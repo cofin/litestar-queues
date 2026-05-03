@@ -32,7 +32,7 @@ __all__ = (
 P = ParamSpec("P")
 T = TypeVar("T")
 TaskCallable = Callable[P, T | Awaitable[T]]
-AnyTaskCallable = Callable[..., Any | Awaitable[Any]]
+AnyTaskCallable = Callable[..., Any]
 
 _task_registry: dict[str, "Task[Any, Any]"] = {}
 _schedule_registry: dict[str, "ScheduleConfig"] = {}
@@ -447,8 +447,9 @@ class Task(Generic[P, T]):
         from litestar_queues.config import QueueConfig
         from litestar_queues.service import QueueService
 
+        enqueue_kwargs = cast("dict[str, Any]", kwargs)
         async with QueueService(QueueConfig(execution_backend="immediate")) as service:
-            return await service.enqueue(self, *args, **kwargs)
+            return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
 
 def get_task_registry() -> dict[str, Task[Any, Any]]:
@@ -506,7 +507,11 @@ def _load_child_modules(module: "ModuleType", *, force_reload: bool) -> int:
 
 
 @overload
-def task(func: TaskCallable[P, T], /) -> Task[P, T]: ...
+def task(func: Callable[P, Awaitable[T]], /) -> Task[P, T]: ...
+
+
+@overload
+def task(func: Callable[P, T], /) -> Task[P, T]: ...
 
 
 @overload
@@ -526,7 +531,7 @@ def task(
     initial_delay: float | timedelta = 0,
     jitter: float | timedelta = 0,
     max_instances: int = 1,
-) -> Callable[[TaskCallable[P, T]], Task[P, T]]: ...
+) -> Callable[[AnyTaskCallable], Task[Any, Any]]: ...
 
 
 def task(
@@ -545,7 +550,7 @@ def task(
     initial_delay: float | timedelta = 0,
     jitter: float | timedelta = 0,
     max_instances: int = 1,
-) -> Task[Any, Any] | Callable[[TaskCallable[P, T]], Task[P, T]]:
+) -> Task[Any, Any] | Callable[[AnyTaskCallable], Task[Any, Any]]:
     """Register a callable as a queue task.
 
     Returns:
@@ -574,10 +579,10 @@ def task(
         else None
     )
 
-    def decorator(func: TaskCallable[P, T]) -> Task[P, T]:
+    def decorator(func: AnyTaskCallable) -> Task[Any, Any]:
         task_name = explicit_name or func.__name__
-        task_obj: Task[P, T] = Task(
-            func,
+        task_obj: Task[Any, Any] = Task(
+            cast("TaskCallable[..., Any]", func),
             name=task_name,
             queue=queue,
             priority=priority,
@@ -586,7 +591,7 @@ def task(
             execution_backend=execution_backend,
             key=key,
         )
-        _task_registry[task_name] = cast("Task[Any, Any]", task_obj)
+        _task_registry[task_name] = task_obj
         if schedule is not None:
             _schedule_registry[task_name] = ScheduleConfig(
                 task_name=task_name,

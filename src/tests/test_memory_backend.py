@@ -53,17 +53,19 @@ async def test_memory_backend_fail_task_retries_then_fails_permanently() -> None
     record = await backend.enqueue("tasks.flaky", max_retries=1)
 
     await backend.claim_task(record.id)
-    await backend.fail_task(record.id, "first failure")
+    retried = await backend.fail_task(record.id, "first failure")
 
-    assert record.status == "pending"
-    assert record.retry_count == 1
+    assert retried is record
+    assert retried.status == "pending"
+    assert retried.retry_count == 1
 
     await backend.claim_task(record.id)
-    await backend.fail_task(record.id, "second failure")
+    failed = await backend.fail_task(record.id, "second failure")
 
-    assert record.status == "failed"
-    assert record.error == "second failure"
-    assert record.completed_at is not None
+    assert failed is record
+    assert failed.status == "failed"
+    assert failed.error == "second failure"
+    assert failed.completed_at is not None
 
 
 async def test_queue_service_local_enqueue_persists_until_worker_processes_record() -> None:
@@ -74,13 +76,14 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
     async with QueueService(QueueConfig(execution_backend="local")) as service:
         result = await service.enqueue(uppercase, "queue")
 
-        assert result.status == "pending"
+        pending_status = result.status
+        assert pending_status == "pending"
 
         record = await service.claim_next()
         assert record is not None
         await service.execute_record(record)
         await result.refresh()
 
-    assert result.status == "completed"
+    completed_status = result.status
+    assert completed_status == "completed"
     assert result.result == "QUEUE"
-

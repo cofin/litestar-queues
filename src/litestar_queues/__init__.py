@@ -1,6 +1,7 @@
 from litestar_queues.backends import (
     BaseStorageBackend,
     InMemoryStorageBackend,
+    SQLSpecStorageBackend,
     get_storage_backend,
     get_storage_backend_class,
     list_storage_backends,
@@ -55,6 +56,7 @@ __all__ = (
     "QueuePlugin",
     "QueueService",
     "QueuedTaskRecord",
+    "SQLSpecStorageBackend",
     "ScheduleConfig",
     "StorageBackendConfig",
     "Task",

@@ -105,5 +105,24 @@ async with config.provide_service() as queue_service:
 | `valkey` | storage | Optional Valkey storage |
 | `cloudrun` | execution | Optional Cloud Run dispatch |
 
-The core package registers ``memory``, ``immediate``, and ``local``. Optional
-backend implementations are added in later chapters.
+The core package registers `memory`, `immediate`, and `local`. The `sqlspec`
+storage backend is available when the SQLSpec extra is installed:
+
+```python
+from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+from litestar_queues import QueueConfig
+
+config = QueueConfig(
+    storage_backend="sqlspec",
+    storage_backend_config={
+        "sqlspec_config": AiosqliteConfig(
+            connection_config={"database": "queue.db"},
+        ),
+    },
+    execution_backend="local",
+)
+```
+
+SQLSpec storage persists JSON-compatible task arguments, keyword arguments,
+metadata, and results.

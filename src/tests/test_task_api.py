@@ -2,7 +2,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, ScheduleConfig, Task, get_scheduled_tasks, get_task_registry, task
+from litestar_queues import (
+    QueueConfig,
+    QueueService,
+    ScheduleConfig,
+    Task,
+    get_scheduled_tasks,
+    get_task_registry,
+    task,
+)
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -98,4 +106,3 @@ async def test_task_decorator_registers_interval_schedule() -> None:
 
     assert "tasks.scheduled" in schedules
     assert schedules["tasks.scheduled"].interval == timedelta(seconds=60)
-

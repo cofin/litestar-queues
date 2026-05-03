@@ -39,8 +39,10 @@ def storage_backend(name: str) -> Callable[[type[BaseStorageBackend]], type[Base
 def _register_builtins() -> None:
     """Register built-in storage backends lazily."""
     from litestar_queues.backends.memory import InMemoryStorageBackend
+    from litestar_queues.backends.sqlspec import SQLSpecStorageBackend
 
     _storage_backend_registry.setdefault("memory", InMemoryStorageBackend)
+    _storage_backend_registry.setdefault("sqlspec", SQLSpecStorageBackend)
 
 
 def get_storage_backend_class(backend_path: str) -> type[BaseStorageBackend]:
@@ -74,6 +76,8 @@ def get_storage_backend(backend: str = "memory", config: "QueueConfig | None" = 
     """
     backend_class = get_storage_backend_class(backend)
     backend_kwargs: dict[str, Any] = {"config": config}
+    if config is not None:
+        backend_kwargs.update(config.storage_backend_config)
 
     init_signature = signature(backend_class.__init__)
     accepts_kwargs = any(param.kind == param.VAR_KEYWORD for param in init_signature.parameters.values())

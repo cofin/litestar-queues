@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -75,6 +75,7 @@ class QueueConfig:
     """
 
     storage_backend: StorageBackendConfig = "memory"
+    storage_backend_config: dict[str, Any] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig = "immediate"
     start_worker: bool = False
     queue_service_dependency_key: str = "queue_service"
@@ -88,7 +89,7 @@ class QueueConfig:
     @property
     def signature_namespace(self) -> dict[str, Any]:
         """Return names added to Litestar's signature namespace."""
-        from litestar_queues.backends import BaseStorageBackend, InMemoryStorageBackend
+        from litestar_queues.backends import BaseStorageBackend, InMemoryStorageBackend, SQLSpecStorageBackend
         from litestar_queues.execution import BaseExecutionBackend, ImmediateExecutionBackend, LocalExecutionBackend
         from litestar_queues.models import QueuedTaskRecord
         from litestar_queues.service import QueueService
@@ -105,6 +106,7 @@ class QueueConfig:
             "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
             "ScheduleConfig": ScheduleConfig,
+            "SQLSpecStorageBackend": SQLSpecStorageBackend,
             "Task": Task,
             "TaskResult": TaskResult,
             "Worker": Worker,

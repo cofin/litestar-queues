@@ -43,7 +43,7 @@ Source = "https://github.com/litestar-org/litestar-queues"
 advanced-alchemy = ["advanced-alchemy>=1.0.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
 redis = ["redis>=5.0.0"]
-sqlspec = ["sqlspec>=0.8.0"]
+sqlspec = ["sqlspec[aiosqlite]>=0.46.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################

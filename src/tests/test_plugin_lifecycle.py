@@ -49,4 +49,3 @@ async def test_plugin_start_worker_creates_and_cleans_up_worker() -> None:
         assert worker.is_running
 
     assert not worker.is_running
-

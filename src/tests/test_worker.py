@@ -35,7 +35,8 @@ async def test_worker_retries_failed_task_until_success() -> None:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise RuntimeError("not yet")
+            msg = "not yet"
+            raise RuntimeError(msg)
         return "ok"
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:
@@ -44,12 +45,13 @@ async def test_worker_retries_failed_task_until_success() -> None:
 
         assert await worker.run_once() == 1
         await result.refresh()
-        assert result.status == "pending"
+        pending_status = result.status
+        assert pending_status == "pending"
 
         assert await worker.run_once() == 1
         await result.refresh()
 
     assert attempts == 2
-    assert result.status == "completed"
+    completed_status = result.status
+    assert completed_status == "completed"
     assert result.result == "ok"
-

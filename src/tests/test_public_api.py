@@ -12,6 +12,7 @@ def test_public_exports() -> None:
         QueuePlugin,
         QueueService,
         ScheduleConfig,
+        SQLSpecStorageBackend,
         StorageBackendConfig,
         Task,
         TaskResult,
@@ -38,6 +39,7 @@ def test_public_exports() -> None:
         "QueuePlugin",
         "QueueService",
         "ScheduleConfig",
+        "SQLSpecStorageBackend",
         "StorageBackendConfig",
         "Task",
         "TaskResult",
@@ -55,7 +57,8 @@ def test_public_exports() -> None:
     assert QueueConfig().storage_backend == "memory"
     assert StorageBackendConfig is str
     assert get_storage_backend_class("memory") is InMemoryStorageBackend
-    assert list_storage_backends() == ["memory"]
+    assert get_storage_backend_class("sqlspec") is SQLSpecStorageBackend
+    assert list_storage_backends() == ["memory", "sqlspec"]
     assert get_execution_backend_class("immediate") is ImmediateExecutionBackend
     assert get_execution_backend_class("local") is LocalExecutionBackend
     assert list_execution_backends() == ["immediate", "local"]
