@@ -4,6 +4,8 @@ from typing_extensions import Self
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
+    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.service import QueueService
 
 __all__ = ("BaseExecutionBackend",)
 
@@ -28,13 +30,9 @@ class BaseExecutionBackend:
     async def close(self) -> None:
         """Close execution resources."""
 
-    async def execute(self, task_name: str, *args: object, **kwargs: object) -> object:
-        """Execute a task.
-
-        Full execution behavior is implemented in later chapters.
-        """
-        message = "Queue execution behavior lands in Chapter 2."
-        raise NotImplementedError(message)
+    async def execute(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        """Execute a queue record."""
+        raise NotImplementedError
 
     async def __aenter__(self) -> Self:
         await self.open()

@@ -15,8 +15,20 @@ async def test_service_context_manager_returns_service() -> None:
 
 
 async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
-    """Test that runtime behavior is deliberately deferred beyond scaffold."""
+    """Test that service enqueue runs through the immediate backend."""
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("example")
+    async def example() -> str:
+        return "ok"
+
     service = QueueService(QueueConfig())
 
-    with pytest.raises(NotImplementedError, match="Chapter 2"):
-        await service.enqueue("example")
+    async with service:
+        result = await service.enqueue("example")
+
+    assert result.status == "completed"
+    assert result.result == "ok"

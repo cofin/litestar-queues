@@ -16,6 +16,14 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def clean_task_registry() -> None:
+    """Clear queue task registries before each test."""
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+
 @pytest.fixture
 def queue_config() -> "QueueConfig":
     """Return a default queue configuration for testing."""

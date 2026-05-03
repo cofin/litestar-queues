@@ -3,13 +3,13 @@ Backends
 
 Litestar Queues separates storage backends from execution backends.
 
-Storage backends persist task state. The scaffold registers the ``memory``
-backend and reserves optional extras for SQLSpec, Advanced Alchemy, Redis, and
-Valkey integrations.
+Storage backends persist task state. The core package registers the ``memory``
+backend for tests, local development, and in-process workers. Optional extras
+are reserved for SQLSpec, Advanced Alchemy, Redis, and Valkey integrations.
 
-Execution backends decide where claimed tasks run. The scaffold registers
-``immediate`` and ``local`` placeholders and reserves a ``cloudrun`` extra for
-external execution.
+Execution backends decide where claimed tasks run. The core package registers
+``immediate`` for inline execution and ``local`` for in-process worker
+execution. A ``cloudrun`` extra is reserved for external execution.
 
 Install optional extras only when an application needs them:
 

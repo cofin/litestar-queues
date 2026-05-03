@@ -38,6 +38,7 @@ def test_config_defaults() -> None:
     assert config.execution_backend == "immediate"
     assert config.queue_service_dependency_key == "queue_service"
     assert config.queue_service_state_key == "queue_service"
+    assert config.queue_worker_state_key == "queue_worker"
     assert config.start_worker is False
 
 

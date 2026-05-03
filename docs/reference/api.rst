@@ -19,6 +19,30 @@ Service
    :undoc-members:
    :show-inheritance:
 
+Tasks
+-----
+
+.. automodule:: litestar_queues.task
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Models
+------
+
+.. automodule:: litestar_queues.models
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Worker
+------
+
+.. automodule:: litestar_queues.worker
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Plugin
 ------
 

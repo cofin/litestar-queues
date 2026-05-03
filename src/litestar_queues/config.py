@@ -79,14 +79,21 @@ class QueueConfig:
     start_worker: bool = False
     queue_service_dependency_key: str = "queue_service"
     queue_service_state_key: str = "queue_service"
+    queue_worker_state_key: str = "queue_worker"
     task_modules: tuple[str, ...] = ()
+    initialize_schedules: bool = True
+    worker_batch_size: int = 10
+    worker_poll_interval: float = 0.1
 
     @property
     def signature_namespace(self) -> dict[str, Any]:
         """Return names added to Litestar's signature namespace."""
         from litestar_queues.backends import BaseStorageBackend, InMemoryStorageBackend
         from litestar_queues.execution import BaseExecutionBackend, ImmediateExecutionBackend, LocalExecutionBackend
+        from litestar_queues.models import QueuedTaskRecord
         from litestar_queues.service import QueueService
+        from litestar_queues.task import ScheduleConfig, Task, TaskResult
+        from litestar_queues.worker import Worker
 
         return {
             "BaseExecutionBackend": BaseExecutionBackend,
@@ -95,7 +102,12 @@ class QueueConfig:
             "InMemoryStorageBackend": InMemoryStorageBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
             "QueueConfig": QueueConfig,
+            "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
+            "ScheduleConfig": ScheduleConfig,
+            "Task": Task,
+            "TaskResult": TaskResult,
+            "Worker": Worker,
         }
 
     @property

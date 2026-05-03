@@ -1,8 +1,8 @@
 # litestar-queues
 
-Task queue support for Litestar applications. This package provides the
-scaffold for defining queue configuration, registering a Litestar plugin, and
-choosing storage and execution backends.
+Task queue support for Litestar applications. This package provides a typed
+task decorator, result handles, memory-backed task storage, immediate
+execution, local in-process workers, and Litestar plugin lifecycle wiring.
 
 ## Installation
 
@@ -34,12 +34,17 @@ Alchemy, Redis, Valkey, or Cloud Run client dependencies.
 
 ```python
 from litestar import Litestar
-from litestar_queues import QueueConfig, QueuePlugin
+from litestar_queues import QueueConfig, QueuePlugin, task
+
+
+@task("accounts.sync", queue="accounts", retries=3, timeout=300)
+async def sync_account(account_id: str) -> dict[str, str]:
+    return {"account_id": account_id, "status": "synced"}
 
 config = QueueConfig(
     storage_backend="memory",
-    execution_backend="immediate",
-    start_worker=False,
+    execution_backend="local",
+    start_worker=True,
 )
 
 app = Litestar(plugins=[QueuePlugin(config=config)])
@@ -52,27 +57,39 @@ from litestar import post
 from litestar_queues import QueueService
 
 
-@post("/tasks/{task_name:str}")
-async def create_task(task_name: str, queue_service: QueueService) -> dict[str, str]:
-    await queue_service.enqueue(task_name)
-    return {"status": "queued"}
+@post("/accounts/{account_id:str}/sync")
+async def create_task(account_id: str, queue_service: QueueService) -> dict[str, str]:
+    result = await queue_service.enqueue(sync_account, account_id)
+    return {"task_id": str(result.id), "status": result.status or "queued"}
 ```
 
-Queue runtime behavior is intentionally minimal in the first scaffold. The
-storage backend contract, task decorator, result handles, and local worker
-runtime are extension points for the next implementation chapter.
+For scripts and tests that do not need a worker, task wrappers can enqueue with
+the default immediate memory service:
+
+```python
+result = await sync_account.enqueue("acct-123")
+
+assert result.status == "completed"
+assert result.result == {"account_id": "acct-123", "status": "synced"}
+```
 
 ## Standalone Usage
 
 Use the config helper directly outside of a Litestar application:
 
 ```python
-from litestar_queues import QueueConfig
+from litestar_queues import QueueConfig, task
+
+
+@task("reports.refresh")
+async def refresh_report(report_id: str) -> str:
+    return report_id
 
 config = QueueConfig(storage_backend="memory")
 
 async with config.provide_service() as queue_service:
-    await queue_service.enqueue("sync-account", "acct-123")
+    result = await queue_service.enqueue(refresh_report, "report-123")
+    await result.refresh()
 ```
 
 ## Available Backend Names
@@ -88,5 +105,5 @@ async with config.provide_service() as queue_service:
 | `valkey` | storage | Optional Valkey storage |
 | `cloudrun` | execution | Optional Cloud Run dispatch |
 
-Only the memory, immediate, and local backend placeholders are registered in
-the scaffold. Optional backend implementations are added in later chapters.
+The core package registers ``memory``, ``immediate``, and ``local``. Optional
+backend implementations are added in later chapters.
