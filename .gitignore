@@ -182,6 +182,7 @@ node_modules
 specs/
 .gemini/
 .claude/
+.codex/
 AGENTS.md
 CLAUDE.md
 GEMINI.md
