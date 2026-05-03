@@ -22,7 +22,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: make install UV_SYNC_ARGS=--all-extras
 
       - name: Build package
         run: uv build

@@ -9,6 +9,7 @@ SHELL := /bin/bash
 .ONESHELL:
 .EXPORT_ALL_VARIABLES:
 MAKEFLAGS += --no-print-directory
+UV_SYNC_ARGS ?= --all-extras --dev
 
 # -----------------------------------------------------------------------------
 # Display Formatting and Colors
@@ -42,9 +43,9 @@ install-uv:                                         ## Install latest version of
 	@echo "${OK} UV installed successfully"
 
 .PHONY: install
-install: clean                                      ## Install the project, dependencies, and pre-commit for local development
+install: clean                                      ## Install the project and dependencies for local development
 	@echo "${INFO} Starting fresh installation..."
-	@uv sync --all-extras --dev
+	@uv sync $(UV_SYNC_ARGS)
 	@echo "${OK} Installation complete"
 
 .PHONY: destroy
@@ -62,8 +63,8 @@ upgrade:                                            ## Upgrade all dependencies 
 	@echo "${INFO} Updating all dependencies..."
 	@uv lock --upgrade
 	@echo "${OK} Dependencies updated"
-	@uv run pre-commit autoupdate
-	@echo "${OK} Updated Pre-commit hooks"
+	@uvx prek autoupdate
+	@echo "${OK} Updated prek hooks"
 
 .PHONY: lock
 lock:                                               ## Rebuild lockfiles from scratch
@@ -170,11 +171,11 @@ type-check: mypy pyright                            ## Run all type checking
 # Linting and Formatting
 # -----------------------------------------------------------------------------
 
-.PHONY: pre-commit
-pre-commit:                                         ## Run pre-commit hooks
-	@echo "${INFO} Running pre-commit checks..."
-	@uv run pre-commit run --all-files
-	@echo "${OK} Pre-commit checks passed"
+.PHONY: prek
+prek:                                               ## Run prek hooks
+	@echo "${INFO} Running prek checks..."
+	@uvx prek run --show-diff-on-failure --color=always --all-files
+	@echo "${OK} prek checks passed"
 
 .PHONY: slotscheck
 slotscheck:                                         ## Run slotscheck
@@ -190,7 +191,7 @@ fix:                                                ## Fix linting issues
 	@echo "${OK} Linting issues fixed"
 
 .PHONY: lint
-lint: pre-commit type-check slotscheck              ## Run all linting checks
+lint: prek type-check slotscheck                    ## Run all linting checks
 
 .PHONY: check-all
 check-all: lint test-all coverage                   ## Run all checks (lint, test, coverage)
