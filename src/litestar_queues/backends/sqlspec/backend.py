@@ -12,7 +12,7 @@ from litestar_queues.backends.sqlspec.config import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueuedTaskRecord, TaskStatus
+from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -51,7 +51,7 @@ def _coerce_status(value: Any) -> TaskStatus:
     return cast("TaskStatus", status)
 
 
-class SQLSpecQueueBackend(BaseQueueBackend):
+class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     """SQLSpec-backed queue backend."""
 
     __slots__ = (
@@ -109,6 +109,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._sqlspec = None
         self._opened = False
 
+    @property
+    def capabilities(self) -> QueueBackendCapabilities:
+        """Return backend behavior capabilities."""
+        return QueueBackendCapabilities(
+            supports_notifications=False,
+            notification_backend=None,
+            notifications_durable=False,
+        )
+
     async def create_schema(self) -> None:
         """Create the SQLSpec queue table and indexes."""
         async with self._session() as driver:
@@ -133,6 +142,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         max_retries: int = 0,
         scheduled_at: datetime | None = None,
         key: str | None = None,
+        execution_backend: str = "local",
+        execution_profile: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> QueuedTaskRecord:
         async with self._session() as driver:
@@ -153,6 +164,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     args=args,
                     kwargs=dict(kwargs or {}),
                     queue=queue,
+                    execution_backend=execution_backend,
+                    execution_profile=execution_profile,
                     status="scheduled" if scheduled_at is not None and scheduled_at > now else "pending",
                     priority=priority,
                     max_retries=max_retries,
@@ -166,6 +179,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 with suppress(Exception):
                     await driver.rollback()
                 raise
+        await self.notify_new_task(record)
         return record
 
     async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
@@ -183,8 +197,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         *,
         limit: int = 1,
         queue: str | None = None,
+        execution_backend: str | None = None,
     ) -> list[QueuedTaskRecord]:
-        rows = await self._select_pending_rows(limit=limit, queue=queue)
+        rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
 
     async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
@@ -222,8 +237,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return self._record_from_row(updated_row) if updated_row is not None else None
 
-    async def claim_next(self, *, queue: str | None = None) -> QueuedTaskRecord | None:
-        rows = await self._select_pending_rows(limit=10, queue=queue)
+    async def claim_next(
+        self,
+        *,
+        queue: str | None = None,
+        execution_backend: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
             task_id = UUID(str(row["id"]))
             claimed = await self.claim_task(task_id)
@@ -327,12 +347,97 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     await driver.rollback()
                 raise
 
+    async def null_heartbeats(self, task_ids: list[UUID]) -> None:
+        if not task_ids:
+            return
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                await driver.execute(self._get_store().null_heartbeats(task_ids=[str(task_id) for task_id in task_ids]))
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+
     async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
         cutoff = _utc_now() - stale_after
         async with self._session() as driver:
             await driver.begin()
             try:
                 result = await driver.execute(self._get_store().requeue_stale(cutoff=_serialize_datetime(cutoff)))
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return int(result.rows_affected)
+
+    async def set_execution_ref(
+        self,
+        task_id: UUID,
+        execution_backend: str,
+        execution_ref: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().set_execution_ref(
+                        task_id=str(task_id),
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                        execution_ref=execution_ref,
+                    ),
+                )
+                row = await self._select_task(driver, task_id) if result.rows_affected else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return self._record_from_row(row) if row is not None else None
+
+    async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
+        async with self._session() as driver:
+            rows = await driver.select(self._get_store().list_running_external(limit=limit))
+        return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
+
+    async def get_statistics(self) -> QueueStatistics:
+        async with self._session() as driver:
+            rows = await driver.select(self._get_store().list_all())
+        statistics = QueueStatistics()
+        for row in cast("list[dict[str, Any]]", rows):
+            status = _coerce_status(row["status"])
+            setattr(statistics, status, getattr(statistics, status) + 1)
+        return statistics
+
+    async def list_completed_by_task(
+        self,
+        task_name: str,
+        *,
+        since: datetime | None = None,
+        limit: int = 10,
+    ) -> list[QueuedTaskRecord]:
+        async with self._session() as driver:
+            rows = await driver.select(
+                self._get_store().list_completed_by_task(
+                    task_name=task_name,
+                    since=_serialize_datetime(since),
+                    limit=limit,
+                )
+            )
+        return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
+
+    async def cleanup_terminal(self, before: datetime) -> int:
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().cleanup_terminal(before=_serialize_datetime(before) or "")
+                )
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -388,13 +493,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._get_or_create_sqlspec().provide_session(sqlspec_config) as driver:
             yield driver
 
-    async def _select_pending_rows(self, *, limit: int, queue: str | None) -> list[dict[str, Any]]:
+    async def _select_pending_rows(
+        self,
+        *,
+        limit: int,
+        queue: str | None,
+        execution_backend: str | None,
+    ) -> list[dict[str, Any]]:
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_pending(
                     now=_serialize_datetime(_utc_now()),
                     limit=limit,
                     queue=queue,
+                    execution_backend=execution_backend,
                 )
             )
         return cast("list[dict[str, Any]]", rows)
@@ -418,6 +530,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "completed_at": _serialize_datetime(record.completed_at),
             "created_at": _serialize_datetime(record.created_at),
             "error": record.error,
+            "execution_backend": record.execution_backend,
+            "execution_profile": record.execution_profile,
+            "execution_ref": record.execution_ref,
             "heartbeat_at": _serialize_datetime(record.heartbeat_at),
             "id": str(record.id),
             "kwargs_json": to_json(record.kwargs),
@@ -446,6 +561,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             args=tuple(args),
             kwargs=kwargs,
             queue=str(row["queue"]),
+            execution_backend=str(row["execution_backend"]),
+            execution_profile=cast("str | None", row["execution_profile"]),
+            execution_ref=cast("str | None", row["execution_ref"]),
             status=_coerce_status(row["status"]),
             priority=int(row["priority"]),
             max_retries=int(row["max_retries"]),

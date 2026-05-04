@@ -1,6 +1,9 @@
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
+
+from litestar_queues.models import QueueBackendCapabilities, QueueStatistics
 
 if TYPE_CHECKING:
     from datetime import datetime, timedelta
@@ -12,7 +15,7 @@ if TYPE_CHECKING:
 __all__ = ("BaseQueueBackend",)
 
 
-class BaseQueueBackend:
+class BaseQueueBackend:  # noqa: PLR0904
     """Base class for queue persistence backends."""
 
     __slots__ = ("config",)
@@ -20,6 +23,11 @@ class BaseQueueBackend:
     def __init__(self, config: "QueueConfig | None" = None) -> None:
         """Initialize the queue backend."""
         self.config = config
+
+    @property
+    def capabilities(self) -> QueueBackendCapabilities:
+        """Return backend behavior capabilities."""
+        return QueueBackendCapabilities()
 
     async def open(self) -> bool:
         """Open queue resources.
@@ -43,6 +51,8 @@ class BaseQueueBackend:
         max_retries: int = 0,
         scheduled_at: "datetime | None" = None,
         key: str | None = None,
+        execution_backend: str = "local",
+        execution_profile: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> "QueuedTaskRecord":
         """Persist a queued task."""
@@ -61,6 +71,7 @@ class BaseQueueBackend:
         *,
         limit: int = 1,
         queue: str | None = None,
+        execution_backend: str | None = None,
     ) -> "list[QueuedTaskRecord]":
         """Return due pending or scheduled tasks ordered for execution."""
         raise NotImplementedError
@@ -69,13 +80,18 @@ class BaseQueueBackend:
         """Atomically claim a pending task."""
         raise NotImplementedError
 
-    async def claim_next(self, *, queue: str | None = None) -> "QueuedTaskRecord | None":
+    async def claim_next(
+        self,
+        *,
+        queue: str | None = None,
+        execution_backend: str | None = None,
+    ) -> "QueuedTaskRecord | None":
         """Claim the next due task.
 
         Returns:
             The claimed task record, if one was available.
         """
-        records = await self.list_pending(limit=1, queue=queue)
+        records = await self.list_pending(limit=1, queue=queue, execution_backend=execution_backend)
         if not records:
             return None
         return await self.claim_task(records[0].id)
@@ -101,6 +117,9 @@ class BaseQueueBackend:
     async def touch_heartbeat(self, task_id: "UUID") -> None:
         """Update the heartbeat timestamp for a running task."""
 
+    async def null_heartbeats(self, task_ids: "list[UUID]") -> None:
+        """Clear heartbeat timestamps for task IDs."""
+
     async def requeue_stale_running(self, *, stale_after: "timedelta") -> int:
         """Requeue running tasks with stale heartbeats.
 
@@ -108,6 +127,66 @@ class BaseQueueBackend:
             Number of requeued tasks.
         """
         return 0
+
+    async def set_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: str,
+        execution_ref: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> "QueuedTaskRecord | None":
+        """Persist an external execution reference for a running task.
+
+        Returns:
+            The updated queued task record, if one exists.
+        """
+        record = await self.get_task(task_id)
+        if record is None:
+            return None
+        record.execution_backend = execution_backend
+        record.execution_ref = execution_ref
+        record.execution_profile = execution_profile
+        return record
+
+    async def list_running_external(self, *, limit: int | None = None) -> "list[QueuedTaskRecord]":
+        """Return running tasks that have external execution references."""
+        return []
+
+    async def get_statistics(self) -> QueueStatistics:
+        """Return queue status counts."""
+        return QueueStatistics()
+
+    async def list_completed_by_task(
+        self,
+        task_name: str,
+        *,
+        since: "datetime | None" = None,
+        limit: int = 10,
+    ) -> "list[QueuedTaskRecord]":
+        """Return recent completed records for a task name."""
+        return []
+
+    async def cleanup_terminal(self, before: "datetime") -> int:
+        """Delete terminal records completed before a cutoff.
+
+        Returns:
+            The number of deleted records.
+        """
+        return 0
+
+    async def notify_new_task(self, record: "QueuedTaskRecord") -> None:
+        """Notify waiters that a new task is available."""
+
+    async def wait_for_notifications(self, timeout: float | None = None) -> bool:
+        """Wait until backend notification arrives.
+
+        Returns:
+            True when a notification was observed.
+        """
+        if timeout is not None:
+            await asyncio.sleep(timeout)
+        return False
 
     async def __aenter__(self) -> Self:
         await self.open()

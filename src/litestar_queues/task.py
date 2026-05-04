@@ -333,13 +333,18 @@ class Task(Generic[P, T]):
 
     __slots__ = (
         "__dict__",
+        "_description",
         "_execution_backend",
+        "_execution_profile",
         "_func",
         "_key",
+        "_log_level",
         "_name",
         "_priority",
         "_queue",
+        "_quiet_success",
         "_retries",
+        "_run_after",
         "_timeout",
     )
 
@@ -353,7 +358,12 @@ class Task(Generic[P, T]):
         retries: int = 0,
         timeout: float | None = None,
         execution_backend: str | None = None,
+        execution_profile: str | None = None,
         key: str | None = None,
+        run_after: float | timedelta | None = None,
+        description: str | None = None,
+        log_level: str | None = None,
+        quiet_success: bool | None = None,
     ) -> None:
         self._func = func
         self._name = name
@@ -362,7 +372,12 @@ class Task(Generic[P, T]):
         self._retries = retries
         self._timeout = timeout
         self._execution_backend = execution_backend
+        self._execution_profile = execution_profile
         self._key = key
+        self._run_after = _coerce_interval(run_after)
+        self._description = description
+        self._log_level = log_level
+        self._quiet_success = quiet_success
         self.__job_name__ = name
 
     @property
@@ -396,9 +411,34 @@ class Task(Generic[P, T]):
         return self._execution_backend
 
     @property
+    def execution_profile(self) -> str | None:
+        """Return the task-specific execution profile override."""
+        return self._execution_profile
+
+    @property
     def key(self) -> str | None:
         """Return the default deduplication key."""
         return self._key
+
+    @property
+    def run_after(self) -> timedelta | None:
+        """Return the relative delay for enqueue operations."""
+        return self._run_after
+
+    @property
+    def description(self) -> str | None:
+        """Return the task description metadata."""
+        return self._description
+
+    @property
+    def log_level(self) -> str | None:
+        """Return the task log level metadata."""
+        return self._log_level
+
+    @property
+    def quiet_success(self) -> bool | None:
+        """Return whether successful completion logging should be quiet."""
+        return self._quiet_success
 
     @property
     def function(self) -> TaskCallable[P, T]:
@@ -416,6 +456,41 @@ class Task(Generic[P, T]):
             return await result
         return result
 
+    async def execute_record(self, record: "QueuedTaskRecord") -> T:
+        """Execute this task for a queued record in worker context.
+
+        Returns:
+            The wrapped callable result.
+        """
+        kwargs = dict(record.kwargs)
+        if self._accepts_job_id():
+            kwargs["_job_id"] = record.id
+        if inspect.iscoroutinefunction(self._func):
+            result = self._func(*record.args, **kwargs)
+        else:
+            result = await asyncio.to_thread(self._func, *record.args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return cast("T", result)
+
+    def metadata(self, values: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return enqueue metadata for this task."""
+        metadata = dict(values or {})
+        if self._description is not None:
+            metadata["description"] = self._description
+        if self._log_level is not None:
+            metadata["log_level"] = self._log_level
+        if self._quiet_success is not None:
+            metadata["quiet_success"] = self._quiet_success
+        return metadata
+
+    def _accepts_job_id(self) -> bool:
+        signature = inspect.signature(self._func)
+        parameters = signature.parameters
+        return "_job_id" in parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+        )
+
     def using(
         self,
         *,
@@ -424,7 +499,12 @@ class Task(Generic[P, T]):
         retries: int | None = None,
         timeout: float | None = None,
         execution_backend: str | None = None,
+        execution_profile: str | None = None,
         key: str | None = None,
+        run_after: float | timedelta | None = None,
+        description: str | None = None,
+        log_level: str | None = None,
+        quiet_success: bool | None = None,
     ) -> "Task[P, T]":
         """Return a configured copy with enqueue overrides."""
         return Task(
@@ -435,7 +515,12 @@ class Task(Generic[P, T]):
             retries=retries if retries is not None else self._retries,
             timeout=timeout if timeout is not None else self._timeout,
             execution_backend=execution_backend if execution_backend is not None else self._execution_backend,
+            execution_profile=execution_profile if execution_profile is not None else self._execution_profile,
             key=key if key is not None else self._key,
+            run_after=run_after if run_after is not None else self._run_after,
+            description=description if description is not None else self._description,
+            log_level=log_level if log_level is not None else self._log_level,
+            quiet_success=quiet_success if quiet_success is not None else self._quiet_success,
         )
 
     async def enqueue(self, *args: P.args, **kwargs: P.kwargs) -> TaskResult:
@@ -524,7 +609,12 @@ def task(
     retries: int = 0,
     timeout: float | None = None,
     execution_backend: str | None = None,
+    execution_profile: str | None = None,
     key: str | None = None,
+    run_after: float | timedelta | None = None,
+    description: str | None = None,
+    log_level: str | None = None,
+    quiet_success: bool | None = None,
     cron: str | None = None,
     interval: float | timedelta | None = None,
     timezone: str = "UTC",
@@ -543,7 +633,12 @@ def task(
     retries: int = 0,
     timeout: float | None = None,
     execution_backend: str | None = None,
+    execution_profile: str | None = None,
     key: str | None = None,
+    run_after: float | timedelta | None = None,
+    description: str | None = None,
+    log_level: str | None = None,
+    quiet_success: bool | None = None,
     cron: str | None = None,
     interval: float | timedelta | None = None,
     timezone: str = "UTC",
@@ -589,7 +684,12 @@ def task(
             retries=retries,
             timeout=timeout,
             execution_backend=execution_backend,
+            execution_profile=execution_profile,
             key=key,
+            run_after=run_after,
+            description=description,
+            log_level=log_level,
+            quiet_success=quiet_success,
         )
         _task_registry[task_name] = task_obj
         if schedule is not None:

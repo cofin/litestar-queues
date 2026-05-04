@@ -5,6 +5,8 @@ from uuid import UUID, uuid4
 
 __all__ = (
     "TERMINAL_STATUSES",
+    "QueueBackendCapabilities",
+    "QueueStatistics",
     "QueuedTaskRecord",
     "TaskStatus",
 )
@@ -21,6 +23,37 @@ def _utc_now() -> datetime:
 
 
 @dataclass(slots=True)
+class QueueBackendCapabilities:
+    """Behavior advertised by a queue backend."""
+
+    supports_notifications: bool = False
+    notification_backend: str | None = None
+    notifications_durable: bool = False
+    supports_heartbeats: bool = True
+    supports_atomic_claim: bool = True
+    supports_atomic_delayed_promotion: bool = True
+    supports_external_refs: bool = True
+    supports_terminal_cleanup: bool = True
+
+
+@dataclass(slots=True)
+class QueueStatistics:
+    """Operational status counts for a queue backend."""
+
+    pending: int = 0
+    scheduled: int = 0
+    running: int = 0
+    completed: int = 0
+    failed: int = 0
+    cancelled: int = 0
+
+    @property
+    def total(self) -> int:
+        """Return the total number of known queue records."""
+        return self.pending + self.scheduled + self.running + self.completed + self.failed + self.cancelled
+
+
+@dataclass(slots=True)
 class QueuedTaskRecord:
     """Backend-neutral representation of a queued task."""
 
@@ -29,6 +62,9 @@ class QueuedTaskRecord:
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
     queue: str = "default"
+    execution_backend: str = "local"
+    execution_profile: str | None = None
+    execution_ref: str | None = None
     status: TaskStatus = "pending"
     priority: int = 0
     max_retries: int = 0

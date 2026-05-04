@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from litestar.plugins import InitPluginProtocol
@@ -75,6 +76,15 @@ class QueuePlugin(InitPluginProtocol):
                 self._service,
                 batch_size=self._config.worker_batch_size,
                 poll_interval=self._config.worker_poll_interval,
+                max_concurrency=self._config.worker_max_concurrency,
+                heartbeat_interval=self._config.worker_heartbeat_interval,
+                stale_after=(
+                    timedelta(seconds=self._config.worker_stale_after)
+                    if self._config.worker_stale_after is not None
+                    else None
+                ),
+                graceful_shutdown_timeout=self._config.worker_graceful_shutdown_timeout,
+                final_cancel_timeout=self._config.worker_final_cancel_timeout,
             )
             self._worker_task = asyncio.create_task(self._worker.start())
             await asyncio.sleep(0)

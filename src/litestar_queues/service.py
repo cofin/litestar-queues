@@ -1,12 +1,13 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
+from litestar_queues.exceptions import NonRetryableError
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled_tasks, get_task_registry
 
 if TYPE_CHECKING:
-    from datetime import datetime
     from uuid import UUID
 
     from litestar_queues.backends import BaseQueueBackend
@@ -56,7 +57,18 @@ class QueueService:
         task: str | Task[Any, Any],
         *args: Any,
         scheduled_at: "datetime | None" = None,
+        run_after: float | timedelta | None = None,
         key: str | None = None,
+        queue: str | None = None,
+        priority: int | None = None,
+        retries: int | None = None,
+        timeout: float | None = None,
+        execution_backend: str | None = None,
+        execution_profile: str | None = None,
+        description: str | None = None,
+        log_level: str | None = None,
+        quiet_success: bool | None = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> TaskResult:
         """Enqueue a registered task.
@@ -66,21 +78,38 @@ class QueueService:
         """
         task_obj = self.resolve_task(task)
         effective_key = key if key is not None else task_obj.key
+        coerced_run_after = _coerce_timedelta(run_after)
+        effective_run_after = coerced_run_after if run_after is not None else task_obj.run_after
+        effective_scheduled_at = scheduled_at
+        if effective_scheduled_at is None and effective_run_after is not None:
+            effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
+        effective_execution_backend = execution_backend or task_obj.execution_backend or self._config.execution_backend
+        effective_execution_profile = execution_profile if execution_profile is not None else task_obj.execution_profile
+        effective_metadata = task_obj.metadata(metadata)
+        if description is not None:
+            effective_metadata["description"] = description
+        if log_level is not None:
+            effective_metadata["log_level"] = log_level
+        if quiet_success is not None:
+            effective_metadata["quiet_success"] = quiet_success
+        if timeout is not None:
+            effective_metadata["timeout"] = timeout
         record = await self.get_queue_backend().enqueue(
             task_obj.name,
             args=args,
             kwargs=kwargs,
-            queue=task_obj.queue,
-            priority=task_obj.priority,
-            max_retries=task_obj.retries,
-            scheduled_at=scheduled_at,
+            queue=queue if queue is not None else task_obj.queue,
+            priority=priority if priority is not None else task_obj.priority,
+            max_retries=retries if retries is not None else task_obj.retries,
+            scheduled_at=effective_scheduled_at,
             key=effective_key,
-            metadata={"execution_backend": task_obj.execution_backend or self._config.execution_backend},
+            execution_backend=effective_execution_backend,
+            execution_profile=effective_execution_profile,
+            metadata=effective_metadata,
         )
         result = TaskResult(record.id, task_obj.name, service=self, record=record)
 
-        execution_backend_name = task_obj.execution_backend or self._config.execution_backend
-        if execution_backend_name == "immediate" and record.status == "pending":
+        if record.execution_backend == "immediate" and record.status == "pending":
             claimed = await self.get_queue_backend().claim_task(record.id)
             if claimed is not None:
                 await self.get_execution_backend().execute(self, claimed)
@@ -108,13 +137,18 @@ class QueueService:
         """Return a queued task record by ID."""
         return await self.get_queue_backend().get_task(task_id)
 
-    async def claim_next(self, *, queue: str | None = None) -> "QueuedTaskRecord | None":
+    async def claim_next(
+        self,
+        *,
+        queue: str | None = None,
+        execution_backend: str | None = None,
+    ) -> "QueuedTaskRecord | None":
         """Claim the next due queued task.
 
         Returns:
             The claimed task record, if one was available.
         """
-        return await self.get_queue_backend().claim_next(queue=queue)
+        return await self.get_queue_backend().claim_next(queue=queue, execution_backend=execution_backend)
 
     async def execute_record(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.
@@ -123,12 +157,19 @@ class QueueService:
             The updated queue record.
         """
         task_obj = self.resolve_task(record.task_name)
+        timeout = record.metadata.get("timeout", task_obj.timeout)
         try:
-            coroutine = task_obj(*record.args, **record.kwargs)
-            result = await asyncio.wait_for(coroutine, timeout=task_obj.timeout)
+            coroutine = task_obj.execute_record(record)
+            result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
+        except NonRetryableError as exc:
+            updated = await self.get_queue_backend().fail_task(record.id, str(exc), retry=False)
+            return updated or record
         except Exception as exc:  # noqa: BLE001
             updated = await self.get_queue_backend().fail_task(record.id, str(exc))
-            return updated or record
+            failed = updated or record
+            if failed.status == "failed":
+                await self._reschedule_if_needed(failed)
+            return failed
 
         updated = await self.get_queue_backend().complete_task(record.id, result=result)
         completed = updated or record
@@ -143,6 +184,7 @@ class QueueService:
         """
         records: list["QueuedTaskRecord"] = []
         for task_name, schedule in get_scheduled_tasks().items():
+            task_obj = self.resolve_task(task_name)
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
             records.append(
                 await self.get_queue_backend().enqueue(
@@ -150,6 +192,8 @@ class QueueService:
                     key=f"scheduled:{task_name}",
                     max_retries=0,
                     scheduled_at=scheduled_at,
+                    execution_backend=task_obj.execution_backend or self._config.execution_backend,
+                    execution_profile=task_obj.execution_profile,
                     metadata={"schedule": schedule.as_metadata()},
                 )
             )
@@ -172,8 +216,11 @@ class QueueService:
         await self.get_queue_backend().enqueue(
             record.task_name,
             key=record.key,
+            queue=record.queue,
             max_retries=record.max_retries,
             scheduled_at=schedule.get_next_run(record.completed_at),
+            execution_backend=record.execution_backend,
+            execution_profile=record.execution_profile,
             metadata={"schedule": schedule.as_metadata()},
         )
 
@@ -205,3 +252,11 @@ class QueueService:
         exc_tb: object,
     ) -> None:
         await self.close()
+
+
+def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        return value
+    return timedelta(seconds=value)

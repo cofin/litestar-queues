@@ -34,6 +34,31 @@ class BaseExecutionBackend:
         """Execute a queue record."""
         raise NotImplementedError
 
+    async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> str | None:
+        """Dispatch a queue record to an external executor.
+
+        Returns:
+            The external execution reference, if one was created.
+        """
+        await self.execute(service, record)
+        return record.execution_ref
+
+    async def reconcile(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord | None":
+        """Reconcile an externally running queue record.
+
+        Returns:
+            The updated record when reconciliation changes state.
+        """
+        return None
+
+    async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> bool:
+        """Cancel an externally running queue record if possible.
+
+        Returns:
+            True when cancellation succeeds.
+        """
+        return False
+
     async def __aenter__(self) -> Self:
         await self.open()
         return self

@@ -15,8 +15,10 @@ from litestar_queues.config import (
 )
 from litestar_queues.exceptions import (
     MissingDependencyError,
+    NonRetryableError,
     QueueConfigurationError,
     QueueError,
+    non_retryable,
 )
 from litestar_queues.execution import (
     BaseExecutionBackend,
@@ -27,7 +29,7 @@ from litestar_queues.execution import (
     get_execution_backend_class,
     list_execution_backends,
 )
-from litestar_queues.models import QueuedTaskRecord, TaskStatus
+from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.service import QueueService
 from litestar_queues.task import (
@@ -50,12 +52,15 @@ __all__ = (
     "InMemoryQueueBackend",
     "LocalExecutionBackend",
     "MissingDependencyError",
+    "NonRetryableError",
+    "QueueBackendCapabilities",
     "QueueBackendConfig",
     "QueueConfig",
     "QueueConfigurationError",
     "QueueError",
     "QueuePlugin",
     "QueueService",
+    "QueueStatistics",
     "QueuedTaskRecord",
     "SQLSpecQueueBackend",
     "ScheduleConfig",
@@ -73,6 +78,7 @@ __all__ = (
     "list_execution_backends",
     "list_queue_backends",
     "load_task_modules",
+    "non_retryable",
     "queue_backend",
     "task",
 )

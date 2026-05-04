@@ -22,6 +22,9 @@ _TASK_COLUMNS = (
     "args_json",
     "kwargs_json",
     "queue",
+    "execution_backend",
+    "execution_profile",
+    "execution_ref",
     "status",
     "priority",
     "max_retries",
@@ -55,7 +58,7 @@ def _adapter_name(config: Any) -> str:
     return ""
 
 
-class SQLSpecQueueStore:
+class SQLSpecQueueStore:  # noqa: PLR0904
     """Base SQLSpec queue statement store."""
 
     __slots__ = ("_config", "_table_name")
@@ -111,7 +114,14 @@ class SQLSpecQueueStore:
         """Return a SELECT statement for one task key."""
         return self._select_all().where_eq("task_key", key)
 
-    def list_pending(self, *, now: str, limit: int, queue: str | None = None) -> Any:
+    def list_pending(
+        self,
+        *,
+        now: str,
+        limit: int,
+        queue: str | None = None,
+        execution_backend: str | None = None,
+    ) -> Any:
         """Return a SELECT statement for due pending tasks."""
         statement = (
             self
@@ -121,6 +131,8 @@ class SQLSpecQueueStore:
         )
         if queue is not None:
             statement = statement.where_eq("queue", queue)
+        if execution_backend is not None:
+            statement = statement.where_eq("execution_backend", execution_backend)
         return statement.order_by("priority", desc=True).order_by("created_at").limit(limit)
 
     def claim_task(self, *, task_id: str, due_at: str, started_at: str, heartbeat_at: str) -> Any:
@@ -193,6 +205,10 @@ class SQLSpecQueueStore:
             .where_eq("status", "running")
         )
 
+    def null_heartbeats(self, *, task_ids: list[str]) -> Any:
+        """Return an UPDATE statement that clears task heartbeats."""
+        return sql.update(self.table_name).set(heartbeat_at=None).where_in("id", task_ids)
+
     def requeue_stale(self, *, cutoff: str) -> Any:
         """Return an UPDATE statement that requeues stale running tasks."""
         return (
@@ -212,6 +228,58 @@ class SQLSpecQueueStore:
         """Return an UPDATE statement that releases a terminal task key."""
         return sql.update(self.table_name).set(task_key=None).where_eq("id", task_id)
 
+    def set_execution_ref(
+        self,
+        *,
+        task_id: str,
+        execution_backend: str,
+        execution_ref: str,
+        execution_profile: str | None,
+    ) -> Any:
+        """Return an UPDATE statement that stores an external execution reference."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                execution_backend=execution_backend,
+                execution_profile=execution_profile,
+                execution_ref=execution_ref,
+            )
+            .where_eq("id", task_id)
+        )
+
+    def list_running_external(self, *, limit: int | None = None) -> Any:
+        """Return a SELECT statement for running external records."""
+        statement = (
+            self
+            ._select_all()
+            .where_eq("status", "running")
+            .where("execution_ref IS NOT NULL")
+            .order_by("started_at")
+            .order_by("created_at")
+        )
+        return statement.limit(limit) if limit is not None else statement
+
+    def list_all(self) -> Any:
+        """Return a SELECT statement for all queue records."""
+        return self._select_all()
+
+    def list_completed_by_task(self, *, task_name: str, since: str | None = None, limit: int = 10) -> Any:
+        """Return a SELECT statement for completed records by task name."""
+        statement = self._select_all().where_eq("task_name", task_name).where_eq("status", "completed")
+        if since is not None:
+            statement = statement.where("completed_at >= :completed_since", completed_since=since)
+        return statement.order_by("completed_at", desc=True).limit(limit)
+
+    def cleanup_terminal(self, *, before: str) -> Any:
+        """Return a DELETE statement for terminal records before a cutoff."""
+        return (
+            sql
+            .delete(self.table_name)
+            .where_in("status", ("completed", "failed", "cancelled"))
+            .where("completed_at IS NOT NULL AND completed_at < :terminal_before", terminal_before=before)
+        )
+
     def _select_all(self) -> Any:
         return sql.select(*_TASK_COLUMNS).from_(self.table_name)
 
@@ -225,6 +293,9 @@ class SQLSpecQueueStore:
             .column("args_json", self.json_type, not_null=True)
             .column("kwargs_json", self.json_type, not_null=True)
             .column("queue", self.indexed_text_type, not_null=True)
+            .column("execution_backend", self.indexed_text_type, not_null=True)
+            .column("execution_profile", self.indexed_text_type)
+            .column("execution_ref", self.indexed_text_type)
             .column("status", self.indexed_text_type, not_null=True)
             .column("priority", self.integer_type, not_null=True)
             .column("max_retries", self.integer_type, not_null=True)
@@ -247,7 +318,7 @@ class SQLSpecQueueStore:
                 .create_index(self._index_name("pending"))
                 .if_not_exists()
                 .on_table(self.table_name)
-                .columns("status", "queue", "scheduled_at", "priority", "created_at")
+                .columns("status", "queue", "execution_backend", "scheduled_at", "priority", "created_at")
             ),
             self._to_sql(
                 sql
@@ -291,7 +362,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
         return [
             (
                 f"CREATE INDEX IF NOT EXISTS {self._index_name('pending')} "
-                f"ON {table_name} (queue, priority DESC, created_at) "
+                f"ON {table_name} (queue, execution_backend, priority DESC, created_at) "
                 "WHERE status IN ('pending', 'scheduled')"
             ),
             (
@@ -334,7 +405,7 @@ class OracleQueueStore(SQLSpecQueueStore):
         """Return statements that create Oracle queue artifacts."""
         return [
             self._create_table_block(),
-            self._create_index_block("pending", "status, queue, scheduled_at, priority, created_at"),
+            self._create_index_block("pending", "status, queue, execution_backend, scheduled_at, priority, created_at"),
             self._create_index_block("heartbeat", "status, heartbeat_at"),
         ]
 
@@ -356,6 +427,9 @@ class OracleQueueStore(SQLSpecQueueStore):
                 args_json CLOB NOT NULL,
                 kwargs_json CLOB NOT NULL,
                 queue VARCHAR2(255) NOT NULL,
+                execution_backend VARCHAR2(255) NOT NULL,
+                execution_profile VARCHAR2(255),
+                execution_ref VARCHAR2(255),
                 status VARCHAR2(255) NOT NULL,
                 priority NUMBER(10) NOT NULL,
                 max_retries NUMBER(10) NOT NULL,

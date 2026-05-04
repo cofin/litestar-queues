@@ -85,13 +85,19 @@ class QueueConfig:
     initialize_schedules: bool = True
     worker_batch_size: int = 10
     worker_poll_interval: float = 0.1
+    worker_max_concurrency: int = 1
+    worker_heartbeat_interval: float = 30
+    worker_stale_after: float | None = None
+    worker_graceful_shutdown_timeout: float = 30
+    worker_final_cancel_timeout: float = 5
 
     @property
     def signature_namespace(self) -> dict[str, Any]:
         """Return names added to Litestar's signature namespace."""
         from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend, SQLSpecQueueBackend
+        from litestar_queues.exceptions import NonRetryableError, non_retryable
         from litestar_queues.execution import BaseExecutionBackend, ImmediateExecutionBackend, LocalExecutionBackend
-        from litestar_queues.models import QueuedTaskRecord
+        from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
         from litestar_queues.service import QueueService
         from litestar_queues.task import ScheduleConfig, Task, TaskResult
         from litestar_queues.worker import Worker
@@ -102,14 +108,18 @@ class QueueConfig:
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
+            "NonRetryableError": NonRetryableError,
             "QueueConfig": QueueConfig,
+            "QueueBackendCapabilities": QueueBackendCapabilities,
             "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
+            "QueueStatistics": QueueStatistics,
             "ScheduleConfig": ScheduleConfig,
             "SQLSpecQueueBackend": SQLSpecQueueBackend,
             "Task": Task,
             "TaskResult": TaskResult,
             "Worker": Worker,
+            "non_retryable": non_retryable,
         }
 
     @property

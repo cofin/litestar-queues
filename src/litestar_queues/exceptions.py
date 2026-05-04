@@ -1,7 +1,9 @@
 __all__ = (
     "MissingDependencyError",
+    "NonRetryableError",
     "QueueConfigurationError",
     "QueueError",
+    "non_retryable",
 )
 
 
@@ -11,6 +13,19 @@ class QueueError(Exception):
 
 class QueueConfigurationError(QueueError):
     """Raised when queue backend configuration is invalid."""
+
+
+class NonRetryableError(QueueError):
+    """Raised by a task to mark the current failure as permanent."""
+
+
+def non_retryable(message: str) -> None:
+    """Raise a non-retryable task failure.
+
+    Raises:
+        NonRetryableError: Always raised with the provided message.
+    """
+    raise NonRetryableError(message)
 
 
 class MissingDependencyError(QueueError, ImportError):
