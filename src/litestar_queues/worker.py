@@ -49,11 +49,11 @@ class Worker:
         Returns:
             Number of claimed task records.
         """
-        storage = self._service.get_storage_backend()
-        records = await storage.list_pending(limit=self._batch_size)
+        queue_backend = self._service.get_queue_backend()
+        records = await queue_backend.list_pending(limit=self._batch_size)
         processed = 0
         for record in records:
-            claimed = await storage.claim_task(record.id)
+            claimed = await queue_backend.claim_task(record.id)
             if claimed is None:
                 continue
             await self._service.get_execution_backend().execute(self._service, claimed)

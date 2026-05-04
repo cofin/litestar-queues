@@ -1,4 +1,4 @@
-"""Storage backend registry and factory functions."""
+"""Queue backend registry and factory functions."""
 
 from collections.abc import Callable
 from functools import lru_cache
@@ -6,30 +6,30 @@ from importlib import import_module
 from inspect import signature
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.base import BaseStorageBackend
+from litestar_queues.backends.base import BaseQueueBackend
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
 
 __all__ = (
-    "get_storage_backend",
-    "get_storage_backend_class",
-    "list_storage_backends",
-    "storage_backend",
+    "get_queue_backend",
+    "get_queue_backend_class",
+    "list_queue_backends",
+    "queue_backend",
 )
 
-_storage_backend_registry: dict[str, type[BaseStorageBackend]] = {}
+_queue_backend_registry: dict[str, type[BaseQueueBackend]] = {}
 
 
-def storage_backend(name: str) -> Callable[[type[BaseStorageBackend]], type[BaseStorageBackend]]:
-    """Decorator to register a storage backend class with a short name.
+def queue_backend(name: str) -> Callable[[type[BaseQueueBackend]], type[BaseQueueBackend]]:
+    """Decorator to register a queue backend class with a short name.
 
     Returns:
         A decorator that registers the backend class.
     """
 
-    def decorator(cls: type[BaseStorageBackend]) -> type[BaseStorageBackend]:
-        _storage_backend_registry[name] = cls
+    def decorator(cls: type[BaseQueueBackend]) -> type[BaseQueueBackend]:
+        _queue_backend_registry[name] = cls
         return cls
 
     return decorator
@@ -37,30 +37,30 @@ def storage_backend(name: str) -> Callable[[type[BaseStorageBackend]], type[Base
 
 @lru_cache(maxsize=1)
 def _register_builtins() -> None:
-    """Register built-in storage backends lazily."""
-    from litestar_queues.backends.memory import InMemoryStorageBackend
-    from litestar_queues.backends.sqlspec import SQLSpecStorageBackend
+    """Register built-in queue backends lazily."""
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    _storage_backend_registry.setdefault("memory", InMemoryStorageBackend)
-    _storage_backend_registry.setdefault("sqlspec", SQLSpecStorageBackend)
+    _queue_backend_registry.setdefault("memory", InMemoryQueueBackend)
+    _queue_backend_registry.setdefault("sqlspec", SQLSpecQueueBackend)
 
 
-def get_storage_backend_class(backend_path: str) -> type[BaseStorageBackend]:
-    """Get a storage backend class by short name or import path.
+def get_queue_backend_class(backend_path: str) -> type[BaseQueueBackend]:
+    """Get a queue backend class by short name or import path.
 
     Returns:
-        The resolved storage backend class.
+        The resolved queue backend class.
 
     Raises:
         ValueError: If a short backend name is unknown.
     """
     _register_builtins()
 
-    if backend_path in _storage_backend_registry:
-        return _storage_backend_registry[backend_path]
+    if backend_path in _queue_backend_registry:
+        return _queue_backend_registry[backend_path]
 
     if "." not in backend_path:
-        msg = f"Unknown storage backend: {backend_path!r}. Available: {list(_storage_backend_registry.keys())}"
+        msg = f"Unknown queue backend: {backend_path!r}. Available: {list(_queue_backend_registry.keys())}"
         raise ValueError(msg)
 
     module_path, class_name = backend_path.rsplit(".", 1)
@@ -68,16 +68,16 @@ def get_storage_backend_class(backend_path: str) -> type[BaseStorageBackend]:
     return getattr(module, class_name)  # type: ignore[no-any-return]
 
 
-def get_storage_backend(backend: str = "memory", config: "QueueConfig | None" = None) -> BaseStorageBackend:
-    """Get an instantiated storage backend.
+def get_queue_backend(backend: str = "memory", config: "QueueConfig | None" = None) -> BaseQueueBackend:
+    """Get an instantiated queue backend.
 
     Returns:
-        A configured storage backend instance.
+        A configured queue backend instance.
     """
-    backend_class = get_storage_backend_class(backend)
+    backend_class = get_queue_backend_class(backend)
     backend_kwargs: dict[str, Any] = {"config": config}
     if config is not None:
-        backend_kwargs.update(config.storage_backend_config)
+        backend_kwargs.update(config.queue_backend_config)
 
     init_signature = signature(backend_class.__init__)
     accepts_kwargs = any(param.kind == param.VAR_KEYWORD for param in init_signature.parameters.values())
@@ -87,7 +87,7 @@ def get_storage_backend(backend: str = "memory", config: "QueueConfig | None" = 
     return backend_class(**backend_kwargs)
 
 
-def list_storage_backends() -> list[str]:
-    """Return registered storage backend names."""
+def list_queue_backends() -> list[str]:
+    """Return registered queue backend names."""
     _register_builtins()
-    return list(_storage_backend_registry.keys())
+    return list(_queue_backend_registry.keys())

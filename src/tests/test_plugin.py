@@ -15,7 +15,7 @@ def test_plugin_instantiation_with_defaults() -> None:
     from litestar_queues import QueuePlugin
 
     plugin = QueuePlugin()
-    assert plugin.config.storage_backend == "memory"
+    assert plugin.config.queue_backend == "memory"
     assert plugin.config.execution_backend == "immediate"
     assert plugin.config.start_worker is False
 
@@ -25,7 +25,7 @@ def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> None:
     from litestar_queues import QueuePlugin
 
     plugin = QueuePlugin(config=queue_config)
-    assert plugin.config.storage_backend == "memory"
+    assert plugin.config.queue_backend == "memory"
     assert plugin.config.start_worker is False
 
 
@@ -34,7 +34,7 @@ def test_config_defaults() -> None:
     from litestar_queues import QueueConfig
 
     config = QueueConfig()
-    assert config.storage_backend == "memory"
+    assert config.queue_backend == "memory"
     assert config.execution_backend == "immediate"
     assert config.queue_service_dependency_key == "queue_service"
     assert config.queue_service_state_key == "queue_service"
@@ -45,7 +45,7 @@ def test_config_defaults() -> None:
 def test_plugin_with_litestar_app(app: "Litestar", queue_plugin: "QueuePlugin") -> None:
     """Test that the plugin integrates with a Litestar application."""
     assert queue_plugin in app.plugins
-    assert queue_plugin.config.storage_backend == "memory"
+    assert queue_plugin.config.queue_backend == "memory"
 
 
 def test_plugin_registers_dependencies_and_state() -> None:

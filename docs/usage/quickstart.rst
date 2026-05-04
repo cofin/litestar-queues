@@ -19,7 +19,7 @@ Register the plugin with a Litestar application:
        return {"account_id": account_id, "status": "synced"}
 
    config = QueueConfig(
-       storage_backend="memory",
+       queue_backend="memory",
        execution_backend="local",
        start_worker=True,
    )

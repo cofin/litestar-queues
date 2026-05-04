@@ -59,18 +59,18 @@ Exceptions
    :undoc-members:
    :show-inheritance:
 
-Storage Backends
-----------------
+Queue Backends
+--------------
 
-Storage backends are available via ``litestar_queues.backends``.
+Queue backends are available via ``litestar_queues.backends``.
 
-.. autofunction:: litestar_queues.backends.get_storage_backend
+.. autofunction:: litestar_queues.backends.get_queue_backend
 
-.. autofunction:: litestar_queues.backends.get_storage_backend_class
+.. autofunction:: litestar_queues.backends.get_queue_backend_class
 
-.. autofunction:: litestar_queues.backends.storage_backend
+.. autofunction:: litestar_queues.backends.queue_backend
 
-.. autofunction:: litestar_queues.backends.list_storage_backends
+.. autofunction:: litestar_queues.backends.list_queue_backends
 
 .. automodule:: litestar_queues.backends.base
    :members:

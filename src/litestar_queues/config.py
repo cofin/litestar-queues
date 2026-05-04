@@ -5,19 +5,19 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from litestar.datastructures import State
 
-    from litestar_queues.backends import BaseStorageBackend
+    from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.service import QueueService
 
 __all__ = (
     "AsyncServiceProvider",
     "ExecutionBackendConfig",
+    "QueueBackendConfig",
     "QueueConfig",
-    "StorageBackendConfig",
 )
 
-StorageBackendConfig = str
-"""Type alias for storage backend configuration values."""
+QueueBackendConfig = str
+"""Type alias for queue backend configuration values."""
 
 ExecutionBackendConfig = str
 """Type alias for execution backend configuration values."""
@@ -71,11 +71,11 @@ class QueueConfig:
     """Configuration for QueuePlugin.
 
     Chapter 1 keeps runtime behavior intentionally small while preserving the
-    extension points used by later storage and execution backends.
+    extension points used by later queue and execution backends.
     """
 
-    storage_backend: StorageBackendConfig = "memory"
-    storage_backend_config: dict[str, Any] = field(default_factory=dict)
+    queue_backend: QueueBackendConfig = "memory"
+    queue_backend_config: dict[str, Any] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig = "immediate"
     start_worker: bool = False
     queue_service_dependency_key: str = "queue_service"
@@ -89,7 +89,7 @@ class QueueConfig:
     @property
     def signature_namespace(self) -> dict[str, Any]:
         """Return names added to Litestar's signature namespace."""
-        from litestar_queues.backends import BaseStorageBackend, InMemoryStorageBackend, SQLSpecStorageBackend
+        from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend, SQLSpecQueueBackend
         from litestar_queues.execution import BaseExecutionBackend, ImmediateExecutionBackend, LocalExecutionBackend
         from litestar_queues.models import QueuedTaskRecord
         from litestar_queues.service import QueueService
@@ -98,15 +98,15 @@ class QueueConfig:
 
         return {
             "BaseExecutionBackend": BaseExecutionBackend,
-            "BaseStorageBackend": BaseStorageBackend,
+            "BaseQueueBackend": BaseQueueBackend,
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
-            "InMemoryStorageBackend": InMemoryStorageBackend,
+            "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
             "QueueConfig": QueueConfig,
             "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
             "ScheduleConfig": ScheduleConfig,
-            "SQLSpecStorageBackend": SQLSpecStorageBackend,
+            "SQLSpecQueueBackend": SQLSpecQueueBackend,
             "Task": Task,
             "TaskResult": TaskResult,
             "Worker": Worker,
@@ -132,11 +132,11 @@ class QueueConfig:
 
         return QueueService(self)
 
-    def get_storage_backend(self) -> "BaseStorageBackend":
-        """Return a configured storage backend instance."""
-        from litestar_queues.backends import get_storage_backend
+    def get_queue_backend(self) -> "BaseQueueBackend":
+        """Return a configured queue backend instance."""
+        from litestar_queues.backends import get_queue_backend
 
-        return get_storage_backend(self.storage_backend, config=self)
+        return get_queue_backend(self.queue_backend, config=self)
 
     def get_execution_backend(self) -> "BaseExecutionBackend":
         """Return a configured execution backend instance."""

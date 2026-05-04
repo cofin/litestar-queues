@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.base import BaseStorageBackend
+from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.models import QueuedTaskRecord
 
 if TYPE_CHECKING:
@@ -10,15 +10,15 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
 
-__all__ = ("InMemoryStorageBackend",)
+__all__ = ("InMemoryQueueBackend",)
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class InMemoryStorageBackend(BaseStorageBackend):
-    """In-process storage backend for tests, local development, and examples."""
+class InMemoryQueueBackend(BaseQueueBackend):
+    """In-process queue backend for tests, local development, and examples."""
 
     __slots__ = ("_keys", "_lock", "_records")
 

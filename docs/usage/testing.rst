@@ -1,7 +1,7 @@
 Testing
 -------
 
-The memory storage backend is the default backend for tests and local
+The memory queue backend is the default backend for tests and local
 development. Combine it with immediate execution when a test needs completed
 results without a worker:
 
@@ -13,7 +13,7 @@ results without a worker:
    async def double(value: int) -> int:
        return value * 2
 
-   config = QueueConfig(storage_backend="memory", execution_backend="immediate")
+   config = QueueConfig(queue_backend="memory", execution_backend="immediate")
 
    async with QueueService(config) as queue_service:
        result = await queue_service.enqueue(double, 21)

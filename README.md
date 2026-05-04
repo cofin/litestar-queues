@@ -1,7 +1,7 @@
 # litestar-queues
 
 Task queue support for Litestar applications. This package provides a typed
-task decorator, result handles, memory-backed task storage, immediate
+task decorator, result handles, memory-backed queue persistence, immediate
 execution, local in-process workers, and Litestar plugin lifecycle wiring.
 
 ## Installation
@@ -10,17 +10,17 @@ execution, local in-process workers, and Litestar plugin lifecycle wiring.
 pip install litestar-queues
 ```
 
-Optional backend extras are reserved for deployments that need additional
-storage or execution integrations:
+Optional backend extras are reserved for deployments that need additional queue
+or execution integrations:
 
 ```bash
-# SQLSpec storage backend
+# SQLSpec queue backend
 pip install litestar-queues[sqlspec]
 
-# Advanced Alchemy storage backend
+# Advanced Alchemy queue backend
 pip install litestar-queues[advanced-alchemy]
 
-# Redis storage backend
+# Redis queue backend
 pip install litestar-queues[redis]
 
 # Cloud Run execution backend
@@ -42,7 +42,7 @@ async def sync_account(account_id: str) -> dict[str, str]:
     return {"account_id": account_id, "status": "synced"}
 
 config = QueueConfig(
-    storage_backend="memory",
+    queue_backend="memory",
     execution_backend="local",
     start_worker=True,
 )
@@ -85,7 +85,7 @@ from litestar_queues import QueueConfig, task
 async def refresh_report(report_id: str) -> str:
     return report_id
 
-config = QueueConfig(storage_backend="memory")
+config = QueueConfig(queue_backend="memory")
 
 async with config.provide_service() as queue_service:
     result = await queue_service.enqueue(refresh_report, "report-123")
@@ -96,17 +96,17 @@ async with config.provide_service() as queue_service:
 
 | Backend | Type | Use Case |
 |---------|------|----------|
-| `memory` | storage | Tests and local development |
+| `memory` | queue | Tests and local development |
 | `immediate` | execution | Inline task execution |
 | `local` | execution | In-process worker execution |
-| `sqlspec` | storage | Optional SQLSpec-backed persistence |
-| `advanced-alchemy` | storage | Optional Advanced Alchemy persistence |
-| `redis` | storage | Optional Redis storage |
-| `valkey` | storage | Optional Valkey storage |
+| `sqlspec` | queue | Optional SQLSpec-backed persistence |
+| `advanced-alchemy` | queue | Optional Advanced Alchemy persistence |
+| `redis` | queue | Optional Redis persistence |
+| `valkey` | queue | Optional Valkey persistence |
 | `cloudrun` | execution | Optional Cloud Run dispatch |
 
 The core package registers `memory`, `immediate`, and `local`. The `sqlspec`
-storage backend is available when the SQLSpec extra is installed:
+queue backend is available when the SQLSpec extra is installed:
 
 ```python
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -114,8 +114,8 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from litestar_queues import QueueConfig
 
 config = QueueConfig(
-    storage_backend="sqlspec",
-    storage_backend_config={
+    queue_backend="sqlspec",
+    queue_backend_config={
         "sqlspec_config": AiosqliteConfig(
             connection_config={"database": "queue.db"},
         ),
@@ -125,7 +125,7 @@ config = QueueConfig(
 )
 ```
 
-SQLSpec storage persists JSON-compatible task arguments, keyword arguments,
-metadata, and results. Set `register_plugin=True` in
-`storage_backend_config` when a Litestar app should also register SQLSpec's
-first-party Litestar plugin during application initialization.
+SQLSpec persists task arguments, keyword arguments, metadata, and results with
+SQLSpec's JSON serializer. Litestar applications should register SQLSpec's
+first-party plugin directly and pass the same `SQLSpec`/adapter config into
+`queue_backend_config` when they want SQLSpec dependency injection.

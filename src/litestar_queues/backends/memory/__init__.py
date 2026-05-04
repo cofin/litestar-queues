@@ -1,5 +1,5 @@
-"""In-memory queue storage backend."""
+"""In-memory queue backend."""
 
-from litestar_queues.backends.memory.backend import InMemoryStorageBackend
+from litestar_queues.backends.memory.backend import InMemoryQueueBackend
 
-__all__ = ("InMemoryStorageBackend",)
+__all__ = ("InMemoryQueueBackend",)

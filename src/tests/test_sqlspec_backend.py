@@ -1,3 +1,4 @@
+import sqlite3
 import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -10,13 +11,15 @@ from litestar import Litestar
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
-from sqlspec import SQLFileLoader
+from sqlspec import SQLSpec
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
+from sqlspec.extensions.litestar import SQLSpecPlugin
 
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
-from litestar_queues.backends import get_storage_backend_class, list_storage_backends
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecStorageBackend
-from litestar_queues.backends.sqlspec.schema import load_queue_queries, migration_paths, sql_file_path
+from litestar_queues.backends import get_queue_backend_class, list_queue_backends
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec.schema import migration_paths
+from litestar_queues.backends.sqlspec.store import SQLiteQueueStore, create_queue_store
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -28,8 +31,8 @@ def clean_task_registry() -> None:
 
 
 @pytest.fixture
-async def sqlspec_backend(tmp_path: Path) -> AsyncIterator[SQLSpecStorageBackend]:
-    backend = SQLSpecStorageBackend(sqlspec_config=_sqlite_config(tmp_path / "queue.db"))
+async def sqlspec_backend(tmp_path: Path) -> AsyncIterator[SQLSpecQueueBackend]:
+    backend = SQLSpecQueueBackend(sqlspec_config=_sqlite_config(tmp_path / "queue.db"))
     await backend.open()
     try:
         yield backend
@@ -42,8 +45,8 @@ def _sqlite_config(path: Path) -> AiosqliteConfig:
 
 
 async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> None:
-    assert "sqlspec" in list_storage_backends()
-    assert get_storage_backend_class("sqlspec") is SQLSpecStorageBackend
+    assert "sqlspec" in list_queue_backends()
+    assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
 
 
 def test_sqlspec_backend_package_import_does_not_import_sqlspec() -> None:
@@ -59,42 +62,46 @@ def blocked_import(name, *args, **kwargs):
 
 builtins.__import__ = blocked_import
 import litestar_queues
-from litestar_queues.backends.sqlspec import SQLSpecStorageBackend
-assert "SQLSpecStorageBackend" in litestar_queues.__all__
-assert SQLSpecStorageBackend is not None
+from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+assert "SQLSpecQueueBackend" in litestar_queues.__all__
+assert SQLSpecQueueBackend is not None
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 
     assert result.returncode == 0, result.stderr
 
 
-async def test_sqlspec_backend_exposes_config_type_and_packaged_sql_assets() -> None:
+async def test_sqlspec_backend_exposes_config_type_and_builder_store(tmp_path: Path) -> None:
     backend_config = SQLSpecBackendConfig(table_name="queue_tasks")
+    store = create_queue_store(_sqlite_config(tmp_path / "queue.db"), table_name=backend_config.table_name)
 
     assert backend_config.table_name == "queue_tasks"
-    assert sql_file_path().name == "queue.sql"
+    assert isinstance(store, SQLiteQueueStore)
+    assert store.table_name == "queue_tasks"
+    assert any('"queue_tasks"' in statement for statement in store.create_statements())
 
-    loader = SQLFileLoader()
-    loader.load_sql(sql_file_path())
-    queries = load_queue_queries(loader, table_name=backend_config.table_name)
+    insert_statement = store.insert_task({"id": "task-1", "task_name": "tasks.sync"}).build(dialect="sqlite")
+    pending_statement = store.list_pending(now=datetime.now(UTC).isoformat(), limit=10, queue="default").build(
+        dialect="sqlite"
+    )
 
-    assert "INSERT INTO queue_tasks" in queries["insert_task"]
-    assert "SELECT *" in queries["get_task"]
-    assert ":queue_filter" in queries["list_pending"]
-    assert ":queue_value" in queries["list_pending"]
+    assert 'INSERT INTO "queue_tasks"' in insert_statement.sql
+    assert "task-1" in insert_statement.parameters.values()
+    assert 'FROM "queue_tasks"' in pending_statement.sql
+    assert "queue" in pending_statement.sql
 
 
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> None:
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_litestar_queue_tasks.sql"]
+    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
     content = paths[0].read_text()
-    assert "-- name: migrate-0001-up" in content
-    assert "CREATE TABLE IF NOT EXISTS litestar_queue_tasks" in content
+    assert "SQLSpecQueueStore" in content
+    assert "CREATE TABLE IF NOT EXISTS litestar_queue_tasks" not in content
 
 
 async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_keys(
-    sqlspec_backend: SQLSpecStorageBackend,
+    sqlspec_backend: SQLSpecQueueBackend,
 ) -> None:
     first = await sqlspec_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
     duplicate = await sqlspec_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
@@ -112,7 +119,7 @@ async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_ke
     assert keyed.id == replacement.id
 
 
-async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: SQLSpecStorageBackend) -> None:
+async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: SQLSpecQueueBackend) -> None:
     later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await sqlspec_backend.enqueue("tasks.low", priority=1)
@@ -134,7 +141,7 @@ async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: SQL
 
 
 async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(
-    sqlspec_backend: SQLSpecStorageBackend,
+    sqlspec_backend: SQLSpecQueueBackend,
 ) -> None:
     record = await sqlspec_backend.enqueue("tasks.flaky", max_retries=1)
 
@@ -155,7 +162,7 @@ async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(
 
 
 async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
-    sqlspec_backend: SQLSpecStorageBackend,
+    sqlspec_backend: SQLSpecQueueBackend,
 ) -> None:
     pending = await sqlspec_backend.enqueue("tasks.cancel")
 
@@ -187,10 +194,25 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert requeued.retry_count == 1
 
 
+async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: SQLSpecQueueBackend) -> None:
+    encoded_at = datetime.now(UTC)
+
+    record = await sqlspec_backend.enqueue("tasks.metadata", metadata={"encoded_at": encoded_at})
+    stored = await sqlspec_backend.get_task(record.id)
+
+    assert stored is not None
+    assert stored.metadata["encoded_at"] == encoded_at.isoformat().replace("+00:00", "Z")
+
+
+def test_sqlspec_backend_does_not_create_sqlspec_litestar_plugin() -> None:
+    with pytest.raises(TypeError):
+        SQLSpecQueueBackend(register_plugin=True)  # type: ignore[call-arg]
+
+
 async def test_sqlspec_backend_can_start_with_packaged_migrations(tmp_path: Path) -> None:
     db_path = tmp_path / "migrated.db"
 
-    first = SQLSpecStorageBackend(
+    first = SQLSpecQueueBackend(
         sqlspec_config=_sqlite_config(db_path),
         create_schema=False,
         run_migrations=True,
@@ -198,7 +220,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(tmp_path: Path
     await first.open()
     await first.close()
 
-    second = SQLSpecStorageBackend(
+    second = SQLSpecQueueBackend(
         sqlspec_config=_sqlite_config(db_path),
         create_schema=False,
         run_migrations=True,
@@ -211,21 +233,50 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(tmp_path: Path
 
     assert record.task_name == "tasks.migrated"
 
+    with sqlite3.connect(db_path) as connection:
+        versions = [row[0] for row in connection.execute("SELECT version_num FROM ddl_migrations")]
 
-async def test_sqlspec_backend_registers_litestar_sqlspec_plugin(tmp_path: Path) -> None:
+    assert versions == ["ext_litestar_queues_0001"]
+
+
+async def test_sqlspec_backend_uses_configured_table_name(tmp_path: Path) -> None:
+    db_path = tmp_path / "custom-table.db"
+    backend = SQLSpecQueueBackend(
+        sqlspec_config=_sqlite_config(db_path),
+        table_name="queue_tasks",
+    )
+
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.custom_table")
+    finally:
+        await backend.close()
+
+    assert record.task_name == "tasks.custom_table"
+    with sqlite3.connect(db_path) as connection:
+        table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+    assert "queue_tasks" in table_names
+    assert "litestar_queue_tasks" not in table_names
+
+
+async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(tmp_path: Path) -> None:
+    sqlspec = SQLSpec()
+    sqlspec_config = _sqlite_config(tmp_path / "litestar.db")
+    sqlspec.add_config(sqlspec_config)
+
     plugin = QueuePlugin(
         QueueConfig(
-            storage_backend="sqlspec",
-            storage_backend_config={
-                "sqlspec_config": _sqlite_config(tmp_path / "litestar.db"),
+            queue_backend="sqlspec",
+            queue_backend_config={
+                "sqlspec": sqlspec,
                 "create_schema": False,
-                "register_plugin": True,
             },
             initialize_schedules=False,
         )
     )
 
-    app = Litestar(plugins=[plugin])
+    app = Litestar(plugins=[SQLSpecPlugin(sqlspec), plugin])
 
     assert "db_session" in app.dependencies
     assert "AiosqliteDriver" in app.signature_namespace
@@ -237,8 +288,8 @@ async def test_queue_service_uses_sqlspec_backend_from_config(tmp_path: Path) ->
         return value.lower()
 
     config = QueueConfig(
-        storage_backend="sqlspec",
-        storage_backend_config={"sqlspec_config": _sqlite_config(tmp_path / "service.db")},
+        queue_backend="sqlspec",
+        queue_backend_config={"sqlspec_config": _sqlite_config(tmp_path / "service.db")},
         execution_backend="local",
     )
     async with QueueService(config) as service:

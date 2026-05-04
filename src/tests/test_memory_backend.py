@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from litestar_queues import QueueConfig, QueueService, task
-from litestar_queues.backends import InMemoryStorageBackend
+from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -15,7 +15,7 @@ def clean_task_registry() -> None:
 
 
 async def test_memory_backend_deduplicates_active_keys_and_replaces_terminal_keys() -> None:
-    backend = InMemoryStorageBackend()
+    backend = InMemoryQueueBackend()
 
     first = await backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
     duplicate = await backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
@@ -31,7 +31,7 @@ async def test_memory_backend_deduplicates_active_keys_and_replaces_terminal_key
 
 
 async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle() -> None:
-    backend = InMemoryStorageBackend()
+    backend = InMemoryQueueBackend()
     later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await backend.enqueue("tasks.low", priority=1)
@@ -49,7 +49,7 @@ async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle()
 
 
 async def test_memory_backend_fail_task_retries_then_fails_permanently() -> None:
-    backend = InMemoryStorageBackend()
+    backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.flaky", max_retries=1)
 
     await backend.claim_task(record.id)

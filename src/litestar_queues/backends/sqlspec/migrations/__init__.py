@@ -1,0 +1,1 @@
+"""SQLSpec queue extension migrations."""

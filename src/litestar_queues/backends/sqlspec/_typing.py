@@ -1,12 +1,18 @@
 """Private typing helpers for the optional SQLSpec backend."""
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from litestar_queues.exceptions import MissingDependencyError
 
-SQLSpecT = Any
-SQLSpecConfigT = Any
-SQLFileLoaderT = Any
+if TYPE_CHECKING:
+    from sqlspec import SQLSpec
+    from sqlspec.config import AsyncDatabaseConfig, NoPoolAsyncConfig
+
+    SQLSpecT = SQLSpec
+    SQLSpecConfigT = AsyncDatabaseConfig[Any, Any, Any] | NoPoolAsyncConfig[Any, Any]
+else:
+    SQLSpecT = Any
+    SQLSpecConfigT = Any
 
 
 def sqlspec_installed() -> bool:
@@ -19,16 +25,9 @@ def sqlspec_installed() -> bool:
 
 
 def missing_sqlspec_error(exc: ModuleNotFoundError) -> MissingDependencyError:
-    """Build a package-specific missing SQLSpec dependency error."""
+    """Build a package-specific missing SQLSpec dependency error.
+
+    Returns:
+        A queue missing dependency error for SQLSpec.
+    """
     return MissingDependencyError(exc.name or "sqlspec", "sqlspec")
-
-
-@runtime_checkable
-class SQLSpecPluginProtocol(Protocol):
-    """Protocol for SQLSpec Litestar plugin objects."""
-
-    def on_app_init(self, app_config: Any) -> Any:
-        """Apply SQLSpec integration to a Litestar app config."""
-
-
-SQLSpecPluginT = SQLSpecPluginProtocol

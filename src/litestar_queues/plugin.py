@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from litestar.config.app import AppConfig
     from litestar.datastructures import State
 
-    from litestar_queues.backends import BaseStorageBackend
+    from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.config import QueueConfig
 
 __all__ = ("QueuePlugin",)
@@ -22,7 +22,7 @@ __all__ = ("QueuePlugin",)
 class QueuePlugin(InitPluginProtocol):
     """Litestar plugin for queue service dependency registration and lifecycle."""
 
-    __slots__ = ("_config", "_service", "_storage_backend", "_worker", "_worker_task")
+    __slots__ = ("_config", "_queue_backend", "_service", "_worker", "_worker_task")
 
     def __init__(self, config: "QueueConfig | None" = None) -> None:
         """Initialize the queue plugin."""
@@ -30,7 +30,7 @@ class QueuePlugin(InitPluginProtocol):
 
         self._config = config or QueueConfig()
         self._service: QueueService | None = None
-        self._storage_backend: "BaseStorageBackend | None" = None
+        self._queue_backend: "BaseQueueBackend | None" = None
         self._worker: Worker | None = None
         self._worker_task: asyncio.Task[None] | None = None
 
@@ -43,7 +43,7 @@ class QueuePlugin(InitPluginProtocol):
         """Return a QueueService for this plugin."""
         if self._service is not None:
             return self._service
-        return QueueService(self._config, storage_backend=self._storage_backend)
+        return QueueService(self._config, queue_backend=self._queue_backend)
 
     def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
         """Register queue dependencies, signature namespace, state, and lifecycle hooks.
@@ -51,8 +51,7 @@ class QueuePlugin(InitPluginProtocol):
         Returns:
             The updated application configuration.
         """
-        self._storage_backend = self._config.get_storage_backend()
-        app_config = self._storage_backend.on_app_init(app_config)
+        self._queue_backend = self._config.get_queue_backend()
         app_config.dependencies.update(self._config.dependencies)
         app_config.signature_namespace.update(self._config.signature_namespace)
         app_config.state.update({self._config.queue_service_state_key: self._config})
@@ -64,7 +63,7 @@ class QueuePlugin(InitPluginProtocol):
         if self._config.task_modules:
             load_task_modules(self._config.task_modules)
 
-        self._service = QueueService(self._config, storage_backend=self._storage_backend)
+        self._service = QueueService(self._config, queue_backend=self._queue_backend)
         await self._service.open()
         app.state[self._config.queue_service_state_key] = self._service
 
