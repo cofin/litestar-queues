@@ -55,5 +55,50 @@ Configure SQLSpec storage by passing a SQLSpec adapter config through
 
 By default, the backend creates the queue table on startup. Set
 ``create_schema=False`` in ``storage_backend_config`` when schema management is
-handled elsewhere. SQLSpec storage persists JSON-compatible task arguments,
-keyword arguments, metadata, and results.
+handled elsewhere. Applications that want SQLSpec to apply the packaged queue
+migration can set ``run_migrations=True``:
+
+.. code-block:: python
+
+   config = QueueConfig(
+       storage_backend="sqlspec",
+       storage_backend_config={
+           "sqlspec_config": AiosqliteConfig(
+               connection_config={"database": "queue.db"},
+           ),
+           "create_schema": False,
+           "run_migrations": True,
+       },
+       execution_backend="local",
+   )
+
+Litestar applications can also let the queue backend register SQLSpec's
+first-party plugin during app initialization:
+
+.. code-block:: python
+
+   from litestar import Litestar
+   from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+   from litestar_queues import QueueConfig, QueuePlugin
+
+   app = Litestar(
+       plugins=[
+           QueuePlugin(
+               QueueConfig(
+                   storage_backend="sqlspec",
+                   storage_backend_config={
+                       "sqlspec_config": AiosqliteConfig(
+                           connection_config={"database": "queue.db"},
+                       ),
+                       "register_plugin": True,
+                   },
+                   execution_backend="local",
+               )
+           )
+       ],
+   )
+
+SQLSpec storage persists JSON-compatible task arguments, keyword arguments,
+metadata, and results. Applications with their own migration flow can set both
+``create_schema=False`` and ``run_migrations=False``.

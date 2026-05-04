@@ -77,12 +77,22 @@ Storage backends are available via ``litestar_queues.backends``.
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: litestar_queues.backends.memory
+.. automodule:: litestar_queues.backends.memory.backend
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: litestar_queues.backends.sqlspec
+.. automodule:: litestar_queues.backends.sqlspec.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.sqlspec.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.sqlspec.schema
    :members:
    :undoc-members:
    :show-inheritance:

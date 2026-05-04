@@ -22,11 +22,17 @@ class QueueService:
 
     __slots__ = ("_config", "_execution_backend", "_storage_backend")
 
-    def __init__(self, config: "QueueConfig") -> None:
+    def __init__(
+        self,
+        config: "QueueConfig",
+        *,
+        storage_backend: "BaseStorageBackend | None" = None,
+        execution_backend: "BaseExecutionBackend | None" = None,
+    ) -> None:
         """Initialize the queue service."""
         self._config = config
-        self._storage_backend: "BaseStorageBackend | None" = None
-        self._execution_backend: "BaseExecutionBackend | None" = None
+        self._storage_backend = storage_backend
+        self._execution_backend = execution_backend
 
     @property
     def config(self) -> "QueueConfig":

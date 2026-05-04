@@ -119,10 +119,13 @@ config = QueueConfig(
         "sqlspec_config": AiosqliteConfig(
             connection_config={"database": "queue.db"},
         ),
+        "run_migrations": True,
     },
     execution_backend="local",
 )
 ```
 
 SQLSpec storage persists JSON-compatible task arguments, keyword arguments,
-metadata, and results.
+metadata, and results. Set `register_plugin=True` in
+`storage_backend_config` when a Litestar app should also register SQLSpec's
+first-party Litestar plugin during application initialization.

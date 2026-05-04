@@ -1,17 +1,22 @@
+import sys
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import AsyncIterator
+from subprocess import run
 
 import pytest
+from litestar import Litestar
 
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
+from sqlspec import SQLFileLoader
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 from litestar_queues.backends import get_storage_backend_class, list_storage_backends
-from litestar_queues.backends.sqlspec import SQLSpecStorageBackend
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecStorageBackend
+from litestar_queues.backends.sqlspec.schema import load_queue_queries, migration_paths, sql_file_path
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -39,6 +44,53 @@ def _sqlite_config(path: Path) -> AiosqliteConfig:
 async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> None:
     assert "sqlspec" in list_storage_backends()
     assert get_storage_backend_class("sqlspec") is SQLSpecStorageBackend
+
+
+def test_sqlspec_backend_package_import_does_not_import_sqlspec() -> None:
+    code = """
+import builtins
+
+original_import = builtins.__import__
+
+def blocked_import(name, *args, **kwargs):
+    if name == "sqlspec" or name.startswith("sqlspec."):
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = blocked_import
+import litestar_queues
+from litestar_queues.backends.sqlspec import SQLSpecStorageBackend
+assert "SQLSpecStorageBackend" in litestar_queues.__all__
+assert SQLSpecStorageBackend is not None
+"""
+    result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+
+async def test_sqlspec_backend_exposes_config_type_and_packaged_sql_assets() -> None:
+    backend_config = SQLSpecBackendConfig(table_name="queue_tasks")
+
+    assert backend_config.table_name == "queue_tasks"
+    assert sql_file_path().name == "queue.sql"
+
+    loader = SQLFileLoader()
+    loader.load_sql(sql_file_path())
+    queries = load_queue_queries(loader, table_name=backend_config.table_name)
+
+    assert "INSERT INTO queue_tasks" in queries["insert_task"]
+    assert "SELECT *" in queries["get_task"]
+    assert ":queue_filter" in queries["list_pending"]
+    assert ":queue_value" in queries["list_pending"]
+
+
+async def test_sqlspec_backend_exposes_packaged_migration_assets() -> None:
+    paths = tuple(Path(path) for path in migration_paths())
+
+    assert [path.name for path in paths] == ["0001_litestar_queue_tasks.sql"]
+    content = paths[0].read_text()
+    assert "-- name: migrate-0001-up" in content
+    assert "CREATE TABLE IF NOT EXISTS litestar_queue_tasks" in content
 
 
 async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_keys(
@@ -133,6 +185,50 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert requeued is not None
     assert requeued.status == "pending"
     assert requeued.retry_count == 1
+
+
+async def test_sqlspec_backend_can_start_with_packaged_migrations(tmp_path: Path) -> None:
+    db_path = tmp_path / "migrated.db"
+
+    first = SQLSpecStorageBackend(
+        sqlspec_config=_sqlite_config(db_path),
+        create_schema=False,
+        run_migrations=True,
+    )
+    await first.open()
+    await first.close()
+
+    second = SQLSpecStorageBackend(
+        sqlspec_config=_sqlite_config(db_path),
+        create_schema=False,
+        run_migrations=True,
+    )
+    await second.open()
+    try:
+        record = await second.enqueue("tasks.migrated")
+    finally:
+        await second.close()
+
+    assert record.task_name == "tasks.migrated"
+
+
+async def test_sqlspec_backend_registers_litestar_sqlspec_plugin(tmp_path: Path) -> None:
+    plugin = QueuePlugin(
+        QueueConfig(
+            storage_backend="sqlspec",
+            storage_backend_config={
+                "sqlspec_config": _sqlite_config(tmp_path / "litestar.db"),
+                "create_schema": False,
+                "register_plugin": True,
+            },
+            initialize_schedules=False,
+        )
+    )
+
+    app = Litestar(plugins=[plugin])
+
+    assert "db_session" in app.dependencies
+    assert "AiosqliteDriver" in app.signature_namespace
 
 
 async def test_queue_service_uses_sqlspec_backend_from_config(tmp_path: Path) -> None:

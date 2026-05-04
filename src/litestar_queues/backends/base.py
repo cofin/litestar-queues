@@ -6,6 +6,8 @@ if TYPE_CHECKING:
     from datetime import datetime, timedelta
     from uuid import UUID
 
+    from litestar.config.app import AppConfig
+
     from litestar_queues.config import QueueConfig
     from litestar_queues.models import QueuedTaskRecord
 
@@ -20,6 +22,14 @@ class BaseStorageBackend:
     def __init__(self, config: "QueueConfig | None" = None) -> None:
         """Initialize the storage backend."""
         self.config = config
+
+    def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
+        """Let storage backends contribute Litestar app configuration.
+
+        Returns:
+            The updated application configuration.
+        """
+        return app_config
 
     async def open(self) -> bool:
         """Open storage resources.

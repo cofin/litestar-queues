@@ -1,37 +1,40 @@
 """SQLSpec storage backend."""
 
 import json
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from litestar_queues.backends.base import BaseStorageBackend
-from litestar_queues.exceptions import MissingDependencyError, QueueConfigurationError
+from litestar_queues.backends.sqlspec._typing import missing_sqlspec_error
+from litestar_queues.backends.sqlspec.config import SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.litestar import build_sqlspec_plugin
+from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
+    load_packaged_sql,
+    load_queue_queries,
+    migration_paths,
+    schema_sql,
+    validate_table_name,
+)
 from litestar_queues.models import QueuedTaskRecord, TaskStatus
 
 if TYPE_CHECKING:
+    from litestar.config.app import AppConfig
+
     from litestar_queues.config import QueueConfig
 
-__all__ = ("SQLSpecStorageBackend",)
+__all__ = ("SQLSpecBackendConfig", "SQLSpecStorageBackend")
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_DEFAULT_TABLE_NAME = "litestar_queue_tasks"
 _DUE_STATUSES = ("pending", "scheduled")
 _JSON_SEPARATORS = (",", ":")
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _validate_table_name(table_name: str) -> str:
-    if not _IDENTIFIER_RE.match(table_name):
-        msg = f"Invalid SQLSpec queue table name: {table_name!r}"
-        raise QueueConfigurationError(msg)
-    return table_name
 
 
 def _dumps_json(value: Any) -> str:
@@ -69,28 +72,63 @@ def _coerce_status(value: Any) -> TaskStatus:
     return cast("TaskStatus", status)
 
 
-def _missing_sqlspec_error(exc: ModuleNotFoundError) -> MissingDependencyError:
-    return MissingDependencyError(exc.name or "sqlspec", "sqlspec")
-
-
 class SQLSpecStorageBackend(BaseStorageBackend):
     """SQLSpec-backed queue storage backend."""
 
-    __slots__ = ("_create_schema", "_sqlspec", "_sqlspec_config", "_table_name")
+    __slots__ = (
+        "_backend_config",
+        "_config_registered",
+        "_loader",
+        "_opened",
+        "_queries",
+        "_sqlspec",
+        "_sqlspec_config",
+        "_table_name",
+    )
 
     def __init__(
         self,
         config: "QueueConfig | None" = None,
         *,
+        sqlspec: Any | None = None,
         sqlspec_config: Any | None = None,
-        table_name: str = _DEFAULT_TABLE_NAME,
+        sqlspec_plugin: Any | None = None,
+        table_name: str = DEFAULT_TABLE_NAME,
         create_schema: bool = True,
+        run_migrations: bool = False,
+        register_plugin: bool = False,
+        loader: Any | None = None,
     ) -> None:
         super().__init__(config=config)
+        table_name = validate_table_name(table_name)
+        self._backend_config = SQLSpecBackendConfig(
+            sqlspec=sqlspec,
+            sqlspec_config=sqlspec_config,
+            sqlspec_plugin=sqlspec_plugin,
+            table_name=table_name,
+            create_schema=create_schema,
+            run_migrations=run_migrations,
+            register_plugin=register_plugin,
+            loader=loader,
+        )
+        self._sqlspec = sqlspec
         self._sqlspec_config = sqlspec_config
-        self._sqlspec: Any | None = None
-        self._table_name = _validate_table_name(table_name)
-        self._create_schema = create_schema
+        self._loader = loader
+        self._table_name = table_name
+        self._queries: dict[str, str] | None = None
+        self._opened = False
+        self._config_registered = False
+
+    def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
+        """Let SQLSpec contribute its first-party Litestar plugin when requested."""
+        if not self._backend_config.register_plugin:
+            return app_config
+
+        plugin = self._backend_config.sqlspec_plugin
+        if plugin is None:
+            plugin = build_sqlspec_plugin(self._get_or_create_sqlspec(), self._get_loader())
+        app_config.plugins.append(plugin)
+        return app_config
 
     async def open(self) -> bool:
         """Open SQLSpec resources.
@@ -98,18 +136,14 @@ class SQLSpecStorageBackend(BaseStorageBackend):
         Returns:
             True when SQLSpec resources are ready.
         """
-        if self._sqlspec is not None:
+        if self._opened:
             return True
 
-        try:
-            from sqlspec import SQLSpec
-        except ModuleNotFoundError as exc:
-            raise _missing_sqlspec_error(exc) from exc
-
-        self._sqlspec_config = self._sqlspec_config or self._default_sqlspec_config()
-        self._sqlspec = SQLSpec()
-        self._sqlspec.add_config(self._sqlspec_config)
-        if self._create_schema:
+        self._get_or_create_sqlspec()
+        self._opened = True
+        if self._backend_config.run_migrations:
+            await self.run_migrations()
+        if self._backend_config.create_schema:
             await self.create_schema()
         return True
 
@@ -118,12 +152,25 @@ class SQLSpecStorageBackend(BaseStorageBackend):
         if self._sqlspec is not None:
             await self._sqlspec.close_all_pools()
             self._sqlspec = None
+        self._opened = False
+        self._config_registered = False
 
     async def create_schema(self) -> None:
         """Create the SQLSpec queue table and indexes."""
         async with self._session() as driver:
-            await driver.execute_script(self._schema_sql())
+            await driver.execute_script(schema_sql(self._get_loader(), self._table_name))
             await driver.commit()
+
+    async def run_migrations(self) -> None:
+        """Apply packaged SQLSpec migrations."""
+        sqlspec_config = self._get_sqlspec_config()
+        paths = migration_paths()
+        migration_config = dict(getattr(sqlspec_config, "migration_config", None) or {})
+        migration_config["script_location"] = str(Path(paths[0]).parent)
+        sqlspec_config.set_migration_config(migration_config)
+        for path in paths:
+            sqlspec_config.load_migration_sql_files(path)
+        await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
         self,
@@ -163,7 +210,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
                     key=key,
                     metadata=dict(metadata or {}),
                 )
-                await driver.execute(self._insert_sql(), **self._params_from_record(record))
+                await driver.execute(self._get_query("insert_task"), **self._params_from_record(record))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -206,7 +253,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
 
                 now = _utc_now()
                 result = await driver.execute(
-                    self._claim_sql(),
+                    self._get_query("claim_task"),
                     id=str(task_id),
                     due_at=_serialize_datetime(now),
                     heartbeat_at=_serialize_datetime(now),
@@ -239,7 +286,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
             await driver.begin()
             try:
                 updated = await driver.execute(
-                    self._complete_sql(),
+                    self._get_query("complete_task"),
                     id=str(task_id),
                     completed_at=_serialize_datetime(now),
                     heartbeat_at=_serialize_datetime(now),
@@ -271,7 +318,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
                 record = self._record_from_row(row)
                 if retry and record.retry_count < record.max_retries:
                     await driver.execute(
-                        self._retry_sql(),
+                        self._get_query("retry_task"),
                         id=str(task_id),
                         error=error,
                         retry_count=record.retry_count + 1,
@@ -279,7 +326,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
                 else:
                     now = _utc_now()
                     await driver.execute(
-                        self._fail_sql(),
+                        self._get_query("fail_task"),
                         id=str(task_id),
                         completed_at=_serialize_datetime(now),
                         heartbeat_at=_serialize_datetime(now),
@@ -299,7 +346,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
             await driver.begin()
             try:
                 result = await driver.execute(
-                    self._cancel_sql(),
+                    self._get_query("cancel_task"),
                     id=str(task_id),
                     completed_at=_serialize_datetime(_utc_now()),
                 )
@@ -315,7 +362,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
             await driver.begin()
             try:
                 await driver.execute(
-                    self._touch_heartbeat_sql(),
+                    self._get_query("touch_heartbeat"),
                     id=str(task_id),
                     heartbeat_at=_serialize_datetime(_utc_now()),
                 )
@@ -330,7 +377,7 @@ class SQLSpecStorageBackend(BaseStorageBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                result = await driver.execute(self._requeue_stale_sql(), cutoff=_serialize_datetime(cutoff))
+                result = await driver.execute(self._get_query("requeue_stale"), cutoff=_serialize_datetime(cutoff))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -343,21 +390,56 @@ class SQLSpecStorageBackend(BaseStorageBackend):
         try:
             from sqlspec.adapters.aiosqlite import AiosqliteConfig
         except ModuleNotFoundError as exc:
-            raise _missing_sqlspec_error(exc) from exc
+            raise missing_sqlspec_error(exc) from exc
         return AiosqliteConfig()
+
+    def _get_or_create_sqlspec(self) -> Any:
+        if self._sqlspec is None:
+            try:
+                from sqlspec import SQLSpec
+            except ModuleNotFoundError as exc:
+                raise missing_sqlspec_error(exc) from exc
+            self._sqlspec = SQLSpec()
+        sqlspec_config = self._get_sqlspec_config()
+        if not self._config_registered:
+            self._sqlspec.add_config(sqlspec_config)
+            self._config_registered = True
+        return self._sqlspec
+
+    def _get_sqlspec_config(self) -> Any:
+        if self._sqlspec_config is None:
+            self._sqlspec_config = self._backend_config.sqlspec_config or self._default_sqlspec_config()
+            self._backend_config.sqlspec_config = self._sqlspec_config
+        return self._sqlspec_config
+
+    def _get_loader(self) -> Any:
+        if self._loader is None:
+            try:
+                from sqlspec import SQLFileLoader
+            except ModuleNotFoundError as exc:
+                raise missing_sqlspec_error(exc) from exc
+            self._loader = load_packaged_sql(SQLFileLoader())
+            self._backend_config.loader = self._loader
+        return self._loader
+
+    def _get_query(self, name: str) -> str:
+        if self._queries is None:
+            self._queries = load_queue_queries(self._get_loader(), self._table_name)
+        return self._queries[name]
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[Any]:
-        if self._sqlspec is None:
+        if not self._opened or self._sqlspec is None:
             msg = "SQLSpecStorageBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
-        async with self._sqlspec.provide_session(self._sqlspec_config) as driver:
+        sqlspec_config = self._get_sqlspec_config()
+        async with self._sqlspec.provide_session(sqlspec_config) as driver:
             yield driver
 
     async def _select_pending_rows(self, *, limit: int, queue: str | None) -> list[dict[str, Any]]:
         async with self._session() as driver:
             rows = await driver.select(
-                self._list_pending_sql(),
+                self._get_query("list_pending"),
                 now=_serialize_datetime(_utc_now()),
                 queue_filter=queue,
                 queue_value=queue,
@@ -366,148 +448,15 @@ class SQLSpecStorageBackend(BaseStorageBackend):
         return cast("list[dict[str, Any]]", rows)
 
     async def _select_task(self, driver: Any, task_id: UUID) -> dict[str, Any] | None:
-        row = await driver.select_one_or_none(self._get_task_sql(), id=str(task_id))
+        row = await driver.select_one_or_none(self._get_query("get_task"), id=str(task_id))
         return cast("dict[str, Any] | None", row)
 
     async def _select_task_by_key(self, driver: Any, key: str) -> dict[str, Any] | None:
-        row = await driver.select_one_or_none(self._get_task_by_key_sql(), task_key=key)
+        row = await driver.select_one_or_none(self._get_query("get_task_by_key"), task_key=key)
         return cast("dict[str, Any] | None", row)
 
     async def _clear_key(self, driver: Any, task_id: UUID) -> None:
-        await driver.execute(self._clear_key_sql(), id=str(task_id))
-
-    def _schema_sql(self) -> str:
-        table_name = self._table_name
-        return f"""
-CREATE TABLE IF NOT EXISTS {table_name} (
-    id TEXT PRIMARY KEY,
-    task_name TEXT NOT NULL,
-    args_json TEXT NOT NULL,
-    kwargs_json TEXT NOT NULL,
-    queue TEXT NOT NULL,
-    status TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    max_retries INTEGER NOT NULL,
-    retry_count INTEGER NOT NULL,
-    scheduled_at TEXT,
-    created_at TEXT NOT NULL,
-    started_at TEXT,
-    completed_at TEXT,
-    heartbeat_at TEXT,
-    result_json TEXT NOT NULL,
-    error TEXT,
-    task_key TEXT UNIQUE,
-    metadata_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_{table_name}_pending
-    ON {table_name} (status, queue, scheduled_at, priority, created_at);
-CREATE INDEX IF NOT EXISTS ix_{table_name}_heartbeat
-    ON {table_name} (status, heartbeat_at);
-"""
-
-    def _insert_sql(self) -> str:
-        return f"""
-INSERT INTO {self._table_name} (
-    id, task_name, args_json, kwargs_json, queue, status, priority,
-    max_retries, retry_count, scheduled_at, created_at, started_at,
-    completed_at, heartbeat_at, result_json, error, task_key, metadata_json
-) VALUES (
-    :id, :task_name, :args_json, :kwargs_json, :queue, :status, :priority,
-    :max_retries, :retry_count, :scheduled_at, :created_at, :started_at,
-    :completed_at, :heartbeat_at, :result_json, :error, :task_key, :metadata_json
-)
-"""
-
-    def _get_task_sql(self) -> str:
-        return f"SELECT * FROM {self._table_name} WHERE id = :id"
-
-    def _get_task_by_key_sql(self) -> str:
-        return f"SELECT * FROM {self._table_name} WHERE task_key = :task_key"
-
-    def _list_pending_sql(self) -> str:
-        return f"""
-SELECT *
-FROM {self._table_name}
-WHERE status IN ('pending', 'scheduled')
-  AND (scheduled_at IS NULL OR scheduled_at <= :now)
-  AND (:queue_filter IS NULL OR queue = :queue_value)
-ORDER BY priority DESC, created_at ASC
-LIMIT :limit
-"""
-
-    def _claim_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET status = 'running',
-    started_at = :started_at,
-    heartbeat_at = :heartbeat_at
-WHERE id = :id
-  AND status IN ('pending', 'scheduled')
-  AND (scheduled_at IS NULL OR scheduled_at <= :due_at)
-"""
-
-    def _complete_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET status = 'completed',
-    completed_at = :completed_at,
-    heartbeat_at = :heartbeat_at,
-    result_json = :result_json,
-    error = NULL
-WHERE id = :id
-"""
-
-    def _retry_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET status = 'pending',
-    retry_count = :retry_count,
-    started_at = NULL,
-    heartbeat_at = NULL,
-    error = :error
-WHERE id = :id
-"""
-
-    def _fail_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET status = 'failed',
-    completed_at = :completed_at,
-    heartbeat_at = :heartbeat_at,
-    error = :error
-WHERE id = :id
-"""
-
-    def _cancel_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET status = 'cancelled',
-    completed_at = :completed_at
-WHERE id = :id
-  AND status IN ('pending', 'scheduled')
-"""
-
-    def _touch_heartbeat_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET heartbeat_at = :heartbeat_at
-WHERE id = :id
-  AND status = 'running'
-"""
-
-    def _requeue_stale_sql(self) -> str:
-        return f"""
-UPDATE {self._table_name}
-SET status = 'pending',
-    started_at = NULL,
-    heartbeat_at = NULL,
-    retry_count = retry_count + 1
-WHERE status = 'running'
-  AND (heartbeat_at IS NULL OR heartbeat_at < :cutoff)
-"""
-
-    def _clear_key_sql(self) -> str:
-        return f"UPDATE {self._table_name} SET task_key = NULL WHERE id = :id"
+        await driver.execute(self._get_query("clear_key"), id=str(task_id))
 
     def _params_from_record(self, record: QueuedTaskRecord) -> dict[str, Any]:
         return {
