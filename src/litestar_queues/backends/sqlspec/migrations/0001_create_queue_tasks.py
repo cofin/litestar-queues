@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec.exceptions import SQLSpecError
 
-from litestar_queues.backends.sqlspec.store import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.store import SQLSpecQueueStore, create_queue_store
 
 if TYPE_CHECKING:
     from sqlspec.migrations.context import MigrationContext
@@ -26,4 +26,4 @@ def _load_store(context: "MigrationContext | None") -> SQLSpecQueueStore:
     if context is None or context.config is None:
         msg = "Migration context with SQLSpec adapter configuration is required"
         raise SQLSpecError(msg)
-    return SQLSpecQueueStore(cast("Any", context.config))
+    return create_queue_store(cast("Any", context.config))

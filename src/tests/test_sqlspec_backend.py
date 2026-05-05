@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import sqlite3
 import sys
 from collections.abc import AsyncIterator
@@ -6,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import run
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,7 +25,29 @@ from litestar_queues.backends import get_queue_backend_class, list_queue_backend
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import migration_paths
-from litestar_queues.backends.sqlspec.store import SQLiteQueueStore, create_queue_store
+from litestar_queues.backends.sqlspec.store import (
+    AdbcQueueStore,
+    AiomysqlQueueStore,
+    AiosqliteQueueStore,
+    AsyncmyQueueStore,
+    AsyncpgQueueStore,
+    BigQueryQueueStore,
+    CockroachAsyncpgQueueStore,
+    CockroachPsycopgAsyncQueueStore,
+    CockroachPsycopgSyncQueueStore,
+    DuckDBQueueStore,
+    MysqlConnectorAsyncQueueStore,
+    MysqlConnectorSyncQueueStore,
+    OracledbAsyncQueueStore,
+    OracledbSyncQueueStore,
+    PsqlpyQueueStore,
+    PsycopgAsyncQueueStore,
+    PsycopgSyncQueueStore,
+    PymysqlQueueStore,
+    SpannerQueueStore,
+    SqliteQueueStore,
+    create_queue_store,
+)
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -46,6 +70,26 @@ async def sqlspec_backend(tmp_path: Path) -> AsyncIterator[SQLSpecQueueBackend]:
 
 def _sqlite_config(path: Path) -> AiosqliteConfig:
     return AiosqliteConfig(connection_config={"database": str(path)})
+
+
+def _fake_adapter_config(
+    adapter_name: str,
+    *,
+    dialect: str | None = None,
+    config_type_name: str | None = None,
+    connection_config: dict[str, Any] | None = None,
+    extension_config: dict[str, Any] | None = None,
+) -> Any:
+    config_type = type(
+        config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
+        (),
+        {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+    )
+    config = config_type()
+    config.extension_config = extension_config or {}
+    config.statement_config = SimpleNamespace(dialect=dialect)
+    config.connection_config = connection_config or {}
+    return config
 
 
 @dataclass(slots=True)
@@ -121,12 +165,127 @@ assert SQLSpecQueueBackend is not None
     assert result.returncode == 0, result.stderr
 
 
+def test_sqlspec_backend_store_factory_does_not_import_optional_adapter_drivers() -> None:
+    code = """
+import builtins
+from types import SimpleNamespace
+
+blocked_prefixes = (
+    "adbc_driver_manager",
+    "adbc_driver_bigquery",
+    "adbc_driver_duckdb",
+    "adbc_driver_flightsql",
+    "adbc_driver_postgresql",
+    "adbc_driver_snowflake",
+    "adbc_driver_sqlite",
+    "aiomysql",
+    "aiosqlite",
+    "asyncmy",
+    "asyncpg",
+    "duckdb",
+    "google.cloud.bigquery",
+    "google.cloud.spanner",
+    "mysql.connector",
+    "oracledb",
+    "psqlpy",
+    "psycopg",
+    "pymysql",
+    "sqlspec.adapters.adbc",
+    "sqlspec.adapters.aiomysql",
+    "sqlspec.adapters.aiosqlite",
+    "sqlspec.adapters.asyncmy",
+    "sqlspec.adapters.asyncpg",
+    "sqlspec.adapters.bigquery",
+    "sqlspec.adapters.cockroach_asyncpg",
+    "sqlspec.adapters.cockroach_psycopg",
+    "sqlspec.adapters.duckdb",
+    "sqlspec.adapters.mysqlconnector",
+    "sqlspec.adapters.oracledb",
+    "sqlspec.adapters.psqlpy",
+    "sqlspec.adapters.psycopg",
+    "sqlspec.adapters.pymysql",
+    "sqlspec.adapters.spanner",
+)
+blocked_package_prefixes = tuple(f"{name}." for name in blocked_prefixes)
+original_import = builtins.__import__
+
+def blocked_import(name, *args, **kwargs):
+    if name in blocked_prefixes or name.startswith(blocked_package_prefixes):
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = blocked_import
+
+from litestar_queues.backends.sqlspec.store import (
+    AdbcQueueStore,
+    AiomysqlQueueStore,
+    AiosqliteQueueStore,
+    AsyncmyQueueStore,
+    AsyncpgQueueStore,
+    BigQueryQueueStore,
+    CockroachAsyncpgQueueStore,
+    CockroachPsycopgAsyncQueueStore,
+    CockroachPsycopgSyncQueueStore,
+    DuckDBQueueStore,
+    MysqlConnectorAsyncQueueStore,
+    MysqlConnectorSyncQueueStore,
+    OracledbAsyncQueueStore,
+    OracledbSyncQueueStore,
+    PsqlpyQueueStore,
+    PsycopgAsyncQueueStore,
+    PsycopgSyncQueueStore,
+    PymysqlQueueStore,
+    SqliteQueueStore,
+    SpannerQueueStore,
+    create_queue_store,
+)
+
+def fake_config(adapter_name, dialect, config_type_name):
+    config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config"})
+    config = config_type()
+    config.extension_config = {}
+    config.statement_config = SimpleNamespace(dialect=dialect)
+    config.connection_config = {}
+    return config
+
+expected = (
+    ("adbc", "adbc", "FakeAdbcConfig", AdbcQueueStore),
+    ("aiomysql", "mysql", "AiomysqlConfig", AiomysqlQueueStore),
+    ("aiosqlite", "sqlite", "AiosqliteConfig", AiosqliteQueueStore),
+    ("asyncmy", "mysql", "AsyncmyConfig", AsyncmyQueueStore),
+    ("asyncpg", "postgres", "AsyncpgConfig", AsyncpgQueueStore),
+    ("bigquery", "bigquery", "BigQueryConfig", BigQueryQueueStore),
+    ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig", CockroachAsyncpgQueueStore),
+    ("cockroach_psycopg", "postgres", "CockroachPsycopgSyncConfig", CockroachPsycopgSyncQueueStore),
+    ("cockroach_psycopg", "postgres", "CockroachPsycopgAsyncConfig", CockroachPsycopgAsyncQueueStore),
+    ("duckdb", "duckdb", "DuckDBConfig", DuckDBQueueStore),
+    ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", MysqlConnectorSyncQueueStore),
+    ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", MysqlConnectorAsyncQueueStore),
+    ("oracledb", "oracle", "OracleSyncConfig", OracledbSyncQueueStore),
+    ("oracledb", "oracle", "OracleAsyncConfig", OracledbAsyncQueueStore),
+    ("psqlpy", "postgres", "PsqlpyConfig", PsqlpyQueueStore),
+    ("psycopg", "postgres", "PsycopgSyncConfig", PsycopgSyncQueueStore),
+    ("psycopg", "postgres", "PsycopgAsyncConfig", PsycopgAsyncQueueStore),
+    ("pymysql", "mysql", "PyMysqlConfig", PymysqlQueueStore),
+    ("spanner", "spanner", "SpannerConfig", SpannerQueueStore),
+    ("sqlite", "sqlite", "SqliteConfig", SqliteQueueStore),
+)
+
+for adapter_name, dialect, config_type_name, expected_store in expected:
+    store = create_queue_store(fake_config(adapter_name, dialect, config_type_name), table_name="queue_tasks")
+    assert isinstance(store, expected_store), adapter_name
+"""
+    result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+
 async def test_sqlspec_backend_exposes_config_type_and_builder_store(tmp_path: Path) -> None:
     backend_config = SQLSpecBackendConfig(table_name="queue_tasks")
     store = create_queue_store(_sqlite_config(tmp_path / "queue.db"), table_name=backend_config.table_name)
 
     assert backend_config.table_name == "queue_tasks"
-    assert isinstance(store, SQLiteQueueStore)
+    assert isinstance(store, AiosqliteQueueStore)
     assert store.table_name == "queue_tasks"
     assert any('"queue_tasks"' in statement for statement in store.create_statements())
 
@@ -141,12 +300,155 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(tmp_path: P
     assert "queue" in pending_statement.sql
 
 
+@pytest.mark.parametrize(
+    (
+        "adapter_name",
+        "dialect",
+        "config_type_name",
+        "connection_config",
+        "expected_store_type",
+        "expected_sql_fragment",
+    ),
+    (
+        ("adbc", "duckdb", "FakeAdbcConfig", {"driver_name": "adbc_driver_duckdb"}, AdbcQueueStore, "JSON"),
+        (
+            "adbc",
+            "postgres",
+            "FakeAdbcConfig",
+            {"driver_name": "adbc_driver_postgresql"},
+            AdbcQueueStore,
+            "WHERE status IN",
+        ),
+        ("adbc", "bigquery", "FakeAdbcConfig", {"driver_name": "adbc_driver_bigquery"}, AdbcQueueStore, "CLUSTER BY"),
+        ("adbc", None, "FakeAdbcConfig", {"driver_name": "adbc_driver_snowflake"}, AdbcQueueStore, "VARIANT"),
+        ("aiomysql", "mysql", "AiomysqlConfig", {}, AiomysqlQueueStore, "ENGINE=InnoDB"),
+        ("aiosqlite", "sqlite", "AiosqliteConfig", {}, AiosqliteQueueStore, '"queue_tasks"'),
+        ("asyncmy", "mysql", "AsyncmyConfig", {}, AsyncmyQueueStore, "ENGINE=InnoDB"),
+        ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, "WHERE status IN"),
+        ("bigquery", "bigquery", "BigQueryConfig", {}, BigQueryQueueStore, "CLUSTER BY"),
+        (
+            "cockroach_asyncpg",
+            "postgres",
+            "CockroachAsyncpgConfig",
+            {},
+            CockroachAsyncpgQueueStore,
+            "TIMESTAMPTZ",
+        ),
+        (
+            "cockroach_psycopg",
+            "postgres",
+            "CockroachPsycopgSyncConfig",
+            {},
+            CockroachPsycopgSyncQueueStore,
+            "TIMESTAMPTZ",
+        ),
+        (
+            "cockroach_psycopg",
+            "postgres",
+            "CockroachPsycopgAsyncConfig",
+            {},
+            CockroachPsycopgAsyncQueueStore,
+            "TIMESTAMPTZ",
+        ),
+        ("duckdb", "duckdb", "DuckDBConfig", {}, DuckDBQueueStore, "JSON"),
+        ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", {}, MysqlConnectorSyncQueueStore, "ENGINE=InnoDB"),
+        ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
+        ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
+        ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
+        ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, "WHERE status IN"),
+        ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, "WHERE status IN"),
+        ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, "WHERE status IN"),
+        ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
+        ("spanner", "spanner", "SpannerConfig", {}, SpannerQueueStore, "PRIMARY KEY"),
+        ("sqlite", "sqlite", "SqliteConfig", {}, SqliteQueueStore, '"queue_tasks"'),
+    ),
+)
+async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
+    adapter_name: str,
+    dialect: str | None,
+    config_type_name: str,
+    connection_config: dict[str, Any],
+    expected_store_type: type[Any],
+    expected_sql_fragment: str,
+) -> None:
+    store = create_queue_store(
+        _fake_adapter_config(
+            adapter_name,
+            dialect=dialect,
+            config_type_name=config_type_name,
+            connection_config=connection_config,
+        ),
+        table_name="queue_tasks",
+    )
+
+    assert isinstance(store, expected_store_type)
+    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    assert expected_sql_fragment in "\n".join(store.create_statements())
+
+
+@pytest.mark.parametrize(
+    ("config_type_name", "expected_store_type"),
+    (
+        ("OracleSyncConfig", OracledbSyncQueueStore),
+        ("OracleAsyncConfig", OracledbAsyncQueueStore),
+    ),
+)
+@pytest.mark.parametrize(
+    ("queue_settings", "expected_json_fragment", "expected_serialized_type"),
+    (
+        ({}, "BLOB CHECK ({column} IS JSON)", bytes),
+        ({"json_storage": "json", "in_memory": True}, "JSON", str),
+        ({"json_storage": "blob"}, "BLOB", bytes),
+        ({"json_storage": "blob_plain"}, "BLOB", bytes),
+    ),
+)
+async def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
+    config_type_name: str,
+    expected_store_type: type[Any],
+    queue_settings: dict[str, Any],
+    expected_json_fragment: str,
+    expected_serialized_type: type[Any],
+) -> None:
+    store = create_queue_store(
+        _fake_adapter_config(
+            "oracledb",
+            dialect="oracle",
+            config_type_name=config_type_name,
+            extension_config={QUEUE_EXTENSION_NAME: queue_settings},
+        ),
+        table_name="queue_tasks",
+    )
+
+    ddl = "\n".join(store.create_statements())
+
+    assert isinstance(store, expected_store_type)
+    assert "CLOB" not in ddl
+    for column_name in ("args_json", "kwargs_json", "result_json", "metadata_json"):
+        expected_column_type = expected_json_fragment.format(column=column_name)
+        assert f"{column_name} {expected_column_type} NOT NULL" in ddl
+    assert ("INMEMORY PRIORITY HIGH" in ddl) is bool(queue_settings.get("in_memory"))
+    serialized = store.serialize_payload_json({"ok": True})
+    assert isinstance(serialized, expected_serialized_type)
+    assert store.deserialize_json(serialized) == {"ok": True}
+
+
+async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> None:
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    context = SimpleNamespace(config=_fake_adapter_config("bigquery", dialect="bigquery"))
+
+    statements = await migration.up(context)
+
+    assert "CLUSTER BY" in statements[0]
+    assert not any("CREATE INDEX" in statement for statement in statements)
+
+
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> None:
     paths = tuple(Path(path) for path in migration_paths())
 
     assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
     content = paths[0].read_text()
-    assert "SQLSpecQueueStore" in content
+    assert "create_queue_store" in content
+    assert "return SQLSpecQueueStore(" not in content
     assert "CREATE TABLE IF NOT EXISTS litestar_queue_tasks" not in content
 
 

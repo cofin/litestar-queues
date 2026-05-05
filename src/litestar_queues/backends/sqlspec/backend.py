@@ -346,18 +346,17 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         return None
 
     async def complete_task(self, task_id: UUID, *, result: Any = None) -> QueuedTaskRecord | None:
-        from sqlspec.utils.serializers import to_json
-
         now = _utc_now()
+        store = self._get_store()
         async with self._session() as driver:
             await driver.begin()
             try:
                 updated = await driver.execute(
-                    self._get_store().complete_task(
+                    store.complete_task(
                         task_id=str(task_id),
                         completed_at=_serialize_datetime(now),
                         heartbeat_at=_serialize_datetime(now),
-                        result_json=to_json(result),
+                        result_json=store.serialize_result_json(result),
                     ),
                 )
                 row = await self._select_task(driver, task_id) if updated.rows_affected else None
@@ -761,10 +760,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
 
     def _params_from_record(self, record: QueuedTaskRecord) -> dict[str, Any]:
-        from sqlspec.utils.serializers import to_json
-
+        store = self._get_store()
         return {
-            "args_json": to_json(list(record.args)),
+            "args_json": store.serialize_payload_json(list(record.args)),
             "completed_at": _serialize_datetime(record.completed_at),
             "created_at": _serialize_datetime(record.created_at),
             "error": record.error,
@@ -773,12 +771,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             "execution_ref": record.execution_ref,
             "heartbeat_at": _serialize_datetime(record.heartbeat_at),
             "id": str(record.id),
-            "kwargs_json": to_json(record.kwargs),
+            "kwargs_json": store.serialize_payload_json(record.kwargs),
             "max_retries": record.max_retries,
-            "metadata_json": to_json(record.metadata),
+            "metadata_json": store.serialize_metadata_json(record.metadata),
             "priority": record.priority,
             "queue": record.queue,
-            "result_json": to_json(record.result),
+            "result_json": store.serialize_result_json(record.result),
             "retry_count": record.retry_count,
             "scheduled_at": _serialize_datetime(record.scheduled_at),
             "started_at": _serialize_datetime(record.started_at),
@@ -788,11 +786,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         }
 
     def _record_from_row(self, row: dict[str, Any]) -> QueuedTaskRecord:
-        from sqlspec.utils.serializers import from_json
-
-        args = from_json(row["args_json"])
-        kwargs = from_json(row["kwargs_json"])
-        metadata = from_json(row["metadata_json"])
+        store = self._get_store()
+        args = store.deserialize_json(row["args_json"])
+        kwargs = store.deserialize_json(row["kwargs_json"])
+        metadata = store.deserialize_json(row["metadata_json"])
         return QueuedTaskRecord(
             id=UUID(str(row["id"])),
             task_name=str(row["task_name"]),
@@ -811,7 +808,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             started_at=_deserialize_datetime(row["started_at"]),
             completed_at=_deserialize_datetime(row["completed_at"]),
             heartbeat_at=_deserialize_datetime(row["heartbeat_at"]),
-            result=from_json(row["result_json"]),
+            result=store.deserialize_json(row["result_json"]),
             error=cast("str | None", row["error"]),
             key=cast("str | None", row["task_key"]),
             metadata=metadata,
