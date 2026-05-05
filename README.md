@@ -129,3 +129,34 @@ SQLSpec persists task arguments, keyword arguments, metadata, and results with
 SQLSpec's JSON serializer. Litestar applications should register SQLSpec's
 first-party plugin directly and pass the same `SQLSpec`/adapter config into
 `queue_backend_config` when they want SQLSpec dependency injection.
+
+SQLSpec worker wakeups can use SQLSpec Events when configured:
+
+```python
+from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+from litestar_queues import QueueConfig
+
+sqlspec_config = AiosqliteConfig(
+    connection_config={"database": "queue.db"},
+    extension_config={
+        "events": {
+            "backend": "table_queue",
+            "queue_table": "queue_events",
+            "poll_interval": 0.1,
+        }
+    },
+)
+
+config = QueueConfig(
+    queue_backend="sqlspec",
+    queue_backend_config={
+        "sqlspec_config": sqlspec_config,
+        "create_schema": False,
+        "run_migrations": True,
+        "notifications": True,
+        "notification_channel": "queue_notifications",
+    },
+    execution_backend="local",
+)
+```

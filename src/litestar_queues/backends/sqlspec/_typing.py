@@ -7,10 +7,13 @@ from litestar_queues.exceptions import MissingDependencyError
 if TYPE_CHECKING:
     from sqlspec import SQLSpec
     from sqlspec.config import AsyncDatabaseConfig, NoPoolAsyncConfig
+    from sqlspec.extensions.events import AsyncEventChannel
 
+    AsyncEventChannelT = AsyncEventChannel
     SQLSpecT = SQLSpec
     SQLSpecConfigT = AsyncDatabaseConfig[Any, Any, Any] | NoPoolAsyncConfig[Any, Any]
 else:
+    AsyncEventChannelT = Any
     SQLSpecT = Any
     SQLSpecConfigT = Any
 

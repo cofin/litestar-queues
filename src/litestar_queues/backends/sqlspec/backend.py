@@ -1,5 +1,6 @@
 """SQLSpec queue backend."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
@@ -7,9 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from litestar_queues.backends.base import BaseQueueBackend
-from litestar_queues.backends.sqlspec._typing import SQLSpecConfigT, SQLSpecT, missing_sqlspec_error
-from litestar_queues.backends.sqlspec.config import SQLSpecBackendConfig
-from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+from litestar_queues.backends.sqlspec._typing import (
+    AsyncEventChannelT,
+    SQLSpecConfigT,
+    SQLSpecT,
+    missing_sqlspec_error,
+)
+from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
@@ -20,6 +26,9 @@ if TYPE_CHECKING:
 __all__ = ("SQLSpecBackendConfig", "SQLSpecQueueBackend")
 
 _DUE_STATUSES = ("pending", "scheduled")
+_DURABLE_NOTIFICATION_BACKENDS = frozenset({"advanced_queue", "listen_notify_durable", "table_queue"})
+_EVENT_EXTENSION_NAME = "events"
+_QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 
 def _utc_now() -> datetime:
@@ -51,12 +60,63 @@ def _coerce_status(value: Any) -> TaskStatus:
     return cast("TaskStatus", status)
 
 
+def _queue_extension_settings(sqlspec_config: SQLSpecConfigT | None) -> dict[str, Any]:
+    if sqlspec_config is None:
+        return {}
+    extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
+    return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
+
+
+def _events_extension_settings(sqlspec_config: SQLSpecConfigT | None) -> dict[str, Any]:
+    if sqlspec_config is None:
+        return {}
+    extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
+    return dict(cast("dict[str, Any]", extension_config.get(_EVENT_EXTENSION_NAME, {}) or {}))
+
+
+def _setting(queue_settings: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in queue_settings:
+            return queue_settings[name]
+    return None
+
+
+def _resolve_bool(value: bool | None, queue_settings: dict[str, Any], key: str, default: bool) -> bool:
+    if value is not None:
+        return value
+    if key in queue_settings:
+        return bool(queue_settings[key])
+    return default
+
+
+def _normalize_notification_channel(channel: str) -> str:
+    try:
+        from sqlspec.extensions.events import normalize_event_channel_name
+    except ModuleNotFoundError as exc:
+        raise missing_sqlspec_error(exc) from exc
+    try:
+        return str(normalize_event_channel_name(channel))
+    except Exception as exc:
+        msg = f"Invalid SQLSpec queue notification channel: {channel!r}"
+        raise QueueConfigurationError(msg) from exc
+
+
 class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     """SQLSpec-backed queue backend."""
 
     __slots__ = (
         "_create_schema",
+        "_event_backend",
+        "_event_channel",
+        "_event_poll_interval",
+        "_event_queue_table",
+        "_event_settings",
+        "_notification_backend",
+        "_notification_channel",
+        "_notifications_enabled",
+        "_notifications_requested",
         "_opened",
+        "_owns_event_channel",
         "_owns_sqlspec",
         "_run_migrations",
         "_sqlspec",
@@ -69,19 +129,47 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self,
         config: "QueueConfig | None" = None,
         *,
+        backend_config: SQLSpecBackendConfig | None = None,
         sqlspec: SQLSpecT | None = None,
         sqlspec_config: SQLSpecConfigT | None = None,
-        table_name: str = DEFAULT_TABLE_NAME,
-        create_schema: bool = True,
-        run_migrations: bool = False,
+        table_name: str | None = None,
+        create_schema: bool | None = None,
+        run_migrations: bool | None = None,
+        event_channel: AsyncEventChannelT | None = None,
+        notifications: bool | None = None,
+        notification_channel: str | None = None,
+        event_backend: str | None = None,
+        event_queue_table: str | None = None,
+        event_poll_interval: float | None = None,
+        event_settings: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(config=config)
-        self._sqlspec = sqlspec
-        self._sqlspec_config = sqlspec_config
-        self._owns_sqlspec = sqlspec is None
-        self._table_name = validate_table_name(table_name)
-        self._create_schema = create_schema
-        self._run_migrations = run_migrations
+        backend_config = backend_config or SQLSpecBackendConfig()
+        self._sqlspec = sqlspec if sqlspec is not None else backend_config.sqlspec
+        self._sqlspec_config = sqlspec_config if sqlspec_config is not None else backend_config.sqlspec_config
+        self._owns_sqlspec = self._sqlspec is None
+        configured_table_name = table_name if table_name is not None else backend_config.table_name
+        self._table_name = validate_table_name(configured_table_name) if configured_table_name is not None else None
+        self._create_schema = create_schema if create_schema is not None else backend_config.create_schema
+        self._run_migrations = run_migrations if run_migrations is not None else backend_config.run_migrations
+        self._event_channel = event_channel if event_channel is not None else backend_config.event_channel
+        self._owns_event_channel = self._event_channel is None
+        self._notifications_requested = notifications if notifications is not None else backend_config.notifications
+        self._notification_channel = (
+            notification_channel if notification_channel is not None else backend_config.notification_channel
+        )
+        self._event_backend = event_backend if event_backend is not None else backend_config.event_backend
+        self._event_queue_table = (
+            event_queue_table if event_queue_table is not None else backend_config.event_queue_table
+        )
+        self._event_poll_interval = (
+            event_poll_interval if event_poll_interval is not None else backend_config.event_poll_interval
+        )
+        self._event_settings = dict(backend_config.event_settings)
+        if event_settings:
+            self._event_settings.update(event_settings)
+        self._notification_backend: str | None = getattr(self._event_channel, "_backend_name", None)
+        self._notifications_enabled = self._event_channel is not None
         self._store: Any | None = None
         self._opened = False
 
@@ -95,15 +183,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             return True
 
         self._get_or_create_sqlspec()
+        self._resolve_table_name()
+        self._configure_notifications()
         self._opened = True
-        if self._run_migrations:
+        if self._resolve_run_migrations():
             await self.run_migrations()
-        if self._create_schema:
+        if self._resolve_create_schema():
             await self.create_schema()
         return True
 
     async def close(self) -> None:
         """Close SQLSpec resources."""
+        if self._owns_event_channel and self._event_channel is not None:
+            await self._event_channel.shutdown()
+            self._event_channel = None
         if self._owns_sqlspec and self._sqlspec is not None:
             await self._sqlspec.close_all_pools()
             self._sqlspec = None
@@ -112,10 +205,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     @property
     def capabilities(self) -> QueueBackendCapabilities:
         """Return backend behavior capabilities."""
+        notification_backend = self._notification_backend
         return QueueBackendCapabilities(
-            supports_notifications=False,
-            notification_backend=None,
-            notifications_durable=False,
+            supports_notifications=self._notifications_enabled,
+            notification_backend=notification_backend,
+            notifications_durable=notification_backend in _DURABLE_NOTIFICATION_BACKENDS,
         )
 
     async def create_schema(self) -> None:
@@ -128,7 +222,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     async def run_migrations(self) -> None:
         """Apply packaged SQLSpec migrations."""
         sqlspec_config = self._get_sqlspec_config()
-        configure_queue_migration_extension(sqlspec_config, table_name=self._table_name)
+        configure_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name())
         await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
@@ -445,6 +539,47 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                 raise
         return int(result.rows_affected)
 
+    async def notify_new_task(self, record: QueuedTaskRecord) -> None:
+        """Publish a SQLSpec event when configured queue work becomes available."""
+        if not self._notifications_enabled or self._event_channel is None or record.status not in _DUE_STATUSES:
+            return
+        await self._event_channel.publish(
+            self._resolve_notification_channel(),
+            {
+                "task_id": str(record.id),
+                "task_name": record.task_name,
+                "queue": record.queue,
+                "execution_backend": record.execution_backend,
+            },
+            {"event_type": "litestar_queues.task_available"},
+        )
+
+    async def wait_for_notifications(self, timeout: float | None = None) -> bool:
+        """Wait for a SQLSpec event when queue notifications are configured.
+
+        Returns:
+            True when a notification was received.
+        """
+        if not self._notifications_enabled or self._event_channel is None:
+            return await super().wait_for_notifications(timeout=timeout)
+
+        stream = self._event_channel.iter_events(
+            self._resolve_notification_channel(),
+            poll_interval=self._event_poll_interval if self._event_poll_interval is not None else timeout,
+        )
+        try:
+            if timeout is None:
+                event = await anext(stream)
+            else:
+                event = await asyncio.wait_for(anext(stream), timeout=timeout)
+        except TimeoutError:
+            return False
+        finally:
+            await cast("Any", stream).aclose()
+
+        await self._event_channel.ack(event.event_id)
+        return True
+
     @staticmethod
     def _default_sqlspec_config() -> SQLSpecConfigT:
         try:
@@ -452,6 +587,109 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         except ModuleNotFoundError as exc:
             raise missing_sqlspec_error(exc) from exc
         return AiosqliteConfig()
+
+    def _resolve_table_name(self) -> str:
+        if self._table_name is None:
+            queue_settings = _queue_extension_settings(self._sqlspec_config)
+            configured_table_name = _setting(queue_settings, "table_name") or DEFAULT_TABLE_NAME
+            self._table_name = validate_table_name(str(configured_table_name))
+        return self._table_name
+
+    def _resolve_create_schema(self) -> bool:
+        return _resolve_bool(
+            self._create_schema, _queue_extension_settings(self._sqlspec_config), "create_schema", True
+        )
+
+    def _resolve_run_migrations(self) -> bool:
+        return _resolve_bool(
+            self._run_migrations,
+            _queue_extension_settings(self._sqlspec_config),
+            "run_migrations",
+            False,
+        )
+
+    def _resolve_notification_channel(self) -> str:
+        if self._notification_channel is not None:
+            self._notification_channel = _normalize_notification_channel(str(self._notification_channel))
+        else:
+            queue_settings = _queue_extension_settings(self._sqlspec_config)
+            configured_channel = _setting(queue_settings, "notification_channel") or DEFAULT_NOTIFICATION_CHANNEL
+            self._notification_channel = _normalize_notification_channel(str(configured_channel))
+        return self._notification_channel
+
+    def _configure_notifications(self) -> None:
+        sqlspec_config = self._get_sqlspec_config()
+        queue_settings = _queue_extension_settings(sqlspec_config)
+        events_settings = _events_extension_settings(sqlspec_config)
+        events_settings = self._configure_notification_overrides(sqlspec_config, queue_settings, events_settings)
+
+        notifications_requested = self._notifications_requested
+        if notifications_requested is None and "notifications" in queue_settings:
+            notifications_requested = bool(queue_settings["notifications"])
+        events_configured = bool(events_settings) or _EVENT_EXTENSION_NAME in cast(
+            "dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}
+        )
+        self._notifications_enabled = bool(
+            self._event_channel is not None or notifications_requested is True or events_configured
+        )
+        if notifications_requested is False:
+            self._notifications_enabled = False
+        if not self._notifications_enabled:
+            self._notification_backend = None
+            return
+
+        self._resolve_notification_channel()
+        if self._event_channel is None:
+            self._event_channel = self._get_or_create_sqlspec().event_channel(sqlspec_config)
+            self._owns_event_channel = True
+        self._notification_backend = cast("str | None", getattr(self._event_channel, "_backend_name", None))
+
+    def _configure_notification_overrides(
+        self,
+        sqlspec_config: SQLSpecConfigT,
+        queue_settings: dict[str, Any],
+        events_settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged_event_settings = dict(events_settings)
+        for name in _QUEUE_SETTING_EVENT_SETTINGS:
+            configured_events = queue_settings.get(name)
+            if isinstance(configured_events, dict):
+                merged_event_settings.update(configured_events)
+        merged_event_settings.update(self._event_settings)
+
+        configured_backend = self._event_backend or _setting(queue_settings, "event_backend", "notification_backend")
+        configured_queue_table = self._event_queue_table or _setting(
+            queue_settings,
+            "event_queue_table",
+            "notification_queue_table",
+        )
+        configured_poll_interval = self._event_poll_interval
+        if configured_poll_interval is None:
+            configured_poll_interval = _setting(queue_settings, "event_poll_interval", "notification_poll_interval")
+        if configured_poll_interval is None and "poll_interval" in merged_event_settings:
+            configured_poll_interval = merged_event_settings["poll_interval"]
+
+        if configured_backend is not None:
+            merged_event_settings["backend"] = str(configured_backend)
+        if configured_queue_table is not None:
+            merged_event_settings["queue_table"] = str(configured_queue_table)
+        if configured_poll_interval is not None:
+            self._event_poll_interval = float(configured_poll_interval)
+            merged_event_settings["poll_interval"] = self._event_poll_interval
+
+        notifications_requested = self._notifications_requested
+        if notifications_requested is None and "notifications" in queue_settings:
+            notifications_requested = bool(queue_settings["notifications"])
+        should_store_event_settings = bool(merged_event_settings) or notifications_requested is True
+        if not should_store_event_settings:
+            return merged_event_settings
+
+        extension_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}))
+        extension_config[_EVENT_EXTENSION_NAME] = merged_event_settings
+        sqlspec_config.extension_config = extension_config
+        migration_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "migration_config", {}) or {}))
+        sqlspec_config.set_migration_config(migration_config)
+        return merged_event_settings
 
     def _get_or_create_sqlspec(self) -> SQLSpecT:
         if self._sqlspec is None:
@@ -481,7 +719,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         if self._store is None:
             from litestar_queues.backends.sqlspec.store import create_queue_store
 
-            self._store = create_queue_store(self._get_sqlspec_config(), table_name=self._table_name)
+            self._store = create_queue_store(self._get_sqlspec_config(), table_name=self._resolve_table_name())
         return self._store
 
     @asynccontextmanager

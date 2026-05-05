@@ -27,7 +27,9 @@ async def queue_backend(request: pytest.FixtureRequest, tmp_path: Path) -> Async
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    backend = SQLSpecQueueBackend(sqlspec_config=AiosqliteConfig(connection_config={"database": str(tmp_path / "queue.db")}))
+    backend = SQLSpecQueueBackend(
+        sqlspec_config=AiosqliteConfig(connection_config={"database": str(tmp_path / "queue.db")})
+    )
     await backend.open()
     try:
         yield backend

@@ -109,3 +109,62 @@ SQLSpec persists task arguments, keyword arguments, metadata, and results using
 SQLSpec's serializer. Packaged migrations are registered with SQLSpec's
 extension runner as ``ext_litestar_queues_0001``. Applications with their own
 migration flow can set both ``create_schema=False`` and ``run_migrations=False``.
+
+SQLSpec Event Notifications
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The SQLSpec backend falls back to worker polling unless notifications are
+configured. To wake workers through SQLSpec Events, configure the SQLSpec
+``events`` extension and enable queue notifications:
+
+.. code-block:: python
+
+   from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+   from litestar_queues import QueueConfig
+
+   sqlspec_config = AiosqliteConfig(
+       connection_config={"database": "queue.db"},
+       extension_config={
+           "events": {
+               "backend": "table_queue",
+               "queue_table": "queue_events",
+               "poll_interval": 0.1,
+           }
+       },
+   )
+
+   config = QueueConfig(
+       queue_backend="sqlspec",
+       queue_backend_config={
+           "sqlspec_config": sqlspec_config,
+           "create_schema": False,
+           "run_migrations": True,
+           "notifications": True,
+           "notification_channel": "queue_notifications",
+       },
+       execution_backend="local",
+   )
+
+PostgreSQL SQLSpec adapters can use SQLSpec's native ``listen_notify`` backend;
+other adapters can use the durable ``table_queue`` backend. Queue notification
+channel names must be valid SQLSpec event identifiers.
+
+Shared SQLSpec Extension Config
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Applications can place queue defaults in ``sqlspec_config.extension_config``.
+Explicit values passed through ``QueueConfig.queue_backend_config`` take
+precedence:
+
+.. code-block:: python
+
+   sqlspec_config = AiosqliteConfig(
+       connection_config={"database": "queue.db"},
+       extension_config={
+           "litestar_queues": {
+               "table_name": "app_queue_tasks",
+               "notification_channel": "app_queue_notifications",
+           }
+       },
+   )

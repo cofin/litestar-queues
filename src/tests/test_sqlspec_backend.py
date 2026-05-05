@@ -1,9 +1,12 @@
+import asyncio
 import sqlite3
 import sys
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import run
+from typing import Any
 
 import pytest
 from litestar import Litestar
@@ -18,6 +21,7 @@ from sqlspec.extensions.litestar import SQLSpecPlugin
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import migration_paths
 from litestar_queues.backends.sqlspec.store import SQLiteQueueStore, create_queue_store
 from litestar_queues.task import clear_task_registry
@@ -42,6 +46,52 @@ async def sqlspec_backend(tmp_path: Path) -> AsyncIterator[SQLSpecQueueBackend]:
 
 def _sqlite_config(path: Path) -> AiosqliteConfig:
     return AiosqliteConfig(connection_config={"database": str(path)})
+
+
+@dataclass(slots=True)
+class StubEvent:
+    event_id: str
+    payload: dict[str, Any]
+    metadata: dict[str, Any] | None = None
+
+
+class StubAsyncEventChannel:
+    __slots__ = ("_backend_name", "_events", "acked", "published")
+
+    def __init__(self, backend_name: str = "table_queue") -> None:
+        self._backend_name = backend_name
+        self.acked: list[str] = []
+        self.published: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
+        self._events: asyncio.Queue[StubEvent] = asyncio.Queue()
+
+    async def publish(
+        self,
+        channel: str,
+        payload: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        event_id = f"event-{len(self.published) + 1}"
+        self.published.append((channel, payload, metadata))
+        await self._events.put(StubEvent(event_id, payload, metadata))
+        return event_id
+
+    async def iter_events(self, channel: str, *, poll_interval: float | None = None) -> AsyncIterator[StubEvent]:
+        while True:
+            if poll_interval is None:
+                event = await self._events.get()
+            else:
+                try:
+                    event = await asyncio.wait_for(self._events.get(), timeout=poll_interval)
+                except TimeoutError:
+                    continue
+            if channel == self.published[-1][0]:
+                yield event
+
+    async def ack(self, event_id: str) -> None:
+        self.acked.append(event_id)
+
+    async def shutdown(self) -> None:
+        return None
 
 
 async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> None:
@@ -258,6 +308,162 @@ async def test_sqlspec_backend_uses_configured_table_name(tmp_path: Path) -> Non
 
     assert "queue_tasks" in table_names
     assert "litestar_queue_tasks" not in table_names
+
+
+async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_values_are_absent(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "extension-config.db"
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": str(db_path)},
+        extension_config={
+            QUEUE_EXTENSION_NAME: {
+                "table_name": "extension_queue_tasks",
+            },
+        },
+    )
+    backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config)
+
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.extension_config")
+    finally:
+        await backend.close()
+
+    assert record.task_name == "tasks.extension_config"
+    with sqlite3.connect(db_path) as connection:
+        table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+    assert "extension_queue_tasks" in table_names
+    assert "litestar_queue_tasks" not in table_names
+
+
+async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension_config(tmp_path: Path) -> None:
+    db_path = tmp_path / "explicit-config.db"
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": str(db_path)},
+        extension_config={
+            QUEUE_EXTENSION_NAME: {
+                "table_name": "extension_queue_tasks",
+            },
+        },
+    )
+    backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config, table_name="explicit_queue_tasks")
+
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.explicit_config")
+    finally:
+        await backend.close()
+
+    assert record.task_name == "tasks.explicit_config"
+    with sqlite3.connect(db_path) as connection:
+        table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+    assert "explicit_queue_tasks" in table_names
+    assert "extension_queue_tasks" not in table_names
+
+
+async def test_sqlspec_backend_event_channel_notifications_wake_waiters(tmp_path: Path) -> None:
+    event_channel = StubAsyncEventChannel()
+    backend = SQLSpecQueueBackend(
+        sqlspec_config=_sqlite_config(tmp_path / "notifications.db"),
+        event_channel=event_channel,
+        notification_channel="queue_notifications",
+    )
+
+    await backend.open()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
+        record = await backend.enqueue("tasks.notified", queue="critical", execution_backend="local")
+
+        assert await waiter is True
+        assert backend.capabilities.supports_notifications is True
+        assert backend.capabilities.notification_backend == "table_queue"
+        assert backend.capabilities.notifications_durable is True
+        assert event_channel.published == [
+            (
+                "queue_notifications",
+                {
+                    "task_id": str(record.id),
+                    "task_name": "tasks.notified",
+                    "queue": "critical",
+                    "execution_backend": "local",
+                },
+                {"event_type": "litestar_queues.task_available"},
+            )
+        ]
+        assert event_channel.acked == ["event-1"]
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_path: Path) -> None:
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": str(tmp_path / "derived-notifications.db")},
+        extension_config={
+            "events": {
+                "backend": "table_queue",
+                "poll_interval": 0.01,
+                "queue_table": "queue_events",
+            },
+        },
+    )
+    backend = SQLSpecQueueBackend(
+        sqlspec_config=sqlspec_config,
+        create_schema=False,
+        run_migrations=True,
+        notifications=True,
+        notification_channel="derived_notifications",
+    )
+
+    await backend.open()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
+        await backend.enqueue("tasks.derived_notified")
+
+        assert await waiter is True
+        assert backend.capabilities.supports_notifications is True
+        assert backend.capabilities.notification_backend == "table_queue"
+        assert backend.capabilities.notifications_durable is True
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_notification_channel_uses_extension_config_with_explicit_override(
+    tmp_path: Path,
+) -> None:
+    extension_channel = StubAsyncEventChannel()
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": str(tmp_path / "extension-notifications.db")},
+        extension_config={
+            QUEUE_EXTENSION_NAME: {
+                "notification_channel": "extension_notifications",
+            },
+        },
+    )
+    extension_backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config, event_channel=extension_channel)
+    await extension_backend.open()
+    try:
+        await extension_backend.enqueue("tasks.extension_notified")
+    finally:
+        await extension_backend.close()
+
+    explicit_channel = StubAsyncEventChannel()
+    explicit_backend = SQLSpecQueueBackend(
+        sqlspec_config=sqlspec_config,
+        event_channel=explicit_channel,
+        notification_channel="explicit_notifications",
+        table_name="explicit_notification_queue",
+    )
+    await explicit_backend.open()
+    try:
+        await explicit_backend.enqueue("tasks.explicit_notified")
+    finally:
+        await explicit_backend.close()
+
+    assert extension_channel.published[0][0] == "extension_notifications"
+    assert explicit_channel.published[0][0] == "explicit_notifications"
 
 
 async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(tmp_path: Path) -> None:
