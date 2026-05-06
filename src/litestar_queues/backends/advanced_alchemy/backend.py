@@ -1,0 +1,331 @@
+"""Advanced Alchemy queue backend."""
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
+
+from litestar_queues.backends.advanced_alchemy._typing import (
+    AsyncSessionMakerT,
+    SQLAlchemyAsyncConfigT,
+    missing_advanced_alchemy_error,
+)
+from litestar_queues.backends.advanced_alchemy.config import (
+    DEFAULT_TABLE_NAME,
+    AdvancedAlchemyBackendConfig,
+    build_alembic_config,
+    validate_table_name,
+)
+from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
+
+if TYPE_CHECKING:
+    from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+    from litestar_queues.config import QueueConfig
+
+__all__ = ("AdvancedAlchemyBackendConfig", "AdvancedAlchemyQueueBackend")
+
+
+class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
+    """Advanced Alchemy-backed queue backend."""
+
+    __slots__ = (
+        "_create_schema",
+        "_opened",
+        "_run_migrations",
+        "_session_maker",
+        "_sqlalchemy_config",
+        "_table_name",
+    )
+
+    def __init__(
+        self,
+        config: "QueueConfig | None" = None,
+        *,
+        backend_config: AdvancedAlchemyBackendConfig | None = None,
+        sqlalchemy_config: SQLAlchemyAsyncConfigT | None = None,
+        session_maker: AsyncSessionMakerT | None = None,
+        table_name: str | None = None,
+        create_schema: bool | None = None,
+        run_migrations: bool | None = None,
+    ) -> None:
+        super().__init__(config=config)
+        backend_config = backend_config or AdvancedAlchemyBackendConfig()
+        self._sqlalchemy_config = (
+            sqlalchemy_config if sqlalchemy_config is not None else backend_config.sqlalchemy_config
+        )
+        self._session_maker = session_maker if session_maker is not None else backend_config.session_maker
+        configured_table_name = table_name if table_name is not None else backend_config.table_name
+        self._table_name = validate_table_name(configured_table_name or DEFAULT_TABLE_NAME)
+        self._create_schema = create_schema if create_schema is not None else backend_config.create_schema
+        self._run_migrations = run_migrations if run_migrations is not None else backend_config.run_migrations
+        self._opened = False
+
+    @property
+    def capabilities(self) -> QueueBackendCapabilities:
+        """Return backend behavior capabilities."""
+        return QueueBackendCapabilities()
+
+    async def open(self) -> bool:
+        """Open Advanced Alchemy resources.
+
+        Returns:
+            True when resources are ready.
+        """
+        if self._opened:
+            return True
+        self._ensure_configured()
+        self._prepare_model()
+        if self._run_migrations:
+            await self.run_migrations()
+        if self._create_schema:
+            await self.create_schema()
+        self._opened = True
+        return True
+
+    async def close(self) -> None:
+        """Close backend-owned resources."""
+        self._opened = False
+
+    async def create_schema(self) -> None:
+        """Create the queue task table and indexes.
+
+        Raises:
+            missing_advanced_alchemy_error: If optional dependencies are missing.
+        """
+        try:
+            from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+        except ModuleNotFoundError as exc:
+            raise missing_advanced_alchemy_error(exc) from exc
+
+        self._prepare_model()
+        if self._sqlalchemy_config is not None:
+            engine = self._sqlalchemy_config.get_engine()
+            async with engine.begin() as connection:
+                await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
+            return
+
+        async with self._session() as session, session.begin():
+            connection = await session.connection()
+            await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
+
+    async def run_migrations(self) -> None:
+        """Apply packaged Advanced Alchemy migrations through Advanced Alchemy's Alembic commands.
+
+        Raises:
+            QueueConfigurationError: If no Advanced Alchemy config is available.
+            missing_advanced_alchemy_error: If optional dependencies are missing.
+        """
+        if self._sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend.run_migrations() requires sqlalchemy_config."
+            raise QueueConfigurationError(msg)
+        try:
+            from advanced_alchemy.extensions.litestar import AlembicCommands
+        except ModuleNotFoundError as exc:
+            raise missing_advanced_alchemy_error(exc) from exc
+
+        original_alembic_config = self._sqlalchemy_config.alembic_config
+        self._sqlalchemy_config.alembic_config = build_alembic_config()
+        try:
+            AlembicCommands(self._sqlalchemy_config).upgrade("head")
+        finally:
+            self._sqlalchemy_config.alembic_config = original_alembic_config
+
+    async def enqueue(
+        self,
+        task_name: str,
+        *,
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+        queue: str = "default",
+        priority: int = 0,
+        max_retries: int = 0,
+        scheduled_at: datetime | None = None,
+        key: str | None = None,
+        execution_backend: str = "local",
+        execution_profile: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> QueuedTaskRecord:
+        async with self._operation() as service:
+            record = await service.enqueue(
+                task_name,
+                args=args,
+                kwargs=dict(kwargs or {}),
+                queue=queue,
+                priority=priority,
+                max_retries=max_retries,
+                scheduled_at=scheduled_at,
+                key=key,
+                execution_backend=execution_backend,
+                execution_profile=execution_profile,
+                metadata=dict(metadata or {}),
+            )
+        await self.notify_new_task(record)
+        return record
+
+    async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
+        async with self._service() as service:
+            return await service.get_task(task_id)
+
+    async def get_task_by_key(self, key: str) -> QueuedTaskRecord | None:
+        async with self._service() as service:
+            return await service.get_task_by_key(key)
+
+    async def list_pending(
+        self,
+        *,
+        limit: int = 1,
+        queue: str | None = None,
+        execution_backend: str | None = None,
+    ) -> list[QueuedTaskRecord]:
+        async with self._service() as service:
+            return await service.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+
+    async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            return await service.claim_task(task_id)
+
+    async def claim_next(
+        self,
+        *,
+        queue: str | None = None,
+        execution_backend: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            return await service.claim_next(queue=queue, execution_backend=execution_backend)
+
+    async def complete_task(self, task_id: UUID, *, result: Any = None) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            return await service.complete_task(task_id, result=result)
+
+    async def fail_task(
+        self,
+        task_id: UUID,
+        error: str,
+        *,
+        retry: bool = True,
+    ) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            return await service.fail_task(task_id, error, retry=retry)
+
+    async def cancel_task(self, task_id: UUID) -> bool:
+        async with self._operation() as service:
+            return await service.cancel_task(task_id)
+
+    async def touch_heartbeat(self, task_id: UUID) -> None:
+        async with self._operation() as service:
+            await service.touch_heartbeat(task_id)
+
+    async def null_heartbeats(self, task_ids: list[UUID]) -> None:
+        async with self._operation() as service:
+            await service.null_heartbeats(task_ids)
+
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+        async with self._operation() as service:
+            return await service.requeue_stale_running(stale_after=stale_after)
+
+    async def set_execution_ref(
+        self,
+        task_id: UUID,
+        execution_backend: str,
+        execution_ref: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            return await service.set_execution_ref(
+                task_id,
+                execution_backend,
+                execution_ref,
+                execution_profile=execution_profile,
+            )
+
+    async def set_execution_backend(
+        self,
+        task_id: UUID,
+        execution_backend: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            record = await service.set_execution_backend(
+                task_id,
+                execution_backend,
+                execution_profile=execution_profile,
+            )
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
+        async with self._service() as service:
+            return await service.list_running_external(limit=limit)
+
+    async def get_statistics(self) -> QueueStatistics:
+        async with self._service() as service:
+            return await service.get_statistics()
+
+    async def list_completed_by_task(
+        self,
+        task_name: str,
+        *,
+        since: datetime | None = None,
+        limit: int = 10,
+    ) -> list[QueuedTaskRecord]:
+        async with self._service() as service:
+            return await service.list_completed_by_task(task_name, since=since, limit=limit)
+
+    async def cleanup_terminal(self, before: datetime) -> int:
+        async with self._operation() as service:
+            return await service.cleanup_terminal(before)
+
+    def _ensure_configured(self) -> None:
+        if self._sqlalchemy_config is None and self._session_maker is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config or session_maker."
+            raise QueueConfigurationError(msg)
+
+    def _ensure_opened(self) -> None:
+        if not self._opened:
+            msg = "AdvancedAlchemyQueueBackend.open() must be called before using the backend."
+            raise RuntimeError(msg)
+
+    def _prepare_model(self) -> None:
+        if self._table_name == DEFAULT_TABLE_NAME:
+            return
+        try:
+            from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+        except ModuleNotFoundError as exc:
+            raise missing_advanced_alchemy_error(exc) from exc
+        cast("Any", QueueTaskModel.__table__).name = self._table_name
+
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[Any]:
+        self._ensure_configured()
+        if self._session_maker is not None:
+            async with self._session_maker() as session:
+                yield session
+            return
+        sqlalchemy_config = self._sqlalchemy_config
+        if sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config or session_maker."
+            raise QueueConfigurationError(msg)
+        async with sqlalchemy_config.get_session() as session:
+            yield session
+
+    @asynccontextmanager
+    async def _service(self) -> AsyncIterator["QueueTaskService"]:
+        self._ensure_opened()
+        async with self._session() as session:
+            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+
+            yield QueueTaskService(session=session)
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncIterator["QueueTaskService"]:
+        self._ensure_opened()
+        async with self._session() as session, session.begin():
+            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+
+            yield QueueTaskService(session=session)
