@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import importlib
 import subprocess
@@ -84,6 +82,15 @@ class FakeRedisLikeClient:
     async def get(self, name: str) -> str | None:
         return self.strings.get(name)
 
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> int:
+        keys = keys_and_args[:numkeys]
+        args = keys_and_args[numkeys:]
+        if "redis.call('GET', KEYS[1]) == ARGV[1]" not in script:
+            raise NotImplementedError(script)
+        if self.strings.get(keys[0]) != args[0]:
+            return 0
+        return await self.delete(keys[0])
+
     async def delete(self, *names: str) -> int:
         deleted = 0
         for name in names:
@@ -141,7 +148,7 @@ class FakeRedisLikeClient:
                 removed += 1
         return removed
 
-    async def smembers(self, name: str) -> set[str]:
+    async def smembers(self, name: str) -> "set[str]":
         return set(self.sets.get(name, set()))
 
     async def zadd(self, name: str, mapping: dict[str, float]) -> int:
@@ -194,7 +201,7 @@ class FakeRedisLikeClient:
 
 
 @pytest.fixture(params=("redis", "valkey"))
-async def backend(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+async def backend(request: pytest.FixtureRequest) -> "AsyncIterator[Any]":
     backend_name = str(request.param)
     module = importlib.import_module(f"litestar_queues.backends.{backend_name}")
     class_name = "RedisQueueBackend" if backend_name == "redis" else "ValkeyQueueBackend"
@@ -293,6 +300,16 @@ async def test_redis_valkey_backend_claims_due_tasks_once_by_priority_and_filter
     assert claimed[0].status == "running"
     assert claimed[0].started_at is not None
     assert (await backend.get_task(low.id)).status == "pending"
+
+
+async def test_redis_valkey_backend_releases_locks_by_token_atomically(backend: Any) -> None:
+    client = await backend._get_client()
+    lock_key = backend._lock_key("task:test")
+
+    await client.set(lock_key, "new-owner")
+    await backend._release_lock(client, lock_key, "old-owner")
+
+    assert await client.get(lock_key) == "new-owner"
 
 
 async def test_redis_valkey_backend_retries_cancels_heartbeats_and_cleans_up(backend: Any) -> None:

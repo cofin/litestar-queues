@@ -1,7 +1,5 @@
 """Shared Redis-protocol queue backend implementation."""
 
-from __future__ import annotations
-
 import asyncio
 import inspect
 import json
@@ -24,6 +22,12 @@ __all__ = ("RedisLikeQueueBackend",)
 _DUE_STATUSES = {"pending", "scheduled"}
 _STATUS_VALUES = {"cancelled", "completed", "failed", "pending", "running", "scheduled"}
 _TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
+_RELEASE_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
 
 
 def _utc_now() -> datetime:
@@ -108,7 +112,7 @@ class RedisLikeQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     def __init__(
         self,
-        config: QueueConfig | None = None,
+        config: "QueueConfig | None" = None,
         *,
         backend_name: str,
         client: Any | None = None,
@@ -501,14 +505,12 @@ class RedisLikeQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         """Publish a Redis-protocol pub/sub message when work is available."""
         if not self._notifications or record.status not in _DUE_STATUSES:
             return
-        payload = _json_dumps(
-            {
-                "task_id": str(record.id),
-                "task_name": record.task_name,
-                "queue": record.queue,
-                "execution_backend": record.execution_backend,
-            }
-        )
+        payload = _json_dumps({
+            "task_id": str(record.id),
+            "task_name": record.task_name,
+            "queue": record.queue,
+            "execution_backend": record.execution_backend,
+        })
         client = await self._get_client()
         await client.publish(self._notification_channel, payload)
 
@@ -549,7 +551,7 @@ class RedisLikeQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         return self._client
 
     @asynccontextmanager
-    async def _lock(self, lock_name: str, *, wait: bool) -> AsyncIterator[bool]:
+    async def _lock(self, lock_name: str, *, wait: bool) -> "AsyncIterator[bool]":
         client = await self._get_client()
         lock_key = self._lock_key(lock_name)
         token = uuid4().hex
@@ -566,8 +568,18 @@ class RedisLikeQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         try:
             yield acquired
         finally:
-            if acquired and _decode(await client.get(lock_key)) == token:
-                await client.delete(lock_key)
+            if acquired:
+                await self._release_lock(client, lock_key, token)
+
+    async def _release_lock(self, client: Any, lock_key: str, token: str) -> None:
+        eval_method = getattr(client, "eval", None)
+        if eval_method is not None:
+            result = eval_method(_RELEASE_LOCK_SCRIPT, 1, lock_key, token)
+            if inspect.isawaitable(result):
+                await result
+            return
+        if _decode(await client.get(lock_key)) == token:
+            await client.delete(lock_key)
 
     def _create_record(
         self,
