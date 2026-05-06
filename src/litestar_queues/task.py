@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from types import ModuleType
     from uuid import UUID
 
+    from litestar_queues.events import TaskExecutionContext
     from litestar_queues.models import QueuedTaskRecord, TaskStatus
     from litestar_queues.service import QueueService
 
@@ -456,7 +457,12 @@ class Task(Generic[P, T]):
             return await result
         return result
 
-    async def execute_record(self, record: "QueuedTaskRecord") -> T:
+    async def execute_record(
+        self,
+        record: "QueuedTaskRecord",
+        *,
+        task_context: "TaskExecutionContext | None" = None,
+    ) -> T:
         """Execute this task for a queued record in worker context.
 
         Returns:
@@ -465,6 +471,8 @@ class Task(Generic[P, T]):
         kwargs = dict(record.kwargs)
         if self._accepts_job_id():
             kwargs["_job_id"] = record.id
+        if task_context is not None and self._accepts_task_context():
+            kwargs["_task_context"] = task_context
         if inspect.iscoroutinefunction(self._func):
             result = self._func(*record.args, **kwargs)
         else:
@@ -488,6 +496,13 @@ class Task(Generic[P, T]):
         signature = inspect.signature(self._func)
         parameters = signature.parameters
         return "_job_id" in parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+        )
+
+    def _accepts_task_context(self) -> bool:
+        signature = inspect.signature(self._func)
+        parameters = signature.parameters
+        return "_task_context" in parameters or any(
             param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         )
 

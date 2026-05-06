@@ -160,7 +160,9 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
         """Return statements that create oracledb sync queue artifacts."""
         return [
             _create_table_block(self, self._json_storage, self._in_memory),
-            _create_index_block(self, "pending", "status, queue, execution_backend, scheduled_at, priority, created_at"),
+            _create_index_block(
+                self, "pending", "status, queue, execution_backend, scheduled_at, priority, created_at"
+            ),
             _create_index_block(self, "heartbeat", "status, heartbeat_at"),
         ]
 
@@ -225,7 +227,9 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
         """Return statements that create oracledb async queue artifacts."""
         return [
             _create_table_block(self, self._json_storage, self._in_memory),
-            _create_index_block(self, "pending", "status, queue, execution_backend, scheduled_at, priority, created_at"),
+            _create_index_block(
+                self, "pending", "status, queue, execution_backend, scheduled_at, priority, created_at"
+            ),
             _create_index_block(self, "heartbeat", "status, heartbeat_at"),
         ]
 

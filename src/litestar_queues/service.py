@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
+from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.exceptions import NonRetryableError
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled_tasks, get_task_registry
 
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.config import QueueConfig
+    from litestar_queues.events import QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.models import QueuedTaskRecord
 
@@ -21,7 +23,7 @@ __all__ = ("QueueService",)
 class QueueService:
     """High-level facade for queue and execution backends."""
 
-    __slots__ = ("_config", "_execution_backend", "_queue_backend")
+    __slots__ = ("_config", "_event_publisher", "_execution_backend", "_queue_backend")
 
     def __init__(
         self,
@@ -29,11 +31,13 @@ class QueueService:
         *,
         queue_backend: "BaseQueueBackend | None" = None,
         execution_backend: "BaseExecutionBackend | None" = None,
+        event_publisher: "QueueEventPublisher | None" = None,
     ) -> None:
         """Initialize the queue service."""
         self._config = config
         self._queue_backend = queue_backend
         self._execution_backend = execution_backend
+        self._event_publisher = event_publisher
 
     @property
     def config(self) -> "QueueConfig":
@@ -51,6 +55,12 @@ class QueueService:
         if self._execution_backend is None:
             self._execution_backend = self._config.get_execution_backend()
         return self._execution_backend
+
+    def get_event_publisher(self) -> "QueueEventPublisher":
+        """Return the configured event publisher."""
+        if self._event_publisher is None:
+            self._event_publisher = self._config.get_event_publisher()
+        return self._event_publisher
 
     async def enqueue(
         self,
@@ -155,24 +165,63 @@ class QueueService:
 
         Returns:
             The updated queue record.
+
+        Raises:
+            asyncio.CancelledError: If task execution is cancelled.
         """
         task_obj = self.resolve_task(record.task_name)
         timeout = record.metadata.get("timeout", task_obj.timeout)
+        task_context = TaskExecutionContext(
+            task_id=str(record.id),
+            task_name=record.task_name,
+            queue=record.queue,
+            worker_id=None,
+            execution_backend=record.execution_backend,
+            execution_profile=record.execution_profile,
+            attempt=record.retry_count + 1,
+            event_publisher=self.get_event_publisher(),
+        )
+        context_token = _bind_task_context(task_context)
         try:
-            coroutine = task_obj.execute_record(record)
+            await task_context.lifecycle("task.started")
+            coroutine = task_obj.execute_record(record, task_context=task_context)
             result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
+        except asyncio.CancelledError:
+            await task_context.lifecycle("task.cancelled")
+            raise
         except NonRetryableError as exc:
             updated = await self.get_queue_backend().fail_task(record.id, str(exc), retry=False)
+            failed = updated or record
+            await task_context.lifecycle(
+                "task.failed",
+                message=str(exc),
+                payload={"status": failed.status, "retry_count": failed.retry_count, "will_retry": False},
+            )
             return updated or record
         except Exception as exc:  # noqa: BLE001
             updated = await self.get_queue_backend().fail_task(record.id, str(exc))
             failed = updated or record
+            await task_context.lifecycle(
+                "task.failed",
+                message=str(exc),
+                payload={
+                    "status": failed.status,
+                    "retry_count": failed.retry_count,
+                    "will_retry": failed.status == "pending",
+                },
+            )
             if failed.status == "failed":
                 await self._reschedule_if_needed(failed)
             return failed
+        finally:
+            _reset_task_context(context_token)
 
         updated = await self.get_queue_backend().complete_task(record.id, result=result)
         completed = updated or record
+        await task_context.lifecycle(
+            "task.completed",
+            payload={"status": completed.status, "retry_count": completed.retry_count},
+        )
         await self._reschedule_if_needed(completed)
         return completed
 
