@@ -16,10 +16,14 @@ def test_public_exports() -> None:
         QueueError,
         QueuePlugin,
         QueueService,
+        RedisBackendConfig,
+        RedisQueueBackend,
         ScheduleConfig,
         SQLSpecQueueBackend,
         Task,
         TaskResult,
+        ValkeyBackendConfig,
+        ValkeyQueueBackend,
         Worker,
         get_execution_backend_class,
         get_queue_backend_class,
@@ -47,10 +51,14 @@ def test_public_exports() -> None:
         "QueueError",
         "QueuePlugin",
         "QueueService",
+        "RedisBackendConfig",
+        "RedisQueueBackend",
         "ScheduleConfig",
         "SQLSpecQueueBackend",
         "Task",
         "TaskResult",
+        "ValkeyBackendConfig",
+        "ValkeyQueueBackend",
         "Worker",
         "get_execution_backend_class",
         "get_queue_backend_class",
@@ -66,14 +74,17 @@ def test_public_exports() -> None:
     assert QueueBackendConfig is str
     assert get_queue_backend_class("advanced-alchemy") is AdvancedAlchemyQueueBackend
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
+    assert get_queue_backend_class("redis") is RedisQueueBackend
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
-    assert list_queue_backends() == ["advanced-alchemy", "memory", "sqlspec"]
+    assert get_queue_backend_class("valkey") is ValkeyQueueBackend
+    assert list_queue_backends() == ["advanced-alchemy", "memory", "redis", "sqlspec", "valkey"]
     assert get_execution_backend_class("cloudrun") is CloudRunExecutionBackend
     assert get_execution_backend_class("immediate") is ImmediateExecutionBackend
     assert get_execution_backend_class("local") is LocalExecutionBackend
     assert list_execution_backends() == ["cloudrun", "immediate", "local"]
     assert QueuePlugin().config.queue_backend == "memory"
     assert QueueService(QueueConfig()).config.queue_backend == "memory"
+    assert RedisBackendConfig(url="redis://example").url == "redis://example"
     assert issubclass(QueueError, Exception)
     assert AsyncServiceProvider(QueueConfig()) is not None
     assert ScheduleConfig(task_name="example", interval=1).task_name == "example"
@@ -81,6 +92,7 @@ def test_public_exports() -> None:
     assert CloudRunExecutionBackend is not None
     assert CloudRunExecutionConfig(project_id="example", job_name="worker").resolve_job_name() == "worker"
     assert CloudRunExecutionStatus().running is True
+    assert ValkeyBackendConfig(url="valkey://example").url == "valkey://example"
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None

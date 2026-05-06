@@ -180,6 +180,71 @@ The queue plugin does not append ``SQLAlchemyPlugin`` or consume request-scoped
 reference the packaged migration location from
 ``litestar_queues.backends.advanced_alchemy.config.migration_script_location``.
 
+Redis
+-----
+
+Install the Redis extra when a queue should persist task state in Redis:
+
+.. code-block:: bash
+
+   pip install litestar-queues[redis]
+
+Configure the queue backend with a Redis URL or pass an already configured
+async Redis client:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig
+
+   config = QueueConfig(
+       queue_backend="redis",
+       queue_backend_config={
+           "url": "redis://localhost:6379/0",
+           "key_prefix": "litestar_queues",
+           "notifications": True,
+       },
+       execution_backend="local",
+   )
+
+Redis queue records are stored in hashes under the configured key prefix. The
+backend keeps an ID set for operational queries, a key hash for deduplication,
+a sorted set for delayed scheduling, and short-lived ``SET NX`` locks around
+claim and key-replacement mutations. Task arguments, keyword arguments,
+metadata, and results must be JSON serializable.
+
+Redis pub/sub is used only as a worker wakeup mechanism. Notifications are not
+durable; workers that miss a message fall back to polling.
+
+Valkey
+------
+
+Install the Valkey extra when a queue should use Valkey's asyncio client:
+
+.. code-block:: bash
+
+   pip install litestar-queues[valkey]
+
+Configure Valkey with the same queue backend settings:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig
+
+   config = QueueConfig(
+       queue_backend="valkey",
+       queue_backend_config={
+           "url": "redis://localhost:6379/0",
+           "key_prefix": "litestar_queues",
+           "notifications": True,
+       },
+       execution_backend="local",
+   )
+
+Valkey follows the same queue lifecycle contract as Redis: active key
+deduplication, terminal key replacement, delayed scheduling, atomic claim via
+backend locks, retries, heartbeats, stale running recovery, result lookup,
+stats, cleanup, and optional pub/sub worker wakeups.
+
 Cloud Run
 ---------
 

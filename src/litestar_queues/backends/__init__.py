@@ -9,13 +9,19 @@ from litestar_queues.backends.factory import (
     queue_backend,
 )
 from litestar_queues.backends.memory import InMemoryQueueBackend
+from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
 
 __all__ = (
     "AdvancedAlchemyQueueBackend",
     "BaseQueueBackend",
     "InMemoryQueueBackend",
+    "RedisBackendConfig",
+    "RedisQueueBackend",
     "SQLSpecQueueBackend",
+    "ValkeyBackendConfig",
+    "ValkeyQueueBackend",
     "get_queue_backend",
     "get_queue_backend_class",
     "list_queue_backends",

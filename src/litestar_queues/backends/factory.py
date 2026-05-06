@@ -40,11 +40,15 @@ def _register_builtins() -> None:
     """Register built-in queue backends lazily."""
     from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
     from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.backends.redis import RedisQueueBackend
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+    from litestar_queues.backends.valkey import ValkeyQueueBackend
 
     _queue_backend_registry.setdefault("advanced-alchemy", AdvancedAlchemyQueueBackend)
     _queue_backend_registry.setdefault("memory", InMemoryQueueBackend)
+    _queue_backend_registry.setdefault("redis", RedisQueueBackend)
     _queue_backend_registry.setdefault("sqlspec", SQLSpecQueueBackend)
+    _queue_backend_registry.setdefault("valkey", ValkeyQueueBackend)
 
 
 def get_queue_backend_class(backend_path: str) -> type[BaseQueueBackend]:

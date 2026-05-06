@@ -107,6 +107,16 @@ Queue backends are available via ``litestar_queues.backends``.
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: litestar_queues.backends.redis.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.redis.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: litestar_queues.backends.sqlspec.backend
    :members:
    :undoc-members:
@@ -118,6 +128,16 @@ Queue backends are available via ``litestar_queues.backends``.
    :show-inheritance:
 
 .. automodule:: litestar_queues.backends.sqlspec.schema
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.valkey.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.valkey.config
    :members:
    :undoc-members:
    :show-inheritance:

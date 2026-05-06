@@ -132,7 +132,9 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
         ),
         jobs_client=FakeJobsClient(error=RuntimeError("api unavailable")),
     )
-    service = QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend)
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
     await service.open()
     try:
         record = await queue_backend.enqueue(remote_task.name, execution_backend="cloudrun")
@@ -152,7 +154,13 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     ("execution", "expected_status", "expected_error"),
     [
         (FakeCloudRunExecution(succeeded_count=1), "completed", None),
-        (FakeCloudRunExecution(failed_count=1, conditions=[type("Condition", (), {"message": "container failed"})()]), "failed", "container failed"),
+        (
+            FakeCloudRunExecution(
+                failed_count=1, conditions=[type("Condition", (), {"message": "container failed"})()]
+            ),
+            "failed",
+            "container failed",
+        ),
         (FakeCloudRunExecution(cancelled_count=1), "failed", "Cloud Run execution cancelled"),
     ],
 )
@@ -168,7 +176,9 @@ async def test_cloudrun_reconcile_updates_terminal_statuses(
         cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
         executions_client=FakeExecutionsClient(execution),
     )
-    service = QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend)
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
     await service.open()
     try:
         record = await queue_backend.enqueue("tasks.remote", execution_backend="cloudrun")
@@ -193,7 +203,9 @@ async def test_cloudrun_reconcile_treats_transient_status_errors_as_running() ->
         cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
         executions_client=FakeExecutionsClient(RuntimeError("temporary api failure")),
     )
-    service = QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend)
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
     await service.open()
     try:
         record = await queue_backend.enqueue("tasks.remote", execution_backend="cloudrun")

@@ -24,7 +24,14 @@ class CloudRunExecutionConfig:
     fallback_execution_backend: str | None = "local"
 
     def resolve_job_name(self, profile: str | None = None) -> str:
-        """Return the Cloud Run Job name for a profile."""
+        """Return the Cloud Run Job name for a profile.
+
+        Returns:
+            The resolved Cloud Run Job name.
+
+        Raises:
+            QueueConfigurationError: If no job name can be resolved.
+        """
         if profile is not None and profile in self.profiles:
             return self.profiles[profile]
         if self.job_name is not None:
@@ -41,7 +48,14 @@ class CloudRunExecutionConfig:
 
 
 def cloudrun_config_from_queue_config(config: "QueueConfig | None") -> CloudRunExecutionConfig:
-    """Resolve Cloud Run execution config from a QueueConfig."""
+    """Resolve Cloud Run execution config from a QueueConfig.
+
+    Returns:
+        The resolved Cloud Run execution config.
+
+    Raises:
+        QueueConfigurationError: If no Cloud Run execution config is available.
+    """
     raw_config: Any = None
     if config is not None:
         raw_config = config.execution_backend_config

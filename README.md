@@ -23,6 +23,9 @@ pip install litestar-queues[advanced-alchemy]
 # Redis queue backend
 pip install litestar-queues[redis]
 
+# Valkey queue backend
+pip install litestar-queues[valkey]
+
 # Cloud Run execution backend
 pip install litestar-queues[cloudrun]
 ```
@@ -105,8 +108,10 @@ async with config.provide_service() as queue_service:
 | `valkey` | queue | Optional Valkey persistence |
 | `cloudrun` | execution | Optional Cloud Run dispatch |
 
-The core package registers `memory`, `immediate`, and `local`. The `sqlspec`
-queue backend is available when the SQLSpec extra is installed:
+The package registers optional backend names without importing their client
+libraries. Opening an optional backend requires the matching extra or an
+injected client. The `sqlspec` queue backend is available when the SQLSpec
+extra is installed:
 
 ```python
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -156,6 +161,46 @@ Litestar applications should register Advanced Alchemy's `SQLAlchemyPlugin`
 directly and pass the same `SQLAlchemyAsyncConfig` into the queue backend. The
 queue backend uses operation-scoped sessions from that config and does not
 append database plugins itself.
+
+The `redis` queue backend is available when the Redis extra is installed:
+
+```python
+from litestar_queues import QueueConfig
+
+config = QueueConfig(
+    queue_backend="redis",
+    queue_backend_config={
+        "url": "redis://localhost:6379/0",
+        "key_prefix": "litestar_queues",
+        "notifications": True,
+    },
+    execution_backend="local",
+)
+```
+
+The `valkey` queue backend uses the same queue contract with Valkey's asyncio
+client:
+
+```python
+from litestar_queues import QueueConfig
+
+config = QueueConfig(
+    queue_backend="valkey",
+    queue_backend_config={
+        "url": "redis://localhost:6379/0",
+        "key_prefix": "litestar_queues",
+        "notifications": True,
+    },
+    execution_backend="local",
+)
+```
+
+Redis and Valkey store queue records in hashes indexed by a package key prefix,
+use a sorted set for delayed scheduling, use short-lived `SET NX` locks around
+claim and key-replacement mutations, and use pub/sub only for worker wakeups.
+Pub/sub notifications are not durable; a worker that misses a notification
+falls back to polling. Task arguments, keyword arguments, metadata, and results
+must be JSON serializable for these backends.
 
 The `cloudrun` execution backend is available when the Cloud Run extra is
 installed:

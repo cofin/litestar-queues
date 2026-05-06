@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 
 __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
+_GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
+_CLOUDRUN_EXTRA = "cloudrun"
+
 
 @dataclass(frozen=True, slots=True)
 class CloudRunExecutionStatus:
@@ -60,12 +63,20 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return self._cloudrun_config
 
     async def execute(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
-        """Dispatch a record and return its persisted state."""
+        """Dispatch a record and return its persisted state.
+
+        Returns:
+            The persisted queue record after dispatch.
+        """
         await self.dispatch(service, record)
         return await service.get_queue_backend().get_task(record.id) or record
 
     async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> str | None:
-        """Dispatch a queue record to Cloud Run Jobs."""
+        """Dispatch a queue record to Cloud Run Jobs.
+
+        Returns:
+            The Cloud Run execution reference, if dispatch succeeds.
+        """
         request = self.build_run_job_request(service, record)
         client = await self._get_jobs_client()
         try:
@@ -88,7 +99,11 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return execution_ref
 
     async def reconcile(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord | None":
-        """Reconcile a Cloud Run execution with the queue record."""
+        """Reconcile a Cloud Run execution with the queue record.
+
+        Returns:
+            The terminal queue record when reconciliation completed it.
+        """
         if record.execution_ref is None:
             return None
 
@@ -114,7 +129,11 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return None
 
     async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> bool:
-        """Cloud Run Jobs do not expose per-execution cancellation here."""
+        """Cloud Run Jobs do not expose per-execution cancellation here.
+
+        Returns:
+            Always false because per-execution cancellation is not implemented.
+        """
         return False
 
     async def check_execution_status(self, execution_ref: str) -> CloudRunExecutionStatus:
@@ -140,7 +159,11 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         )
 
     def build_run_job_request(self, service: "QueueService", record: "QueuedTaskRecord") -> dict[str, Any]:
-        """Build the Cloud Run Jobs API request for a queue record."""
+        """Build the Cloud Run Jobs API request for a queue record.
+
+        Returns:
+            Cloud Run Jobs API request data.
+        """
         config = self.cloudrun_config
         task_obj = service.resolve_task(record.task_name)
         timeout = record.metadata.get("timeout", task_obj.timeout)
@@ -156,7 +179,11 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         }
 
     def build_environment(self, record: "QueuedTaskRecord") -> dict[str, str]:
-        """Build generic environment variables for a Cloud Run task process."""
+        """Build generic environment variables for a Cloud Run task process.
+
+        Returns:
+            Environment variables for the Cloud Run task process.
+        """
         config = self.cloudrun_config
         env = {
             config.env_name("TASK_ID"): str(record.id),
@@ -175,7 +202,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             try:
                 from google.cloud import run_v2  # pyright: ignore[reportMissingImports]
             except ImportError as exc:
-                raise MissingDependencyError("google-cloud-run", "cloudrun") from exc
+                raise MissingDependencyError(_GOOGLE_CLOUD_RUN_PACKAGE, _CLOUDRUN_EXTRA) from exc
             self.jobs_client = cast("CloudRunJobsClient", run_v2.JobsAsyncClient())
         return self.jobs_client
 
@@ -184,7 +211,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             try:
                 from google.cloud import run_v2  # pyright: ignore[reportMissingImports]
             except ImportError as exc:
-                raise MissingDependencyError("google-cloud-run", "cloudrun") from exc
+                raise MissingDependencyError(_GOOGLE_CLOUD_RUN_PACKAGE, _CLOUDRUN_EXTRA) from exc
             self.executions_client = cast("CloudRunExecutionsClient", run_v2.ExecutionsAsyncClient())
         return self.executions_client
 

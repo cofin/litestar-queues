@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import os
-import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 from enum import IntEnum
 from importlib import import_module
@@ -35,7 +34,11 @@ async def execute_cloudrun_task(
     service_factory: Callable[[], Any] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CloudRunExitCode:
-    """Execute one persisted queue record in a Cloud Run task process."""
+    """Execute one persisted queue record in a Cloud Run task process.
+
+    Returns:
+        A deterministic process exit code.
+    """
     environ = env or os.environ
     task_id_raw = environ.get(_env_name(config, "TASK_ID"))
     if not task_id_raw:
@@ -54,7 +57,9 @@ async def execute_cloudrun_task(
         try:
             queue.resolve_task(record.task_name)
         except KeyError:
-            await queue.get_queue_backend().fail_task(record.id, f"Unknown queue task: {record.task_name!r}", retry=False)
+            await queue.get_queue_backend().fail_task(
+                record.id, f"Unknown queue task: {record.task_name!r}", retry=False
+            )
             return CloudRunExitCode.UNKNOWN_TASK
 
         claimed = await queue.get_queue_backend().claim_task(record.id)
@@ -80,7 +85,11 @@ async def execute_cloudrun_task(
 
 
 def main() -> None:
-    """Console entry point for Cloud Run task execution."""
+    """Console entry point for Cloud Run task execution.
+
+    Raises:
+        SystemExit: Always raised with the execution exit code.
+    """
     raise SystemExit(int(asyncio.run(execute_cloudrun_task())))
 
 
