@@ -1,6 +1,6 @@
 """Optional Valkey dependency helpers."""
 
-from typing import Any
+from typing import Any, cast
 
 from litestar_queues.exceptions import MissingDependencyError
 
@@ -23,4 +23,5 @@ def create_valkey_client(url: str) -> Any:
     except ModuleNotFoundError as exc:
         error = missing_valkey_error(exc)
         raise error from exc
-    return valkey_asyncio.from_url(url, decode_responses=True)
+    from_url = cast("Any", valkey_asyncio.from_url)
+    return from_url(url, decode_responses=True)

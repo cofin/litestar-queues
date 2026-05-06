@@ -1,4 +1,5 @@
 import asyncio
+import builtins
 import importlib
 import subprocess
 import sys
@@ -148,7 +149,7 @@ class FakeRedisLikeClient:
                 removed += 1
         return removed
 
-    async def smembers(self, name: str) -> "set[str]":
+    async def smembers(self, name: str) -> builtins.set[str]:
         return set(self.sets.get(name, set()))
 
     async def zadd(self, name: str, mapping: dict[str, float]) -> int:
