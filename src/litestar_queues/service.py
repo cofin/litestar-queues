@@ -232,18 +232,27 @@ class QueueService:
             The created or reused schedule records.
         """
         records: list["QueuedTaskRecord"] = []
+        queue_backend = self.get_queue_backend()
         for task_name, schedule in get_scheduled_tasks().items():
             task_obj = self.resolve_task(task_name)
+            schedule_metadata = schedule.as_metadata()
+            schedule_key = f"scheduled:{task_name}"
+            existing = await queue_backend.get_task_by_key(schedule_key)
+            if existing is not None and not existing.is_terminal:
+                if existing.metadata.get("schedule") == schedule_metadata:
+                    records.append(existing)
+                    continue
+                await queue_backend.cancel_task(existing.id)
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
             records.append(
-                await self.get_queue_backend().enqueue(
+                await queue_backend.enqueue(
                     task_name,
-                    key=f"scheduled:{task_name}",
+                    key=schedule_key,
                     max_retries=0,
                     scheduled_at=scheduled_at,
                     execution_backend=task_obj.execution_backend or self._config.execution_backend,
                     execution_profile=task_obj.execution_profile,
-                    metadata={"schedule": schedule.as_metadata()},
+                    metadata=task_obj.metadata({"schedule": schedule_metadata}),
                 )
             )
         return records
@@ -270,7 +279,7 @@ class QueueService:
             scheduled_at=schedule.get_next_run(record.completed_at),
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
-            metadata={"schedule": schedule.as_metadata()},
+            metadata={**record.metadata, "schedule": schedule.as_metadata()},
         )
 
     async def open(self) -> Self:

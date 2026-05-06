@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import pkgutil
+import random
 import sys
 import zoneinfo
 from collections.abc import Awaitable, Callable
@@ -152,13 +153,13 @@ class ScheduleConfig:
         interval = cast("timedelta | None", self.interval)
 
         if use_initial_delay and initial_delay:
-            return base + initial_delay
+            return self._apply_jitter(base + initial_delay)
         if interval is not None:
-            return base + interval
+            return self._apply_jitter(base + interval)
         if self.cron is None:
             msg = "Schedule must have either cron or interval"
             raise ValueError(msg)
-        return self._get_next_cron_run(base)
+        return self._apply_jitter(self._get_next_cron_run(base))
 
     def as_metadata(self) -> dict[str, Any]:
         """Return a JSON-compatible metadata representation."""
@@ -243,6 +244,13 @@ class ScheduleConfig:
 
         msg = f"No matching run found for cron expression: {self.cron}"
         raise ValueError(msg)
+
+    def _apply_jitter(self, value: datetime) -> datetime:
+        jitter = cast("timedelta", self.jitter)
+        jitter_seconds = jitter.total_seconds()
+        if jitter_seconds <= 0:
+            return value
+        return value + timedelta(seconds=random.uniform(0, jitter_seconds))  # noqa: S311
 
 
 class TaskResult:
