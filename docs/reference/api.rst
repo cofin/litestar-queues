@@ -1,186 +1,37 @@
-API Reference
+=============
+Reference Map
 =============
 
-The main public API is exported through the ``litestar_queues`` module.
+The API reference is split by subsystem so each page stays focused and matches
+the package layout.
 
-Configuration
--------------
+.. grid:: 1 1 2 2
+   :gutter: 2
+   :padding: 0
 
-.. automodule:: litestar_queues.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
+   .. grid-item-card:: Core API
+      :link: core
+      :link-type: doc
 
-Service
--------
+      Configuration, service, task, model, worker, plugin, and exception APIs.
 
-.. automodule:: litestar_queues.service
-   :members:
-   :undoc-members:
-   :show-inheritance:
+   .. grid-item-card:: Queue Backends
+      :link: backends
+      :link-type: doc
 
-Tasks
------
+      Queue backend registry, base protocol, memory, SQLSpec, Advanced Alchemy,
+      Redis, and Valkey modules.
 
-.. automodule:: litestar_queues.task
-   :members:
-   :undoc-members:
-   :show-inheritance:
+   .. grid-item-card:: Execution Backends
+      :link: execution
+      :link-type: doc
 
-Models
-------
+      Execution backend registry, immediate execution, local workers, and Cloud
+      Run execution modules.
 
-.. automodule:: litestar_queues.models
-   :members:
-   :undoc-members:
-   :show-inheritance:
+   .. grid-item-card:: Events
+      :link: events
+      :link-type: doc
 
-Worker
-------
-
-.. automodule:: litestar_queues.worker
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Plugin
-------
-
-.. automodule:: litestar_queues.plugin
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Exceptions
-----------
-
-.. automodule:: litestar_queues.exceptions
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Queue Backends
---------------
-
-Queue backends are available via ``litestar_queues.backends``.
-
-.. autofunction:: litestar_queues.backends.get_queue_backend
-
-.. autofunction:: litestar_queues.backends.get_queue_backend_class
-
-.. autofunction:: litestar_queues.backends.queue_backend
-
-.. autofunction:: litestar_queues.backends.list_queue_backends
-
-.. automodule:: litestar_queues.backends.base
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.memory.backend
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.advanced_alchemy.backend
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.advanced_alchemy.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.advanced_alchemy.models
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.advanced_alchemy.repository
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.advanced_alchemy.service
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.redis.backend
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.redis.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.sqlspec.backend
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.sqlspec.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.sqlspec.schema
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.valkey.backend
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.backends.valkey.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Execution Backends
-------------------
-
-Execution backends are available via ``litestar_queues.execution``.
-
-.. autofunction:: litestar_queues.execution.get_execution_backend
-
-.. autofunction:: litestar_queues.execution.get_execution_backend_class
-
-.. autofunction:: litestar_queues.execution.execution_backend
-
-.. autofunction:: litestar_queues.execution.list_execution_backends
-
-.. automodule:: litestar_queues.execution.base
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.execution.immediate
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.execution.local
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.execution.cloudrun.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.execution.cloudrun.backend
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: litestar_queues.execution.cloudrun.entrypoint
-   :members:
-   :undoc-members:
-   :show-inheritance:
+      Queue event models, publishers, context helpers, sinks, channels, and
+      Litestar Channels integration.

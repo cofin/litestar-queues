@@ -110,6 +110,73 @@ SQLSpec's serializer. Packaged migrations are registered with SQLSpec's
 extension runner as ``ext_litestar_queues_0001``. Applications with their own
 migration flow can set both ``create_schema=False`` and ``run_migrations=False``.
 
+SQLSpec Store Selection
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The SQLSpec queue backend selects stores by SQLSpec adapter configuration, not
+by directly importing database drivers. This keeps driver dependencies optional
+and lets each store use database-specific DDL, column types, JSON behavior, and
+claim/update statements where the database supports them.
+
+.. list-table::
+   :header-rows: 1
+
+   * - SQLSpec adapter
+     - Queue store
+     - Notes
+   * - ``adbc``
+     - ``AdbcQueueStore``
+     - Shared ADBC behavior.
+   * - ``aiomysql``
+     - ``AiomysqlQueueStore``
+     - Async MySQL behavior.
+   * - ``aiosqlite``
+     - ``AiosqliteQueueStore``
+     - Async SQLite behavior.
+   * - ``asyncmy``
+     - ``AsyncmyQueueStore``
+     - Async MySQL behavior.
+   * - ``asyncpg``
+     - ``AsyncpgQueueStore``
+     - PostgreSQL behavior.
+   * - ``bigquery``
+     - ``BigQueryQueueStore``
+     - BigQuery DDL and JSON behavior.
+   * - ``cockroach_asyncpg``
+     - ``CockroachAsyncpgQueueStore``
+     - CockroachDB through asyncpg.
+   * - ``cockroach_psycopg``
+     - ``CockroachPsycopgAsyncQueueStore`` or ``CockroachPsycopgSyncQueueStore``
+     - Async and sync variants are selected from the SQLSpec config type.
+   * - ``duckdb``
+     - ``DuckDBQueueStore``
+     - DuckDB-specific DDL and JSON behavior.
+   * - ``mysqlconnector``
+     - ``MysqlConnectorAsyncQueueStore`` or ``MysqlConnectorSyncQueueStore``
+     - Async and sync variants are selected from the SQLSpec config type.
+   * - ``oracledb``
+     - ``OracledbAsyncQueueStore`` or ``OracledbSyncQueueStore``
+     - Uses Oracle-specific DDL and JSON column choices.
+   * - ``psqlpy``
+     - ``PsqlpyQueueStore``
+     - PostgreSQL behavior.
+   * - ``psycopg``
+     - ``PsycopgAsyncQueueStore`` or ``PsycopgSyncQueueStore``
+     - Async and sync variants are selected from the SQLSpec config type.
+   * - ``pymysql``
+     - ``PymysqlQueueStore``
+     - Sync MySQL behavior.
+   * - ``spanner``
+     - ``SpannerQueueStore``
+     - Spanner-specific DDL and JSON behavior.
+   * - ``sqlite``
+     - ``SqliteQueueStore``
+     - Sync SQLite behavior.
+
+Unsupported adapters fall back to the shared SQLSpec store. Applications should
+install the SQLSpec adapter driver they configure; Litestar Queues does not
+install every SQLSpec driver as a package dependency.
+
 Advanced Alchemy
 ----------------
 
