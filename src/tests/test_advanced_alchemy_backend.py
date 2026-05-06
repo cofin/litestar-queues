@@ -6,6 +6,7 @@ from pathlib import Path
 from subprocess import run
 
 import pytest
+from anyio import Path as AsyncPath
 
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("aiosqlite")
@@ -88,7 +89,7 @@ async def test_advanced_alchemy_backend_exposes_config_and_migration_assets(tmp_
 
     assert backend_config.table_name == "litestar_queue_tasks"
     assert migration_location.name == "migrations"
-    assert migration_location.exists()
+    assert await AsyncPath(migration_location).exists()
     assert migration_versions.joinpath("0001_litestar_queue_tasks.py").is_file()
     assert alembic_config.script_location == str(migration_location)
 
@@ -103,7 +104,9 @@ async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_te
     assert duplicate.kwargs == {"account_id": "acct-1"}
 
     await advanced_alchemy_backend.complete_task(first.id, result={"ok": True})
-    replacement = await advanced_alchemy_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
+    replacement = await advanced_alchemy_backend.enqueue(
+        "tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1"
+    )
 
     assert replacement.id != first.id
     assert replacement.kwargs == {"account_id": "acct-2"}

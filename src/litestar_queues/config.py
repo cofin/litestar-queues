@@ -81,6 +81,7 @@ class QueueConfig:
     queue_backend: QueueBackendConfig = "memory"
     queue_backend_config: dict[str, Any] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig = "immediate"
+    execution_backend_config: dict[str, Any] = field(default_factory=dict)
     start_worker: bool = False
     queue_service_dependency_key: str = "queue_service"
     queue_service_state_key: str = "queue_service"
@@ -94,6 +95,7 @@ class QueueConfig:
     worker_poll_interval: float = 0.1
     worker_max_concurrency: int = 1
     worker_heartbeat_interval: float = 30
+    worker_reconcile_interval: float = 30
     worker_stale_after: float | None = None
     worker_graceful_shutdown_timeout: float = 30
     worker_final_cancel_timeout: float = 5
@@ -119,7 +121,14 @@ class QueueConfig:
             TaskExecutionContext,
         )
         from litestar_queues.exceptions import NonRetryableError, non_retryable
-        from litestar_queues.execution import BaseExecutionBackend, ImmediateExecutionBackend, LocalExecutionBackend
+        from litestar_queues.execution import (
+            BaseExecutionBackend,
+            CloudRunExecutionBackend,
+            CloudRunExecutionConfig,
+            CloudRunExecutionStatus,
+            ImmediateExecutionBackend,
+            LocalExecutionBackend,
+        )
         from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
         from litestar_queues.service import QueueService
         from litestar_queues.task import ScheduleConfig, Task, TaskResult
@@ -129,6 +138,9 @@ class QueueConfig:
             "BaseExecutionBackend": BaseExecutionBackend,
             "BaseQueueBackend": BaseQueueBackend,
             "AdvancedAlchemyQueueBackend": AdvancedAlchemyQueueBackend,
+            "CloudRunExecutionBackend": CloudRunExecutionBackend,
+            "CloudRunExecutionConfig": CloudRunExecutionConfig,
+            "CloudRunExecutionStatus": CloudRunExecutionStatus,
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,

@@ -41,6 +41,9 @@ from litestar_queues.exceptions import (
 )
 from litestar_queues.execution import (
     BaseExecutionBackend,
+    CloudRunExecutionBackend,
+    CloudRunExecutionConfig,
+    CloudRunExecutionStatus,
     ImmediateExecutionBackend,
     LocalExecutionBackend,
     execution_backend,
@@ -69,6 +72,9 @@ __all__ = (
     "AsyncServiceProvider",
     "BaseExecutionBackend",
     "BaseQueueBackend",
+    "CloudRunExecutionBackend",
+    "CloudRunExecutionConfig",
+    "CloudRunExecutionStatus",
     "ExecutionBackendConfig",
     "ImmediateExecutionBackend",
     "InMemoryQueueBackend",

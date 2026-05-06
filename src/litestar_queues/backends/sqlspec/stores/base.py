@@ -244,12 +244,31 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             .where_eq("id", task_id)
         )
 
+    def set_execution_backend(
+        self,
+        *,
+        task_id: str,
+        execution_backend: str,
+        execution_profile: str | None,
+    ) -> Any:
+        """Return an UPDATE statement that changes execution routing."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                execution_backend=execution_backend,
+                execution_profile=execution_profile,
+                execution_ref=None,
+            )
+            .where_eq("id", task_id)
+        )
+
     def list_running_external(self, *, limit: int | None = None) -> Any:
-        """Return a SELECT statement for running external records."""
+        """Return a SELECT statement for externally dispatched records."""
         statement = (
             self
             ._select_all()
-            .where_eq("status", "running")
+            .where("status IN ('pending', 'scheduled', 'running')")
             .where("execution_ref IS NOT NULL")
             .order_by("started_at")
             .order_by("created_at")

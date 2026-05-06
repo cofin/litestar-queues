@@ -38,9 +38,11 @@ def execution_backend(name: str) -> Callable[[type[BaseExecutionBackend]], type[
 @lru_cache(maxsize=1)
 def _register_builtins() -> None:
     """Register built-in execution backends lazily."""
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend
     from litestar_queues.execution.immediate import ImmediateExecutionBackend
     from litestar_queues.execution.local import LocalExecutionBackend
 
+    _execution_backend_registry.setdefault("cloudrun", CloudRunExecutionBackend)
     _execution_backend_registry.setdefault("immediate", ImmediateExecutionBackend)
     _execution_backend_registry.setdefault("local", LocalExecutionBackend)
 

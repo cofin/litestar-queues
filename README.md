@@ -157,6 +157,40 @@ directly and pass the same `SQLAlchemyAsyncConfig` into the queue backend. The
 queue backend uses operation-scoped sessions from that config and does not
 append database plugins itself.
 
+The `cloudrun` execution backend is available when the Cloud Run extra is
+installed:
+
+```python
+from litestar_queues import QueueConfig, task
+from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+
+
+@task("reports.render", execution_backend="cloudrun", execution_profile="heavy")
+async def render_report(report_id: str) -> None:
+    ...
+
+config = QueueConfig(
+    queue_backend="sqlspec",
+    queue_backend_config={...},
+    execution_backend="cloudrun",
+    execution_backend_config={
+        "cloudrun": CloudRunExecutionConfig(
+            project_id="example-project",
+            region="us-central1",
+            job_name="queue-worker",
+            profiles={"heavy": "queue-worker-heavy"},
+        )
+    },
+)
+```
+
+Cloud Run dispatch stores an execution reference on the queue record. The
+package entry point `litestar-queues-cloudrun-worker` reads generic
+`LITESTAR_QUEUES_*` environment variables, loads the configured task modules,
+claims the persisted record, executes it with normal queue lifecycle semantics,
+and publishes task events through the configured event publisher. Applications
+own the queue backend configuration passed into the worker process.
+
 SQLSpec worker wakeups can use SQLSpec Events when configured:
 
 ```python

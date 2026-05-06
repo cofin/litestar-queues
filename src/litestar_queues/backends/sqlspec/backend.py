@@ -493,6 +493,34 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                 raise
         return self._record_from_row(row) if row is not None else None
 
+    async def set_execution_backend(
+        self,
+        task_id: UUID,
+        execution_backend: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().set_execution_backend(
+                        task_id=str(task_id),
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                    ),
+                )
+                row = await self._select_task(driver, task_id) if result.rows_affected else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        record = self._record_from_row(row) if row is not None else None
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
     async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
         async with self._session() as driver:
             rows = await driver.select(self._get_store().list_running_external(limit=limit))

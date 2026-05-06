@@ -10,7 +10,7 @@ extras provide Advanced Alchemy, Redis, and Valkey integrations.
 
 Execution backends decide where claimed tasks run. The core package registers
 ``immediate`` for inline execution and ``local`` for in-process worker
-execution. A ``cloudrun`` extra is reserved for external execution.
+execution. The optional ``cloudrun`` extra dispatches records to Cloud Run Jobs.
 
 Install optional extras only when an application needs them:
 
@@ -179,6 +179,54 @@ The queue plugin does not append ``SQLAlchemyPlugin`` or consume request-scoped
 ``db_session`` dependencies. Applications that manage schema with Alembic can
 reference the packaged migration location from
 ``litestar_queues.backends.advanced_alchemy.config.migration_script_location``.
+
+Cloud Run
+---------
+
+Install the Cloud Run extra when tasks should execute in Cloud Run Jobs:
+
+.. code-block:: bash
+
+   pip install litestar-queues[cloudrun]
+
+Configure execution with generic package settings. Queue persistence remains
+app-owned and can use any queue backend that supports execution references:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig, task
+   from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+
+   @task("reports.render", execution_backend="cloudrun", execution_profile="heavy")
+   async def render_report(report_id: str) -> None:
+       ...
+
+   config = QueueConfig(
+       queue_backend="sqlspec",
+       queue_backend_config={...},
+       execution_backend="cloudrun",
+       execution_backend_config={
+           "cloudrun": CloudRunExecutionConfig(
+               project_id="example-project",
+               region="us-central1",
+               job_name="queue-worker",
+               profiles={"heavy": "queue-worker-heavy"},
+           )
+       },
+   )
+
+The dispatch worker stores the Cloud Run execution name on the queue record and
+does not claim the task locally. The Cloud Run container should run
+``litestar-queues-cloudrun-worker`` or
+``python -m litestar_queues.execution.cloudrun.entrypoint``. The entry point
+reads ``LITESTAR_QUEUES_TASK_ID``, loads configured task modules, claims the
+persisted record, updates heartbeats, executes the task through the shared queue
+service, and returns deterministic process exit codes.
+
+If the Cloud Run API call fails before a remote execution owns the task, the
+backend can move the record to a fallback execution backend such as ``local``.
+Status checks that fail transiently are treated as still running so
+reconciliation does not create false terminal states.
 
 SQLSpec Event Notifications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

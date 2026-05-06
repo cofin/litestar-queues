@@ -149,8 +149,28 @@ class BaseQueueBackend:  # noqa: PLR0904
         record.execution_profile = execution_profile
         return record
 
+    async def set_execution_backend(
+        self,
+        task_id: "UUID",
+        execution_backend: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> "QueuedTaskRecord | None":
+        """Persist an execution backend/profile change for a queued task.
+
+        Returns:
+            The updated queued task record, if one exists.
+        """
+        record = await self.get_task(task_id)
+        if record is None:
+            return None
+        record.execution_backend = execution_backend
+        record.execution_profile = execution_profile
+        record.execution_ref = None
+        return record
+
     async def list_running_external(self, *, limit: int | None = None) -> "list[QueuedTaskRecord]":
-        """Return running tasks that have external execution references."""
+        """Return externally dispatched tasks with references to reconcile."""
         return []
 
     async def get_statistics(self) -> QueueStatistics:

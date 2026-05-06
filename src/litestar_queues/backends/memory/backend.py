@@ -209,11 +209,26 @@ class InMemoryQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             record.execution_ref = execution_ref
             return record
 
+    async def set_execution_backend(
+        self,
+        task_id: "UUID",
+        execution_backend: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._lock:
+            record = self._records.get(task_id)
+            if record is None:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = None
+        await self.notify_new_task(record)
+        return record
+
     async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
         records = [
-            record
-            for record in self._records.values()
-            if record.status == "running" and record.execution_ref is not None
+            record for record in self._records.values() if not record.is_terminal and record.execution_ref is not None
         ]
         records.sort(key=lambda record: record.started_at or record.created_at)
         return records[:limit] if limit is not None else records

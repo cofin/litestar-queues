@@ -19,6 +19,11 @@ class BaseExecutionBackend:
         """Initialize the execution backend."""
         self.config = config
 
+    @property
+    def is_external(self) -> bool:
+        """Return whether this backend dispatches records to another process."""
+        return False
+
     async def open(self) -> bool:
         """Open execution resources.
 

@@ -149,3 +149,18 @@ Execution backends are available via ``litestar_queues.execution``.
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. automodule:: litestar_queues.execution.cloudrun.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.cloudrun.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.cloudrun.entrypoint
+   :members:
+   :undoc-members:
+   :show-inheritance:

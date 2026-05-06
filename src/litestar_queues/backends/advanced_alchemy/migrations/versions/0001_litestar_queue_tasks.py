@@ -1,9 +1,9 @@
 """Create Litestar queue task table."""
 
-from typing import Sequence
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0001_litestar_queue_tasks"
 down_revision = None

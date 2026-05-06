@@ -8,7 +8,7 @@ from uuid import UUID
 from litestar_queues.backends.advanced_alchemy._typing import missing_advanced_alchemy_error
 from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
-from litestar_queues.models import QueueStatistics, QueuedTaskRecord, TaskStatus
+from litestar_queues.models import QueuedTaskRecord, QueueStatistics, TaskStatus
 
 try:
     from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
@@ -263,10 +263,34 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
 
+    async def set_execution_backend(
+        self,
+        task_id: UUID,
+        execution_backend: str,
+        *,
+        execution_profile: str | None,
+    ) -> QueuedTaskRecord | None:
+        result = await self.repository.session.execute(
+            update(QueueTaskModel)
+            .where(QueueTaskModel.id == task_id)
+            .values(
+                execution_backend=execution_backend,
+                execution_profile=execution_profile,
+                execution_ref=None,
+            )
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
     async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
         statement = (
             select(QueueTaskModel)
-            .where(QueueTaskModel.status == "running", QueueTaskModel.execution_ref.is_not(None))
+            .where(
+                QueueTaskModel.status.in_(("pending", "scheduled", "running")),
+                QueueTaskModel.execution_ref.is_not(None),
+            )
             .order_by(QueueTaskModel.started_at, QueueTaskModel.created_at)
         )
         if limit is not None:
@@ -311,7 +335,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
 
     @staticmethod
     def model_from_record(record: QueuedTaskRecord) -> QueueTaskModel:
-        """Convert a backend-neutral record into an Advanced Alchemy model."""
+        """Convert a backend-neutral record into an Advanced Alchemy model.
+
+        Returns:
+            The Advanced Alchemy queue task model.
+        """
         return QueueTaskModel(
             id=record.id,
             task_name=record.task_name,
@@ -338,7 +366,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
 
     @staticmethod
     def record_from_model(model: QueueTaskModel) -> QueuedTaskRecord:
-        """Convert an Advanced Alchemy model into a backend-neutral record."""
+        """Convert an Advanced Alchemy model into a backend-neutral record.
+
+        Returns:
+            The backend-neutral queued task record.
+        """
         args = _deserialize_json(model.args_json)
         kwargs = _deserialize_json(model.kwargs_json)
         metadata = _deserialize_json(model.metadata_json)
@@ -384,4 +416,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
             criteria.append(QueueTaskModel.queue == queue)
         if execution_backend is not None:
             criteria.append(QueueTaskModel.execution_backend == execution_backend)
-        return select(QueueTaskModel).where(and_(*criteria)).order_by(desc(QueueTaskModel.priority), QueueTaskModel.created_at)
+        return (
+            select(QueueTaskModel)
+            .where(and_(*criteria))
+            .order_by(desc(QueueTaskModel.priority), QueueTaskModel.created_at)
+        )

@@ -39,6 +39,9 @@ Homepage = "https://github.com/litestar-org/litestar-queues"
 Issue = "https://github.com/litestar-org/litestar-queues/issues/"
 Source = "https://github.com/litestar-org/litestar-queues"
 
+[project.scripts]
+litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint:main"
+
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.9.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]

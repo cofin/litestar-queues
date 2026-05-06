@@ -4,6 +4,9 @@ def test_public_exports() -> None:
     from litestar_queues import (
         AdvancedAlchemyQueueBackend,
         AsyncServiceProvider,
+        CloudRunExecutionBackend,
+        CloudRunExecutionConfig,
+        CloudRunExecutionStatus,
         ImmediateExecutionBackend,
         InMemoryQueueBackend,
         LocalExecutionBackend,
@@ -32,6 +35,9 @@ def test_public_exports() -> None:
         "AsyncServiceProvider",
         "BaseExecutionBackend",
         "BaseQueueBackend",
+        "CloudRunExecutionBackend",
+        "CloudRunExecutionConfig",
+        "CloudRunExecutionStatus",
         "ImmediateExecutionBackend",
         "InMemoryQueueBackend",
         "LocalExecutionBackend",
@@ -62,15 +68,19 @@ def test_public_exports() -> None:
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
     assert list_queue_backends() == ["advanced-alchemy", "memory", "sqlspec"]
+    assert get_execution_backend_class("cloudrun") is CloudRunExecutionBackend
     assert get_execution_backend_class("immediate") is ImmediateExecutionBackend
     assert get_execution_backend_class("local") is LocalExecutionBackend
-    assert list_execution_backends() == ["immediate", "local"]
+    assert list_execution_backends() == ["cloudrun", "immediate", "local"]
     assert QueuePlugin().config.queue_backend == "memory"
     assert QueueService(QueueConfig()).config.queue_backend == "memory"
     assert issubclass(QueueError, Exception)
     assert AsyncServiceProvider(QueueConfig()) is not None
     assert ScheduleConfig(task_name="example", interval=1).task_name == "example"
     assert QueuedTaskRecord(task_name="example").task_name == "example"
+    assert CloudRunExecutionBackend is not None
+    assert CloudRunExecutionConfig(project_id="example", job_name="worker").resolve_job_name() == "worker"
+    assert CloudRunExecutionStatus().running is True
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None

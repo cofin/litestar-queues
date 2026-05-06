@@ -12,18 +12,18 @@ from litestar_queues.backends.advanced_alchemy._typing import (
     missing_advanced_alchemy_error,
 )
 from litestar_queues.backends.advanced_alchemy.config import (
-    AdvancedAlchemyBackendConfig,
     DEFAULT_TABLE_NAME,
+    AdvancedAlchemyBackendConfig,
     build_alembic_config,
     validate_table_name,
 )
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueueBackendCapabilities, QueueStatistics, QueuedTaskRecord
+from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
 
 if TYPE_CHECKING:
-    from litestar_queues.config import QueueConfig
     from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+    from litestar_queues.config import QueueConfig
 
 __all__ = ("AdvancedAlchemyBackendConfig", "AdvancedAlchemyQueueBackend")
 
@@ -69,7 +69,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         return QueueBackendCapabilities()
 
     async def open(self) -> bool:
-        """Open Advanced Alchemy resources."""
+        """Open Advanced Alchemy resources.
+
+        Returns:
+            True when resources are ready.
+        """
         if self._opened:
             return True
         self._ensure_configured()
@@ -86,7 +90,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self._opened = False
 
     async def create_schema(self) -> None:
-        """Create the queue task table and indexes."""
+        """Create the queue task table and indexes.
+
+        Raises:
+            missing_advanced_alchemy_error: If optional dependencies are missing.
+        """
         try:
             from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
         except ModuleNotFoundError as exc:
@@ -99,13 +107,17 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                 await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
             return
 
-        async with self._session() as session:
-            async with session.begin():
-                connection = await session.connection()
-                await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
+        async with self._session() as session, session.begin():
+            connection = await session.connection()
+            await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
 
     async def run_migrations(self) -> None:
-        """Apply packaged Advanced Alchemy migrations through Advanced Alchemy's Alembic commands."""
+        """Apply packaged Advanced Alchemy migrations through Advanced Alchemy's Alembic commands.
+
+        Raises:
+            QueueConfigurationError: If no Advanced Alchemy config is available.
+            missing_advanced_alchemy_error: If optional dependencies are missing.
+        """
         if self._sqlalchemy_config is None:
             msg = "AdvancedAlchemyQueueBackend.run_migrations() requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
@@ -230,6 +242,23 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                 execution_profile=execution_profile,
             )
 
+    async def set_execution_backend(
+        self,
+        task_id: UUID,
+        execution_backend: str,
+        *,
+        execution_profile: str | None = None,
+    ) -> QueuedTaskRecord | None:
+        async with self._operation() as service:
+            record = await service.set_execution_backend(
+                task_id,
+                execution_backend,
+                execution_profile=execution_profile,
+            )
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
     async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
         async with self._service() as service:
             return await service.list_running_external(limit=limit)
@@ -296,8 +325,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     @asynccontextmanager
     async def _operation(self) -> AsyncIterator["QueueTaskService"]:
         self._ensure_opened()
-        async with self._session() as session:
-            async with session.begin():
-                from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+        async with self._session() as session, session.begin():
+            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 
-                yield QueueTaskService(session=session)
+            yield QueueTaskService(session=session)

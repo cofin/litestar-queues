@@ -30,7 +30,14 @@ class AdvancedAlchemyBackendConfig:
 
 
 def validate_table_name(table_name: str) -> str:
-    """Validate a simple SQL table identifier."""
+    """Validate a simple SQL table identifier.
+
+    Returns:
+        The validated table name.
+
+    Raises:
+        QueueConfigurationError: If the table name is not a simple SQL identifier.
+    """
     if not table_name.replace("_", "").isalnum() or table_name[0].isdigit():
         msg = f"Invalid Advanced Alchemy queue table name: {table_name!r}"
         raise QueueConfigurationError(msg)
@@ -43,7 +50,14 @@ def migration_script_location() -> str:
 
 
 def build_alembic_config(script_config: str = "alembic.ini") -> Any:
-    """Build an Advanced Alchemy Alembic config pointing at packaged queue migrations."""
+    """Build an Advanced Alchemy Alembic config pointing at packaged queue migrations.
+
+    Returns:
+        An Advanced Alchemy Alembic config.
+
+    Raises:
+        missing_advanced_alchemy_error: If optional dependencies are missing.
+    """
     try:
         from advanced_alchemy.extensions.litestar import AlembicAsyncConfig
     except ModuleNotFoundError as exc:
