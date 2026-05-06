@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 
 from litestar_queues.backends import (
+    AdvancedAlchemyQueueBackend,
     BaseQueueBackend,
     InMemoryQueueBackend,
     SQLSpecQueueBackend,
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from litestar_queues.plugin import QueuePlugin
 
 __all__ = (
+    "AdvancedAlchemyQueueBackend",
     "AsyncServiceProvider",
     "BaseExecutionBackend",
     "BaseQueueBackend",

@@ -58,7 +58,11 @@ class QueueEventActor:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueueEventActor":
-        """Build an actor reference from a mapping."""
+        """Build an actor reference from a mapping.
+
+        Returns:
+            The actor reference.
+        """
         return cls(
             type=cast("str | None", data.get("type")),
             id=cast("str | None", data.get("id")),
@@ -80,7 +84,11 @@ class QueueEventEntityRef:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueueEventEntityRef":
-        """Build an entity reference from a mapping."""
+        """Build an entity reference from a mapping.
+
+        Returns:
+            The entity reference.
+        """
         return cls(type=str(data["type"]), id=str(data["id"]), name=cast("str | None", data.get("name")))
 
 
@@ -148,7 +156,11 @@ class QueueEvent:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueueEvent":
-        """Build an event from a JSON-compatible mapping."""
+        """Build an event from a JSON-compatible mapping.
+
+        Returns:
+            The queue event.
+        """
         actor_data = data.get("actor")
         entity_data = data.get("entity")
         occurred_at = data.get("occurred_at")
@@ -179,9 +191,16 @@ class QueueEvent:
 
     @classmethod
     def from_json(cls, data: str | bytes | bytearray) -> "QueueEvent":
-        """Build an event from JSON text or bytes."""
+        """Build an event from JSON text or bytes.
+
+        Returns:
+            The queue event.
+
+        Raises:
+            TypeError: If the decoded JSON value is not an object.
+        """
         decoded = json.loads(data)
         if not isinstance(decoded, dict):
             msg = "Queue event JSON must decode to an object"
-            raise ValueError(msg)
+            raise TypeError(msg)
         return cls.from_dict(cast("dict[str, Any]", decoded))

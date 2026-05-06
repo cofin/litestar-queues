@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import run
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from litestar import Litestar
@@ -670,7 +670,7 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(tmp_path
     event_channel = StubAsyncEventChannel()
     backend = SQLSpecQueueBackend(
         sqlspec_config=_sqlite_config(tmp_path / "notifications.db"),
-        event_channel=event_channel,
+        event_channel=cast("Any", event_channel),
         notification_channel="queue_notifications",
     )
 
@@ -744,7 +744,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
             },
         },
     )
-    extension_backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config, event_channel=extension_channel)
+    extension_backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config, event_channel=cast("Any", extension_channel))
     await extension_backend.open()
     try:
         await extension_backend.enqueue("tasks.extension_notified")
@@ -754,7 +754,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
     explicit_channel = StubAsyncEventChannel()
     explicit_backend = SQLSpecQueueBackend(
         sqlspec_config=sqlspec_config,
-        event_channel=explicit_channel,
+        event_channel=cast("Any", explicit_channel),
         notification_channel="explicit_notifications",
         table_name="explicit_notification_queue",
     )

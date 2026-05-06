@@ -6,7 +6,7 @@ Litestar Queues separates queue backends from execution backends.
 Queue backends persist task state. The core package registers the ``memory``
 backend for tests, local development, and in-process workers. The ``sqlspec``
 backend is available when the SQLSpec extra is installed. Additional optional
-extras are reserved for Advanced Alchemy, Redis, and Valkey integrations.
+extras provide Advanced Alchemy, Redis, and Valkey integrations.
 
 Execution backends decide where claimed tasks run. The core package registers
 ``immediate`` for inline execution and ``local`` for in-process worker
@@ -109,6 +109,76 @@ SQLSpec persists task arguments, keyword arguments, metadata, and results using
 SQLSpec's serializer. Packaged migrations are registered with SQLSpec's
 extension runner as ``ext_litestar_queues_0001``. Applications with their own
 migration flow can set both ``create_schema=False`` and ``run_migrations=False``.
+
+Advanced Alchemy
+----------------
+
+Install the Advanced Alchemy extra when a queue should persist task state using
+Advanced Alchemy and SQLAlchemy:
+
+.. code-block:: bash
+
+   pip install litestar-queues[advanced-alchemy]
+
+Configure the queue backend with an app-owned ``SQLAlchemyAsyncConfig``:
+
+.. code-block:: python
+
+   from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
+   from litestar_queues import QueueConfig
+
+   alchemy_config = SQLAlchemyAsyncConfig(
+       connection_string="sqlite+aiosqlite:///queue.db",
+   )
+
+   config = QueueConfig(
+       queue_backend="advanced-alchemy",
+       queue_backend_config={
+           "sqlalchemy_config": alchemy_config,
+           "create_schema": True,
+       },
+       execution_backend="local",
+   )
+
+The backend also accepts an async SQLAlchemy ``session_maker`` for standalone
+service usage. In both cases, queue operations use fresh operation-scoped
+sessions and commit or roll back queue mutations explicitly.
+
+Litestar applications should register Advanced Alchemy's first-party plugin
+directly and pass the same config to the queue backend:
+
+.. code-block:: python
+
+   from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig, SQLAlchemyPlugin
+   from litestar import Litestar
+
+   from litestar_queues import QueueConfig, QueuePlugin
+
+   alchemy_config = SQLAlchemyAsyncConfig(
+       connection_string="sqlite+aiosqlite:///queue.db",
+   )
+
+   app = Litestar(
+       plugins=[
+           SQLAlchemyPlugin(config=alchemy_config),
+           QueuePlugin(
+               QueueConfig(
+                   queue_backend="advanced-alchemy",
+                   queue_backend_config={
+                       "sqlalchemy_config": alchemy_config,
+                       "create_schema": True,
+                   },
+                   execution_backend="local",
+               )
+           ),
+       ],
+   )
+
+The queue plugin does not append ``SQLAlchemyPlugin`` or consume request-scoped
+``db_session`` dependencies. Applications that manage schema with Alembic can
+reference the packaged migration location from
+``litestar_queues.backends.advanced_alchemy.config.migration_script_location``.
 
 SQLSpec Event Notifications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

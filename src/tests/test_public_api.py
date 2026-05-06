@@ -2,6 +2,7 @@ def test_public_exports() -> None:
     """Test that the scaffold exposes the public queue API."""
     import litestar_queues
     from litestar_queues import (
+        AdvancedAlchemyQueueBackend,
         AsyncServiceProvider,
         ImmediateExecutionBackend,
         InMemoryQueueBackend,
@@ -27,6 +28,7 @@ def test_public_exports() -> None:
     )
 
     expected_exports = {
+        "AdvancedAlchemyQueueBackend",
         "AsyncServiceProvider",
         "BaseExecutionBackend",
         "BaseQueueBackend",
@@ -56,9 +58,10 @@ def test_public_exports() -> None:
     assert expected_exports.issubset(set(litestar_queues.__all__))
     assert QueueConfig().queue_backend == "memory"
     assert QueueBackendConfig is str
+    assert get_queue_backend_class("advanced-alchemy") is AdvancedAlchemyQueueBackend
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
-    assert list_queue_backends() == ["memory", "sqlspec"]
+    assert list_queue_backends() == ["advanced-alchemy", "memory", "sqlspec"]
     assert get_execution_backend_class("immediate") is ImmediateExecutionBackend
     assert get_execution_backend_class("local") is LocalExecutionBackend
     assert list_execution_backends() == ["immediate", "local"]

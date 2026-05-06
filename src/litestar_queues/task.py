@@ -474,12 +474,10 @@ class Task(Generic[P, T]):
         if task_context is not None and self._accepts_task_context():
             kwargs["_task_context"] = task_context
         if inspect.iscoroutinefunction(self._func):
-            result = self._func(*record.args, **kwargs)
-        else:
-            result = await asyncio.to_thread(self._func, *record.args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return cast("T", result)
+            coroutine_func = cast("Callable[..., Awaitable[T]]", self._func)
+            return await coroutine_func(*record.args, **kwargs)
+        sync_func = cast("Callable[..., T]", self._func)
+        return await asyncio.to_thread(sync_func, *record.args, **kwargs)
 
     def metadata(self, values: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return enqueue metadata for this task."""

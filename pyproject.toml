@@ -40,7 +40,7 @@ Issue = "https://github.com/litestar-org/litestar-queues/issues/"
 Source = "https://github.com/litestar-org/litestar-queues"
 
 [project.optional-dependencies]
-advanced-alchemy = ["advanced-alchemy>=1.0.0"]
+advanced-alchemy = ["advanced-alchemy>=1.9.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
 redis = ["redis>=5.0.0"]
 sqlspec = ["sqlspec[aiosqlite]>=0.46.0"]
@@ -103,6 +103,7 @@ docs = [
 [tool.pytest.ini_options]
 addopts = "-ra -q"
 filterwarnings = [
+  "ignore:Call to deprecated function 'set_async_context'.*:DeprecationWarning:advanced_alchemy._listeners",
   "ignore::DeprecationWarning:pkg_resources.*",
   "ignore::DeprecationWarning:xdist.*",
   "ignore::DeprecationWarning:importlib._bootstrap",

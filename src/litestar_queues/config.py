@@ -101,7 +101,12 @@ class QueueConfig:
     @property
     def signature_namespace(self) -> dict[str, Any]:
         """Return names added to Litestar's signature namespace."""
-        from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend, SQLSpecQueueBackend
+        from litestar_queues.backends import (
+            AdvancedAlchemyQueueBackend,
+            BaseQueueBackend,
+            InMemoryQueueBackend,
+            SQLSpecQueueBackend,
+        )
         from litestar_queues.events import (
             InMemoryQueueEventSink,
             NoopQueueEventSink,
@@ -123,6 +128,7 @@ class QueueConfig:
         return {
             "BaseExecutionBackend": BaseExecutionBackend,
             "BaseQueueBackend": BaseQueueBackend,
+            "AdvancedAlchemyQueueBackend": AdvancedAlchemyQueueBackend,
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
@@ -154,7 +160,7 @@ class QueueConfig:
         """Return dependency providers for Litestar's DI system."""
         from litestar.di import Provide
 
-        return {self.queue_service_dependency_key: Provide(self.provide_service, sync_to_thread=False)}
+        return {self.queue_service_dependency_key: Provide(self.provide_service_dependency)}
 
     def get_service(self, state: "State | None" = None) -> "QueueService":
         """Return a QueueService for this configuration."""
@@ -183,9 +189,15 @@ class QueueConfig:
 
     def get_event_publisher(self) -> "QueueEventPublisher":
         """Return a configured queue event publisher."""
-        from litestar_queues.events import ChannelsQueueEventSink, NoopQueueEventSink, QueueEventPublisher
+        from litestar_queues.events import (
+            ChannelsQueueEventSink,
+            NoopQueueEventSink,
+            QueueEventPublisher,
+            QueueEventSink,
+        )
 
         event_config = self.event_config
+        sink: QueueEventSink
         if not event_config.enabled:
             sink = NoopQueueEventSink()
         elif event_config.sink is not None:
@@ -209,3 +221,8 @@ class QueueConfig:
             An async service provider.
         """
         return AsyncServiceProvider(self)
+
+    async def provide_service_dependency(self) -> AsyncIterator["QueueService"]:
+        """Yield a managed QueueService for Litestar dependency injection."""
+        async with self.provide_service() as service:
+            yield service

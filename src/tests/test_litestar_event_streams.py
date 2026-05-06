@@ -28,7 +28,9 @@ class FakeChannelsPlugin:
         self.closed = False
 
     @asynccontextmanager
-    async def start_subscription(self, channels: Sequence[str], history: int | None = None) -> AsyncIterator[FakeSubscriber]:
+    async def start_subscription(
+        self, channels: Sequence[str], history: int | None = None
+    ) -> AsyncIterator[FakeSubscriber]:
         self.subscribed_channels = list(channels)
         self.history = history
         try:
@@ -52,14 +54,12 @@ class FakeSocket:
 
 async def test_stream_queue_events_subscribes_and_skips_malformed_and_duplicates() -> None:
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
-    plugin = FakeChannelsPlugin(
-        [
-            b"not-json",
-            event.to_json().encode(),
-            event.to_json().encode(),
-            json.dumps({"id": "not-an-event"}).encode(),
-        ]
-    )
+    plugin = FakeChannelsPlugin([
+        b"not-json",
+        event.to_json().encode(),
+        event.to_json().encode(),
+        json.dumps({"id": "not-an-event"}).encode(),
+    ])
     socket = FakeSocket(plugin)
 
     await stream_queue_events(socket, ["litestar_queues:task:task_1:events"], history=5, channels_backend=plugin)

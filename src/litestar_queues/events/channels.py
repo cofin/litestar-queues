@@ -12,13 +12,7 @@ _REPEATED_UNDERSCORES = re.compile(r"_+")
 
 
 def _normalize_part(value: str, *, allow_colon: bool = False) -> str:
-    normalized = (
-        unicodedata.normalize("NFKD", str(value))
-        .encode("ascii", "ignore")
-        .decode("ascii")
-        .strip()
-        .lower()
-    )
+    normalized = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii").strip().lower()
     pattern = _INVALID_CHARS if allow_colon else _INVALID_CHARS_NO_COLON
     normalized = pattern.sub("_", normalized)
     normalized = _REPEATED_UNDERSCORES.sub("_", normalized).strip("_")

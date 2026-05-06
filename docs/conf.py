@@ -1,8 +1,20 @@
 import os
 import sys
+import warnings
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+
+try:
+    from sqlalchemy.exc import SAWarning
+except ModuleNotFoundError:
+    SAWarning = None
+else:
+    warnings.filterwarnings(
+        "ignore",
+        message="Unmanaged access of declarative attribute _sentinel.*",
+        category=SAWarning,
+    )
 
 current_path = Path(__file__).parent.parent.resolve()
 sys.path.append(str(current_path))

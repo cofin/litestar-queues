@@ -82,6 +82,31 @@ Queue backends are available via ``litestar_queues.backends``.
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: litestar_queues.backends.advanced_alchemy.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.advanced_alchemy.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.advanced_alchemy.models
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.advanced_alchemy.repository
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.advanced_alchemy.service
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: litestar_queues.backends.sqlspec.backend
    :members:
    :undoc-members:

@@ -40,8 +40,8 @@ class TaskExecutionContext:
     async def progress(
         self,
         *,
-        current: int | float | None = None,
-        total: int | float | None = None,
+        current: float | None = None,
+        total: float | None = None,
         percent: float | None = None,
         message: str | None = None,
         payload: dict[str, Any] | None = None,
@@ -99,13 +99,17 @@ class TaskExecutionContext:
         *,
         level: str | None = None,
         message: str | None = None,
-        progress_current: int | float | None = None,
-        progress_total: int | float | None = None,
+        progress_current: float | None = None,
+        progress_total: float | None = None,
         progress_percent: float | None = None,
         payload: dict[str, Any] | None = None,
         channels: Sequence[str] | None = None,
     ) -> QueueEvent:
-        """Build and publish an event for this task context."""
+        """Build and publish an event for this task context.
+
+        Returns:
+            The published queue event.
+        """
         event = QueueEvent(
             type=event_type,
             scope="task",
@@ -138,7 +142,11 @@ def get_current_task_context() -> TaskExecutionContext | None:
 
 
 def require_current_task_context() -> TaskExecutionContext:
-    """Return the current task context or raise if none is bound."""
+    """Return the current task context or raise if none is bound.
+
+    Raises:
+        RuntimeError: If no task context is bound.
+    """
     context = get_current_task_context()
     if context is None:
         msg = "No queue task execution context is currently bound."
@@ -148,8 +156,8 @@ def require_current_task_context() -> TaskExecutionContext:
 
 async def publish_task_progress(
     *,
-    current: int | float | None = None,
-    total: int | float | None = None,
+    current: float | None = None,
+    total: float | None = None,
     percent: float | None = None,
     message: str | None = None,
     payload: dict[str, Any] | None = None,

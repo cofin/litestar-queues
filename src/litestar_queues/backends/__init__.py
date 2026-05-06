@@ -1,5 +1,6 @@
 """Queue backend public re-exports."""
 
+from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.backends.factory import (
     get_queue_backend,
@@ -11,6 +12,7 @@ from litestar_queues.backends.memory import InMemoryQueueBackend
 from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
 __all__ = (
+    "AdvancedAlchemyQueueBackend",
     "BaseQueueBackend",
     "InMemoryQueueBackend",
     "SQLSpecQueueBackend",

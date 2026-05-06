@@ -38,9 +38,11 @@ def queue_backend(name: str) -> Callable[[type[BaseQueueBackend]], type[BaseQueu
 @lru_cache(maxsize=1)
 def _register_builtins() -> None:
     """Register built-in queue backends lazily."""
+    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
     from litestar_queues.backends.memory import InMemoryQueueBackend
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
+    _queue_backend_registry.setdefault("advanced-alchemy", AdvancedAlchemyQueueBackend)
     _queue_backend_registry.setdefault("memory", InMemoryQueueBackend)
     _queue_backend_registry.setdefault("sqlspec", SQLSpecQueueBackend)
 

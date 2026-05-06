@@ -130,6 +130,33 @@ SQLSpec's JSON serializer. Litestar applications should register SQLSpec's
 first-party plugin directly and pass the same `SQLSpec`/adapter config into
 `queue_backend_config` when they want SQLSpec dependency injection.
 
+The `advanced-alchemy` queue backend is available when the Advanced Alchemy
+extra is installed:
+
+```python
+from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
+from litestar_queues import QueueConfig
+
+alchemy_config = SQLAlchemyAsyncConfig(
+    connection_string="sqlite+aiosqlite:///queue.db",
+)
+
+config = QueueConfig(
+    queue_backend="advanced-alchemy",
+    queue_backend_config={
+        "sqlalchemy_config": alchemy_config,
+        "create_schema": True,
+    },
+    execution_backend="local",
+)
+```
+
+Litestar applications should register Advanced Alchemy's `SQLAlchemyPlugin`
+directly and pass the same `SQLAlchemyAsyncConfig` into the queue backend. The
+queue backend uses operation-scoped sessions from that config and does not
+append database plugins itself.
+
 SQLSpec worker wakeups can use SQLSpec Events when configured:
 
 ```python
