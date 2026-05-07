@@ -56,6 +56,15 @@ async def test_queue_event_serialization_preserves_null_keys() -> None:
     assert QueueEvent.from_json(event.to_json()).to_dict() == data
 
 
+async def test_queue_event_supports_idempotency_key_field() -> None:
+    """QueueEvent has an idempotency_key field that defaults to None and is settable."""
+    default_event = QueueEvent(type="task.progress", scope="task")
+    assert default_event.idempotency_key is None
+
+    keyed_event = QueueEvent(type="task.progress", scope="task", idempotency_key="dedup-1")
+    assert keyed_event.idempotency_key == "dedup-1"
+
+
 def test_queue_channels_normalize_parts_deterministically() -> None:
     assert QueueChannels.task("Task 1", topic="progress") == "litestar_queues:task:task_1:progress"
     assert QueueChannels.queue("critical/default") == "litestar_queues:queue:critical_default:events"

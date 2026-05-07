@@ -116,6 +116,7 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
     payload: dict[str, Any] = msgspec.field(default_factory=dict)
     occurred_at: datetime = msgspec.field(default_factory=_utc_now)
     schema_version: int = 1
+    idempotency_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON-compatible event envelope.
