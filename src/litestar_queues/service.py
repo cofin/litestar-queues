@@ -184,7 +184,8 @@ class QueueService:
         context_token = _bind_task_context(task_context)
         try:
             await task_context.lifecycle("task.started")
-            coroutine = task_obj.execute_record(record, task_context=task_context)
+            extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
+            coroutine = task_obj.execute_record(record, task_context=task_context, extra_kwargs=extra_kwargs)
             result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
         except asyncio.CancelledError:
             await task_context.lifecycle("task.cancelled")
@@ -256,6 +257,18 @@ class QueueService:
                 )
             )
         return records
+
+    async def _resolve_task_dependencies(
+        self,
+        task: Task[Any, Any],
+        record: "QueuedTaskRecord",
+        task_context: TaskExecutionContext,
+    ) -> "dict[str, Any] | None":
+        """Invoke the configured task dependency resolver, if any."""
+        resolver = self._config.task_dependency_resolver
+        if resolver is None:
+            return None
+        return await resolver(task, record, task_context)
 
     async def _reschedule_if_needed(self, record: "QueuedTaskRecord") -> None:
         schedule_data = record.metadata.get("schedule")

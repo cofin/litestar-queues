@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from litestar_queues import QueueConfig, QueueService
@@ -32,3 +34,119 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
 
     assert result.status == "completed"
     assert result.result == "ok"
+
+
+async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> None:
+    """Configured resolver fires before task body and its kwargs reach the callable."""
+    from litestar_queues import Task, TaskExecutionContext, task
+    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    invocations: list[tuple[str, str]] = []
+
+    async def resolver(
+        _task: "Task[Any, Any]",
+        record: "QueuedTaskRecord",
+        context: "TaskExecutionContext",
+    ) -> dict[str, Any]:
+        invocations.append((str(record.id), context.task_id))
+        return {"injected_service": "from_resolver"}
+
+    @task("resolver.consume")
+    async def consume(**kwargs: Any) -> dict[str, Any]:
+        return dict(kwargs)
+
+    config = QueueConfig(task_dependency_resolver=resolver)
+    service = QueueService(config)
+
+    async with service:
+        result = await service.enqueue("resolver.consume")
+
+    assert result.status == "completed"
+    assert isinstance(result.result, dict)
+    assert result.result["injected_service"] == "from_resolver"
+    assert len(invocations) == 1
+
+
+async def test_execute_record_runs_resolver_after_started_lifecycle() -> None:
+    """Resolver fires after task.started lifecycle event and before task.completed."""
+    from litestar_queues import (
+        InMemoryQueueEventSink,
+        QueueEventConfig,
+        Task,
+        TaskExecutionContext,
+        task,
+    )
+    from litestar_queues.events import QueueEventPublisher
+    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink)
+    resolver_called_at: list[int] = []
+
+    async def resolver(
+        _task: "Task[Any, Any]",
+        _record: "QueuedTaskRecord",
+        _context: "TaskExecutionContext",
+    ) -> dict[str, Any]:
+        resolver_called_at.append(len(sink.events))
+        return {}
+
+    @task("resolver.order")
+    async def order(**_kwargs: Any) -> str:
+        return "ok"
+
+    config = QueueConfig(
+        task_dependency_resolver=resolver,
+        event_config=QueueEventConfig(enabled=True),
+    )
+    service = QueueService(config, event_publisher=publisher)
+
+    async with service:
+        result = await service.enqueue("resolver.order")
+
+    assert result.status == "completed"
+    assert len(resolver_called_at) == 1
+
+    event_types = [event.type for event in sink.events]
+    assert "task.started" in event_types
+    assert "task.completed" in event_types
+    started_index = event_types.index("task.started")
+    completed_index = event_types.index("task.completed")
+    assert started_index < resolver_called_at[0] <= completed_index
+
+
+async def test_execute_record_no_resolver_skips_invocation_path() -> None:
+    """No resolver configured -> no extra_kwargs reach Task.execute_record."""
+    from unittest.mock import patch
+
+    from litestar_queues import Task, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("resolver.absent")
+    async def absent() -> str:
+        return "ok"
+
+    config = QueueConfig()
+    service = QueueService(config)
+
+    original = Task.execute_record
+    captured: list[Any] = []
+
+    async def spy(self: "Task[Any, Any]", record: Any, **kwargs: Any) -> Any:
+        captured.append(kwargs.get("extra_kwargs", "MISSING"))
+        return await original(self, record, **kwargs)
+
+    with patch.object(Task, "execute_record", spy):
+        async with service:
+            result = await service.enqueue("resolver.absent")
+
+    assert result.status == "completed"
+    assert captured == [None]
