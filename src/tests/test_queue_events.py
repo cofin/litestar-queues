@@ -118,6 +118,13 @@ async def test_queue_event_round_trip_preserves_idempotency_key() -> None:
     assert restored.task_id == "t-1"
 
 
+async def test_queue_event_occurred_at_uses_rfc3339_with_trailing_z() -> None:
+    """OccurredAt serializes to RFC 3339 UTC with a trailing Z so subscribers can rely on the format."""
+    event = QueueEvent(type="task.started", scope="task")
+    decoded = json.loads(event.to_json())
+    assert decoded["occurredAt"].endswith("Z")
+
+
 async def test_queue_event_actor_and_entity_serialize_as_camelcase_dicts() -> None:
     """Nested QueueEventActor / QueueEventEntityRef appear as native dicts on the wire."""
     from litestar_queues.events import QueueEventActor, QueueEventEntityRef
