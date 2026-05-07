@@ -56,8 +56,8 @@ async def test_stream_queue_events_subscribes_and_skips_malformed_and_duplicates
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
     plugin = FakeChannelsPlugin([
         b"not-json",
-        event.to_json().encode(),
-        event.to_json().encode(),
+        event.to_json(),
+        event.to_json(),
         json.dumps({"id": "not-an-event"}).encode(),
     ])
     socket = FakeSocket(plugin)

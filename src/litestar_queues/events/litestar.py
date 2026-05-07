@@ -25,7 +25,7 @@ class ChannelsQueueEventSink:
 
     async def publish(self, event: QueueEvent, *, channels: Sequence[str]) -> None:
         """Publish an event to Litestar Channels."""
-        data = event.to_json().encode()
+        data = event.to_json()
         channels_backend = cast("Any", self._channels_backend)
         if hasattr(self._channels_backend, "wait_published"):
             result = channels_backend.wait_published(data, list(channels))
