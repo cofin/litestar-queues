@@ -53,7 +53,7 @@ Core fields (Python name → wire name):
 * ``actor``, ``entity``, ``payload`` (payload contents are passed through
   verbatim and are NOT renamed)
 * ``occurred_at`` → ``occurredAt`` (RFC 3339 UTC with a trailing ``Z``)
-* ``idempotency_key`` → ``idempotencyKey``: optional dedup key for
+* ``event_key`` → ``eventKey``: optional dedup key for
   subscribers; ``stream_queue_events`` deduplicates on this when set and falls
   back to ``id`` otherwise.
 
@@ -111,8 +111,8 @@ The application owns route paths, authorization, tenant filtering, and the
 Channels backend configuration.
 
 Subscribers connected through ``stream_queue_events`` receive at-most-once
-delivery per ``idempotencyKey`` (or per ``id`` when no key is set) within a
-single connection. Set ``QueueEvent(..., idempotency_key=...)`` at publish
+delivery per ``eventKey`` (or per ``id`` when no key is set) within a
+single connection. Set ``QueueEvent(..., event_key=...)`` at publish
 time when worker-level retries should not double-emit downstream.
 
 Testing Events

@@ -61,7 +61,7 @@ async def stream_queue_events(
             event = _decode_event(raw_event)
             if event is None:
                 continue
-            dedup_key = event.idempotency_key if event.idempotency_key is not None else event.id
+            dedup_key = event.event_key if event.event_key is not None else event.id
             if dedup_key in seen_dedup_keys:
                 continue
             seen_dedup_keys.add(dedup_key)

@@ -70,7 +70,7 @@ async def test_queue_event_serialization_uses_camelcase_wire_format() -> None:
         progress_current=10,
         progress_total=100,
         progress_percent=10.0,
-        idempotency_key="dedup-1",
+        event_key="dedup-1",
     )
 
     data = event.to_dict()
@@ -83,9 +83,9 @@ async def test_queue_event_serialization_uses_camelcase_wire_format() -> None:
     assert data["progressCurrent"] == 10
     assert data["progressTotal"] == 100
     assert data["progressPercent"] == pytest.approx(10.0)
-    assert data["idempotencyKey"] == "dedup-1"
+    assert data["eventKey"] == "dedup-1"
 
-    for snake_key in ("task_id", "task_name", "scope_key", "execution_backend", "idempotency_key"):
+    for snake_key in ("task_id", "task_name", "scope_key", "execution_backend", "event_key"):
         assert snake_key not in data
 
 
@@ -100,21 +100,21 @@ async def test_queue_event_payload_keys_are_not_camelized() -> None:
     assert data["payload"] == {"snake_inner": 1, "nested": {"deep_key": 2}}
 
 
-async def test_queue_event_round_trip_preserves_idempotency_key() -> None:
-    """idempotency_key survives to_json -> from_json round trip."""
+async def test_queue_event_round_trip_preserves_event_key() -> None:
+    """event_key survives to_json -> from_json round trip."""
     event = QueueEvent(
         type="task.completed",
         scope="task",
         task_id="t-1",
-        idempotency_key="dedup-xyz",
+        event_key="dedup-xyz",
     )
     encoded = event.to_json()
 
     encoded_text = encoded.decode() if isinstance(encoded, (bytes, bytearray)) else encoded
-    assert '"idempotencyKey":"dedup-xyz"' in encoded_text
+    assert '"eventKey":"dedup-xyz"' in encoded_text
 
     restored = QueueEvent.from_json(encoded)
-    assert restored.idempotency_key == "dedup-xyz"
+    assert restored.event_key == "dedup-xyz"
     assert restored.task_id == "t-1"
 
 
@@ -155,13 +155,13 @@ raise SystemExit(1 if 'sqlspec' in sys.modules else 0)
     assert result.returncode == 0, result.stdout
 
 
-async def test_queue_event_supports_idempotency_key_field() -> None:
-    """QueueEvent has an idempotency_key field that defaults to None and is settable."""
+async def test_queue_event_supports_event_key_field() -> None:
+    """QueueEvent has an event_key field that defaults to None and is settable."""
     default_event = QueueEvent(type="task.progress", scope="task")
-    assert default_event.idempotency_key is None
+    assert default_event.event_key is None
 
-    keyed_event = QueueEvent(type="task.progress", scope="task", idempotency_key="dedup-1")
-    assert keyed_event.idempotency_key == "dedup-1"
+    keyed_event = QueueEvent(type="task.progress", scope="task", event_key="dedup-1")
+    assert keyed_event.event_key == "dedup-1"
 
 
 def test_queue_channels_normalize_parts_deterministically() -> None:
