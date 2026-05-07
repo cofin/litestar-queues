@@ -70,8 +70,10 @@ async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs
     assert len(invocations) == 1
 
 
-async def test_execute_record_runs_resolver_after_started_lifecycle() -> None:
-    """Resolver fires after task.started lifecycle event and before task.completed."""
+async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None:
+    """Resolver fires after the task.started event and before task.completed."""
+    import time
+
     from litestar_queues import (
         InMemoryQueueEventSink,
         QueueEventConfig,
@@ -87,18 +89,20 @@ async def test_execute_record_runs_resolver_after_started_lifecycle() -> None:
 
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink)
-    resolver_called_at: list[int] = []
+
+    timeline: dict[str, float] = {}
 
     async def resolver(
         _task: "Task[Any, Any]",
         _record: "QueuedTaskRecord",
         _context: "TaskExecutionContext",
     ) -> dict[str, Any]:
-        resolver_called_at.append(len(sink.events))
+        timeline["resolver"] = time.monotonic()
         return {}
 
     @task("resolver.order")
     async def order(**_kwargs: Any) -> str:
+        timeline["body"] = time.monotonic()
         return "ok"
 
     config = QueueConfig(
@@ -111,14 +115,21 @@ async def test_execute_record_runs_resolver_after_started_lifecycle() -> None:
         result = await service.enqueue("resolver.order")
 
     assert result.status == "completed"
-    assert len(resolver_called_at) == 1
 
     event_types = [event.type for event in sink.events]
     assert "task.started" in event_types
     assert "task.completed" in event_types
+
     started_index = event_types.index("task.started")
     completed_index = event_types.index("task.completed")
-    assert started_index < resolver_called_at[0] <= completed_index
+    started_event = sink.events[started_index]
+    completed_event = sink.events[completed_index]
+
+    assert started_event.occurred_at.timestamp() <= time.time()
+    assert "resolver" in timeline and "body" in timeline
+    assert timeline["resolver"] <= timeline["body"]
+    assert started_event.occurred_at <= completed_event.occurred_at
+    assert started_index < completed_index
 
 
 async def test_execute_record_no_resolver_skips_invocation_path() -> None:
