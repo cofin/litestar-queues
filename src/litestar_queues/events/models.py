@@ -1,10 +1,11 @@
 """Typed realtime event models for queue tasks."""
 
 import json
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 from uuid import uuid4
+
+import msgspec
 
 __all__ = (
     "QueueEvent",
@@ -44,8 +45,7 @@ def _deserialize_datetime(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-@dataclass(slots=True)
-class QueueEventActor:
+class QueueEventActor(msgspec.Struct, rename="camel", kw_only=True):
     """Actor reference for a queue event."""
 
     type: str | None = None
@@ -70,8 +70,7 @@ class QueueEventActor:
         )
 
 
-@dataclass(slots=True)
-class QueueEventEntityRef:
+class QueueEventEntityRef(msgspec.Struct, rename="camel", kw_only=True):
     """Entity reference for a queue event."""
 
     type: str
@@ -92,13 +91,12 @@ class QueueEventEntityRef:
         return cls(type=str(data["type"]), id=str(data["id"]), name=cast("str | None", data.get("name")))
 
 
-@dataclass(slots=True)
-class QueueEvent:
+class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
     """Stable event envelope for queue lifecycle, progress, log, and custom events."""
 
     type: str
     scope: QueueEventScope
-    id: str = field(default_factory=lambda: uuid4().hex)
+    id: str = msgspec.field(default_factory=lambda: uuid4().hex)
     scope_key: str | None = None
     task_id: str | None = None
     task_name: str | None = None
@@ -115,8 +113,8 @@ class QueueEvent:
     progress_percent: float | None = None
     actor: QueueEventActor | None = None
     entity: QueueEventEntityRef | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
-    occurred_at: datetime = field(default_factory=_utc_now)
+    payload: dict[str, Any] = msgspec.field(default_factory=dict)
+    occurred_at: datetime = msgspec.field(default_factory=_utc_now)
     schema_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
