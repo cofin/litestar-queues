@@ -1,17 +1,34 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
 from litestar_queues import (
     QueueConfig,
+    QueuedTaskRecord,
     QueueService,
     ScheduleConfig,
     Task,
+    TaskExecutionContext,
     get_scheduled_tasks,
     get_task_registry,
     task,
 )
+from litestar_queues.events import NoopQueueEventSink, QueueEventPublisher
 from litestar_queues.task import clear_task_registry
+
+
+def _build_test_context(record: QueuedTaskRecord) -> TaskExecutionContext:
+    return TaskExecutionContext(
+        task_id=str(record.id),
+        task_name=record.task_name,
+        queue=record.queue,
+        worker_id=None,
+        execution_backend=record.execution_backend,
+        execution_profile=record.execution_profile,
+        attempt=record.retry_count + 1,
+        event_publisher=QueueEventPublisher(NoopQueueEventSink()),
+    )
 
 pytestmark = pytest.mark.anyio
 
@@ -42,6 +59,43 @@ async def test_task_decorator_registers_and_calls_async_and_sync_functions() -> 
     assert add.timeout == 5
     assert await add(2, 3) == 5
     assert await uppercase("queue") == "QUEUE"
+
+
+async def test_task_execute_record_merges_extra_kwargs_into_call() -> None:
+    @task("inject.consume")
+    async def consume(**kwargs: Any) -> dict[str, Any]:
+        return dict(kwargs)
+
+    record = QueuedTaskRecord(task_name="inject.consume", kwargs={"existing": "from_record"})
+    context = _build_test_context(record)
+
+    result = await consume.execute_record(
+        record,
+        task_context=context,
+        extra_kwargs={"injected_service": "resolved", "another": 42},
+    )
+
+    assert result["existing"] == "from_record"
+    assert result["injected_service"] == "resolved"
+    assert result["another"] == 42
+
+
+async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> None:
+    @task("inject.sentinels")
+    async def sentinels(**kwargs: Any) -> dict[str, Any]:
+        return dict(kwargs)
+
+    record = QueuedTaskRecord(task_name="inject.sentinels")
+    context = _build_test_context(record)
+
+    result = await sentinels.execute_record(
+        record,
+        task_context=context,
+        extra_kwargs={"_job_id": "hijacked", "_task_context": "hijacked"},
+    )
+
+    assert result["_job_id"] == record.id
+    assert result["_task_context"] is context
 
 
 async def test_task_using_returns_configured_copy_without_mutating_original() -> None:

@@ -470,6 +470,7 @@ class Task(Generic[P, T]):
         record: "QueuedTaskRecord",
         *,
         task_context: "TaskExecutionContext | None" = None,
+        extra_kwargs: "dict[str, Any] | None" = None,
     ) -> T:
         """Execute this task for a queued record in worker context.
 
@@ -477,6 +478,8 @@ class Task(Generic[P, T]):
             The wrapped callable result.
         """
         kwargs = dict(record.kwargs)
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
         if self._accepts_job_id():
             kwargs["_job_id"] = record.id
         if task_context is not None and self._accepts_task_context():
