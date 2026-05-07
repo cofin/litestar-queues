@@ -101,6 +101,16 @@ def test_public_exports() -> None:
     assert callable(task)
 
 
+def test_task_dependency_resolver_is_re_exported_from_package_root() -> None:
+    """TaskDependencyResolver is part of the package root surface."""
+    import litestar_queues
+    from litestar_queues import TaskDependencyResolver
+    from litestar_queues.config import TaskDependencyResolver as ConfigTaskDependencyResolver
+
+    assert TaskDependencyResolver is ConfigTaskDependencyResolver
+    assert "TaskDependencyResolver" in litestar_queues.__all__
+
+
 def test_task_dependency_resolver_config_surface() -> None:
     """The TaskDependencyResolver alias and config field are part of the config module surface."""
     from litestar_queues import config as config_module

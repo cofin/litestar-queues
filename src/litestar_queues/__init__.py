@@ -20,6 +20,7 @@ from litestar_queues.config import (
     QueueBackendConfig,
     QueueConfig,
     QueueEventConfig,
+    TaskDependencyResolver,
 )
 from litestar_queues.events import (
     InMemoryQueueEventSink,
@@ -107,6 +108,7 @@ __all__ = (
     "SQLSpecQueueBackend",
     "ScheduleConfig",
     "Task",
+    "TaskDependencyResolver",
     "TaskExecutionContext",
     "TaskResult",
     "TaskStatus",
