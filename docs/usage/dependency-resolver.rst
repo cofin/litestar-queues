@@ -108,7 +108,7 @@ Per-Attempt Invocation
 ======================
 
 Resolvers are called once per attempt. They should treat each invocation as a
-fresh attempt and avoid memoizing per-record state across retries. Re-using a
+fresh attempt and avoid memoizing per-record state across retries. Reusing a
 session, transaction, or cached object that survived a previous failed attempt
 is an easy way to leak corrupted state into a retry. If a resource is
 expensive to build, build it once at process scope (a module-level singleton or

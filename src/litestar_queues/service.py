@@ -264,7 +264,11 @@ class QueueService:
         record: "QueuedTaskRecord",
         task_context: TaskExecutionContext,
     ) -> "dict[str, Any] | None":
-        """Invoke the configured task dependency resolver, if any."""
+        """Invoke the configured task dependency resolver, if any.
+
+        Returns:
+            The resolver's kwargs mapping, or ``None`` when no resolver is configured.
+        """
         resolver = self._config.task_dependency_resolver
         if resolver is None:
             return None

@@ -1,8 +1,11 @@
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from litestar_queues import QueueConfig, QueueService
+
+if TYPE_CHECKING:
+    from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -39,7 +42,6 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
 async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> None:
     """Configured resolver fires before task body and its kwargs reach the callable."""
     from litestar_queues import Task, TaskExecutionContext, task
-    from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -82,7 +84,6 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
         task,
     )
     from litestar_queues.events import QueueEventPublisher
-    from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()

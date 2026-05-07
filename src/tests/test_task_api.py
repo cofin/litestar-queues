@@ -30,6 +30,7 @@ def _build_test_context(record: QueuedTaskRecord) -> TaskExecutionContext:
         event_publisher=QueueEventPublisher(NoopQueueEventSink()),
     )
 
+
 pytestmark = pytest.mark.anyio
 
 
