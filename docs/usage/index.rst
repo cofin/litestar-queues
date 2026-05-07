@@ -52,6 +52,13 @@ Choose a Topic
       Select queue and execution backends while keeping optional drivers
       optional.
 
+   .. grid-item-card:: Dependency Resolver
+      :link: dependency-resolver
+      :link-type: doc
+
+      Inject services into task callables through an external DI container
+      with the optional ``task_dependency_resolver`` hook.
+
 Recommended Path
 ----------------
 
@@ -74,5 +81,6 @@ Recommended Path
    events
    quickstart
    backends
+   dependency-resolver
    testing
    migration
