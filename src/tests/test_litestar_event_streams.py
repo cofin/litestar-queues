@@ -69,3 +69,46 @@ async def test_stream_queue_events_subscribes_and_skips_malformed_and_duplicates
     assert plugin.history == 5
     assert plugin.closed
     assert socket.sent_json == [event.to_dict()]
+
+
+async def test_stream_queue_events_dedups_by_idempotency_key() -> None:
+    """Two events with the same idempotency_key but different ids emit only once."""
+    first = QueueEvent(
+        type="task.progress",
+        scope="task",
+        id="evt-1",
+        task_id="task-1",
+        idempotency_key="dedup-1",
+    )
+    second = QueueEvent(
+        type="task.progress",
+        scope="task",
+        id="evt-2",
+        task_id="task-1",
+        idempotency_key="dedup-1",
+    )
+    plugin = FakeChannelsPlugin([first.to_json(), second.to_json()])
+    socket = FakeSocket(plugin)
+
+    await stream_queue_events(socket, ["litestar_queues:task:task_1:events"], channels_backend=plugin)
+
+    assert len(socket.sent_json) == 1
+    assert socket.sent_json[0]["id"] == "evt-1"
+    assert socket.sent_json[0]["idempotencyKey"] == "dedup-1"
+
+
+async def test_stream_queue_events_falls_back_to_event_id_when_no_idempotency_key() -> None:
+    """Events with no idempotency_key still dedup on event.id."""
+    event_a = QueueEvent(type="task.progress", scope="task", id="evt-a", task_id="task-1")
+    event_b = QueueEvent(type="task.progress", scope="task", id="evt-b", task_id="task-1")
+    plugin = FakeChannelsPlugin([
+        event_a.to_json(),
+        event_a.to_json(),  # duplicate of evt-a
+        event_b.to_json(),
+    ])
+    socket = FakeSocket(plugin)
+
+    await stream_queue_events(socket, ["litestar_queues:task:task_1:events"], channels_backend=plugin)
+
+    sent_ids = [payload["id"] for payload in socket.sent_json]
+    assert sent_ids == ["evt-a", "evt-b"]

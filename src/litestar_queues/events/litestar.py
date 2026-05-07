@@ -55,13 +55,16 @@ async def stream_queue_events(
         raise RuntimeError(msg)
 
     await socket.accept()
-    seen_event_ids: set[str] = set()
+    seen_dedup_keys: set[str] = set()
     async with _event_stream(backend, channels, history=history) as events:
         async for raw_event in events:
             event = _decode_event(raw_event)
-            if event is None or event.id in seen_event_ids:
+            if event is None:
                 continue
-            seen_event_ids.add(event.id)
+            dedup_key = event.idempotency_key or event.id
+            if dedup_key in seen_dedup_keys:
+                continue
+            seen_dedup_keys.add(dedup_key)
             try:
                 await socket.send_json(event.to_dict())
             except (OSError, RuntimeError):
