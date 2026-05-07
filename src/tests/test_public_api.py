@@ -99,3 +99,15 @@ def test_public_exports() -> None:
     assert get_task_registry() == {}
     assert get_scheduled_tasks() == {}
     assert callable(task)
+
+
+def test_task_dependency_resolver_config_surface() -> None:
+    """The TaskDependencyResolver alias and config field are part of the config module surface."""
+    from litestar_queues import config as config_module
+    from litestar_queues.config import QueueConfig, TaskDependencyResolver
+
+    assert "TaskDependencyResolver" in config_module.__all__
+    assert TaskDependencyResolver is not None
+    instance = QueueConfig()
+    assert instance.task_dependency_resolver is None
+    assert instance.signature_namespace["TaskDependencyResolver"] is TaskDependencyResolver

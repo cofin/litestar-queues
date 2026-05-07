@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -8,9 +8,11 @@ if TYPE_CHECKING:
     from litestar.datastructures import State
 
     from litestar_queues.backends import BaseQueueBackend
-    from litestar_queues.events import QueueEventPublisher
+    from litestar_queues.events import QueueEventPublisher, TaskExecutionContext
     from litestar_queues.execution import BaseExecutionBackend
+    from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
+    from litestar_queues.task import Task
 
 __all__ = (
     "AsyncServiceProvider",
@@ -18,6 +20,7 @@ __all__ = (
     "QueueBackendConfig",
     "QueueConfig",
     "QueueEventConfig",
+    "TaskDependencyResolver",
 )
 
 QueueBackendConfig = str
@@ -25,6 +28,12 @@ QueueBackendConfig = str
 
 ExecutionBackendConfig = str
 """Type alias for execution backend configuration values."""
+
+TaskDependencyResolver = Callable[
+    ["Task[Any, Any]", "QueuedTaskRecord", "TaskExecutionContext"],
+    Awaitable["dict[str, Any]"],
+]
+"""User-supplied callable that resolves extra kwargs for a task before execution."""
 
 
 class AsyncServiceProvider:
@@ -82,6 +91,7 @@ class QueueConfig:
     queue_backend_config: dict[str, Any] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig = "immediate"
     execution_backend_config: dict[str, Any] = field(default_factory=dict)
+    task_dependency_resolver: "TaskDependencyResolver | None" = None
     start_worker: bool = False
     queue_service_dependency_key: str = "queue_service"
     queue_service_state_key: str = "queue_service"
@@ -169,6 +179,7 @@ class QueueConfig:
             "ValkeyBackendConfig": ValkeyBackendConfig,
             "ValkeyQueueBackend": ValkeyQueueBackend,
             "Task": Task,
+            "TaskDependencyResolver": TaskDependencyResolver,
             "TaskExecutionContext": TaskExecutionContext,
             "TaskResult": TaskResult,
             "Worker": Worker,
