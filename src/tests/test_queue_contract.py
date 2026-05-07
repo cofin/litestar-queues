@@ -2,15 +2,26 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import (
+    InMemoryQueueEventSink,
+    QueueConfig,
+    QueueEventConfig,
+    QueueService,
+    Task,
+    TaskExecutionContext,
+    task,
+)
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.events import QueueEventPublisher
+from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
     from litestar_queues.backends import BaseQueueBackend
+    from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -104,6 +115,155 @@ async def test_memory_backend_notifications_wake_waiters() -> None:
 
     assert await waiter is True
     assert await backend.wait_for_notifications(timeout=0.01) is False
+
+
+async def test_task_dependency_resolver_merges_kwargs_into_task_call(
+    queue_backend: "BaseQueueBackend",
+) -> None:
+    clear_task_registry()
+
+    async def resolver(
+        _task: "Task[Any, Any]",
+        _record: "QueuedTaskRecord",
+        _context: "TaskExecutionContext",
+    ) -> dict[str, Any]:
+        return {"injected_service": "from-resolver"}
+
+    @task("contract.resolver.merge")
+    async def consume(**kwargs: Any) -> dict[str, Any]:
+        return {"injected_service": kwargs["injected_service"]}
+
+    config = QueueConfig(task_dependency_resolver=resolver)
+    service = QueueService(config, queue_backend=queue_backend)
+
+    async with service:
+        result = await service.enqueue("contract.resolver.merge")
+        await result.refresh()
+
+    assert result.status == "completed"
+    assert isinstance(result.result, dict)
+    assert result.result["injected_service"] == "from-resolver"
+
+
+async def test_task_dependency_resolver_cannot_override_sentinels(
+    queue_backend: "BaseQueueBackend",
+) -> None:
+    clear_task_registry()
+
+    async def resolver(
+        _task: "Task[Any, Any]",
+        _record: "QueuedTaskRecord",
+        _context: "TaskExecutionContext",
+    ) -> dict[str, Any]:
+        return {"_job_id": "hijacked", "_task_context": "hijacked"}
+
+    @task("contract.resolver.sentinels")
+    async def sentinels(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "job_id": kwargs["_job_id"],
+            "ctx_type": type(kwargs["_task_context"]).__name__,
+            "ctx_task_name": kwargs["_task_context"].task_name,
+        }
+
+    config = QueueConfig(task_dependency_resolver=resolver)
+    service = QueueService(config, queue_backend=queue_backend)
+
+    async with service:
+        result = await service.enqueue("contract.resolver.sentinels")
+        await result.refresh()
+
+    assert result.status == "completed"
+    assert isinstance(result.result, dict)
+    assert str(result.result["job_id"]) == str(result.record.id)
+    assert result.result["ctx_type"] == "TaskExecutionContext"
+    assert result.result["ctx_task_name"] == "contract.resolver.sentinels"
+
+
+async def test_task_dependency_resolver_exception_records_failure_and_retries(
+    queue_backend: "BaseQueueBackend",
+) -> None:
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink)
+
+    attempts = {"count": 0}
+
+    async def resolver(
+        _task: "Task[Any, Any]",
+        _record: "QueuedTaskRecord",
+        _context: "TaskExecutionContext",
+    ) -> dict[str, Any]:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            msg = "resolver boom"
+            raise RuntimeError(msg)
+        return {}
+
+    @task("contract.resolver.retry", retries=1)
+    async def succeed() -> str:
+        return "ok"
+
+    config = QueueConfig(
+        task_dependency_resolver=resolver,
+        execution_backend="local",
+        event_config=QueueEventConfig(enabled=True),
+    )
+    service = QueueService(config, queue_backend=queue_backend, event_publisher=publisher)
+
+    async with service:
+        enqueued = await service.enqueue("contract.resolver.retry")
+        first_claim = await queue_backend.claim_task(enqueued.record.id)
+        assert first_claim is not None
+        first_outcome = await service.execute_record(first_claim)
+        assert first_outcome.status == "pending"
+        assert first_outcome.retry_count == 1
+        assert first_outcome.error == "resolver boom"
+
+        second_claim = await queue_backend.claim_task(enqueued.record.id)
+        assert second_claim is not None
+        second_outcome = await service.execute_record(second_claim)
+
+    assert attempts["count"] == 2
+    assert second_outcome.status == "completed"
+
+    event_types = [event.type for event in sink.events]
+    assert "task.failed" in event_types
+    failed_event = next(event for event in sink.events if event.type == "task.failed")
+    assert failed_event.message == "resolver boom"
+    failed_index = event_types.index("task.failed")
+    completed_index = event_types.index("task.completed")
+    assert failed_index < completed_index
+
+
+async def test_task_dependency_resolver_default_is_none_with_no_invocation(
+    queue_backend: "BaseQueueBackend",
+) -> None:
+    clear_task_registry()
+    config = QueueConfig()
+    assert config.task_dependency_resolver is None
+
+    @task("contract.resolver.default")
+    async def default() -> str:
+        return "ok"
+
+    service = QueueService(config, queue_backend=queue_backend)
+    captured: list[Any] = []
+
+    original = Task.execute_record
+
+    async def spy(self: "Task[Any, Any]", record: Any, **kwargs: Any) -> Any:
+        captured.append(kwargs.get("extra_kwargs", "MISSING"))
+        return await original(self, record, **kwargs)
+
+    from unittest.mock import patch
+
+    with patch.object(Task, "execute_record", spy):
+        async with service:
+            result = await service.enqueue("contract.resolver.default")
+            await result.refresh()
+
+    assert result.status == "completed"
+    assert captured == [None]
 
 
 async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_delay() -> None:
