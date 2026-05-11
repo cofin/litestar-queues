@@ -16,6 +16,7 @@ class SQLSpecBackendConfig:
 
     sqlspec: SQLSpecT | None = None
     sqlspec_config: SQLSpecConfigT | None = None
+    heartbeat_pool_config: SQLSpecConfigT | None = None
     table_name: str | None = None
     create_schema: bool | None = None
     run_migrations: bool | None = None

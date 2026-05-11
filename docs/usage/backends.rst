@@ -110,6 +110,58 @@ SQLSpec's serializer. Packaged migrations are registered with SQLSpec's
 extension runner as ``ext_litestar_queues_0001``. Applications with their own
 migration flow can set both ``create_schema=False`` and ``run_migrations=False``.
 
+.. _heartbeat-pool-isolation:
+
+Heartbeat Pool Isolation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Workers issue a heartbeat write every ``QueueConfig.worker_heartbeat_interval``
+seconds for every running task. At high ``worker_max_concurrency`` those writes
+share the main pool with task fetch, claim, and lifecycle UPDATEs, and on
+network databases (AsyncPG, AioMySQL) heartbeats can stall behind queue work
+and miss the stale-recovery window.
+
+Set ``heartbeat_pool_config`` to a second SQLSpec adapter config so heartbeat
+writes run on a small dedicated pool:
+
+.. code-block:: python
+
+   from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+   from litestar_queues import QueueConfig
+
+   queue_url = "postgresql://queue@db/queues"
+
+   main_config = AsyncpgConfig(
+       pool_config={"dsn": queue_url, "min_size": 4, "max_size": 16},
+   )
+   heartbeat_config = AsyncpgConfig(
+       pool_config={"dsn": queue_url, "min_size": 1, "max_size": 2},
+   )
+
+   config = QueueConfig(
+       queue_backend="sqlspec",
+       queue_backend_config={
+           "sqlspec_config": main_config,
+           "heartbeat_pool_config": heartbeat_config,
+       },
+       execution_backend="local",
+       worker_max_concurrency=32,
+   )
+
+The dedicated config MUST point at the same database as the main config; the
+backend only uses it for ``touch_heartbeat`` and ``null_heartbeats``. Lifecycle
+writes that touch ``heartbeat_at`` alongside other columns (``claim_task``,
+``complete_task``, ``fail_task``, ``requeue_stale_running``) stay on the main
+pool. Recommended sizing: ``max_size=2`` for AsyncPG / AioMySQL,
+``max_size=1`` for AioSQLite. The dedicated pool's connections add to the
+application's total database connection budget.
+
+When ``heartbeat_pool_config`` is ``None`` (the default), heartbeat writes
+share the main pool exactly as before. If the dedicated pool fails to register
+or open, the backend logs a single warning and falls back to the main pool for
+the lifetime of the backend.
+
 SQLSpec Store Selection
 ~~~~~~~~~~~~~~~~~~~~~~~
 

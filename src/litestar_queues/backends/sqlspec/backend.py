@@ -111,6 +111,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         "_event_poll_interval",
         "_event_queue_table",
         "_event_settings",
+        "_heartbeat_pool_config",
+        "_heartbeat_pool_enabled",
+        "_heartbeat_pool_registered",
         "_notification_backend",
         "_notification_channel",
         "_notifications_enabled",
@@ -132,6 +135,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         backend_config: SQLSpecBackendConfig | None = None,
         sqlspec: SQLSpecT | None = None,
         sqlspec_config: SQLSpecConfigT | None = None,
+        heartbeat_pool_config: SQLSpecConfigT | None = None,
         table_name: str | None = None,
         create_schema: bool | None = None,
         run_migrations: bool | None = None,
@@ -147,6 +151,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         backend_config = backend_config or SQLSpecBackendConfig()
         self._sqlspec = sqlspec if sqlspec is not None else backend_config.sqlspec
         self._sqlspec_config = sqlspec_config if sqlspec_config is not None else backend_config.sqlspec_config
+        self._heartbeat_pool_config = (
+            heartbeat_pool_config if heartbeat_pool_config is not None else backend_config.heartbeat_pool_config
+        )
+        self._heartbeat_pool_enabled = self._heartbeat_pool_config is not None
+        self._heartbeat_pool_registered = False
         self._owns_sqlspec = self._sqlspec is None
         configured_table_name = table_name if table_name is not None else backend_config.table_name
         self._table_name = validate_table_name(configured_table_name) if configured_table_name is not None else None
@@ -185,6 +194,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self._get_or_create_sqlspec()
         self._resolve_table_name()
         self._configure_notifications()
+        self._register_heartbeat_pool()
         self._opened = True
         if self._resolve_run_migrations():
             await self.run_migrations()
@@ -194,6 +204,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     async def close(self) -> None:
         """Close SQLSpec resources."""
+        await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
             await self._event_channel.shutdown()
             self._event_channel = None
@@ -425,7 +436,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         return int(result.rows_affected) == 1
 
     async def touch_heartbeat(self, task_id: UUID) -> None:
-        async with self._session() as driver:
+        async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
                 await driver.execute(
@@ -443,7 +454,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     async def null_heartbeats(self, task_ids: list[UUID]) -> None:
         if not task_ids:
             return
-        async with self._session() as driver:
+        async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
                 await driver.execute(self._get_store().null_heartbeats(task_ids=[str(task_id) for task_id in task_ids]))
@@ -757,6 +768,67 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         sqlspec_config = self._get_sqlspec_config()
         async with self._get_or_create_sqlspec().provide_session(sqlspec_config) as driver:
             yield driver
+
+    @asynccontextmanager
+    async def _heartbeat_session(self) -> AsyncIterator[Any]:
+        """Yield a driver bound to the dedicated heartbeat pool when configured.
+
+        Falls back to the main pool when ``heartbeat_pool_config`` is not set,
+        or when the dedicated pool failed to register at ``open()`` time.
+
+        Raises:
+            RuntimeError: When ``open()`` has not been called on the backend.
+        """
+        if not self._opened or self._sqlspec is None:
+            msg = "SQLSpecQueueBackend.open() must be called before using the backend."
+            raise RuntimeError(msg)
+        if self._heartbeat_pool_enabled and self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
+            async with self._sqlspec.provide_session(self._heartbeat_pool_config) as driver:
+                yield driver
+            return
+        async with self._session() as driver:
+            yield driver
+
+    def _register_heartbeat_pool(self) -> None:
+        """Register the dedicated heartbeat pool with the SQLSpec manager.
+
+        Best effort. On failure the backend logs a warning and continues with
+        the main pool for heartbeats.
+        """
+        if not self._heartbeat_pool_enabled or self._heartbeat_pool_config is None:
+            return
+        if self._heartbeat_pool_registered:
+            return
+        try:
+            self._get_or_create_sqlspec().add_config(self._heartbeat_pool_config)
+        except Exception:
+            from logging import getLogger
+
+            getLogger("litestar_queues").warning(
+                "SQLSpecQueueBackend heartbeat pool registration failed; "
+                "falling back to main pool for heartbeat writes.",
+                exc_info=True,
+            )
+            self._heartbeat_pool_enabled = False
+            self._heartbeat_pool_registered = False
+            return
+        self._heartbeat_pool_registered = True
+
+    async def _close_heartbeat_pool(self) -> None:
+        """Close the dedicated heartbeat pool if the backend opened one."""
+        if not self._heartbeat_pool_registered or self._heartbeat_pool_config is None:
+            return
+        from inspect import isawaitable
+
+        try:
+            close_result = self._heartbeat_pool_config.close_pool()
+            if isawaitable(close_result):
+                await close_result
+        except Exception:
+            from logging import getLogger
+
+            getLogger("litestar_queues").debug("SQLSpecQueueBackend heartbeat pool close failed.", exc_info=True)
+        self._heartbeat_pool_registered = False
 
     async def _select_pending_rows(
         self,
