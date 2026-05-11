@@ -52,6 +52,11 @@ Heartbeats and Stale Records
 Workers update heartbeats while a local task is running and clear heartbeat
 values after execution finishes. Backends that support stale recovery can
 requeue running records whose heartbeat is older than ``worker_stale_after``.
+The worker re-checks stale records every ``worker_stale_check_interval``
+seconds (default ``60``) from inside the poll loop, so a worker that survives
+a peer crash will rescue orphaned records without operator intervention. Set
+``worker_stale_after`` to ``None`` (the default) to disable stale recovery
+entirely; the periodic check is skipped in that case.
 
 External Execution
 ==================
@@ -71,3 +76,20 @@ Worker Wakeups
 Queue backends can implement notifications to wake sleeping workers. These
 notifications are only hints. Workers always fall back to polling via
 ``worker_poll_interval`` when notifications are unavailable or missed.
+
+Worker Identity
+===============
+
+Each :class:`~litestar_queues.Worker` carries a string ``worker_id`` used to
+tag published ``QueueEvent`` envelopes (the ``workerId`` field on the wire).
+The default is ``"worker-{os.getpid()}"``; operators that run multiple
+workers per host, or that need stable identities across hosts where PIDs
+may collide, should pass an explicit ``worker_id`` to ``Worker(...)``:
+
+.. code-block:: python
+
+   worker = Worker(service, worker_id="orders-worker-3")
+
+The :class:`~litestar_queues.QueuePlugin` startup path uses the PID-based
+default. Standalone worker entry points should pass an explicit ``worker_id``
+per process.

@@ -62,12 +62,24 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             self._cloudrun_config = cloudrun_config_from_queue_config(self.config)
         return self._cloudrun_config
 
-    async def execute(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+    async def execute(
+        self,
+        service: "QueueService",
+        record: "QueuedTaskRecord",
+        *,
+        worker_id: str | None = None,
+    ) -> "QueuedTaskRecord":
         """Dispatch a record and return its persisted state.
+
+        The ``worker_id`` argument is accepted for protocol parity but not
+        forwarded: external dispatch does not run ``service.execute_record``
+        locally, so the remote runner is responsible for its own worker
+        identity binding.
 
         Returns:
             The persisted queue record after dispatch.
         """
+        del worker_id
         await self.dispatch(service, record)
         return await service.get_queue_backend().get_task(record.id) or record
 

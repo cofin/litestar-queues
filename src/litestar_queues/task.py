@@ -481,7 +481,7 @@ class Task(Generic[P, T]):
         if extra_kwargs:
             kwargs.update(extra_kwargs)
         if self._accepts_job_id():
-            kwargs["_job_id"] = record.id
+            kwargs["_job_id"] = str(record.id)
         if task_context is not None and self._accepts_task_context():
             kwargs["_task_context"] = task_context
         if inspect.iscoroutinefunction(self._func):

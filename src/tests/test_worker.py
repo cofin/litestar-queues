@@ -1,10 +1,13 @@
 import asyncio
+import os
 from contextlib import suppress
-from uuid import UUID
+from datetime import timedelta
 
 import pytest
 
 from litestar_queues import QueueConfig, QueueService, Worker, non_retryable, task
+from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -62,10 +65,10 @@ async def test_worker_retries_failed_task_until_success() -> None:
 
 
 async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -> None:
-    captured_job_id: UUID | None = None
+    captured_job_id: str | None = None
 
     @task("tasks.permanent", retries=3)
-    async def permanent_failure(*, _job_id: UUID) -> None:
+    async def permanent_failure(*, _job_id: str) -> None:
         nonlocal captured_job_id
         captured_job_id = _job_id
         non_retryable("permanent failure")
@@ -77,7 +80,7 @@ async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -
         assert await worker.run_once() == 1
         await result.refresh()
 
-    assert captured_job_id == result.id
+    assert captured_job_id == str(result.id)
     assert result.status == "failed"
     assert result.error == "permanent failure"
     assert result.record is not None
@@ -134,3 +137,98 @@ async def test_worker_start_wakes_from_backend_notifications() -> None:
 
     assert result.status == "completed"
     assert result.result == 42
+
+
+class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
+    __slots__ = ("requeue_calls",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requeue_calls: list[timedelta] = []
+
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+        self.requeue_calls.append(stale_after)
+        return await super().requeue_stale_running(stale_after=stale_after)
+
+
+async def test_worker_periodic_requeue_calls_backend_on_cadence() -> None:
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service,
+            stale_after=timedelta(seconds=30),
+            stale_check_interval=0.0,
+        )
+
+        await worker._maybe_requeue_stale()
+        await worker._maybe_requeue_stale()
+
+    assert len(backend.requeue_calls) >= 2
+    assert backend.requeue_calls[0] == timedelta(seconds=30)
+
+
+async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> None:
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service)  # stale_after defaults to None
+
+        for _ in range(3):
+            await worker._maybe_requeue_stale()
+
+    assert backend.requeue_calls == []
+
+
+async def test_worker_periodic_requeue_respects_cadence_window() -> None:
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service,
+            stale_after=timedelta(seconds=30),
+            stale_check_interval=3600.0,  # one hour: only the first call fires
+        )
+
+        await worker._maybe_requeue_stale()
+        await worker._maybe_requeue_stale()
+        await worker._maybe_requeue_stale()
+
+    assert len(backend.requeue_calls) == 1
+
+
+async def test_worker_default_worker_id_uses_pid() -> None:
+    async with QueueService(QueueConfig()) as service:
+        worker = Worker(service)
+
+    assert worker.worker_id == f"worker-{os.getpid()}"
+
+
+async def test_worker_explicit_worker_id_overrides_default() -> None:
+    async with QueueService(QueueConfig()) as service:
+        worker = Worker(service, worker_id="worker-alpha-7")
+
+    assert worker.worker_id == "worker-alpha-7"
+
+
+async def test_worker_id_propagates_into_published_events() -> None:
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.worker_id_event")
+    async def worker_id_task() -> str:
+        return "ok"
+
+    async with QueueService(
+        QueueConfig(
+            execution_backend="local",
+            event_config=QueueEventConfig(enabled=True, sink=sink),
+        )
+    ) as service:
+        await service.enqueue(worker_id_task)
+        worker = Worker(service, worker_id="worker-test")
+
+        assert await worker.run_once() == 1
+
+    assert sink.events, "Expected lifecycle events to be published"
+    lifecycle_types = {"task.started", "task.completed", "task.failed"}
+    lifecycle_events = [event for event in sink.events if event.type in lifecycle_types]
+    assert lifecycle_events, "Expected at least one lifecycle event"
+    for event in lifecycle_events:
+        assert event.worker_id == "worker-test"

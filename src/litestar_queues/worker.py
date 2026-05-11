@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -22,12 +23,15 @@ class Worker:
         "_heartbeat_interval",
         "_is_running",
         "_last_reconcile_at",
+        "_last_stale_check_at",
         "_max_concurrency",
         "_poll_interval",
         "_reconcile_interval",
         "_service",
         "_stale_after",
+        "_stale_check_interval",
         "_stop_event",
+        "_worker_id",
     )
 
     def __init__(
@@ -40,8 +44,10 @@ class Worker:
         heartbeat_interval: float = 30,
         reconcile_interval: float = 30,
         stale_after: timedelta | None = None,
+        stale_check_interval: float = 60.0,
         graceful_shutdown_timeout: float = 30,
         final_cancel_timeout: float = 5,
+        worker_id: str | None = None,
     ) -> None:
         """Initialize the worker."""
         self._service = service
@@ -51,25 +57,32 @@ class Worker:
         self._heartbeat_interval = heartbeat_interval
         self._reconcile_interval = reconcile_interval
         self._stale_after = stale_after
+        self._stale_check_interval = stale_check_interval
         self._graceful_shutdown_timeout = graceful_shutdown_timeout
         self._final_cancel_timeout = final_cancel_timeout
+        self._worker_id = worker_id if worker_id is not None else f"worker-{os.getpid()}"
         self._stop_event = asyncio.Event()
         self._is_running = False
         self._last_reconcile_at = 0.0
+        self._last_stale_check_at = 0.0
 
     @property
     def is_running(self) -> bool:
         """Return whether the worker loop is active."""
         return self._is_running
 
+    @property
+    def worker_id(self) -> str:
+        """Return the worker identity used for events and logs."""
+        return self._worker_id
+
     async def start(self) -> None:
         """Run the worker loop until stopped or cancelled."""
         self._is_running = True
         self._stop_event.clear()
         try:
-            if self._stale_after is not None:
-                await self._service.get_queue_backend().requeue_stale_running(stale_after=self._stale_after)
             while not self._stop_event.is_set():
+                await self._maybe_requeue_stale()
                 await self._maybe_reconcile_external()
                 processed = await self.run_once()
                 if processed == 0:
@@ -142,7 +155,11 @@ class Worker:
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> None:
         heartbeat_task = asyncio.create_task(self._heartbeat(record.id))
         try:
-            await self._service.get_execution_backend().execute(self._service, record)
+            await self._service.get_execution_backend().execute(
+                self._service,
+                record,
+                worker_id=self._worker_id,
+            )
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -158,6 +175,15 @@ class Worker:
             await execution_backend.dispatch(self._service, record)
             dispatched += 1
         return dispatched
+
+    async def _maybe_requeue_stale(self) -> None:
+        if self._stale_after is None:
+            return
+        now = asyncio.get_running_loop().time()
+        if now - self._last_stale_check_at < self._stale_check_interval:
+            return
+        self._last_stale_check_at = now
+        await self._service.get_queue_backend().requeue_stale_running(stale_after=self._stale_after)
 
     async def _maybe_reconcile_external(self) -> None:
         if self._reconcile_interval <= 0:

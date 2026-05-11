@@ -98,6 +98,7 @@ class QueuePlugin:
                     if self._config.worker_stale_after is not None
                     else None
                 ),
+                stale_check_interval=self._config.worker_stale_check_interval,
                 graceful_shutdown_timeout=self._config.worker_graceful_shutdown_timeout,
                 final_cancel_timeout=self._config.worker_final_cancel_timeout,
             )

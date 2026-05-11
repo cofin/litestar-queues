@@ -44,6 +44,10 @@ Core fields (Python name → wire name):
 * ``type`` → ``type``, ``scope`` → ``scope``, ``scope_key`` → ``scopeKey``
 * ``task_id`` → ``taskId``, ``task_name`` → ``taskName``
 * ``queue`` → ``queue``, ``worker_id`` → ``workerId``
+  (``workerId`` is populated for events emitted from worker-driven
+  executions; the default identity is ``worker-{pid}``. Service-driven
+  executions without an attached :class:`~litestar_queues.Worker` leave
+  it ``null``.)
 * ``execution_backend`` → ``executionBackend``,
   ``execution_profile`` → ``executionProfile``
 * ``attempt``, ``sequence``, ``level``, ``message``

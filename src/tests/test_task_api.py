@@ -95,7 +95,7 @@ async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> N
         extra_kwargs={"_job_id": "hijacked", "_task_context": "hijacked"},
     )
 
-    assert result["_job_id"] == record.id
+    assert result["_job_id"] == str(record.id)
     assert result["_task_context"] is context
 
 

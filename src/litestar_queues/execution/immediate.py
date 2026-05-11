@@ -14,10 +14,16 @@ class ImmediateExecutionBackend(BaseExecutionBackend):
 
     __slots__ = ()
 
-    async def execute(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+    async def execute(
+        self,
+        service: "QueueService",
+        record: "QueuedTaskRecord",
+        *,
+        worker_id: str | None = None,
+    ) -> "QueuedTaskRecord":
         """Execute a task immediately in the current event loop.
 
         Returns:
             The updated queue record.
         """
-        return await service.execute_record(record)
+        return await service.execute_record(record, worker_id=worker_id)

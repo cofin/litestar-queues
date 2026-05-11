@@ -160,8 +160,20 @@ class QueueService:
         """
         return await self.get_queue_backend().claim_next(queue=queue, execution_backend=execution_backend)
 
-    async def execute_record(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+    async def execute_record(
+        self,
+        record: "QueuedTaskRecord",
+        *,
+        worker_id: str | None = None,
+    ) -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.
+
+        Args:
+            record: The claimed queue record to execute.
+            worker_id: Identity of the worker driving execution, if any. The
+                value is forwarded to ``TaskExecutionContext.worker_id`` so
+                published events carry stable worker provenance. Service-driven
+                executions (no worker) leave this as ``None``.
 
         Returns:
             The updated queue record.
@@ -175,7 +187,7 @@ class QueueService:
             task_id=str(record.id),
             task_name=record.task_name,
             queue=record.queue,
-            worker_id=None,
+            worker_id=worker_id,
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
             attempt=record.retry_count + 1,
