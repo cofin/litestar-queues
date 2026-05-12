@@ -111,7 +111,7 @@ docs-clean:                                         ## Clean documentation artif
 .PHONY: clean
 clean:                                              ## Cleanup temporary build artifacts
 	@echo "${INFO} Cleaning working directory..."
-	@rm -rf .pytest_cache .ruff_cache .hypothesis build/ dist/ .eggs/ .coverage coverage.xml coverage.json htmlcov/ .pytest_cache src/tests/.pytest_cache src/tests/**/.pytest_cache .mypy_cache >/dev/null 2>&1
+	@rm -rf .pytest_cache .ruff_cache .hypothesis build/ dist/ .eggs/ .coverage coverage.xml coverage.json htmlcov/ src/tests/.pytest_cache src/tests/**/.pytest_cache .mypy_cache >/dev/null 2>&1
 	@find . -name '*.egg-info' -exec rm -rf {} + >/dev/null 2>&1
 	@find . -type f -name '*.egg' -exec rm -f {} + >/dev/null 2>&1
 	@find . -name '*.pyc' -exec rm -f {} + >/dev/null 2>&1
@@ -133,6 +133,18 @@ test:                                               ## Run the tests
 
 .PHONY: test-all
 test-all: test                                      ## Run all tests
+
+.PHONY: test-unit
+test-unit:                                          ## Run unit tests only (no Docker required)
+	@echo "${INFO} Running unit tests..."
+	@uv run pytest src/tests/unit -n auto
+	@echo "${OK} Unit tests complete"
+
+.PHONY: test-integration
+test-integration:                                   ## Run integration tests only (autoskips without Docker)
+	@echo "${INFO} Running integration tests..."
+	@uv run pytest src/tests/integration -n auto
+	@echo "${OK} Integration tests complete"
 
 .PHONY: coverage
 coverage:                                           ## Run tests with coverage report

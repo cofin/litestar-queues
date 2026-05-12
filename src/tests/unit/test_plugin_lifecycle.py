@@ -20,7 +20,7 @@ async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> 
     plugin = QueuePlugin(
         QueueConfig(
             execution_backend="local",
-            task_modules=("tests.support.queue_tasks",),
+            task_modules=("tests._factories.queue_tasks",),
         )
     )
     app = Litestar(plugins=[plugin])
