@@ -97,8 +97,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
             key=key,
             metadata=dict(metadata),
         )
-        self.repository.session.add(self.model_from_record(record))
-        await self.repository.session.flush()
+        await self.repository.add(self.model_from_record(record), auto_commit=False, auto_refresh=False)
         return record
 
     async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
@@ -117,8 +116,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         execution_backend: str | None,
     ) -> list[QueuedTaskRecord]:
         statement = self._pending_statement(queue=queue, execution_backend=execution_backend).limit(limit)
-        result = await self.repository.session.execute(statement)
-        return [self.record_from_model(model) for model in result.scalars()]
+        models = await self.list(statement=statement)
+        return [self.record_from_model(model) for model in models]
 
     async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
         now = _utc_now()
@@ -286,8 +285,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         )
         if limit is not None:
             statement = statement.limit(limit)
-        result = await self.repository.session.execute(statement)
-        return [self.record_from_model(model) for model in result.scalars()]
+        models = await self.list(statement=statement)
+        return [self.record_from_model(model) for model in models]
 
     async def get_statistics(self) -> QueueStatistics:
         result = await self.repository.session.execute(
@@ -309,10 +308,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         criteria = [QueueTaskModel.task_name == task_name, QueueTaskModel.status == "completed"]
         if since is not None:
             criteria.append(QueueTaskModel.completed_at >= since)
-        result = await self.repository.session.execute(
+        statement = (
             select(QueueTaskModel).where(and_(*criteria)).order_by(desc(QueueTaskModel.completed_at)).limit(limit)
         )
-        return [self.record_from_model(model) for model in result.scalars()]
+        models = await self.list(statement=statement)
+        return [self.record_from_model(model) for model in models]
 
     async def cleanup_terminal(self, before: datetime) -> int:
         result = await self.repository.session.execute(
@@ -390,12 +390,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         )
 
     async def _select_task(self, task_id: UUID) -> QueueTaskModel | None:
-        result = await self.repository.session.execute(select(QueueTaskModel).where(QueueTaskModel.id == task_id))
-        return cast("QueueTaskModel | None", result.scalar_one_or_none())
+        return await self.repository.get_one_or_none(id=task_id)
 
     async def _select_task_by_key(self, key: str) -> QueueTaskModel | None:
-        result = await self.repository.session.execute(select(QueueTaskModel).where(QueueTaskModel.task_key == key))
-        return cast("QueueTaskModel | None", result.scalar_one_or_none())
+        return await self.repository.get_one_or_none(task_key=key)
 
     def _pending_statement(self, *, queue: str | None, execution_backend: str | None) -> Any:
         now = _utc_now()
