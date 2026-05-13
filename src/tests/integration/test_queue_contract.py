@@ -174,6 +174,7 @@ async def test_task_dependency_resolver_cannot_override_sentinels(
 
     assert result.status == "completed"
     assert isinstance(result.result, dict)
+    assert result.record is not None
     assert str(result.result["job_id"]) == str(result.record.id)
     assert result.result["ctx_type"] == "TaskExecutionContext"
     assert result.result["ctx_task_name"] == "contract.resolver.sentinels"
@@ -212,6 +213,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
 
     async with service:
         enqueued = await service.enqueue("contract.resolver.retry")
+        assert enqueued.record is not None
         first_claim = await queue_backend.claim_task(enqueued.record.id)
         assert first_claim is not None
         first_outcome = await service.execute_record(first_claim)
@@ -219,6 +221,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
         assert first_outcome.retry_count == 1
         assert first_outcome.error == "resolver boom"
 
+        assert enqueued.record is not None
         second_claim = await queue_backend.claim_task(enqueued.record.id)
         assert second_claim is not None
         second_outcome = await service.execute_record(second_claim)

@@ -73,6 +73,28 @@ def _sqlite_config(path: Path) -> AiosqliteConfig:
     return AiosqliteConfig(connection_config={"database": str(path)})
 
 
+async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridge(tmp_path: Path) -> None:
+    """SQLSpecQueueBackend must support sync SQLSpec configs by bridging via sqlspec.utils.sync_tools."""
+    from sqlspec.adapters.sqlite import SqliteConfig
+
+    backend = SQLSpecQueueBackend(
+        sqlspec_config=SqliteConfig(connection_config={"database": str(tmp_path / "queue-sync.db")})
+    )
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.sync_bridge", kwargs={"a": 1})
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert claimed.id == record.id
+        assert claimed.status == "running"
+        await backend.complete_task(claimed.id, result={"ok": True})
+        stored = await backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "completed"
+    finally:
+        await backend.close()
+
+
 def _fake_adapter_config(
     adapter_name: str,
     *,

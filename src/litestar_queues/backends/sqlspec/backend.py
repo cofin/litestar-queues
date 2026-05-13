@@ -31,6 +31,54 @@ _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 
+class _AsyncDriverWrapper:
+    """Expose sync SQLSpec driver methods as awaitable for queue backend use.
+
+    The SQLSpec queue backend awaits driver methods like ``execute`` and ``commit``;
+    sync drivers return values directly. ``sqlspec.utils.sync_tools.ensure_async_``
+    wraps each callable on demand so the backend's ``async with self._session()``
+    path is uniform across sync and async configs.
+    """
+
+    __slots__ = ("_driver",)
+
+    def __init__(self, driver: Any) -> None:
+        self._driver = driver
+
+    def __getattr__(self, name: str) -> Any:
+        from sqlspec.utils.sync_tools import ensure_async_
+
+        attr = getattr(self._driver, name)
+        if callable(attr):
+            return ensure_async_(attr)
+        return attr
+
+
+@asynccontextmanager
+async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIterator[Any]":
+    """Yield a SQLSpec driver regardless of sync/async config.
+
+    Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``PyMysqlConfig``, etc.)
+    return sync context managers; this helper wraps them via
+    ``sqlspec.utils.sync_tools.with_ensure_async_`` so ``__aenter__`` works, and
+    wraps the yielded driver via :class:`_AsyncDriverWrapper` so individual method
+    calls are awaitable.
+
+    Yields:
+        A SQLSpec driver whose methods can be awaited regardless of whether the
+        underlying config is sync or async.
+    """
+    session_cm = sqlspec_manager.provide_session(sqlspec_config)
+    if sqlspec_config.is_async:
+        async with session_cm as driver:
+            yield driver
+    else:
+        from sqlspec.utils.sync_tools import with_ensure_async_
+
+        async with with_ensure_async_(session_cm) as driver:
+            yield _AsyncDriverWrapper(driver)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -766,7 +814,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
-        async with self._get_or_create_sqlspec().provide_session(sqlspec_config) as driver:
+        async with _bridge_session(self._get_or_create_sqlspec(), sqlspec_config) as driver:
             yield driver
 
     @asynccontextmanager
@@ -783,7 +831,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
         if self._heartbeat_pool_enabled and self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
-            async with self._sqlspec.provide_session(self._heartbeat_pool_config) as driver:
+            async with _bridge_session(self._sqlspec, self._heartbeat_pool_config) as driver:
                 yield driver
             return
         async with self._session() as driver:

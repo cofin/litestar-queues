@@ -109,6 +109,7 @@ test-adapters = [
   # Postgres async + sync drivers
   "asyncpg>=0.30.0",
   "psycopg[binary]>=3.2.0",
+  "psycopg-pool>=3.2.0",
   "psqlpy>=0.10.0",
   # MySQL async + sync drivers
   "asyncmy>=0.2.0",
