@@ -77,12 +77,18 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _serialize_datetime(value: datetime | None) -> str | None:
+def _serialize_datetime(value: datetime | None) -> datetime | None:
+    """Normalize a datetime to UTC for parameter binding.
+
+    Returns the datetime as a UTC-aware ``datetime`` object so each SQLSpec
+    adapter can apply its own driver-native serialization (asyncpg/oracledb
+    require ``datetime`` instances; SQLite-family drivers accept either).
+    """
     if value is None:
         return None
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat()
+    return value.astimezone(timezone.utc)
 
 
 def _deserialize_datetime(value: Any) -> datetime | None:
@@ -605,9 +611,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         async with self._session() as driver:
             await driver.begin()
             try:
-                result = await driver.execute(
-                    self._get_store().cleanup_terminal(before=_serialize_datetime(before) or "")
-                )
+                result = await driver.execute(self._get_store().cleanup_terminal(before=_serialize_datetime(before)))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):

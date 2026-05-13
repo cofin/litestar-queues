@@ -129,7 +129,10 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             statement = statement.where_eq("queue", queue)
         if execution_backend is not None:
             statement = statement.where_eq("execution_backend", execution_backend)
-        return statement.order_by("priority", desc=True).order_by("created_at").limit(limit)
+        # ``order_by(name, desc=True)`` currently produces invalid SQL on several
+        # dialects (Postgres / DuckDB emit ``NULLS FIRST DESC``); pass raw column
+        # expressions so SQLSpec doesn't append dialect-specific NULL ordering.
+        return statement.order_by(sql.raw("priority DESC"), sql.raw("created_at ASC")).limit(limit)
 
     def claim_task(self, *, task_id: str, due_at: str, started_at: str, heartbeat_at: str) -> Any:
         """Return an UPDATE statement that claims a due task."""
@@ -270,8 +273,7 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             ._select_all()
             .where("status IN ('pending', 'scheduled', 'running')")
             .where("execution_ref IS NOT NULL")
-            .order_by("started_at")
-            .order_by("created_at")
+            .order_by(sql.raw("started_at ASC"), sql.raw("created_at ASC"))
         )
         return statement.limit(limit) if limit is not None else statement
 
@@ -284,7 +286,7 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         statement = self._select_all().where_eq("task_name", task_name).where_eq("status", "completed")
         if since is not None:
             statement = statement.where("completed_at >= :completed_since", completed_since=since)
-        return statement.order_by("completed_at", desc=True).limit(limit)
+        return statement.order_by(sql.raw("completed_at DESC")).limit(limit)
 
     def cleanup_terminal(self, *, before: str) -> Any:
         """Return a DELETE statement for terminal records before a cutoff."""
@@ -330,6 +332,10 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         read = getattr(value, "read", None)
         if callable(read):
             value = read()
+        if isinstance(value, (list, dict)):
+            # Some drivers (e.g., psycopg/psqlpy with JSONB columns) auto-decode
+            # JSON values; pass them through unchanged.
+            return value
         from sqlspec.utils.serializers import from_json
 
         return from_json(value)
