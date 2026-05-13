@@ -1,10 +1,17 @@
-"""Valkey queue backend."""
+"""Valkey queue backend.
 
-from typing import TYPE_CHECKING, Any, cast
+The Valkey wire protocol is API-compatible with Redis, so this backend
+inherits the full ``RedisQueueBackend`` implementation and only overrides
+the client factory (uses ``valkey.asyncio`` instead of ``redis.asyncio``)
+plus the ``_backend_name`` ClassVar that drives lock-name error messages
+and the ``valkey-pubsub`` notification capability label.
+"""
+
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from valkey import asyncio as valkey_asyncio
 
-from litestar_queues.backends._redis_like import RedisLikeQueueBackend
+from litestar_queues.backends.redis.backend import RedisQueueBackend
 from litestar_queues.backends.valkey.config import ValkeyBackendConfig
 
 if TYPE_CHECKING:
@@ -13,8 +20,10 @@ if TYPE_CHECKING:
 __all__ = ("ValkeyBackendConfig", "ValkeyQueueBackend")
 
 
-class ValkeyQueueBackend(RedisLikeQueueBackend):
+class ValkeyQueueBackend(RedisQueueBackend):
     """Valkey-backed queue backend."""
+
+    _backend_name: ClassVar[str] = "valkey"
 
     def __init__(
         self,
@@ -29,11 +38,11 @@ class ValkeyQueueBackend(RedisLikeQueueBackend):
         lock_timeout: float | None = None,
         poll_interval: float | None = None,
     ) -> None:
-        """Initialize the Valkey queue backend."""
         backend_config = backend_config or ValkeyBackendConfig()
+        # ValkeyBackendConfig is structurally identical to RedisBackendConfig;
+        # passing the unpacked values through the parent constructor is safe.
         super().__init__(
             config=config,
-            backend_name="valkey",
             client=client if client is not None else backend_config.client,
             url=url if url is not None else backend_config.url,
             key_prefix=key_prefix if key_prefix is not None else backend_config.key_prefix,
