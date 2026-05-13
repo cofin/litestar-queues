@@ -1,5 +1,12 @@
+"""Advanced Alchemy queue-backend contract suite.
+
+Smoke tests (registration + import isolation + migration assets) stay
+unparametrized. The 6 behavior tests consume the ``advanced_alchemy_backend``
+fixture parametrized over ``AA_ENGINES`` (aiosqlite + Postgres + MySQL +
+Oracle async configs) by the subdir conftest.
+"""
+
 import sys
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
@@ -26,17 +33,6 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture(autouse=True)
 def clean_task_registry() -> None:
     clear_task_registry()
-
-
-@pytest.fixture
-async def advanced_alchemy_backend(tmp_path: Path) -> AsyncIterator[AdvancedAlchemyQueueBackend]:
-    config = _sqlite_config(tmp_path / "queue.db")
-    backend = AdvancedAlchemyQueueBackend(sqlalchemy_config=config, create_schema=True)
-    await backend.open()
-    try:
-        yield backend
-    finally:
-        await backend.close()
 
 
 def _sqlite_config(path: Path) -> SQLAlchemyAsyncConfig:
