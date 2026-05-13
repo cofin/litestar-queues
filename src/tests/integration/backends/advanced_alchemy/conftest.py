@@ -74,7 +74,7 @@ async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> None:
     quotes on Postgres, uppercase on Oracle). Bookkeeping tables fall
     back to unquoted DDL so they work across every dialect.
     """
-    from typing import cast as _cast
+    from typing import Any, cast
 
     from sqlalchemy import text
 
@@ -86,7 +86,7 @@ async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> None:
     engine = sqlalchemy_config.get_engine()
     async with engine.begin() as connection:
         with suppress(Exception):
-            await connection.run_sync(_cast("Any", QueueTaskModel.__table__).drop, checkfirst=True)
+            await connection.run_sync(cast("Any", QueueTaskModel.__table__).drop, checkfirst=True)
         for ddl in ("DROP TABLE IF EXISTS ddl_migrations", "DROP TABLE IF EXISTS alembic_version"):
             with suppress(Exception):
                 await connection.execute(text(ddl))

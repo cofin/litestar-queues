@@ -390,10 +390,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         )
 
     async def _select_task(self, task_id: UUID) -> QueueTaskModel | None:
-        return await self.repository.get_one_or_none(id=task_id)
+        return cast("QueueTaskModel | None", await self.repository.get_one_or_none(id=task_id))
 
     async def _select_task_by_key(self, key: str) -> QueueTaskModel | None:
-        return await self.repository.get_one_or_none(task_key=key)
+        return cast("QueueTaskModel | None", await self.repository.get_one_or_none(task_key=key))
 
     def _pending_statement(self, *, queue: str | None, execution_backend: str | None) -> Any:
         now = _utc_now()

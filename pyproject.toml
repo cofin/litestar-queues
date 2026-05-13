@@ -101,7 +101,10 @@ docs = [
 ]
 test-adapters = [
   # Real-service fixtures for the integration tier
-  "pytest-databases[postgres,mysql,oracle]>=0.16.0",
+  "pytest-databases[postgres,mysql,oracle,redis,valkey]>=0.16.0",
+  # Redis + Valkey clients used directly by integration tests
+  "redis>=5.0.0",
+  "valkey>=6.0.0",
   # In-process / file-backed SQL adapters
   "aiosqlite>=0.20.0",
   "duckdb>=1.1.0",
@@ -306,6 +309,10 @@ warn_unused_configs = true
 warn_unused_ignores = true
 mypy_path = "src"
 packages = ["litestar_queues", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["google.cloud.*"]
+ignore_missing_imports = true
 
 [tool.codespell]
 skip = "uv.lock"
