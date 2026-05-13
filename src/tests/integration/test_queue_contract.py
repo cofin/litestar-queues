@@ -1,7 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -24,28 +22,6 @@ if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture(params=("memory", "sqlspec"))
-async def queue_backend(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator["BaseQueueBackend"]:
-    if request.param == "memory":
-        yield InMemoryQueueBackend()
-        return
-
-    pytest.importorskip("aiosqlite")
-    pytest.importorskip("sqlspec")
-    from sqlspec.adapters.aiosqlite import AiosqliteConfig
-
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
-    backend = SQLSpecQueueBackend(
-        sqlspec_config=AiosqliteConfig(connection_config={"database": str(tmp_path / "queue.db")})
-    )
-    await backend.open()
-    try:
-        yield backend
-    finally:
-        await backend.close()
 
 
 async def test_backend_contract_persists_execution_metadata_and_filters_claims(
