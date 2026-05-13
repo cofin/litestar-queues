@@ -1,20 +1,16 @@
 """Advanced Alchemy queue persistence service."""
 
 from datetime import datetime, timedelta, timezone
-from importlib import import_module
 from typing import Any, cast
 from uuid import UUID
 
-from litestar_queues.backends.advanced_alchemy._typing import missing_advanced_alchemy_error
+from advanced_alchemy import _serialization
+from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
+from sqlalchemy import and_, delete, desc, func, or_, select, update
+
 from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
 from litestar_queues.models import QueuedTaskRecord, QueueStatistics, TaskStatus
-
-try:
-    from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
-    from sqlalchemy import and_, delete, desc, func, or_, select, update
-except ModuleNotFoundError as exc:
-    raise missing_advanced_alchemy_error(exc) from exc
 
 __all__ = ("QueueTaskService",)
 
@@ -27,18 +23,11 @@ def _utc_now() -> datetime:
 
 
 def _serialize_json(value: Any) -> str:
-    return str(_serialization_module().encode_json(value))
+    return str(_serialization.encode_json(value))
 
 
 def _deserialize_json(value: str) -> Any:
-    return _serialization_module().decode_json(value)
-
-
-def _serialization_module() -> Any:
-    try:
-        return import_module("advanced_alchemy._serialization")
-    except ModuleNotFoundError as exc:
-        raise missing_advanced_alchemy_error(exc) from exc
+    return _serialization.decode_json(value)
 
 
 def _coerce_datetime(value: Any) -> datetime | None:

@@ -3,7 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from litestar_queues.backends.sqlspec._typing import AsyncEventChannelT, SQLSpecConfigT, SQLSpecT
+from sqlspec import SQLSpec
+from sqlspec.extensions.events import AsyncEventChannel
 
 __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "SQLSpecBackendConfig")
 
@@ -14,13 +15,13 @@ DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 class SQLSpecBackendConfig:
     """Configuration values for the SQLSpec queue backend."""
 
-    sqlspec: SQLSpecT | None = None
-    sqlspec_config: SQLSpecConfigT | None = None
-    heartbeat_pool_config: SQLSpecConfigT | None = None
+    sqlspec: SQLSpec | None = None
+    sqlspec_config: Any | None = None
+    heartbeat_pool_config: Any | None = None
     table_name: str | None = None
     create_schema: bool | None = None
     run_migrations: bool | None = None
-    event_channel: AsyncEventChannelT | None = None
+    event_channel: AsyncEventChannel | None = None
     notifications: bool | None = None
     notification_channel: str | None = None
     event_backend: str | None = None

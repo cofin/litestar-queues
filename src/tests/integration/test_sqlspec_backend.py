@@ -166,9 +166,11 @@ async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> None:
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
 
 
-def test_sqlspec_backend_package_import_does_not_import_sqlspec() -> None:
+def test_top_level_litestar_queues_import_does_not_pull_in_sqlspec() -> None:
+    """Importing ``litestar_queues`` must succeed without sqlspec installed."""
     code = """
 import builtins
+import sys
 
 original_import = builtins.__import__
 
@@ -179,9 +181,11 @@ def blocked_import(name, *args, **kwargs):
 
 builtins.__import__ = blocked_import
 import litestar_queues
-from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-assert "SQLSpecQueueBackend" in litestar_queues.__all__
-assert SQLSpecQueueBackend is not None
+from litestar_queues import InMemoryQueueBackend
+
+assert "InMemoryQueueBackend" in litestar_queues.__all__
+assert "SQLSpecQueueBackend" not in litestar_queues.__all__
+assert "sqlspec" not in sys.modules
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 

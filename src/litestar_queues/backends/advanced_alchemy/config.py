@@ -2,10 +2,12 @@
 
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.advanced_alchemy._typing import AsyncSessionMakerT, SQLAlchemyAsyncConfigT
 from litestar_queues.exceptions import QueueConfigurationError
+
+if TYPE_CHECKING:
+    from advanced_alchemy.config import SQLAlchemyAsyncConfig
 
 __all__ = (
     "DEFAULT_TABLE_NAME",
@@ -22,8 +24,7 @@ DEFAULT_TABLE_NAME = "litestar_queue_tasks"
 class AdvancedAlchemyBackendConfig:
     """Configuration values for the Advanced Alchemy queue backend."""
 
-    sqlalchemy_config: SQLAlchemyAsyncConfigT | None = None
-    session_maker: AsyncSessionMakerT | None = None
+    sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None
     table_name: str = DEFAULT_TABLE_NAME
     create_schema: bool = False
     run_migrations: bool = False
@@ -54,14 +55,7 @@ def build_alembic_config(script_config: str = "alembic.ini") -> Any:
 
     Returns:
         An Advanced Alchemy Alembic config.
-
-    Raises:
-        missing_advanced_alchemy_error: If optional dependencies are missing.
     """
-    try:
-        from advanced_alchemy.extensions.litestar import AlembicAsyncConfig
-    except ModuleNotFoundError as exc:
-        from litestar_queues.backends.advanced_alchemy._typing import missing_advanced_alchemy_error
+    from advanced_alchemy.extensions.litestar import AlembicAsyncConfig
 
-        raise missing_advanced_alchemy_error(exc) from exc
     return AlembicAsyncConfig(script_config=script_config, script_location=migration_script_location())

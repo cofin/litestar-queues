@@ -2,15 +2,11 @@
 
 from typing import Any
 
-from litestar_queues.backends.advanced_alchemy._typing import missing_advanced_alchemy_error
-from litestar_queues.backends.advanced_alchemy.config import DEFAULT_TABLE_NAME
+from advanced_alchemy.base import UUIDAuditBase
+from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
-try:
-    from advanced_alchemy.base import UUIDAuditBase
-    from sqlalchemy import DateTime, Index, Integer, String, Text
-    from sqlalchemy.orm import Mapped, mapped_column
-except ModuleNotFoundError as exc:
-    raise missing_advanced_alchemy_error(exc) from exc
+from litestar_queues.backends.advanced_alchemy.config import DEFAULT_TABLE_NAME
 
 __all__ = ("QueueTaskModel",)
 

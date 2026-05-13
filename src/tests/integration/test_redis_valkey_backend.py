@@ -222,7 +222,8 @@ async def backend(request: pytest.FixtureRequest) -> "AsyncIterator[Any]":
         await instance.close()
 
 
-def test_redis_valkey_packages_do_not_import_optional_clients() -> None:
+def test_top_level_litestar_queues_import_does_not_pull_in_redis_or_valkey() -> None:
+    """Importing ``litestar_queues`` must NOT import the redis or valkey clients."""
     code = """
 import builtins
 import sys
@@ -236,15 +237,11 @@ def blocked_import(name, *args, **kwargs):
 
 builtins.__import__ = blocked_import
 import litestar_queues
-from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
-from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
+from litestar_queues import InMemoryQueueBackend
 
-assert "RedisQueueBackend" in litestar_queues.__all__
-assert "ValkeyQueueBackend" in litestar_queues.__all__
-assert RedisBackendConfig is not None
-assert RedisQueueBackend is not None
-assert ValkeyBackendConfig is not None
-assert ValkeyQueueBackend is not None
+assert "InMemoryQueueBackend" in litestar_queues.__all__
+assert "RedisQueueBackend" not in litestar_queues.__all__
+assert "ValkeyQueueBackend" not in litestar_queues.__all__
 assert "redis" not in sys.modules
 assert "valkey" not in sys.modules
 """

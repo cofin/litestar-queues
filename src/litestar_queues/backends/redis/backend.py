@@ -2,8 +2,9 @@
 
 from typing import TYPE_CHECKING, Any
 
+from redis import asyncio as redis_asyncio
+
 from litestar_queues.backends._redis_like import RedisLikeQueueBackend
-from litestar_queues.backends.redis._typing import create_redis_client
 from litestar_queues.backends.redis.config import RedisBackendConfig
 
 if TYPE_CHECKING:
@@ -45,4 +46,4 @@ class RedisQueueBackend(RedisLikeQueueBackend):
         )
 
     def _create_client(self, url: str) -> Any:
-        return create_redis_client(url)
+        return redis_asyncio.from_url(url, decode_responses=True)

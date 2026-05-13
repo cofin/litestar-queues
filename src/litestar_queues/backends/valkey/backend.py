@@ -1,9 +1,10 @@
 """Valkey queue backend."""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from valkey import asyncio as valkey_asyncio
 
 from litestar_queues.backends._redis_like import RedisLikeQueueBackend
-from litestar_queues.backends.valkey._typing import create_valkey_client
 from litestar_queues.backends.valkey.config import ValkeyBackendConfig
 
 if TYPE_CHECKING:
@@ -45,4 +46,5 @@ class ValkeyQueueBackend(RedisLikeQueueBackend):
         )
 
     def _create_client(self, url: str) -> Any:
-        return create_valkey_client(url)
+        from_url = cast("Any", valkey_asyncio.from_url)
+        return from_url(url, decode_responses=True)

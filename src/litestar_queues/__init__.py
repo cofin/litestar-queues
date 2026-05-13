@@ -1,14 +1,8 @@
 from typing import TYPE_CHECKING
 
 from litestar_queues.backends import (
-    AdvancedAlchemyQueueBackend,
     BaseQueueBackend,
     InMemoryQueueBackend,
-    RedisBackendConfig,
-    RedisQueueBackend,
-    SQLSpecQueueBackend,
-    ValkeyBackendConfig,
-    ValkeyQueueBackend,
     get_queue_backend,
     get_queue_backend_class,
     list_queue_backends,
@@ -73,7 +67,6 @@ if TYPE_CHECKING:
     from litestar_queues.plugin import QueuePlugin
 
 __all__ = (
-    "AdvancedAlchemyQueueBackend",
     "AsyncServiceProvider",
     "BaseExecutionBackend",
     "BaseQueueBackend",
@@ -103,17 +96,12 @@ __all__ = (
     "QueueService",
     "QueueStatistics",
     "QueuedTaskRecord",
-    "RedisBackendConfig",
-    "RedisQueueBackend",
-    "SQLSpecQueueBackend",
     "ScheduleConfig",
     "Task",
     "TaskDependencyResolver",
     "TaskExecutionContext",
     "TaskResult",
     "TaskStatus",
-    "ValkeyBackendConfig",
-    "ValkeyQueueBackend",
     "Worker",
     "execution_backend",
     "get_current_task_context",

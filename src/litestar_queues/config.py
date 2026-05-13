@@ -113,17 +113,15 @@ class QueueConfig:
 
     @property
     def signature_namespace(self) -> dict[str, Any]:
-        """Return names added to Litestar's signature namespace."""
-        from litestar_queues.backends import (
-            AdvancedAlchemyQueueBackend,
-            BaseQueueBackend,
-            InMemoryQueueBackend,
-            RedisBackendConfig,
-            RedisQueueBackend,
-            SQLSpecQueueBackend,
-            ValkeyBackendConfig,
-            ValkeyQueueBackend,
-        )
+        """Return names added to Litestar's signature namespace.
+
+        Optional backends (advanced_alchemy, sqlspec, redis, valkey) are added
+        only when their driver extra is installed; missing extras silently drop
+        the corresponding entries.
+        """
+        from contextlib import suppress
+
+        from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
         from litestar_queues.events import (
             InMemoryQueueEventSink,
             NoopQueueEventSink,
@@ -149,10 +147,9 @@ class QueueConfig:
         from litestar_queues.task import ScheduleConfig, Task, TaskResult
         from litestar_queues.worker import Worker
 
-        return {
+        namespace: dict[str, Any] = {
             "BaseExecutionBackend": BaseExecutionBackend,
             "BaseQueueBackend": BaseQueueBackend,
-            "AdvancedAlchemyQueueBackend": AdvancedAlchemyQueueBackend,
             "CloudRunExecutionBackend": CloudRunExecutionBackend,
             "CloudRunExecutionConfig": CloudRunExecutionConfig,
             "CloudRunExecutionStatus": CloudRunExecutionStatus,
@@ -165,8 +162,6 @@ class QueueConfig:
             "QueueChannels": QueueChannels,
             "QueueConfig": QueueConfig,
             "QueueBackendCapabilities": QueueBackendCapabilities,
-            "RedisBackendConfig": RedisBackendConfig,
-            "RedisQueueBackend": RedisQueueBackend,
             "QueueEvent": QueueEvent,
             "QueueEventActor": QueueEventActor,
             "QueueEventConfig": QueueEventConfig,
@@ -176,9 +171,6 @@ class QueueConfig:
             "QueueService": QueueService,
             "QueueStatistics": QueueStatistics,
             "ScheduleConfig": ScheduleConfig,
-            "SQLSpecQueueBackend": SQLSpecQueueBackend,
-            "ValkeyBackendConfig": ValkeyBackendConfig,
-            "ValkeyQueueBackend": ValkeyQueueBackend,
             "Task": Task,
             "TaskDependencyResolver": TaskDependencyResolver,
             "TaskExecutionContext": TaskExecutionContext,
@@ -186,6 +178,25 @@ class QueueConfig:
             "Worker": Worker,
             "non_retryable": non_retryable,
         }
+        with suppress(ImportError):
+            from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+
+            namespace["AdvancedAlchemyQueueBackend"] = AdvancedAlchemyQueueBackend
+        with suppress(ImportError):
+            from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+
+            namespace["SQLSpecQueueBackend"] = SQLSpecQueueBackend
+        with suppress(ImportError):
+            from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
+
+            namespace["RedisBackendConfig"] = RedisBackendConfig
+            namespace["RedisQueueBackend"] = RedisQueueBackend
+        with suppress(ImportError):
+            from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
+
+            namespace["ValkeyBackendConfig"] = ValkeyBackendConfig
+            namespace["ValkeyQueueBackend"] = ValkeyQueueBackend
+        return namespace
 
     @property
     def dependencies(self) -> dict[str, Any]:

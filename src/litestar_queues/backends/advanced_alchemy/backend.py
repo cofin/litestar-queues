@@ -6,11 +6,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from litestar_queues.backends.advanced_alchemy._typing import (
-    AsyncSessionMakerT,
-    SQLAlchemyAsyncConfigT,
-    missing_advanced_alchemy_error,
-)
 from litestar_queues.backends.advanced_alchemy.config import (
     DEFAULT_TABLE_NAME,
     AdvancedAlchemyBackendConfig,
@@ -22,6 +17,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
 
 if TYPE_CHECKING:
+    from advanced_alchemy.config import SQLAlchemyAsyncConfig
+
     from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
     from litestar_queues.config import QueueConfig
 
@@ -35,7 +32,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         "_create_schema",
         "_opened",
         "_run_migrations",
-        "_session_maker",
         "_sqlalchemy_config",
         "_table_name",
     )
@@ -45,8 +41,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         config: "QueueConfig | None" = None,
         *,
         backend_config: AdvancedAlchemyBackendConfig | None = None,
-        sqlalchemy_config: SQLAlchemyAsyncConfigT | None = None,
-        session_maker: AsyncSessionMakerT | None = None,
+        sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None,
         table_name: str | None = None,
         create_schema: bool | None = None,
         run_migrations: bool | None = None,
@@ -56,7 +51,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self._sqlalchemy_config = (
             sqlalchemy_config if sqlalchemy_config is not None else backend_config.sqlalchemy_config
         )
-        self._session_maker = session_maker if session_maker is not None else backend_config.session_maker
         configured_table_name = table_name if table_name is not None else backend_config.table_name
         self._table_name = validate_table_name(configured_table_name or DEFAULT_TABLE_NAME)
         self._create_schema = create_schema if create_schema is not None else backend_config.create_schema
@@ -90,15 +84,8 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self._opened = False
 
     async def create_schema(self) -> None:
-        """Create the queue task table and indexes.
-
-        Raises:
-            missing_advanced_alchemy_error: If optional dependencies are missing.
-        """
-        try:
-            from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
-        except ModuleNotFoundError as exc:
-            raise missing_advanced_alchemy_error(exc) from exc
+        """Create the queue task table and indexes."""
+        from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
 
         self._prepare_model()
         if self._sqlalchemy_config is not None:
@@ -116,15 +103,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
         Raises:
             QueueConfigurationError: If no Advanced Alchemy config is available.
-            missing_advanced_alchemy_error: If optional dependencies are missing.
         """
         if self._sqlalchemy_config is None:
             msg = "AdvancedAlchemyQueueBackend.run_migrations() requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
-        try:
-            from advanced_alchemy.extensions.litestar import AlembicCommands
-        except ModuleNotFoundError as exc:
-            raise missing_advanced_alchemy_error(exc) from exc
+        from advanced_alchemy.extensions.litestar import AlembicCommands
 
         original_alembic_config = self._sqlalchemy_config.alembic_config
         self._sqlalchemy_config.alembic_config = build_alembic_config()
@@ -282,8 +265,8 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             return await service.cleanup_terminal(before)
 
     def _ensure_configured(self) -> None:
-        if self._sqlalchemy_config is None and self._session_maker is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config or session_maker."
+        if self._sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
 
     def _ensure_opened(self) -> None:
@@ -294,23 +277,15 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     def _prepare_model(self) -> None:
         if self._table_name == DEFAULT_TABLE_NAME:
             return
-        try:
-            from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
-        except ModuleNotFoundError as exc:
-            raise missing_advanced_alchemy_error(exc) from exc
+        from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+
         cast("Any", QueueTaskModel.__table__).name = self._table_name
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[Any]:
         self._ensure_configured()
-        if self._session_maker is not None:
-            async with self._session_maker() as session:
-                yield session
-            return
         sqlalchemy_config = self._sqlalchemy_config
-        if sqlalchemy_config is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config or session_maker."
-            raise QueueConfigurationError(msg)
+        assert sqlalchemy_config is not None
         async with sqlalchemy_config.get_session() as session:
             yield session
 

@@ -1,12 +1,8 @@
 """Advanced Alchemy queue task repository."""
 
-from litestar_queues.backends.advanced_alchemy._typing import missing_advanced_alchemy_error
-from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+from advanced_alchemy.repository import SQLAlchemyAsyncRepository
 
-try:
-    from advanced_alchemy.repository import SQLAlchemyAsyncRepository
-except ModuleNotFoundError as exc:
-    raise missing_advanced_alchemy_error(exc) from exc
+from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
 
 __all__ = ("QueueTaskRepository",)
 

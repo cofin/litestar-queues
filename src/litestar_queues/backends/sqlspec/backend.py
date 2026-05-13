@@ -7,13 +7,11 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
+from sqlspec import SQLSpec
+from sqlspec.extensions.events import AsyncEventChannel, normalize_event_channel_name
+from sqlspec.utils.sync_tools import ensure_async_, with_ensure_async_
+
 from litestar_queues.backends.base import BaseQueueBackend
-from litestar_queues.backends.sqlspec._typing import (
-    AsyncEventChannelT,
-    SQLSpecConfigT,
-    SQLSpecT,
-    missing_sqlspec_error,
-)
 from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
@@ -46,8 +44,6 @@ class _AsyncDriverWrapper:
         self._driver = driver
 
     def __getattr__(self, name: str) -> Any:
-        from sqlspec.utils.sync_tools import ensure_async_
-
         attr = getattr(self._driver, name)
         if callable(attr):
             return ensure_async_(attr)
@@ -73,8 +69,6 @@ async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIt
         async with session_cm as driver:
             yield driver
     else:
-        from sqlspec.utils.sync_tools import with_ensure_async_
-
         async with with_ensure_async_(session_cm) as driver:
             yield _AsyncDriverWrapper(driver)
 
@@ -108,14 +102,14 @@ def _coerce_status(value: Any) -> TaskStatus:
     return cast("TaskStatus", status)
 
 
-def _queue_extension_settings(sqlspec_config: SQLSpecConfigT | None) -> dict[str, Any]:
+def _queue_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
     if sqlspec_config is None:
         return {}
     extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
     return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
 
 
-def _events_extension_settings(sqlspec_config: SQLSpecConfigT | None) -> dict[str, Any]:
+def _events_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
     if sqlspec_config is None:
         return {}
     extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
@@ -138,10 +132,6 @@ def _resolve_bool(value: bool | None, queue_settings: dict[str, Any], key: str, 
 
 
 def _normalize_notification_channel(channel: str) -> str:
-    try:
-        from sqlspec.extensions.events import normalize_event_channel_name
-    except ModuleNotFoundError as exc:
-        raise missing_sqlspec_error(exc) from exc
     try:
         return str(normalize_event_channel_name(channel))
     except Exception as exc:
@@ -181,13 +171,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         config: "QueueConfig | None" = None,
         *,
         backend_config: SQLSpecBackendConfig | None = None,
-        sqlspec: SQLSpecT | None = None,
-        sqlspec_config: SQLSpecConfigT | None = None,
-        heartbeat_pool_config: SQLSpecConfigT | None = None,
+        sqlspec: SQLSpec | None = None,
+        sqlspec_config: Any | None = None,
+        heartbeat_pool_config: Any | None = None,
         table_name: str | None = None,
         create_schema: bool | None = None,
         run_migrations: bool | None = None,
-        event_channel: AsyncEventChannelT | None = None,
+        event_channel: AsyncEventChannel | None = None,
         notifications: bool | None = None,
         notification_channel: str | None = None,
         event_backend: str | None = None,
@@ -667,11 +657,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         return True
 
     @staticmethod
-    def _default_sqlspec_config() -> SQLSpecConfigT:
-        try:
-            from sqlspec.adapters.aiosqlite import AiosqliteConfig
-        except ModuleNotFoundError as exc:
-            raise missing_sqlspec_error(exc) from exc
+    def _default_sqlspec_config() -> Any:
+        from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
         return AiosqliteConfig()
 
     def _resolve_table_name(self) -> str:
@@ -732,7 +720,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     def _configure_notification_overrides(
         self,
-        sqlspec_config: SQLSpecConfigT,
+        sqlspec_config: Any,
         queue_settings: dict[str, Any],
         events_settings: dict[str, Any],
     ) -> dict[str, Any]:
@@ -777,16 +765,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         sqlspec_config.set_migration_config(migration_config)
         return merged_event_settings
 
-    def _get_or_create_sqlspec(self) -> SQLSpecT:
+    def _get_or_create_sqlspec(self) -> SQLSpec:
         if self._sqlspec is None:
-            try:
-                from sqlspec import SQLSpec
-            except ModuleNotFoundError as exc:
-                raise missing_sqlspec_error(exc) from exc
             self._sqlspec = SQLSpec()
         return self._sqlspec
 
-    def _get_sqlspec_config(self) -> SQLSpecConfigT:
+    def _get_sqlspec_config(self) -> Any:
         if self._sqlspec_config is None:
             registered_configs = tuple(cast("dict[int, Any]", self._get_or_create_sqlspec().configs).values())
             if len(registered_configs) == 1:

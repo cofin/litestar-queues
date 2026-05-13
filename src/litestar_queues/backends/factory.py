@@ -1,7 +1,6 @@
 """Queue backend registry and factory functions."""
 
 from collections.abc import Callable
-from functools import lru_cache
 from importlib import import_module
 from inspect import signature
 from typing import TYPE_CHECKING, Any
@@ -20,6 +19,14 @@ __all__ = (
 
 _queue_backend_registry: dict[str, type[BaseQueueBackend]] = {}
 
+_BUILTIN_BACKENDS: dict[str, str] = {
+    "advanced-alchemy": "litestar_queues.backends.advanced_alchemy:AdvancedAlchemyQueueBackend",
+    "memory": "litestar_queues.backends.memory:InMemoryQueueBackend",
+    "redis": "litestar_queues.backends.redis:RedisQueueBackend",
+    "sqlspec": "litestar_queues.backends.sqlspec:SQLSpecQueueBackend",
+    "valkey": "litestar_queues.backends.valkey:ValkeyQueueBackend",
+}
+
 
 def queue_backend(name: str) -> Callable[[type[BaseQueueBackend]], type[BaseQueueBackend]]:
     """Decorator to register a queue backend class with a short name.
@@ -35,24 +42,11 @@ def queue_backend(name: str) -> Callable[[type[BaseQueueBackend]], type[BaseQueu
     return decorator
 
 
-@lru_cache(maxsize=1)
-def _register_builtins() -> None:
-    """Register built-in queue backends lazily."""
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
-    from litestar_queues.backends.memory import InMemoryQueueBackend
-    from litestar_queues.backends.redis import RedisQueueBackend
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-    from litestar_queues.backends.valkey import ValkeyQueueBackend
-
-    _queue_backend_registry.setdefault("advanced-alchemy", AdvancedAlchemyQueueBackend)
-    _queue_backend_registry.setdefault("memory", InMemoryQueueBackend)
-    _queue_backend_registry.setdefault("redis", RedisQueueBackend)
-    _queue_backend_registry.setdefault("sqlspec", SQLSpecQueueBackend)
-    _queue_backend_registry.setdefault("valkey", ValkeyQueueBackend)
-
-
 def get_queue_backend_class(backend_path: str) -> type[BaseQueueBackend]:
     """Get a queue backend class by short name or import path.
+
+    Optional backends are imported lazily on first lookup so unused adapters do
+    not require their driver extras to be installed.
 
     Returns:
         The resolved queue backend class.
@@ -60,18 +54,33 @@ def get_queue_backend_class(backend_path: str) -> type[BaseQueueBackend]:
     Raises:
         ValueError: If a short backend name is unknown.
     """
-    _register_builtins()
-
     if backend_path in _queue_backend_registry:
         return _queue_backend_registry[backend_path]
 
+    if backend_path in _BUILTIN_BACKENDS:
+        module_path, class_name = _BUILTIN_BACKENDS[backend_path].split(":", 1)
+        module = import_module(module_path)
+        backend_class = cast_backend_class(getattr(module, class_name))
+        _queue_backend_registry[backend_path] = backend_class
+        return backend_class
+
     if "." not in backend_path:
-        msg = f"Unknown queue backend: {backend_path!r}. Available: {list(_queue_backend_registry.keys())}"
+        available = sorted({*_queue_backend_registry, *_BUILTIN_BACKENDS})
+        msg = f"Unknown queue backend: {backend_path!r}. Available: {available}"
         raise ValueError(msg)
 
     module_path, class_name = backend_path.rsplit(".", 1)
     module = import_module(module_path)
-    return getattr(module, class_name)  # type: ignore[no-any-return]
+    return cast_backend_class(getattr(module, class_name))
+
+
+def cast_backend_class(value: Any) -> type[BaseQueueBackend]:
+    """Narrow an imported attribute to the backend class type for type-checkers.
+
+    Returns:
+        The same value, typed as ``type[BaseQueueBackend]``.
+    """
+    return value  # type: ignore[no-any-return]
 
 
 def get_queue_backend(backend: str = "memory", config: "QueueConfig | None" = None) -> BaseQueueBackend:
@@ -94,6 +103,5 @@ def get_queue_backend(backend: str = "memory", config: "QueueConfig | None" = No
 
 
 def list_queue_backends() -> list[str]:
-    """Return registered queue backend names."""
-    _register_builtins()
-    return list(_queue_backend_registry.keys())
+    """Return registered queue backend names (built-ins + dynamically registered)."""
+    return sorted({*_queue_backend_registry, *_BUILTIN_BACKENDS})

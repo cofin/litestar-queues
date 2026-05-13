@@ -48,7 +48,8 @@ async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> None:
     assert get_queue_backend_class("advanced-alchemy") is AdvancedAlchemyQueueBackend
 
 
-def test_advanced_alchemy_backend_package_import_does_not_import_optional_dependencies() -> None:
+def test_top_level_litestar_queues_import_does_not_require_advanced_alchemy() -> None:
+    """Importing ``litestar_queues`` must succeed without advanced_alchemy installed."""
     code = """
 import builtins
 
@@ -64,12 +65,11 @@ def blocked_import(name, *args, **kwargs):
 builtins.__import__ = blocked_import
 
 import litestar_queues
-from litestar_queues import AdvancedAlchemyQueueBackend
-from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig
+from litestar_queues import InMemoryQueueBackend, QueueConfig
 
-assert "AdvancedAlchemyQueueBackend" in litestar_queues.__all__
-assert AdvancedAlchemyQueueBackend is not None
-assert AdvancedAlchemyBackendConfig is not None
+assert "InMemoryQueueBackend" in litestar_queues.__all__
+assert "AdvancedAlchemyQueueBackend" not in litestar_queues.__all__
+assert QueueConfig().queue_backend == "memory"
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 
