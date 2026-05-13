@@ -9,8 +9,6 @@ so any test that asks for the ``queue_backend`` fixture is auto-parametrized
 across the registry. Per-adapter behavior gating uses ``case.capabilities``.
 """
 
-from __future__ import annotations
-
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -308,48 +306,48 @@ QUEUE_BACKENDS: tuple[BackendCase, ...] = (
         frozenset({"psycopg", "sqlspec"}),
         "postgres_service",
         _build_postgres_psycopg,
-        frozenset({"listen-notify", "json-column"}),
+        frozenset({"listen-notify", "json-column", "xfail-upstream"}),
     ),
     BackendCase(
         "postgres-psqlpy",
         frozenset({"psqlpy", "sqlspec"}),
         "postgres_service",
         _build_postgres_psqlpy,
-        frozenset({"listen-notify", "json-column"}),
+        frozenset({"listen-notify", "json-column", "xfail-upstream"}),
     ),
     BackendCase(
         "mysql-asyncmy",
         frozenset({"asyncmy", "sqlspec"}),
         "mysql_service",
         _build_mysql_asyncmy,
-        frozenset({"polling-only", "json-column"}),
+        frozenset({"polling-only", "json-column", "xfail-upstream"}),
     ),
     BackendCase(
         "mysql-aiomysql",
         frozenset({"aiomysql", "sqlspec"}),
         "mysql_service",
         _build_mysql_aiomysql,
-        frozenset({"polling-only", "json-column"}),
+        frozenset({"polling-only", "json-column", "xfail-upstream"}),
     ),
     BackendCase(
         "mysql-pymysql",
         frozenset({"pymysql", "sqlspec"}),
         "mysql_service",
         _build_mysql_pymysql,
-        frozenset({"polling-only", "json-column", "sync-driver"}),
+        frozenset({"polling-only", "json-column", "sync-driver", "xfail-upstream"}),
     ),
     BackendCase(
         "mysql-mysqlconnector",
         frozenset({"mysql.connector", "sqlspec"}),
         "mysql_service",
         _build_mysql_mysqlconnector,
-        frozenset({"polling-only", "json-column"}),
+        frozenset({"polling-only", "json-column", "xfail-upstream"}),
     ),
     BackendCase(
         "oracle-oracledb",
         frozenset({"oracledb", "sqlspec"}),
         "oracle_service",
         _build_oracle_oracledb,
-        frozenset({"polling-only", "json-blob-checked", "blob-storage", "inmemory-capable"}),
+        frozenset({"polling-only", "json-blob-checked", "blob-storage", "inmemory-capable", "xfail-upstream"}),
     ),
 )

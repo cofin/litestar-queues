@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from advanced_alchemy.config import SQLAlchemyAsyncConfig
+    from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
 
 __all__ = (
     "DEFAULT_TABLE_NAME",

@@ -78,12 +78,7 @@ def _utc_now() -> datetime:
 
 
 def _serialize_datetime(value: datetime | None) -> datetime | None:
-    """Normalize a datetime to UTC for parameter binding.
-
-    Returns the datetime as a UTC-aware ``datetime`` object so each SQLSpec
-    adapter can apply its own driver-native serialization (asyncpg/oracledb
-    require ``datetime`` instances; SQLite-family drivers accept either).
-    """
+    """Return ``value`` normalized to UTC for SQLSpec parameter binding."""
     if value is None:
         return None
     if value.tzinfo is None:

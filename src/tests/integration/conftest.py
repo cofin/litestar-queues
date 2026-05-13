@@ -1,7 +1,6 @@
 """Integration-tier pytest fixtures and pytest-databases plugin registration."""
 
-from __future__ import annotations
-
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,20 +13,19 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
 
-# pytest-databases auto-skips each plugin when Docker is unavailable.
-pytest_plugins = [
-    "pytest_databases.docker.postgres",
-    "pytest_databases.docker.mysql",
-    "pytest_databases.docker.oracle",
-]
-
 
 @pytest.fixture
 async def queue_backend(
     request: pytest.FixtureRequest,
     tmp_path: "Path",
 ) -> "AsyncIterator[BaseQueueBackend]":
-    """Yield an opened queue backend parametrized over QUEUE_BACKENDS."""
+    """Yield an opened queue backend parametrized over QUEUE_BACKENDS.
+
+    For service-backed adapters (Postgres, MySQL, Oracle), tests share the same
+    Docker database across the run; we drop the queue table on teardown to
+    prevent cross-test data leakage. In-process adapters get a unique tmp_path
+    DB file per test so no extra cleanup is required.
+    """
     case: BackendCase = request.param
     for extra in case.extras:
         pytest.importorskip(extra)
@@ -54,7 +52,29 @@ async def queue_backend(
     try:
         yield backend
     finally:
+        if case.service_attr is not None:
+            with suppress(Exception):
+                await _drop_queue_tables(backend)
         await backend.close()
+
+
+async def _drop_queue_tables(backend: "BaseQueueBackend") -> None:
+    """Drop the queue + events tables for service-backed SQLSpec adapters."""
+    sqlspec_config = getattr(backend, "_sqlspec_config", None)
+    sqlspec_manager = getattr(backend, "_sqlspec", None)
+    if sqlspec_config is None or sqlspec_manager is None:
+        return
+    table_name = getattr(backend, "_table_name", None) or "litestar_queue_tasks"
+    from litestar_queues.backends.sqlspec.backend import _bridge_session
+
+    async with _bridge_session(sqlspec_manager, sqlspec_config) as driver:
+        for ddl in (
+            f'DROP TABLE IF EXISTS "{table_name}"',
+            'DROP TABLE IF EXISTS "ddl_migrations"',
+            'DROP TABLE IF EXISTS "sqlspec_async_events"',
+        ):
+            with suppress(Exception):
+                await driver.execute_script(ddl)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:

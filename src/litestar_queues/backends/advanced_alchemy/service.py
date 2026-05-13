@@ -23,11 +23,13 @@ def _utc_now() -> datetime:
 
 
 def _serialize_json(value: Any) -> str:
-    return str(_serialization.encode_json(value))
+    encode_json = _serialization.encode_json  # pyright: ignore[reportPrivateImportUsage]
+    return str(encode_json(value))
 
 
 def _deserialize_json(value: str) -> Any:
-    return _serialization.decode_json(value)
+    decode_json = _serialization.decode_json  # pyright: ignore[reportPrivateImportUsage]
+    return decode_json(value)
 
 
 def _coerce_datetime(value: Any) -> datetime | None:

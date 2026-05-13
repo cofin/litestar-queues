@@ -17,7 +17,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
 
 if TYPE_CHECKING:
-    from advanced_alchemy.config import SQLAlchemyAsyncConfig
+    from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
 
     from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
     from litestar_queues.config import QueueConfig
@@ -285,7 +285,9 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     async def _session(self) -> AsyncIterator[Any]:
         self._ensure_configured()
         sqlalchemy_config = self._sqlalchemy_config
-        assert sqlalchemy_config is not None
+        if sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
+            raise QueueConfigurationError(msg)
         async with sqlalchemy_config.get_session() as session:
             yield session
 
