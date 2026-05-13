@@ -110,6 +110,7 @@ class QueueConfig:
     worker_stale_check_interval: float = 60.0
     worker_graceful_shutdown_timeout: float = 30
     worker_final_cancel_timeout: float = 5
+    scheduler_canary_task: str = "scheduler.heartbeat"
 
     @property
     def signature_namespace(self) -> dict[str, Any]:

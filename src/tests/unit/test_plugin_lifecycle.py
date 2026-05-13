@@ -1,3 +1,7 @@
+import subprocess
+import sys
+import textwrap
+
 import pytest
 from litestar import Litestar
 from litestar.config.app import AppConfig
@@ -52,6 +56,24 @@ async def test_plugin_start_worker_creates_and_cleans_up_worker() -> None:
         assert worker.is_running
 
     assert not worker.is_running
+
+
+def test_importing_litestar_queues_does_not_load_click() -> None:
+    """``click`` is only pulled in when the CLI is actually invoked.
+
+    Verified in a fresh subprocess so prior in-process imports cannot leak
+    ``click`` into the test process's ``sys.modules``.
+    """
+    code = textwrap.dedent(
+        """
+        import sys
+        import litestar_queues  # noqa: F401
+        from litestar_queues import QueueConfig, QueuePlugin, discover_tasks  # noqa: F401
+        assert "click" not in sys.modules, sorted(m for m in sys.modules if "click" in m)
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, timeout=20)
+    assert result.returncode == 0, result.stderr.decode()
 
 
 async def test_plugin_uses_registered_queue_backend_instance() -> None:

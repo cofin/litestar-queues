@@ -40,12 +40,31 @@ def test_config_defaults() -> None:
     assert config.queue_service_state_key == "queue_service"
     assert config.queue_worker_state_key == "queue_worker"
     assert config.start_worker is False
+    assert config.scheduler_canary_task == "scheduler.heartbeat"
+
+
+def test_scheduler_canary_task_is_overridable() -> None:
+    """Operators can override the canary task name used by scheduler-health."""
+    from litestar_queues import QueueConfig
+
+    config = QueueConfig(scheduler_canary_task="ops.healthcheck")
+    assert config.scheduler_canary_task == "ops.healthcheck"
 
 
 def test_plugin_with_litestar_app(app: "Litestar", queue_plugin: "QueuePlugin") -> None:
     """Test that the plugin integrates with a Litestar application."""
     assert queue_plugin in app.plugins
     assert queue_plugin.config.queue_backend == "memory"
+
+
+def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> None:
+    """``QueuePlugin`` satisfies ``CLIPluginProtocol`` and is registered on ``app.plugins.cli``."""
+    from litestar import Litestar
+    from litestar.plugins import CLIPluginProtocol
+
+    app = Litestar(plugins=[queue_plugin])
+    assert isinstance(queue_plugin, CLIPluginProtocol)
+    assert any(p is queue_plugin for p in app.plugins.cli)
 
 
 def test_plugin_registers_dependencies_and_state() -> None:

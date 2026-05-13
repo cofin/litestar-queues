@@ -53,6 +53,7 @@ def test_public_exports() -> None:
         "Task",
         "TaskResult",
         "Worker",
+        "discover_tasks",
         "get_execution_backend_class",
         "get_queue_backend_class",
         "get_scheduled_tasks",

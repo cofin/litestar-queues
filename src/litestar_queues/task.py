@@ -25,6 +25,7 @@ __all__ = (
     "Task",
     "TaskResult",
     "clear_task_registry",
+    "discover_tasks",
     "get_scheduled_tasks",
     "get_task_registry",
     "load_task_modules",
@@ -613,6 +614,58 @@ def _load_child_modules(module: "ModuleType", *, force_reload: bool) -> int:
         _loaded_modules.add(module_name)
         loaded += 1
     return loaded
+
+
+def discover_tasks(
+    package: str,
+    subpackage: str = "jobs",
+    *,
+    force_reload: bool = False,
+) -> tuple[str, ...]:
+    """Walk ``package`` and import every ``<package>.<...>.<subpackage>.<...>`` module.
+
+    Adopters with ``app.domain.<x>.jobs/`` layouts can call this once at
+    startup so ``@task``-decorated callables register without having to
+    enumerate ``QueueConfig.task_modules`` by hand.
+
+    Args:
+        package: Dotted package name to walk (e.g. ``"app.domain"``).
+        subpackage: Path segment that marks task modules. Any module whose
+            dotted path (excluding the root) contains this segment is
+            imported. Defaults to ``"jobs"``.
+        force_reload: Re-import modules already in ``sys.modules``.
+
+    Returns:
+        Sorted, deduplicated tuple of task names registered after the walk.
+
+    Raises:
+        ModuleNotFoundError: If ``package`` cannot be imported, or if it
+            resolves to a plain module rather than a package.
+    """
+    root = reload(sys.modules[package]) if force_reload and package in sys.modules else import_module(package)
+    if not hasattr(root, "__path__"):
+        msg = f"discover_tasks requires a package; {package!r} is a module"
+        raise ModuleNotFoundError(msg)
+
+    matched: list[str] = []
+    for _, module_name, _is_package in pkgutil.walk_packages(
+        root.__path__,  # pyright: ignore[reportUnknownMemberType]
+        prefix=f"{root.__name__}.",
+    ):
+        if subpackage not in module_name.split(".")[1:]:
+            continue
+        matched.append(module_name)
+
+    for module_name in matched:
+        if module_name in _loaded_modules and not force_reload:
+            continue
+        if force_reload and module_name in sys.modules:
+            reload(sys.modules[module_name])
+        else:
+            import_module(module_name)
+        _loaded_modules.add(module_name)
+
+    return tuple(sorted(_task_registry.keys()))
 
 
 @overload

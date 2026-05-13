@@ -117,3 +117,17 @@ class QueuePlugin:
         if self._service is not None:
             await self._service.close()
             self._service = None
+
+    def on_cli_init(self, cli: "object") -> None:
+        """Attach the ``queues`` subcommand group to the Litestar CLI.
+
+        Args:
+            cli: The root ``click.Group`` of the Litestar CLI. Typed as
+                :class:`object` so importing this module does not pull
+                ``click`` into ``sys.modules`` — Litestar's
+                :class:`~litestar.plugins.CLIPluginProtocol` enforces the
+                runtime type.
+        """
+        from litestar_queues._cli import register
+
+        register(cli)  # type: ignore[arg-type]

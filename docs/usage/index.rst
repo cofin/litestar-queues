@@ -59,6 +59,13 @@ Choose a Topic
       Inject services into task callables through an external DI container
       with the optional ``task_dependency_resolver`` hook.
 
+   .. grid-item-card:: CLI
+      :link: cli
+      :link-type: doc
+
+      Run worker fleets, inspect queue status, and check scheduler health
+      via the ``litestar queues`` subcommand group.
+
 Recommended Path
 ----------------
 
@@ -81,6 +88,7 @@ Recommended Path
    events
    quickstart
    backends
+   cli
    dependency-resolver
    testing
    migration
