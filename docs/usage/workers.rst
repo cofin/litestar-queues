@@ -58,10 +58,12 @@ a peer crash will rescue orphaned records without operator intervention. Set
 ``worker_stale_after`` to ``None`` (the default) to disable stale recovery
 entirely; the periodic check is skipped in that case.
 
-The SQLSpec backend can optionally route heartbeat writes through a dedicated
-connection pool so they do not contend with task fetch and lifecycle UPDATEs
-under high concurrency. See :ref:`Heartbeat Pool Isolation
-<heartbeat-pool-isolation>` in the SQLSpec backend docs.
+SQL-backed backends can optionally route heartbeat writes through a dedicated
+connection so they do not contend with task fetch and lifecycle UPDATEs under
+high concurrency. See :ref:`Heartbeat Pool Isolation
+<heartbeat-pool-isolation>` (SQLSpec) and
+:ref:`Heartbeat Session Maker Isolation <aa-heartbeat-session-maker>`
+(Advanced Alchemy).
 
 External Execution
 ==================

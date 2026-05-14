@@ -260,9 +260,8 @@ Configure the queue backend with an app-owned ``SQLAlchemyAsyncConfig``:
        execution_backend="local",
    )
 
-The backend also accepts an async SQLAlchemy ``session_maker`` for standalone
-service usage. In both cases, queue operations use fresh operation-scoped
-sessions and commit or roll back queue mutations explicitly.
+Queue operations use fresh operation-scoped sessions opened from
+``sqlalchemy_config`` and commit or roll back queue mutations explicitly.
 
 Litestar applications should register Advanced Alchemy's first-party plugin
 directly and pass the same config to the queue backend:
@@ -298,6 +297,62 @@ The queue plugin does not append ``SQLAlchemyPlugin`` or consume request-scoped
 ``db_session`` dependencies. Applications that manage schema with Alembic can
 reference the packaged migration location from
 ``litestar_queues.backends.advanced_alchemy.config.migration_script_location``.
+
+.. _aa-heartbeat-session-maker:
+
+Heartbeat Session Maker Isolation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Workers issue a heartbeat write every ``QueueConfig.worker_heartbeat_interval``
+seconds for every running task. At high ``worker_max_concurrency`` those writes
+share the main async SQLAlchemy pool with task fetch, claim, and lifecycle
+UPDATEs. On network databases (AsyncPG, AioMySQL) heartbeats can stall behind
+queue work and miss the stale-recovery window.
+
+Construct a dedicated async engine and ``async_sessionmaker``, then pass it
+through ``heartbeat_session_maker``:
+
+.. code-block:: python
+
+   from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+   from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+   from litestar_queues import QueueConfig
+
+   queue_url = "postgresql+asyncpg://queue@db/queues"
+
+   main_config = SQLAlchemyAsyncConfig(connection_string=queue_url)
+   heartbeat_engine = create_async_engine(queue_url, pool_size=1, max_overflow=1)
+   heartbeat_maker = async_sessionmaker(heartbeat_engine, expire_on_commit=False)
+
+   config = QueueConfig(
+       queue_backend="advanced-alchemy",
+       queue_backend_config={
+           "sqlalchemy_config": main_config,
+           "heartbeat_session_maker": heartbeat_maker,
+       },
+       execution_backend="local",
+       worker_max_concurrency=32,
+   )
+
+The dedicated engine MUST point at the same database as the main config. The
+backend uses it only for ``touch_heartbeat`` and ``null_heartbeats``; lifecycle
+UPDATEs that touch ``heartbeat_at`` alongside other columns (``claim_task``,
+``complete_task``, ``fail_task``, ``requeue_stale_running``) stay on the main
+session for transactional correctness. Recommended sizing:
+``pool_size=1, max_overflow=1`` for AsyncPG / AioMySQL, ``pool_size=1`` for
+``aiosqlite`` (SQLite serializes writes anyway). The dedicated engine's
+connections add to the application's total database connection budget.
+
+The adopter owns the dedicated engine's lifecycle. ``backend.close()`` does
+NOT dispose the heartbeat engine — call ``engine.dispose()`` from the
+application shutdown hook that owns the engine. Unlike the SQLSpec backend
+(which registers its dedicated config on ``open()``), the Advanced Alchemy
+backend never constructs or owns the heartbeat engine; any construction error
+surfaces from the first ``touch_heartbeat()`` call.
+
+When ``heartbeat_session_maker`` is ``None`` (the default), heartbeat writes
+share the main session exactly as before.
 
 Redis
 -----

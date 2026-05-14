@@ -18,6 +18,7 @@ from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, Q
 
 if TYPE_CHECKING:
     from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
     from litestar_queues.config import QueueConfig
@@ -30,6 +31,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     __slots__ = (
         "_create_schema",
+        "_heartbeat_session_maker",
         "_opened",
         "_run_migrations",
         "_sqlalchemy_config",
@@ -42,6 +44,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         *,
         backend_config: AdvancedAlchemyBackendConfig | None = None,
         sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None,
+        heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None,
         table_name: str | None = None,
         create_schema: bool | None = None,
         run_migrations: bool | None = None,
@@ -50,6 +53,9 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         backend_config = backend_config or AdvancedAlchemyBackendConfig()
         self._sqlalchemy_config = (
             sqlalchemy_config if sqlalchemy_config is not None else backend_config.sqlalchemy_config
+        )
+        self._heartbeat_session_maker = (
+            heartbeat_session_maker if heartbeat_session_maker is not None else backend_config.heartbeat_session_maker
         )
         configured_table_name = table_name if table_name is not None else backend_config.table_name
         self._table_name = validate_table_name(configured_table_name or DEFAULT_TABLE_NAME)
@@ -198,11 +204,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             return await service.cancel_task(task_id)
 
     async def touch_heartbeat(self, task_id: UUID) -> None:
-        async with self._operation() as service:
+        async with self._heartbeat_operation() as service:
             await service.touch_heartbeat(task_id)
 
     async def null_heartbeats(self, task_ids: list[UUID]) -> None:
-        async with self._operation() as service:
+        async with self._heartbeat_operation() as service:
             await service.null_heartbeats(task_ids)
 
     async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
@@ -303,6 +309,24 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     async def _operation(self) -> AsyncIterator["QueueTaskService"]:
         self._ensure_opened()
         async with self._session() as session, session.begin():
+            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+
+            yield QueueTaskService(session=session)
+
+    @asynccontextmanager
+    async def _heartbeat_operation(self) -> AsyncIterator["QueueTaskService"]:
+        """Yield a ``QueueTaskService`` bound to the dedicated heartbeat session maker.
+
+        Falls back to :meth:`_operation` when ``heartbeat_session_maker`` is not
+        configured. The dedicated engine is supplied and owned by the adopter;
+        :meth:`close` does not dispose it.
+        """
+        self._ensure_opened()
+        if self._heartbeat_session_maker is None:
+            async with self._operation() as service:
+                yield service
+            return
+        async with self._heartbeat_session_maker() as session, session.begin():
             from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 
             yield QueueTaskService(session=session)

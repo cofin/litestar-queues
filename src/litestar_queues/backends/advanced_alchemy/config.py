@@ -8,6 +8,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 __all__ = (
     "DEFAULT_TABLE_NAME",
@@ -25,6 +26,7 @@ class AdvancedAlchemyBackendConfig:
     """Configuration values for the Advanced Alchemy queue backend."""
 
     sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None
+    heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None
     table_name: str = DEFAULT_TABLE_NAME
     create_schema: bool = False
     run_migrations: bool = False
