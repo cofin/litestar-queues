@@ -118,7 +118,7 @@ async def test_redis_backend_releases_locks_by_token_via_lua_script(
     await client.set(lock_key, "new-owner")
     await redis_backend._release_lock(client, lock_key, "old-owner")
 
-    assert await client.get(lock_key) == b"new-owner"
+    assert await client.get(lock_key) == "new-owner"
 
     await redis_backend._release_lock(client, lock_key, "new-owner")
 

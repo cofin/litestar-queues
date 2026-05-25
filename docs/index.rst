@@ -12,6 +12,7 @@ pluggable execution backends, and realtime task event delivery.
 
    getting_started/index
    usage/index
+   contributing/index
    reference/index
 
 .. grid:: 1 1 2 2
@@ -38,6 +39,13 @@ pluggable execution backends, and realtime task event delivery.
 
       Choose queue persistence and execution backends without requiring every
       optional driver dependency.
+
+   .. grid-item-card:: Contributing
+      :link: contributing/index
+      :link-type: doc
+
+      Run the unit and integration tiers, use the backend registry, and add
+      adapter coverage without making optional drivers mandatory.
 
    .. grid-item-card:: API Reference
       :link: reference/index

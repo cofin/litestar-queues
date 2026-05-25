@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -30,8 +30,8 @@ ExecutionBackendConfig = str
 """Type alias for execution backend configuration values."""
 
 TaskDependencyResolver = Callable[
-    ["Task[Any, Any]", "QueuedTaskRecord", "TaskExecutionContext"],
-    Awaitable["dict[str, Any]"],
+    ["Task[..., object]", "QueuedTaskRecord", "TaskExecutionContext"],
+    Awaitable[Mapping[str, object]],
 ]
 """User-supplied callable that resolves extra kwargs for a task before execution."""
 

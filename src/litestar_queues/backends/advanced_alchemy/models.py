@@ -1,49 +1,111 @@
-"""Advanced Alchemy queue task model."""
+"""Advanced Alchemy queue task model and mixin."""
 
 from typing import Any
 
-from advanced_alchemy.base import UUIDAuditBase
 from sqlalchemy import DateTime, Index, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
-from litestar_queues.backends.advanced_alchemy.config import DEFAULT_TABLE_NAME
-
-__all__ = ("QueueTaskModel",)
+__all__ = ("QueueTaskModelMixin",)
 
 
-class QueueTaskModel(UUIDAuditBase):
-    """Advanced Alchemy model storing queue task records."""
+@declarative_mixin
+class QueueTaskModelMixin:
+    """Declarative mixin carrying queue task columns and indexes.
 
-    __tablename__ = DEFAULT_TABLE_NAME
-    __table_args__ = (
-        Index(
-            "ix_litestar_queue_tasks_pending",
-            "status",
-            "queue",
-            "scheduled_at",
-            "priority",
-            "created_at",
-        ),
-        Index("ix_litestar_queue_tasks_heartbeat", "status", "heartbeat_at"),
-        Index("ix_litestar_queue_tasks_execution", "status", "execution_ref"),
-    )
+    Compose this with an application-owned Advanced Alchemy base that provides
+    compatible ``id`` and ``created_at`` columns.
+    """
 
-    task_name: Mapped[str] = mapped_column(String(length=500), nullable=False)
-    args_json: Mapped[str] = mapped_column(Text(), default="[]", nullable=False)
-    kwargs_json: Mapped[str] = mapped_column(Text(), default="{}", nullable=False)
-    queue: Mapped[str] = mapped_column(String(length=255), default="default", nullable=False)
-    execution_backend: Mapped[str] = mapped_column(String(length=255), default="local", nullable=False)
-    execution_profile: Mapped[str | None] = mapped_column(String(length=255), default=None)
-    execution_ref: Mapped[str | None] = mapped_column(String(length=1000), default=None)
-    status: Mapped[str] = mapped_column(String(length=32), default="pending", nullable=False)
-    priority: Mapped[int] = mapped_column(Integer(), default=0, nullable=False)
-    max_retries: Mapped[int] = mapped_column(Integer(), default=0, nullable=False)
-    retry_count: Mapped[int] = mapped_column(Integer(), default=0, nullable=False)
-    scheduled_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), default=None)
-    started_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), default=None)
-    completed_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), default=None)
-    heartbeat_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), default=None)
-    result_json: Mapped[str] = mapped_column(Text(), default="null", nullable=False)
-    error: Mapped[str | None] = mapped_column(Text(), default=None)
-    task_key: Mapped[str | None] = mapped_column(String(length=500), unique=True, default=None)
-    metadata_json: Mapped[str] = mapped_column(Text(), default="{}", nullable=False)
+    __abstract__ = True
+
+    @declared_attr.directive
+    def __table_args__(cls) -> tuple[Any, ...]:  # noqa: N805, PLW3201
+        table = cls.__tablename__  # type: ignore[attr-defined]
+        return (
+            Index(
+                f"ix_{table}_pending",
+                "status",
+                "queue",
+                "scheduled_at",
+                "priority",
+                "created_at",
+            ),
+            Index(f"ix_{table}_heartbeat", "status", "heartbeat_at"),
+            Index(f"ix_{table}_execution", "status", "execution_ref", mysql_length={"execution_ref": 255}),
+        )
+
+    @declared_attr
+    def task_name(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(String(length=500), nullable=False)
+
+    @declared_attr
+    def args_json(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(Text(), default="[]", nullable=False)
+
+    @declared_attr
+    def kwargs_json(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(Text(), default="{}", nullable=False)
+
+    @declared_attr
+    def queue(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(String(length=255), default="default", nullable=False)
+
+    @declared_attr
+    def execution_backend(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(String(length=255), default="local", nullable=False)
+
+    @declared_attr
+    def execution_profile(cls) -> Mapped[str | None]:  # noqa: N805
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def execution_ref(cls) -> Mapped[str | None]:  # noqa: N805
+        return mapped_column(String(length=1000), default=None)
+
+    @declared_attr
+    def status(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(String(length=32), default="pending", nullable=False)
+
+    @declared_attr
+    def priority(cls) -> Mapped[int]:  # noqa: N805
+        return mapped_column(Integer(), default=0, nullable=False)
+
+    @declared_attr
+    def max_retries(cls) -> Mapped[int]:  # noqa: N805
+        return mapped_column(Integer(), default=0, nullable=False)
+
+    @declared_attr
+    def retry_count(cls) -> Mapped[int]:  # noqa: N805
+        return mapped_column(Integer(), default=0, nullable=False)
+
+    @declared_attr
+    def scheduled_at(cls) -> Mapped[Any | None]:  # noqa: N805
+        return mapped_column(DateTime(timezone=True), default=None)
+
+    @declared_attr
+    def started_at(cls) -> Mapped[Any | None]:  # noqa: N805
+        return mapped_column(DateTime(timezone=True), default=None)
+
+    @declared_attr
+    def completed_at(cls) -> Mapped[Any | None]:  # noqa: N805
+        return mapped_column(DateTime(timezone=True), default=None)
+
+    @declared_attr
+    def heartbeat_at(cls) -> Mapped[Any | None]:  # noqa: N805
+        return mapped_column(DateTime(timezone=True), default=None)
+
+    @declared_attr
+    def result_json(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(Text(), default="null", nullable=False)
+
+    @declared_attr
+    def error(cls) -> Mapped[str | None]:  # noqa: N805
+        return mapped_column(Text(), default=None)
+
+    @declared_attr
+    def task_key(cls) -> Mapped[str | None]:  # noqa: N805
+        return mapped_column(String(length=500), unique=True, default=None)
+
+    @declared_attr
+    def metadata_json(cls) -> Mapped[str]:  # noqa: N805
+        return mapped_column(Text(), default="{}", nullable=False)

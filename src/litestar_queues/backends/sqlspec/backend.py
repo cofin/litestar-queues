@@ -1,7 +1,7 @@
 """SQLSpec queue backend."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
@@ -14,7 +14,12 @@ from sqlspec.utils.sync_tools import ensure_async_, with_ensure_async_
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
-from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
+from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
+    validate_column_map,
+    validate_native_json_columns,
+    validate_table_name,
+)
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
 
@@ -89,7 +94,11 @@ def _serialize_datetime(value: datetime | None) -> datetime | None:
 def _deserialize_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
-    parsed = datetime.fromisoformat(str(value))
+    value_text = str(value)
+    try:
+        parsed = datetime.fromisoformat(value_text)
+    except ValueError:
+        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=timezone.utc)
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
@@ -144,6 +153,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     """SQLSpec-backed queue backend."""
 
     __slots__ = (
+        "_column_map",
         "_create_schema",
         "_event_backend",
         "_event_channel",
@@ -153,6 +163,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
+        "_manage_schema",
+        "_native_json_columns",
         "_notification_backend",
         "_notification_channel",
         "_notifications_enabled",
@@ -185,9 +197,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         event_queue_table: str | None = None,
         event_poll_interval: float | None = None,
         event_settings: dict[str, Any] | None = None,
+        column_map: Mapping[str, str] | None = None,
+        native_json_columns: frozenset[str] | None = None,
+        manage_schema: bool | None = None,
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or SQLSpecBackendConfig()
+        configured_column_map = column_map if column_map is not None else backend_config.column_map
+        configured_native_json_columns = (
+            native_json_columns if native_json_columns is not None else backend_config.native_json_columns
+        )
+        self._column_map = validate_column_map(configured_column_map)
+        self._native_json_columns = validate_native_json_columns(frozenset(configured_native_json_columns))
+        self._manage_schema = backend_config.manage_schema if manage_schema is None else manage_schema
         self._sqlspec = sqlspec if sqlspec is not None else backend_config.sqlspec
         self._sqlspec_config = sqlspec_config if sqlspec_config is not None else backend_config.sqlspec_config
         self._heartbeat_pool_config = (
@@ -264,6 +286,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     async def create_schema(self) -> None:
         """Create the SQLSpec queue table and indexes."""
+        if not self._manage_schema:
+            return
         async with self._session() as driver:
             for statement in self._get_store().create_statements():
                 await driver.execute_script(statement)
@@ -271,6 +295,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     async def run_migrations(self) -> None:
         """Apply packaged SQLSpec migrations."""
+        if not self._manage_schema:
+            return
         sqlspec_config = self._get_sqlspec_config()
         configure_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name())
         await sqlspec_config.migrate_up(echo=False)
@@ -369,11 +395,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                         started_at=_serialize_datetime(now),
                     ),
                 )
-                if result.rows_affected != 1:
+                if result.rows_affected == 0:
                     await driver.rollback()
                     return None
 
                 updated_row = await self._select_task(driver, task_id)
+                if updated_row is None or self._record_from_row(updated_row).status != "running":
+                    await driver.rollback()
+                    return None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -406,7 +435,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                         task_id=str(task_id),
                         completed_at=_serialize_datetime(now),
                         heartbeat_at=_serialize_datetime(now),
-                        result_json=store.serialize_result_json(result),
+                        result_json=store.serialize_json_column("result_json", result),
                     ),
                 )
                 row = await self._select_task(driver, task_id) if updated.rows_affected else None
@@ -669,11 +698,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         return self._table_name
 
     def _resolve_create_schema(self) -> bool:
+        if not self._manage_schema:
+            return False
         return _resolve_bool(
             self._create_schema, _queue_extension_settings(self._sqlspec_config), "create_schema", True
         )
 
     def _resolve_run_migrations(self) -> bool:
+        if not self._manage_schema:
+            return False
         return _resolve_bool(
             self._run_migrations,
             _queue_extension_settings(self._sqlspec_config),
@@ -788,7 +821,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         if self._store is None:
             from litestar_queues.backends.sqlspec.store import create_queue_store
 
-            self._store = create_queue_store(self._get_sqlspec_config(), table_name=self._resolve_table_name())
+            self._store = create_queue_store(
+                self._get_sqlspec_config(),
+                table_name=self._resolve_table_name(),
+                column_map=self._column_map,
+                native_json_columns=self._native_json_columns,
+                manage_schema=self._manage_schema,
+            )
         return self._store
 
     @asynccontextmanager
@@ -893,7 +932,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     def _params_from_record(self, record: QueuedTaskRecord) -> dict[str, Any]:
         store = self._get_store()
         return {
-            "args_json": store.serialize_payload_json(list(record.args)),
+            "args_json": store.serialize_json_column("args_json", list(record.args)),
             "completed_at": _serialize_datetime(record.completed_at),
             "created_at": _serialize_datetime(record.created_at),
             "error": record.error,
@@ -902,12 +941,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             "execution_ref": record.execution_ref,
             "heartbeat_at": _serialize_datetime(record.heartbeat_at),
             "id": str(record.id),
-            "kwargs_json": store.serialize_payload_json(record.kwargs),
+            "kwargs_json": store.serialize_json_column("kwargs_json", record.kwargs),
             "max_retries": record.max_retries,
-            "metadata_json": store.serialize_metadata_json(record.metadata),
+            "metadata_json": store.serialize_json_column("metadata_json", record.metadata),
             "priority": record.priority,
             "queue": record.queue,
-            "result_json": store.serialize_result_json(record.result),
+            "result_json": store.serialize_json_column("result_json", record.result),
             "retry_count": record.retry_count,
             "scheduled_at": _serialize_datetime(record.scheduled_at),
             "started_at": _serialize_datetime(record.started_at),

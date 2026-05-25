@@ -26,4 +26,5 @@ def _load_store(context: "MigrationContext | None") -> SQLSpecQueueStore:
     if context is None or context.config is None:
         msg = "Migration context with SQLSpec adapter configuration is required"
         raise SQLSpecError(msg)
-    return create_queue_store(cast("Any", context.config))
+    config = cast("Any", context.config)
+    return create_queue_store(config, manage_schema=bool(getattr(config, "manage_schema", True)))

@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
@@ -81,7 +85,7 @@ def test_discover_tasks_rejects_non_package_module() -> None:
         discover_tasks(f"{_FIXTURE_PACKAGE}.foo.jobs.send")
 
 
-def test_discover_tasks_skips_non_jobs_siblings(tmp_path, monkeypatch) -> None:
+def test_discover_tasks_skips_non_jobs_siblings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Modules outside any ``.jobs.`` subpackage are not imported by the walker."""
     from litestar_queues import discover_tasks
 

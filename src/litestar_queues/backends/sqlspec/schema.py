@@ -1,6 +1,7 @@
 """Schema and migration helpers for the SQLSpec queue backend."""
 
 import re
+from collections.abc import Mapping
 from importlib.resources import files
 from pathlib import Path
 
@@ -10,11 +11,39 @@ __all__ = (
     "DEFAULT_TABLE_NAME",
     "migration_directory",
     "migration_paths",
+    "validate_column_map",
+    "validate_native_json_columns",
     "validate_table_name",
 )
 
 DEFAULT_TABLE_NAME = "litestar_queue_tasks"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CANONICAL_COLUMNS = frozenset(
+    {
+        "id",
+        "task_name",
+        "args_json",
+        "kwargs_json",
+        "queue",
+        "execution_backend",
+        "execution_profile",
+        "execution_ref",
+        "status",
+        "priority",
+        "max_retries",
+        "retry_count",
+        "scheduled_at",
+        "created_at",
+        "started_at",
+        "completed_at",
+        "heartbeat_at",
+        "result_json",
+        "error",
+        "task_key",
+        "metadata_json",
+    }
+)
+_JSON_COLUMNS = frozenset({"args_json", "kwargs_json", "result_json", "metadata_json"})
 
 
 def validate_table_name(table_name: str) -> str:
@@ -30,6 +59,44 @@ def validate_table_name(table_name: str) -> str:
         msg = f"Invalid SQLSpec queue table name: {table_name!r}"
         raise QueueConfigurationError(msg)
     return table_name
+
+
+def validate_column_map(column_map: Mapping[str, str]) -> dict[str, str]:
+    """Validate a canonical-to-adopter column map.
+
+    Returns:
+        A defensive copy of the validated map.
+
+    Raises:
+        QueueConfigurationError: If a canonical name is unknown or a mapped
+            name is not a valid SQL identifier.
+    """
+    resolved: dict[str, str] = {}
+    for canonical, mapped in column_map.items():
+        if canonical not in _CANONICAL_COLUMNS:
+            msg = f"Unknown canonical column in column_map: {canonical!r}"
+            raise QueueConfigurationError(msg)
+        if not _IDENTIFIER_RE.match(mapped):
+            msg = f"Invalid SQL identifier in column_map: {mapped!r}"
+            raise QueueConfigurationError(msg)
+        resolved[canonical] = mapped
+    return resolved
+
+
+def validate_native_json_columns(columns: frozenset[str]) -> frozenset[str]:
+    """Validate native JSON passthrough columns.
+
+    Returns:
+        The validated column set.
+
+    Raises:
+        QueueConfigurationError: If any column is not a canonical JSON column.
+    """
+    unknown = columns - _JSON_COLUMNS
+    if unknown:
+        msg = f"native_json_columns contains non-JSON canonical names: {sorted(unknown)!r}"
+        raise QueueConfigurationError(msg)
+    return columns
 
 
 def migration_paths() -> tuple[str, ...]:

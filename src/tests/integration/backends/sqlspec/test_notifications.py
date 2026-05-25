@@ -7,7 +7,7 @@ service.
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -27,16 +27,20 @@ from tests.integration.backends.sqlspec.conftest import StubAsyncEventChannel
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from sqlspec.extensions.events import AsyncEventChannel
+
+    from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
+
 pytestmark = pytest.mark.anyio
 
 
 async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
-    tmp_path: "Path", sqlite_config_factory: Any
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     event_channel = StubAsyncEventChannel()
     backend = SQLSpecQueueBackend(
         sqlspec_config=sqlite_config_factory(tmp_path / "notifications.db"),
-        event_channel=cast("Any", event_channel),
+        event_channel=cast("AsyncEventChannel", event_channel),
         notification_channel="queue_notifications",
     )
 
@@ -110,7 +114,10 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
             },
         },
     )
-    extension_backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config, event_channel=cast("Any", extension_channel))
+    extension_backend = SQLSpecQueueBackend(
+        sqlspec_config=sqlspec_config,
+        event_channel=cast("AsyncEventChannel", extension_channel),
+    )
     await extension_backend.open()
     try:
         await extension_backend.enqueue("tasks.extension_notified")
@@ -120,7 +127,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
     explicit_channel = StubAsyncEventChannel()
     explicit_backend = SQLSpecQueueBackend(
         sqlspec_config=sqlspec_config,
-        event_channel=cast("Any", explicit_channel),
+        event_channel=cast("AsyncEventChannel", explicit_channel),
         notification_channel="explicit_notifications",
         table_name="explicit_notification_queue",
     )
@@ -135,7 +142,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
 
 
 async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
-    tmp_path: "Path", sqlite_config_factory: Any
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     sqlspec = SQLSpec()
     sqlspec_config = sqlite_config_factory(tmp_path / "litestar.db")

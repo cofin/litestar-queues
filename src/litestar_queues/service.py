@@ -9,6 +9,7 @@ from litestar_queues.exceptions import NonRetryableError
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled_tasks, get_task_registry
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from uuid import UUID
 
     from litestar_queues.backends import BaseQueueBackend
@@ -272,10 +273,10 @@ class QueueService:
 
     async def _resolve_task_dependencies(
         self,
-        task: Task[Any, Any],
+        task: Task[..., object],
         record: "QueuedTaskRecord",
         task_context: TaskExecutionContext,
-    ) -> "dict[str, Any] | None":
+    ) -> "Mapping[str, object] | None":
         """Invoke the configured task dependency resolver, if any.
 
         Returns:

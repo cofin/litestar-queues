@@ -14,6 +14,8 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from click.testing import Result
+
 pytestmark = pytest.mark.anyio
 
 
@@ -24,6 +26,9 @@ def _evict_support_modules() -> "Iterator[None]":
     ``clean_task_registry`` (autouse, project conftest) clears the registry but
     ``load_task_modules`` short-circuits on ``_loaded_modules``; evicting
     forces re-import so the canary task is registered for each invocation.
+
+    Yields:
+        Control to the test before clearing cached support modules.
     """
     yield
     for name in list(sys.modules):
@@ -34,11 +39,11 @@ def _evict_support_modules() -> "Iterator[None]":
     _loaded_modules.discard("tests._factories.queue_tasks")
 
 
-def _runner_invoke(app_target: str, args: list[str], monkeypatch: pytest.MonkeyPatch):
+def _runner_invoke(app_target: str, args: list[str], monkeypatch: pytest.MonkeyPatch) -> "Result":
     """Invoke ``litestar`` CLI with the configured app target via ``CliRunner``.
 
-    Returns the ``Result`` object so callers can assert on ``exit_code``,
-    ``stdout``, and ``stderr``.
+    Returns:
+        The ``Result`` object so callers can assert on ``exit_code``, ``stdout``, and ``stderr``.
     """
     from click.testing import CliRunner
     from litestar.cli.main import litestar_group

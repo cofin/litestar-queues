@@ -48,6 +48,8 @@ class PsycopgAsyncQueueStore(SQLSpecQueueStore):
 
 
 def _create_statements(store: SQLSpecQueueStore) -> list[str]:
+    if not store._manage_schema:
+        return []
     return [
         f"{store._to_sql(store._create_table_statement())} WITH (fillfactor = 80)",
         *_create_index_statements(store),
@@ -60,6 +62,8 @@ def _create_statements(store: SQLSpecQueueStore) -> list[str]:
 
 
 def _drop_statements(store: SQLSpecQueueStore) -> list[str]:
+    if not store._manage_schema:
+        return []
     return [
         store._to_sql(sql.drop_index(store._index_name("heartbeat")).if_exists()),
         store._to_sql(sql.drop_index(store._index_name("scheduled")).if_exists()),
@@ -73,15 +77,16 @@ def _create_index_statements(store: SQLSpecQueueStore) -> list[str]:
     return [
         (
             f"CREATE INDEX IF NOT EXISTS {store._index_name('pending')} "
-            f"ON {table_name} (queue, execution_backend, priority DESC, created_at) "
-            "WHERE status IN ('pending', 'scheduled')"
+            f"ON {table_name} ({store._col('queue')}, {store._col('execution_backend')}, "
+            f"{store._col('priority')} DESC, {store._col('created_at')}) "
+            f"WHERE {store._col('status')} IN ('pending', 'scheduled')"
         ),
         (
             f"CREATE INDEX IF NOT EXISTS {store._index_name('scheduled')} "
-            f"ON {table_name} (scheduled_at) WHERE status = 'scheduled'"
+            f"ON {table_name} ({store._col('scheduled_at')}) WHERE {store._col('status')} = 'scheduled'"
         ),
         (
             f"CREATE INDEX IF NOT EXISTS {store._index_name('heartbeat')} "
-            f"ON {table_name} (heartbeat_at) WHERE status = 'running'"
+            f"ON {table_name} ({store._col('heartbeat_at')}) WHERE {store._col('status')} = 'running'"
         ),
     ]

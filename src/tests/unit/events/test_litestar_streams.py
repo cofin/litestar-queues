@@ -1,7 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
 
 import pytest
 
@@ -43,12 +42,12 @@ class FakeSocket:
     def __init__(self, channels_plugin: FakeChannelsPlugin) -> None:
         self.channels_plugin = channels_plugin
         self.accepted = False
-        self.sent_json: list[dict[str, Any]] = []
+        self.sent_json: list[dict[str, object]] = []
 
     async def accept(self) -> None:
         self.accepted = True
 
-    async def send_json(self, data: dict[str, Any]) -> None:
+    async def send_json(self, data: dict[str, object]) -> None:
         self.sent_json.append(data)
 
 

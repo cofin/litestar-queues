@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -49,15 +49,15 @@ async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs
     invocations: list[tuple[str, str]] = []
 
     async def resolver(
-        _task: "Task[Any, Any]",
+        _task: "Task[..., object]",
         record: "QueuedTaskRecord",
         context: "TaskExecutionContext",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         invocations.append((str(record.id), context.task_id))
         return {"injected_service": "from_resolver"}
 
     @task("resolver.consume")
-    async def consume(**kwargs: Any) -> dict[str, Any]:
+    async def consume(**kwargs: object) -> dict[str, object]:
         return dict(kwargs)
 
     config = QueueConfig(task_dependency_resolver=resolver)
@@ -94,15 +94,15 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
     timeline: dict[str, float] = {}
 
     async def resolver(
-        _task: "Task[Any, Any]",
+        _task: "Task[..., object]",
         _record: "QueuedTaskRecord",
         _context: "TaskExecutionContext",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         timeline["resolver"] = time.monotonic()
         return {}
 
     @task("resolver.order")
-    async def order(**_kwargs: Any) -> str:
+    async def order(**_kwargs: object) -> str:
         timeline["body"] = time.monotonic()
         return "ok"
 
@@ -137,7 +137,7 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> None:
     """No resolver configured -> no extra_kwargs reach Task.execute_record."""
     from unittest.mock import patch
 
-    from litestar_queues import Task, task
+    from litestar_queues import Task, TaskExecutionContext, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -150,11 +150,15 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> None:
     service = QueueService(config)
 
     original = Task.execute_record
-    captured: list[Any] = []
+    captured: list[object] = []
 
-    async def spy(self: "Task[Any, Any]", record: Any, **kwargs: Any) -> Any:
-        captured.append(kwargs.get("extra_kwargs", "MISSING"))
-        return await original(self, record, **kwargs)
+    async def spy(self: "Task[..., object]", record: "QueuedTaskRecord", **kwargs: object) -> object:
+        extra_kwargs = kwargs.get("extra_kwargs")
+        task_context = kwargs.get("task_context")
+        assert extra_kwargs is None or isinstance(extra_kwargs, dict)
+        assert task_context is None or isinstance(task_context, TaskExecutionContext)
+        captured.append(extra_kwargs if "extra_kwargs" in kwargs else "MISSING")
+        return await original(self, record, task_context=task_context, extra_kwargs=extra_kwargs)
 
     with patch.object(Task, "execute_record", spy):
         async with service:

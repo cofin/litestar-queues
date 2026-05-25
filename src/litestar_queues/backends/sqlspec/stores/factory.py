@@ -1,5 +1,6 @@
 """SQLSpec queue store factory."""
 
+from collections.abc import Mapping
 from typing import Any
 
 from litestar_queues.backends.sqlspec.stores.adbc import AdbcQueueStore
@@ -44,14 +45,27 @@ _ADAPTER_STORE_TYPES: dict[str, type[SQLSpecQueueStore]] = {
 }
 
 
-def create_queue_store(config: Any, *, table_name: str | None = None) -> SQLSpecQueueStore:
+def create_queue_store(
+    config: Any,
+    *,
+    table_name: str | None = None,
+    column_map: Mapping[str, str] | None = None,
+    native_json_columns: frozenset[str] | None = None,
+    manage_schema: bool = True,
+) -> SQLSpecQueueStore:
     """Create a queue store for a SQLSpec adapter configuration.
 
     Returns:
         The queue store implementation for the SQLSpec adapter.
     """
     store_type = _adapter_store_type(config)
-    return store_type(config, table_name=table_name)
+    return store_type(
+        config,
+        table_name=table_name,
+        column_map=column_map,
+        native_json_columns=native_json_columns or None,
+        manage_schema=manage_schema,
+    )
 
 
 def _adapter_store_type(config: Any) -> type[SQLSpecQueueStore]:

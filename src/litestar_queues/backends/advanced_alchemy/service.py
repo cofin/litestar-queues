@@ -8,7 +8,6 @@ from advanced_alchemy import _serialization
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 
-from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
 from litestar_queues.models import QueuedTaskRecord, QueueStatistics, TaskStatus
 
@@ -53,10 +52,22 @@ def _coerce_status(value: Any) -> TaskStatus:
     return cast("TaskStatus", status)
 
 
-class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
+class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):  # noqa: PLR0904
     """Persistence operations for Advanced Alchemy queue records."""
 
-    repository_type = QueueTaskRepository
+    @classmethod
+    def for_model(cls, model_class: type[Any]) -> type["QueueTaskService"]:
+        """Return a service subclass bound to ``model_class``."""
+        repository_type = QueueTaskRepository.for_model(model_class)
+        return cast(
+            "type[QueueTaskService]",
+            type(f"QueueTaskServiceFor{model_class.__name__}", (cls,), {"repository_type": repository_type}),
+        )
+
+    @property
+    def model_type(self) -> type[Any]:
+        """Return the model class bound to this service repository."""
+        return cast("type[Any]", self.repository.model_type)
 
     async def enqueue(
         self,
@@ -121,12 +132,13 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
 
     async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
         now = _utc_now()
+        model_type = self.model_type
         result = await self.repository.session.execute(
-            update(QueueTaskModel)
+            update(model_type)
             .where(
-                QueueTaskModel.id == task_id,
-                QueueTaskModel.status.in_(_DUE_STATUSES),
-                or_(QueueTaskModel.scheduled_at.is_(None), QueueTaskModel.scheduled_at <= now),
+                model_type.id == task_id,
+                model_type.status.in_(_DUE_STATUSES),
+                or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
             )
             .values(status="running", started_at=now, heartbeat_at=now)
         )
@@ -150,9 +162,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
 
     async def complete_task(self, task_id: UUID, *, result: Any = None) -> QueuedTaskRecord | None:
         now = _utc_now()
+        model_type = self.model_type
         update_result = await self.repository.session.execute(
-            update(QueueTaskModel)
-            .where(QueueTaskModel.id == task_id)
+            update(model_type)
+            .where(model_type.id == task_id)
             .values(
                 status="completed",
                 completed_at=now,
@@ -170,10 +183,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         model = await self._select_task(task_id)
         if model is None:
             return None
+        model_type = self.model_type
         if retry and int(model.retry_count) < int(model.max_retries):
             await self.repository.session.execute(
-                update(QueueTaskModel)
-                .where(QueueTaskModel.id == task_id)
+                update(model_type)
+                .where(model_type.id == task_id)
                 .values(
                     status="pending",
                     started_at=None,
@@ -185,48 +199,52 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         else:
             now = _utc_now()
             await self.repository.session.execute(
-                update(QueueTaskModel)
-                .where(QueueTaskModel.id == task_id)
+                update(model_type)
+                .where(model_type.id == task_id)
                 .values(status="failed", completed_at=now, heartbeat_at=now, error=error)
             )
         updated = await self._select_task(task_id)
         return self.record_from_model(updated) if updated is not None else None
 
     async def cancel_task(self, task_id: UUID) -> bool:
+        model_type = self.model_type
         result = await self.repository.session.execute(
-            update(QueueTaskModel)
-            .where(QueueTaskModel.id == task_id, QueueTaskModel.status.in_(_DUE_STATUSES))
+            update(model_type)
+            .where(model_type.id == task_id, model_type.status.in_(_DUE_STATUSES))
             .values(status="cancelled", completed_at=_utc_now())
         )
         return int(result.rowcount or 0) == 1
 
     async def touch_heartbeat(self, task_id: UUID) -> None:
+        model_type = self.model_type
         await self.repository.session.execute(
-            update(QueueTaskModel)
-            .where(QueueTaskModel.id == task_id, QueueTaskModel.status == "running")
+            update(model_type)
+            .where(model_type.id == task_id, model_type.status == "running")
             .values(heartbeat_at=_utc_now())
         )
 
     async def null_heartbeats(self, task_ids: list[UUID]) -> None:
         if not task_ids:
             return
+        model_type = self.model_type
         await self.repository.session.execute(
-            update(QueueTaskModel).where(QueueTaskModel.id.in_(task_ids)).values(heartbeat_at=None)
+            update(model_type).where(model_type.id.in_(task_ids)).values(heartbeat_at=None)
         )
 
     async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
         cutoff = _utc_now() - stale_after
+        model_type = self.model_type
+        criteria = [model_type.status == "running"]
+        if stale_after > timedelta(0):
+            criteria.append(or_(model_type.heartbeat_at.is_(None), model_type.heartbeat_at <= cutoff))
         result = await self.repository.session.execute(
-            update(QueueTaskModel)
-            .where(
-                QueueTaskModel.status == "running",
-                or_(QueueTaskModel.heartbeat_at.is_(None), QueueTaskModel.heartbeat_at < cutoff),
-            )
+            update(model_type)
+            .where(*criteria)
             .values(
                 status="pending",
                 started_at=None,
                 heartbeat_at=None,
-                retry_count=QueueTaskModel.retry_count + 1,
+                retry_count=model_type.retry_count + 1,
             )
         )
         return int(result.rowcount or 0)
@@ -239,9 +257,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         *,
         execution_profile: str | None,
     ) -> QueuedTaskRecord | None:
+        model_type = self.model_type
         result = await self.repository.session.execute(
-            update(QueueTaskModel)
-            .where(QueueTaskModel.id == task_id)
+            update(model_type)
+            .where(model_type.id == task_id)
             .values(
                 execution_backend=execution_backend,
                 execution_profile=execution_profile,
@@ -260,9 +279,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         *,
         execution_profile: str | None,
     ) -> QueuedTaskRecord | None:
+        model_type = self.model_type
         result = await self.repository.session.execute(
-            update(QueueTaskModel)
-            .where(QueueTaskModel.id == task_id)
+            update(model_type)
+            .where(model_type.id == task_id)
             .values(
                 execution_backend=execution_backend,
                 execution_profile=execution_profile,
@@ -275,13 +295,14 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         return self.record_from_model(model) if model is not None else None
 
     async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
+        model_type = self.model_type
         statement = (
-            select(QueueTaskModel)
+            select(model_type)
             .where(
-                QueueTaskModel.status.in_(("pending", "scheduled", "running")),
-                QueueTaskModel.execution_ref.is_not(None),
+                model_type.status.in_(("pending", "scheduled", "running")),
+                model_type.execution_ref.is_not(None),
             )
-            .order_by(QueueTaskModel.started_at, QueueTaskModel.created_at)
+            .order_by(model_type.started_at, model_type.created_at)
         )
         if limit is not None:
             statement = statement.limit(limit)
@@ -289,8 +310,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         return [self.record_from_model(model) for model in models]
 
     async def get_statistics(self) -> QueueStatistics:
+        model_type = self.model_type
         result = await self.repository.session.execute(
-            select(QueueTaskModel.status, func.count()).group_by(QueueTaskModel.status)
+            select(model_type.status, func.count()).group_by(model_type.status)
         )
         statistics = QueueStatistics()
         for status, count in result.all():
@@ -305,33 +327,34 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         since: datetime | None,
         limit: int,
     ) -> list[QueuedTaskRecord]:
-        criteria = [QueueTaskModel.task_name == task_name, QueueTaskModel.status == "completed"]
+        model_type = self.model_type
+        criteria = [model_type.task_name == task_name, model_type.status == "completed"]
         if since is not None:
-            criteria.append(QueueTaskModel.completed_at >= since)
+            criteria.append(model_type.completed_at >= since)
         statement = (
-            select(QueueTaskModel).where(and_(*criteria)).order_by(desc(QueueTaskModel.completed_at)).limit(limit)
+            select(model_type).where(and_(*criteria)).order_by(desc(model_type.completed_at)).limit(limit)
         )
         models = await self.list(statement=statement)
         return [self.record_from_model(model) for model in models]
 
     async def cleanup_terminal(self, before: datetime) -> int:
+        model_type = self.model_type
         result = await self.repository.session.execute(
-            delete(QueueTaskModel).where(
-                QueueTaskModel.status.in_(_TERMINAL_STATUSES),
-                QueueTaskModel.completed_at.is_not(None),
-                QueueTaskModel.completed_at < before,
+            delete(model_type).where(
+                model_type.status.in_(_TERMINAL_STATUSES),
+                model_type.completed_at.is_not(None),
+                model_type.completed_at < before,
             )
         )
         return int(result.rowcount or 0)
 
-    @staticmethod
-    def model_from_record(record: QueuedTaskRecord) -> QueueTaskModel:
+    def model_from_record(self, record: QueuedTaskRecord) -> Any:
         """Convert a backend-neutral record into an Advanced Alchemy model.
 
         Returns:
             The Advanced Alchemy queue task model.
         """
-        return QueueTaskModel(
+        return self.model_type(
             id=record.id,
             task_name=record.task_name,
             args_json=_serialize_json(list(record.args)),
@@ -356,7 +379,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
         )
 
     @staticmethod
-    def record_from_model(model: QueueTaskModel) -> QueuedTaskRecord:
+    def record_from_model(model: Any) -> QueuedTaskRecord:
         """Convert an Advanced Alchemy model into a backend-neutral record.
 
         Returns:
@@ -389,24 +412,25 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[QueueTaskModel]):
             metadata=metadata,
         )
 
-    async def _select_task(self, task_id: UUID) -> QueueTaskModel | None:
-        return cast("QueueTaskModel | None", await self.repository.get_one_or_none(id=task_id))
+    async def _select_task(self, task_id: UUID) -> Any | None:
+        return await self.repository.get_one_or_none(id=task_id)
 
-    async def _select_task_by_key(self, key: str) -> QueueTaskModel | None:
-        return cast("QueueTaskModel | None", await self.repository.get_one_or_none(task_key=key))
+    async def _select_task_by_key(self, key: str) -> Any | None:
+        return await self.repository.get_one_or_none(task_key=key)
 
     def _pending_statement(self, *, queue: str | None, execution_backend: str | None) -> Any:
         now = _utc_now()
+        model_type = self.model_type
         criteria = [
-            QueueTaskModel.status.in_(_DUE_STATUSES),
-            or_(QueueTaskModel.scheduled_at.is_(None), QueueTaskModel.scheduled_at <= now),
+            model_type.status.in_(_DUE_STATUSES),
+            or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
         ]
         if queue is not None:
-            criteria.append(QueueTaskModel.queue == queue)
+            criteria.append(model_type.queue == queue)
         if execution_backend is not None:
-            criteria.append(QueueTaskModel.execution_backend == execution_backend)
+            criteria.append(model_type.execution_backend == execution_backend)
         return (
-            select(QueueTaskModel)
+            select(model_type)
             .where(and_(*criteria))
-            .order_by(desc(QueueTaskModel.priority), QueueTaskModel.created_at)
+            .order_by(desc(model_type.priority), model_type.created_at)
         )

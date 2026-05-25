@@ -1,5 +1,3 @@
-from typing import Any
-
 import pytest
 
 from litestar_queues import QueueConfig, QueueService, task
@@ -71,10 +69,10 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> None:
 
 async def test_task_context_keyword_is_not_injected_when_callable_does_not_accept_it() -> None:
     sink = InMemoryQueueEventSink()
-    received_kwargs: dict[str, Any] | None = None
+    received_kwargs: dict[str, object] | None = None
 
     @task("tasks.plain")
-    async def plain() -> dict[str, Any]:
+    async def plain() -> dict[str, object]:
         nonlocal received_kwargs
         received_kwargs = {}
         await publish_task_progress(percent=50)

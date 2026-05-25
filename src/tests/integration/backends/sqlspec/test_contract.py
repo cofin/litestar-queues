@@ -15,7 +15,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from subprocess import run
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -56,8 +56,17 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from litestar_queues.backends import BaseQueueBackend
+    from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
 pytestmark = pytest.mark.anyio
+
+
+class FakeSQLSpecConfig(SimpleNamespace):
+    """Structural config used by SQLSpec store dispatch tests."""
+
+    extension_config: dict[str, object]
+    statement_config: SimpleNamespace
+    connection_config: dict[str, object]
 
 
 def _fake_adapter_config(
@@ -65,13 +74,16 @@ def _fake_adapter_config(
     *,
     dialect: str | None = None,
     config_type_name: str | None = None,
-    connection_config: dict[str, Any] | None = None,
-    extension_config: dict[str, Any] | None = None,
-) -> Any:
-    config_type = type(
-        config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
-        (),
-        {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+    connection_config: dict[str, object] | None = None,
+    extension_config: dict[str, object] | None = None,
+) -> FakeSQLSpecConfig:
+    config_type = cast(
+        "type[FakeSQLSpecConfig]",
+        type(
+            config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
+            (FakeSQLSpecConfig,),
+            {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+        ),
     )
     config = config_type()
     config.extension_config = extension_config or {}
@@ -275,7 +287,7 @@ for adapter_name, dialect, config_type_name, expected_store in expected:
 
 
 async def test_sqlspec_backend_exposes_config_type_and_builder_store(
-    tmp_path: "Path", sqlite_config_factory: Any
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     backend_config = SQLSpecBackendConfig(table_name="queue_tasks")
     store = create_queue_store(sqlite_config_factory(tmp_path / "queue.db"), table_name=backend_config.table_name)
@@ -321,7 +333,7 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
         ("aiosqlite", "sqlite", "AiosqliteConfig", {}, AiosqliteQueueStore, '"queue_tasks"'),
         ("asyncmy", "mysql", "AsyncmyConfig", {}, AsyncmyQueueStore, "ENGINE=InnoDB"),
         ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, "WHERE status IN"),
-        ("bigquery", "bigquery", "BigQueryConfig", {}, BigQueryQueueStore, "CLUSTER BY"),
+        ("bigquery", "bigquery", "BigQueryConfig", {}, BigQueryQueueStore, "CREATE TABLE"),
         (
             "cockroach_asyncpg",
             "postgres",
@@ -363,8 +375,8 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     adapter_name: str,
     dialect: str | None,
     config_type_name: str,
-    connection_config: dict[str, Any],
-    expected_store_type: type[Any],
+    connection_config: dict[str, object],
+    expected_store_type: type[object],
     expected_sql_fragment: str,
 ) -> None:
     store = create_queue_store(
@@ -380,6 +392,32 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert isinstance(store, expected_store_type)
     assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
     assert expected_sql_fragment in "\n".join(store.create_statements())
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "config_type_name"),
+    (
+        ("aiomysql", "AiomysqlConfig"),
+        ("asyncmy", "AsyncmyConfig"),
+        ("mysqlconnector", "MysqlConnectorSyncConfig"),
+        ("mysqlconnector", "MysqlConnectorAsyncConfig"),
+        ("pymysql", "PyMysqlConfig"),
+    ),
+)
+async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(
+    adapter_name: str,
+    config_type_name: str,
+) -> None:
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect="mysql", config_type_name=config_type_name),
+        table_name="queue_tasks",
+    )
+
+    ddl = "\n".join(store.create_statements())
+
+    assert "status(32), queue(191), execution_backend(191)" in ddl
+    assert "status(32), heartbeat_at" in ddl
+    assert "task_key VARCHAR(255) UNIQUE" in ddl
 
 
 async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_keys(
@@ -491,7 +529,10 @@ def test_sqlspec_backend_does_not_create_sqlspec_litestar_plugin() -> None:
         SQLSpecQueueBackend(register_plugin=True)  # type: ignore[call-arg]
 
 
-async def test_sqlspec_backend_can_start_with_packaged_migrations(tmp_path: "Path", sqlite_config_factory: Any) -> None:
+async def test_sqlspec_backend_can_start_with_packaged_migrations(
+    tmp_path: "Path",
+    sqlite_config_factory: "SqliteConfigFactory",
+) -> None:
     db_path = tmp_path / "migrated.db"
 
     first = SQLSpecQueueBackend(
@@ -521,7 +562,10 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(tmp_path: "Pat
     assert versions == ["ext_litestar_queues_0001"]
 
 
-async def test_sqlspec_backend_uses_configured_table_name(tmp_path: "Path", sqlite_config_factory: Any) -> None:
+async def test_sqlspec_backend_uses_configured_table_name(
+    tmp_path: "Path",
+    sqlite_config_factory: "SqliteConfigFactory",
+) -> None:
     db_path = tmp_path / "custom-table.db"
     backend = SQLSpecQueueBackend(
         sqlspec_config=sqlite_config_factory(db_path),
@@ -596,7 +640,10 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
     assert "extension_queue_tasks" not in table_names
 
 
-async def test_queue_service_uses_sqlspec_backend_from_config(tmp_path: "Path", sqlite_config_factory: Any) -> None:
+async def test_queue_service_uses_sqlspec_backend_from_config(
+    tmp_path: "Path",
+    sqlite_config_factory: "SqliteConfigFactory",
+) -> None:
     @task("tasks.lower", retries=1)
     async def lowercase(value: str) -> str:
         return value.lower()

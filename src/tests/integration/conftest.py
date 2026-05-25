@@ -39,13 +39,7 @@ async def queue_backend(
         if service is None:
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 
-    ctx = FixtureCtx(
-        tmp_path=tmp_path,
-        postgres_service=service if case.service_attr == "postgres_service" else None,
-        mysql_service=service if case.service_attr == "mysql_service" else None,
-        mariadb_service=service if case.service_attr == "mariadb_service" else None,
-        oracle_service=service if case.service_attr == "oracle_service" else None,
-    )
+    ctx = FixtureCtx(tmp_path=tmp_path, service=service)
 
     backend = await case.build(ctx)
     await backend.open()
@@ -65,10 +59,12 @@ async def _drop_queue_tables(backend: "BaseQueueBackend") -> None:
     if sqlspec_config is None or sqlspec_manager is None:
         return
     table_name = getattr(backend, "_table_name", None) or "litestar_queue_tasks"
+    store = getattr(backend, "_store", None)
     from litestar_queues.backends.sqlspec.backend import _bridge_session
 
     async with _bridge_session(sqlspec_manager, sqlspec_config) as driver:
         for ddl in (
+            *(store.drop_statements() if store is not None else ()),
             f'DROP TABLE IF EXISTS "{table_name}"',
             'DROP TABLE IF EXISTS "ddl_migrations"',
             'DROP TABLE IF EXISTS "sqlspec_async_events"',
@@ -80,15 +76,20 @@ async def _drop_queue_tables(backend: "BaseQueueBackend") -> None:
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     """Parametrize any test consuming the `queue_backend` fixture across QUEUE_BACKENDS.
 
-    Cases tagged with ``xfail-upstream`` are wrapped in ``pytest.param(..., marks=xfail)``
-    so the test suite reports a clean signal without failing CI. See
+    Cases tagged with ``skip-upstream`` are known to hang or fail before the
+    contract body can run. Cases tagged with ``xfail-upstream`` still run but
+    report a clean signal without failing CI. See
     ``tests/integration/_backends.py`` for the rationale.
     """
     if "queue_backend" in metafunc.fixturenames:
         params = []
         for case in QUEUE_BACKENDS:
             marks: list[pytest.MarkDecorator] = []
-            if "xfail-upstream" in case.capabilities:
+            if "skip-upstream" in case.capabilities:
+                marks.append(
+                    pytest.mark.skip(reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)")
+                )
+            elif "xfail-upstream" in case.capabilities:
                 marks.append(
                     pytest.mark.xfail(
                         reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)",

@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -99,14 +99,14 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(
     clear_task_registry()
 
     async def resolver(
-        _task: "Task[Any, Any]",
+        _task: "Task[..., object]",
         _record: "QueuedTaskRecord",
         _context: "TaskExecutionContext",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         return {"injected_service": "from-resolver"}
 
     @task("contract.resolver.merge")
-    async def consume(**kwargs: Any) -> dict[str, Any]:
+    async def consume(**kwargs: object) -> dict[str, object]:
         return {"injected_service": kwargs["injected_service"]}
 
     config = QueueConfig(task_dependency_resolver=resolver)
@@ -127,18 +127,20 @@ async def test_task_dependency_resolver_cannot_override_sentinels(
     clear_task_registry()
 
     async def resolver(
-        _task: "Task[Any, Any]",
+        _task: "Task[..., object]",
         _record: "QueuedTaskRecord",
         _context: "TaskExecutionContext",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         return {"_job_id": "hijacked", "_task_context": "hijacked"}
 
     @task("contract.resolver.sentinels")
-    async def sentinels(**kwargs: Any) -> dict[str, Any]:
+    async def sentinels(**kwargs: object) -> dict[str, object]:
+        task_context = kwargs["_task_context"]
+        assert isinstance(task_context, TaskExecutionContext)
         return {
             "job_id": kwargs["_job_id"],
-            "ctx_type": type(kwargs["_task_context"]).__name__,
-            "ctx_task_name": kwargs["_task_context"].task_name,
+            "ctx_type": type(task_context).__name__,
+            "ctx_task_name": task_context.task_name,
         }
 
     config = QueueConfig(task_dependency_resolver=resolver)
@@ -166,10 +168,10 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     attempts = {"count": 0}
 
     async def resolver(
-        _task: "Task[Any, Any]",
+        _task: "Task[..., object]",
         _record: "QueuedTaskRecord",
         _context: "TaskExecutionContext",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         attempts["count"] += 1
         if attempts["count"] == 1:
             msg = "resolver boom"
@@ -226,13 +228,17 @@ async def test_task_dependency_resolver_default_is_none_with_no_invocation(
         return "ok"
 
     service = QueueService(config, queue_backend=queue_backend)
-    captured: list[Any] = []
+    captured: list[object] = []
 
     original = Task.execute_record
 
-    async def spy(self: "Task[Any, Any]", record: Any, **kwargs: Any) -> Any:
-        captured.append(kwargs.get("extra_kwargs", "MISSING"))
-        return await original(self, record, **kwargs)
+    async def spy(self: "Task[..., object]", record: "QueuedTaskRecord", **kwargs: object) -> object:
+        extra_kwargs = kwargs.get("extra_kwargs")
+        task_context = kwargs.get("task_context")
+        assert extra_kwargs is None or isinstance(extra_kwargs, dict)
+        assert task_context is None or isinstance(task_context, TaskExecutionContext)
+        captured.append(extra_kwargs if "extra_kwargs" in kwargs else "MISSING")
+        return await original(self, record, task_context=task_context, extra_kwargs=extra_kwargs)
 
     from unittest.mock import patch
 

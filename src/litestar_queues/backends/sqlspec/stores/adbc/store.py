@@ -21,8 +21,8 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     __slots__ = ("_dialect",)
 
-    def __init__(self, config: Any, *, table_name: str | None = None) -> None:
-        super().__init__(config, table_name=table_name)
+    def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
+        super().__init__(config, table_name=table_name, **kwargs)
         self._dialect: str | None = None
 
     @property
@@ -34,6 +34,8 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> list[str]:
         """Return statements that create adbc queue artifacts."""
+        if not self._manage_schema:
+            return []
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
             return [self._bigquery_create_table_statement()]
         if self.adbc_dialect == _ADBC_DIALECT_SNOWFLAKE:
@@ -47,6 +49,8 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop adbc queue artifacts."""
+        if not self._manage_schema:
+            return []
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_SNOWFLAKE}:
             return [f"DROP TABLE IF EXISTS {self.table_name}"]
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
@@ -103,16 +107,17 @@ class AdbcQueueStore(SQLSpecQueueStore):
         return [
             (
                 f"CREATE INDEX IF NOT EXISTS {self._index_name('pending')} "
-                f"ON {table_name} (queue, execution_backend, priority DESC, created_at) "
-                "WHERE status IN ('pending', 'scheduled')"
+                f"ON {table_name} ({self._col('queue')}, {self._col('execution_backend')}, "
+                f"{self._col('priority')} DESC, {self._col('created_at')}) "
+                f"WHERE {self._col('status')} IN ('pending', 'scheduled')"
             ),
             (
                 f"CREATE INDEX IF NOT EXISTS {self._index_name('scheduled')} "
-                f"ON {table_name} (scheduled_at) WHERE status = 'scheduled'"
+                f"ON {table_name} ({self._col('scheduled_at')}) WHERE {self._col('status')} = 'scheduled'"
             ),
             (
                 f"CREATE INDEX IF NOT EXISTS {self._index_name('heartbeat')} "
-                f"ON {table_name} (heartbeat_at) WHERE status = 'running'"
+                f"ON {table_name} ({self._col('heartbeat_at')}) WHERE {self._col('status')} = 'running'"
             ),
         ]
 
@@ -120,55 +125,56 @@ class AdbcQueueStore(SQLSpecQueueStore):
         table_name = self.table_name
         return f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            id STRING NOT NULL,
-            task_name STRING NOT NULL,
-            args_json {self._payload_json_type("args_json")} NOT NULL,
-            kwargs_json {self._payload_json_type("kwargs_json")} NOT NULL,
-            queue STRING NOT NULL,
-            execution_backend STRING NOT NULL,
-            execution_profile STRING,
-            execution_ref STRING,
-            status STRING NOT NULL,
-            priority INT64 NOT NULL,
-            max_retries INT64 NOT NULL,
-            retry_count INT64 NOT NULL,
-            scheduled_at TIMESTAMP,
-            created_at TIMESTAMP NOT NULL,
-            started_at TIMESTAMP,
-            completed_at TIMESTAMP,
-            heartbeat_at TIMESTAMP,
-            result_json {self._result_json_type("result_json")} NOT NULL,
-            error STRING,
-            task_key STRING,
-            metadata_json {self._metadata_json_type("metadata_json")} NOT NULL
+            {self._col("id")} STRING NOT NULL,
+            {self._col("task_name")} STRING NOT NULL,
+            {self._col("args_json")} {self._payload_json_type("args_json")} NOT NULL,
+            {self._col("kwargs_json")} {self._payload_json_type("kwargs_json")} NOT NULL,
+            {self._col("queue")} STRING NOT NULL,
+            {self._col("execution_backend")} STRING NOT NULL,
+            {self._col("execution_profile")} STRING,
+            {self._col("execution_ref")} STRING,
+            {self._col("status")} STRING NOT NULL,
+            {self._col("priority")} INT64 NOT NULL,
+            {self._col("max_retries")} INT64 NOT NULL,
+            {self._col("retry_count")} INT64 NOT NULL,
+            {self._col("scheduled_at")} TIMESTAMP,
+            {self._col("created_at")} TIMESTAMP NOT NULL,
+            {self._col("started_at")} TIMESTAMP,
+            {self._col("completed_at")} TIMESTAMP,
+            {self._col("heartbeat_at")} TIMESTAMP,
+            {self._col("result_json")} {self._result_json_type("result_json")} NOT NULL,
+            {self._col("error")} STRING,
+            {self._col("task_key")} STRING,
+            {self._col("metadata_json")} {self._metadata_json_type("metadata_json")} NOT NULL
         )
-        CLUSTER BY status, queue, execution_backend, scheduled_at
+        CLUSTER BY {self._col("status")}, {self._col("queue")},
+            {self._col("execution_backend")}, {self._col("scheduled_at")}
         """
 
     def _snowflake_create_table_statement(self) -> str:
         return f"""
         CREATE TABLE IF NOT EXISTS {self.table_name} (
-            id VARCHAR(64) PRIMARY KEY,
-            task_name VARCHAR(255) NOT NULL,
-            args_json VARIANT NOT NULL,
-            kwargs_json VARIANT NOT NULL,
-            queue VARCHAR(255) NOT NULL,
-            execution_backend VARCHAR(255) NOT NULL,
-            execution_profile VARCHAR(255),
-            execution_ref VARCHAR(255),
-            status VARCHAR(255) NOT NULL,
-            priority INTEGER NOT NULL,
-            max_retries INTEGER NOT NULL,
-            retry_count INTEGER NOT NULL,
-            scheduled_at TIMESTAMP_TZ,
-            created_at TIMESTAMP_TZ NOT NULL,
-            started_at TIMESTAMP_TZ,
-            completed_at TIMESTAMP_TZ,
-            heartbeat_at TIMESTAMP_TZ,
-            result_json VARIANT NOT NULL,
-            error VARCHAR,
-            task_key VARCHAR(255) UNIQUE,
-            metadata_json VARIANT NOT NULL
+            {self._col("id")} VARCHAR(64) PRIMARY KEY,
+            {self._col("task_name")} VARCHAR(255) NOT NULL,
+            {self._col("args_json")} VARIANT NOT NULL,
+            {self._col("kwargs_json")} VARIANT NOT NULL,
+            {self._col("queue")} VARCHAR(255) NOT NULL,
+            {self._col("execution_backend")} VARCHAR(255) NOT NULL,
+            {self._col("execution_profile")} VARCHAR(255),
+            {self._col("execution_ref")} VARCHAR(255),
+            {self._col("status")} VARCHAR(255) NOT NULL,
+            {self._col("priority")} INTEGER NOT NULL,
+            {self._col("max_retries")} INTEGER NOT NULL,
+            {self._col("retry_count")} INTEGER NOT NULL,
+            {self._col("scheduled_at")} TIMESTAMP_TZ,
+            {self._col("created_at")} TIMESTAMP_TZ NOT NULL,
+            {self._col("started_at")} TIMESTAMP_TZ,
+            {self._col("completed_at")} TIMESTAMP_TZ,
+            {self._col("heartbeat_at")} TIMESTAMP_TZ,
+            {self._col("result_json")} VARIANT NOT NULL,
+            {self._col("error")} VARCHAR,
+            {self._col("task_key")} VARCHAR(255) UNIQUE,
+            {self._col("metadata_json")} VARIANT NOT NULL
         )
         """
 

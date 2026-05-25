@@ -10,12 +10,108 @@ across the registry. Per-adapter behavior gating uses ``case.capabilities``.
 """
 
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from litestar_queues.backends import BaseQueueBackend
+
+
+class PostgresService(Protocol):
+    """pytest-databases Postgres service attributes used by backend builders."""
+
+    host: str
+    port: int
+    user: str
+    password: str
+    database: str
+
+
+class MySQLService(Protocol):
+    """pytest-databases MySQL service attributes used by backend builders."""
+
+    host: str
+    port: int
+    user: str
+    password: str
+    db: str
+
+
+class OracleService(Protocol):
+    """pytest-databases Oracle service attributes used by backend builders."""
+
+    host: str
+    port: int
+    user: str
+    password: str
+    service_name: str
+
+
+class BigQueryService(Protocol):
+    """pytest-databases BigQuery service attributes used by backend builders."""
+
+    project: str
+    dataset: str
+    credentials: object
+    client_options: object
+
+
+class SpannerService(Protocol):
+    """pytest-databases Spanner service attributes used by backend builders."""
+
+    project: str
+    instance_name: str
+    database_name: str
+    credentials: object
+    client_options: object
+
+
+class SpannerOperation(Protocol):
+    """Synchronous Spanner emulator operation result used by the test bootstrap."""
+
+    def result(self, timeout: int) -> object:
+        """Wait for the operation to complete."""
+
+
+class SpannerDatabase(Protocol):
+    """Spanner database methods used by the test bootstrap."""
+
+    def exists(self) -> bool:
+        """Return whether the database exists."""
+
+    def create(self) -> SpannerOperation:
+        """Create the database."""
+
+
+class SpannerInstance(Protocol):
+    """Spanner instance methods used by the test bootstrap."""
+
+    def exists(self) -> bool:
+        """Return whether the instance exists."""
+
+    def create(self) -> SpannerOperation:
+        """Create the instance."""
+
+    def database(self, database_name: str) -> SpannerDatabase:
+        """Return a database handle."""
+
+
+class SpannerClient(Protocol):
+    """Spanner client methods used by the test bootstrap."""
+
+    def instance(
+        self,
+        instance_id: str,
+        *,
+        configuration_name: str,
+        display_name: str,
+    ) -> SpannerInstance:
+        """Return an instance handle."""
+
+    def close(self) -> None:
+        """Close the client."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,10 +119,7 @@ class FixtureCtx:
     """Per-test fixture context handed to a BackendCase builder."""
 
     tmp_path: Path
-    postgres_service: Any | None = None
-    mysql_service: Any | None = None
-    mariadb_service: Any | None = None
-    oracle_service: Any | None = None
+    service: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +192,7 @@ async def _build_postgres_asyncpg(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.postgres_service
+    svc = cast("PostgresService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=AsyncpgConfig(
@@ -119,7 +212,7 @@ async def _build_postgres_psycopg(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.postgres_service
+    svc = cast("PostgresService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=PsycopgAsyncConfig(
@@ -139,7 +232,7 @@ async def _build_postgres_psqlpy(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.postgres_service
+    svc = cast("PostgresService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=PsqlpyConfig(
@@ -159,7 +252,7 @@ async def _build_mysql_asyncmy(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.mysql_service
+    svc = cast("MySQLService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=AsyncmyConfig(
@@ -179,7 +272,7 @@ async def _build_mysql_aiomysql(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.mysql_service
+    svc = cast("MySQLService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=AiomysqlConfig(
@@ -199,7 +292,7 @@ async def _build_mysql_pymysql(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.mysql_service
+    svc = cast("MySQLService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=PyMysqlConfig(
@@ -219,7 +312,7 @@ async def _build_mysql_mysqlconnector(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.mysql_service
+    svc = cast("MySQLService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=MysqlConnectorAsyncConfig(
@@ -239,7 +332,7 @@ async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
 
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
-    svc = ctx.oracle_service
+    svc = cast("OracleService", ctx.service)
     assert svc is not None
     return SQLSpecQueueBackend(
         sqlspec_config=OracleAsyncConfig(
@@ -254,8 +347,82 @@ async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-# ``xfail-upstream`` is read by the integration conftest to mark cases that
-# regress against known upstream issues (see bead litestar-queues-27b).
+async def _build_bigquery(ctx: FixtureCtx) -> "BaseQueueBackend":
+    from sqlspec.adapters.bigquery import BigQueryConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+
+    svc = cast("BigQueryService", ctx.service)
+    assert svc is not None
+    return SQLSpecQueueBackend(
+        sqlspec_config=BigQueryConfig(
+            connection_config={
+                "project": svc.project,
+                "dataset_id": svc.dataset,
+                "credentials": svc.credentials,
+                "client_options": svc.client_options,
+                "use_query_cache": False,
+            }
+        )
+    )
+
+
+async def _build_spanner(ctx: FixtureCtx) -> "BaseQueueBackend":
+    from sqlspec.adapters.spanner import SpannerSyncConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+
+    svc = cast("SpannerService", ctx.service)
+    assert svc is not None
+    _ensure_spanner_database(svc)
+    return SQLSpecQueueBackend(
+        sqlspec_config=SpannerSyncConfig(
+            connection_config={
+                "project": svc.project,
+                "instance_id": svc.instance_name,
+                "database_id": svc.database_name,
+                "credentials": svc.credentials,
+                "client_options": svc.client_options,
+                "min_sessions": 1,
+                "max_sessions": 2,
+            }
+        )
+    )
+
+
+def _ensure_spanner_database(service: SpannerService) -> None:
+    """Create the Spanner emulator instance and database used by SQLSpec tests."""
+    from google.api_core.exceptions import AlreadyExists
+    from google.cloud.spanner import Client
+
+    client = cast(
+        "SpannerClient",
+        Client(
+            project=service.project,
+            credentials=service.credentials,
+            client_options=service.client_options,
+        ),
+    )
+    try:
+        instance = client.instance(
+            service.instance_name,
+            configuration_name="emulator-config",
+            display_name=service.instance_name,
+        )
+        if not instance.exists():
+            with suppress(AlreadyExists):
+                instance.create().result(timeout=30)
+        database = instance.database(service.database_name)
+        if not database.exists():
+            with suppress(AlreadyExists):
+                database.create().result(timeout=30)
+    finally:
+        client.close()
+
+
+# ``skip-upstream`` / ``xfail-upstream`` are read by the integration conftest
+# to mark cases that regress against known upstream issues (see bead
+# litestar-queues-27b).
 # When the upstream fixes land, drop the capability from the BackendCase to flip
 # the case back to a hard-pass requirement.
 QUEUE_BACKENDS: tuple[BackendCase, ...] = (
@@ -285,7 +452,7 @@ QUEUE_BACKENDS: tuple[BackendCase, ...] = (
         frozenset({"duckdb", "sqlspec"}),
         None,
         _build_duckdb,
-        frozenset({"in-process", "polling-only", "json-column", "sync-driver", "xfail-upstream"}),
+        frozenset({"in-process", "polling-only", "json-column", "sync-driver"}),
     ),
     BackendCase(
         "adbc-sqlite",
@@ -306,48 +473,62 @@ QUEUE_BACKENDS: tuple[BackendCase, ...] = (
         frozenset({"psycopg", "sqlspec"}),
         "postgres_service",
         _build_postgres_psycopg,
-        frozenset({"listen-notify", "json-column", "xfail-upstream"}),
+        frozenset({"listen-notify", "json-column"}),
     ),
     BackendCase(
         "postgres-psqlpy",
         frozenset({"psqlpy", "sqlspec"}),
         "postgres_service",
         _build_postgres_psqlpy,
-        frozenset({"listen-notify", "json-column", "xfail-upstream"}),
+        frozenset({"listen-notify", "json-column"}),
     ),
     BackendCase(
         "mysql-asyncmy",
         frozenset({"asyncmy", "sqlspec"}),
         "mysql_service",
         _build_mysql_asyncmy,
-        frozenset({"polling-only", "json-column", "xfail-upstream"}),
+        frozenset({"polling-only", "json-column"}),
     ),
     BackendCase(
         "mysql-aiomysql",
         frozenset({"aiomysql", "sqlspec"}),
         "mysql_service",
         _build_mysql_aiomysql,
-        frozenset({"polling-only", "json-column", "xfail-upstream"}),
+        frozenset({"polling-only", "json-column"}),
     ),
     BackendCase(
         "mysql-pymysql",
         frozenset({"pymysql", "sqlspec"}),
         "mysql_service",
         _build_mysql_pymysql,
-        frozenset({"polling-only", "json-column", "sync-driver", "xfail-upstream"}),
+        frozenset({"polling-only", "json-column", "sync-driver"}),
     ),
     BackendCase(
         "mysql-mysqlconnector",
         frozenset({"mysql.connector", "sqlspec"}),
         "mysql_service",
         _build_mysql_mysqlconnector,
-        frozenset({"polling-only", "json-column", "xfail-upstream"}),
+        frozenset({"polling-only", "json-column"}),
     ),
     BackendCase(
         "oracle-oracledb",
         frozenset({"oracledb", "sqlspec"}),
         "oracle_service",
         _build_oracle_oracledb,
-        frozenset({"polling-only", "json-blob-checked", "blob-storage", "inmemory-capable", "xfail-upstream"}),
+        frozenset({"polling-only", "json-blob-checked", "blob-storage", "inmemory-capable"}),
+    ),
+    BackendCase(
+        "bigquery",
+        frozenset({"google.cloud.bigquery", "sqlspec.adapters.bigquery"}),
+        "bigquery_service",
+        _build_bigquery,
+        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-upstream"}),
+    ),
+    BackendCase(
+        "spanner",
+        frozenset({"google.cloud.spanner", "google.cloud.spanner_v1", "sqlspec.adapters.spanner"}),
+        "spanner_service",
+        _build_spanner,
+        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-upstream"}),
     ),
 )

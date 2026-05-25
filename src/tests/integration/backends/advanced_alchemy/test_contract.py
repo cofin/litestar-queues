@@ -1,6 +1,6 @@
 """Advanced Alchemy queue-backend contract suite.
 
-Smoke tests (registration + import isolation + migration assets) stay
+Smoke tests (registration + import isolation + schema bootstrap config) stay
 unparametrized. The 6 behavior tests consume the ``advanced_alchemy_backend``
 fixture parametrized over ``AA_ENGINES`` (aiosqlite + Postgres + MySQL +
 Oracle async configs) by the subdir conftest.
@@ -8,23 +8,25 @@ Oracle async configs) by the subdir conftest.
 
 import sys
 from datetime import UTC, datetime, timedelta
-from importlib.resources import files
 from pathlib import Path
 from subprocess import run
 
 import pytest
-from anyio import Path as AsyncPath
 
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlalchemy")
 
+from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
 from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
-from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
-from litestar_queues.backends.advanced_alchemy.config import build_alembic_config, migration_script_location
+from litestar_queues.backends.advanced_alchemy import (
+    AdvancedAlchemyBackendConfig,
+    AdvancedAlchemyQueueBackend,
+    QueueTaskModelMixin,
+)
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -37,6 +39,10 @@ def clean_task_registry() -> None:
 
 def _sqlite_config(path: Path) -> SQLAlchemyAsyncConfig:
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
+
+
+class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
+    __tablename__ = "aa_contract_queue_tasks"
 
 
 async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> None:
@@ -72,22 +78,15 @@ assert QueueConfig().queue_backend == "memory"
     assert result.returncode == 0, result.stderr
 
 
-async def test_advanced_alchemy_backend_exposes_config_and_migration_assets(tmp_path: Path) -> None:
+async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path: Path) -> None:
     backend_config = AdvancedAlchemyBackendConfig(
         sqlalchemy_config=_sqlite_config(tmp_path / "configured.db"),
-        table_name="litestar_queue_tasks",
+        model_class=ContractQueueTask,
         create_schema=True,
     )
 
-    migration_location = Path(migration_script_location())
-    migration_versions = files("litestar_queues.backends.advanced_alchemy.migrations.versions")
-    alembic_config = build_alembic_config()
-
-    assert backend_config.table_name == "litestar_queue_tasks"
-    assert migration_location.name == "migrations"
-    assert await AsyncPath(migration_location).exists()
-    assert migration_versions.joinpath("0001_litestar_queue_tasks.py").is_file()
-    assert alembic_config.script_location == str(migration_location)
+    assert backend_config.model_class is ContractQueueTask
+    assert backend_config.create_schema is True
 
 
 async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_terminal_keys(
@@ -243,6 +242,7 @@ async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: Path) -> No
         queue_backend="advanced-alchemy",
         queue_backend_config={
             "sqlalchemy_config": _sqlite_config(tmp_path / "service.db"),
+            "model_class": ContractQueueTask,
             "create_schema": True,
         },
     )

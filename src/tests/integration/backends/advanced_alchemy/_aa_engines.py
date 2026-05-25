@@ -8,9 +8,9 @@ factories. Each ``AAEngineCase`` knows how to build a config from a
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from tests.integration._backends import FixtureCtx
+from tests.integration._backends import FixtureCtx, MySQLService, OracleService, PostgresService
 
 if TYPE_CHECKING:
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
@@ -45,7 +45,7 @@ def _config_aiosqlite(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
 def _config_postgres_asyncpg(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
-    svc = ctx.postgres_service
+    svc = cast("PostgresService", ctx.service)
     assert svc is not None
     return SQLAlchemyAsyncConfig(
         connection_string=f"postgresql+asyncpg://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.database}",
@@ -55,7 +55,7 @@ def _config_postgres_asyncpg(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
 def _config_mysql_asyncmy(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
-    svc = ctx.mysql_service
+    svc = cast("MySQLService", ctx.service)
     assert svc is not None
     return SQLAlchemyAsyncConfig(
         connection_string=f"mysql+asyncmy://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.db}",
@@ -65,7 +65,7 @@ def _config_mysql_asyncmy(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
 def _config_oracle_oracledb(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
-    svc = ctx.oracle_service
+    svc = cast("OracleService", ctx.service)
     assert svc is not None
     return SQLAlchemyAsyncConfig(
         connection_string=(
@@ -83,28 +83,28 @@ AA_ENGINES: tuple[AAEngineCase, ...] = (
         frozenset({"aiosqlite", "sqlalchemy", "advanced_alchemy"}),
         None,
         _config_aiosqlite,
-        frozenset({"in-process", "alembic-supported", "json-text"}),
+        frozenset({"in-process", "json-text"}),
     ),
     AAEngineCase(
         "aa-postgres-asyncpg",
         frozenset({"asyncpg", "sqlalchemy", "advanced_alchemy"}),
         "postgres_service",
         _config_postgres_asyncpg,
-        frozenset({"alembic-supported", "json-column"}),
+        frozenset({"json-column"}),
     ),
     AAEngineCase(
         "aa-mysql-asyncmy",
         frozenset({"asyncmy", "sqlalchemy", "advanced_alchemy"}),
         "mysql_service",
         _config_mysql_asyncmy,
-        frozenset({"alembic-supported", "json-column", "xfail-upstream"}),
+        frozenset({"json-column"}),
     ),
     AAEngineCase(
         "aa-oracle-oracledb",
         frozenset({"oracledb", "sqlalchemy", "advanced_alchemy"}),
         "oracle_service",
         _config_oracle_oracledb,
-        frozenset({"alembic-supported", "json-blob-checked", "blob-storage", "xfail-upstream"}),
+        frozenset({"json-blob-checked", "blob-storage"}),
     ),
 )
 

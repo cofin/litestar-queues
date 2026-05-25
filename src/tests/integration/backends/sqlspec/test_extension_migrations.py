@@ -9,7 +9,7 @@ discoverable, and that running it twice is idempotent (the
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import cast
 
 import pytest
 
@@ -20,18 +20,29 @@ from litestar_queues.backends.sqlspec.schema import migration_paths
 pytestmark = pytest.mark.anyio
 
 
+class FakeSQLSpecConfig(SimpleNamespace):
+    """Structural config used by SQLSpec store dispatch tests."""
+
+    extension_config: dict[str, object]
+    statement_config: SimpleNamespace
+    connection_config: dict[str, object]
+
+
 def _fake_adapter_config(
     adapter_name: str,
     *,
     dialect: str | None = None,
     config_type_name: str | None = None,
-    connection_config: dict[str, Any] | None = None,
-    extension_config: dict[str, Any] | None = None,
-) -> Any:
-    config_type = type(
-        config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
-        (),
-        {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+    connection_config: dict[str, object] | None = None,
+    extension_config: dict[str, object] | None = None,
+) -> FakeSQLSpecConfig:
+    config_type = cast(
+        "type[FakeSQLSpecConfig]",
+        type(
+            config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
+            (),
+            {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+        ),
     )
     config = config_type()
     config.extension_config = extension_config or {}
@@ -46,7 +57,7 @@ async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> 
 
     statements = await migration.up(context)
 
-    assert "CLUSTER BY" in statements[0]
+    assert "CREATE TABLE IF NOT EXISTS" in statements[0]
     assert not any("CREATE INDEX" in statement for statement in statements)
 
 

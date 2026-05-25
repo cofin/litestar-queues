@@ -242,15 +242,16 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
 
 
 def _dumps_camel(payload: dict[str, int]) -> str:
-    """Emit JSON, preferring ``sqlspec.utils.serializers.to_json`` for symmetry with the wire format."""
+    """Emit JSON, preferring ``sqlspec.utils.serializers.to_json`` for symmetry with the wire format.
+
+    Returns:
+        A JSON string with camelCase keys.
+    """
     try:
         from sqlspec.utils.serializers import to_json
     except ImportError:
         return json.dumps(payload)
-    result = to_json(payload)
-    if isinstance(result, bytes):
-        return result.decode("utf-8")
-    return result
+    return to_json(payload)
 
 
 # --- scheduler-health ------------------------------------------------

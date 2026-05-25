@@ -1,7 +1,7 @@
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import pytest
 
@@ -9,7 +9,29 @@ from litestar_queues import QueueConfig, QueueService, Worker, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
 
+if TYPE_CHECKING:
+    from litestar_queues.execution.cloudrun._typing import CloudRunJobsClient
+
 pytestmark = pytest.mark.anyio
+
+
+class RunJobEnv(TypedDict):
+    name: str
+    value: str
+
+
+class RunJobContainerOverride(TypedDict):
+    env: list[RunJobEnv]
+
+
+class RunJobOverrides(TypedDict):
+    container_overrides: list[RunJobContainerOverride]
+    timeout: str
+
+
+class RunJobRequest(TypedDict):
+    name: str
+    overrides: RunJobOverrides
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +45,7 @@ class FakeCloudRunExecution:
     succeeded_count: int = 0
     failed_count: int = 0
     cancelled_count: int = 0
-    conditions: list[Any] | None = None
+    conditions: list[object] | None = None
 
 
 class FakeOperation:
@@ -38,9 +60,9 @@ class FakeJobsClient:
     def __init__(self, execution: FakeCloudRunExecution | None = None, *, error: Exception | None = None) -> None:
         self.execution = execution or FakeCloudRunExecution()
         self.error = error
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[RunJobRequest] = []
 
-    async def run_job(self, *, request: dict[str, Any]) -> FakeOperation:
+    async def run_job(self, *, request: RunJobRequest) -> FakeOperation:
         self.requests.append(request)
         if self.error is not None:
             raise self.error
@@ -59,7 +81,7 @@ class FakeExecutionsClient:
         return self.execution
 
 
-def _env_map(request: dict[str, Any]) -> dict[str, str]:
+def _env_map(request: RunJobRequest) -> dict[str, str]:
     env = request["overrides"]["container_overrides"][0]["env"]
     return {item["name"]: item["value"] for item in env}
 
@@ -72,6 +94,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         return value + 1
 
     queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
     service = QueueService(
         QueueConfig(execution_backend="cloudrun"),
         queue_backend=queue_backend,
@@ -83,7 +106,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
                 profiles={"heavy": "heavy-worker"},
                 extra_env={"EXTRA_SETTING": "enabled"},
             ),
-            jobs_client=FakeJobsClient(),
+            jobs_client=cast("CloudRunJobsClient", jobs_client),
         ),
     )
     await service.open()
@@ -97,8 +120,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
     finally:
         await service.close()
 
-    backend = service.get_execution_backend()
-    request = backend.jobs_client.requests[0]  # type: ignore[attr-defined]
+    request = jobs_client.requests[0]
     env = _env_map(request)
 
     assert execution_ref == "projects/test/locations/us-central1/jobs/worker/executions/run-1"
@@ -130,7 +152,7 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
             job_name="worker",
             fallback_execution_backend="local",
         ),
-        jobs_client=FakeJobsClient(error=RuntimeError("api unavailable")),
+        jobs_client=cast("CloudRunJobsClient", FakeJobsClient(error=RuntimeError("api unavailable"))),
     )
     service = QueueService(
         QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
@@ -214,9 +236,10 @@ async def test_cloudrun_reconcile_treats_transient_status_errors_as_running() ->
         assert claimed is not None
 
         updated = await backend.reconcile(service, claimed)
-        stored = await queue_backend.get_task(record.id)
     finally:
         await service.close()
+
+    stored = await queue_backend.get_task(record.id)
 
     assert updated is None
     assert stored is not None
@@ -233,7 +256,7 @@ async def test_worker_dispatches_external_records_without_claiming_them() -> Non
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
         cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
-        jobs_client=FakeJobsClient(),
+        jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     async with QueueService(
         QueueConfig(execution_backend="cloudrun"),

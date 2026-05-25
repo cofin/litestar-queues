@@ -1,5 +1,4 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 
@@ -64,7 +63,7 @@ async def test_task_decorator_registers_and_calls_async_and_sync_functions() -> 
 
 async def test_task_execute_record_merges_extra_kwargs_into_call() -> None:
     @task("inject.consume")
-    async def consume(**kwargs: Any) -> dict[str, Any]:
+    async def consume(**kwargs: object) -> dict[str, object]:
         return dict(kwargs)
 
     record = QueuedTaskRecord(task_name="inject.consume", kwargs={"existing": "from_record"})
@@ -83,7 +82,7 @@ async def test_task_execute_record_merges_extra_kwargs_into_call() -> None:
 
 async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> None:
     @task("inject.sentinels")
-    async def sentinels(**kwargs: Any) -> dict[str, Any]:
+    async def sentinels(**kwargs: object) -> dict[str, object]:
         return dict(kwargs)
 
     record = QueuedTaskRecord(task_name="inject.sentinels")

@@ -4,7 +4,7 @@ import pkgutil
 import random
 import sys
 import zoneinfo
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from importlib import import_module, reload
@@ -471,7 +471,7 @@ class Task(Generic[P, T]):
         record: "QueuedTaskRecord",
         *,
         task_context: "TaskExecutionContext | None" = None,
-        extra_kwargs: "dict[str, Any] | None" = None,
+        extra_kwargs: "Mapping[str, object] | None" = None,
     ) -> T:
         """Execute this task for a queued record in worker context.
 

@@ -6,12 +6,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from litestar_queues.backends.advanced_alchemy.config import (
-    DEFAULT_TABLE_NAME,
-    AdvancedAlchemyBackendConfig,
-    build_alembic_config,
-    validate_table_name,
-)
+from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
@@ -32,10 +27,10 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     __slots__ = (
         "_create_schema",
         "_heartbeat_session_maker",
+        "_model_class",
         "_opened",
-        "_run_migrations",
+        "_service_class",
         "_sqlalchemy_config",
-        "_table_name",
     )
 
     def __init__(
@@ -45,9 +40,8 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         backend_config: AdvancedAlchemyBackendConfig | None = None,
         sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None,
         heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None,
-        table_name: str | None = None,
+        model_class: type[Any] | None = None,
         create_schema: bool | None = None,
-        run_migrations: bool | None = None,
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or AdvancedAlchemyBackendConfig()
@@ -57,10 +51,10 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self._heartbeat_session_maker = (
             heartbeat_session_maker if heartbeat_session_maker is not None else backend_config.heartbeat_session_maker
         )
-        configured_table_name = table_name if table_name is not None else backend_config.table_name
-        self._table_name = validate_table_name(configured_table_name or DEFAULT_TABLE_NAME)
+        self._model_class, self._service_class = self._resolve_model_classes(
+            model_class if model_class is not None else backend_config.model_class
+        )
         self._create_schema = create_schema if create_schema is not None else backend_config.create_schema
-        self._run_migrations = run_migrations if run_migrations is not None else backend_config.run_migrations
         self._opened = False
 
     @property
@@ -77,9 +71,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         if self._opened:
             return True
         self._ensure_configured()
-        self._prepare_model()
-        if self._run_migrations:
-            await self.run_migrations()
         if self._create_schema:
             await self.create_schema()
         self._opened = True
@@ -91,36 +82,15 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     async def create_schema(self) -> None:
         """Create the queue task table and indexes."""
-        from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
-
-        self._prepare_model()
         if self._sqlalchemy_config is not None:
             engine = self._sqlalchemy_config.get_engine()
             async with engine.begin() as connection:
-                await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
+                await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
             return
 
         async with self._session() as session, session.begin():
             connection = await session.connection()
-            await connection.run_sync(cast("Any", QueueTaskModel.__table__).create, checkfirst=True)
-
-    async def run_migrations(self) -> None:
-        """Apply packaged Advanced Alchemy migrations through Advanced Alchemy's Alembic commands.
-
-        Raises:
-            QueueConfigurationError: If no Advanced Alchemy config is available.
-        """
-        if self._sqlalchemy_config is None:
-            msg = "AdvancedAlchemyQueueBackend.run_migrations() requires sqlalchemy_config."
-            raise QueueConfigurationError(msg)
-        from advanced_alchemy.extensions.litestar import AlembicCommands
-
-        original_alembic_config = self._sqlalchemy_config.alembic_config
-        self._sqlalchemy_config.alembic_config = build_alembic_config()
-        try:
-            AlembicCommands(self._sqlalchemy_config).upgrade("head")
-        finally:
-            self._sqlalchemy_config.alembic_config = original_alembic_config
+            await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
 
     async def enqueue(
         self,
@@ -280,12 +250,51 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             msg = "AdvancedAlchemyQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
 
-    def _prepare_model(self) -> None:
-        if self._table_name == DEFAULT_TABLE_NAME:
-            return
-        from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+    def _resolve_model_classes(self, model_class: type[Any] | None) -> tuple[type[Any], type["QueueTaskService"]]:
+        from litestar_queues.backends.advanced_alchemy.models import QueueTaskModelMixin
+        from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 
-        cast("Any", QueueTaskModel.__table__).name = self._table_name
+        if model_class is None:
+            msg = "AdvancedAlchemyBackendConfig.model_class is required and must inherit QueueTaskModelMixin."
+            raise QueueConfigurationError(msg)
+        try:
+            valid_model = issubclass(model_class, QueueTaskModelMixin)
+        except TypeError:
+            valid_model = False
+        if not valid_model:
+            msg = "AdvancedAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
+            raise QueueConfigurationError(msg)
+        if "__tablename__" not in model_class.__dict__:
+            msg = "AdvancedAlchemyBackendConfig.model_class must declare __tablename__."
+            raise QueueConfigurationError(msg)
+        missing_columns = {
+            "id",
+            "created_at",
+            "task_name",
+            "args_json",
+            "kwargs_json",
+            "queue",
+            "execution_backend",
+            "execution_profile",
+            "execution_ref",
+            "status",
+            "priority",
+            "max_retries",
+            "retry_count",
+            "scheduled_at",
+            "started_at",
+            "completed_at",
+            "heartbeat_at",
+            "result_json",
+            "error",
+            "task_key",
+            "metadata_json",
+        } - {column.name for column in model_class.__table__.columns}
+        if missing_columns:
+            columns = ", ".join(sorted(missing_columns))
+            msg = f"AdvancedAlchemyBackendConfig.model_class is missing queue columns: {columns}."
+            raise QueueConfigurationError(msg)
+        return model_class, QueueTaskService.for_model(model_class)
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[Any]:
@@ -301,17 +310,13 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
     async def _service(self) -> AsyncIterator["QueueTaskService"]:
         self._ensure_opened()
         async with self._session() as session:
-            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
-
-            yield QueueTaskService(session=session)
+            yield self._service_class(session=session)
 
     @asynccontextmanager
     async def _operation(self) -> AsyncIterator["QueueTaskService"]:
         self._ensure_opened()
         async with self._session() as session, session.begin():
-            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
-
-            yield QueueTaskService(session=session)
+            yield self._service_class(session=session)
 
     @asynccontextmanager
     async def _heartbeat_operation(self) -> AsyncIterator["QueueTaskService"]:
@@ -327,6 +332,4 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                 yield service
             return
         async with self._heartbeat_session_maker() as session, session.begin():
-            from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
-
-            yield QueueTaskService(session=session)
+            yield self._service_class(session=session)

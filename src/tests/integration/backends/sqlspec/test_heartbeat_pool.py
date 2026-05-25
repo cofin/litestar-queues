@@ -8,7 +8,7 @@ and concurrent-heartbeat correctness. All cases pin to aiosqlite.
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -21,6 +21,10 @@ from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
 pytestmark = pytest.mark.anyio
 
@@ -45,7 +49,7 @@ async def test_sqlspec_backend_default_heartbeat_uses_main_pool(
 async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_writes(
     tmp_path: "Path",
     monkeypatch: pytest.MonkeyPatch,
-    sqlite_config_factory: Any,
+    sqlite_config_factory: "SqliteConfigFactory",
 ) -> None:
     """touch_heartbeat / null_heartbeats hit the dedicated pool only."""
     queue_path = tmp_path / "queue.db"
@@ -74,14 +78,14 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
         heartbeat_calls = 0
 
         @contextlib.asynccontextmanager
-        async def counting_session(self: SQLSpecQueueBackend) -> AsyncIterator[Any]:
+        async def counting_session(self: SQLSpecQueueBackend) -> AsyncIterator[object]:
             nonlocal main_calls
             main_calls += 1
             async with original_session(self) as driver:
                 yield driver
 
         @contextlib.asynccontextmanager
-        async def counting_heartbeat(self: SQLSpecQueueBackend) -> AsyncIterator[Any]:
+        async def counting_heartbeat(self: SQLSpecQueueBackend) -> AsyncIterator[object]:
             nonlocal heartbeat_calls
             heartbeat_calls += 1
             async with original_heartbeat(self) as driver:
@@ -103,7 +107,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
     tmp_path: "Path",
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    sqlite_config_factory: Any,
+    sqlite_config_factory: "SqliteConfigFactory",
 ) -> None:
     """Dedicated pool registration failure does not prevent backend.open()."""
     main_config = sqlite_config_factory(tmp_path / "main.db")
@@ -111,7 +115,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
 
     real_add_config = SQLSpec.add_config
 
-    def failing_add_config(self: SQLSpec, config: Any) -> Any:
+    def failing_add_config(self: SQLSpec, config: "AiosqliteConfig") -> "AiosqliteConfig":
         if config is bad_heartbeat_config:
             msg = "simulated heartbeat pool registration failure"
             raise RuntimeError(msg)
@@ -142,7 +146,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
 
 async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heartbeats(
     tmp_path: "Path",
-    sqlite_config_factory: Any,
+    sqlite_config_factory: "SqliteConfigFactory",
 ) -> None:
     """Many concurrent heartbeats on the dedicated pool must not deadlock."""
     queue_path = tmp_path / "queue.db"

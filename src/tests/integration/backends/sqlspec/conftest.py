@@ -8,9 +8,9 @@ fixture defined here is the SQLSpec counterpart to the parametrized
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeAlias
 
 import pytest
 
@@ -24,6 +24,10 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
+SqliteConfigFactory: TypeAlias = Callable[["Path"], AiosqliteConfig]
+EventPayload: TypeAlias = dict[str, object]
+EventMetadata: TypeAlias = dict[str, object]
+
 
 def _sqlite_config(path: "Path") -> AiosqliteConfig:
     """Return an aiosqlite SQLSpec config pointing at ``path``."""
@@ -31,7 +35,7 @@ def _sqlite_config(path: "Path") -> AiosqliteConfig:
 
 
 @pytest.fixture
-def sqlite_config_factory() -> Any:
+def sqlite_config_factory() -> SqliteConfigFactory:
     """Return the ``_sqlite_config`` helper as a fixture."""
     return _sqlite_config
 
@@ -52,8 +56,8 @@ class StubEvent:
     """Test-double event passed by ``StubAsyncEventChannel``."""
 
     event_id: str
-    payload: dict[str, Any]
-    metadata: dict[str, Any] | None = None
+    payload: EventPayload
+    metadata: EventMetadata | None = None
 
 
 class StubAsyncEventChannel:
@@ -64,14 +68,14 @@ class StubAsyncEventChannel:
     def __init__(self, backend_name: str = "table_queue") -> None:
         self._backend_name = backend_name
         self.acked: list[str] = []
-        self.published: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
+        self.published: list[tuple[str, EventPayload, EventMetadata | None]] = []
         self._events: asyncio.Queue[StubEvent] = asyncio.Queue()
 
     async def publish(
         self,
         channel: str,
-        payload: dict[str, Any],
-        metadata: dict[str, Any] | None = None,
+        payload: EventPayload,
+        metadata: EventMetadata | None = None,
     ) -> str:
         event_id = f"event-{len(self.published) + 1}"
         self.published.append((channel, payload, metadata))

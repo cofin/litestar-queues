@@ -2,12 +2,12 @@
 
 Provides the ``advanced_alchemy_backend`` async fixture that yields an
 opened ``AdvancedAlchemyQueueBackend`` parametrized over ``AA_ENGINES``.
-For service-backed engines, drops the queue tables on teardown so the
+For service-backed engines, drops the queue table on teardown so the
 shared Docker DB stays isolated between tests.
 """
 
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
 
@@ -18,7 +18,33 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
 
+    from sqlalchemy import Table
+
     from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+
+
+class MappedQueueModel(Protocol):
+    """Structural type for app-owned SQLAlchemy queue models."""
+
+    __table__: "Table"
+
+
+_QUEUE_MODEL: type[object] | None = None
+
+
+def _queue_model() -> type[object]:
+    """Return the app-owned queue model used by integration tests."""
+    global _QUEUE_MODEL  # noqa: PLW0603
+    if _QUEUE_MODEL is None:
+        from advanced_alchemy.base import UUIDAuditBase
+
+        from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+
+        class IntegrationQueueTask(UUIDAuditBase, QueueTaskModelMixin):
+            __tablename__ = "aa_integration_queue_tasks"
+
+        _QUEUE_MODEL = IntegrationQueueTask
+    return _QUEUE_MODEL
 
 
 @pytest.fixture
@@ -28,10 +54,10 @@ async def advanced_alchemy_backend(
 ) -> "AsyncIterator[AdvancedAlchemyQueueBackend]":
     """Yield an opened Advanced Alchemy queue backend parametrized over AA_ENGINES.
 
-    For service-backed engines (Postgres/MySQL/Oracle), the queue + alembic
-    bookkeeping tables are dropped on teardown to keep the shared Docker DB
-    clean between tests. In-process (aiosqlite) gets a unique tmp_path DB
-    file per test so no extra cleanup is required.
+    For service-backed engines (Postgres/MySQL/Oracle), the queue table is
+    dropped on teardown to keep the shared Docker DB clean between tests.
+    In-process (aiosqlite) gets a unique tmp_path DB file per test so no extra
+    cleanup is required.
     """
     from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
 
@@ -48,14 +74,9 @@ async def advanced_alchemy_backend(
         if service is None:
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 
-    ctx = FixtureCtx(
-        tmp_path=tmp_path,
-        postgres_service=service if case.service_attr == "postgres_service" else None,
-        mysql_service=service if case.service_attr == "mysql_service" else None,
-        oracle_service=service if case.service_attr == "oracle_service" else None,
-    )
+    ctx = FixtureCtx(tmp_path=tmp_path, service=service)
     config = case.build_config(ctx)
-    backend = AdvancedAlchemyQueueBackend(sqlalchemy_config=config, create_schema=True)
+    backend = AdvancedAlchemyQueueBackend(sqlalchemy_config=config, model_class=_queue_model(), create_schema=True)
     await backend.open()
     try:
         yield backend
@@ -67,29 +88,21 @@ async def advanced_alchemy_backend(
 
 
 async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> None:
-    """Drop the queue + alembic bookkeeping tables for service-backed engines.
+    """Drop the queue table for service-backed engines.
 
     Uses the dialect-aware ``Table.drop()`` path for the queue table so
     identifier quoting matches the engine (backticks on MySQL, double-
-    quotes on Postgres, uppercase on Oracle). Bookkeeping tables fall
-    back to unquoted DDL so they work across every dialect.
+    quotes on Postgres, uppercase on Oracle).
     """
-    from typing import Any, cast
-
-    from sqlalchemy import text
-
-    from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
 
     sqlalchemy_config = backend._sqlalchemy_config
     if sqlalchemy_config is None:
         return
+    model_class = cast("MappedQueueModel", backend._model_class)
     engine = sqlalchemy_config.get_engine()
     async with engine.begin() as connection:
         with suppress(Exception):
-            await connection.run_sync(cast("Any", QueueTaskModel.__table__).drop, checkfirst=True)
-        for ddl in ("DROP TABLE IF EXISTS ddl_migrations", "DROP TABLE IF EXISTS alembic_version"):
-            with suppress(Exception):
-                await connection.execute(text(ddl))
+            await connection.run_sync(model_class.__table__.drop, checkfirst=True)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:

@@ -68,27 +68,27 @@ def _create_table_block(store: SQLSpecQueueStore, storage_type: OracleJSONStorag
     return f"""
     BEGIN
         EXECUTE IMMEDIATE 'CREATE TABLE {table_name} (
-            id VARCHAR2(64) PRIMARY KEY,
-            task_name VARCHAR2(255) NOT NULL,
-            args_json {_json_column_type("args_json", storage_type)} NOT NULL,
-            kwargs_json {_json_column_type("kwargs_json", storage_type)} NOT NULL,
-            queue VARCHAR2(255) NOT NULL,
-            execution_backend VARCHAR2(255) NOT NULL,
-            execution_profile VARCHAR2(255),
-            execution_ref VARCHAR2(255),
-            status VARCHAR2(255) NOT NULL,
-            priority NUMBER(10) NOT NULL,
-            max_retries NUMBER(10) NOT NULL,
-            retry_count NUMBER(10) NOT NULL,
-            scheduled_at VARCHAR2(64),
-            created_at VARCHAR2(64) NOT NULL,
-            started_at VARCHAR2(64),
-            completed_at VARCHAR2(64),
-            heartbeat_at VARCHAR2(64),
-            result_json {_json_column_type("result_json", storage_type)} NOT NULL,
-            error VARCHAR2(4000),
-            task_key VARCHAR2(255) UNIQUE,
-            metadata_json {_json_column_type("metadata_json", storage_type)} NOT NULL
+            {store._col("id")} VARCHAR2(64) PRIMARY KEY,
+            {store._col("task_name")} VARCHAR2(255) NOT NULL,
+            {store._col("args_json")} {_json_column_type(store._col("args_json"), storage_type)} NOT NULL,
+            {store._col("kwargs_json")} {_json_column_type(store._col("kwargs_json"), storage_type)} NOT NULL,
+            {store._col("queue")} VARCHAR2(255) NOT NULL,
+            {store._col("execution_backend")} VARCHAR2(255) NOT NULL,
+            {store._col("execution_profile")} VARCHAR2(255),
+            {store._col("execution_ref")} VARCHAR2(255),
+            {store._col("status")} VARCHAR2(255) NOT NULL,
+            {store._col("priority")} NUMBER(10) NOT NULL,
+            {store._col("max_retries")} NUMBER(10) NOT NULL,
+            {store._col("retry_count")} NUMBER(10) NOT NULL,
+            {store._col("scheduled_at")} VARCHAR2(64),
+            {store._col("created_at")} VARCHAR2(64) NOT NULL,
+            {store._col("started_at")} VARCHAR2(64),
+            {store._col("completed_at")} VARCHAR2(64),
+            {store._col("heartbeat_at")} VARCHAR2(64),
+            {store._col("result_json")} {_json_column_type(store._col("result_json"), storage_type)} NOT NULL,
+            {store._col("error")} VARCHAR2(4000),
+            {store._col("task_key")} VARCHAR2(255) UNIQUE,
+            {store._col("metadata_json")} {_json_column_type(store._col("metadata_json"), storage_type)} NOT NULL
         ){in_memory_clause}';
     EXCEPTION
         WHEN OTHERS THEN
@@ -150,44 +150,37 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
     timestamp_type = "VARCHAR2(64)"
     error_type = "VARCHAR2(4000)"
 
-    def __init__(self, config: Any, *, table_name: str | None = None) -> None:
-        super().__init__(config, table_name=table_name)
+    def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
+        super().__init__(config, table_name=table_name, **kwargs)
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
 
     def create_statements(self) -> list[str]:
         """Return statements that create oracledb sync queue artifacts."""
+        if not self._manage_schema:
+            return []
         return [
             _create_table_block(self, self._json_storage, self._in_memory),
             _create_index_block(
-                self, "pending", "status, queue, execution_backend, scheduled_at, priority, created_at"
+                self,
+                "pending",
+                (
+                    f"{self._col('status')}, {self._col('queue')}, {self._col('execution_backend')}, "
+                    f"{self._col('scheduled_at')}, {self._col('priority')}, {self._col('created_at')}"
+                ),
             ),
-            _create_index_block(self, "heartbeat", "status, heartbeat_at"),
+            _create_index_block(self, "heartbeat", f"{self._col('status')}, {self._col('heartbeat_at')}"),
         ]
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop oracledb sync queue artifacts."""
+        if not self._manage_schema:
+            return []
         return [_drop_index_block(self, "heartbeat"), _drop_index_block(self, "pending"), _drop_table_block(self)]
 
-    def serialize_payload_json(self, value: Any) -> str | bytes:
-        """Serialize Oracle payload JSON according to configured storage.
-
-        Returns:
-            A string for native JSON or bytes for BLOB-backed JSON.
-        """
-        return _serialize_oracle_json(value, self._json_storage)
-
-    def serialize_result_json(self, value: Any) -> str | bytes:
-        """Serialize Oracle result JSON according to configured storage.
-
-        Returns:
-            A string for native JSON or bytes for BLOB-backed JSON.
-        """
-        return _serialize_oracle_json(value, self._json_storage)
-
-    def serialize_metadata_json(self, value: Any) -> str | bytes:
-        """Serialize Oracle metadata JSON according to configured storage.
+    def serialize_json_column(self, canonical: str, value: Any) -> str | bytes:
+        """Serialize Oracle JSON according to configured storage.
 
         Returns:
             A string for native JSON or bytes for BLOB-backed JSON.
@@ -217,44 +210,37 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
     timestamp_type = "VARCHAR2(64)"
     error_type = "VARCHAR2(4000)"
 
-    def __init__(self, config: Any, *, table_name: str | None = None) -> None:
-        super().__init__(config, table_name=table_name)
+    def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
+        super().__init__(config, table_name=table_name, **kwargs)
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
 
     def create_statements(self) -> list[str]:
         """Return statements that create oracledb async queue artifacts."""
+        if not self._manage_schema:
+            return []
         return [
             _create_table_block(self, self._json_storage, self._in_memory),
             _create_index_block(
-                self, "pending", "status, queue, execution_backend, scheduled_at, priority, created_at"
+                self,
+                "pending",
+                (
+                    f"{self._col('status')}, {self._col('queue')}, {self._col('execution_backend')}, "
+                    f"{self._col('scheduled_at')}, {self._col('priority')}, {self._col('created_at')}"
+                ),
             ),
-            _create_index_block(self, "heartbeat", "status, heartbeat_at"),
+            _create_index_block(self, "heartbeat", f"{self._col('status')}, {self._col('heartbeat_at')}"),
         ]
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop oracledb async queue artifacts."""
+        if not self._manage_schema:
+            return []
         return [_drop_index_block(self, "heartbeat"), _drop_index_block(self, "pending"), _drop_table_block(self)]
 
-    def serialize_payload_json(self, value: Any) -> str | bytes:
-        """Serialize Oracle payload JSON according to configured storage.
-
-        Returns:
-            A string for native JSON or bytes for BLOB-backed JSON.
-        """
-        return _serialize_oracle_json(value, self._json_storage)
-
-    def serialize_result_json(self, value: Any) -> str | bytes:
-        """Serialize Oracle result JSON according to configured storage.
-
-        Returns:
-            A string for native JSON or bytes for BLOB-backed JSON.
-        """
-        return _serialize_oracle_json(value, self._json_storage)
-
-    def serialize_metadata_json(self, value: Any) -> str | bytes:
-        """Serialize Oracle metadata JSON according to configured storage.
+    def serialize_json_column(self, canonical: str, value: Any) -> str | bytes:
+        """Serialize Oracle JSON according to configured storage.
 
         Returns:
             A string for native JSON or bytes for BLOB-backed JSON.

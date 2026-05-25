@@ -1,11 +1,17 @@
 """Shared SQLSpec queue store primitives."""
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 from sqlspec import sql
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
+from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
+    validate_column_map,
+    validate_native_json_columns,
+    validate_table_name,
+)
 
 __all__ = ("SQLSpecQueueStore", "adapter_name")
 
@@ -54,7 +60,7 @@ def adapter_name(config: Any) -> str:
 class SQLSpecQueueStore:  # noqa: PLR0904
     """Base SQLSpec queue statement store."""
 
-    __slots__ = ("_config", "_table_name")
+    __slots__ = ("_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
 
     id_type = "TEXT"
     text_type = "TEXT"
@@ -67,9 +73,20 @@ class SQLSpecQueueStore:  # noqa: PLR0904
     timestamp_type = "TEXT"
     error_type = "TEXT"
 
-    def __init__(self, config: Any, *, table_name: str | None = None) -> None:
+    def __init__(
+        self,
+        config: Any,
+        *,
+        table_name: str | None = None,
+        column_map: Mapping[str, str] | None = None,
+        native_json_columns: frozenset[str] | None = None,
+        manage_schema: bool = True,
+    ) -> None:
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
+        self._column_map = validate_column_map(column_map or {})
+        self._native_json_columns = validate_native_json_columns(native_json_columns or frozenset())
+        self._manage_schema = manage_schema
 
     @property
     def table_name(self) -> str:
@@ -83,8 +100,14 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         dialect = getattr(statement_config, "dialect", None)
         return str(dialect) if dialect is not None else None
 
+    def _col(self, canonical: str) -> str:
+        """Return the configured database column name for ``canonical``."""
+        return self._column_map.get(canonical, canonical)
+
     def create_statements(self) -> list[str]:
         """Return statements that create the queue table and indexes."""
+        if not self._manage_schema:
+            return []
         return [
             self._to_sql(self._create_table_statement()),
             *self._create_index_statements(),
@@ -92,6 +115,8 @@ class SQLSpecQueueStore:  # noqa: PLR0904
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop queue artifacts."""
+        if not self._manage_schema:
+            return []
         return [
             self._to_sql(sql.drop_index(self._index_name("heartbeat")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("pending")).if_exists()),
@@ -100,15 +125,16 @@ class SQLSpecQueueStore:  # noqa: PLR0904
 
     def insert_task(self, values: dict[str, Any]) -> Any:
         """Return an INSERT statement for a queued task."""
-        return sql.insert(self.table_name).columns(*values.keys()).values(**values)
+        mapped_values = self._mapped_values(values)
+        return sql.insert(self.table_name).columns(*mapped_values.keys()).values(**mapped_values)
 
     def select_task(self, task_id: str) -> Any:
         """Return a SELECT statement for one task id."""
-        return self._select_all().where_eq("id", task_id)
+        return self._select_all().where_eq(self._col("id"), task_id)
 
     def select_task_by_key(self, key: str) -> Any:
         """Return a SELECT statement for one task key."""
-        return self._select_all().where_eq("task_key", key)
+        return self._select_all().where_eq(self._col("task_key"), key)
 
     def list_pending(
         self,
@@ -122,27 +148,34 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         statement = (
             self
             ._select_all()
-            .where_in("status", _DUE_STATUSES)
-            .where("scheduled_at IS NULL OR scheduled_at <= :now", now=now)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :now", now=now)
         )
         if queue is not None:
-            statement = statement.where_eq("queue", queue)
+            statement = statement.where_eq(self._col("queue"), queue)
         if execution_backend is not None:
-            statement = statement.where_eq("execution_backend", execution_backend)
+            statement = statement.where_eq(self._col("execution_backend"), execution_backend)
         # ``order_by(name, desc=True)`` currently produces invalid SQL on several
         # dialects (Postgres / DuckDB emit ``NULLS FIRST DESC``); pass raw column
         # expressions so SQLSpec doesn't append dialect-specific NULL ordering.
-        return statement.order_by(sql.raw("priority DESC"), sql.raw("created_at ASC")).limit(limit)
+        return statement.order_by(sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")).limit(limit)
 
     def claim_task(self, *, task_id: str, due_at: str, started_at: str, heartbeat_at: str) -> Any:
         """Return an UPDATE statement that claims a due task."""
         return (
             sql
             .update(self.table_name)
-            .set(status="running", started_at=started_at, heartbeat_at=heartbeat_at)
-            .where_eq("id", task_id)
-            .where_in("status", _DUE_STATUSES)
-            .where("scheduled_at IS NULL OR scheduled_at <= :due_at", due_at=due_at)
+            .set(
+                **self._mapped_values(
+                    {"status": "running", "started_at": started_at, "heartbeat_at": heartbeat_at}
+                )
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(
+                f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at",
+                due_at=due_at,
+            )
         )
 
     def complete_task(self, *, task_id: str, completed_at: str, heartbeat_at: str, result_json: Any) -> Any:
@@ -151,13 +184,17 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             sql
             .update(self.table_name)
             .set(
-                status="completed",
-                completed_at=completed_at,
-                heartbeat_at=heartbeat_at,
-                result_json=result_json,
-                error=None,
+                **self._mapped_values(
+                    {
+                        "status": "completed",
+                        "completed_at": completed_at,
+                        "heartbeat_at": heartbeat_at,
+                        "result_json": result_json,
+                        "error": None,
+                    }
+                )
             )
-            .where_eq("id", task_id)
+            .where_eq(self._col("id"), task_id)
         )
 
     def retry_task(self, *, task_id: str, error: str, retry_count: int) -> Any:
@@ -166,13 +203,17 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             sql
             .update(self.table_name)
             .set(
-                status="pending",
-                retry_count=retry_count,
-                started_at=None,
-                heartbeat_at=None,
-                error=error,
+                **self._mapped_values(
+                    {
+                        "status": "pending",
+                        "retry_count": retry_count,
+                        "started_at": None,
+                        "heartbeat_at": None,
+                        "error": error,
+                    }
+                )
             )
-            .where_eq("id", task_id)
+            .where_eq(self._col("id"), task_id)
         )
 
     def fail_task(self, *, task_id: str, completed_at: str, heartbeat_at: str, error: str) -> Any:
@@ -180,8 +221,17 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         return (
             sql
             .update(self.table_name)
-            .set(status="failed", completed_at=completed_at, heartbeat_at=heartbeat_at, error=error)
-            .where_eq("id", task_id)
+            .set(
+                **self._mapped_values(
+                    {
+                        "status": "failed",
+                        "completed_at": completed_at,
+                        "heartbeat_at": heartbeat_at,
+                        "error": error,
+                    }
+                )
+            )
+            .where_eq(self._col("id"), task_id)
         )
 
     def cancel_task(self, *, task_id: str, completed_at: str) -> Any:
@@ -189,9 +239,9 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         return (
             sql
             .update(self.table_name)
-            .set(status="cancelled", completed_at=completed_at)
-            .where_eq("id", task_id)
-            .where_in("status", _DUE_STATUSES)
+            .set(**self._mapped_values({"status": "cancelled", "completed_at": completed_at}))
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
         )
 
     def touch_heartbeat(self, *, task_id: str, heartbeat_at: str) -> Any:
@@ -199,14 +249,19 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         return (
             sql
             .update(self.table_name)
-            .set(heartbeat_at=heartbeat_at)
-            .where_eq("id", task_id)
-            .where_eq("status", "running")
+            .set(**self._mapped_values({"heartbeat_at": heartbeat_at}))
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
         )
 
     def null_heartbeats(self, *, task_ids: list[str]) -> Any:
         """Return an UPDATE statement that clears task heartbeats."""
-        return sql.update(self.table_name).set(heartbeat_at=None).where_in("id", task_ids)
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"heartbeat_at": None}))
+            .where_in(self._col("id"), task_ids)
+        )
 
     def requeue_stale(self, *, cutoff: str) -> Any:
         """Return an UPDATE statement that requeues stale running tasks."""
@@ -214,18 +269,27 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             sql
             .update(self.table_name)
             .set(
-                status="pending",
-                started_at=None,
-                heartbeat_at=None,
-                retry_count=sql.raw("retry_count + 1"),
+                **self._mapped_values(
+                    {
+                        "status": "pending",
+                        "started_at": None,
+                        "heartbeat_at": None,
+                        "retry_count": sql.raw(f"{self._col('retry_count')} + 1"),
+                    }
+                )
             )
-            .where_eq("status", "running")
-            .where("heartbeat_at IS NULL OR heartbeat_at < :cutoff", cutoff=cutoff)
+            .where_eq(self._col("status"), "running")
+            .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
 
     def clear_key(self, *, task_id: str) -> Any:
         """Return an UPDATE statement that releases a terminal task key."""
-        return sql.update(self.table_name).set(task_key=None).where_eq("id", task_id)
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"task_key": None}))
+            .where_eq(self._col("id"), task_id)
+        )
 
     def set_execution_ref(
         self,
@@ -240,11 +304,15 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             sql
             .update(self.table_name)
             .set(
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                execution_ref=execution_ref,
+                **self._mapped_values(
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": execution_ref,
+                    }
+                )
             )
-            .where_eq("id", task_id)
+            .where_eq(self._col("id"), task_id)
         )
 
     def set_execution_backend(
@@ -259,11 +327,15 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             sql
             .update(self.table_name)
             .set(
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                execution_ref=None,
+                **self._mapped_values(
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": None,
+                    }
+                )
             )
-            .where_eq("id", task_id)
+            .where_eq(self._col("id"), task_id)
         )
 
     def list_running_external(self, *, limit: int | None = None) -> Any:
@@ -271,9 +343,9 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         statement = (
             self
             ._select_all()
-            .where("status IN ('pending', 'scheduled', 'running')")
-            .where("execution_ref IS NOT NULL")
-            .order_by(sql.raw("started_at ASC"), sql.raw("created_at ASC"))
+            .where(f"{self._col('status')} IN ('pending', 'scheduled', 'running')")
+            .where(f"{self._col('execution_ref')} IS NOT NULL")
+            .order_by(sql.raw(f"{self._col('started_at')} ASC"), sql.raw(f"{self._col('created_at')} ASC"))
         )
         return statement.limit(limit) if limit is not None else statement
 
@@ -283,42 +355,33 @@ class SQLSpecQueueStore:  # noqa: PLR0904
 
     def list_completed_by_task(self, *, task_name: str, since: str | None = None, limit: int = 10) -> Any:
         """Return a SELECT statement for completed records by task name."""
-        statement = self._select_all().where_eq("task_name", task_name).where_eq("status", "completed")
+        statement = self._select_all().where_eq(self._col("task_name"), task_name).where_eq(
+            self._col("status"), "completed"
+        )
         if since is not None:
-            statement = statement.where("completed_at >= :completed_since", completed_since=since)
-        return statement.order_by(sql.raw("completed_at DESC")).limit(limit)
+            statement = statement.where(f"{self._col('completed_at')} >= :completed_since", completed_since=since)
+        return statement.order_by(sql.raw(f"{self._col('completed_at')} DESC")).limit(limit)
 
     def cleanup_terminal(self, *, before: str) -> Any:
         """Return a DELETE statement for terminal records before a cutoff."""
         return (
             sql
             .delete(self.table_name)
-            .where_in("status", ("completed", "failed", "cancelled"))
-            .where("completed_at IS NOT NULL AND completed_at < :terminal_before", terminal_before=before)
+            .where_in(self._col("status"), ("completed", "failed", "cancelled"))
+            .where(
+                f"{self._col('completed_at')} IS NOT NULL AND {self._col('completed_at')} < :terminal_before",
+                terminal_before=before,
+            )
         )
 
-    def serialize_payload_json(self, value: Any) -> Any:
-        """Serialize task payload JSON values for this store.
+    def serialize_json_column(self, canonical: str, value: Any) -> Any:
+        """Serialize a JSON value for a canonical queue column.
 
         Returns:
             A JSON value suitable for the configured adapter.
         """
-        return self._serialize_json(value)
-
-    def serialize_result_json(self, value: Any) -> Any:
-        """Serialize task result JSON values for this store.
-
-        Returns:
-            A JSON value suitable for the configured adapter.
-        """
-        return self._serialize_json(value)
-
-    def serialize_metadata_json(self, value: Any) -> Any:
-        """Serialize task metadata JSON values for this store.
-
-        Returns:
-            A JSON value suitable for the configured adapter.
-        """
+        if canonical in self._native_json_columns:
+            return value
         return self._serialize_json(value)
 
     def deserialize_json(self, value: Any) -> Any:
@@ -341,34 +404,35 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         return from_json(value)
 
     def _select_all(self) -> Any:
-        return sql.select(*_TASK_COLUMNS).from_(self.table_name)
+        columns = tuple(self._select_column(canonical) for canonical in _TASK_COLUMNS)
+        return sql.select(*columns).from_(self.table_name)
 
     def _create_table_statement(self) -> Any:
         return (
             sql
             .create_table(self.table_name)
             .if_not_exists()
-            .column("id", self._id_type(), primary_key=True)
-            .column("task_name", self._indexed_text_type(), not_null=True)
-            .column("args_json", self._payload_json_type("args_json"), not_null=True)
-            .column("kwargs_json", self._payload_json_type("kwargs_json"), not_null=True)
-            .column("queue", self._indexed_text_type(), not_null=True)
-            .column("execution_backend", self._indexed_text_type(), not_null=True)
-            .column("execution_profile", self._indexed_text_type())
-            .column("execution_ref", self._indexed_text_type())
-            .column("status", self._indexed_text_type(), not_null=True)
-            .column("priority", self._integer_type(), not_null=True)
-            .column("max_retries", self._integer_type(), not_null=True)
-            .column("retry_count", self._integer_type(), not_null=True)
-            .column("scheduled_at", self._timestamp_type())
-            .column("created_at", self._timestamp_type(), not_null=True)
-            .column("started_at", self._timestamp_type())
-            .column("completed_at", self._timestamp_type())
-            .column("heartbeat_at", self._timestamp_type())
-            .column("result_json", self._result_json_type("result_json"), not_null=True)
-            .column("error", self._error_type())
-            .column("task_key", self._indexed_text_type(), unique=True)
-            .column("metadata_json", self._metadata_json_type("metadata_json"), not_null=True)
+            .column(self._col("id"), self._id_type(), primary_key=True)
+            .column(self._col("task_name"), self._indexed_text_type(), not_null=True)
+            .column(self._col("args_json"), self._payload_json_type("args_json"), not_null=True)
+            .column(self._col("kwargs_json"), self._payload_json_type("kwargs_json"), not_null=True)
+            .column(self._col("queue"), self._indexed_text_type(), not_null=True)
+            .column(self._col("execution_backend"), self._indexed_text_type(), not_null=True)
+            .column(self._col("execution_profile"), self._indexed_text_type())
+            .column(self._col("execution_ref"), self._indexed_text_type())
+            .column(self._col("status"), self._indexed_text_type(), not_null=True)
+            .column(self._col("priority"), self._integer_type(), not_null=True)
+            .column(self._col("max_retries"), self._integer_type(), not_null=True)
+            .column(self._col("retry_count"), self._integer_type(), not_null=True)
+            .column(self._col("scheduled_at"), self._timestamp_type())
+            .column(self._col("created_at"), self._timestamp_type(), not_null=True)
+            .column(self._col("started_at"), self._timestamp_type())
+            .column(self._col("completed_at"), self._timestamp_type())
+            .column(self._col("heartbeat_at"), self._timestamp_type())
+            .column(self._col("result_json"), self._result_json_type("result_json"), not_null=True)
+            .column(self._col("error"), self._error_type())
+            .column(self._col("task_key"), self._indexed_text_type(), unique=True)
+            .column(self._col("metadata_json"), self._metadata_json_type("metadata_json"), not_null=True)
         )
 
     def _create_index_statements(self) -> list[str]:
@@ -378,16 +442,30 @@ class SQLSpecQueueStore:  # noqa: PLR0904
                 .create_index(self._index_name("pending"))
                 .if_not_exists()
                 .on_table(self.table_name)
-                .columns("status", "queue", "execution_backend", "scheduled_at", "priority", "created_at")
+                .columns(
+                    *(
+                        self._col(canonical)
+                        for canonical in ("status", "queue", "execution_backend", "scheduled_at", "priority", "created_at")
+                    )
+                )
             ),
             self._to_sql(
                 sql
                 .create_index(self._index_name("heartbeat"))
                 .if_not_exists()
                 .on_table(self.table_name)
-                .columns("status", "heartbeat_at")
+                .columns(*(self._col(canonical) for canonical in ("status", "heartbeat_at")))
             ),
         ]
+
+    def _select_column(self, canonical: str) -> str:
+        column = self._col(canonical)
+        if column == canonical:
+            return canonical
+        return f"{column} AS {canonical}"
+
+    def _mapped_values(self, values: dict[str, Any]) -> dict[str, Any]:
+        return {self._col(column): value for column, value in values.items()}
 
     def _index_name(self, suffix: str) -> str:
         return validate_table_name(f"ix_{self.table_name}_{suffix}")

@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         env:
           UV_PYTHON: ${{ inputs.python-version }}
-        run: make install
+        run: make install-test-adapters
 
       - name: Set PYTHONPATH
         run: echo "PYTHONPATH=$PWD/src" >> $GITHUB_ENV

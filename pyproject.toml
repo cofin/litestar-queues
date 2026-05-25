@@ -101,7 +101,7 @@ docs = [
 ]
 test-adapters = [
   # Real-service fixtures for the integration tier
-  "pytest-databases[postgres,mysql,oracle,redis,valkey]>=0.16.0",
+  "pytest-databases[postgres,mysql,oracle,redis,valkey,bigquery,spanner]>=0.16.0",
   # Redis + Valkey clients used directly by integration tests
   "redis>=5.0.0",
   "valkey>=6.0.0",
@@ -121,6 +121,8 @@ test-adapters = [
   "mysql-connector-python>=9.0.0",
   # Oracle
   "oracledb>=2.5.0",
+  # BigQuery + Spanner emulators and SQLSpec adapters
+  "sqlspec[bigquery,spanner]>=0.46.0",
 ]
 
 #####################
@@ -244,6 +246,7 @@ lint.ignore = [
   "PERF203",
   "COM812",
   "PLR0917",
+  "PLW0717",
   "CPY001",
   "FA100",
   "PLC2701",

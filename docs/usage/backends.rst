@@ -239,13 +239,19 @@ Advanced Alchemy and SQLAlchemy:
 
    pip install litestar-queues[advanced-alchemy]
 
-Configure the queue backend with an app-owned ``SQLAlchemyAsyncConfig``:
+Configure the queue backend with an app-owned queue model and
+``SQLAlchemyAsyncConfig``:
 
 .. code-block:: python
 
+   from advanced_alchemy.base import UUIDAuditBase
    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+
+   class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
+       __tablename__ = "app_queue_tasks"
 
    alchemy_config = SQLAlchemyAsyncConfig(
        connection_string="sqlite+aiosqlite:///queue.db",
@@ -255,6 +261,7 @@ Configure the queue backend with an app-owned ``SQLAlchemyAsyncConfig``:
        queue_backend="advanced-alchemy",
        queue_backend_config={
            "sqlalchemy_config": alchemy_config,
+           "model_class": AppQueueTask,
            "create_schema": True,
        },
        execution_backend="local",
@@ -268,10 +275,15 @@ directly and pass the same config to the queue backend:
 
 .. code-block:: python
 
+   from advanced_alchemy.base import UUIDAuditBase
    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig, SQLAlchemyPlugin
    from litestar import Litestar
 
    from litestar_queues import QueueConfig, QueuePlugin
+   from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+
+   class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
+       __tablename__ = "app_queue_tasks"
 
    alchemy_config = SQLAlchemyAsyncConfig(
        connection_string="sqlite+aiosqlite:///queue.db",
@@ -285,6 +297,7 @@ directly and pass the same config to the queue backend:
                    queue_backend="advanced-alchemy",
                    queue_backend_config={
                        "sqlalchemy_config": alchemy_config,
+                       "model_class": AppQueueTask,
                        "create_schema": True,
                    },
                    execution_backend="local",
@@ -294,9 +307,49 @@ directly and pass the same config to the queue backend:
    )
 
 The queue plugin does not append ``SQLAlchemyPlugin`` or consume request-scoped
-``db_session`` dependencies. Applications that manage schema with Alembic can
-reference the packaged migration location from
-``litestar_queues.backends.advanced_alchemy.config.migration_script_location``.
+``db_session`` dependencies. Applications that manage schema with Alembic should
+import the queue model they use into their Alembic environment so autogenerate
+can include the queue table in the application migration stream.
+
+App-Owned Queue Model
+~~~~~~~~~~~~~~~~~~~~~
+
+Advanced Alchemy support uses only an application-owned model. Compose
+``QueueTaskModelMixin`` with an Advanced Alchemy base that provides compatible
+``id`` and ``created_at`` columns, then pass the resulting model class to the
+backend:
+
+.. code-block:: python
+
+   from advanced_alchemy.base import UUIDAuditBase
+   from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
+   from litestar_queues import QueueConfig
+   from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+
+   class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
+       __tablename__ = "app_queue_tasks"
+
+   alchemy_config = SQLAlchemyAsyncConfig(
+       connection_string="sqlite+aiosqlite:///queue.db",
+   )
+
+   config = QueueConfig(
+       queue_backend="advanced-alchemy",
+       queue_backend_config={
+           "sqlalchemy_config": alchemy_config,
+           "model_class": AppQueueTask,
+           "create_schema": True,
+       },
+       execution_backend="local",
+   )
+
+``QueueTaskModelMixin`` carries the queue columns and derives index names from
+the composed class's ``__tablename__``. If your application uses Alembic
+autogenerate, import this model in ``env.py`` and include its metadata in
+``target_metadata``. Use ``create_schema`` only for local bootstrap or tests;
+production schema changes should be generated and reviewed in the application
+migration stream.
 
 .. _aa-heartbeat-session-maker:
 
@@ -318,6 +371,7 @@ through ``heartbeat_session_maker``:
    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
    from litestar_queues import QueueConfig
+   from myapp.models import AppQueueTask
 
    queue_url = "postgresql+asyncpg://queue@db/queues"
 
@@ -329,6 +383,7 @@ through ``heartbeat_session_maker``:
        queue_backend="advanced-alchemy",
        queue_backend_config={
            "sqlalchemy_config": main_config,
+           "model_class": AppQueueTask,
            "heartbeat_session_maker": heartbeat_maker,
        },
        execution_backend="local",

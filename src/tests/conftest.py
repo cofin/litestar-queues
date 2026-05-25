@@ -1,3 +1,4 @@
+from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,6 +18,11 @@ pytest_plugins = [
     "pytest_databases.docker.redis",
     "pytest_databases.docker.valkey",
 ]
+
+if find_spec("google.cloud.bigquery") is not None:
+    pytest_plugins.append("pytest_databases.docker.bigquery")
+if find_spec("google.cloud.spanner") is not None:
+    pytest_plugins.append("pytest_databases.docker.spanner")
 
 pytestmark = pytest.mark.anyio
 
