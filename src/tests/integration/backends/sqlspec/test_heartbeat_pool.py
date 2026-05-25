@@ -17,7 +17,7 @@ pytest.importorskip("sqlspec")
 
 from sqlspec import SQLSpec
 
-from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,9 +59,11 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
     sqlspec.add_config(main_config)
 
     backend = SQLSpecQueueBackend(
-        sqlspec=sqlspec,
-        sqlspec_config=main_config,
-        heartbeat_pool_config=heartbeat_config,
+        backend_config=SQLSpecBackendConfig(
+            sqlspec=sqlspec,
+            sqlspec_config=main_config,
+            heartbeat_pool_config=heartbeat_config,
+        )
     )
     await backend.open()
     try:
@@ -124,8 +126,10 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
     monkeypatch.setattr(SQLSpec, "add_config", failing_add_config)
 
     backend = SQLSpecQueueBackend(
-        sqlspec_config=main_config,
-        heartbeat_pool_config=bad_heartbeat_config,
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=main_config,
+            heartbeat_pool_config=bad_heartbeat_config,
+        )
     )
     with caplog.at_level("WARNING", logger="litestar_queues"):
         await backend.open()
@@ -153,8 +157,10 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heart
     main_config = sqlite_config_factory(queue_path)
     heartbeat_config = sqlite_config_factory(queue_path)
     backend = SQLSpecQueueBackend(
-        sqlspec_config=main_config,
-        heartbeat_pool_config=heartbeat_config,
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=main_config,
+            heartbeat_pool_config=heartbeat_config,
+        )
     )
     await backend.open()
     try:

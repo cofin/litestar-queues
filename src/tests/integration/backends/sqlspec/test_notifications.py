@@ -20,7 +20,7 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from sqlspec.extensions.litestar import SQLSpecPlugin
 
 from litestar_queues import QueueConfig, QueuePlugin
-from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from tests.integration.backends.sqlspec.conftest import StubAsyncEventChannel
 
@@ -39,9 +39,11 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
 ) -> None:
     event_channel = StubAsyncEventChannel()
     backend = SQLSpecQueueBackend(
-        sqlspec_config=sqlite_config_factory(tmp_path / "notifications.db"),
-        event_channel=cast("AsyncEventChannel", event_channel),
-        notification_channel="queue_notifications",
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlite_config_factory(tmp_path / "notifications.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="queue_notifications",
+        )
     )
 
     await backend.open()
@@ -82,11 +84,13 @@ async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_pat
         },
     )
     backend = SQLSpecQueueBackend(
-        sqlspec_config=sqlspec_config,
-        create_schema=False,
-        run_migrations=True,
-        notifications=True,
-        notification_channel="derived_notifications",
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config,
+            create_schema=False,
+            run_migrations=True,
+            notifications=True,
+            notification_channel="derived_notifications",
+        )
     )
 
     await backend.open()
@@ -115,8 +119,10 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
         },
     )
     extension_backend = SQLSpecQueueBackend(
-        sqlspec_config=sqlspec_config,
-        event_channel=cast("AsyncEventChannel", extension_channel),
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config,
+            event_channel=cast("AsyncEventChannel", extension_channel),
+        )
     )
     await extension_backend.open()
     try:
@@ -126,10 +132,12 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
 
     explicit_channel = StubAsyncEventChannel()
     explicit_backend = SQLSpecQueueBackend(
-        sqlspec_config=sqlspec_config,
-        event_channel=cast("AsyncEventChannel", explicit_channel),
-        notification_channel="explicit_notifications",
-        table_name="explicit_notification_queue",
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config,
+            event_channel=cast("AsyncEventChannel", explicit_channel),
+            notification_channel="explicit_notifications",
+            table_name="explicit_notification_queue",
+        )
     )
     await explicit_backend.open()
     try:
@@ -150,11 +158,10 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
 
     plugin = QueuePlugin(
         QueueConfig(
-            queue_backend="sqlspec",
-            queue_backend_config={
-                "sqlspec": sqlspec,
-                "create_schema": False,
-            },
+            queue_backend=SQLSpecBackendConfig(
+                sqlspec=sqlspec,
+                create_schema=False,
+            ),
             initialize_schedules=False,
         )
     )

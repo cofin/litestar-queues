@@ -123,7 +123,9 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
     from sqlspec.adapters.sqlite import SqliteConfig
 
     backend = SQLSpecQueueBackend(
-        sqlspec_config=SqliteConfig(connection_config={"database": str(tmp_path / "queue-sync.db")})
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=SqliteConfig(connection_config={"database": str(tmp_path / "queue-sync.db")})
+        )
     )
     await backend.open()
     try:
@@ -536,17 +538,21 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     db_path = tmp_path / "migrated.db"
 
     first = SQLSpecQueueBackend(
-        sqlspec_config=sqlite_config_factory(db_path),
-        create_schema=False,
-        run_migrations=True,
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlite_config_factory(db_path),
+            create_schema=False,
+            run_migrations=True,
+        )
     )
     await first.open()
     await first.close()
 
     second = SQLSpecQueueBackend(
-        sqlspec_config=sqlite_config_factory(db_path),
-        create_schema=False,
-        run_migrations=True,
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlite_config_factory(db_path),
+            create_schema=False,
+            run_migrations=True,
+        )
     )
     await second.open()
     try:
@@ -568,8 +574,10 @@ async def test_sqlspec_backend_uses_configured_table_name(
 ) -> None:
     db_path = tmp_path / "custom-table.db"
     backend = SQLSpecQueueBackend(
-        sqlspec_config=sqlite_config_factory(db_path),
-        table_name="queue_tasks",
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlite_config_factory(db_path),
+            table_name="queue_tasks",
+        )
     )
 
     await backend.open()
@@ -598,7 +606,7 @@ async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_va
             },
         },
     )
-    backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config)
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
 
     await backend.open()
     try:
@@ -624,7 +632,9 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
             },
         },
     )
-    backend = SQLSpecQueueBackend(sqlspec_config=sqlspec_config, table_name="explicit_queue_tasks")
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, table_name="explicit_queue_tasks")
+    )
 
     await backend.open()
     try:
@@ -649,8 +659,7 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
         return value.lower()
 
     config = QueueConfig(
-        queue_backend="sqlspec",
-        queue_backend_config={"sqlspec_config": sqlite_config_factory(tmp_path / "service.db")},
+        queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(tmp_path / "service.db")),
         execution_backend="local",
     )
 

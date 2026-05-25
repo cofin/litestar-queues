@@ -239,12 +239,11 @@ async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: Path) -> No
         return "ok"
 
     queue_config = QueueConfig(
-        queue_backend="advanced-alchemy",
-        queue_backend_config={
-            "sqlalchemy_config": _sqlite_config(tmp_path / "service.db"),
-            "model_class": ContractQueueTask,
-            "create_schema": True,
-        },
+        queue_backend=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "service.db"),
+            model_class=ContractQueueTask,
+            create_schema=True,
+        ),
     )
 
     async with QueueService(queue_config) as service:

@@ -12,7 +12,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig, SQLAlchemyPlugin
 
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
-from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 from litestar_queues.task import clear_task_registry
 
 
@@ -37,12 +37,11 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     alchemy_config = _sqlite_config(tmp_path / "litestar.db")
     queue_plugin = QueuePlugin(
         QueueConfig(
-            queue_backend="advanced-alchemy",
-            queue_backend_config={
-                "sqlalchemy_config": alchemy_config,
-                "model_class": LitestarQueueTask,
-                "create_schema": True,
-            },
+            queue_backend=AdvancedAlchemyBackendConfig(
+                sqlalchemy_config=alchemy_config,
+                model_class=LitestarQueueTask,
+                create_schema=True,
+            ),
             initialize_schedules=False,
         )
     )
@@ -59,7 +58,8 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
 
     assert response.status_code == 201
     assert response.json()["status"] == "pending"
-    assert queue_plugin.config.queue_backend_config["sqlalchemy_config"] is alchemy_config
+    assert isinstance(queue_plugin.config.queue_backend, AdvancedAlchemyBackendConfig)
+    assert queue_plugin.config.queue_backend.sqlalchemy_config is alchemy_config
 
 
 def test_advanced_alchemy_backend_does_not_create_sqlalchemy_litestar_plugin() -> None:

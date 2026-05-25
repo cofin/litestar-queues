@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
+from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.exceptions import NonRetryableError
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled_tasks, get_task_registry
@@ -94,7 +95,9 @@ class QueueService:
         effective_scheduled_at = scheduled_at
         if effective_scheduled_at is None and effective_run_after is not None:
             effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
-        effective_execution_backend = execution_backend or task_obj.execution_backend or self._config.execution_backend
+        effective_execution_backend = (
+            execution_backend or task_obj.execution_backend or execution_backend_name(self._config.execution_backend)
+        )
         effective_execution_profile = execution_profile if execution_profile is not None else task_obj.execution_profile
         effective_metadata = task_obj.metadata(metadata)
         if description is not None:
@@ -264,7 +267,7 @@ class QueueService:
                     key=schedule_key,
                     max_retries=0,
                     scheduled_at=scheduled_at,
-                    execution_backend=task_obj.execution_backend or self._config.execution_backend,
+                    execution_backend=task_obj.execution_backend or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
                     metadata=task_obj.metadata({"schedule": schedule_metadata}),
                 )

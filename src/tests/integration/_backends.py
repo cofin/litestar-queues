@@ -145,43 +145,33 @@ async def _build_memory(ctx: FixtureCtx) -> "BaseQueueBackend":
     return InMemoryQueueBackend()
 
 
+def _sqlspec_backend(sqlspec_config: object) -> "BaseQueueBackend":
+    """Return a SQLSpec backend configured through the typed config object."""
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    return SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
+
+
 async def _build_aiosqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
-
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
-    return SQLSpecQueueBackend(
-        sqlspec_config=AiosqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-aiosqlite.db")})
-    )
+    return _sqlspec_backend(AiosqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-aiosqlite.db")}))
 
 
 async def _build_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.sqlite import SqliteConfig
-
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
-    return SQLSpecQueueBackend(
-        sqlspec_config=SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")})
-    )
+    return _sqlspec_backend(SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")}))
 
 
 async def _build_duckdb(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.duckdb import DuckDBConfig
-
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
-    return SQLSpecQueueBackend(
-        sqlspec_config=DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")})
-    )
+    return _sqlspec_backend(DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}))
 
 
 async def _build_adbc_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.adbc import AdbcConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
-    return SQLSpecQueueBackend(
-        sqlspec_config=AdbcConfig(
+    return _sqlspec_backend(
+        AdbcConfig(
             connection_config={"driver_name": "sqlite", "uri": str(ctx.tmp_path / "queue-adbc.db")}
         )
     )
@@ -190,12 +180,10 @@ async def _build_adbc_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_postgres_asyncpg(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.asyncpg import AsyncpgConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("PostgresService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=AsyncpgConfig(
+    return _sqlspec_backend(
+        AsyncpgConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -210,12 +198,10 @@ async def _build_postgres_asyncpg(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_postgres_psycopg(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.psycopg import PsycopgAsyncConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("PostgresService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=PsycopgAsyncConfig(
+    return _sqlspec_backend(
+        PsycopgAsyncConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -230,12 +216,10 @@ async def _build_postgres_psycopg(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_postgres_psqlpy(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.psqlpy import PsqlpyConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("PostgresService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=PsqlpyConfig(
+    return _sqlspec_backend(
+        PsqlpyConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -250,12 +234,10 @@ async def _build_postgres_psqlpy(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_mysql_asyncmy(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.asyncmy import AsyncmyConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("MySQLService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=AsyncmyConfig(
+    return _sqlspec_backend(
+        AsyncmyConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -270,12 +252,10 @@ async def _build_mysql_asyncmy(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_mysql_aiomysql(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.aiomysql import AiomysqlConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("MySQLService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=AiomysqlConfig(
+    return _sqlspec_backend(
+        AiomysqlConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -290,12 +270,10 @@ async def _build_mysql_aiomysql(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_mysql_pymysql(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.pymysql import PyMysqlConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("MySQLService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=PyMysqlConfig(
+    return _sqlspec_backend(
+        PyMysqlConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -310,12 +288,10 @@ async def _build_mysql_pymysql(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_mysql_mysqlconnector(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.mysqlconnector import MysqlConnectorAsyncConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("MySQLService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=MysqlConnectorAsyncConfig(
+    return _sqlspec_backend(
+        MysqlConnectorAsyncConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -330,12 +306,10 @@ async def _build_mysql_mysqlconnector(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.oracledb import OracleAsyncConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("OracleService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=OracleAsyncConfig(
+    return _sqlspec_backend(
+        OracleAsyncConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -350,12 +324,10 @@ async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_bigquery(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.bigquery import BigQueryConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("BigQueryService", ctx.service)
     assert svc is not None
-    return SQLSpecQueueBackend(
-        sqlspec_config=BigQueryConfig(
+    return _sqlspec_backend(
+        BigQueryConfig(
             connection_config={
                 "project": svc.project,
                 "dataset_id": svc.dataset,
@@ -370,13 +342,11 @@ async def _build_bigquery(ctx: FixtureCtx) -> "BaseQueueBackend":
 async def _build_spanner(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.spanner import SpannerSyncConfig
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
-
     svc = cast("SpannerService", ctx.service)
     assert svc is not None
     _ensure_spanner_database(svc)
-    return SQLSpecQueueBackend(
-        sqlspec_config=SpannerSyncConfig(
+    return _sqlspec_backend(
+        SpannerSyncConfig(
             connection_config={
                 "project": svc.project,
                 "instance_id": svc.instance_name,

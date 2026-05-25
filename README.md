@@ -117,15 +117,15 @@ extra is installed:
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues import QueueConfig
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
 config = QueueConfig(
-    queue_backend="sqlspec",
-    queue_backend_config={
-        "sqlspec_config": AiosqliteConfig(
+    queue_backend=SQLSpecBackendConfig(
+        sqlspec_config=AiosqliteConfig(
             connection_config={"database": "queue.db"},
         ),
-        "run_migrations": True,
-    },
+        run_migrations=True,
+    ),
     execution_backend="local",
 )
 ```
@@ -133,7 +133,7 @@ config = QueueConfig(
 SQLSpec persists task arguments, keyword arguments, metadata, and results with
 SQLSpec's JSON serializer. Litestar applications should register SQLSpec's
 first-party plugin directly and pass the same `SQLSpec`/adapter config into
-`queue_backend_config` when they want SQLSpec dependency injection.
+`SQLSpecBackendConfig` when they want SQLSpec dependency injection.
 
 The `advanced-alchemy` queue backend is available when the Advanced Alchemy
 extra is installed:
@@ -142,17 +142,19 @@ extra is installed:
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
 from litestar_queues import QueueConfig
+from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig
+from myapp.models import AppQueueTask
 
 alchemy_config = SQLAlchemyAsyncConfig(
     connection_string="sqlite+aiosqlite:///queue.db",
 )
 
 config = QueueConfig(
-    queue_backend="advanced-alchemy",
-    queue_backend_config={
-        "sqlalchemy_config": alchemy_config,
-        "create_schema": True,
-    },
+    queue_backend=AdvancedAlchemyBackendConfig(
+        sqlalchemy_config=alchemy_config,
+        model_class=AppQueueTask,
+        create_schema=True,
+    ),
     execution_backend="local",
 )
 ```
@@ -166,14 +168,14 @@ The `redis` queue backend is available when the Redis extra is installed:
 
 ```python
 from litestar_queues import QueueConfig
+from litestar_queues.backends.redis import RedisBackendConfig
 
 config = QueueConfig(
-    queue_backend="redis",
-    queue_backend_config={
-        "url": "redis://localhost:6379/0",
-        "key_prefix": "litestar_queues",
-        "notifications": True,
-    },
+    queue_backend=RedisBackendConfig(
+        url="redis://localhost:6379/0",
+        key_prefix="litestar_queues",
+        notifications=True,
+    ),
     execution_backend="local",
 )
 ```
@@ -183,14 +185,14 @@ client:
 
 ```python
 from litestar_queues import QueueConfig
+from litestar_queues.backends.valkey import ValkeyBackendConfig
 
 config = QueueConfig(
-    queue_backend="valkey",
-    queue_backend_config={
-        "url": "redis://localhost:6379/0",
-        "key_prefix": "litestar_queues",
-        "notifications": True,
-    },
+    queue_backend=ValkeyBackendConfig(
+        url="redis://localhost:6379/0",
+        key_prefix="litestar_queues",
+        notifications=True,
+    ),
     execution_backend="local",
 )
 ```
@@ -207,6 +209,7 @@ installed:
 
 ```python
 from litestar_queues import QueueConfig, task
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 
@@ -215,17 +218,13 @@ async def render_report(report_id: str) -> None:
     ...
 
 config = QueueConfig(
-    queue_backend="sqlspec",
-    queue_backend_config={...},
-    execution_backend="cloudrun",
-    execution_backend_config={
-        "cloudrun": CloudRunExecutionConfig(
-            project_id="example-project",
-            region="us-central1",
-            job_name="queue-worker",
-            profiles={"heavy": "queue-worker-heavy"},
-        )
-    },
+    queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+    execution_backend=CloudRunExecutionConfig(
+        project_id="example-project",
+        region="us-central1",
+        job_name="queue-worker",
+        profiles={"heavy": "queue-worker-heavy"},
+    ),
 )
 ```
 
@@ -242,6 +241,7 @@ SQLSpec worker wakeups can use SQLSpec Events when configured:
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues import QueueConfig
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
 sqlspec_config = AiosqliteConfig(
     connection_config={"database": "queue.db"},
@@ -255,14 +255,13 @@ sqlspec_config = AiosqliteConfig(
 )
 
 config = QueueConfig(
-    queue_backend="sqlspec",
-    queue_backend_config={
-        "sqlspec_config": sqlspec_config,
-        "create_schema": False,
-        "run_migrations": True,
-        "notifications": True,
-        "notification_channel": "queue_notifications",
-    },
+    queue_backend=SQLSpecBackendConfig(
+        sqlspec_config=sqlspec_config,
+        create_schema=False,
+        run_migrations=True,
+        notifications=True,
+        notification_channel="queue_notifications",
+    ),
     execution_backend="local",
 )
 ```

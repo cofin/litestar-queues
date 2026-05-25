@@ -4,6 +4,8 @@ import os
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from litestar_queues.config import execution_backend_name
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -104,7 +106,7 @@ class Worker:
         execution_backend = self._service.get_execution_backend()
         records = await queue_backend.list_pending(
             limit=self._batch_size,
-            execution_backend=self._service.config.execution_backend,
+            execution_backend=execution_backend_name(self._service.config.execution_backend),
         )
         if execution_backend.is_external:
             return await self._dispatch_external(records)
@@ -144,7 +146,7 @@ class Worker:
                 continue
             execution_backend = (
                 current_backend
-                if record.execution_backend == self._service.config.execution_backend
+                if record.execution_backend == execution_backend_name(self._service.config.execution_backend)
                 else get_execution_backend(record.execution_backend, config=self._service.config)
             )
             updated = await execution_backend.reconcile(self._service, record)

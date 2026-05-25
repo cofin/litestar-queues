@@ -60,27 +60,17 @@ class RedisQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         config: "QueueConfig | None" = None,
         *,
         backend_config: RedisBackendConfig | None = None,
-        client: Any | None = None,
-        url: str | None = None,
-        key_prefix: str | None = None,
-        notifications: bool | None = None,
-        notification_channel: str | None = None,
-        lock_timeout: float | None = None,
-        poll_interval: float | None = None,
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or RedisBackendConfig()
-        self._client = client if client is not None else backend_config.client
+        self._client = backend_config.client
         self._owns_client = self._client is None
-        self._url = url if url is not None else backend_config.url
-        prefix = key_prefix if key_prefix is not None else backend_config.key_prefix
-        self._key_prefix = prefix.rstrip(":")
-        self._notifications = notifications if notifications is not None else backend_config.notifications
-        self._notification_channel = (
-            notification_channel if notification_channel is not None else backend_config.notification_channel
-        )
-        self._lock_timeout = lock_timeout if lock_timeout is not None else backend_config.lock_timeout
-        self._poll_interval = poll_interval if poll_interval is not None else backend_config.poll_interval
+        self._url = backend_config.url
+        self._key_prefix = backend_config.key_prefix.rstrip(":")
+        self._notifications = backend_config.notifications
+        self._notification_channel = backend_config.notification_channel
+        self._lock_timeout = backend_config.lock_timeout
+        self._poll_interval = backend_config.poll_interval
 
     @property
     def capabilities(self) -> QueueBackendCapabilities:

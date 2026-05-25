@@ -64,11 +64,6 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):  # noqa: PLR0904
             type(f"QueueTaskServiceFor{model_class.__name__}", (cls,), {"repository_type": repository_type}),
         )
 
-    @property
-    def model_type(self) -> type[Any]:
-        """Return the model class bound to this service repository."""
-        return cast("type[Any]", self.repository.model_type)
-
     async def enqueue(
         self,
         task_name: str,

@@ -55,16 +55,10 @@ Core Settings
      - Purpose
    * - ``queue_backend``
      - ``"memory"``
-     - Queue persistence backend name.
-   * - ``queue_backend_config``
-     - ``{}``
-     - Backend-specific settings or injected clients.
+     - Queue persistence backend name or typed backend config object.
    * - ``execution_backend``
      - ``"immediate"``
-     - Default execution backend for enqueued records.
-   * - ``execution_backend_config``
-     - ``{}``
-     - Execution backend-specific settings.
+     - Default execution backend name or typed execution config object.
    * - ``task_modules``
      - ``()``
      - Modules imported on startup so task decorators register tasks.

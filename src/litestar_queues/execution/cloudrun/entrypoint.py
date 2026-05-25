@@ -157,9 +157,7 @@ def _load_configured_task_modules(config: QueueConfig, env: Mapping[str, str]) -
 
 
 def _env_name(config: QueueConfig | None, suffix: str) -> str:
-    raw_config = config.execution_backend_config if config is not None else {}
-    if isinstance(raw_config, dict) and "cloudrun" in raw_config:
-        raw_config = raw_config["cloudrun"]
+    raw_config = config.execution_backend if config is not None else None
     env_name = getattr(raw_config, "env_name", None)
     if callable(env_name):
         return str(env_name(suffix))

@@ -7,6 +7,7 @@ from litestar_queues.execution.base import BaseExecutionBackend
 from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, cloudrun_config_from_queue_config
 
 if TYPE_CHECKING:
+    from litestar_queues.config import QueueConfig
     from litestar_queues.execution.cloudrun._typing import (
         CloudRunExecutionLike,
         CloudRunExecutionsClient,
@@ -35,18 +36,18 @@ class CloudRunExecutionStatus:
 class CloudRunExecutionBackend(BaseExecutionBackend):
     """Execution backend that dispatches queued records to Cloud Run Jobs."""
 
-    __slots__ = ("_cloudrun_config", "executions_client", "jobs_client")
+    __slots__ = ("_execution_config", "executions_client", "jobs_client")
 
     def __init__(
         self,
-        config: "Any | None" = None,
+        config: "QueueConfig | None" = None,
         *,
-        cloudrun_config: CloudRunExecutionConfig | None = None,
+        execution_config: CloudRunExecutionConfig | None = None,
         jobs_client: "CloudRunJobsClient | None" = None,
         executions_client: "CloudRunExecutionsClient | None" = None,
     ) -> None:
         super().__init__(config=config)
-        self._cloudrun_config = cloudrun_config
+        self._execution_config = execution_config
         self.jobs_client = jobs_client
         self.executions_client = executions_client
 
@@ -58,9 +59,9 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
     @property
     def cloudrun_config(self) -> CloudRunExecutionConfig:
         """Return the resolved Cloud Run execution config."""
-        if self._cloudrun_config is None:
-            self._cloudrun_config = cloudrun_config_from_queue_config(self.config)
-        return self._cloudrun_config
+        if self._execution_config is None:
+            self._execution_config = cloudrun_config_from_queue_config(self.config)
+        return self._execution_config
 
     async def execute(
         self,

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from litestar_queues.backends.base import BaseQueueBackend
 
 if TYPE_CHECKING:
-    from litestar_queues.config import QueueConfig
+    from litestar_queues.config import QueueBackendConfig, QueueConfig
 
 __all__ = (
     "get_queue_backend",
@@ -83,19 +83,29 @@ def cast_backend_class(value: Any) -> type[BaseQueueBackend]:
     return value  # type: ignore[no-any-return]
 
 
-def get_queue_backend(backend: str = "memory", config: "QueueConfig | None" = None) -> BaseQueueBackend:
+def get_queue_backend(backend: "QueueBackendConfig" = "memory", config: "QueueConfig | None" = None) -> BaseQueueBackend:
     """Get an instantiated queue backend.
 
     Returns:
         A configured queue backend instance.
+
+    Raises:
+        TypeError: If a typed backend config selects a backend class that does
+            not accept ``backend_config``.
     """
-    backend_class = get_queue_backend_class(backend)
+    from litestar_queues.config import queue_backend_name
+
+    backend_config = None if isinstance(backend, str) else backend
+    backend_class = get_queue_backend_class(queue_backend_name(backend))
     backend_kwargs: dict[str, Any] = {"config": config}
-    if config is not None:
-        backend_kwargs.update(config.queue_backend_config)
+    if backend_config is not None:
+        backend_kwargs["backend_config"] = backend_config
 
     init_signature = signature(backend_class.__init__)
     accepts_kwargs = any(param.kind == param.VAR_KEYWORD for param in init_signature.parameters.values())
+    if backend_config is not None and not accepts_kwargs and "backend_config" not in init_signature.parameters:
+        msg = f"{backend_class.__name__} must accept backend_config when selected by a typed backend config."
+        raise TypeError(msg)
     if not accepts_kwargs:
         backend_kwargs = {key: value for key, value in backend_kwargs.items() if key in init_signature.parameters}
 

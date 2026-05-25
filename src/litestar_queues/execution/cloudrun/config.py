@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, ClassVar
 
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -13,6 +13,7 @@ __all__ = ("CloudRunExecutionConfig", "cloudrun_config_from_queue_config")
 class CloudRunExecutionConfig:
     """Configuration for Cloud Run Jobs execution."""
 
+    backend_name: ClassVar[str] = "cloudrun"
     project_id: str
     region: str = "us-central1"
     job_name: str | None = None
@@ -56,17 +57,8 @@ def cloudrun_config_from_queue_config(config: "QueueConfig | None") -> CloudRunE
     Raises:
         QueueConfigurationError: If no Cloud Run execution config is available.
     """
-    raw_config: Any = None
-    if config is not None:
-        raw_config = config.execution_backend_config
-        if isinstance(raw_config, dict) and "cloudrun" in raw_config:
-            raw_config = raw_config["cloudrun"]
+    if config is not None and isinstance(config.execution_backend, CloudRunExecutionConfig):
+        return config.execution_backend
 
-    if isinstance(raw_config, CloudRunExecutionConfig):
-        return raw_config
-
-    if isinstance(raw_config, dict) and raw_config:
-        return CloudRunExecutionConfig(**raw_config)
-
-    msg = "Cloud Run execution requires QueueConfig.execution_backend_config with CloudRunExecutionConfig values."
+    msg = "Cloud Run execution requires QueueConfig.execution_backend with a CloudRunExecutionConfig value."
     raise QueueConfigurationError(msg)

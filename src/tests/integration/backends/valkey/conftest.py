@@ -24,15 +24,17 @@ class ValkeyService(Protocol):
 @pytest.fixture
 async def valkey_backend(valkey_service: ValkeyService) -> "AsyncIterator[ValkeyQueueBackend]":
     """Yield an opened ``ValkeyQueueBackend`` namespaced under a unique prefix."""
-    from litestar_queues.backends.valkey import ValkeyQueueBackend
+    from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
 
     prefix = f"litestar_queues:test:valkey:{uuid.uuid4().hex}"
     backend = ValkeyQueueBackend(
-        url=f"redis://{valkey_service.host}:{valkey_service.port}/{valkey_service.db}",
-        key_prefix=prefix,
-        notifications=True,
-        notification_channel=f"{prefix}:notifications",
-        lock_timeout=0.1,
+        backend_config=ValkeyBackendConfig(
+            url=f"redis://{valkey_service.host}:{valkey_service.port}/{valkey_service.db}",
+            key_prefix=prefix,
+            notifications=True,
+            notification_channel=f"{prefix}:notifications",
+            lock_timeout=0.1,
+        ),
     )
     await backend.open()
     try:

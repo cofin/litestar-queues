@@ -59,7 +59,7 @@ async def advanced_alchemy_backend(
     In-process (aiosqlite) gets a unique tmp_path DB file per test so no extra
     cleanup is required.
     """
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
 
     case: AAEngineCase = request.param
     for extra in case.extras:
@@ -76,7 +76,13 @@ async def advanced_alchemy_backend(
 
     ctx = FixtureCtx(tmp_path=tmp_path, service=service)
     config = case.build_config(ctx)
-    backend = AdvancedAlchemyQueueBackend(sqlalchemy_config=config, model_class=_queue_model(), create_schema=True)
+    backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=config,
+            model_class=_queue_model(),
+            create_schema=True,
+        )
+    )
     await backend.open()
     try:
         yield backend

@@ -13,7 +13,7 @@ pytest.importorskip("sqlalchemy")
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
-from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
 from litestar_queues.backends.advanced_alchemy.models import QueueTaskModelMixin
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -83,9 +83,11 @@ def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> 
 
 async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: Path) -> None:
     backend = AdvancedAlchemyQueueBackend(
-        sqlalchemy_config=_sqlite_config(tmp_path / "custom-model.db"),
-        model_class=CustomQueueTaskModel,
-        create_schema=True,
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "custom-model.db"),
+            model_class=CustomQueueTaskModel,
+            create_schema=True,
+        )
     )
     await backend.open()
     try:
@@ -111,9 +113,11 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
     fixed_now = datetime(2026, 5, 25, tzinfo=UTC)
     monkeypatch.setattr(service_module, "_utc_now", lambda: fixed_now)
     backend = AdvancedAlchemyQueueBackend(
-        sqlalchemy_config=_sqlite_config(tmp_path / "stale-cutoff.db"),
-        model_class=CustomQueueTaskModel,
-        create_schema=True,
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "stale-cutoff.db"),
+            model_class=CustomQueueTaskModel,
+            create_schema=True,
+        )
     )
     await backend.open()
     try:
@@ -135,10 +139,14 @@ def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: Path) ->
     config = _sqlite_config(tmp_path / "invalid-model.db")
 
     with pytest.raises(QueueConfigurationError, match="model_class is required"):
-        AdvancedAlchemyQueueBackend(sqlalchemy_config=config)
+        AdvancedAlchemyQueueBackend(backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config))
 
     with pytest.raises(QueueConfigurationError, match="QueueTaskModelMixin"):
-        AdvancedAlchemyQueueBackend(sqlalchemy_config=config, model_class=object)
+        AdvancedAlchemyQueueBackend(
+            backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config, model_class=object)
+        )
 
     with pytest.raises(QueueConfigurationError, match="__tablename__"):
-        AdvancedAlchemyQueueBackend(sqlalchemy_config=config, model_class=AbstractQueueTaskModel)
+        AdvancedAlchemyQueueBackend(
+            backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config, model_class=AbstractQueueTaskModel)
+        )

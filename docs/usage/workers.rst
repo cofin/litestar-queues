@@ -13,9 +13,10 @@ application:
 
 .. code-block:: python
 
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+
    config = QueueConfig(
-       queue_backend="sqlspec",
-       queue_backend_config={...},
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
        execution_backend="local",
        start_worker=True,
        worker_batch_size=20,

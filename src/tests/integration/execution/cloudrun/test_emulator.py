@@ -99,7 +99,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         QueueConfig(execution_backend="cloudrun"),
         queue_backend=queue_backend,
         execution_backend=CloudRunExecutionBackend(
-            cloudrun_config=CloudRunExecutionConfig(
+            execution_config=CloudRunExecutionConfig(
                 project_id="test-project",
                 region="us-central1",
                 job_name="default-worker",
@@ -147,7 +147,7 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
 
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
-        cloudrun_config=CloudRunExecutionConfig(
+        execution_config=CloudRunExecutionConfig(
             project_id="test-project",
             job_name="worker",
             fallback_execution_backend="local",
@@ -195,7 +195,7 @@ async def test_cloudrun_reconcile_updates_terminal_statuses(
 
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
-        cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
         executions_client=FakeExecutionsClient(execution),
     )
     service = QueueService(
@@ -222,7 +222,7 @@ async def test_cloudrun_reconcile_treats_transient_status_errors_as_running() ->
 
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
-        cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
         executions_client=FakeExecutionsClient(RuntimeError("temporary api failure")),
     )
     service = QueueService(
@@ -255,7 +255,7 @@ async def test_worker_dispatches_external_records_without_claiming_them() -> Non
 
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
-        cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     async with QueueService(
@@ -280,7 +280,7 @@ async def test_worker_reconciles_running_external_records() -> None:
 
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
-        cloudrun_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
         executions_client=FakeExecutionsClient(FakeCloudRunExecution(failed_count=1)),
     )
     async with QueueService(

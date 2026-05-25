@@ -21,7 +21,11 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend, QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy import (
+    AdvancedAlchemyBackendConfig,
+    AdvancedAlchemyQueueBackend,
+    QueueTaskModelMixin,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,9 +49,11 @@ async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(
 ) -> None:
     """When heartbeat_session_maker is None, heartbeat writes use the main session."""
     backend = AdvancedAlchemyQueueBackend(
-        sqlalchemy_config=_sqlite_config(tmp_path / "queue.db"),
-        model_class=HeartbeatQueueTask,
-        create_schema=True,
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "queue.db"),
+            model_class=HeartbeatQueueTask,
+            create_schema=True,
+        )
     )
     await backend.open()
     try:
@@ -76,10 +82,12 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_write
     heartbeat_maker = async_sessionmaker(heartbeat_config.get_engine(), expire_on_commit=False)
 
     backend = AdvancedAlchemyQueueBackend(
-        sqlalchemy_config=main_config,
-        model_class=HeartbeatQueueTask,
-        heartbeat_session_maker=heartbeat_maker,
-        create_schema=True,
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=main_config,
+            model_class=HeartbeatQueueTask,
+            heartbeat_session_maker=heartbeat_maker,
+            create_schema=True,
+        )
     )
     await backend.open()
     try:
@@ -131,10 +139,12 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_handles_concur
     heartbeat_maker = async_sessionmaker(heartbeat_config.get_engine(), expire_on_commit=False)
 
     backend = AdvancedAlchemyQueueBackend(
-        sqlalchemy_config=main_config,
-        model_class=HeartbeatQueueTask,
-        heartbeat_session_maker=heartbeat_maker,
-        create_schema=True,
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=main_config,
+            model_class=HeartbeatQueueTask,
+            heartbeat_session_maker=heartbeat_maker,
+            create_schema=True,
+        )
     )
     await backend.open()
     try:

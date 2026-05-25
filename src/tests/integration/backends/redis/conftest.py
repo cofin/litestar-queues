@@ -24,15 +24,17 @@ class RedisService(Protocol):
 @pytest.fixture
 async def redis_backend(redis_service: RedisService) -> "AsyncIterator[RedisQueueBackend]":
     """Yield an opened ``RedisQueueBackend`` namespaced under a unique prefix."""
-    from litestar_queues.backends.redis import RedisQueueBackend
+    from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 
     prefix = f"litestar_queues:test:redis:{uuid.uuid4().hex}"
     backend = RedisQueueBackend(
-        url=f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}",
-        key_prefix=prefix,
-        notifications=True,
-        notification_channel=f"{prefix}:notifications",
-        lock_timeout=0.1,
+        backend_config=RedisBackendConfig(
+            url=f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}",
+            key_prefix=prefix,
+            notifications=True,
+            notification_channel=f"{prefix}:notifications",
+            lock_timeout=0.1,
+        ),
     )
     await backend.open()
     try:

@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from litestar_queues.events import QueueEventConfig
 
@@ -17,17 +17,45 @@ if TYPE_CHECKING:
 __all__ = (
     "AsyncServiceProvider",
     "ExecutionBackendConfig",
+    "ExecutionBackendConfigProtocol",
     "QueueBackendConfig",
+    "QueueBackendConfigProtocol",
     "QueueConfig",
     "QueueEventConfig",
     "TaskDependencyResolver",
+    "execution_backend_name",
+    "queue_backend_name",
 )
 
-QueueBackendConfig = str
-"""Type alias for queue backend configuration values."""
 
-ExecutionBackendConfig = str
-"""Type alias for execution backend configuration values."""
+class QueueBackendConfigProtocol(Protocol):
+    """Protocol for typed queue backend configuration objects."""
+
+    backend_name: ClassVar[str]
+
+
+class ExecutionBackendConfigProtocol(Protocol):
+    """Protocol for typed execution backend configuration objects."""
+
+    backend_name: ClassVar[str]
+
+
+QueueBackendConfig = str | QueueBackendConfigProtocol
+"""Type alias for queue backend selectors."""
+
+ExecutionBackendConfig = str | ExecutionBackendConfigProtocol
+"""Type alias for execution backend selectors."""
+
+
+def queue_backend_name(backend: QueueBackendConfig) -> str:
+    """Return the registered queue backend name for a selector."""
+    return backend if isinstance(backend, str) else backend.backend_name
+
+
+def execution_backend_name(backend: ExecutionBackendConfig) -> str:
+    """Return the registered execution backend name for a selector."""
+    return backend if isinstance(backend, str) else backend.backend_name
+
 
 TaskDependencyResolver = Callable[
     ["Task[..., object]", "QueuedTaskRecord", "TaskExecutionContext"],
@@ -88,9 +116,7 @@ class QueueConfig:
     """
 
     queue_backend: QueueBackendConfig = "memory"
-    queue_backend_config: dict[str, Any] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig = "immediate"
-    execution_backend_config: dict[str, Any] = field(default_factory=dict)
     task_dependency_resolver: "TaskDependencyResolver | None" = None
     start_worker: bool = False
     queue_service_dependency_key: str = "queue_service"
@@ -160,9 +186,12 @@ class QueueConfig:
             "NonRetryableError": NonRetryableError,
             "NoopQueueEventSink": NoopQueueEventSink,
             "InMemoryQueueEventSink": InMemoryQueueEventSink,
+            "ExecutionBackendConfig": ExecutionBackendConfig,
             "QueueChannels": QueueChannels,
             "QueueConfig": QueueConfig,
             "QueueBackendCapabilities": QueueBackendCapabilities,
+            "QueueBackendConfig": QueueBackendConfig,
+            "QueueBackendConfigProtocol": QueueBackendConfigProtocol,
             "QueueEvent": QueueEvent,
             "QueueEventActor": QueueEventActor,
             "QueueEventConfig": QueueEventConfig,
@@ -174,6 +203,7 @@ class QueueConfig:
             "ScheduleConfig": ScheduleConfig,
             "Task": Task,
             "TaskDependencyResolver": TaskDependencyResolver,
+            "ExecutionBackendConfigProtocol": ExecutionBackendConfigProtocol,
             "TaskExecutionContext": TaskExecutionContext,
             "TaskResult": TaskResult,
             "Worker": Worker,

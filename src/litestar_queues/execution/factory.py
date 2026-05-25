@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from litestar_queues.execution.base import BaseExecutionBackend
 
 if TYPE_CHECKING:
-    from litestar_queues.config import QueueConfig
+    from litestar_queues.config import ExecutionBackendConfig, QueueConfig
 
 __all__ = (
     "execution_backend",
@@ -70,17 +70,32 @@ def get_execution_backend_class(backend_path: str) -> type[BaseExecutionBackend]
     return getattr(module, class_name)  # type: ignore[no-any-return]
 
 
-def get_execution_backend(backend: str = "immediate", config: "QueueConfig | None" = None) -> BaseExecutionBackend:
+def get_execution_backend(
+    backend: "ExecutionBackendConfig" = "immediate",
+    config: "QueueConfig | None" = None,
+) -> BaseExecutionBackend:
     """Get an instantiated execution backend.
 
     Returns:
         A configured execution backend instance.
+
+    Raises:
+        TypeError: If a typed execution config selects a backend class that
+            does not accept ``execution_config``.
     """
-    backend_class = get_execution_backend_class(backend)
+    from litestar_queues.config import execution_backend_name
+
+    execution_config = None if isinstance(backend, str) else backend
+    backend_class = get_execution_backend_class(execution_backend_name(backend))
     backend_kwargs: dict[str, Any] = {"config": config}
+    if execution_config is not None:
+        backend_kwargs["execution_config"] = execution_config
 
     init_signature = signature(backend_class.__init__)
     accepts_kwargs = any(param.kind == param.VAR_KEYWORD for param in init_signature.parameters.values())
+    if execution_config is not None and not accepts_kwargs and "execution_config" not in init_signature.parameters:
+        msg = f"{backend_class.__name__} must accept execution_config when selected by a typed execution config."
+        raise TypeError(msg)
     if not accepts_kwargs:
         backend_kwargs = {key: value for key, value in backend_kwargs.items() if key in init_signature.parameters}
 

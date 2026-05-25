@@ -22,7 +22,7 @@ pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
 SqliteConfigFactory: TypeAlias = Callable[["Path"], AiosqliteConfig]
 EventPayload: TypeAlias = dict[str, object]
@@ -43,7 +43,9 @@ def sqlite_config_factory() -> SqliteConfigFactory:
 @pytest.fixture
 async def sqlspec_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend]":
     """Yield an opened aiosqlite-backed SQLSpec queue backend."""
-    backend = SQLSpecQueueBackend(sqlspec_config=_sqlite_config(tmp_path / "queue.db"))
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=_sqlite_config(tmp_path / "queue.db"))
+    )
     await backend.open()
     try:
         yield backend

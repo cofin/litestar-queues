@@ -1,14 +1,14 @@
 """SQLSpec queue backend."""
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlspec import SQLSpec
-from sqlspec.extensions.events import AsyncEventChannel, normalize_event_channel_name
+from sqlspec.extensions.events import normalize_event_channel_name
 from sqlspec.utils.sync_tools import ensure_async_, with_ensure_async_
 
 from litestar_queues.backends.base import BaseQueueBackend
@@ -184,60 +184,31 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         config: "QueueConfig | None" = None,
         *,
         backend_config: SQLSpecBackendConfig | None = None,
-        sqlspec: SQLSpec | None = None,
-        sqlspec_config: Any | None = None,
-        heartbeat_pool_config: Any | None = None,
-        table_name: str | None = None,
-        create_schema: bool | None = None,
-        run_migrations: bool | None = None,
-        event_channel: AsyncEventChannel | None = None,
-        notifications: bool | None = None,
-        notification_channel: str | None = None,
-        event_backend: str | None = None,
-        event_queue_table: str | None = None,
-        event_poll_interval: float | None = None,
-        event_settings: dict[str, Any] | None = None,
-        column_map: Mapping[str, str] | None = None,
-        native_json_columns: frozenset[str] | None = None,
-        manage_schema: bool | None = None,
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or SQLSpecBackendConfig()
-        configured_column_map = column_map if column_map is not None else backend_config.column_map
-        configured_native_json_columns = (
-            native_json_columns if native_json_columns is not None else backend_config.native_json_columns
-        )
-        self._column_map = validate_column_map(configured_column_map)
-        self._native_json_columns = validate_native_json_columns(frozenset(configured_native_json_columns))
-        self._manage_schema = backend_config.manage_schema if manage_schema is None else manage_schema
-        self._sqlspec = sqlspec if sqlspec is not None else backend_config.sqlspec
-        self._sqlspec_config = sqlspec_config if sqlspec_config is not None else backend_config.sqlspec_config
-        self._heartbeat_pool_config = (
-            heartbeat_pool_config if heartbeat_pool_config is not None else backend_config.heartbeat_pool_config
-        )
+        self._column_map = validate_column_map(backend_config.column_map)
+        self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
+        self._manage_schema = backend_config.manage_schema
+        self._sqlspec = backend_config.sqlspec
+        self._sqlspec_config = backend_config.sqlspec_config
+        self._heartbeat_pool_config = backend_config.heartbeat_pool_config
         self._heartbeat_pool_enabled = self._heartbeat_pool_config is not None
         self._heartbeat_pool_registered = False
         self._owns_sqlspec = self._sqlspec is None
-        configured_table_name = table_name if table_name is not None else backend_config.table_name
-        self._table_name = validate_table_name(configured_table_name) if configured_table_name is not None else None
-        self._create_schema = create_schema if create_schema is not None else backend_config.create_schema
-        self._run_migrations = run_migrations if run_migrations is not None else backend_config.run_migrations
-        self._event_channel = event_channel if event_channel is not None else backend_config.event_channel
+        self._table_name = (
+            validate_table_name(backend_config.table_name) if backend_config.table_name is not None else None
+        )
+        self._create_schema = backend_config.create_schema
+        self._run_migrations = backend_config.run_migrations
+        self._event_channel = backend_config.event_channel
         self._owns_event_channel = self._event_channel is None
-        self._notifications_requested = notifications if notifications is not None else backend_config.notifications
-        self._notification_channel = (
-            notification_channel if notification_channel is not None else backend_config.notification_channel
-        )
-        self._event_backend = event_backend if event_backend is not None else backend_config.event_backend
-        self._event_queue_table = (
-            event_queue_table if event_queue_table is not None else backend_config.event_queue_table
-        )
-        self._event_poll_interval = (
-            event_poll_interval if event_poll_interval is not None else backend_config.event_poll_interval
-        )
+        self._notifications_requested = backend_config.notifications
+        self._notification_channel = backend_config.notification_channel
+        self._event_backend = backend_config.event_backend
+        self._event_queue_table = backend_config.event_queue_table
+        self._event_poll_interval = backend_config.event_poll_interval
         self._event_settings = dict(backend_config.event_settings)
-        if event_settings:
-            self._event_settings.update(event_settings)
         self._notification_backend: str | None = getattr(self._event_channel, "_backend_name", None)
         self._notifications_enabled = self._event_channel is not None
         self._store: Any | None = None

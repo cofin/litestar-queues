@@ -62,7 +62,7 @@ are imported only by their own public subpackages:
 
 Applications that already configure SQLSpec or Advanced Alchemy should keep
 owning those framework plugins and pass the configured objects to
-``QueueConfig.queue_backend_config``. ``litestar_queues`` does not register
+the typed queue backend config object. ``litestar_queues`` does not register
 SQLSpec or Advanced Alchemy plugins on behalf of the application.
 
 Schedules
@@ -109,11 +109,11 @@ contract:
 .. code-block:: python
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.redis import RedisBackendConfig
    from litestar_queues.events import QueueEventConfig
 
    config = QueueConfig(
-       queue_backend="redis",
-       queue_backend_config={...},
+       queue_backend=RedisBackendConfig(url="redis://localhost:6379/0"),
        execution_backend="local",
        event_config=QueueEventConfig(
            enabled=True,

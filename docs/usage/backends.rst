@@ -35,40 +35,39 @@ Install the SQLSpec extra when a queue needs SQL-backed persistence:
    pip install litestar-queues[sqlspec]
 
 Configure SQLSpec queue persistence by passing a SQLSpec adapter config through
-``QueueConfig.queue_backend_config``:
+``SQLSpecBackendConfig``:
 
 .. code-block:: python
 
    from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
    config = QueueConfig(
-       queue_backend="sqlspec",
-       queue_backend_config={
-           "sqlspec_config": AiosqliteConfig(
+       queue_backend=SQLSpecBackendConfig(
+           sqlspec_config=AiosqliteConfig(
                connection_config={"database": "queue.db"},
            ),
-       },
+       ),
        execution_backend="local",
    )
 
 By default, the backend creates the queue table on startup. Set
-``create_schema=False`` in ``queue_backend_config`` when schema management is
+``create_schema=False`` in ``SQLSpecBackendConfig`` when schema management is
 handled elsewhere. Applications that want SQLSpec to apply the packaged queue
 migration can set ``run_migrations=True``:
 
 .. code-block:: python
 
    config = QueueConfig(
-       queue_backend="sqlspec",
-       queue_backend_config={
-           "sqlspec_config": AiosqliteConfig(
+       queue_backend=SQLSpecBackendConfig(
+           sqlspec_config=AiosqliteConfig(
                connection_config={"database": "queue.db"},
            ),
-           "create_schema": False,
-           "run_migrations": True,
-       },
+           create_schema=False,
+           run_migrations=True,
+       ),
        execution_backend="local",
    )
 
@@ -84,6 +83,7 @@ config to the queue backend:
    from sqlspec.extensions.litestar import SQLSpecPlugin
 
    from litestar_queues import QueueConfig, QueuePlugin
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
    sqlspec = SQLSpec()
    sqlspec_config = AiosqliteConfig(connection_config={"database": "queue.db"})
@@ -94,11 +94,10 @@ config to the queue backend:
            SQLSpecPlugin(sqlspec),
            QueuePlugin(
                QueueConfig(
-                   queue_backend="sqlspec",
-                   queue_backend_config={
-                       "sqlspec": sqlspec,
-                       "sqlspec_config": sqlspec_config,
-                   },
+                   queue_backend=SQLSpecBackendConfig(
+                       sqlspec=sqlspec,
+                       sqlspec_config=sqlspec_config,
+                   ),
                    execution_backend="local",
                )
            )
@@ -129,6 +128,7 @@ writes run on a small dedicated pool:
    from sqlspec.adapters.asyncpg import AsyncpgConfig
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
    queue_url = "postgresql://queue@db/queues"
 
@@ -140,11 +140,10 @@ writes run on a small dedicated pool:
    )
 
    config = QueueConfig(
-       queue_backend="sqlspec",
-       queue_backend_config={
-           "sqlspec_config": main_config,
-           "heartbeat_pool_config": heartbeat_config,
-       },
+       queue_backend=SQLSpecBackendConfig(
+           sqlspec_config=main_config,
+           heartbeat_pool_config=heartbeat_config,
+       ),
        execution_backend="local",
        worker_max_concurrency=32,
    )
@@ -248,7 +247,7 @@ Configure the queue backend with an app-owned queue model and
    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
    from litestar_queues import QueueConfig
-   from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+   from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 
    class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
        __tablename__ = "app_queue_tasks"
@@ -258,12 +257,11 @@ Configure the queue backend with an app-owned queue model and
    )
 
    config = QueueConfig(
-       queue_backend="advanced-alchemy",
-       queue_backend_config={
-           "sqlalchemy_config": alchemy_config,
-           "model_class": AppQueueTask,
-           "create_schema": True,
-       },
+       queue_backend=AdvancedAlchemyBackendConfig(
+           sqlalchemy_config=alchemy_config,
+           model_class=AppQueueTask,
+           create_schema=True,
+       ),
        execution_backend="local",
    )
 
@@ -280,7 +278,7 @@ directly and pass the same config to the queue backend:
    from litestar import Litestar
 
    from litestar_queues import QueueConfig, QueuePlugin
-   from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+   from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 
    class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
        __tablename__ = "app_queue_tasks"
@@ -294,12 +292,11 @@ directly and pass the same config to the queue backend:
            SQLAlchemyPlugin(config=alchemy_config),
            QueuePlugin(
                QueueConfig(
-                   queue_backend="advanced-alchemy",
-                   queue_backend_config={
-                       "sqlalchemy_config": alchemy_config,
-                       "model_class": AppQueueTask,
-                       "create_schema": True,
-                   },
+                   queue_backend=AdvancedAlchemyBackendConfig(
+                       sqlalchemy_config=alchemy_config,
+                       model_class=AppQueueTask,
+                       create_schema=True,
+                   ),
                    execution_backend="local",
                )
            ),
@@ -325,7 +322,7 @@ backend:
    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
    from litestar_queues import QueueConfig
-   from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+   from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 
    class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
        __tablename__ = "app_queue_tasks"
@@ -335,12 +332,11 @@ backend:
    )
 
    config = QueueConfig(
-       queue_backend="advanced-alchemy",
-       queue_backend_config={
-           "sqlalchemy_config": alchemy_config,
-           "model_class": AppQueueTask,
-           "create_schema": True,
-       },
+       queue_backend=AdvancedAlchemyBackendConfig(
+           sqlalchemy_config=alchemy_config,
+           model_class=AppQueueTask,
+           create_schema=True,
+       ),
        execution_backend="local",
    )
 
@@ -371,6 +367,7 @@ through ``heartbeat_session_maker``:
    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig
    from myapp.models import AppQueueTask
 
    queue_url = "postgresql+asyncpg://queue@db/queues"
@@ -380,12 +377,11 @@ through ``heartbeat_session_maker``:
    heartbeat_maker = async_sessionmaker(heartbeat_engine, expire_on_commit=False)
 
    config = QueueConfig(
-       queue_backend="advanced-alchemy",
-       queue_backend_config={
-           "sqlalchemy_config": main_config,
-           "model_class": AppQueueTask,
-           "heartbeat_session_maker": heartbeat_maker,
-       },
+       queue_backend=AdvancedAlchemyBackendConfig(
+           sqlalchemy_config=main_config,
+           model_class=AppQueueTask,
+           heartbeat_session_maker=heartbeat_maker,
+       ),
        execution_backend="local",
        worker_max_concurrency=32,
    )
@@ -424,14 +420,14 @@ async Redis client:
 .. code-block:: python
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.redis import RedisBackendConfig
 
    config = QueueConfig(
-       queue_backend="redis",
-       queue_backend_config={
-           "url": "redis://localhost:6379/0",
-           "key_prefix": "litestar_queues",
-           "notifications": True,
-       },
+       queue_backend=RedisBackendConfig(
+           url="redis://localhost:6379/0",
+           key_prefix="litestar_queues",
+           notifications=True,
+       ),
        execution_backend="local",
    )
 
@@ -458,14 +454,14 @@ Configure Valkey with the same queue backend settings:
 .. code-block:: python
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.valkey import ValkeyBackendConfig
 
    config = QueueConfig(
-       queue_backend="valkey",
-       queue_backend_config={
-           "url": "redis://localhost:6379/0",
-           "key_prefix": "litestar_queues",
-           "notifications": True,
-       },
+       queue_backend=ValkeyBackendConfig(
+           url="redis://localhost:6379/0",
+           key_prefix="litestar_queues",
+           notifications=True,
+       ),
        execution_backend="local",
    )
 
@@ -489,6 +485,7 @@ app-owned and can use any queue backend that supports execution references:
 .. code-block:: python
 
    from litestar_queues import QueueConfig, task
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
    @task("reports.render", execution_backend="cloudrun", execution_profile="heavy")
@@ -496,17 +493,13 @@ app-owned and can use any queue backend that supports execution references:
        ...
 
    config = QueueConfig(
-       queue_backend="sqlspec",
-       queue_backend_config={...},
-       execution_backend="cloudrun",
-       execution_backend_config={
-           "cloudrun": CloudRunExecutionConfig(
-               project_id="example-project",
-               region="us-central1",
-               job_name="queue-worker",
-               profiles={"heavy": "queue-worker-heavy"},
-           )
-       },
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+       execution_backend=CloudRunExecutionConfig(
+           project_id="example-project",
+           region="us-central1",
+           job_name="queue-worker",
+           profiles={"heavy": "queue-worker-heavy"},
+       ),
    )
 
 The dispatch worker stores the Cloud Run execution name on the queue record and
@@ -534,6 +527,7 @@ configured. To wake workers through SQLSpec Events, configure the SQLSpec
    from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
    sqlspec_config = AiosqliteConfig(
        connection_config={"database": "queue.db"},
@@ -547,14 +541,13 @@ configured. To wake workers through SQLSpec Events, configure the SQLSpec
    )
 
    config = QueueConfig(
-       queue_backend="sqlspec",
-       queue_backend_config={
-           "sqlspec_config": sqlspec_config,
-           "create_schema": False,
-           "run_migrations": True,
-           "notifications": True,
-           "notification_channel": "queue_notifications",
-       },
+       queue_backend=SQLSpecBackendConfig(
+           sqlspec_config=sqlspec_config,
+           create_schema=False,
+           run_migrations=True,
+           notifications=True,
+           notification_channel="queue_notifications",
+       ),
        execution_backend="local",
    )
 
@@ -566,7 +559,7 @@ Shared SQLSpec Extension Config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Applications can place queue defaults in ``sqlspec_config.extension_config``.
-Explicit values passed through ``QueueConfig.queue_backend_config`` take
+Explicit values passed through ``SQLSpecBackendConfig`` take
 precedence:
 
 .. code-block:: python

@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlspec import SQLSpec
 from sqlspec.extensions.events import AsyncEventChannel
@@ -18,6 +18,7 @@ DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 class SQLSpecBackendConfig:
     """Configuration values for the SQLSpec queue backend."""
 
+    backend_name: ClassVar[str] = "sqlspec"
     sqlspec: SQLSpec | None = None
     sqlspec_config: Any | None = None
     heartbeat_pool_config: Any | None = None

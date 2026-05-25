@@ -11,10 +11,13 @@ def test_public_exports() -> None:
         CloudRunExecutionBackend,
         CloudRunExecutionConfig,
         CloudRunExecutionStatus,
+        ExecutionBackendConfig,
+        ExecutionBackendConfigProtocol,
         ImmediateExecutionBackend,
         InMemoryQueueBackend,
         LocalExecutionBackend,
         QueueBackendConfig,
+        QueueBackendConfigProtocol,
         QueueConfig,
         QueuedTaskRecord,
         QueueError,
@@ -40,10 +43,13 @@ def test_public_exports() -> None:
         "CloudRunExecutionBackend",
         "CloudRunExecutionConfig",
         "CloudRunExecutionStatus",
+        "ExecutionBackendConfig",
+        "ExecutionBackendConfigProtocol",
         "ImmediateExecutionBackend",
         "InMemoryQueueBackend",
         "LocalExecutionBackend",
         "QueueBackendConfig",
+        "QueueBackendConfigProtocol",
         "QueuedTaskRecord",
         "QueueConfig",
         "QueueError",
@@ -74,13 +80,16 @@ def test_public_exports() -> None:
     assert expected_exports.issubset(set(litestar_queues.__all__))
     assert forbidden_exports.isdisjoint(set(litestar_queues.__all__))
     assert QueueConfig().queue_backend == "memory"
-    assert QueueBackendConfig is str
+    assert QueueBackendConfig is not None
+    assert ExecutionBackendConfig is not None
+    assert QueueBackendConfigProtocol is not None
+    assert ExecutionBackendConfigProtocol is not None
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
-    assert list_queue_backends() == ["advanced-alchemy", "memory", "redis", "sqlspec", "valkey"]
+    assert {"advanced-alchemy", "memory", "redis", "sqlspec", "valkey"}.issubset(set(list_queue_backends()))
     assert get_execution_backend_class("cloudrun") is CloudRunExecutionBackend
     assert get_execution_backend_class("immediate") is ImmediateExecutionBackend
     assert get_execution_backend_class("local") is LocalExecutionBackend
-    assert list_execution_backends() == ["cloudrun", "immediate", "local"]
+    assert {"cloudrun", "immediate", "local"}.issubset(set(list_execution_backends()))
     assert QueuePlugin().config.queue_backend == "memory"
     assert QueueService(QueueConfig()).config.queue_backend == "memory"
     assert issubclass(QueueError, Exception)

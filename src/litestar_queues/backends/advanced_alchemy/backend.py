@@ -12,9 +12,6 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
 
 if TYPE_CHECKING:
-    from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
     from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
     from litestar_queues.config import QueueConfig
 
@@ -38,23 +35,13 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         config: "QueueConfig | None" = None,
         *,
         backend_config: AdvancedAlchemyBackendConfig | None = None,
-        sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None,
-        heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None,
-        model_class: type[Any] | None = None,
-        create_schema: bool | None = None,
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or AdvancedAlchemyBackendConfig()
-        self._sqlalchemy_config = (
-            sqlalchemy_config if sqlalchemy_config is not None else backend_config.sqlalchemy_config
-        )
-        self._heartbeat_session_maker = (
-            heartbeat_session_maker if heartbeat_session_maker is not None else backend_config.heartbeat_session_maker
-        )
-        self._model_class, self._service_class = self._resolve_model_classes(
-            model_class if model_class is not None else backend_config.model_class
-        )
-        self._create_schema = create_schema if create_schema is not None else backend_config.create_schema
+        self._sqlalchemy_config = backend_config.sqlalchemy_config
+        self._heartbeat_session_maker = backend_config.heartbeat_session_maker
+        self._model_class, self._service_class = self._resolve_model_classes(backend_config.model_class)
+        self._create_schema = backend_config.create_schema
         self._opened = False
 
     @property

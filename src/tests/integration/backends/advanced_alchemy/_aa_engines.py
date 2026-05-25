@@ -3,7 +3,7 @@
 Mirrors ``tests.integration._backends`` but for ``SQLAlchemyAsyncConfig``
 factories. Each ``AAEngineCase`` knows how to build a config from a
 ``FixtureCtx``; the subdir conftest wraps that config in
-``AdvancedAlchemyQueueBackend(create_schema=True)`` and owns lifecycle.
+``AdvancedAlchemyBackendConfig(create_schema=True)`` and owns lifecycle.
 """
 
 from collections.abc import Callable
@@ -29,7 +29,7 @@ class AAEngineCase:
 
 # ---------------------------------------------------------------------------
 # Config factories. Each returns an unopened SQLAlchemyAsyncConfig; the
-# fixture wraps it in AdvancedAlchemyQueueBackend(create_schema=True) and
+# fixture wraps it in AdvancedAlchemyBackendConfig(create_schema=True) and
 # runs open()/close().
 # ---------------------------------------------------------------------------
 
