@@ -15,7 +15,7 @@ pytest.importorskip("sqlspec")
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
-from litestar_queues.backends.sqlspec.store import create_queue_store
+from litestar_queues.backends.sqlspec.stores import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:

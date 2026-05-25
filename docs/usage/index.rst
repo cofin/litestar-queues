@@ -86,7 +86,6 @@ Recommended Path
    schedules
    workers
    events
-   quickstart
    backends
    cli
    dependency-resolver

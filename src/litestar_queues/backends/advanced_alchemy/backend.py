@@ -7,18 +7,19 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
+from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
 
 if TYPE_CHECKING:
-    from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
     from litestar_queues.config import QueueConfig
 
-__all__ = ("AdvancedAlchemyBackendConfig", "AdvancedAlchemyQueueBackend")
+__all__ = ("AdvancedAlchemyQueueBackend",)
 
 
-class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
+class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     """Advanced Alchemy-backed queue backend."""
 
     __slots__ = (
@@ -238,9 +239,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             raise RuntimeError(msg)
 
     def _resolve_model_classes(self, model_class: type[Any] | None) -> tuple[type[Any], type["QueueTaskService"]]:
-        from litestar_queues.backends.advanced_alchemy.models import QueueTaskModelMixin
-        from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
-
         if model_class is None:
             msg = "AdvancedAlchemyBackendConfig.model_class is required and must inherit QueueTaskModelMixin."
             raise QueueConfigurationError(msg)

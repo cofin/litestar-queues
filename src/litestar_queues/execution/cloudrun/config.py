@@ -6,7 +6,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
 
-__all__ = ("CloudRunExecutionConfig", "cloudrun_config_from_queue_config")
+__all__ = ("CloudRunExecutionConfig",)
 
 
 @dataclass(slots=True)
@@ -48,7 +48,7 @@ class CloudRunExecutionConfig:
         return f"{self.env_prefix}_{normalized}"
 
 
-def cloudrun_config_from_queue_config(config: "QueueConfig | None") -> CloudRunExecutionConfig:
+def _execution_config_from_queue_config(config: "QueueConfig | None") -> CloudRunExecutionConfig:
     """Resolve Cloud Run execution config from a QueueConfig.
 
     Returns:

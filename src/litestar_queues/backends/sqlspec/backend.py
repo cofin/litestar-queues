@@ -4,6 +4,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
+from inspect import isawaitable
+from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -20,13 +22,14 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_native_json_columns,
     validate_table_name,
 )
+from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
 
-__all__ = ("SQLSpecBackendConfig", "SQLSpecQueueBackend")
+__all__ = ("SQLSpecQueueBackend",)
 
 _DUE_STATUSES = ("pending", "scheduled")
 _DURABLE_NOTIFICATION_BACKENDS = frozenset({"advanced_queue", "listen_notify_durable", "table_queue"})
@@ -34,122 +37,7 @@ _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 
-class _AsyncDriverWrapper:
-    """Expose sync SQLSpec driver methods as awaitable for queue backend use.
-
-    The SQLSpec queue backend awaits driver methods like ``execute`` and ``commit``;
-    sync drivers return values directly. ``sqlspec.utils.sync_tools.ensure_async_``
-    wraps each callable on demand so the backend's ``async with self._session()``
-    path is uniform across sync and async configs.
-    """
-
-    __slots__ = ("_driver",)
-
-    def __init__(self, driver: Any) -> None:
-        self._driver = driver
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._driver, name)
-        if callable(attr):
-            return ensure_async_(attr)
-        return attr
-
-
-@asynccontextmanager
-async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIterator[Any]":
-    """Yield a SQLSpec driver regardless of sync/async config.
-
-    Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``PyMysqlConfig``, etc.)
-    return sync context managers; this helper wraps them via
-    ``sqlspec.utils.sync_tools.with_ensure_async_`` so ``__aenter__`` works, and
-    wraps the yielded driver via :class:`_AsyncDriverWrapper` so individual method
-    calls are awaitable.
-
-    Yields:
-        A SQLSpec driver whose methods can be awaited regardless of whether the
-        underlying config is sync or async.
-    """
-    session_cm = sqlspec_manager.provide_session(sqlspec_config)
-    if sqlspec_config.is_async:
-        async with session_cm as driver:
-            yield driver
-    else:
-        async with with_ensure_async_(session_cm) as driver:
-            yield _AsyncDriverWrapper(driver)
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _serialize_datetime(value: datetime | None) -> datetime | None:
-    """Return ``value`` normalized to UTC for SQLSpec parameter binding."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _deserialize_datetime(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    value_text = str(value)
-    try:
-        parsed = datetime.fromisoformat(value_text)
-    except ValueError:
-        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=timezone.utc)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _coerce_status(value: Any) -> TaskStatus:
-    status = str(value)
-    if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
-        msg = f"Unknown queued task status from SQLSpec queue backend: {status!r}"
-        raise ValueError(msg)
-    return cast("TaskStatus", status)
-
-
-def _queue_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
-    if sqlspec_config is None:
-        return {}
-    extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
-    return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
-
-
-def _events_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
-    if sqlspec_config is None:
-        return {}
-    extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
-    return dict(cast("dict[str, Any]", extension_config.get(_EVENT_EXTENSION_NAME, {}) or {}))
-
-
-def _setting(queue_settings: dict[str, Any], *names: str) -> Any:
-    for name in names:
-        if name in queue_settings:
-            return queue_settings[name]
-    return None
-
-
-def _resolve_bool(value: bool | None, queue_settings: dict[str, Any], key: str, default: bool) -> bool:
-    if value is not None:
-        return value
-    if key in queue_settings:
-        return bool(queue_settings[key])
-    return default
-
-
-def _normalize_notification_channel(channel: str) -> str:
-    try:
-        return str(normalize_event_channel_name(channel))
-    except Exception as exc:
-        msg = f"Invalid SQLSpec queue notification channel: {channel!r}"
-        raise QueueConfigurationError(msg) from exc
-
-
-class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
+class SQLSpecQueueBackend(BaseQueueBackend):
     """SQLSpec-backed queue backend."""
 
     __slots__ = (
@@ -734,15 +622,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
                 merged_event_settings.update(configured_events)
         merged_event_settings.update(self._event_settings)
 
-        configured_backend = self._event_backend or _setting(queue_settings, "event_backend", "notification_backend")
-        configured_queue_table = self._event_queue_table or _setting(
-            queue_settings,
-            "event_queue_table",
-            "notification_queue_table",
-        )
+        configured_backend = self._event_backend or _setting(queue_settings, "event_backend")
+        configured_queue_table = self._event_queue_table or _setting(queue_settings, "event_queue_table")
         configured_poll_interval = self._event_poll_interval
         if configured_poll_interval is None:
-            configured_poll_interval = _setting(queue_settings, "event_poll_interval", "notification_poll_interval")
+            configured_poll_interval = _setting(queue_settings, "event_poll_interval")
         if configured_poll_interval is None and "poll_interval" in merged_event_settings:
             configured_poll_interval = merged_event_settings["poll_interval"]
 
@@ -790,8 +674,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
 
     def _get_store(self) -> Any:
         if self._store is None:
-            from litestar_queues.backends.sqlspec.store import create_queue_store
-
             self._store = create_queue_store(
                 self._get_sqlspec_config(),
                 table_name=self._resolve_table_name(),
@@ -843,8 +725,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         try:
             self._get_or_create_sqlspec().add_config(self._heartbeat_pool_config)
         except Exception:
-            from logging import getLogger
-
             getLogger("litestar_queues").warning(
                 "SQLSpecQueueBackend heartbeat pool registration failed; "
                 "falling back to main pool for heartbeat writes.",
@@ -859,15 +739,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         """Close the dedicated heartbeat pool if the backend opened one."""
         if not self._heartbeat_pool_registered or self._heartbeat_pool_config is None:
             return
-        from inspect import isawaitable
 
         try:
             close_result = self._heartbeat_pool_config.close_pool()
             if isawaitable(close_result):
                 await close_result
         except Exception:
-            from logging import getLogger
-
             getLogger("litestar_queues").debug("SQLSpecQueueBackend heartbeat pool close failed.", exc_info=True)
         self._heartbeat_pool_registered = False
 
@@ -954,3 +831,117 @@ class SQLSpecQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             key=cast("str | None", row["task_key"]),
             metadata=metadata,
         )
+
+
+class _AsyncDriverWrapper:
+    """Expose sync SQLSpec driver methods as awaitable for queue backend use.
+
+    The SQLSpec queue backend awaits driver methods like ``execute`` and ``commit``;
+    sync drivers return values directly. ``sqlspec.utils.sync_tools.ensure_async_``
+    wraps each callable on demand so the backend's ``async with self._session()``
+    path is uniform across sync and async configs.
+    """
+
+    __slots__ = ("_driver",)
+
+    def __init__(self, driver: Any) -> None:
+        self._driver = driver
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._driver, name)
+        if callable(attr):
+            return ensure_async_(attr)
+        return attr
+
+
+@asynccontextmanager
+async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIterator[Any]":
+    """Yield a SQLSpec driver regardless of sync/async config.
+
+    Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``PyMysqlConfig``, etc.)
+    return sync context managers; this helper wraps them via
+    ``sqlspec.utils.sync_tools.with_ensure_async_`` so ``__aenter__`` works, and
+    wraps the yielded driver via :class:`_AsyncDriverWrapper` so individual method
+    calls are awaitable.
+
+    Yields:
+        A SQLSpec driver whose methods can be awaited regardless of whether the
+        underlying config is sync or async.
+    """
+    session_cm = sqlspec_manager.provide_session(sqlspec_config)
+    if sqlspec_config.is_async:
+        async with session_cm as driver:
+            yield driver
+    else:
+        async with with_ensure_async_(session_cm) as driver:
+            yield _AsyncDriverWrapper(driver)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _serialize_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _deserialize_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    value_text = str(value)
+    try:
+        parsed = datetime.fromisoformat(value_text)
+    except ValueError:
+        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _coerce_status(value: Any) -> TaskStatus:
+    status = str(value)
+    if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
+        msg = f"Unknown queued task status from SQLSpec queue backend: {status!r}"
+        raise ValueError(msg)
+    return cast("TaskStatus", status)
+
+
+def _queue_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
+    if sqlspec_config is None:
+        return {}
+    extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
+    return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
+
+
+def _events_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
+    if sqlspec_config is None:
+        return {}
+    extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
+    return dict(cast("dict[str, Any]", extension_config.get(_EVENT_EXTENSION_NAME, {}) or {}))
+
+
+def _setting(queue_settings: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in queue_settings:
+            return queue_settings[name]
+    return None
+
+
+def _resolve_bool(value: bool | None, queue_settings: dict[str, Any], key: str, default: bool) -> bool:
+    if value is not None:
+        return value
+    if key in queue_settings:
+        return bool(queue_settings[key])
+    return default
+
+
+def _normalize_notification_channel(channel: str) -> str:
+    try:
+        return str(normalize_event_channel_name(channel))
+    except Exception as exc:
+        msg = f"Invalid SQLSpec queue notification channel: {channel!r}"
+        raise QueueConfigurationError(msg) from exc

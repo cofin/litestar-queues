@@ -5,7 +5,6 @@ so ``import litestar_queues`` does not pull ``click`` into ``sys.modules``.
 Once *this* module is imported, ``import click`` at top level is fine
 because the decorator-style command bodies need it at definition time.
 """
-from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -15,11 +14,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import click
+from litestar.cli._utils import LitestarEnv
+
+from litestar_queues.plugin import QueuePlugin
+from litestar_queues.task import get_task_registry, load_task_modules
+from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
-    from litestar.cli._utils import LitestarEnv
-
-    from litestar_queues.plugin import QueuePlugin
     from litestar_queues.service import QueueService
 
 __all__ = ("register",)
@@ -36,40 +37,6 @@ def register(cli: click.Group) -> None:
     queues_group.add_command(_status_command)
     queues_group.add_command(_scheduler_health_command)
     cli.add_command(queues_group)
-
-
-def _ensure_env(ctx: click.Context) -> LitestarEnv:
-    from litestar.cli._utils import LitestarEnv
-
-    if not isinstance(ctx.obj, LitestarEnv):
-        ctx.obj = ctx.obj()
-    return ctx.ensure_object(LitestarEnv)
-
-
-def _resolve_plugin(env: LitestarEnv) -> QueuePlugin:
-    from litestar_queues.plugin import QueuePlugin
-
-    for plugin in env.app.plugins:
-        if isinstance(plugin, QueuePlugin):
-            return plugin
-    msg = "litestar-queues plugin not found on the loaded Litestar app."
-    raise RuntimeError(msg)
-
-
-def _open_service(plugin: QueuePlugin) -> QueueService:
-    """Return a ``QueueService`` reusing the plugin's cached backend.
-
-    CLI subcommands run outside Litestar's lifespan, so the plugin's
-    ``_on_startup`` has not opened a service. We piggy-back on
-    ``plugin.get_service`` which constructs one bound to the plugin's
-    cached backend instance; that matters for the in-memory backend
-    (state lives on the backend) and also avoids opening a second
-    pool for Redis/SQLSpec-style backends.
-    """
-    return plugin.get_service()
-
-
-# --- run -------------------------------------------------------------
 
 
 @click.command(name="run", help="Start a standalone worker fleet.")
@@ -100,8 +67,6 @@ def _run_command(
     max_concurrency: int | None,
     drain_timeout: float | None,
 ) -> None:
-    from litestar_queues.task import load_task_modules
-
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     config = plugin.config
@@ -125,10 +90,6 @@ def _run_command(
 
 
 async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: float) -> int:
-    from datetime import timedelta as _timedelta
-
-    from litestar_queues.worker import Worker
-
     config = plugin.config
     service = _open_service(plugin)
     await service.open()
@@ -140,7 +101,7 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
         heartbeat_interval=config.worker_heartbeat_interval,
         reconcile_interval=config.worker_reconcile_interval,
         stale_after=(
-            _timedelta(seconds=config.worker_stale_after)
+            timedelta(seconds=config.worker_stale_after)
             if config.worker_stale_after is not None
             else None
         ),
@@ -175,16 +136,13 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
             with contextlib.suppress(BaseException):
                 await asyncio.wait_for(worker_task, timeout=config.worker_final_cancel_timeout)
             exit_code = 2
-        except Exception:  # noqa: BLE001
+        except Exception:
             exit_code = 1
     finally:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(worker.stop(), timeout=drain_timeout)
         await service.close()
     return exit_code
-
-
-# --- status ----------------------------------------------------------
 
 
 @click.command(name="status", help="Show queue status counts.")
@@ -214,7 +172,7 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
     await service.open()
     try:
         stats = await service.get_queue_backend().get_statistics()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         click.echo(f"error: {exc}", err=True)
         await service.close()
         return 1
@@ -231,7 +189,7 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
     }
 
     if as_json:
-        click.echo(_dumps_camel(payload))
+        click.echo(json.dumps(payload, separators=(",", ":")))
     else:
         click.echo(f"{'Status':<12}{'Count':>8}")
         click.echo(f"{'-' * 12}{'-' * 8:>8}")
@@ -239,22 +197,6 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
             click.echo(f"{key:<12}{payload[key]:>8}")
         click.echo(f"{'total':<12}{payload['total']:>8}")
     return 0
-
-
-def _dumps_camel(payload: dict[str, int]) -> str:
-    """Emit JSON, preferring ``sqlspec.utils.serializers.to_json`` for symmetry with the wire format.
-
-    Returns:
-        A JSON string with camelCase keys.
-    """
-    try:
-        from sqlspec.utils.serializers import to_json
-    except ImportError:
-        return json.dumps(payload)
-    return to_json(payload)
-
-
-# --- scheduler-health ------------------------------------------------
 
 
 @click.command(
@@ -276,8 +218,6 @@ def _scheduler_health_command(ctx: click.Context, minutes: int) -> None:
 
 
 async def _scheduler_health_run(plugin: QueuePlugin, minutes: int) -> int:
-    from litestar_queues.task import get_task_registry, load_task_modules
-
     config = plugin.config
     canary = config.scheduler_canary_task
     if config.task_modules:
@@ -308,3 +248,30 @@ async def _scheduler_health_run(plugin: QueuePlugin, minutes: int) -> int:
         err=True,
     )
     return 4
+
+
+def _ensure_env(ctx: click.Context) -> LitestarEnv:
+    if not isinstance(ctx.obj, LitestarEnv):
+        ctx.obj = ctx.obj()
+    return ctx.ensure_object(LitestarEnv)
+
+
+def _resolve_plugin(env: LitestarEnv) -> QueuePlugin:
+    for plugin in env.app.plugins:
+        if isinstance(plugin, QueuePlugin):
+            return plugin
+    msg = "litestar-queues plugin not found on the loaded Litestar app."
+    raise RuntimeError(msg)
+
+
+def _open_service(plugin: QueuePlugin) -> "QueueService":
+    """Return a ``QueueService`` reusing the plugin's cached backend.
+
+    CLI subcommands run outside Litestar's lifespan, so the plugin's
+    ``_on_startup`` has not opened a service. We piggy-back on
+    ``plugin.get_service`` which constructs one bound to the plugin's
+    cached backend instance; that matters for the in-memory backend
+    (state lives on the backend) and also avoids opening a second
+    pool for Redis/SQLSpec-style backends.
+    """
+    return plugin.get_service()

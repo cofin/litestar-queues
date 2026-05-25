@@ -1,10 +1,11 @@
 import json
 from dataclasses import dataclass
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import BaseExecutionBackend
-from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, cloudrun_config_from_queue_config
+from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, _execution_config_from_queue_config
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -57,10 +58,10 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return True
 
     @property
-    def cloudrun_config(self) -> CloudRunExecutionConfig:
+    def execution_config(self) -> CloudRunExecutionConfig:
         """Return the resolved Cloud Run execution config."""
         if self._execution_config is None:
-            self._execution_config = cloudrun_config_from_queue_config(self.config)
+            self._execution_config = _execution_config_from_queue_config(self.config)
         return self._execution_config
 
     async def execute(
@@ -96,7 +97,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             operation = await client.run_job(request=request)
             execution = await operation.result()
         except Exception:
-            fallback = self.cloudrun_config.fallback_execution_backend
+            fallback = self.execution_config.fallback_execution_backend
             if fallback is None:
                 raise
             await service.get_queue_backend().set_execution_backend(record.id, fallback)
@@ -157,7 +158,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         """
         try:
             execution = await (await self._get_executions_client()).get_execution(name=execution_ref)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CloudRunExecutionStatus(running=True, error=str(exc))
 
         succeeded = int(getattr(execution, "succeeded_count", 0) or 0) > 0
@@ -177,7 +178,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         Returns:
             Cloud Run Jobs API request data.
         """
-        config = self.cloudrun_config
+        config = self.execution_config
         task_obj = service.resolve_task(record.task_name)
         timeout = record.metadata.get("timeout", task_obj.timeout)
         timeout_seconds = int(timeout if isinstance(timeout, int | float) else config.timeout)
@@ -197,7 +198,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         Returns:
             Environment variables for the Cloud Run task process.
         """
-        config = self.cloudrun_config
+        config = self.execution_config
         env = {
             config.env_name("TASK_ID"): str(record.id),
             config.env_name("TASK_NAME"): record.task_name,
@@ -213,7 +214,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
     async def _get_jobs_client(self) -> "CloudRunJobsClient":
         if self.jobs_client is None:
             try:
-                from google.cloud import run_v2  # pyright: ignore[reportMissingImports]
+                run_v2 = import_module("google.cloud.run_v2")
             except ImportError as exc:
                 raise MissingDependencyError(_GOOGLE_CLOUD_RUN_PACKAGE, _CLOUDRUN_EXTRA) from exc
             self.jobs_client = cast("CloudRunJobsClient", run_v2.JobsAsyncClient())
@@ -222,7 +223,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
     async def _get_executions_client(self) -> "CloudRunExecutionsClient":
         if self.executions_client is None:
             try:
-                from google.cloud import run_v2  # pyright: ignore[reportMissingImports]
+                run_v2 = import_module("google.cloud.run_v2")
             except ImportError as exc:
                 raise MissingDependencyError(_GOOGLE_CLOUD_RUN_PACKAGE, _CLOUDRUN_EXTRA) from exc
             self.executions_client = cast("CloudRunExecutionsClient", run_v2.ExecutionsAsyncClient())

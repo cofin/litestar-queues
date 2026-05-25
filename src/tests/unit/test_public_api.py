@@ -1,5 +1,5 @@
 def test_public_exports() -> None:
-    """Test that the scaffold exposes the public queue API.
+    """Test that the package exposes the public queue API.
 
     Optional backends (advanced_alchemy, sqlspec, redis, valkey) are NOT in the
     top-level public API and must be imported explicitly from their submodules.

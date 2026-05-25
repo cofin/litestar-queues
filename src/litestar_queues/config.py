@@ -1,6 +1,9 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+
+from litestar.di import Provide
 
 from litestar_queues.events import QueueEventConfig
 
@@ -109,11 +112,7 @@ class AsyncServiceProvider:
 
 @dataclass(slots=True)
 class QueueConfig:
-    """Configuration for QueuePlugin.
-
-    Chapter 1 keeps runtime behavior intentionally small while preserving the
-    extension points used by later queue and execution backends.
-    """
+    """Configuration for QueuePlugin."""
 
     queue_backend: QueueBackendConfig = "memory"
     execution_backend: ExecutionBackendConfig = "immediate"
@@ -146,8 +145,6 @@ class QueueConfig:
         only when their driver extra is installed; missing extras silently drop
         the corresponding entries.
         """
-        from contextlib import suppress
-
         from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
         from litestar_queues.events import (
             InMemoryQueueEventSink,
@@ -232,8 +229,6 @@ class QueueConfig:
     @property
     def dependencies(self) -> dict[str, Any]:
         """Return dependency providers for Litestar's DI system."""
-        from litestar.di import Provide
-
         return {self.queue_service_dependency_key: Provide(self.provide_service_dependency)}
 
     def get_service(self, state: "State | None" = None) -> "QueueService":

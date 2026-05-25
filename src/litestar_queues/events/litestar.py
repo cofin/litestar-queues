@@ -119,7 +119,7 @@ async def _event_stream(
     try:
         yield _backend_events(cast("Any", backend).stream_events(), set(channels))
     finally:
-        await backend.unsubscribe(list(channels))  # type: ignore[attr-defined]
+        await typed_backend.unsubscribe(list(channels))
 
 
 async def _backend_events(events: AsyncIterator[tuple[str, bytes]], channels: set[str]) -> AsyncIterator[bytes]:

@@ -27,10 +27,6 @@ QueueEventType = Literal[
 ]
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class QueueEventActor(msgspec.Struct, rename="camel", kw_only=True):
     """Actor reference for a queue event."""
 
@@ -101,7 +97,7 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
     actor: QueueEventActor | None = None
     entity: QueueEventEntityRef | None = None
     payload: dict[str, Any] = msgspec.field(default_factory=dict)
-    occurred_at: datetime = msgspec.field(default_factory=_utc_now)
+    occurred_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
     schema_version: int = 1
     event_key: str | None = None
 
@@ -116,9 +112,7 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
 
     def to_json(self) -> bytes:
         """Return the event envelope as camelCase JSON bytes."""
-        from sqlspec.utils.serializers import to_json as _to_json
-
-        return _to_json(self, as_bytes=True)
+        return msgspec.json.encode(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueueEvent":
@@ -139,10 +133,8 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
         Raises:
             TypeError: If the decoded JSON value is not an object.
         """
-        from sqlspec.utils.serializers import from_json as _from_json
-
         payload = bytes(data) if isinstance(data, bytearray) else data
-        decoded = _from_json(payload)
+        decoded = msgspec.json.decode(payload)
         if not isinstance(decoded, dict):
             msg = "Queue event JSON must decode to an object"
             raise TypeError(msg)

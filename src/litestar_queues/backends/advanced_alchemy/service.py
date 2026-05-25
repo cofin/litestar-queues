@@ -1,10 +1,10 @@
 """Advanced Alchemy queue persistence service."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from importlib import import_module
+from typing import Any, Protocol, cast
 from uuid import UUID
 
-from advanced_alchemy import _serialization
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 
@@ -17,42 +17,7 @@ _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _serialize_json(value: Any) -> str:
-    encode_json = _serialization.encode_json  # pyright: ignore[reportPrivateImportUsage]
-    return str(encode_json(value))
-
-
-def _deserialize_json(value: str) -> Any:
-    decode_json = _serialization.decode_json  # pyright: ignore[reportPrivateImportUsage]
-    return decode_json(value)
-
-
-def _coerce_datetime(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _coerce_status(value: Any) -> TaskStatus:
-    status = str(value)
-    if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
-        msg = f"Unknown queued task status from Advanced Alchemy queue backend: {status!r}"
-        raise ValueError(msg)
-    return cast("TaskStatus", status)
-
-
-class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):  # noqa: PLR0904
+class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     """Persistence operations for Advanced Alchemy queue records."""
 
     @classmethod
@@ -429,3 +394,45 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):  # noqa: PLR0904
             .where(and_(*criteria))
             .order_by(desc(model_type.priority), model_type.created_at)
         )
+
+
+class _AdvancedAlchemySerialization(Protocol):
+    def encode_json(self, data: Any) -> str: ...
+
+    def decode_json(self, data: str) -> Any: ...
+
+
+_serialization = cast("_AdvancedAlchemySerialization", import_module("advanced_alchemy._serialization"))
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _serialize_json(value: Any) -> str:
+    return str(_serialization.encode_json(value))
+
+
+def _deserialize_json(value: str) -> Any:
+    return _serialization.decode_json(value)
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _coerce_status(value: Any) -> TaskStatus:
+    status = str(value)
+    if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
+        msg = f"Unknown queued task status from Advanced Alchemy queue backend: {status!r}"
+        raise ValueError(msg)
+    return cast("TaskStatus", status)

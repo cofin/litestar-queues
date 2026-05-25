@@ -28,7 +28,7 @@ from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.store import (
+from litestar_queues.backends.sqlspec.stores import (
     AdbcQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
@@ -224,7 +224,7 @@ def blocked_import(name, *args, **kwargs):
 
 builtins.__import__ = blocked_import
 
-from litestar_queues.backends.sqlspec.store import (
+from litestar_queues.backends.sqlspec.stores import (
     AdbcQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,

@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 from redis import asyncio as redis_asyncio
 
 from litestar_queues.backends.base import BaseQueueBackend
-from litestar_queues.backends.redis.config import RedisBackendConfig
+from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
 
-__all__ = ("RedisBackendConfig", "RedisQueueBackend")
+__all__ = ("RedisQueueBackend",)
 
 _DUE_STATUSES = {"pending", "scheduled"}
 _STATUS_VALUES = {"cancelled", "completed", "failed", "pending", "running", "scheduled"}
@@ -39,7 +39,7 @@ return 0
 """
 
 
-class RedisQueueBackend(BaseQueueBackend):  # noqa: PLR0904
+class RedisQueueBackend(BaseQueueBackend):
     """Queue backend that stores records in a Redis-protocol key-value server."""
 
     _backend_name: ClassVar[str] = "redis"
@@ -59,10 +59,10 @@ class RedisQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         self,
         config: "QueueConfig | None" = None,
         *,
-        backend_config: RedisBackendConfig | None = None,
+        backend_config: _RedisBackendConfig | None = None,
     ) -> None:
         super().__init__(config=config)
-        backend_config = backend_config or RedisBackendConfig()
+        backend_config = backend_config or _RedisBackendConfig()
         self._client = backend_config.client
         self._owns_client = self._client is None
         self._url = backend_config.url
@@ -468,16 +468,8 @@ class RedisQueueBackend(BaseQueueBackend):  # noqa: PLR0904
         finally:
             await _close_pubsub(pubsub, self._notification_channel)
 
-    # ------------------------------------------------------------------
-    # Subclass hook
-    # ------------------------------------------------------------------
-
     def _create_client(self, url: str) -> Any:
         return redis_asyncio.from_url(url, decode_responses=True)
-
-    # ------------------------------------------------------------------
-    # Private machinery
-    # ------------------------------------------------------------------
 
     async def _get_client(self) -> Any:
         if self._client is None:
@@ -662,11 +654,6 @@ class RedisQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             key=str(mapping["key"]) if mapping.get("key") else None,
             metadata=dict(_json_loads(mapping.get("metadata"), {})),
         )
-
-
-# ---------------------------------------------------------------------------
-# Module-level private helpers
-# ---------------------------------------------------------------------------
 
 
 def _utc_now() -> datetime:

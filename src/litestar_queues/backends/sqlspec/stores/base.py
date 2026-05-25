@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from sqlspec import sql
+from sqlspec.utils.serializers import from_json, to_json
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import (
@@ -13,7 +14,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_table_name,
 )
 
-__all__ = ("SQLSpecQueueStore", "adapter_name")
+__all__ = ("SQLSpecQueueStore",)
 
 _TASK_COLUMNS = (
     "id",
@@ -41,23 +42,7 @@ _TASK_COLUMNS = (
 _DUE_STATUSES = ("pending", "scheduled")
 
 
-def _configured_table_name(config: Any, table_name: str | None) -> str:
-    if table_name is not None:
-        return validate_table_name(table_name)
-    extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
-    queue_settings = cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    return validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
-
-
-def adapter_name(config: Any) -> str:
-    """Return the SQLSpec adapter name for a config object without importing the adapter."""
-    module_name = type(config).__module__
-    if module_name.startswith("sqlspec.adapters."):
-        return module_name.split(".")[2]
-    return ""
-
-
-class SQLSpecQueueStore:  # noqa: PLR0904
+class SQLSpecQueueStore:
     """Base SQLSpec queue statement store."""
 
     __slots__ = ("_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
@@ -99,10 +84,6 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         statement_config = getattr(self._config, "statement_config", None)
         dialect = getattr(statement_config, "dialect", None)
         return str(dialect) if dialect is not None else None
-
-    def _col(self, canonical: str) -> str:
-        """Return the configured database column name for ``canonical``."""
-        return self._column_map.get(canonical, canonical)
 
     def create_statements(self) -> list[str]:
         """Return statements that create the queue table and indexes."""
@@ -155,9 +136,6 @@ class SQLSpecQueueStore:  # noqa: PLR0904
             statement = statement.where_eq(self._col("queue"), queue)
         if execution_backend is not None:
             statement = statement.where_eq(self._col("execution_backend"), execution_backend)
-        # ``order_by(name, desc=True)`` currently produces invalid SQL on several
-        # dialects (Postgres / DuckDB emit ``NULLS FIRST DESC``); pass raw column
-        # expressions so SQLSpec doesn't append dialect-specific NULL ordering.
         return statement.order_by(sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")).limit(limit)
 
     def claim_task(self, *, task_id: str, due_at: str, started_at: str, heartbeat_at: str) -> Any:
@@ -396,12 +374,13 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         if callable(read):
             value = read()
         if isinstance(value, (list, dict)):
-            # Some drivers (e.g., psycopg/psqlpy with JSONB columns) auto-decode
-            # JSON values; pass them through unchanged.
             return value
-        from sqlspec.utils.serializers import from_json
 
         return from_json(value)
+
+    def _col(self, canonical: str) -> str:
+        """Return the configured database column name for ``canonical``."""
+        return self._column_map.get(canonical, canonical)
 
     def _select_all(self) -> Any:
         columns = tuple(self._select_column(canonical) for canonical in _TASK_COLUMNS)
@@ -498,10 +477,23 @@ class SQLSpecQueueStore:  # noqa: PLR0904
         return self.error_type
 
     def _serialize_json(self, value: Any) -> str:
-        from sqlspec.utils.serializers import to_json
-
         return to_json(value)
 
     def _to_sql(self, statement: Any) -> str:
         built = statement.build(dialect=self.dialect_name)
         return cast("str", built.sql)
+
+
+def _configured_table_name(config: Any, table_name: str | None) -> str:
+    if table_name is not None:
+        return validate_table_name(table_name)
+    extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
+    queue_settings = cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
+    return validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
+
+
+def _adapter_name(config: Any) -> str:
+    module_name = type(config).__module__
+    if module_name.startswith("sqlspec.adapters."):
+        return module_name.split(".")[2]
+    return ""

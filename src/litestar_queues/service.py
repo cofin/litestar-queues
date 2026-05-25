@@ -64,6 +64,35 @@ class QueueService:
             self._event_publisher = self._config.get_event_publisher()
         return self._event_publisher
 
+    async def open(self) -> Self:
+        """Open queue and execution backends.
+
+        Returns:
+            The opened service.
+        """
+        await self.get_queue_backend().open()
+        await self.get_execution_backend().open()
+        return self
+
+    async def close(self) -> None:
+        """Close queue and execution backends."""
+        if self._execution_backend is not None:
+            await self._execution_backend.close()
+        if self._queue_backend is not None:
+            await self._queue_backend.close()
+
+    async def __aenter__(self) -> Self:
+        await self.open()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        await self.close()
+
     async def enqueue(
         self,
         task: str | Task[Any, Any],
@@ -215,7 +244,7 @@ class QueueService:
                 payload={"status": failed.status, "retry_count": failed.retry_count, "will_retry": False},
             )
             return updated or record
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             updated = await self.get_queue_backend().fail_task(record.id, str(exc))
             failed = updated or record
             await task_context.lifecycle(
@@ -314,35 +343,6 @@ class QueueService:
             execution_profile=record.execution_profile,
             metadata={**record.metadata, "schedule": schedule.as_metadata()},
         )
-
-    async def open(self) -> Self:
-        """Open queue and execution backends.
-
-        Returns:
-            The opened service.
-        """
-        await self.get_queue_backend().open()
-        await self.get_execution_backend().open()
-        return self
-
-    async def close(self) -> None:
-        """Close queue and execution backends."""
-        if self._execution_backend is not None:
-            await self._execution_backend.close()
-        if self._queue_backend is not None:
-            await self._queue_backend.close()
-
-    async def __aenter__(self) -> Self:
-        await self.open()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object,
-    ) -> None:
-        await self.close()
 
 
 def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:

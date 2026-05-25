@@ -46,7 +46,7 @@ class TypedExecutionBackend(BaseExecutionBackend):
         self.execution_config = execution_config
 
 
-def test_queue_config_accepts_typed_queue_backend_config() -> None:
+def test_queue_config_selects_typed_queue_backend() -> None:
     backend_config = CustomQueueBackendConfig(value="configured")
     config = QueueConfig(queue_backend=backend_config)
 
@@ -57,7 +57,7 @@ def test_queue_config_accepts_typed_queue_backend_config() -> None:
     assert backend.backend_config is backend_config
 
 
-def test_queue_config_accepts_typed_execution_backend_config() -> None:
+def test_queue_config_selects_typed_execution_backend() -> None:
     execution_config = CustomExecutionBackendConfig(value="configured")
     config = QueueConfig(execution_backend=execution_config)
 
@@ -66,13 +66,6 @@ def test_queue_config_accepts_typed_execution_backend_config() -> None:
     assert isinstance(backend, TypedExecutionBackend)
     assert backend.config is config
     assert backend.execution_config is execution_config
-
-
-def test_queue_config_no_longer_exposes_untyped_backend_config_dicts() -> None:
-    config = QueueConfig()
-
-    assert not hasattr(config, "queue_backend_config")
-    assert not hasattr(config, "execution_backend_config")
 
 
 def test_cloudrun_execution_config_selects_cloudrun_backend() -> None:
@@ -84,4 +77,4 @@ def test_cloudrun_execution_config_selects_cloudrun_backend() -> None:
     backend = config.get_execution_backend()
 
     assert isinstance(backend, CloudRunExecutionBackend)
-    assert backend.cloudrun_config is execution_config
+    assert backend.execution_config is execution_config

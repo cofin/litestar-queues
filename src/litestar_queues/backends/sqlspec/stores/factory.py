@@ -8,7 +8,7 @@ from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, adapter_name
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.bigquery import BigQueryQueueStore
 from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
@@ -69,7 +69,7 @@ def create_queue_store(
 
 
 def _adapter_store_type(config: Any) -> type[SQLSpecQueueStore]:
-    name = adapter_name(config)
+    name = _adapter_name(config)
     if name == "cockroach_psycopg":
         return _async_or_sync_store_type(
             config,

@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 from litestar_queues.backends import (
     BaseQueueBackend,
     InMemoryQueueBackend,
@@ -53,6 +51,7 @@ from litestar_queues.execution import (
     list_execution_backends,
 )
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
+from litestar_queues.plugin import QueuePlugin
 from litestar_queues.service import QueueService
 from litestar_queues.task import (
     ScheduleConfig,
@@ -65,9 +64,6 @@ from litestar_queues.task import (
     task,
 )
 from litestar_queues.worker import Worker
-
-if TYPE_CHECKING:
-    from litestar_queues.plugin import QueuePlugin
 
 __all__ = (
     "AsyncServiceProvider",
@@ -128,20 +124,3 @@ __all__ = (
     "require_current_task_context",
     "task",
 )
-
-
-def __getattr__(name: str) -> object:
-    """Resolve heavier public exports lazily.
-
-    Returns:
-        The requested public export.
-
-    Raises:
-        AttributeError: If the export name is unknown.
-    """
-    if name == "QueuePlugin":
-        from litestar_queues.plugin import QueuePlugin
-
-        return QueuePlugin
-    msg = f"module {__name__!r} has no attribute {name!r}"
-    raise AttributeError(msg)

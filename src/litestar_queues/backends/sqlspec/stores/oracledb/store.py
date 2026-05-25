@@ -11,134 +11,6 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
 
 
-class OracleJSONStorageType(str, Enum):
-    """Oracle JSON storage modes."""
-
-    JSON_NATIVE = "json"
-    BLOB_JSON = "blob_json"
-    BLOB_PLAIN = "blob"
-
-
-def _queue_settings(config: Any) -> dict[str, Any]:
-    extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
-    return cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-
-
-def _json_storage_from_settings(settings: dict[str, Any]) -> OracleJSONStorageType:
-    configured = settings.get("json_storage")
-    if configured == OracleJSONStorageType.JSON_NATIVE.value:
-        return OracleJSONStorageType.JSON_NATIVE
-    if configured in {OracleJSONStorageType.BLOB_PLAIN.value, "blob_plain"}:
-        return OracleJSONStorageType.BLOB_PLAIN
-    return OracleJSONStorageType.BLOB_JSON
-
-
-def _json_column_type(column_name: str, storage_type: OracleJSONStorageType) -> str:
-    if storage_type == OracleJSONStorageType.JSON_NATIVE:
-        return "JSON"
-    if storage_type == OracleJSONStorageType.BLOB_JSON:
-        return f"BLOB CHECK ({column_name} IS JSON)"
-    return "BLOB"
-
-
-def _serialize_oracle_json(value: Any, storage_type: OracleJSONStorageType) -> str | bytes:
-    if storage_type == OracleJSONStorageType.JSON_NATIVE:
-        return to_json(value)
-    return to_json(value, as_bytes=True)
-
-
-def _deserialize_oracle_json(value: Any) -> Any:
-    if value is None:
-        return None
-    read = getattr(value, "read", None)
-    if callable(read):
-        value = read()
-    if isinstance(value, (dict, list)):
-        return value
-    return from_json(value)
-
-
-def _index_name(store: SQLSpecQueueStore, suffix: str) -> str:
-    return SQLSpecQueueStore._index_name(store, suffix)[:30]
-
-
-def _create_table_block(store: SQLSpecQueueStore, storage_type: OracleJSONStorageType, in_memory: bool) -> str:
-    table_name = store.table_name
-    in_memory_clause = " INMEMORY PRIORITY HIGH" if in_memory else ""
-    return f"""
-    BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE {table_name} (
-            {store._col("id")} VARCHAR2(64) PRIMARY KEY,
-            {store._col("task_name")} VARCHAR2(255) NOT NULL,
-            {store._col("args_json")} {_json_column_type(store._col("args_json"), storage_type)} NOT NULL,
-            {store._col("kwargs_json")} {_json_column_type(store._col("kwargs_json"), storage_type)} NOT NULL,
-            {store._col("queue")} VARCHAR2(255) NOT NULL,
-            {store._col("execution_backend")} VARCHAR2(255) NOT NULL,
-            {store._col("execution_profile")} VARCHAR2(255),
-            {store._col("execution_ref")} VARCHAR2(255),
-            {store._col("status")} VARCHAR2(255) NOT NULL,
-            {store._col("priority")} NUMBER(10) NOT NULL,
-            {store._col("max_retries")} NUMBER(10) NOT NULL,
-            {store._col("retry_count")} NUMBER(10) NOT NULL,
-            {store._col("scheduled_at")} VARCHAR2(64),
-            {store._col("created_at")} VARCHAR2(64) NOT NULL,
-            {store._col("started_at")} VARCHAR2(64),
-            {store._col("completed_at")} VARCHAR2(64),
-            {store._col("heartbeat_at")} VARCHAR2(64),
-            {store._col("result_json")} {_json_column_type(store._col("result_json"), storage_type)} NOT NULL,
-            {store._col("error")} VARCHAR2(4000),
-            {store._col("task_key")} VARCHAR2(255) UNIQUE,
-            {store._col("metadata_json")} {_json_column_type(store._col("metadata_json"), storage_type)} NOT NULL
-        ){in_memory_clause}';
-    EXCEPTION
-        WHEN OTHERS THEN
-            IF SQLCODE != -955 THEN
-                RAISE;
-            END IF;
-    END;
-    """
-
-
-def _create_index_block(store: SQLSpecQueueStore, suffix: str, columns: str) -> str:
-    return f"""
-    BEGIN
-        EXECUTE IMMEDIATE 'CREATE INDEX {_index_name(store, suffix)}
-            ON {store.table_name}({columns})';
-    EXCEPTION
-        WHEN OTHERS THEN
-            IF SQLCODE != -955 THEN
-                RAISE;
-            END IF;
-    END;
-    """
-
-
-def _drop_index_block(store: SQLSpecQueueStore, suffix: str) -> str:
-    return f"""
-    BEGIN
-        EXECUTE IMMEDIATE 'DROP INDEX {_index_name(store, suffix)}';
-    EXCEPTION
-        WHEN OTHERS THEN
-            IF SQLCODE != -1418 THEN
-                RAISE;
-            END IF;
-    END;
-    """
-
-
-def _drop_table_block(store: SQLSpecQueueStore) -> str:
-    return f"""
-    BEGIN
-        EXECUTE IMMEDIATE 'DROP TABLE {store.table_name}';
-    EXCEPTION
-        WHEN OTHERS THEN
-            IF SQLCODE != -942 THEN
-                RAISE;
-            END IF;
-    END;
-    """
-
-
 class OracledbSyncQueueStore(SQLSpecQueueStore):
     """oracledb sync SQLSpec queue statement store."""
 
@@ -257,3 +129,129 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
 
     def _index_name(self, suffix: str) -> str:
         return _index_name(self, suffix)
+
+
+class _OracleJSONStorageType(str, Enum):
+    JSON_NATIVE = "json"
+    BLOB_JSON = "blob_json"
+    BLOB_PLAIN = "blob"
+
+
+def _queue_settings(config: Any) -> dict[str, Any]:
+    extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
+    return cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
+
+
+def _json_storage_from_settings(settings: dict[str, Any]) -> _OracleJSONStorageType:
+    configured = settings.get("json_storage")
+    if configured == _OracleJSONStorageType.JSON_NATIVE.value:
+        return _OracleJSONStorageType.JSON_NATIVE
+    if configured == _OracleJSONStorageType.BLOB_PLAIN.value:
+        return _OracleJSONStorageType.BLOB_PLAIN
+    return _OracleJSONStorageType.BLOB_JSON
+
+
+def _json_column_type(column_name: str, storage_type: _OracleJSONStorageType) -> str:
+    if storage_type == _OracleJSONStorageType.JSON_NATIVE:
+        return "JSON"
+    if storage_type == _OracleJSONStorageType.BLOB_JSON:
+        return f"BLOB CHECK ({column_name} IS JSON)"
+    return "BLOB"
+
+
+def _serialize_oracle_json(value: Any, storage_type: _OracleJSONStorageType) -> str | bytes:
+    if storage_type == _OracleJSONStorageType.JSON_NATIVE:
+        return to_json(value)
+    return to_json(value, as_bytes=True)
+
+
+def _deserialize_oracle_json(value: Any) -> Any:
+    if value is None:
+        return None
+    read = getattr(value, "read", None)
+    if callable(read):
+        value = read()
+    if isinstance(value, (dict, list)):
+        return value
+    return from_json(value)
+
+
+def _index_name(store: SQLSpecQueueStore, suffix: str) -> str:
+    return SQLSpecQueueStore._index_name(store, suffix)[:30]
+
+
+def _create_table_block(store: SQLSpecQueueStore, storage_type: _OracleJSONStorageType, in_memory: bool) -> str:
+    table_name = store.table_name
+    in_memory_clause = " INMEMORY PRIORITY HIGH" if in_memory else ""
+    return f"""
+    BEGIN
+        EXECUTE IMMEDIATE 'CREATE TABLE {table_name} (
+            {store._col("id")} VARCHAR2(64) PRIMARY KEY,
+            {store._col("task_name")} VARCHAR2(255) NOT NULL,
+            {store._col("args_json")} {_json_column_type(store._col("args_json"), storage_type)} NOT NULL,
+            {store._col("kwargs_json")} {_json_column_type(store._col("kwargs_json"), storage_type)} NOT NULL,
+            {store._col("queue")} VARCHAR2(255) NOT NULL,
+            {store._col("execution_backend")} VARCHAR2(255) NOT NULL,
+            {store._col("execution_profile")} VARCHAR2(255),
+            {store._col("execution_ref")} VARCHAR2(255),
+            {store._col("status")} VARCHAR2(255) NOT NULL,
+            {store._col("priority")} NUMBER(10) NOT NULL,
+            {store._col("max_retries")} NUMBER(10) NOT NULL,
+            {store._col("retry_count")} NUMBER(10) NOT NULL,
+            {store._col("scheduled_at")} VARCHAR2(64),
+            {store._col("created_at")} VARCHAR2(64) NOT NULL,
+            {store._col("started_at")} VARCHAR2(64),
+            {store._col("completed_at")} VARCHAR2(64),
+            {store._col("heartbeat_at")} VARCHAR2(64),
+            {store._col("result_json")} {_json_column_type(store._col("result_json"), storage_type)} NOT NULL,
+            {store._col("error")} VARCHAR2(4000),
+            {store._col("task_key")} VARCHAR2(255) UNIQUE,
+            {store._col("metadata_json")} {_json_column_type(store._col("metadata_json"), storage_type)} NOT NULL
+        ){in_memory_clause}';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+    """
+
+
+def _create_index_block(store: SQLSpecQueueStore, suffix: str, columns: str) -> str:
+    return f"""
+    BEGIN
+        EXECUTE IMMEDIATE 'CREATE INDEX {_index_name(store, suffix)}
+            ON {store.table_name}({columns})';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -955 THEN
+                RAISE;
+            END IF;
+    END;
+    """
+
+
+def _drop_index_block(store: SQLSpecQueueStore, suffix: str) -> str:
+    return f"""
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP INDEX {_index_name(store, suffix)}';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -1418 THEN
+                RAISE;
+            END IF;
+    END;
+    """
+
+
+def _drop_table_block(store: SQLSpecQueueStore) -> str:
+    return f"""
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TABLE {store.table_name}';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != -942 THEN
+                RAISE;
+            END IF;
+    END;
+    """

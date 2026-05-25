@@ -1,15 +1,12 @@
 """Execution backend registry and factory functions."""
 
 from collections.abc import Callable
-from functools import lru_cache
 from importlib import import_module
 from inspect import signature
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
+from litestar_queues.config import ExecutionBackendConfig, QueueConfig, execution_backend_name
 from litestar_queues.execution.base import BaseExecutionBackend
-
-if TYPE_CHECKING:
-    from litestar_queues.config import ExecutionBackendConfig, QueueConfig
 
 __all__ = (
     "execution_backend",
@@ -19,6 +16,12 @@ __all__ = (
 )
 
 _execution_backend_registry: dict[str, type[BaseExecutionBackend]] = {}
+
+_BUILTIN_BACKENDS: dict[str, str] = {
+    "cloudrun": "litestar_queues.execution.cloudrun:CloudRunExecutionBackend",
+    "immediate": "litestar_queues.execution.immediate:ImmediateExecutionBackend",
+    "local": "litestar_queues.execution.local:LocalExecutionBackend",
+}
 
 
 def execution_backend(name: str) -> Callable[[type[BaseExecutionBackend]], type[BaseExecutionBackend]]:
@@ -35,18 +38,6 @@ def execution_backend(name: str) -> Callable[[type[BaseExecutionBackend]], type[
     return decorator
 
 
-@lru_cache(maxsize=1)
-def _register_builtins() -> None:
-    """Register built-in execution backends lazily."""
-    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend
-    from litestar_queues.execution.immediate import ImmediateExecutionBackend
-    from litestar_queues.execution.local import LocalExecutionBackend
-
-    _execution_backend_registry.setdefault("cloudrun", CloudRunExecutionBackend)
-    _execution_backend_registry.setdefault("immediate", ImmediateExecutionBackend)
-    _execution_backend_registry.setdefault("local", LocalExecutionBackend)
-
-
 def get_execution_backend_class(backend_path: str) -> type[BaseExecutionBackend]:
     """Get an execution backend class by short name or import path.
 
@@ -56,23 +47,29 @@ def get_execution_backend_class(backend_path: str) -> type[BaseExecutionBackend]
     Raises:
         ValueError: If a short backend name is unknown.
     """
-    _register_builtins()
-
     if backend_path in _execution_backend_registry:
         return _execution_backend_registry[backend_path]
 
+    if backend_path in _BUILTIN_BACKENDS:
+        module_path, class_name = _BUILTIN_BACKENDS[backend_path].split(":", 1)
+        module = import_module(module_path)
+        backend_class = _backend_class(getattr(module, class_name))
+        _execution_backend_registry[backend_path] = backend_class
+        return backend_class
+
     if "." not in backend_path:
-        msg = f"Unknown execution backend: {backend_path!r}. Available: {list(_execution_backend_registry.keys())}"
+        available = sorted({*_execution_backend_registry, *_BUILTIN_BACKENDS})
+        msg = f"Unknown execution backend: {backend_path!r}. Available: {available}"
         raise ValueError(msg)
 
     module_path, class_name = backend_path.rsplit(".", 1)
     module = import_module(module_path)
-    return getattr(module, class_name)  # type: ignore[no-any-return]
+    return _backend_class(getattr(module, class_name))
 
 
 def get_execution_backend(
-    backend: "ExecutionBackendConfig" = "immediate",
-    config: "QueueConfig | None" = None,
+    backend: ExecutionBackendConfig = "immediate",
+    config: QueueConfig | None = None,
 ) -> BaseExecutionBackend:
     """Get an instantiated execution backend.
 
@@ -83,8 +80,6 @@ def get_execution_backend(
         TypeError: If a typed execution config selects a backend class that
             does not accept ``execution_config``.
     """
-    from litestar_queues.config import execution_backend_name
-
     execution_config = None if isinstance(backend, str) else backend
     backend_class = get_execution_backend_class(execution_backend_name(backend))
     backend_kwargs: dict[str, Any] = {"config": config}
@@ -104,5 +99,8 @@ def get_execution_backend(
 
 def list_execution_backends() -> list[str]:
     """Return registered execution backend names."""
-    _register_builtins()
-    return list(_execution_backend_registry.keys())
+    return sorted({*_execution_backend_registry, *_BUILTIN_BACKENDS})
+
+
+def _backend_class(value: Any) -> type[BaseExecutionBackend]:
+    return cast("type[BaseExecutionBackend]", value)

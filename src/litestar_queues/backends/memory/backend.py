@@ -13,11 +13,7 @@ if TYPE_CHECKING:
 __all__ = ("InMemoryQueueBackend",)
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class InMemoryQueueBackend(BaseQueueBackend):  # noqa: PLR0904
+class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
     __slots__ = ("_keys", "_lock", "_notification_event", "_records")
@@ -290,3 +286,7 @@ class InMemoryQueueBackend(BaseQueueBackend):  # noqa: PLR0904
             self._records.clear()
             self._keys.clear()
             self._notification_event.clear()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)

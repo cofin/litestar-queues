@@ -14,7 +14,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
 from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
-from litestar_queues.backends.advanced_alchemy.models import QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:

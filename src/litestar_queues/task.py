@@ -40,81 +40,7 @@ AnyTaskCallable = Callable[..., Any]
 _task_registry: dict[str, "Task[Any, Any]"] = {}
 _schedule_registry: dict[str, "ScheduleConfig"] = {}
 _loaded_modules: set[str] = set()
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _coerce_interval(value: float | timedelta | None) -> timedelta | None:
-    if value is None:
-        return None
-    if isinstance(value, timedelta):
-        return value
-    return timedelta(seconds=value)
-
-
-def _parse_cron_value(value: str, names: dict[str, int]) -> int:
-    normalized = value.upper()
-    if normalized in names:
-        return names[normalized]
-    return int(value)
-
-
-def _expand_cron_field(
-    field: str,
-    *,
-    minimum: int,
-    maximum: int,
-    names: dict[str, int] | None = None,
-    normalize_sunday: bool = False,
-) -> set[int]:
-    names = names or {}
-    values: set[int] = set()
-
-    for raw_part in field.split(","):
-        part = raw_part.strip()
-        if not part:
-            msg = "Cron fields cannot be empty"
-            raise ValueError(msg)
-
-        if "/" in part:
-            range_part, step_part = part.split("/", 1)
-            step = int(step_part)
-            if step <= 0:
-                msg = "Cron step values must be positive"
-                raise ValueError(msg)
-        else:
-            range_part = part
-            step = 1
-
-        if range_part == "*":
-            start = minimum
-            end = maximum
-        elif "-" in range_part:
-            start_part, end_part = range_part.split("-", 1)
-            start = _parse_cron_value(start_part, names)
-            end = _parse_cron_value(end_part, names)
-        else:
-            start = _parse_cron_value(range_part, names)
-            end = maximum if "/" in part else start
-
-        if start > end and not normalize_sunday:
-            msg = f"Invalid cron range: {raw_part}"
-            raise ValueError(msg)
-
-        if not minimum <= start <= maximum or not minimum <= end <= maximum:
-            msg = f"Cron value out of range: {raw_part}"
-            raise ValueError(msg)
-
-        values.update(range(start, end + 1, step))
-
-    if normalize_sunday and 7 in values:
-        values.remove(7)
-        values.add(0)
-    return values
+_RANDOM = random.SystemRandom()
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +177,7 @@ class ScheduleConfig:
         jitter_seconds = jitter.total_seconds()
         if jitter_seconds <= 0:
             return value
-        return value + timedelta(seconds=random.uniform(0, jitter_seconds))  # noqa: S311
+        return value + timedelta(seconds=_RANDOM.uniform(0, jitter_seconds))
 
 
 class TaskResult:
@@ -388,7 +314,6 @@ class Task(Generic[P, T]):
         self._description = description
         self._log_level = log_level
         self._quiet_success = quiet_success
-        self.__job_name__ = name
 
     @property
     def name(self) -> str:
@@ -502,20 +427,6 @@ class Task(Generic[P, T]):
             metadata["quiet_success"] = self._quiet_success
         return metadata
 
-    def _accepts_job_id(self) -> bool:
-        signature = inspect.signature(self._func)
-        parameters = signature.parameters
-        return "_job_id" in parameters or any(
-            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
-        )
-
-    def _accepts_task_context(self) -> bool:
-        signature = inspect.signature(self._func)
-        parameters = signature.parameters
-        return "_task_context" in parameters or any(
-            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
-        )
-
     def using(
         self,
         *,
@@ -561,6 +472,20 @@ class Task(Generic[P, T]):
         async with QueueService(QueueConfig(execution_backend="immediate")) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
+    def _accepts_job_id(self) -> bool:
+        signature = inspect.signature(self._func)
+        parameters = signature.parameters
+        return "_job_id" in parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+        )
+
+    def _accepts_task_context(self) -> bool:
+        signature = inspect.signature(self._func)
+        parameters = signature.parameters
+        return "_task_context" in parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+        )
+
 
 def get_task_registry() -> dict[str, Task[Any, Any]]:
     """Return the global task registry."""
@@ -599,23 +524,6 @@ def load_task_modules(modules: tuple[str, ...] | list[str], *, force_reload: boo
     return loaded
 
 
-def _load_child_modules(module: "ModuleType", *, force_reload: bool) -> int:
-    if not hasattr(module, "__path__"):
-        return 0
-    loaded = 0
-    module_paths = module.__path__  # pyright: ignore[reportUnknownMemberType]
-    for _, module_name, is_package in pkgutil.walk_packages(module_paths, prefix=f"{module.__name__}."):
-        if is_package or (module_name in _loaded_modules and not force_reload):
-            continue
-        if force_reload and module_name in sys.modules:
-            reload(sys.modules[module_name])
-        else:
-            import_module(module_name)
-        _loaded_modules.add(module_name)
-        loaded += 1
-    return loaded
-
-
 def discover_tasks(
     package: str,
     subpackage: str = "jobs",
@@ -648,10 +556,7 @@ def discover_tasks(
         raise ModuleNotFoundError(msg)
 
     matched: list[str] = []
-    for _, module_name, _is_package in pkgutil.walk_packages(
-        root.__path__,  # pyright: ignore[reportUnknownMemberType]
-        prefix=f"{root.__name__}.",
-    ):
+    for _, module_name, _is_package in pkgutil.walk_packages(cast("Any", root).__path__, prefix=f"{root.__name__}."):
         if subpackage not in module_name.split(".")[1:]:
             continue
         matched.append(module_name)
@@ -785,3 +690,95 @@ def task(
     if callable(func_or_name) and not isinstance(func_or_name, str):
         return decorator(func_or_name)
     return decorator
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _coerce_interval(value: float | timedelta | None) -> timedelta | None:
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        return value
+    return timedelta(seconds=value)
+
+
+def _parse_cron_value(value: str, names: dict[str, int]) -> int:
+    normalized = value.upper()
+    if normalized in names:
+        return names[normalized]
+    return int(value)
+
+
+def _expand_cron_field(
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+    names: dict[str, int] | None = None,
+    normalize_sunday: bool = False,
+) -> set[int]:
+    names = names or {}
+    values: set[int] = set()
+
+    for raw_part in field.split(","):
+        part = raw_part.strip()
+        if not part:
+            msg = "Cron fields cannot be empty"
+            raise ValueError(msg)
+
+        if "/" in part:
+            range_part, step_part = part.split("/", 1)
+            step = int(step_part)
+            if step <= 0:
+                msg = "Cron step values must be positive"
+                raise ValueError(msg)
+        else:
+            range_part = part
+            step = 1
+
+        if range_part == "*":
+            start = minimum
+            end = maximum
+        elif "-" in range_part:
+            start_part, end_part = range_part.split("-", 1)
+            start = _parse_cron_value(start_part, names)
+            end = _parse_cron_value(end_part, names)
+        else:
+            start = _parse_cron_value(range_part, names)
+            end = maximum if "/" in part else start
+
+        if start > end and not normalize_sunday:
+            msg = f"Invalid cron range: {raw_part}"
+            raise ValueError(msg)
+
+        if not minimum <= start <= maximum or not minimum <= end <= maximum:
+            msg = f"Cron value out of range: {raw_part}"
+            raise ValueError(msg)
+
+        values.update(range(start, end + 1, step))
+
+    if normalize_sunday and 7 in values:
+        values.remove(7)
+        values.add(0)
+    return values
+
+
+def _load_child_modules(module: "ModuleType", *, force_reload: bool) -> int:
+    if not hasattr(module, "__path__"):
+        return 0
+    loaded = 0
+    module_paths = cast("Any", module).__path__
+    for _, module_name, is_package in pkgutil.walk_packages(module_paths, prefix=f"{module.__name__}."):
+        if is_package or (module_name in _loaded_modules and not force_reload):
+            continue
+        if force_reload and module_name in sys.modules:
+            reload(sys.modules[module_name])
+        else:
+            import_module(module_name)
+        _loaded_modules.add(module_name)
+        loaded += 1
+    return loaded

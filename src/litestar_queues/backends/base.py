@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 __all__ = ("BaseQueueBackend",)
 
 
-class BaseQueueBackend:  # noqa: PLR0904
+class BaseQueueBackend:
     """Base class for queue persistence backends."""
 
     __slots__ = ("config",)

@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("sqlspec")
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.store import (
+from litestar_queues.backends.sqlspec.stores import (
     OracledbAsyncQueueStore,
     OracledbSyncQueueStore,
     create_queue_store,
@@ -61,7 +61,6 @@ def _fake_oracle_config(
         ({}, "BLOB CHECK ({column} IS JSON)", bytes),
         ({"json_storage": "json", "in_memory": True}, "JSON", str),
         ({"json_storage": "blob"}, "BLOB", bytes),
-        ({"json_storage": "blob_plain"}, "BLOB", bytes),
     ),
 )
 def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(

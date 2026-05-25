@@ -11,13 +11,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from valkey import asyncio as valkey_asyncio
 
-from litestar_queues.backends.redis.backend import RedisBackendConfig, RedisQueueBackend
+from litestar_queues.backends.redis.backend import RedisQueueBackend
 from litestar_queues.backends.valkey.config import ValkeyBackendConfig
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
 
-__all__ = ("ValkeyBackendConfig", "ValkeyQueueBackend")
+__all__ = ("ValkeyQueueBackend",)
 
 
 class ValkeyQueueBackend(RedisQueueBackend):
@@ -32,11 +32,9 @@ class ValkeyQueueBackend(RedisQueueBackend):
         backend_config: ValkeyBackendConfig | None = None,
     ) -> None:
         backend_config = backend_config or ValkeyBackendConfig()
-        # ValkeyBackendConfig is structurally identical to RedisBackendConfig;
-        # passing the unpacked values through the parent constructor is safe.
         super().__init__(
             config=config,
-            backend_config=cast("RedisBackendConfig", backend_config),
+            backend_config=cast("Any", backend_config),
         )
 
     def _create_client(self, url: str) -> Any:

@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
+from litestar_queues.config import QueueConfig
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules
 from litestar_queues.worker import Worker
@@ -13,7 +14,6 @@ if TYPE_CHECKING:
     from litestar.datastructures import State
 
     from litestar_queues.backends import BaseQueueBackend
-    from litestar_queues.config import QueueConfig
     from litestar_queues.events import QueueEventPublisher
 
 __all__ = ("QueuePlugin",)
@@ -26,8 +26,6 @@ class QueuePlugin:
 
     def __init__(self, config: "QueueConfig | None" = None) -> None:
         """Initialize the queue plugin."""
-        from litestar_queues.config import QueueConfig
-
         self._config = config or QueueConfig()
         self._service: QueueService | None = None
         self._queue_backend: "BaseQueueBackend | None" = None
@@ -66,6 +64,20 @@ class QueuePlugin:
         app_config.on_startup.append(self._on_startup)
         app_config.on_shutdown.append(self._on_shutdown)
         return app_config
+
+    def on_cli_init(self, cli: "object") -> None:
+        """Attach the ``queues`` subcommand group to the Litestar CLI.
+
+        Args:
+            cli: The root ``click.Group`` of the Litestar CLI. Typed as
+                :class:`object` so importing this module does not pull
+                ``click`` into ``sys.modules`` — Litestar's
+                :class:`~litestar.plugins.CLIPluginProtocol` enforces the
+                runtime type.
+        """
+        from litestar_queues._cli import register
+
+        register(cast("Any", cli))
 
     async def _on_startup(self, app: "Litestar") -> None:
         if self._config.task_modules:
@@ -117,17 +129,3 @@ class QueuePlugin:
         if self._service is not None:
             await self._service.close()
             self._service = None
-
-    def on_cli_init(self, cli: "object") -> None:
-        """Attach the ``queues`` subcommand group to the Litestar CLI.
-
-        Args:
-            cli: The root ``click.Group`` of the Litestar CLI. Typed as
-                :class:`object` so importing this module does not pull
-                ``click`` into ``sys.modules`` — Litestar's
-                :class:`~litestar.plugins.CLIPluginProtocol` enforces the
-                runtime type.
-        """
-        from litestar_queues._cli import register
-
-        register(cli)  # type: ignore[arg-type]

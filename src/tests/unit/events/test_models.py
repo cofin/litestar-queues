@@ -44,7 +44,7 @@ async def test_queue_event_serialization_preserves_null_keys() -> None:
 
 
 async def test_queue_event_serialization_uses_camelcase_wire_format() -> None:
-    """Top-level keys are camelCase; legacy snake_case keys are absent."""
+    """Top-level keys use the public camelCase wire format."""
     event = QueueEvent(
         type="task.progress",
         scope="task",

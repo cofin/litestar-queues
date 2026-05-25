@@ -18,10 +18,6 @@ TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset({"completed", "failed", "ca
 """Statuses that represent finished queue records."""
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 @dataclass(slots=True)
 class QueueBackendCapabilities:
     """Behavior advertised by a queue backend."""
@@ -70,7 +66,7 @@ class QueuedTaskRecord:
     max_retries: int = 0
     retry_count: int = 0
     scheduled_at: datetime | None = None
-    created_at: datetime = field(default_factory=_utc_now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     heartbeat_at: datetime | None = None
@@ -87,4 +83,4 @@ class QueuedTaskRecord:
     @property
     def is_due(self) -> bool:
         """Return whether the record is eligible to be claimed now."""
-        return self.scheduled_at is None or self.scheduled_at <= _utc_now()
+        return self.scheduled_at is None or self.scheduled_at <= datetime.now(timezone.utc)

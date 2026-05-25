@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import execution_backend_name
+from litestar_queues.execution import get_execution_backend
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -135,8 +136,6 @@ class Worker:
         Returns:
             Number of records that reached a terminal queue status.
         """
-        from litestar_queues.execution import get_execution_backend
-
         queue_backend = self._service.get_queue_backend()
         records = await queue_backend.list_running_external(limit=limit)
         reconciled = 0

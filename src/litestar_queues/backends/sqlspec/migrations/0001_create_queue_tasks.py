@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec.exceptions import SQLSpecError
 
-from litestar_queues.backends.sqlspec.store import SQLSpecQueueStore, create_queue_store
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 
 if TYPE_CHECKING:
     from sqlspec.migrations.context import MigrationContext
