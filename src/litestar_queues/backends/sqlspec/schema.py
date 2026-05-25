@@ -18,31 +18,29 @@ __all__ = (
 
 DEFAULT_TABLE_NAME = "litestar_queue_tasks"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_CANONICAL_COLUMNS = frozenset(
-    {
-        "id",
-        "task_name",
-        "args_json",
-        "kwargs_json",
-        "queue",
-        "execution_backend",
-        "execution_profile",
-        "execution_ref",
-        "status",
-        "priority",
-        "max_retries",
-        "retry_count",
-        "scheduled_at",
-        "created_at",
-        "started_at",
-        "completed_at",
-        "heartbeat_at",
-        "result_json",
-        "error",
-        "task_key",
-        "metadata_json",
-    }
-)
+_CANONICAL_COLUMNS = frozenset({
+    "id",
+    "task_name",
+    "args_json",
+    "kwargs_json",
+    "queue",
+    "execution_backend",
+    "execution_profile",
+    "execution_ref",
+    "status",
+    "priority",
+    "max_retries",
+    "retry_count",
+    "scheduled_at",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "heartbeat_at",
+    "result_json",
+    "error",
+    "task_key",
+    "metadata_json",
+})
 _JSON_COLUMNS = frozenset({"args_json", "kwargs_json", "result_json", "metadata_json"})
 
 

@@ -6,13 +6,7 @@ from uuid import uuid4
 
 import msgspec
 
-__all__ = (
-    "QueueEvent",
-    "QueueEventActor",
-    "QueueEventEntityRef",
-    "QueueEventScope",
-    "QueueEventType",
-)
+__all__ = ("QueueEvent", "QueueEventActor", "QueueEventEntityRef", "QueueEventScope", "QueueEventType")
 
 QueueEventScope = Literal["task", "queue", "worker", "global", "custom"]
 QueueEventType = Literal[

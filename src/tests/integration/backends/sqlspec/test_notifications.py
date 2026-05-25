@@ -75,13 +75,7 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
 async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_path: "Path") -> None:
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "derived-notifications.db")},
-        extension_config={
-            "events": {
-                "backend": "table_queue",
-                "poll_interval": 0.01,
-                "queue_table": "queue_events",
-            },
-        },
+        extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01, "queue_table": "queue_events"}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
@@ -112,16 +106,11 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
     extension_channel = StubAsyncEventChannel()
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "extension-notifications.db")},
-        extension_config={
-            QUEUE_EXTENSION_NAME: {
-                "notification_channel": "extension_notifications",
-            },
-        },
+        extension_config={QUEUE_EXTENSION_NAME: {"notification_channel": "extension_notifications"}},
     )
     extension_backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config,
-            event_channel=cast("AsyncEventChannel", extension_channel),
+            sqlspec_config=sqlspec_config, event_channel=cast("AsyncEventChannel", extension_channel)
         )
     )
     await extension_backend.open()
@@ -158,11 +147,7 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
 
     plugin = QueuePlugin(
         QueueConfig(
-            queue_backend=SQLSpecBackendConfig(
-                sqlspec=sqlspec,
-                create_schema=False,
-            ),
-            initialize_schedules=False,
+            queue_backend=SQLSpecBackendConfig(sqlspec=sqlspec, create_schema=False), initialize_schedules=False
         )
     )
 

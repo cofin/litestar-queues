@@ -15,11 +15,7 @@ class LocalExecutionBackend(BaseExecutionBackend):
     __slots__ = ()
 
     async def execute(
-        self,
-        service: "QueueService",
-        record: "QueuedTaskRecord",
-        *,
-        worker_id: str | None = None,
+        self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: str | None = None
     ) -> "QueuedTaskRecord":
         """Execute one claimed task in a local worker.
 

@@ -70,9 +70,7 @@ async def test_task_execute_record_merges_extra_kwargs_into_call() -> None:
     context = _build_test_context(record)
 
     result = await consume.execute_record(
-        record,
-        task_context=context,
-        extra_kwargs={"injected_service": "resolved", "another": 42},
+        record, task_context=context, extra_kwargs={"injected_service": "resolved", "another": 42}
     )
 
     assert result["existing"] == "from_record"
@@ -89,9 +87,7 @@ async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> N
     context = _build_test_context(record)
 
     result = await sentinels.execute_record(
-        record,
-        task_context=context,
-        extra_kwargs={"_job_id": "hijacked", "_task_context": "hijacked"},
+        record, task_context=context, extra_kwargs={"_job_id": "hijacked", "_task_context": "hijacked"}
     )
 
     assert result["_job_id"] == str(record.id)

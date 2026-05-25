@@ -44,15 +44,11 @@ class HeartbeatQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "heartbeat_queue_tasks"
 
 
-async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(
-    tmp_path: "Path",
-) -> None:
+async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(tmp_path: "Path") -> None:
     """When heartbeat_session_maker is None, heartbeat writes use the main session."""
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "queue.db"),
-            model_class=HeartbeatQueueTask,
-            create_schema=True,
+            sqlalchemy_config=_sqlite_config(tmp_path / "queue.db"), model_class=HeartbeatQueueTask, create_schema=True
         )
     )
     await backend.open()
@@ -72,8 +68,7 @@ async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(
 
 
 async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_writes(
-    tmp_path: "Path",
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """touch_heartbeat / null_heartbeats use the dedicated heartbeat sessionmaker."""
     queue_path = tmp_path / "queue.db"
@@ -156,8 +151,7 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_handles_concur
             claimed.append(c)
 
         await asyncio.wait_for(
-            asyncio.gather(*(backend.touch_heartbeat(record.id) for _ in range(4) for record in claimed)),
-            timeout=10.0,
+            asyncio.gather(*(backend.touch_heartbeat(record.id) for _ in range(4) for record in claimed)), timeout=10.0
         )
         for record in claimed:
             stored = await backend.get_task(record.id)

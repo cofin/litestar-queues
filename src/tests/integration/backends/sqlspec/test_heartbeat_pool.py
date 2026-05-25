@@ -29,9 +29,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-async def test_sqlspec_backend_default_heartbeat_uses_main_pool(
-    sqlspec_backend: SQLSpecQueueBackend,
-) -> None:
+async def test_sqlspec_backend_default_heartbeat_uses_main_pool(sqlspec_backend: SQLSpecQueueBackend) -> None:
     """When heartbeat_pool_config is None, heartbeat writes use the main pool."""
     record = await sqlspec_backend.enqueue("tasks.heartbeat")
     claimed = await sqlspec_backend.claim_task(record.id)
@@ -47,9 +45,7 @@ async def test_sqlspec_backend_default_heartbeat_uses_main_pool(
 
 
 async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_writes(
-    tmp_path: "Path",
-    monkeypatch: pytest.MonkeyPatch,
-    sqlite_config_factory: "SqliteConfigFactory",
+    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch, sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     """touch_heartbeat / null_heartbeats hit the dedicated pool only."""
     queue_path = tmp_path / "queue.db"
@@ -60,9 +56,7 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
 
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec=sqlspec,
-            sqlspec_config=main_config,
-            heartbeat_pool_config=heartbeat_config,
+            sqlspec=sqlspec, sqlspec_config=main_config, heartbeat_pool_config=heartbeat_config
         )
     )
     await backend.open()
@@ -126,10 +120,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
     monkeypatch.setattr(SQLSpec, "add_config", failing_add_config)
 
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            sqlspec_config=main_config,
-            heartbeat_pool_config=bad_heartbeat_config,
-        )
+        backend_config=SQLSpecBackendConfig(sqlspec_config=main_config, heartbeat_pool_config=bad_heartbeat_config)
     )
     with caplog.at_level("WARNING", logger="litestar_queues"):
         await backend.open()
@@ -149,18 +140,14 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
 
 
 async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heartbeats(
-    tmp_path: "Path",
-    sqlite_config_factory: "SqliteConfigFactory",
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     """Many concurrent heartbeats on the dedicated pool must not deadlock."""
     queue_path = tmp_path / "queue.db"
     main_config = sqlite_config_factory(queue_path)
     heartbeat_config = sqlite_config_factory(queue_path)
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            sqlspec_config=main_config,
-            heartbeat_pool_config=heartbeat_config,
-        )
+        backend_config=SQLSpecBackendConfig(sqlspec_config=main_config, heartbeat_pool_config=heartbeat_config)
     )
     await backend.open()
     try:
@@ -172,8 +159,7 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heart
             claimed.append(c)
 
         await asyncio.wait_for(
-            asyncio.gather(*(backend.touch_heartbeat(record.id) for _ in range(4) for record in claimed)),
-            timeout=10.0,
+            asyncio.gather(*(backend.touch_heartbeat(record.id) for _ in range(4) for record in claimed)), timeout=10.0
         )
         for record in claimed:
             stored = await backend.get_task(record.id)

@@ -80,9 +80,7 @@ assert QueueConfig().queue_backend == "memory"
 
 async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path: Path) -> None:
     backend_config = AdvancedAlchemyBackendConfig(
-        sqlalchemy_config=_sqlite_config(tmp_path / "configured.db"),
-        model_class=ContractQueueTask,
-        create_schema=True,
+        sqlalchemy_config=_sqlite_config(tmp_path / "configured.db"), model_class=ContractQueueTask, create_schema=True
     )
 
     assert backend_config.model_class is ContractQueueTask
@@ -192,9 +190,7 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
 ) -> None:
     local = await advanced_alchemy_backend.enqueue("tasks.local", priority=100, execution_backend="local")
     external = await advanced_alchemy_backend.enqueue(
-        "tasks.remote",
-        execution_backend="cloudrun",
-        execution_profile="batch-small",
+        "tasks.remote", execution_backend="cloudrun", execution_profile="batch-small"
     )
     completed = await advanced_alchemy_backend.enqueue("tasks.report", metadata={"encoded_at": datetime.now(UTC)})
 
@@ -208,10 +204,7 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     assert completed_claim is not None
 
     await advanced_alchemy_backend.set_execution_ref(
-        claimed.id,
-        "cloudrun",
-        "jobs/abc-123",
-        execution_profile="batch-small",
+        claimed.id, "cloudrun", "jobs/abc-123", execution_profile="batch-small"
     )
     await advanced_alchemy_backend.complete_task(completed_claim.id, result={"ok": True})
 
@@ -240,10 +233,8 @@ async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: Path) -> No
 
     queue_config = QueueConfig(
         queue_backend=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "service.db"),
-            model_class=ContractQueueTask,
-            create_schema=True,
-        ),
+            sqlalchemy_config=_sqlite_config(tmp_path / "service.db"), model_class=ContractQueueTask, create_schema=True
+        )
     )
 
     async with QueueService(queue_config) as service:

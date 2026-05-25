@@ -148,9 +148,7 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
         execution_config=CloudRunExecutionConfig(
-            project_id="test-project",
-            job_name="worker",
-            fallback_execution_backend="local",
+            project_id="test-project", job_name="worker", fallback_execution_backend="local"
         ),
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient(error=RuntimeError("api unavailable"))),
     )
@@ -187,9 +185,7 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     ],
 )
 async def test_cloudrun_reconcile_updates_terminal_statuses(
-    execution: FakeCloudRunExecution,
-    expected_status: str,
-    expected_error: str | None,
+    execution: FakeCloudRunExecution, expected_status: str, expected_error: str | None
 ) -> None:
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
@@ -259,9 +255,7 @@ async def test_worker_dispatches_external_records_without_claiming_them() -> Non
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"),
-        queue_backend=queue_backend,
-        execution_backend=backend,
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
     ) as service:
         result = await service.enqueue(remote_task.using(execution_backend="cloudrun"))
         worker = Worker(service)
@@ -284,9 +278,7 @@ async def test_worker_reconciles_running_external_records() -> None:
         executions_client=FakeExecutionsClient(FakeCloudRunExecution(failed_count=1)),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"),
-        queue_backend=queue_backend,
-        execution_backend=backend,
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
     ) as service:
         record = await queue_backend.enqueue("tasks.remote", execution_backend="cloudrun")
         await queue_backend.set_execution_ref(record.id, "cloudrun", "executions/run-1")
@@ -311,10 +303,7 @@ async def test_cloudrun_entrypoint_claims_and_executes_persisted_record() -> Non
     queue_backend = InMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
         result = await service.enqueue(entrypoint_task.using(execution_backend="cloudrun"), 41)
-        exit_code = await execute_cloudrun_task(
-            service=service,
-            env={"LITESTAR_QUEUES_TASK_ID": str(result.id)},
-        )
+        exit_code = await execute_cloudrun_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": str(result.id)})
         await result.refresh()
 
     assert exit_code == CloudRunExitCode.SUCCESS

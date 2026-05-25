@@ -101,13 +101,7 @@ class SpannerInstance(Protocol):
 class SpannerClient(Protocol):
     """Spanner client methods used by the test bootstrap."""
 
-    def instance(
-        self,
-        instance_id: str,
-        *,
-        configuration_name: str,
-        display_name: str,
-    ) -> SpannerInstance:
+    def instance(self, instance_id: str, *, configuration_name: str, display_name: str) -> SpannerInstance:
         """Return an instance handle."""
 
     def close(self) -> None:
@@ -154,16 +148,19 @@ def _sqlspec_backend(sqlspec_config: object) -> "BaseQueueBackend":
 
 async def _build_aiosqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
     return _sqlspec_backend(AiosqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-aiosqlite.db")}))
 
 
 async def _build_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.sqlite import SqliteConfig
+
     return _sqlspec_backend(SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")}))
 
 
 async def _build_duckdb(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.duckdb import DuckDBConfig
+
     return _sqlspec_backend(DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}))
 
 
@@ -171,9 +168,7 @@ async def _build_adbc_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.adbc import AdbcConfig
 
     return _sqlspec_backend(
-        AdbcConfig(
-            connection_config={"driver_name": "sqlite", "uri": str(ctx.tmp_path / "queue-adbc.db")}
-        )
+        AdbcConfig(connection_config={"driver_name": "sqlite", "uri": str(ctx.tmp_path / "queue-adbc.db")})
     )
 
 
@@ -367,17 +362,11 @@ def _ensure_spanner_database(service: SpannerService) -> None:
 
     client = cast(
         "SpannerClient",
-        Client(
-            project=service.project,
-            credentials=service.credentials,
-            client_options=service.client_options,
-        ),
+        Client(project=service.project, credentials=service.credentials, client_options=service.client_options),
     )
     try:
         instance = client.instance(
-            service.instance_name,
-            configuration_name="emulator-config",
-            display_name=service.instance_name,
+            service.instance_name, configuration_name="emulator-config", display_name=service.instance_name
         )
         if not instance.exists():
             with suppress(AlreadyExists):
@@ -396,13 +385,7 @@ def _ensure_spanner_database(service: SpannerService) -> None:
 # When the upstream fixes land, drop the capability from the BackendCase to flip
 # the case back to a hard-pass requirement.
 QUEUE_BACKENDS: tuple[BackendCase, ...] = (
-    BackendCase(
-        "memory",
-        frozenset(),
-        None,
-        _build_memory,
-        frozenset({"in-process", "notify-direct"}),
-    ),
+    BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
     BackendCase(
         "aiosqlite",
         frozenset({"aiosqlite", "sqlspec"}),

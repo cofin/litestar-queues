@@ -56,10 +56,7 @@ class RedisQueueBackend(BaseQueueBackend):
     )
 
     def __init__(
-        self,
-        config: "QueueConfig | None" = None,
-        *,
-        backend_config: _RedisBackendConfig | None = None,
+        self, config: "QueueConfig | None" = None, *, backend_config: _RedisBackendConfig | None = None
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or _RedisBackendConfig()
@@ -180,11 +177,7 @@ class RedisQueueBackend(BaseQueueBackend):
         return await self.get_task(UUID(str(_decode(task_id))))
 
     async def list_pending(
-        self,
-        *,
-        limit: int = 1,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
     ) -> list[QueuedTaskRecord]:
         """Return due pending or scheduled tasks ordered for execution."""
         client = await self._get_client()
@@ -238,13 +231,7 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
             return record
 
-    async def fail_task(
-        self,
-        task_id: UUID,
-        error: str,
-        *,
-        retry: bool = True,
-    ) -> QueuedTaskRecord | None:
+    async def fail_task(self, task_id: UUID, error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
         """Mark a task as failed or retry it.
 
         Returns:
@@ -333,12 +320,7 @@ class RedisQueueBackend(BaseQueueBackend):
         return count
 
     async def set_execution_ref(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        execution_ref: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         """Persist an external execution reference for a running task.
 
@@ -356,11 +338,7 @@ class RedisQueueBackend(BaseQueueBackend):
             return record
 
     async def set_execution_backend(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: UUID, execution_backend: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         """Persist an execution backend/profile change for a queued task.
 
@@ -396,11 +374,7 @@ class RedisQueueBackend(BaseQueueBackend):
         return statistics
 
     async def list_completed_by_task(
-        self,
-        task_name: str,
-        *,
-        since: datetime | None = None,
-        limit: int = 10,
+        self, task_name: str, *, since: datetime | None = None, limit: int = 10
     ) -> list[QueuedTaskRecord]:
         """Return recent completed records for a task name."""
         records = [

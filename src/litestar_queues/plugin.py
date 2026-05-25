@@ -84,9 +84,7 @@ class QueuePlugin:
             load_task_modules(self._config.task_modules)
 
         self._service = QueueService(
-            self._config,
-            queue_backend=self._queue_backend,
-            event_publisher=self._event_publisher,
+            self._config, queue_backend=self._queue_backend, event_publisher=self._event_publisher
         )
         await self._service.open()
         app.state[self._config.queue_service_state_key] = self._service

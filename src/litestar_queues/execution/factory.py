@@ -8,12 +8,7 @@ from typing import Any, cast
 from litestar_queues.config import ExecutionBackendConfig, QueueConfig, execution_backend_name
 from litestar_queues.execution.base import BaseExecutionBackend
 
-__all__ = (
-    "execution_backend",
-    "get_execution_backend",
-    "get_execution_backend_class",
-    "list_execution_backends",
-)
+__all__ = ("execution_backend", "get_execution_backend", "get_execution_backend_class", "list_execution_backends")
 
 _execution_backend_registry: dict[str, type[BaseExecutionBackend]] = {}
 
@@ -68,8 +63,7 @@ def get_execution_backend_class(backend_path: str) -> type[BaseExecutionBackend]
 
 
 def get_execution_backend(
-    backend: ExecutionBackendConfig = "immediate",
-    config: QueueConfig | None = None,
+    backend: ExecutionBackendConfig = "immediate", config: QueueConfig | None = None
 ) -> BaseExecutionBackend:
     """Get an instantiated execution backend.
 

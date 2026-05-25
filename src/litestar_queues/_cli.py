@@ -1,4 +1,4 @@
-"""Click subcommand callbacks for ``litestar queues …``.
+"""Click command surfaces for ``litestar queues …``.
 
 This module is private. :meth:`QueuePlugin.on_cli_init` imports it lazily
 so ``import litestar_queues`` does not pull ``click`` into ``sys.modules``.
@@ -23,35 +23,25 @@ from litestar_queues.worker import Worker
 if TYPE_CHECKING:
     from litestar_queues.service import QueueService
 
-__all__ = ("register",)
+__all__ = ("queues_group", "register", "run_command", "scheduler_health_command", "status_command")
+
+FORCE_STOP_SIGNAL_COUNT = 2
 
 
-def register(cli: click.Group) -> None:
-    """Attach the ``queues`` subcommand group to ``cli``."""
-
-    @click.group(name="queues", help="litestar-queues operations.")
-    def queues_group() -> None:
-        pass
-
-    queues_group.add_command(_run_command)
-    queues_group.add_command(_status_command)
-    queues_group.add_command(_scheduler_health_command)
-    cli.add_command(queues_group)
+@click.group(name="queues", help="litestar-queues operations.")
+def queues_group() -> None:
+    pass
 
 
-@click.command(name="run", help="Start a standalone worker fleet.")
+@queues_group.command(name="run", help="Start a standalone worker fleet.")
 @click.option(
     "--queue",
     "queues",
     multiple=True,
-    help="Queue name to process. Repeatable. Currently advisory; backend-side "
-    "filtering is not yet enforced.",
+    help="Queue name to process. Repeatable. Currently advisory; backend-side filtering is not yet enforced.",
 )
 @click.option(
-    "--max-concurrency",
-    type=click.IntRange(min=1),
-    default=None,
-    help="Override worker_max_concurrency for this run.",
+    "--max-concurrency", type=click.IntRange(min=1), default=None, help="Override worker_max_concurrency for this run."
 )
 @click.option(
     "--drain-timeout",
@@ -61,11 +51,8 @@ def register(cli: click.Group) -> None:
     "Defaults to QueueConfig.worker_graceful_shutdown_timeout.",
 )
 @click.pass_context
-def _run_command(
-    ctx: click.Context,
-    queues: tuple[str, ...],
-    max_concurrency: int | None,
-    drain_timeout: float | None,
+def run_command(
+    ctx: click.Context, queues: tuple[str, ...], max_concurrency: int | None, drain_timeout: float | None
 ) -> None:
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
@@ -75,18 +62,47 @@ def _run_command(
 
     if queues:
         click.echo(
-            "--queue is advisory; backend-side filtering is not yet enforced. "
-            f"Selected: {', '.join(queues)}",
-            err=True,
+            f"--queue is advisory; backend-side filtering is not yet enforced. Selected: {', '.join(queues)}", err=True
         )
 
     effective_concurrency = max_concurrency or config.worker_max_concurrency
-    effective_drain_timeout = (
-        drain_timeout if drain_timeout is not None else config.worker_graceful_shutdown_timeout
-    )
+    effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker_graceful_shutdown_timeout
 
     exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout))
     ctx.exit(exit_code)
+
+
+@queues_group.command(name="status", help="Show queue status counts.")
+@click.option(
+    "--queue",
+    "queue_filter",
+    default=None,
+    help="Filter by queue name. Currently advisory; backend filtering is not yet enforced.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.pass_context
+def status_command(ctx: click.Context, queue_filter: str | None, as_json: bool) -> None:
+    env = _ensure_env(ctx)
+    plugin = _resolve_plugin(env)
+    exit_code = asyncio.run(_status_run(plugin, queue_filter, as_json))
+    ctx.exit(exit_code)
+
+
+@queues_group.command(
+    name="scheduler-health", help="Exit non-zero if the scheduler canary task has not completed within the window."
+)
+@click.option("--minutes", type=click.IntRange(min=1), default=5, help="Staleness threshold in minutes (default 5).")
+@click.pass_context
+def scheduler_health_command(ctx: click.Context, minutes: int) -> None:
+    env = _ensure_env(ctx)
+    plugin = _resolve_plugin(env)
+    exit_code = asyncio.run(_scheduler_health_run(plugin, minutes))
+    ctx.exit(exit_code)
+
+
+def register(cli: click.Group) -> None:
+    """Attach the ``queues`` subcommand group to ``cli``."""
+    cli.add_command(queues_group)
 
 
 async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: float) -> int:
@@ -100,11 +116,7 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
         max_concurrency=max_concurrency,
         heartbeat_interval=config.worker_heartbeat_interval,
         reconcile_interval=config.worker_reconcile_interval,
-        stale_after=(
-            timedelta(seconds=config.worker_stale_after)
-            if config.worker_stale_after is not None
-            else None
-        ),
+        stale_after=(timedelta(seconds=config.worker_stale_after) if config.worker_stale_after is not None else None),
         stale_check_interval=config.worker_stale_check_interval,
         graceful_shutdown_timeout=drain_timeout,
         final_cancel_timeout=config.worker_final_cancel_timeout,
@@ -112,20 +124,26 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
 
     loop = asyncio.get_running_loop()
     stop_count = {"n": 0}
+    stop_task: asyncio.Task[None] | None = None
 
     def _request_stop() -> None:
+        nonlocal stop_task
         stop_count["n"] += 1
-        if stop_count["n"] >= 2:
+        if stop_count["n"] >= FORCE_STOP_SIGNAL_COUNT:
             for task_ in asyncio.all_tasks(loop):
                 task_.cancel()
             return
-        asyncio.ensure_future(worker.stop())
+        if stop_task is None or stop_task.done():
+            stop_task = asyncio.create_task(worker.stop())
 
-    for sig in (signal.SIGTERM, signal.SIGINT):
+    def _register_signal_handler(sig: signal.Signals) -> None:
         try:
             loop.add_signal_handler(sig, _request_stop)
         except NotImplementedError:
             signal.signal(sig, lambda *_: _request_stop())
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        _register_signal_handler(sig)
 
     worker_task = asyncio.create_task(worker.start())
     exit_code = 0
@@ -145,28 +163,9 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
     return exit_code
 
 
-@click.command(name="status", help="Show queue status counts.")
-@click.option(
-    "--queue",
-    "queue_filter",
-    default=None,
-    help="Filter by queue name. Currently advisory; backend filtering is not yet enforced.",
-)
-@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
-@click.pass_context
-def _status_command(ctx: click.Context, queue_filter: str | None, as_json: bool) -> None:
-    env = _ensure_env(ctx)
-    plugin = _resolve_plugin(env)
-    exit_code = asyncio.run(_status_run(plugin, queue_filter, as_json))
-    ctx.exit(exit_code)
-
-
 async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bool) -> int:
     if queue_filter is not None:
-        click.echo(
-            f"--queue is advisory; backend filtering not yet enforced (selected: {queue_filter})",
-            err=True,
-        )
+        click.echo(f"--queue is advisory; backend filtering not yet enforced (selected: {queue_filter})", err=True)
 
     service = _open_service(plugin)
     await service.open()
@@ -199,24 +198,6 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
     return 0
 
 
-@click.command(
-    name="scheduler-health",
-    help="Exit non-zero if the scheduler canary task has not completed within the window.",
-)
-@click.option(
-    "--minutes",
-    type=click.IntRange(min=1),
-    default=5,
-    help="Staleness threshold in minutes (default 5).",
-)
-@click.pass_context
-def _scheduler_health_command(ctx: click.Context, minutes: int) -> None:
-    env = _ensure_env(ctx)
-    plugin = _resolve_plugin(env)
-    exit_code = asyncio.run(_scheduler_health_run(plugin, minutes))
-    ctx.exit(exit_code)
-
-
 async def _scheduler_health_run(plugin: QueuePlugin, minutes: int) -> int:
     config = plugin.config
     canary = config.scheduler_canary_task
@@ -234,19 +215,14 @@ async def _scheduler_health_run(plugin: QueuePlugin, minutes: int) -> int:
     service = _open_service(plugin)
     await service.open()
     try:
-        records = await service.get_queue_backend().list_completed_by_task(
-            canary, since=since, limit=1
-        )
+        records = await service.get_queue_backend().list_completed_by_task(canary, since=since, limit=1)
     finally:
         await service.close()
 
     if records:
         click.echo(f"healthy: {canary} completed {records[0].completed_at!s}")
         return 0
-    click.echo(
-        f"stale: no {canary} completion within {minutes}m window since {since.isoformat()}",
-        err=True,
-    )
+    click.echo(f"stale: no {canary} completion within {minutes}m window since {since.isoformat()}", err=True)
     return 4
 
 

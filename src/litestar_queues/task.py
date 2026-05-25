@@ -37,6 +37,9 @@ T = TypeVar("T")
 TaskCallable = Callable[P, T | Awaitable[T]]
 AnyTaskCallable = Callable[..., Any]
 
+CRON_FIELD_COUNT = 5
+SUNDAY_CRON_VALUE = 7
+
 _task_registry: dict[str, "Task[Any, Any]"] = {}
 _schedule_registry: dict[str, "ScheduleConfig"] = {}
 _loaded_modules: set[str] = set()
@@ -120,7 +123,7 @@ class ScheduleConfig:
         }
         expression = aliases.get(self.cron, self.cron)
         parts = expression.split()
-        if len(parts) != 5:
+        if len(parts) != CRON_FIELD_COUNT:
             msg = f"Invalid cron expression: {self.cron}"
             raise ValueError(msg)
 
@@ -524,12 +527,7 @@ def load_task_modules(modules: tuple[str, ...] | list[str], *, force_reload: boo
     return loaded
 
 
-def discover_tasks(
-    package: str,
-    subpackage: str = "jobs",
-    *,
-    force_reload: bool = False,
-) -> tuple[str, ...]:
+def discover_tasks(package: str, subpackage: str = "jobs", *, force_reload: bool = False) -> tuple[str, ...]:
     """Walk ``package`` and import every ``<package>.<...>.<subpackage>.<...>`` module.
 
     Adopters with ``app.domain.<x>.jobs/`` layouts can call this once at
@@ -714,12 +712,7 @@ def _parse_cron_value(value: str, names: dict[str, int]) -> int:
 
 
 def _expand_cron_field(
-    field: str,
-    *,
-    minimum: int,
-    maximum: int,
-    names: dict[str, int] | None = None,
-    normalize_sunday: bool = False,
+    field: str, *, minimum: int, maximum: int, names: dict[str, int] | None = None, normalize_sunday: bool = False
 ) -> set[int]:
     names = names or {}
     values: set[int] = set()
@@ -761,8 +754,8 @@ def _expand_cron_field(
 
         values.update(range(start, end + 1, step))
 
-    if normalize_sunday and 7 in values:
-        values.remove(7)
+    if normalize_sunday and SUNDAY_CRON_VALUE in values:
+        values.remove(SUNDAY_CRON_VALUE)
         values.add(0)
     return values
 

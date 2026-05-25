@@ -41,10 +41,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
         if self.adbc_dialect == _ADBC_DIALECT_SNOWFLAKE:
             return [self._snowflake_create_table_statement()]
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
-            return [
-                self._to_sql(self._create_table_statement()),
-                *self._postgres_index_statements(),
-            ]
+            return [self._to_sql(self._create_table_statement()), *self._postgres_index_statements()]
         return super().create_statements()
 
     def drop_statements(self) -> list[str]:

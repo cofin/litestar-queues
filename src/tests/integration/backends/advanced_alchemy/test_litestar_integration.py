@@ -38,9 +38,7 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     queue_plugin = QueuePlugin(
         QueueConfig(
             queue_backend=AdvancedAlchemyBackendConfig(
-                sqlalchemy_config=alchemy_config,
-                model_class=LitestarQueueTask,
-                create_schema=True,
+                sqlalchemy_config=alchemy_config, model_class=LitestarQueueTask, create_schema=True
             ),
             initialize_schedules=False,
         )

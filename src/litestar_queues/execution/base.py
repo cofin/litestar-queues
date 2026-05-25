@@ -36,11 +36,7 @@ class BaseExecutionBackend:
         """Close execution resources."""
 
     async def execute(
-        self,
-        service: "QueueService",
-        record: "QueuedTaskRecord",
-        *,
-        worker_id: str | None = None,
+        self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: str | None = None
     ) -> "QueuedTaskRecord":
         """Execute a queue record."""
         raise NotImplementedError
@@ -75,9 +71,6 @@ class BaseExecutionBackend:
         return self
 
     async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object,
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
     ) -> None:
         await self.close()

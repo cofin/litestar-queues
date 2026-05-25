@@ -5,11 +5,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from litestar_queues import QueueConfig, QueueService
-from litestar_queues.events import (
-    InMemoryQueueEventSink,
-    NoopQueueEventSink,
-    QueueEventSink,
-)
+from litestar_queues.events import InMemoryQueueEventSink, NoopQueueEventSink, QueueEventSink
 
 
 @pytest.fixture(params=["in_memory", "noop"], ids=["in_memory", "noop"])

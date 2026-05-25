@@ -49,8 +49,7 @@ def _queue_model() -> type[object]:
 
 @pytest.fixture
 async def advanced_alchemy_backend(
-    request: pytest.FixtureRequest,
-    tmp_path: "Path",
+    request: pytest.FixtureRequest, tmp_path: "Path"
 ) -> "AsyncIterator[AdvancedAlchemyQueueBackend]":
     """Yield an opened Advanced Alchemy queue backend parametrized over AA_ENGINES.
 
@@ -78,9 +77,7 @@ async def advanced_alchemy_backend(
     config = case.build_config(ctx)
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=config,
-            model_class=_queue_model(),
-            create_schema=True,
+            sqlalchemy_config=config, model_class=_queue_model(), create_schema=True
         )
     )
     await backend.open()

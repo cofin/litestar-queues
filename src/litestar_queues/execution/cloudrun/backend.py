@@ -65,11 +65,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return self._execution_config
 
     async def execute(
-        self,
-        service: "QueueService",
-        record: "QueuedTaskRecord",
-        *,
-        worker_id: str | None = None,
+        self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: str | None = None
     ) -> "QueuedTaskRecord":
         """Dispatch a record and return its persisted state.
 
@@ -105,10 +101,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
 
         execution_ref = str(execution.name)
         await service.get_queue_backend().set_execution_ref(
-            record.id,
-            "cloudrun",
-            execution_ref,
-            execution_profile=record.execution_profile,
+            record.id, "cloudrun", execution_ref, execution_profile=record.execution_profile
         )
         return execution_ref
 

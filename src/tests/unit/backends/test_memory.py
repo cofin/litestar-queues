@@ -68,9 +68,7 @@ async def test_memory_backend_fail_task_retries_then_fails_permanently() -> None
     assert failed.completed_at is not None
 
 
-async def test_queue_service_memory_fixture_yields_running_service(
-    queue_service_memory: QueueService,
-) -> None:
+async def test_queue_service_memory_fixture_yields_running_service(queue_service_memory: QueueService) -> None:
     """The unit-tier `queue_service_memory` fixture yields a running QueueService."""
     assert queue_service_memory.config.queue_backend == "memory"
     assert queue_service_memory.config.execution_backend == "local"

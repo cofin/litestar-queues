@@ -5,11 +5,7 @@ from typing import Any, cast
 
 from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, migration_directory, validate_table_name
 
-__all__ = (
-    "QUEUE_EXTENSION_NAME",
-    "configure_queue_migration_extension",
-    "queue_migration_directory",
-)
+__all__ = ("QUEUE_EXTENSION_NAME", "configure_queue_migration_extension", "queue_migration_directory")
 
 QUEUE_EXTENSION_NAME = "litestar_queues"
 

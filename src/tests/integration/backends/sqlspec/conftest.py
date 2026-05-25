@@ -73,12 +73,7 @@ class StubAsyncEventChannel:
         self.published: list[tuple[str, EventPayload, EventMetadata | None]] = []
         self._events: asyncio.Queue[StubEvent] = asyncio.Queue()
 
-    async def publish(
-        self,
-        channel: str,
-        payload: EventPayload,
-        metadata: EventMetadata | None = None,
-    ) -> str:
+    async def publish(self, channel: str, payload: EventPayload, metadata: EventMetadata | None = None) -> str:
         event_id = f"event-{len(self.published) + 1}"
         self.published.append((channel, payload, metadata))
         await self._events.put(StubEvent(event_id, payload, metadata))

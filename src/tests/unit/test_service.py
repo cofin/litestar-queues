@@ -49,9 +49,7 @@ async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs
     invocations: list[tuple[str, str]] = []
 
     async def resolver(
-        _task: "Task[..., object]",
-        record: "QueuedTaskRecord",
-        context: "TaskExecutionContext",
+        _task: "Task[..., object]", record: "QueuedTaskRecord", context: "TaskExecutionContext"
     ) -> dict[str, object]:
         invocations.append((str(record.id), context.task_id))
         return {"injected_service": "from_resolver"}
@@ -76,13 +74,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
     """Resolver fires after the task.started event and before task.completed."""
     import time
 
-    from litestar_queues import (
-        InMemoryQueueEventSink,
-        QueueEventConfig,
-        Task,
-        TaskExecutionContext,
-        task,
-    )
+    from litestar_queues import InMemoryQueueEventSink, QueueEventConfig, Task, TaskExecutionContext, task
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.task import clear_task_registry
 
@@ -94,9 +86,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
     timeline: dict[str, float] = {}
 
     async def resolver(
-        _task: "Task[..., object]",
-        _record: "QueuedTaskRecord",
-        _context: "TaskExecutionContext",
+        _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
     ) -> dict[str, object]:
         timeline["resolver"] = time.monotonic()
         return {}
@@ -106,10 +96,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
         timeline["body"] = time.monotonic()
         return "ok"
 
-    config = QueueConfig(
-        task_dependency_resolver=resolver,
-        event_config=QueueEventConfig(enabled=True),
-    )
+    config = QueueConfig(task_dependency_resolver=resolver, event_config=QueueEventConfig(enabled=True))
     service = QueueService(config, event_publisher=publisher)
 
     async with service:

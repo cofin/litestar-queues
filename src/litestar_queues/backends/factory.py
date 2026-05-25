@@ -8,12 +8,7 @@ from typing import Any, cast
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.config import QueueBackendConfig, QueueConfig, queue_backend_name
 
-__all__ = (
-    "get_queue_backend",
-    "get_queue_backend_class",
-    "list_queue_backends",
-    "queue_backend",
-)
+__all__ = ("get_queue_backend", "get_queue_backend_class", "list_queue_backends", "queue_backend")
 
 _queue_backend_registry: dict[str, type[BaseQueueBackend]] = {}
 

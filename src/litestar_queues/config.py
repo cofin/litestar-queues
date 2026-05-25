@@ -61,8 +61,7 @@ def execution_backend_name(backend: ExecutionBackendConfig) -> str:
 
 
 TaskDependencyResolver = Callable[
-    ["Task[..., object]", "QueuedTaskRecord", "TaskExecutionContext"],
-    Awaitable[Mapping[str, object]],
+    ["Task[..., object]", "QueuedTaskRecord", "TaskExecutionContext"], Awaitable[Mapping[str, object]]
 ]
 """User-supplied callable that resolves extra kwargs for a task before execution."""
 
@@ -94,10 +93,7 @@ class AsyncServiceProvider:
         return self._service
 
     async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object,
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
     ) -> None:
         """Exit the async context and close the QueueService."""
         if self._service is not None:

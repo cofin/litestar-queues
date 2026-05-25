@@ -89,10 +89,7 @@ class SQLSpecQueueStore:
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
             return []
-        return [
-            self._to_sql(self._create_table_statement()),
-            *self._create_index_statements(),
-        ]
+        return [self._to_sql(self._create_table_statement()), *self._create_index_statements()]
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop queue artifacts."""
@@ -118,12 +115,7 @@ class SQLSpecQueueStore:
         return self._select_all().where_eq(self._col("task_key"), key)
 
     def list_pending(
-        self,
-        *,
-        now: str,
-        limit: int,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, now: str, limit: int, queue: str | None = None, execution_backend: str | None = None
     ) -> Any:
         """Return a SELECT statement for due pending tasks."""
         statement = (
@@ -136,24 +128,19 @@ class SQLSpecQueueStore:
             statement = statement.where_eq(self._col("queue"), queue)
         if execution_backend is not None:
             statement = statement.where_eq(self._col("execution_backend"), execution_backend)
-        return statement.order_by(sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")).limit(limit)
+        return statement.order_by(
+            sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
+        ).limit(limit)
 
     def claim_task(self, *, task_id: str, due_at: str, started_at: str, heartbeat_at: str) -> Any:
         """Return an UPDATE statement that claims a due task."""
         return (
             sql
             .update(self.table_name)
-            .set(
-                **self._mapped_values(
-                    {"status": "running", "started_at": started_at, "heartbeat_at": heartbeat_at}
-                )
-            )
+            .set(**self._mapped_values({"status": "running", "started_at": started_at, "heartbeat_at": heartbeat_at}))
             .where_eq(self._col("id"), task_id)
             .where_in(self._col("status"), _DUE_STATUSES)
-            .where(
-                f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at",
-                due_at=due_at,
-            )
+            .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
         )
 
     def complete_task(self, *, task_id: str, completed_at: str, heartbeat_at: str, result_json: Any) -> Any:
@@ -162,15 +149,13 @@ class SQLSpecQueueStore:
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "status": "completed",
-                        "completed_at": completed_at,
-                        "heartbeat_at": heartbeat_at,
-                        "result_json": result_json,
-                        "error": None,
-                    }
-                )
+                **self._mapped_values({
+                    "status": "completed",
+                    "completed_at": completed_at,
+                    "heartbeat_at": heartbeat_at,
+                    "result_json": result_json,
+                    "error": None,
+                })
             )
             .where_eq(self._col("id"), task_id)
         )
@@ -181,15 +166,13 @@ class SQLSpecQueueStore:
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "status": "pending",
-                        "retry_count": retry_count,
-                        "started_at": None,
-                        "heartbeat_at": None,
-                        "error": error,
-                    }
-                )
+                **self._mapped_values({
+                    "status": "pending",
+                    "retry_count": retry_count,
+                    "started_at": None,
+                    "heartbeat_at": None,
+                    "error": error,
+                })
             )
             .where_eq(self._col("id"), task_id)
         )
@@ -200,14 +183,12 @@ class SQLSpecQueueStore:
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "status": "failed",
-                        "completed_at": completed_at,
-                        "heartbeat_at": heartbeat_at,
-                        "error": error,
-                    }
-                )
+                **self._mapped_values({
+                    "status": "failed",
+                    "completed_at": completed_at,
+                    "heartbeat_at": heartbeat_at,
+                    "error": error,
+                })
             )
             .where_eq(self._col("id"), task_id)
         )
@@ -247,14 +228,12 @@ class SQLSpecQueueStore:
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "status": "pending",
-                        "started_at": None,
-                        "heartbeat_at": None,
-                        "retry_count": sql.raw(f"{self._col('retry_count')} + 1"),
-                    }
-                )
+                **self._mapped_values({
+                    "status": "pending",
+                    "started_at": None,
+                    "heartbeat_at": None,
+                    "retry_count": sql.raw(f"{self._col('retry_count')} + 1"),
+                })
             )
             .where_eq(self._col("status"), "running")
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
@@ -270,48 +249,33 @@ class SQLSpecQueueStore:
         )
 
     def set_execution_ref(
-        self,
-        *,
-        task_id: str,
-        execution_backend: str,
-        execution_ref: str,
-        execution_profile: str | None,
+        self, *, task_id: str, execution_backend: str, execution_ref: str, execution_profile: str | None
     ) -> Any:
         """Return an UPDATE statement that stores an external execution reference."""
         return (
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "execution_backend": execution_backend,
-                        "execution_profile": execution_profile,
-                        "execution_ref": execution_ref,
-                    }
-                )
+                **self._mapped_values({
+                    "execution_backend": execution_backend,
+                    "execution_profile": execution_profile,
+                    "execution_ref": execution_ref,
+                })
             )
             .where_eq(self._col("id"), task_id)
         )
 
-    def set_execution_backend(
-        self,
-        *,
-        task_id: str,
-        execution_backend: str,
-        execution_profile: str | None,
-    ) -> Any:
+    def set_execution_backend(self, *, task_id: str, execution_backend: str, execution_profile: str | None) -> Any:
         """Return an UPDATE statement that changes execution routing."""
         return (
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "execution_backend": execution_backend,
-                        "execution_profile": execution_profile,
-                        "execution_ref": None,
-                    }
-                )
+                **self._mapped_values({
+                    "execution_backend": execution_backend,
+                    "execution_profile": execution_profile,
+                    "execution_ref": None,
+                })
             )
             .where_eq(self._col("id"), task_id)
         )
@@ -333,8 +297,8 @@ class SQLSpecQueueStore:
 
     def list_completed_by_task(self, *, task_name: str, since: str | None = None, limit: int = 10) -> Any:
         """Return a SELECT statement for completed records by task name."""
-        statement = self._select_all().where_eq(self._col("task_name"), task_name).where_eq(
-            self._col("status"), "completed"
+        statement = (
+            self._select_all().where_eq(self._col("task_name"), task_name).where_eq(self._col("status"), "completed")
         )
         if since is not None:
             statement = statement.where(f"{self._col('completed_at')} >= :completed_since", completed_since=since)
@@ -424,7 +388,14 @@ class SQLSpecQueueStore:
                 .columns(
                     *(
                         self._col(canonical)
-                        for canonical in ("status", "queue", "execution_backend", "scheduled_at", "priority", "created_at")
+                        for canonical in (
+                            "status",
+                            "queue",
+                            "execution_backend",
+                            "scheduled_at",
+                            "priority",
+                            "created_at",
+                        )
                     )
                 )
             ),

@@ -66,9 +66,7 @@ async def test_valkey_backend_claims_due_tasks_once_by_priority_and_filters_exec
     assert stored_low.status == "pending"
 
 
-async def test_valkey_backend_releases_locks_by_token_via_lua_script(
-    valkey_backend: "ValkeyQueueBackend",
-) -> None:
+async def test_valkey_backend_releases_locks_by_token_via_lua_script(valkey_backend: "ValkeyQueueBackend") -> None:
     """Verify the token-checked release script against real Valkey Lua semantics."""
     client = await valkey_backend._get_client()
     lock_key = valkey_backend._lock_key("task:test")
@@ -83,9 +81,7 @@ async def test_valkey_backend_releases_locks_by_token_via_lua_script(
     assert await client.get(lock_key) is None
 
 
-async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(
-    valkey_backend: "ValkeyQueueBackend",
-) -> None:
+async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_backend: "ValkeyQueueBackend") -> None:
     flaky = await valkey_backend.enqueue("tasks.flaky", max_retries=1)
 
     await valkey_backend.claim_task(flaky.id)

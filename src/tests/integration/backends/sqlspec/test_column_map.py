@@ -49,39 +49,48 @@ ADOPTER_COLUMN_MAP = {
 
 
 def test_column_map_resolves_generated_statement_columns(
-    tmp_path: "Path",
-    sqlite_config_factory: Callable[["Path"], AiosqliteConfig],
+    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
 ) -> None:
     """Every statement variant uses mapped columns while SELECT aliases preserve canonical rows."""
     store = create_queue_store(
-        sqlite_config_factory(tmp_path / "statements.db"),
-        table_name="adopter_jobs",
-        column_map=ADOPTER_COLUMN_MAP,
+        sqlite_config_factory(tmp_path / "statements.db"), table_name="adopter_jobs", column_map=ADOPTER_COLUMN_MAP
     )
 
     insert_sql = store.insert_task({"id": "task-1", "task_name": "tasks.sync"}).build(dialect="sqlite").sql
     select_sql = store.select_task("task-1").build(dialect="sqlite").sql
-    pending_sql = store.list_pending(now=datetime.now(UTC).isoformat(), limit=10, queue="critical").build(
-        dialect="sqlite"
-    ).sql
-    claim_sql = store.claim_task(
-        task_id="task-1",
-        due_at=datetime.now(UTC).isoformat(),
-        heartbeat_at=datetime.now(UTC).isoformat(),
-        started_at=datetime.now(UTC).isoformat(),
-    ).build(dialect="sqlite").sql
-    complete_sql = store.complete_task(
-        task_id="task-1",
-        completed_at=datetime.now(UTC).isoformat(),
-        heartbeat_at=datetime.now(UTC).isoformat(),
-        result_json='{"ok": true}',
-    ).build(dialect="sqlite").sql
+    pending_sql = (
+        store.list_pending(now=datetime.now(UTC).isoformat(), limit=10, queue="critical").build(dialect="sqlite").sql
+    )
+    claim_sql = (
+        store
+        .claim_task(
+            task_id="task-1",
+            due_at=datetime.now(UTC).isoformat(),
+            heartbeat_at=datetime.now(UTC).isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
+        )
+        .build(dialect="sqlite")
+        .sql
+    )
+    complete_sql = (
+        store
+        .complete_task(
+            task_id="task-1",
+            completed_at=datetime.now(UTC).isoformat(),
+            heartbeat_at=datetime.now(UTC).isoformat(),
+            result_json='{"ok": true}',
+        )
+        .build(dialect="sqlite")
+        .sql
+    )
     stale_sql = store.requeue_stale(cutoff=datetime.now(UTC).isoformat()).build(dialect="sqlite").sql
     external_sql = store.list_running_external(limit=10).build(dialect="sqlite").sql
-    completed_sql = store.list_completed_by_task(
-        task_name="tasks.sync",
-        since=datetime.now(UTC).isoformat(),
-    ).build(dialect="sqlite").sql
+    completed_sql = (
+        store
+        .list_completed_by_task(task_name="tasks.sync", since=datetime.now(UTC).isoformat())
+        .build(dialect="sqlite")
+        .sql
+    )
     cleanup_sql = store.cleanup_terminal(before=datetime.now(UTC).isoformat()).build(dialect="sqlite").sql
     ddl_sql = "\n".join(store.create_statements())
 
@@ -109,8 +118,7 @@ def test_column_map_resolves_generated_statement_columns(
 
 
 async def test_column_map_operates_against_adopter_owned_sqlite_table(
-    tmp_path: "Path",
-    sqlite_config_factory: Callable[["Path"], AiosqliteConfig],
+    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
 ) -> None:
     """The backend can run end-to-end against a table that uses adopter names."""
     db_path = tmp_path / "adopter.db"
@@ -143,17 +151,11 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
 
-        referenced = await backend.set_execution_ref(
-            claimed.id,
-            "cloudrun",
-            "job-123",
-            execution_profile="batch",
-        )
+        referenced = await backend.set_execution_ref(claimed.id, "cloudrun", "job-123", execution_profile="batch")
         running_external = await backend.list_running_external(limit=10)
         completed = await backend.complete_task(claimed.id, result={"ok": True})
         completed_by_task = await backend.list_completed_by_task(
-            "tasks.adopter",
-            since=datetime.now(UTC) - timedelta(minutes=1),
+            "tasks.adopter", since=datetime.now(UTC) - timedelta(minutes=1)
         )
     finally:
         await backend.close()
@@ -183,8 +185,7 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
 
 
 async def test_manage_schema_false_emits_no_schema_ddl(
-    tmp_path: "Path",
-    sqlite_config_factory: Callable[["Path"], AiosqliteConfig],
+    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
 ) -> None:
     """Schema creation, drop, migrations, and open() stay hands-off when opted out."""
     db_path = tmp_path / "no-schema.db"
@@ -208,13 +209,11 @@ async def test_manage_schema_false_emits_no_schema_ddl(
 
 
 def test_native_json_columns_bypass_text_serialization(
-    tmp_path: "Path",
-    sqlite_config_factory: Callable[["Path"], AiosqliteConfig],
+    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
 ) -> None:
     """Native JSON columns pass Python values to SQLSpec while text JSON remains encoded."""
     store = create_queue_store(
-        sqlite_config_factory(tmp_path / "native-json.db"),
-        native_json_columns=frozenset({"kwargs_json"}),
+        sqlite_config_factory(tmp_path / "native-json.db"), native_json_columns=frozenset({"kwargs_json"})
     )
     payload = {"nested": ["value"]}
 
@@ -234,8 +233,7 @@ def test_native_json_columns_bypass_text_serialization(
     ),
 )
 def test_backend_config_validates_column_map_and_native_json_columns(
-    config_factory: Callable[[], SQLSpecBackendConfig],
-    match: str,
+    config_factory: Callable[[], SQLSpecBackendConfig], match: str
 ) -> None:
     """Configuration mistakes fail before runtime SQL execution."""
     with pytest.raises(QueueConfigurationError, match=match):
@@ -248,27 +246,27 @@ def _create_adopter_sqlite_schema(path: "Path") -> None:
         connection.execute(
             f"""
             CREATE TABLE adopter_jobs (
-                "{columns['id']}" TEXT PRIMARY KEY,
-                "{columns['task_name']}" TEXT NOT NULL,
-                "{columns['args_json']}" TEXT NOT NULL,
-                "{columns['kwargs_json']}" TEXT NOT NULL,
-                "{columns['queue']}" TEXT NOT NULL,
-                "{columns['execution_backend']}" TEXT NOT NULL,
-                "{columns['execution_profile']}" TEXT,
-                "{columns['execution_ref']}" TEXT,
-                "{columns['status']}" TEXT NOT NULL,
-                "{columns['priority']}" INTEGER NOT NULL,
-                "{columns['max_retries']}" INTEGER NOT NULL,
-                "{columns['retry_count']}" INTEGER NOT NULL,
-                "{columns['scheduled_at']}" TEXT,
-                "{columns['created_at']}" TEXT NOT NULL,
-                "{columns['started_at']}" TEXT,
-                "{columns['completed_at']}" TEXT,
-                "{columns['heartbeat_at']}" TEXT,
-                "{columns['result_json']}" TEXT NOT NULL,
-                "{columns['error']}" TEXT,
-                "{columns['task_key']}" TEXT UNIQUE,
-                "{columns['metadata_json']}" TEXT NOT NULL
+                "{columns["id"]}" TEXT PRIMARY KEY,
+                "{columns["task_name"]}" TEXT NOT NULL,
+                "{columns["args_json"]}" TEXT NOT NULL,
+                "{columns["kwargs_json"]}" TEXT NOT NULL,
+                "{columns["queue"]}" TEXT NOT NULL,
+                "{columns["execution_backend"]}" TEXT NOT NULL,
+                "{columns["execution_profile"]}" TEXT,
+                "{columns["execution_ref"]}" TEXT,
+                "{columns["status"]}" TEXT NOT NULL,
+                "{columns["priority"]}" INTEGER NOT NULL,
+                "{columns["max_retries"]}" INTEGER NOT NULL,
+                "{columns["retry_count"]}" INTEGER NOT NULL,
+                "{columns["scheduled_at"]}" TEXT,
+                "{columns["created_at"]}" TEXT NOT NULL,
+                "{columns["started_at"]}" TEXT,
+                "{columns["completed_at"]}" TEXT,
+                "{columns["heartbeat_at"]}" TEXT,
+                "{columns["result_json"]}" TEXT NOT NULL,
+                "{columns["error"]}" TEXT,
+                "{columns["task_key"]}" TEXT UNIQUE,
+                "{columns["metadata_json"]}" TEXT NOT NULL
             )
             """
         )

@@ -34,7 +34,7 @@ async def valkey_backend(valkey_service: ValkeyService) -> "AsyncIterator[Valkey
             notifications=True,
             notification_channel=f"{prefix}:notifications",
             lock_timeout=0.1,
-        ),
+        )
     )
     await backend.open()
     try:

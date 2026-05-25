@@ -19,10 +19,7 @@ class CockroachAsyncpgQueueStore(SQLSpecQueueStore):
         """Return statements that create cockroach_asyncpg queue artifacts."""
         if not self._manage_schema:
             return []
-        return [
-            self._to_sql(self._create_table_statement()),
-            *self._create_index_statements(),
-        ]
+        return [self._to_sql(self._create_table_statement()), *self._create_index_statements()]
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop cockroach_asyncpg queue artifacts."""

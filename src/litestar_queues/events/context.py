@@ -18,8 +18,7 @@ __all__ = (
 )
 
 _current_task_context: ContextVar["TaskExecutionContext | None"] = ContextVar(
-    "litestar_queues_task_context",
-    default=None,
+    "litestar_queues_task_context", default=None
 )
 
 
@@ -84,11 +83,7 @@ class TaskExecutionContext:
         await self.publish(event_type, message=message, payload=payload, channels=channels)
 
     async def lifecycle(
-        self,
-        event_type: str,
-        *,
-        message: str | None = None,
-        payload: dict[str, Any] | None = None,
+        self, event_type: str, *, message: str | None = None, payload: dict[str, Any] | None = None
     ) -> None:
         """Publish a worker-owned lifecycle event."""
         await self.publish(event_type, message=message, payload=payload)
@@ -165,21 +160,12 @@ async def publish_task_progress(
 ) -> None:
     """Publish progress through the currently bound task context."""
     await require_current_task_context().progress(
-        current=current,
-        total=total,
-        percent=percent,
-        message=message,
-        payload=payload,
-        channels=channels,
+        current=current, total=total, percent=percent, message=message, payload=payload, channels=channels
     )
 
 
 async def publish_task_log(
-    message: str,
-    *,
-    level: str = "info",
-    payload: dict[str, Any] | None = None,
-    channels: Sequence[str] | None = None,
+    message: str, *, level: str = "info", payload: dict[str, Any] | None = None, channels: Sequence[str] | None = None
 ) -> None:
     """Publish a log event through the currently bound task context."""
     await require_current_task_context().log(message, level=level, payload=payload, channels=channels)

@@ -6,7 +6,6 @@ within the drain window.
 
 Skipped on Windows because SIGTERM is not meaningfully delivered there.
 """
-from __future__ import annotations
 
 import os
 import signal

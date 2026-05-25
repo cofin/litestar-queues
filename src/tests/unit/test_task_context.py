@@ -36,10 +36,7 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> None:
         return "ok"
 
     async with QueueService(
-        QueueConfig(
-            execution_backend="immediate",
-            event_config=QueueEventConfig(enabled=True, sink=sink),
-        )
+        QueueConfig(execution_backend="immediate", event_config=QueueEventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(with_context)
         await result.refresh()
@@ -52,13 +49,7 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> None:
     assert get_current_task_context() is None
 
     event_types = [event.type for event in sink.events]
-    assert event_types == [
-        "task.started",
-        "task.progress",
-        "task.log",
-        "task.custom",
-        "task.completed",
-    ]
+    assert event_types == ["task.started", "task.progress", "task.log", "task.custom", "task.completed"]
     progress = sink.events[1]
     assert progress.progress_current is None
     assert progress.progress_total == 10
@@ -79,10 +70,7 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
         return received_kwargs
 
     async with QueueService(
-        QueueConfig(
-            execution_backend="immediate",
-            event_config=QueueEventConfig(enabled=True, sink=sink),
-        )
+        QueueConfig(execution_backend="immediate", event_config=QueueEventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(plain)
         await result.refresh()

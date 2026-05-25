@@ -72,20 +72,8 @@ async def test_stream_queue_events_subscribes_and_skips_malformed_and_duplicates
 
 async def test_stream_queue_events_dedups_by_event_key() -> None:
     """Two events with the same event_key but different ids emit only once."""
-    first = QueueEvent(
-        type="task.progress",
-        scope="task",
-        id="evt-1",
-        task_id="task-1",
-        event_key="dedup-1",
-    )
-    second = QueueEvent(
-        type="task.progress",
-        scope="task",
-        id="evt-2",
-        task_id="task-1",
-        event_key="dedup-1",
-    )
+    first = QueueEvent(type="task.progress", scope="task", id="evt-1", task_id="task-1", event_key="dedup-1")
+    second = QueueEvent(type="task.progress", scope="task", id="evt-2", task_id="task-1", event_key="dedup-1")
     plugin = FakeChannelsPlugin([first.to_json(), second.to_json()])
     socket = FakeSocket(plugin)
 

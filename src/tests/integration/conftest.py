@@ -15,10 +15,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-async def queue_backend(
-    request: pytest.FixtureRequest,
-    tmp_path: "Path",
-) -> "AsyncIterator[BaseQueueBackend]":
+async def queue_backend(request: pytest.FixtureRequest, tmp_path: "Path") -> "AsyncIterator[BaseQueueBackend]":
     """Yield an opened queue backend parametrized over QUEUE_BACKENDS.
 
     For service-backed adapters (Postgres, MySQL, Oracle), tests share the same
@@ -92,8 +89,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
             elif "xfail-upstream" in case.capabilities:
                 marks.append(
                     pytest.mark.xfail(
-                        reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)",
-                        strict=False,
+                        reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)", strict=False
                     )
                 )
             params.append(pytest.param(case, marks=marks, id=case.name))

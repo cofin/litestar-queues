@@ -29,9 +29,7 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
 ) -> None:
     local = await queue_backend.enqueue("tasks.local", priority=100, execution_backend="local")
     external = await queue_backend.enqueue(
-        "tasks.remote",
-        execution_backend="cloudrun",
-        execution_profile="batch-small",
+        "tasks.remote", execution_backend="cloudrun", execution_profile="batch-small"
     )
 
     pending = await queue_backend.list_pending(limit=10, execution_backend="cloudrun")
@@ -54,9 +52,7 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert stored_local.status == "pending"
 
 
-async def test_backend_contract_exposes_operational_queries_and_cleanup(
-    queue_backend: "BaseQueueBackend",
-) -> None:
+async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_backend: "BaseQueueBackend") -> None:
     completed = await queue_backend.enqueue("tasks.report")
     claimed_completed = await queue_backend.claim_task(completed.id)
     assert claimed_completed is not None
@@ -93,15 +89,11 @@ async def test_memory_backend_notifications_wake_waiters() -> None:
     assert await backend.wait_for_notifications(timeout=0.01) is False
 
 
-async def test_task_dependency_resolver_merges_kwargs_into_task_call(
-    queue_backend: "BaseQueueBackend",
-) -> None:
+async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backend: "BaseQueueBackend") -> None:
     clear_task_registry()
 
     async def resolver(
-        _task: "Task[..., object]",
-        _record: "QueuedTaskRecord",
-        _context: "TaskExecutionContext",
+        _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
     ) -> dict[str, object]:
         return {"injected_service": "from-resolver"}
 
@@ -121,15 +113,11 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(
     assert result.result["injected_service"] == "from-resolver"
 
 
-async def test_task_dependency_resolver_cannot_override_sentinels(
-    queue_backend: "BaseQueueBackend",
-) -> None:
+async def test_task_dependency_resolver_cannot_override_sentinels(queue_backend: "BaseQueueBackend") -> None:
     clear_task_registry()
 
     async def resolver(
-        _task: "Task[..., object]",
-        _record: "QueuedTaskRecord",
-        _context: "TaskExecutionContext",
+        _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
     ) -> dict[str, object]:
         return {"_job_id": "hijacked", "_task_context": "hijacked"}
 
@@ -168,9 +156,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     attempts = {"count": 0}
 
     async def resolver(
-        _task: "Task[..., object]",
-        _record: "QueuedTaskRecord",
-        _context: "TaskExecutionContext",
+        _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
     ) -> dict[str, object]:
         attempts["count"] += 1
         if attempts["count"] == 1:
@@ -183,9 +169,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
         return "ok"
 
     config = QueueConfig(
-        task_dependency_resolver=resolver,
-        execution_backend="local",
-        event_config=QueueEventConfig(enabled=True),
+        task_dependency_resolver=resolver, execution_backend="local", event_config=QueueEventConfig(enabled=True)
     )
     service = QueueService(config, queue_backend=queue_backend, event_publisher=publisher)
 
@@ -216,9 +200,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     assert failed_index < completed_index
 
 
-async def test_task_dependency_resolver_default_is_none_with_no_invocation(
-    queue_backend: "BaseQueueBackend",
-) -> None:
+async def test_task_dependency_resolver_default_is_none_with_no_invocation(queue_backend: "BaseQueueBackend") -> None:
     clear_task_registry()
     config = QueueConfig()
     assert config.task_dependency_resolver is None

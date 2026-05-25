@@ -29,9 +29,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     def capabilities(self) -> QueueBackendCapabilities:
         """Return backend behavior capabilities."""
         return QueueBackendCapabilities(
-            supports_notifications=True,
-            notification_backend="asyncio-event",
-            notifications_durable=False,
+            supports_notifications=True, notification_backend="asyncio-event", notifications_durable=False
         )
 
     async def enqueue(
@@ -87,11 +85,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return self._records.get(task_id)
 
     async def list_pending(
-        self,
-        *,
-        limit: int = 1,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
     ) -> list[QueuedTaskRecord]:
         due_records = [
             record
@@ -128,13 +122,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.error = None
             return record
 
-    async def fail_task(
-        self,
-        task_id: "UUID",
-        error: str,
-        *,
-        retry: bool = True,
-    ) -> QueuedTaskRecord | None:
+    async def fail_task(self, task_id: "UUID", error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
@@ -189,12 +177,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return count
 
     async def set_execution_ref(
-        self,
-        task_id: "UUID",
-        execution_backend: str,
-        execution_ref: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: "UUID", execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._lock:
             record = self._records.get(task_id)
@@ -206,11 +189,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return record
 
     async def set_execution_backend(
-        self,
-        task_id: "UUID",
-        execution_backend: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: "UUID", execution_backend: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._lock:
             record = self._records.get(task_id)
@@ -236,11 +215,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return statistics
 
     async def list_completed_by_task(
-        self,
-        task_name: str,
-        *,
-        since: datetime | None = None,
-        limit: int = 10,
+        self, task_name: str, *, since: datetime | None = None, limit: int = 10
     ) -> list[QueuedTaskRecord]:
         records = [
             record

@@ -32,11 +32,7 @@ def test_queue_channels_normalize_parts_deterministically() -> None:
 
 async def test_queue_event_publisher_targets_configured_channels() -> None:
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(
-        sink,
-        publish_queue_channel=True,
-        publish_global_lifecycle=True,
-    )
+    publisher = QueueEventPublisher(sink, publish_queue_channel=True, publish_global_lifecycle=True)
     event = QueueEvent(
         type="task.started",
         scope="task",

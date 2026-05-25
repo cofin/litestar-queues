@@ -154,11 +154,7 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
 async def test_worker_periodic_requeue_calls_backend_on_cadence() -> None:
     backend = _CountingInMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
-        worker = Worker(
-            service,
-            stale_after=timedelta(seconds=30),
-            stale_check_interval=0.0,
-        )
+        worker = Worker(service, stale_after=timedelta(seconds=30), stale_check_interval=0.0)
 
         await worker._maybe_requeue_stale()
         await worker._maybe_requeue_stale()
@@ -216,10 +212,7 @@ async def test_worker_id_propagates_into_published_events() -> None:
         return "ok"
 
     async with QueueService(
-        QueueConfig(
-            execution_backend="local",
-            event_config=QueueEventConfig(enabled=True, sink=sink),
-        )
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
     ) as service:
         await service.enqueue(worker_id_task)
         worker = Worker(service, worker_id="worker-test")

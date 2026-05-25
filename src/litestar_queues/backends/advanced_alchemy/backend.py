@@ -32,10 +32,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     )
 
     def __init__(
-        self,
-        config: "QueueConfig | None" = None,
-        *,
-        backend_config: AdvancedAlchemyBackendConfig | None = None,
+        self, config: "QueueConfig | None" = None, *, backend_config: AdvancedAlchemyBackendConfig | None = None
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or AdvancedAlchemyBackendConfig()
@@ -121,11 +118,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             return await service.get_task_by_key(key)
 
     async def list_pending(
-        self,
-        *,
-        limit: int = 1,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
     ) -> list[QueuedTaskRecord]:
         async with self._service() as service:
             return await service.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
@@ -135,10 +128,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             return await service.claim_task(task_id)
 
     async def claim_next(
-        self,
-        *,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, queue: str | None = None, execution_backend: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._operation() as service:
             return await service.claim_next(queue=queue, execution_backend=execution_backend)
@@ -147,13 +137,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         async with self._operation() as service:
             return await service.complete_task(task_id, result=result)
 
-    async def fail_task(
-        self,
-        task_id: UUID,
-        error: str,
-        *,
-        retry: bool = True,
-    ) -> QueuedTaskRecord | None:
+    async def fail_task(self, task_id: UUID, error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
         async with self._operation() as service:
             return await service.fail_task(task_id, error, retry=retry)
 
@@ -174,33 +158,19 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             return await service.requeue_stale_running(stale_after=stale_after)
 
     async def set_execution_ref(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        execution_ref: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._operation() as service:
             return await service.set_execution_ref(
-                task_id,
-                execution_backend,
-                execution_ref,
-                execution_profile=execution_profile,
+                task_id, execution_backend, execution_ref, execution_profile=execution_profile
             )
 
     async def set_execution_backend(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: UUID, execution_backend: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._operation() as service:
             record = await service.set_execution_backend(
-                task_id,
-                execution_backend,
-                execution_profile=execution_profile,
+                task_id, execution_backend, execution_profile=execution_profile
             )
         if record is not None:
             await self.notify_new_task(record)
@@ -215,11 +185,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             return await service.get_statistics()
 
     async def list_completed_by_task(
-        self,
-        task_name: str,
-        *,
-        since: datetime | None = None,
-        limit: int = 10,
+        self, task_name: str, *, since: datetime | None = None, limit: int = 10
     ) -> list[QueuedTaskRecord]:
         async with self._service() as service:
             return await service.list_completed_by_task(task_name, since=since, limit=limit)

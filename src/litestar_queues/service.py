@@ -86,10 +86,7 @@ class QueueService:
         return self
 
     async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object,
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
     ) -> None:
         await self.close()
 
@@ -181,10 +178,7 @@ class QueueService:
         return await self.get_queue_backend().get_task(task_id)
 
     async def claim_next(
-        self,
-        *,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, queue: str | None = None, execution_backend: str | None = None
     ) -> "QueuedTaskRecord | None":
         """Claim the next due queued task.
 
@@ -193,12 +187,7 @@ class QueueService:
         """
         return await self.get_queue_backend().claim_next(queue=queue, execution_backend=execution_backend)
 
-    async def execute_record(
-        self,
-        record: "QueuedTaskRecord",
-        *,
-        worker_id: str | None = None,
-    ) -> "QueuedTaskRecord":
+    async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: str | None = None) -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.
 
         Args:
@@ -265,8 +254,7 @@ class QueueService:
         updated = await self.get_queue_backend().complete_task(record.id, result=result)
         completed = updated or record
         await task_context.lifecycle(
-            "task.completed",
-            payload={"status": completed.status, "retry_count": completed.retry_count},
+            "task.completed", payload={"status": completed.status, "retry_count": completed.retry_count}
         )
         await self._reschedule_if_needed(completed)
         return completed
@@ -296,7 +284,8 @@ class QueueService:
                     key=schedule_key,
                     max_retries=0,
                     scheduled_at=scheduled_at,
-                    execution_backend=task_obj.execution_backend or execution_backend_name(self._config.execution_backend),
+                    execution_backend=task_obj.execution_backend
+                    or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
                     metadata=task_obj.metadata({"schedule": schedule_metadata}),
                 )
@@ -304,10 +293,7 @@ class QueueService:
         return records
 
     async def _resolve_task_dependencies(
-        self,
-        task: Task[..., object],
-        record: "QueuedTaskRecord",
-        task_context: TaskExecutionContext,
+        self, task: Task[..., object], record: "QueuedTaskRecord", task_context: TaskExecutionContext
     ) -> "Mapping[str, object] | None":
         """Invoke the configured task dependency resolver, if any.
 

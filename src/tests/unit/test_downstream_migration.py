@@ -9,15 +9,14 @@ from litestar_queues.task import clear_task_registry, get_scheduled_tasks
 pytestmark = pytest.mark.anyio
 
 
-def _use_upper_jitter(_lower: float, upper: float) -> float:
-    return upper
+class _UpperJitterRandom:
+    def uniform(self, _lower: float, upper: float) -> float:
+        return upper
 
 
-async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
     task_module = import_module("litestar_queues.task")
-    monkeypatch.setattr(task_module.random, "uniform", _use_upper_jitter)
+    monkeypatch.setattr(task_module, "_RANDOM", _UpperJitterRandom())
 
     @task(
         "jobs.weekly_report",

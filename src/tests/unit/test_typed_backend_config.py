@@ -23,10 +23,7 @@ class TypedQueueBackend(BaseQueueBackend):
     __slots__ = ("backend_config",)
 
     def __init__(
-        self,
-        config: QueueConfig | None = None,
-        *,
-        backend_config: CustomQueueBackendConfig | None = None,
+        self, config: QueueConfig | None = None, *, backend_config: CustomQueueBackendConfig | None = None
     ) -> None:
         super().__init__(config=config)
         self.backend_config = backend_config
@@ -37,10 +34,7 @@ class TypedExecutionBackend(BaseExecutionBackend):
     __slots__ = ("execution_config",)
 
     def __init__(
-        self,
-        config: QueueConfig | None = None,
-        *,
-        execution_config: CustomExecutionBackendConfig | None = None,
+        self, config: QueueConfig | None = None, *, execution_config: CustomExecutionBackendConfig | None = None
     ) -> None:
         super().__init__(config=config)
         self.execution_config = execution_config

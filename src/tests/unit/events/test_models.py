@@ -78,23 +78,14 @@ async def test_queue_event_serialization_uses_camelcase_wire_format() -> None:
 
 async def test_queue_event_payload_keys_are_not_camelized() -> None:
     """User-supplied payload contents are passed through verbatim."""
-    event = QueueEvent(
-        type="task.event",
-        scope="task",
-        payload={"snake_inner": 1, "nested": {"deep_key": 2}},
-    )
+    event = QueueEvent(type="task.event", scope="task", payload={"snake_inner": 1, "nested": {"deep_key": 2}})
     data = event.to_dict()
     assert data["payload"] == {"snake_inner": 1, "nested": {"deep_key": 2}}
 
 
 async def test_queue_event_round_trip_preserves_event_key() -> None:
     """event_key survives to_json -> from_json round trip."""
-    event = QueueEvent(
-        type="task.completed",
-        scope="task",
-        task_id="t-1",
-        event_key="dedup-xyz",
-    )
+    event = QueueEvent(type="task.completed", scope="task", task_id="t-1", event_key="dedup-xyz")
     encoded = event.to_json()
 
     encoded_text = encoded.decode() if isinstance(encoded, (bytes, bytearray)) else encoded

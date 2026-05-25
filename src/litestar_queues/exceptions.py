@@ -1,10 +1,4 @@
-__all__ = (
-    "MissingDependencyError",
-    "NonRetryableError",
-    "QueueConfigurationError",
-    "QueueError",
-    "non_retryable",
-)
+__all__ = ("MissingDependencyError", "NonRetryableError", "QueueConfigurationError", "QueueError", "non_retryable")
 
 
 class QueueError(Exception):

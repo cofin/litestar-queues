@@ -80,11 +80,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def list_pending(
-        self,
-        *,
-        limit: int,
-        queue: str | None,
-        execution_backend: str | None,
+        self, *, limit: int, queue: str | None, execution_backend: str | None
     ) -> list[QueuedTaskRecord]:
         statement = self._pending_statement(queue=queue, execution_backend=execution_backend).limit(limit)
         models = await self.list(statement=statement)
@@ -107,12 +103,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
 
-    async def claim_next(
-        self,
-        *,
-        queue: str | None,
-        execution_backend: str | None,
-    ) -> QueuedTaskRecord | None:
+    async def claim_next(self, *, queue: str | None, execution_backend: str | None) -> QueuedTaskRecord | None:
         pending = await self.list_pending(limit=10, queue=queue, execution_backend=execution_backend)
         for record in pending:
             claimed = await self.claim_task(record.id)
@@ -127,11 +118,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             update(model_type)
             .where(model_type.id == task_id)
             .values(
-                status="completed",
-                completed_at=now,
-                heartbeat_at=now,
-                result_json=_serialize_json(result),
-                error=None,
+                status="completed", completed_at=now, heartbeat_at=now, result_json=_serialize_json(result), error=None
             )
         )
         if update_result.rowcount != 1:
@@ -200,31 +187,19 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         result = await self.repository.session.execute(
             update(model_type)
             .where(*criteria)
-            .values(
-                status="pending",
-                started_at=None,
-                heartbeat_at=None,
-                retry_count=model_type.retry_count + 1,
-            )
+            .values(status="pending", started_at=None, heartbeat_at=None, retry_count=model_type.retry_count + 1)
         )
         return int(result.rowcount or 0)
 
     async def set_execution_ref(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        execution_ref: str,
-        *,
-        execution_profile: str | None,
+        self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None
     ) -> QueuedTaskRecord | None:
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
             .where(model_type.id == task_id)
             .values(
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                execution_ref=execution_ref,
+                execution_backend=execution_backend, execution_profile=execution_profile, execution_ref=execution_ref
             )
         )
         if result.rowcount != 1:
@@ -233,21 +208,13 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def set_execution_backend(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        *,
-        execution_profile: str | None,
+        self, task_id: UUID, execution_backend: str, *, execution_profile: str | None
     ) -> QueuedTaskRecord | None:
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
             .where(model_type.id == task_id)
-            .values(
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                execution_ref=None,
-            )
+            .values(execution_backend=execution_backend, execution_profile=execution_profile, execution_ref=None)
         )
         if result.rowcount != 1:
             return None
@@ -258,10 +225,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model_type = self.model_type
         statement = (
             select(model_type)
-            .where(
-                model_type.status.in_(("pending", "scheduled", "running")),
-                model_type.execution_ref.is_not(None),
-            )
+            .where(model_type.status.in_(("pending", "scheduled", "running")), model_type.execution_ref.is_not(None))
             .order_by(model_type.started_at, model_type.created_at)
         )
         if limit is not None:
@@ -281,19 +245,13 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return statistics
 
     async def list_completed_by_task(
-        self,
-        task_name: str,
-        *,
-        since: datetime | None,
-        limit: int,
+        self, task_name: str, *, since: datetime | None, limit: int
     ) -> list[QueuedTaskRecord]:
         model_type = self.model_type
         criteria = [model_type.task_name == task_name, model_type.status == "completed"]
         if since is not None:
             criteria.append(model_type.completed_at >= since)
-        statement = (
-            select(model_type).where(and_(*criteria)).order_by(desc(model_type.completed_at)).limit(limit)
-        )
+        statement = select(model_type).where(and_(*criteria)).order_by(desc(model_type.completed_at)).limit(limit)
         models = await self.list(statement=statement)
         return [self.record_from_model(model) for model in models]
 
@@ -389,11 +347,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             criteria.append(model_type.queue == queue)
         if execution_backend is not None:
             criteria.append(model_type.execution_backend == execution_backend)
-        return (
-            select(model_type)
-            .where(and_(*criteria))
-            .order_by(desc(model_type.priority), model_type.created_at)
-        )
+        return select(model_type).where(and_(*criteria)).order_by(desc(model_type.priority), model_type.created_at)
 
 
 class _AdvancedAlchemySerialization(Protocol):

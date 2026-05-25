@@ -37,9 +37,7 @@ class AAEngineCase:
 def _config_aiosqlite(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
-    return SQLAlchemyAsyncConfig(
-        connection_string=f"sqlite+aiosqlite:///{ctx.tmp_path / 'queue-aa-aiosqlite.db'}",
-    )
+    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{ctx.tmp_path / 'queue-aa-aiosqlite.db'}")
 
 
 def _config_postgres_asyncpg(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
@@ -48,7 +46,7 @@ def _config_postgres_asyncpg(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     svc = cast("PostgresService", ctx.service)
     assert svc is not None
     return SQLAlchemyAsyncConfig(
-        connection_string=f"postgresql+asyncpg://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.database}",
+        connection_string=f"postgresql+asyncpg://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.database}"
     )
 
 
@@ -58,7 +56,7 @@ def _config_mysql_asyncmy(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     svc = cast("MySQLService", ctx.service)
     assert svc is not None
     return SQLAlchemyAsyncConfig(
-        connection_string=f"mysql+asyncmy://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.db}",
+        connection_string=f"mysql+asyncmy://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.db}"
     )
 
 
@@ -70,7 +68,7 @@ def _config_oracle_oracledb(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     return SQLAlchemyAsyncConfig(
         connection_string=(
             f"oracle+oracledb_async://{svc.user}:{svc.password}@{svc.host}:{svc.port}/?service_name={svc.service_name}"
-        ),
+        )
     )
 
 

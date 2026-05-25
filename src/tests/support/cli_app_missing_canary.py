@@ -1,4 +1,5 @@
 """App factory used by the scheduler-health missing-canary test."""
+
 from litestar import Litestar
 
 from litestar_queues import QueueConfig, QueuePlugin

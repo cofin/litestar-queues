@@ -3,7 +3,6 @@
 The ``run`` subcommand is exercised by ``test_cli_run.py`` via subprocess
 because ``CliRunner`` cannot deliver real signals.
 """
-from __future__ import annotations
 
 import json
 import sys
@@ -62,6 +61,23 @@ def test_litestar_queues_help_lists_subcommands(monkeypatch: pytest.MonkeyPatch)
     assert "scheduler-health" in result.stdout
 
 
+def test_cli_module_exposes_public_command_callbacks() -> None:
+    from litestar_queues import _cli
+
+    expected_callbacks = {
+        "run": "run_command",
+        "scheduler-health": "scheduler_health_command",
+        "status": "status_command",
+    }
+
+    for command_name, callback_name in expected_callbacks.items():
+        command = _cli.queues_group.commands[command_name]
+        assert command.callback is not None
+        assert command.callback.__name__ == callback_name
+        assert hasattr(_cli, callback_name)
+        assert not hasattr(_cli, f"_{callback_name}")
+
+
 def test_status_subcommand_default_table(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "status"], monkeypatch)
 
@@ -81,9 +97,7 @@ def test_status_subcommand_json(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_status_subcommand_advisory_queue_filter(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _runner_invoke(
-        "tests.support.cli_app:app", ["queues", "status", "--queue", "billing"], monkeypatch
-    )
+    result = _runner_invoke("tests.support.cli_app:app", ["queues", "status", "--queue", "billing"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "advisory" in result.stderr.lower()
@@ -91,28 +105,20 @@ def test_status_subcommand_advisory_queue_filter(monkeypatch: pytest.MonkeyPatch
 
 def test_scheduler_health_returns_4_when_no_canary_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Canary task is registered but never executed, so the health check is stale."""
-    result = _runner_invoke(
-        "tests.support.cli_app:app", ["queues", "scheduler-health", "--minutes", "5"], monkeypatch
-    )
+    result = _runner_invoke("tests.support.cli_app:app", ["queues", "scheduler-health", "--minutes", "5"], monkeypatch)
 
     assert result.exit_code == 4
     assert "stale" in result.stderr.lower()
 
 
 def test_scheduler_health_returns_3_when_canary_not_registered(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _runner_invoke(
-        "tests.support.cli_app_missing_canary:app",
-        ["queues", "scheduler-health"],
-        monkeypatch,
-    )
+    result = _runner_invoke("tests.support.cli_app_missing_canary:app", ["queues", "scheduler-health"], monkeypatch)
 
     assert result.exit_code == 3
     assert "canary" in result.stderr.lower()
 
 
-def test_scheduler_health_returns_0_when_canary_completed_recently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: pytest.MonkeyPatch) -> None:
     """Seed a completed canary record and assert exit 0 with healthy message."""
     import anyio
 
@@ -138,9 +144,7 @@ def test_scheduler_health_returns_0_when_canary_completed_recently(
 
     anyio.run(_seed_canary)
 
-    result = _runner_invoke(
-        "tests.support.cli_app:app", ["queues", "scheduler-health"], monkeypatch
-    )
+    result = _runner_invoke("tests.support.cli_app:app", ["queues", "scheduler-health"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "healthy" in result.stdout.lower()

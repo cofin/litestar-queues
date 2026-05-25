@@ -34,7 +34,7 @@ async def redis_backend(redis_service: RedisService) -> "AsyncIterator[RedisQueu
             notifications=True,
             notification_channel=f"{prefix}:notifications",
             lock_timeout=0.1,
-        ),
+        )
     )
     await backend.open()
     try:

@@ -36,11 +36,7 @@ class ChannelsQueueEventSink:
 
 
 async def stream_queue_events(
-    socket: Any,
-    channels: Sequence[str],
-    *,
-    history: int = 0,
-    channels_backend: object | None = None,
+    socket: Any, channels: Sequence[str], *, history: int = 0, channels_backend: object | None = None
 ) -> None:
     """Stream queue events from an app-owned Channels subscription to a WebSocket.
 
@@ -99,10 +95,7 @@ def _resolve_channels_backend(socket: Any) -> object | None:
 
 @asynccontextmanager
 async def _event_stream(
-    backend: object,
-    channels: Sequence[str],
-    *,
-    history: int,
+    backend: object, channels: Sequence[str], *, history: int
 ) -> AsyncIterator[AsyncIterator[bytes]]:
     if hasattr(backend, "start_subscription"):
         typed_backend = cast("Any", backend)

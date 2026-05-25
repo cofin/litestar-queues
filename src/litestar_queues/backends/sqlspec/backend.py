@@ -68,10 +68,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     )
 
     def __init__(
-        self,
-        config: "QueueConfig | None" = None,
-        *,
-        backend_config: SQLSpecBackendConfig | None = None,
+        self, config: "QueueConfig | None" = None, *, backend_config: SQLSpecBackendConfig | None = None
     ) -> None:
         super().__init__(config=config)
         backend_config = backend_config or SQLSpecBackendConfig()
@@ -222,11 +219,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._record_from_row(row) if row is not None else None
 
     async def list_pending(
-        self,
-        *,
-        limit: int = 1,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
     ) -> list[QueuedTaskRecord]:
         rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
@@ -252,7 +245,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         due_at=_serialize_datetime(now),
                         heartbeat_at=_serialize_datetime(now),
                         started_at=_serialize_datetime(now),
-                    ),
+                    )
                 )
                 if result.rows_affected == 0:
                     await driver.rollback()
@@ -270,10 +263,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._record_from_row(updated_row) if updated_row is not None else None
 
     async def claim_next(
-        self,
-        *,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, queue: str | None = None, execution_backend: str | None = None
     ) -> QueuedTaskRecord | None:
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
@@ -295,7 +285,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         completed_at=_serialize_datetime(now),
                         heartbeat_at=_serialize_datetime(now),
                         result_json=store.serialize_json_column("result_json", result),
-                    ),
+                    )
                 )
                 row = await self._select_task(driver, task_id) if updated.rows_affected else None
                 await driver.commit()
@@ -305,13 +295,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return self._record_from_row(row) if row is not None else None
 
-    async def fail_task(
-        self,
-        task_id: UUID,
-        error: str,
-        *,
-        retry: bool = True,
-    ) -> QueuedTaskRecord | None:
+    async def fail_task(self, task_id: UUID, error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -324,10 +308,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 if retry and record.retry_count < record.max_retries:
                     await driver.execute(
                         self._get_store().retry_task(
-                            task_id=str(task_id),
-                            error=error,
-                            retry_count=record.retry_count + 1,
-                        ),
+                            task_id=str(task_id), error=error, retry_count=record.retry_count + 1
+                        )
                     )
                 else:
                     now = _utc_now()
@@ -337,7 +319,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             completed_at=_serialize_datetime(now),
                             heartbeat_at=_serialize_datetime(now),
                             error=error,
-                        ),
+                        )
                     )
 
                 updated_row = await self._select_task(driver, task_id)
@@ -353,7 +335,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 result = await driver.execute(
-                    self._get_store().cancel_task(task_id=str(task_id), completed_at=_serialize_datetime(_utc_now())),
+                    self._get_store().cancel_task(task_id=str(task_id), completed_at=_serialize_datetime(_utc_now()))
                 )
                 await driver.commit()
             except Exception:
@@ -368,9 +350,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             try:
                 await driver.execute(
                     self._get_store().touch_heartbeat(
-                        task_id=str(task_id),
-                        heartbeat_at=_serialize_datetime(_utc_now()),
-                    ),
+                        task_id=str(task_id), heartbeat_at=_serialize_datetime(_utc_now())
+                    )
                 )
                 await driver.commit()
             except Exception:
@@ -405,12 +386,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return int(result.rows_affected)
 
     async def set_execution_ref(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        execution_ref: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._session() as driver:
             await driver.begin()
@@ -421,7 +397,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         execution_backend=execution_backend,
                         execution_profile=execution_profile,
                         execution_ref=execution_ref,
-                    ),
+                    )
                 )
                 row = await self._select_task(driver, task_id) if result.rows_affected else None
                 await driver.commit()
@@ -432,21 +408,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._record_from_row(row) if row is not None else None
 
     async def set_execution_backend(
-        self,
-        task_id: UUID,
-        execution_backend: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: UUID, execution_backend: str, *, execution_profile: str | None = None
     ) -> QueuedTaskRecord | None:
         async with self._session() as driver:
             await driver.begin()
             try:
                 result = await driver.execute(
                     self._get_store().set_execution_backend(
-                        task_id=str(task_id),
-                        execution_backend=execution_backend,
-                        execution_profile=execution_profile,
-                    ),
+                        task_id=str(task_id), execution_backend=execution_backend, execution_profile=execution_profile
+                    )
                 )
                 row = await self._select_task(driver, task_id) if result.rows_affected else None
                 await driver.commit()
@@ -474,18 +444,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return statistics
 
     async def list_completed_by_task(
-        self,
-        task_name: str,
-        *,
-        since: datetime | None = None,
-        limit: int = 10,
+        self, task_name: str, *, since: datetime | None = None, limit: int = 10
     ) -> list[QueuedTaskRecord]:
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_completed_by_task(
-                    task_name=task_name,
-                    since=_serialize_datetime(since),
-                    limit=limit,
+                    task_name=task_name, since=_serialize_datetime(since), limit=limit
                 )
             )
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
@@ -567,10 +531,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if not self._manage_schema:
             return False
         return _resolve_bool(
-            self._run_migrations,
-            _queue_extension_settings(self._sqlspec_config),
-            "run_migrations",
-            False,
+            self._run_migrations, _queue_extension_settings(self._sqlspec_config), "run_migrations", False
         )
 
     def _resolve_notification_channel(self) -> str:
@@ -610,10 +571,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._notification_backend = cast("str | None", getattr(self._event_channel, "_backend_name", None))
 
     def _configure_notification_overrides(
-        self,
-        sqlspec_config: Any,
-        queue_settings: dict[str, Any],
-        events_settings: dict[str, Any],
+        self, sqlspec_config: Any, queue_settings: dict[str, Any], events_settings: dict[str, Any]
     ) -> dict[str, Any]:
         merged_event_settings = dict(events_settings)
         for name in _QUEUE_SETTING_EVENT_SETTINGS:
@@ -749,19 +707,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._heartbeat_pool_registered = False
 
     async def _select_pending_rows(
-        self,
-        *,
-        limit: int,
-        queue: str | None,
-        execution_backend: str | None,
+        self, *, limit: int, queue: str | None, execution_backend: str | None
     ) -> list[dict[str, Any]]:
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_pending(
-                    now=_serialize_datetime(_utc_now()),
-                    limit=limit,
-                    queue=queue,
-                    execution_backend=execution_backend,
+                    now=_serialize_datetime(_utc_now()), limit=limit, queue=queue, execution_backend=execution_backend
                 )
             )
         return cast("list[dict[str, Any]]", rows)

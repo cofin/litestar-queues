@@ -21,12 +21,7 @@ def clean_task_registry() -> None:
 
 
 async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> None:
-    plugin = QueuePlugin(
-        QueueConfig(
-            execution_backend="local",
-            task_modules=("tests._factories.queue_tasks",),
-        )
-    )
+    plugin = QueuePlugin(QueueConfig(execution_backend="local", task_modules=("tests._factories.queue_tasks",)))
     app = Litestar(plugins=[plugin])
 
     async with AsyncTestClient(app=app):
@@ -41,13 +36,7 @@ async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> 
 
 
 async def test_plugin_start_worker_creates_and_cleans_up_worker() -> None:
-    plugin = QueuePlugin(
-        QueueConfig(
-            execution_backend="local",
-            start_worker=True,
-            worker_poll_interval=0.01,
-        )
-    )
+    plugin = QueuePlugin(QueueConfig(execution_backend="local", start_worker=True, worker_poll_interval=0.01))
     app = Litestar(plugins=[plugin])
 
     async with AsyncTestClient(app=app):

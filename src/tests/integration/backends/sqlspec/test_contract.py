@@ -336,14 +336,7 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
         ("asyncmy", "mysql", "AsyncmyConfig", {}, AsyncmyQueueStore, "ENGINE=InnoDB"),
         ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, "WHERE status IN"),
         ("bigquery", "bigquery", "BigQueryConfig", {}, BigQueryQueueStore, "CREATE TABLE"),
-        (
-            "cockroach_asyncpg",
-            "postgres",
-            "CockroachAsyncpgConfig",
-            {},
-            CockroachAsyncpgQueueStore,
-            "TIMESTAMPTZ",
-        ),
+        ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig", {}, CockroachAsyncpgQueueStore, "TIMESTAMPTZ"),
         (
             "cockroach_psycopg",
             "postgres",
@@ -383,10 +376,7 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
 ) -> None:
     store = create_queue_store(
         _fake_adapter_config(
-            adapter_name,
-            dialect=dialect,
-            config_type_name=config_type_name,
-            connection_config=connection_config,
+            adapter_name, dialect=dialect, config_type_name=config_type_name, connection_config=connection_config
         ),
         table_name="queue_tasks",
     )
@@ -406,13 +396,9 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
         ("pymysql", "PyMysqlConfig"),
     ),
 )
-async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(
-    adapter_name: str,
-    config_type_name: str,
-) -> None:
+async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(adapter_name: str, config_type_name: str) -> None:
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="mysql", config_type_name=config_type_name),
-        table_name="queue_tasks",
+        _fake_adapter_config(adapter_name, dialect="mysql", config_type_name=config_type_name), table_name="queue_tasks"
     )
 
     ddl = "\n".join(store.create_statements())
@@ -462,9 +448,7 @@ async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: SQL
     assert stored_scheduled.status == "scheduled"
 
 
-async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(
-    sqlspec_backend: SQLSpecQueueBackend,
-) -> None:
+async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(sqlspec_backend: SQLSpecQueueBackend) -> None:
     record = await sqlspec_backend.enqueue("tasks.flaky", max_retries=1)
 
     await sqlspec_backend.claim_task(record.id)
@@ -532,16 +516,13 @@ def test_sqlspec_backend_does_not_create_sqlspec_litestar_plugin() -> None:
 
 
 async def test_sqlspec_backend_can_start_with_packaged_migrations(
-    tmp_path: "Path",
-    sqlite_config_factory: "SqliteConfigFactory",
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     db_path = tmp_path / "migrated.db"
 
     first = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlite_config_factory(db_path),
-            create_schema=False,
-            run_migrations=True,
+            sqlspec_config=sqlite_config_factory(db_path), create_schema=False, run_migrations=True
         )
     )
     await first.open()
@@ -549,9 +530,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
 
     second = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlite_config_factory(db_path),
-            create_schema=False,
-            run_migrations=True,
+            sqlspec_config=sqlite_config_factory(db_path), create_schema=False, run_migrations=True
         )
     )
     await second.open()
@@ -569,15 +548,11 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
 
 
 async def test_sqlspec_backend_uses_configured_table_name(
-    tmp_path: "Path",
-    sqlite_config_factory: "SqliteConfigFactory",
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     db_path = tmp_path / "custom-table.db"
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlite_config_factory(db_path),
-            table_name="queue_tasks",
-        )
+        backend_config=SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path), table_name="queue_tasks")
     )
 
     await backend.open()
@@ -600,11 +575,7 @@ async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_va
     db_path = tmp_path / "extension-config.db"
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(db_path)},
-        extension_config={
-            QUEUE_EXTENSION_NAME: {
-                "table_name": "extension_queue_tasks",
-            },
-        },
+        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "extension_queue_tasks"}},
     )
     backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
 
@@ -626,11 +597,7 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
     db_path = tmp_path / "explicit-config.db"
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(db_path)},
-        extension_config={
-            QUEUE_EXTENSION_NAME: {
-                "table_name": "extension_queue_tasks",
-            },
-        },
+        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "extension_queue_tasks"}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, table_name="explicit_queue_tasks")
@@ -651,8 +618,7 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
 
 
 async def test_queue_service_uses_sqlspec_backend_from_config(
-    tmp_path: "Path",
-    sqlite_config_factory: "SqliteConfigFactory",
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> None:
     @task("tasks.lower", retries=1)
     async def lowercase(value: str) -> str:

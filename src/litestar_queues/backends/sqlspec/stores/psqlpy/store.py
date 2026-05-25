@@ -18,17 +18,10 @@ class PsqlpyQueueStore(SQLSpecQueueStore):
     result_json_type = "TEXT"
     timestamp_type = "TIMESTAMPTZ"
 
-    def __init__(
-        self,
-        config: Any,
-        *,
-        native_json_columns: frozenset[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, config: Any, *, native_json_columns: frozenset[str] | None = None, **kwargs: Any) -> None:
         super().__init__(
             config,
-            native_json_columns=native_json_columns
-            or frozenset({"args_json", "kwargs_json", "metadata_json"}),
+            native_json_columns=native_json_columns or frozenset({"args_json", "kwargs_json", "metadata_json"}),
             **kwargs,
         )
 

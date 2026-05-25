@@ -23,10 +23,7 @@ async def test_worker_emits_started_progress_and_terminal_events_in_order() -> N
         return "ok"
 
     async with QueueService(
-        QueueConfig(
-            execution_backend="local",
-            event_config=QueueEventConfig(enabled=True, sink=sink),
-        )
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(worker_events)
         worker = Worker(service)
@@ -49,10 +46,7 @@ async def test_worker_emits_failed_terminal_event_for_failed_attempt() -> None:
         raise RuntimeError(msg)
 
     async with QueueService(
-        QueueConfig(
-            execution_backend="local",
-            event_config=QueueEventConfig(enabled=True, sink=sink),
-        )
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(worker_failure)
         worker = Worker(service)
@@ -72,10 +66,7 @@ async def test_event_publish_failure_does_not_fail_successful_task_by_default() 
         return "ok"
 
     async with QueueService(
-        QueueConfig(
-            execution_backend="local",
-            event_config=QueueEventConfig(enabled=True, sink=FailingSink()),
-        )
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=FailingSink()))
     ) as service:
         result = await service.enqueue(event_sink_failure)
         worker = Worker(service)

@@ -22,14 +22,7 @@ class QueueTaskModelMixin:
     def __table_args__(cls) -> tuple[Any, ...]:
         table = str(cast("_NamedTable", cls).__tablename__)
         return (
-            Index(
-                f"ix_{table}_pending",
-                "status",
-                "queue",
-                "scheduled_at",
-                "priority",
-                "created_at",
-            ),
+            Index(f"ix_{table}_pending", "status", "queue", "scheduled_at", "priority", "created_at"),
             Index(f"ix_{table}_heartbeat", "status", "heartbeat_at"),
             Index(f"ix_{table}_execution", "status", "execution_ref", mysql_length={"execution_ref": 255}),
         )

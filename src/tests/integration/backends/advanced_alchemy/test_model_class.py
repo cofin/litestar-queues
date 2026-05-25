@@ -105,8 +105,7 @@ async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: Path
 
 
 async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from litestar_queues.backends.advanced_alchemy import service as service_module
 

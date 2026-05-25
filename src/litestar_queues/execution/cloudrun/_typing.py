@@ -1,11 +1,6 @@
 from typing import Any, Protocol
 
-__all__ = (
-    "CloudRunExecutionLike",
-    "CloudRunExecutionsClient",
-    "CloudRunJobsClient",
-    "CloudRunOperation",
-)
+__all__ = ("CloudRunExecutionLike", "CloudRunExecutionsClient", "CloudRunJobsClient", "CloudRunOperation")
 
 
 class CloudRunExecutionLike(Protocol):

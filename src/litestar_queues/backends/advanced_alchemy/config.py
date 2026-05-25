@@ -7,9 +7,7 @@ if TYPE_CHECKING:
     from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-__all__ = (
-    "AdvancedAlchemyBackendConfig",
-)
+__all__ = ("AdvancedAlchemyBackendConfig",)
 
 
 @dataclass(slots=True)

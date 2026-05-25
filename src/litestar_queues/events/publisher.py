@@ -31,13 +31,7 @@ class QueueEventConfig:
 class QueueEventPublisher:
     """Publish queue events through a configured sink."""
 
-    __slots__ = (
-        "_sink",
-        "publish_global_lifecycle",
-        "publish_queue_channel",
-        "publish_task_channel",
-        "strict",
-    )
+    __slots__ = ("_sink", "publish_global_lifecycle", "publish_queue_channel", "publish_task_channel", "strict")
 
     def __init__(
         self,

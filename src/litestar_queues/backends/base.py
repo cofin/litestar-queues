@@ -67,11 +67,7 @@ class BaseQueueBackend:
         raise NotImplementedError
 
     async def list_pending(
-        self,
-        *,
-        limit: int = 1,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
     ) -> "list[QueuedTaskRecord]":
         """Return due pending or scheduled tasks ordered for execution."""
         raise NotImplementedError
@@ -81,10 +77,7 @@ class BaseQueueBackend:
         raise NotImplementedError
 
     async def claim_next(
-        self,
-        *,
-        queue: str | None = None,
-        execution_backend: str | None = None,
+        self, *, queue: str | None = None, execution_backend: str | None = None
     ) -> "QueuedTaskRecord | None":
         """Claim the next due task.
 
@@ -100,13 +93,7 @@ class BaseQueueBackend:
         """Mark a task as completed."""
         raise NotImplementedError
 
-    async def fail_task(
-        self,
-        task_id: "UUID",
-        error: str,
-        *,
-        retry: bool = True,
-    ) -> "QueuedTaskRecord | None":
+    async def fail_task(self, task_id: "UUID", error: str, *, retry: bool = True) -> "QueuedTaskRecord | None":
         """Mark a task as failed or retry it."""
         raise NotImplementedError
 
@@ -129,12 +116,7 @@ class BaseQueueBackend:
         return 0
 
     async def set_execution_ref(
-        self,
-        task_id: "UUID",
-        execution_backend: str,
-        execution_ref: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: "UUID", execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
     ) -> "QueuedTaskRecord | None":
         """Persist an external execution reference for a running task.
 
@@ -150,11 +132,7 @@ class BaseQueueBackend:
         return record
 
     async def set_execution_backend(
-        self,
-        task_id: "UUID",
-        execution_backend: str,
-        *,
-        execution_profile: str | None = None,
+        self, task_id: "UUID", execution_backend: str, *, execution_profile: str | None = None
     ) -> "QueuedTaskRecord | None":
         """Persist an execution backend/profile change for a queued task.
 
@@ -178,11 +156,7 @@ class BaseQueueBackend:
         return QueueStatistics()
 
     async def list_completed_by_task(
-        self,
-        task_name: str,
-        *,
-        since: "datetime | None" = None,
-        limit: int = 10,
+        self, task_name: str, *, since: "datetime | None" = None, limit: int = 10
     ) -> "list[QueuedTaskRecord]":
         """Return recent completed records for a task name."""
         return []
@@ -213,9 +187,6 @@ class BaseQueueBackend:
         return self
 
     async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object,
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
     ) -> None:
         await self.close()

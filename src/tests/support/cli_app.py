@@ -2,6 +2,7 @@
 
 Pointed at via ``LITESTAR_APP=tests.support.cli_app:app``.
 """
+
 from litestar import Litestar
 
 from litestar_queues import QueueConfig, QueuePlugin

@@ -13,11 +13,7 @@ import pytest
 pytest.importorskip("sqlspec")
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.stores import (
-    OracledbAsyncQueueStore,
-    OracledbSyncQueueStore,
-    create_queue_store,
-)
+from litestar_queues.backends.sqlspec.stores import OracledbAsyncQueueStore, OracledbSyncQueueStore, create_queue_store
 
 
 class FakeOracleConfig(SimpleNamespace):
@@ -29,17 +25,11 @@ class FakeOracleConfig(SimpleNamespace):
 
 
 def _fake_oracle_config(
-    *,
-    config_type_name: str,
-    extension_config: dict[str, object] | None = None,
+    *, config_type_name: str, extension_config: dict[str, object] | None = None
 ) -> FakeOracleConfig:
     config_type = cast(
         "type[FakeOracleConfig]",
-        type(
-            config_type_name,
-            (FakeOracleConfig,),
-            {"__module__": "sqlspec.adapters.oracledb.config"},
-        ),
+        type(config_type_name, (FakeOracleConfig,), {"__module__": "sqlspec.adapters.oracledb.config"}),
     )
     config = config_type()
     config.extension_config = extension_config or {}
@@ -50,10 +40,7 @@ def _fake_oracle_config(
 
 @pytest.mark.parametrize(
     ("config_type_name", "expected_store_type"),
-    (
-        ("OracleSyncConfig", OracledbSyncQueueStore),
-        ("OracleAsyncConfig", OracledbAsyncQueueStore),
-    ),
+    (("OracleSyncConfig", OracledbSyncQueueStore), ("OracleAsyncConfig", OracledbAsyncQueueStore)),
 )
 @pytest.mark.parametrize(
     ("queue_settings", "expected_json_fragment", "expected_serialized_type"),
@@ -71,10 +58,7 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
     expected_serialized_type: type[object],
 ) -> None:
     store = create_queue_store(
-        _fake_oracle_config(
-            config_type_name=config_type_name,
-            extension_config={QUEUE_EXTENSION_NAME: queue_settings},
-        ),
+        _fake_oracle_config(config_type_name=config_type_name, extension_config={QUEUE_EXTENSION_NAME: queue_settings}),
         table_name="queue_tasks",
     )
 

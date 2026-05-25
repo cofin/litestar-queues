@@ -106,8 +106,7 @@ class Worker:
         queue_backend = self._service.get_queue_backend()
         execution_backend = self._service.get_execution_backend()
         records = await queue_backend.list_pending(
-            limit=self._batch_size,
-            execution_backend=execution_backend_name(self._service.config.execution_backend),
+            limit=self._batch_size, execution_backend=execution_backend_name(self._service.config.execution_backend)
         )
         if execution_backend.is_external:
             return await self._dispatch_external(records)
@@ -156,11 +155,7 @@ class Worker:
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> None:
         heartbeat_task = asyncio.create_task(self._heartbeat(record.id))
         try:
-            await self._service.get_execution_backend().execute(
-                self._service,
-                record,
-                worker_id=self._worker_id,
-            )
+            await self._service.get_execution_backend().execute(self._service, record, worker_id=self._worker_id)
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -205,10 +200,7 @@ class Worker:
         queue_backend = self._service.get_queue_backend()
         notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=self._poll_interval))
         stop_task = asyncio.create_task(self._stop_event.wait())
-        done, pending = await asyncio.wait(
-            {notification_task, stop_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        done, pending = await asyncio.wait({notification_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

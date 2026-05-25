@@ -17,9 +17,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-async def test_valkey_backend_pubsub_notifications_wake_waiters(
-    valkey_backend: "ValkeyQueueBackend",
-) -> None:
+async def test_valkey_backend_pubsub_notifications_wake_waiters(valkey_backend: "ValkeyQueueBackend") -> None:
     waiter = asyncio.create_task(valkey_backend.wait_for_notifications(timeout=2.0))
     # Real Valkey requires the SUBSCRIBE roundtrip to land before the
     # sibling enqueue publishes; a bare ``asyncio.sleep(0)`` is too brief.

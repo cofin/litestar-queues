@@ -72,36 +72,25 @@ def _adapter_store_type(config: Any) -> type[SQLSpecQueueStore]:
     name = _adapter_name(config)
     if name == "cockroach_psycopg":
         return _async_or_sync_store_type(
-            config,
-            async_store_type=CockroachPsycopgAsyncQueueStore,
-            sync_store_type=CockroachPsycopgSyncQueueStore,
+            config, async_store_type=CockroachPsycopgAsyncQueueStore, sync_store_type=CockroachPsycopgSyncQueueStore
         )
     if name == "mysqlconnector":
         return _async_or_sync_store_type(
-            config,
-            async_store_type=MysqlConnectorAsyncQueueStore,
-            sync_store_type=MysqlConnectorSyncQueueStore,
+            config, async_store_type=MysqlConnectorAsyncQueueStore, sync_store_type=MysqlConnectorSyncQueueStore
         )
     if name == "oracledb":
         return _async_or_sync_store_type(
-            config,
-            async_store_type=OracledbAsyncQueueStore,
-            sync_store_type=OracledbSyncQueueStore,
+            config, async_store_type=OracledbAsyncQueueStore, sync_store_type=OracledbSyncQueueStore
         )
     if name == "psycopg":
         return _async_or_sync_store_type(
-            config,
-            async_store_type=PsycopgAsyncQueueStore,
-            sync_store_type=PsycopgSyncQueueStore,
+            config, async_store_type=PsycopgAsyncQueueStore, sync_store_type=PsycopgSyncQueueStore
         )
     return _ADAPTER_STORE_TYPES.get(name, SQLSpecQueueStore)
 
 
 def _async_or_sync_store_type(
-    config: Any,
-    *,
-    async_store_type: type[SQLSpecQueueStore],
-    sync_store_type: type[SQLSpecQueueStore],
+    config: Any, *, async_store_type: type[SQLSpecQueueStore], sync_store_type: type[SQLSpecQueueStore]
 ) -> type[SQLSpecQueueStore]:
     config_type_name = type(config).__name__.lower()
     if "async" in config_type_name:

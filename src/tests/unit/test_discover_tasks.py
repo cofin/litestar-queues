@@ -1,22 +1,14 @@
 """Tests for the ``discover_tasks`` walker."""
-from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
 _FIXTURE_PACKAGE = "tests.support.discover_tasks_pkg"
-_EXPECTED_TASKS = (
-    "discover.bar.notify",
-    "discover.baz.inner.run",
-    "discover.foo.send",
-)
+_EXPECTED_TASKS = ("discover.bar.notify", "discover.baz.inner.run", "discover.foo.send")
 
 
 def _drop_fixture_modules() -> None:

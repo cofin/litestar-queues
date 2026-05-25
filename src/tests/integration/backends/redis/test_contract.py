@@ -108,9 +108,7 @@ async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execu
     assert stored_low.status == "pending"
 
 
-async def test_redis_backend_releases_locks_by_token_via_lua_script(
-    redis_backend: "RedisQueueBackend",
-) -> None:
+async def test_redis_backend_releases_locks_by_token_via_lua_script(redis_backend: "RedisQueueBackend") -> None:
     """Verify the token-checked release script against real Redis Lua semantics."""
     client = await redis_backend._get_client()
     lock_key = redis_backend._lock_key("task:test")
@@ -125,9 +123,7 @@ async def test_redis_backend_releases_locks_by_token_via_lua_script(
     assert await client.get(lock_key) is None
 
 
-async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(
-    redis_backend: "RedisQueueBackend",
-) -> None:
+async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_backend: "RedisQueueBackend") -> None:
     flaky = await redis_backend.enqueue("tasks.flaky", max_retries=1)
 
     await redis_backend.claim_task(flaky.id)
