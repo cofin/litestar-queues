@@ -11,7 +11,9 @@ except ModuleNotFoundError:
     SAWarning = None
 else:
     warnings.filterwarnings(
-        "ignore", message="Unmanaged access of declarative attribute _sentinel.*", category=SAWarning
+        "ignore",
+        message="Unmanaged access of declarative attribute .* from non-mapped class QueueTaskModelMixin",
+        category=SAWarning,
     )
 
 current_path = Path(__file__).parent.parent.resolve()
