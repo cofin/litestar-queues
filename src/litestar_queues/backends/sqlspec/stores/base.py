@@ -1,7 +1,7 @@
 """Shared SQLSpec queue store primitives."""
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from sqlspec import sql
 from sqlspec.utils.serializers import from_json, to_json
@@ -57,6 +57,14 @@ class SQLSpecQueueStore:
     metadata_json_type: str | None = None
     timestamp_type = "TEXT"
     error_type = "TEXT"
+    # Per-store opt-in: canonical JSON columns whose driver round-trips
+    # native Python values rather than JSON-encoded strings. Subclasses
+    # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
+    # psqlpy PyJSON, MySQL JSON, Oracle JSON, etc.) override this. Stores
+    # whose driver returns JSON columns as plain strings (DuckDB, SQLite,
+    # ADBC) keep the default empty frozenset. Unioned with adopter-supplied
+    # ``native_json_columns`` at ``__init__``.
+    auto_native_json_columns: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(
         self,
@@ -70,7 +78,8 @@ class SQLSpecQueueStore:
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
         self._column_map = validate_column_map(column_map or {})
-        self._native_json_columns = validate_native_json_columns(native_json_columns or frozenset())
+        configured = validate_native_json_columns(native_json_columns or frozenset())
+        self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
 
     @property
@@ -304,6 +313,23 @@ class SQLSpecQueueStore:
             statement = statement.where(f"{self._col('completed_at')} >= :completed_since", completed_since=since)
         return statement.order_by(sql.raw(f"{self._col('completed_at')} DESC")).limit(limit)
 
+    def count_terminal(self, *, before: str) -> Any:
+        """Return a COUNT statement matching the same predicate as cleanup_terminal.
+
+        Used by the backend to return a deterministic row count even when the
+        underlying driver cannot report ``rows_affected`` for DELETE.
+        """
+        return (
+            sql
+            .select(sql.raw("COUNT(*) AS terminal_count"))
+            .from_(self.table_name)
+            .where_in(self._col("status"), ("completed", "failed", "cancelled"))
+            .where(
+                f"{self._col('completed_at')} IS NOT NULL AND {self._col('completed_at')} < :terminal_before",
+                terminal_before=before,
+            )
+        )
+
     def cleanup_terminal(self, *, before: str) -> Any:
         """Return a DELETE statement for terminal records before a cutoff."""
         return (
@@ -319,15 +345,32 @@ class SQLSpecQueueStore:
     def serialize_json_column(self, canonical: str, value: Any) -> Any:
         """Serialize a JSON value for a canonical queue column.
 
+        Native JSON columns (driver registers a JSON codec — e.g.
+        SQLSpec's asyncpg/psycopg JSONB codec, psqlpy's PyJSON type,
+        mysql JSON, oracle JSON) accept structured Python values
+        directly. Primitives (``str``, ``int``, ``float``, ``bool``,
+        ``None``) must be pre-encoded because most codecs treat a raw
+        ``str`` parameter as already-JSON-encoded text — sending
+        ``"ok"`` would be parsed as the bare JSON token ``ok`` (invalid).
+        TEXT columns receive the JSON-encoded string from
+        ``_serialize_json``.
+
         Returns:
-            A JSON value suitable for the configured adapter.
+            The value shaped for the configured adapter.
         """
         if canonical in self._native_json_columns:
-            return value
+            if isinstance(value, (dict, list, tuple)):
+                return value
+            return self._serialize_json(value)
         return self._serialize_json(value)
 
-    def deserialize_json(self, value: Any) -> Any:
+    def deserialize_json(self, canonical: str, value: Any) -> Any:
         """Deserialize a task JSON value returned by the database driver.
+
+        When ``canonical`` is in ``_native_json_columns`` the driver has
+        already decoded the JSON value (e.g. psycopg JSONB → Python value);
+        pass the value through. Otherwise the value is a JSON-encoded
+        ``str``/``bytes`` and must be decoded with ``from_json``.
 
         Returns:
             The decoded Python JSON value.
@@ -337,6 +380,8 @@ class SQLSpecQueueStore:
         read = getattr(value, "read", None)
         if callable(read):
             value = read()
+        if canonical in self._native_json_columns:
+            return value
         if isinstance(value, (list, dict)):
             return value
 

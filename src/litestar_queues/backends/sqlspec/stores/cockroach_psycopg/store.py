@@ -14,6 +14,7 @@ class CockroachPsycopgSyncQueueStore(SQLSpecQueueStore):
 
     json_type = "JSONB"
     timestamp_type = "TIMESTAMPTZ"
+    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
         """Return statements that create cockroach_psycopg sync queue artifacts."""
@@ -59,6 +60,7 @@ class CockroachPsycopgAsyncQueueStore(SQLSpecQueueStore):
 
     json_type = "JSONB"
     timestamp_type = "TIMESTAMPTZ"
+    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
         """Return statements that create cockroach_psycopg async queue artifacts."""

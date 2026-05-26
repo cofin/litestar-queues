@@ -1,28 +1,21 @@
-from typing import TYPE_CHECKING
-
 import pytest
 from litestar import Litestar, Response, post
 from litestar.background_tasks import BackgroundTask
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, QueuedBackgroundTask, task
+from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, QueueService, task
 from litestar_queues.task import get_default_service
-
-if TYPE_CHECKING:
-    from litestar_queues.backends import InMemoryQueueBackend
 
 pytestmark = pytest.mark.anyio
 
 
 def _records(service: QueueService) -> dict[str, object]:
     backend = service.get_queue_backend()
-    return getattr(backend, "_records")  # type: InMemoryQueueBackend
+    return backend._records  # type: ignore[attr-defined]  # InMemoryQueueBackend internal
 
 
 def _build_plugin() -> QueuePlugin:
-    return QueuePlugin(
-        QueueConfig(queue_backend="memory", execution_backend="immediate", initialize_schedules=False)
-    )
+    return QueuePlugin(QueueConfig(queue_backend="memory", execution_backend="immediate", initialize_schedules=False))
 
 
 async def test_background_task_native_integration() -> None:
@@ -34,10 +27,7 @@ async def test_background_task_native_integration() -> None:
 
     @post("/test-native")
     async def native_handler() -> Response[dict[str, str]]:
-        return Response(
-            {"status": "ok"},
-            background=BackgroundTask(sample_task.enqueue, 42, name="test-run"),
-        )
+        return Response({"status": "ok"}, background=BackgroundTask(sample_task.enqueue, 42, name="test-run"))
 
     app = Litestar(route_handlers=[native_handler], plugins=[_build_plugin()])
 
@@ -64,10 +54,7 @@ async def test_queued_background_task_helper() -> None:
 
     @post("/test-helper")
     async def helper_handler() -> Response[dict[str, str]]:
-        return Response(
-            {"status": "ok"},
-            background=QueuedBackgroundTask(helper_task, 99),
-        )
+        return Response({"status": "ok"}, background=QueuedBackgroundTask(helper_task, 99))
 
     app = Litestar(route_handlers=[helper_handler], plugins=[_build_plugin()])
 
@@ -91,10 +78,7 @@ async def test_queued_background_task_custom_service() -> None:
 
     @post("/test-custom")
     async def custom_handler(queue_service: QueueService) -> Response[dict[str, str]]:
-        return Response(
-            {"status": "ok"},
-            background=QueuedBackgroundTask(custom_task, 88, service=queue_service),
-        )
+        return Response({"status": "ok"}, background=QueuedBackgroundTask(custom_task, 88, service=queue_service))
 
     app = Litestar(route_handlers=[custom_handler], plugins=[_build_plugin()])
 

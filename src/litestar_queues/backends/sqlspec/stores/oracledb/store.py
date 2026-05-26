@@ -27,6 +27,13 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
+        if self._json_storage in (_OracleJSONStorageType.JSON_NATIVE, _OracleJSONStorageType.BLOB_JSON):
+            self._native_json_columns = self._native_json_columns | frozenset({
+                "args_json",
+                "kwargs_json",
+                "metadata_json",
+                "result_json",
+            })
 
     def create_statements(self) -> list[str]:
         """Return statements that create oracledb sync queue artifacts."""
@@ -59,12 +66,17 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
         """
         return _serialize_oracle_json(value, self._json_storage)
 
-    def deserialize_json(self, value: Any) -> Any:
+    def deserialize_json(self, canonical: str, value: Any) -> Any:
         """Deserialize Oracle JSON, BLOB, or LOB values.
 
         Returns:
             The decoded Python JSON value.
         """
+        if canonical in self._native_json_columns:
+            if value is None:
+                return None
+            read = getattr(value, "read", None)
+            return read() if callable(read) else value
         return _deserialize_oracle_json(value)
 
     def _index_name(self, suffix: str) -> str:
@@ -87,6 +99,13 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
+        if self._json_storage in (_OracleJSONStorageType.JSON_NATIVE, _OracleJSONStorageType.BLOB_JSON):
+            self._native_json_columns = self._native_json_columns | frozenset({
+                "args_json",
+                "kwargs_json",
+                "metadata_json",
+                "result_json",
+            })
 
     def create_statements(self) -> list[str]:
         """Return statements that create oracledb async queue artifacts."""
@@ -119,12 +138,17 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
         """
         return _serialize_oracle_json(value, self._json_storage)
 
-    def deserialize_json(self, value: Any) -> Any:
+    def deserialize_json(self, canonical: str, value: Any) -> Any:
         """Deserialize Oracle JSON, BLOB, or LOB values.
 
         Returns:
             The decoded Python JSON value.
         """
+        if canonical in self._native_json_columns:
+            if value is None:
+                return None
+            read = getattr(value, "read", None)
+            return read() if callable(read) else value
         return _deserialize_oracle_json(value)
 
     def _index_name(self, suffix: str) -> str:

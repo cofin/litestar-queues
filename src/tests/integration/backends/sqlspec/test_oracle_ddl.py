@@ -72,4 +72,4 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
     assert ("INMEMORY PRIORITY HIGH" in ddl) is bool(queue_settings.get("in_memory"))
     serialized = store.serialize_json_column("kwargs_json", {"ok": True})
     assert isinstance(serialized, expected_serialized_type)
-    assert store.deserialize_json(serialized) == {"ok": True}
+    assert store.deserialize_json("kwargs_json", serialized) == {"ok": True}

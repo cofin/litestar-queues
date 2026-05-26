@@ -17,6 +17,7 @@ class PymysqlQueueStore(SQLSpecQueueStore):
     json_type = "JSON"
     timestamp_type = "VARCHAR(64)"
     error_type = "LONGTEXT"
+    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
         """Return statements that create pymysql queue artifacts."""

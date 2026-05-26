@@ -14,6 +14,7 @@ class PsycopgSyncQueueStore(SQLSpecQueueStore):
 
     json_type = "JSONB"
     timestamp_type = "TIMESTAMPTZ"
+    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
         """Return statements that create psycopg sync queue artifacts."""
@@ -34,6 +35,7 @@ class PsycopgAsyncQueueStore(SQLSpecQueueStore):
 
     json_type = "JSONB"
     timestamp_type = "TIMESTAMPTZ"
+    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
         """Return statements that create psycopg async queue artifacts."""

@@ -455,16 +455,25 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
 
     async def cleanup_terminal(self, before: datetime) -> int:
+        store = self._get_store()
+        before_str = _serialize_datetime(before)
         async with self._session() as driver:
             await driver.begin()
             try:
-                result = await driver.execute(self._get_store().cleanup_terminal(before=_serialize_datetime(before)))
+                # Some drivers (e.g. psqlpy) cannot reliably report
+                # ``rows_affected`` for DELETE: they return ``-1`` as a
+                # sentinel for "unknown". Count first inside the same
+                # transaction so the cleanup count is always exact.
+                count_row = await driver.select_one_or_none(store.count_terminal(before=before_str))
+                deleted = int(count_row["terminal_count"]) if count_row is not None else 0
+                if deleted > 0:
+                    await driver.execute(store.cleanup_terminal(before=before_str))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return int(result.rows_affected)
+        return deleted
 
     async def notify_new_task(self, record: QueuedTaskRecord) -> None:
         """Publish a SQLSpec event when configured queue work becomes available."""
@@ -756,9 +765,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _record_from_row(self, row: dict[str, Any]) -> QueuedTaskRecord:
         store = self._get_store()
-        args = store.deserialize_json(row["args_json"])
-        kwargs = store.deserialize_json(row["kwargs_json"])
-        metadata = store.deserialize_json(row["metadata_json"])
+        args = store.deserialize_json("args_json", row["args_json"])
+        kwargs = store.deserialize_json("kwargs_json", row["kwargs_json"])
+        metadata = store.deserialize_json("metadata_json", row["metadata_json"])
         return QueuedTaskRecord(
             id=UUID(str(row["id"])),
             task_name=str(row["task_name"]),
@@ -777,7 +786,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             started_at=_deserialize_datetime(row["started_at"]),
             completed_at=_deserialize_datetime(row["completed_at"]),
             heartbeat_at=_deserialize_datetime(row["heartbeat_at"]),
-            result=store.deserialize_json(row["result_json"]),
+            result=store.deserialize_json("result_json", row["result_json"]),
             error=cast("str | None", row["error"]),
             key=cast("str | None", row["task_key"]),
             metadata=metadata,
@@ -830,6 +839,18 @@ async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIt
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _extract_count(result: Any) -> int:
+    """Pull a non-negative ``COUNT(*)`` value off a SQLSpec result."""
+    rows = getattr(result, "data", None) or []
+    if rows:
+        row = rows[0]
+        if isinstance(row, dict):
+            return int(next(iter(row.values())))
+        if isinstance(row, (list, tuple)):
+            return int(row[0])
+    return 0
 
 
 def _serialize_datetime(value: datetime | None) -> datetime | None:
