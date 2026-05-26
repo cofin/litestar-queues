@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, cast
+
 import pytest
 from litestar import Litestar, Response, post
 from litestar.background_tasks import BackgroundTask
@@ -6,12 +8,15 @@ from litestar.testing import AsyncTestClient
 from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, QueueService, task
 from litestar_queues.task import get_default_service
 
+if TYPE_CHECKING:
+    from litestar_queues.models import QueuedTaskRecord
+
 pytestmark = pytest.mark.anyio
 
 
-def _records(service: QueueService) -> dict[str, object]:
+def _records(service: QueueService) -> "dict[str, QueuedTaskRecord]":
     backend = service.get_queue_backend()
-    return backend._records  # type: ignore[attr-defined]  # InMemoryQueueBackend internal
+    return cast("dict[str, QueuedTaskRecord]", backend._records)  # type: ignore[attr-defined]
 
 
 def _build_plugin() -> QueuePlugin:

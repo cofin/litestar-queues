@@ -114,6 +114,7 @@ class FixtureCtx:
 
     tmp_path: Path
     service: object | None = None
+    table_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,36 +140,51 @@ async def _build_memory(ctx: FixtureCtx) -> "BaseQueueBackend":
     return InMemoryQueueBackend()
 
 
-def _sqlspec_backend(sqlspec_config: object) -> "BaseQueueBackend":
-    """Return a SQLSpec backend configured through the typed config object."""
+def _sqlspec_backend(sqlspec_config: object, *, table_name: str | None = None) -> "BaseQueueBackend":
+    """Return a SQLSpec backend configured through the typed config object.
+
+    ``table_name`` is set per-case by the fixture so adapters sharing the
+    same Docker database (the Postgres/MySQL/Oracle service containers)
+    each own a dedicated queue table and cannot pollute one another.
+    """
     from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
-    return SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
+    return SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, table_name=table_name)
+    )
 
 
 async def _build_aiosqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-    return _sqlspec_backend(AiosqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-aiosqlite.db")}))
+    return _sqlspec_backend(
+        AiosqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-aiosqlite.db")}),
+        table_name=ctx.table_name,
+    )
 
 
 async def _build_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.sqlite import SqliteConfig
 
-    return _sqlspec_backend(SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")}))
+    return _sqlspec_backend(
+        SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")}), table_name=ctx.table_name
+    )
 
 
 async def _build_duckdb(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.duckdb import DuckDBConfig
 
-    return _sqlspec_backend(DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}))
+    return _sqlspec_backend(
+        DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}), table_name=ctx.table_name
+    )
 
 
 async def _build_adbc_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     from sqlspec.adapters.adbc import AdbcConfig
 
     return _sqlspec_backend(
-        AdbcConfig(connection_config={"driver_name": "sqlite", "uri": str(ctx.tmp_path / "queue-adbc.db")})
+        AdbcConfig(connection_config={"driver_name": "sqlite", "uri": str(ctx.tmp_path / "queue-adbc.db")}),
+        table_name=ctx.table_name,
     )
 
 
@@ -186,7 +202,8 @@ async def _build_postgres_asyncpg(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "database": svc.database,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -204,7 +221,8 @@ async def _build_postgres_psycopg(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "dbname": svc.database,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -222,7 +240,8 @@ async def _build_postgres_psqlpy(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "db_name": svc.database,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -240,7 +259,8 @@ async def _build_mysql_asyncmy(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "database": svc.db,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -258,7 +278,8 @@ async def _build_mysql_aiomysql(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "db": svc.db,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -276,7 +297,8 @@ async def _build_mysql_pymysql(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "database": svc.db,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -294,7 +316,8 @@ async def _build_mysql_mysqlconnector(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "database": svc.db,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -312,7 +335,8 @@ async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "password": svc.password,
                 "service_name": svc.service_name,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -330,7 +354,8 @@ async def _build_bigquery(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "client_options": svc.client_options,
                 "use_query_cache": False,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 
@@ -351,7 +376,8 @@ async def _build_spanner(ctx: FixtureCtx) -> "BaseQueueBackend":
                 "min_sessions": 1,
                 "max_sessions": 2,
             }
-        )
+        ),
+        table_name=ctx.table_name,
     )
 
 

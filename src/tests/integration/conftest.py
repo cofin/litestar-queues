@@ -36,7 +36,11 @@ async def queue_backend(request: pytest.FixtureRequest, tmp_path: "Path") -> "As
         if service is None:
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 
-    ctx = FixtureCtx(tmp_path=tmp_path, service=service)
+    # Service-backed adapters share the same Docker database across the
+    # session. Give each parametrized case its own queue table so adapters
+    # cannot collide via the shared default ``litestar_queue_tasks`` name.
+    table_name = f"litestar_queue_tasks_{case.name.replace('-', '_')}" if case.service_attr is not None else None
+    ctx = FixtureCtx(tmp_path=tmp_path, service=service, table_name=table_name)
 
     backend = await case.build(ctx)
     await backend.open()
