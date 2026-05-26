@@ -26,9 +26,11 @@ __all__ = (
     "TaskResult",
     "clear_task_registry",
     "discover_tasks",
+    "get_default_service",
     "get_scheduled_tasks",
     "get_task_registry",
     "load_task_modules",
+    "set_default_service",
     "task",
 )
 
@@ -44,6 +46,7 @@ _task_registry: dict[str, "Task[Any, Any]"] = {}
 _schedule_registry: dict[str, "ScheduleConfig"] = {}
 _loaded_modules: set[str] = set()
 _RANDOM = random.SystemRandom()
+_default_service_holder: list["QueueService | None"] = [None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,15 +466,19 @@ class Task(Generic[P, T]):
         )
 
     async def enqueue(self, *args: P.args, **kwargs: P.kwargs) -> TaskResult:
-        """Enqueue this task using a default immediate in-memory service.
+        """Enqueue this task using the configured default service or fall back to an immediate service.
 
         Returns:
             A result handle for the queued record.
         """
+        enqueue_kwargs = cast("dict[str, Any]", kwargs)
+        service = get_default_service()
+        if service is not None:
+            return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
+
         from litestar_queues.config import QueueConfig
         from litestar_queues.service import QueueService
 
-        enqueue_kwargs = cast("dict[str, Any]", kwargs)
         async with QueueService(QueueConfig(execution_backend="immediate")) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
@@ -500,11 +507,22 @@ def get_scheduled_tasks() -> dict[str, ScheduleConfig]:
     return _schedule_registry
 
 
+def get_default_service() -> "QueueService | None":
+    """Return the global default QueueService instance."""
+    return _default_service_holder[0]
+
+
+def set_default_service(service: "QueueService | None") -> None:
+    """Set the global default QueueService instance."""
+    _default_service_holder[0] = service
+
+
 def clear_task_registry() -> None:
     """Clear task and schedule registries."""
     _task_registry.clear()
     _schedule_registry.clear()
     _loaded_modules.clear()
+    _default_service_holder[0] = None
 
 
 def load_task_modules(modules: tuple[str, ...] | list[str], *, force_reload: bool = False) -> int:

@@ -6,6 +6,7 @@ from litestar_queues.backends import (
     list_queue_backends,
     queue_backend,
 )
+from litestar_queues.background import QueuedBackgroundTask
 from litestar_queues.config import (
     AsyncServiceProvider,
     ExecutionBackendConfig,
@@ -96,6 +97,7 @@ __all__ = (
     "QueuePlugin",
     "QueueService",
     "QueueStatistics",
+    "QueuedBackgroundTask",
     "QueuedTaskRecord",
     "ScheduleConfig",
     "Task",

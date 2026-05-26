@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.config import QueueConfig
 from litestar_queues.service import QueueService
-from litestar_queues.task import load_task_modules
+from litestar_queues.task import load_task_modules, set_default_service
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
@@ -87,6 +87,7 @@ class QueuePlugin:
             self._config, queue_backend=self._queue_backend, event_publisher=self._event_publisher
         )
         await self._service.open()
+        set_default_service(self._service)
         app.state[self._config.queue_service_state_key] = self._service
         app.state[self._config.queue_event_publisher_state_key] = self._service.get_event_publisher()
         if self._config.event_config.channels_backend is not None:
@@ -125,5 +126,6 @@ class QueuePlugin:
                 await self._worker_task
             self._worker_task = None
         if self._service is not None:
+            set_default_service(None)
             await self._service.close()
             self._service = None

@@ -287,7 +287,6 @@ class QueueConfig:
         """
         return AsyncServiceProvider(self)
 
-    async def provide_service_dependency(self) -> AsyncIterator["QueueService"]:
-        """Yield a managed QueueService for Litestar dependency injection."""
-        async with self.provide_service() as service:
-            yield service
+    async def provide_service_dependency(self, state: "State") -> AsyncIterator["QueueService"]:
+        """Yield the application-scoped QueueService for Litestar dependency injection."""
+        yield self.get_service(state)
