@@ -76,7 +76,11 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
             if value is None:
                 return None
             read = getattr(value, "read", None)
-            return read() if callable(read) else value
+            if callable(read):
+                value = read()
+            if isinstance(value, (str, bytes)):
+                return from_json(value)
+            return value
         return _deserialize_oracle_json(value)
 
     def _index_name(self, suffix: str) -> str:
@@ -148,7 +152,11 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
             if value is None:
                 return None
             read = getattr(value, "read", None)
-            return read() if callable(read) else value
+            if callable(read):
+                value = read()
+            if isinstance(value, (str, bytes)):
+                return from_json(value)
+            return value
         return _deserialize_oracle_json(value)
 
     def _index_name(self, suffix: str) -> str:

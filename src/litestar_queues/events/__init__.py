@@ -1,5 +1,7 @@
 """Realtime queue event contracts and publishers."""
 
+from typing import Any
+
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.context import (
     TaskExecutionContext,
@@ -9,7 +11,6 @@ from litestar_queues.events.context import (
     publish_task_progress,
     require_current_task_context,
 )
-from litestar_queues.events.litestar import ChannelsQueueEventSink, stream_queue_events
 from litestar_queues.events.models import (
     QueueEvent,
     QueueEventActor,
@@ -41,3 +42,16 @@ __all__ = (
     "require_current_task_context",
     "stream_queue_events",
 )
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy load Litestar integration classes to avoid unnecessary imports."""
+    if name == "ChannelsQueueEventSink":
+        from litestar_queues.events.litestar import ChannelsQueueEventSink
+
+        return ChannelsQueueEventSink
+    if name == "stream_queue_events":
+        from litestar_queues.events.litestar import stream_queue_events
+
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
