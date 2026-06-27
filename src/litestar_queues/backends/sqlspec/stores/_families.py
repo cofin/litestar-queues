@@ -67,6 +67,12 @@ class PostgresQueueStore(SQLSpecQueueStore):
             ),
         ]
 
+    def _json_type(self) -> str:
+        return "JSONB"
+
+    def _timestamp_type(self) -> str:
+        return "TIMESTAMPTZ"
+
 
 class MySQLQueueStore(SQLSpecQueueStore):
     """MySQL-family queue store with shared InnoDB DDL."""
@@ -75,11 +81,6 @@ class MySQLQueueStore(SQLSpecQueueStore):
 
     data_dictionary_dialect = "mysql"
     identifier_quote_style = "backtick"
-    id_type = "VARCHAR(64)"
-    indexed_text_type = "VARCHAR(255)"
-    integer_type = "INTEGER"
-    timestamp_type = "VARCHAR(64)"
-    error_type = "LONGTEXT"
     auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
@@ -132,6 +133,9 @@ class MySQLQueueStore(SQLSpecQueueStore):
     def _prefixed_col(self, canonical: str, length: int) -> str:
         return f"{self._quoted_col(canonical)}({length})"
 
+    def _timestamp_type(self) -> str:
+        return "DATETIME(6)"
+
 
 class SQLServerQueueStore(SQLSpecQueueStore):
     """SQL Server queue store with T-SQL existence guards."""
@@ -140,9 +144,6 @@ class SQLServerQueueStore(SQLSpecQueueStore):
 
     data_dictionary_dialect = "mssql"
     identifier_quote_style = "none"
-    id_type = "NVARCHAR(64)"
-    indexed_text_type = "NVARCHAR(255)"
-    integer_type = "INT"
 
     def create_statements(self) -> list[str]:
         """Return statements that create SQL Server queue artifacts."""
@@ -221,6 +222,14 @@ class SQLServerQueueStore(SQLSpecQueueStore):
 
     def _wrap_drop_table(self) -> str:
         return f"IF OBJECT_ID(N'{_object_name(self.table_name)}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};"
+
+    def _string_type(self, length: int | None = None) -> str:
+        if length is None or length >= 4000:
+            return "NVARCHAR(MAX)"
+        return f"NVARCHAR({length})"
+
+    def _integer_type(self) -> str:
+        return "INT"
 
 
 def _object_name(table_name: str) -> str:

@@ -11,7 +11,3 @@ class DuckDBQueueStore(SQLSpecQueueStore):
     __slots__ = ()
 
     data_dictionary_dialect = "duckdb"
-    id_type = "VARCHAR"
-    text_type = "VARCHAR"
-    indexed_text_type = "VARCHAR"
-    error_type = "VARCHAR"

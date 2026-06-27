@@ -12,10 +12,6 @@ class SpannerQueueStore(SQLSpecQueueStore):
 
     data_dictionary_dialect = "spanner"
     identifier_quote_style = "backtick"
-    id_type = "STRING(64)"
-    indexed_text_type = "STRING(255)"
-    integer_type = "INT64"
-    error_type = "STRING(MAX)"
 
     def create_statements(self) -> list[str]:
         """Return statements that create Spanner queue artifacts."""
@@ -68,3 +64,9 @@ class SpannerQueueStore(SQLSpecQueueStore):
             f"DROP INDEX {self._quoted_index_name('pending')}",
             f"DROP TABLE {self._quoted_table_name()}",
         ]
+
+    def _string_type(self, length: int | None = None) -> str:
+        return f"STRING({length})" if length is not None else "STRING(MAX)"
+
+    def _integer_type(self) -> str:
+        return "INT64"

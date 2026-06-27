@@ -9,3 +9,8 @@ class AiosqliteQueueStore(SQLSpecQueueStore):
     """aiosqlite-specific SQLSpec queue statement store."""
 
     __slots__ = ()
+
+    data_dictionary_dialect = "sqlite"
+
+    def _json_type(self) -> str:
+        return "TEXT"

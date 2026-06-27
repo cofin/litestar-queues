@@ -6,7 +6,6 @@ from typing import Any
 from litestar_queues.backends.sqlspec.stores.adbc import AdbcQueueStore
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
-from litestar_queues.backends.sqlspec.stores.arrow_odbc import ArrowOdbcQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
@@ -28,6 +27,7 @@ from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueSto
 from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
+from litestar_queues.exceptions import QueueConfigurationError
 
 __all__ = ("create_queue_store",)
 
@@ -35,7 +35,6 @@ _ADAPTER_STORE_TYPES: dict[str, type[SQLSpecQueueStore]] = {
     "adbc": AdbcQueueStore,
     "aiomysql": AiomysqlQueueStore,
     "aiosqlite": AiosqliteQueueStore,
-    "arrow_odbc": ArrowOdbcQueueStore,
     "asyncmy": AsyncmyQueueStore,
     "asyncpg": AsyncpgQueueStore,
     "bigquery": BigQueryQueueStore,
@@ -46,6 +45,14 @@ _ADAPTER_STORE_TYPES: dict[str, type[SQLSpecQueueStore]] = {
     "spanner": SpannerQueueStore,
     "sqlite": SqliteQueueStore,
 }
+_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({
+    "cockroach_psycopg",
+    "mssql_python",
+    "mysqlconnector",
+    "oracledb",
+    "psycopg",
+})
+_SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAPTER_NAMES
 
 
 def create_queue_store(
@@ -93,7 +100,13 @@ def _adapter_store_type(config: Any) -> type[SQLSpecQueueStore]:
         return _async_or_sync_store_type(
             config, async_store_type=PsycopgAsyncQueueStore, sync_store_type=PsycopgSyncQueueStore
         )
-    return _ADAPTER_STORE_TYPES.get(name, SQLSpecQueueStore)
+    if name in _ADAPTER_STORE_TYPES:
+        return _ADAPTER_STORE_TYPES[name]
+    if name:
+        supported = ", ".join(sorted(_SUPPORTED_ADAPTER_NAMES))
+        msg = f"SQLSpec adapter {name!r} is not supported by this queue backend. Supported adapters: {supported}."
+        raise QueueConfigurationError(msg)
+    return SQLSpecQueueStore
 
 
 def _async_or_sync_store_type(

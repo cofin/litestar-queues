@@ -12,10 +12,6 @@ class BigQueryQueueStore(SQLSpecQueueStore):
 
     data_dictionary_dialect = "bigquery"
     identifier_quote_style = "backtick"
-    id_type = "STRING"
-    indexed_text_type = "STRING"
-    integer_type = "INT64"
-    error_type = "STRING"
 
     def create_statements(self) -> list[str]:
         """Return statements that create BigQuery queue artifacts."""
@@ -54,3 +50,10 @@ class BigQueryQueueStore(SQLSpecQueueStore):
         if not self._manage_schema:
             return []
         return [f"DROP TABLE IF EXISTS {self._quoted_table_name()}"]
+
+    def _string_type(self, length: int | None = None) -> str:
+        del length
+        return "STRING"
+
+    def _integer_type(self) -> str:
+        return "INT64"

@@ -11,18 +11,28 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
 
 
-class OracledbSyncQueueStore(SQLSpecQueueStore):
-    """oracledb sync SQLSpec queue statement store."""
+class _OracledbQueueStoreMixin:
+    """Shared Oracle DDL type hooks."""
 
-    __slots__ = ("_in_memory", "_json_storage")
+    __slots__ = ()
 
     data_dictionary_dialect = "oracle"
     identifier_quote_style = "none"
-    id_type = "VARCHAR2(64)"
-    indexed_text_type = "VARCHAR2(255)"
-    integer_type = "NUMBER(10)"
-    timestamp_type = "VARCHAR2(64)"
-    error_type = "VARCHAR2(4000)"
+
+    def _string_type(self, length: int | None = None) -> str:
+        return "CLOB" if length is None else f"VARCHAR2({length})"
+
+    def _integer_type(self) -> str:
+        return "NUMBER(10)"
+
+    def _error_type(self) -> str:
+        return "VARCHAR2(4000)"
+
+
+class OracledbSyncQueueStore(_OracledbQueueStoreMixin, SQLSpecQueueStore):
+    """oracledb sync SQLSpec queue statement store."""
+
+    __slots__ = ("_in_memory", "_json_storage")
 
     def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
         super().__init__(config, table_name=table_name, **kwargs)
@@ -82,18 +92,10 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
         return _index_name(self, suffix)
 
 
-class OracledbAsyncQueueStore(SQLSpecQueueStore):
+class OracledbAsyncQueueStore(_OracledbQueueStoreMixin, SQLSpecQueueStore):
     """oracledb async SQLSpec queue statement store."""
 
     __slots__ = ("_in_memory", "_json_storage")
-
-    data_dictionary_dialect = "oracle"
-    identifier_quote_style = "none"
-    id_type = "VARCHAR2(64)"
-    indexed_text_type = "VARCHAR2(255)"
-    integer_type = "NUMBER(10)"
-    timestamp_type = "VARCHAR2(64)"
-    error_type = "VARCHAR2(4000)"
 
     def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
         super().__init__(config, table_name=table_name, **kwargs)

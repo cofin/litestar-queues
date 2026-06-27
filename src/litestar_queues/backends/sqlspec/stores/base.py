@@ -54,16 +54,6 @@ class SQLSpecQueueStore:
 
     data_dictionary_dialect: ClassVar[str | None] = None
     identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "double"
-    id_type: ClassVar[str | None] = None
-    text_type: ClassVar[str | None] = None
-    indexed_text_type: ClassVar[str | None] = None
-    integer_type: ClassVar[str | None] = "INTEGER"
-    json_type: ClassVar[str | None] = None
-    payload_json_type: ClassVar[str | None] = None
-    result_json_type: ClassVar[str | None] = None
-    metadata_json_type: ClassVar[str | None] = None
-    timestamp_type: ClassVar[str | None] = None
-    error_type: ClassVar[str | None] = None
     # Per-store opt-in: canonical JSON columns whose driver round-trips
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
@@ -131,7 +121,7 @@ class SQLSpecQueueStore:
         return self._select_all().where_eq(self._col("task_key"), key)
 
     def list_pending(
-        self, *, now: str, limit: int, queue: str | None = None, execution_backend: str | None = None
+        self, *, now: Any, limit: int, queue: str | None = None, execution_backend: str | None = None
     ) -> Any:
         """Return a SELECT statement for due pending tasks."""
         statement = (
@@ -148,7 +138,7 @@ class SQLSpecQueueStore:
             sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
         ).limit(limit)
 
-    def claim_task(self, *, task_id: str, due_at: str, started_at: str, heartbeat_at: str) -> Any:
+    def claim_task(self, *, task_id: str, due_at: Any, started_at: Any, heartbeat_at: Any) -> Any:
         """Return an UPDATE statement that claims a due task."""
         return (
             sql
@@ -159,7 +149,7 @@ class SQLSpecQueueStore:
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
         )
 
-    def complete_task(self, *, task_id: str, completed_at: str, heartbeat_at: str, result_json: Any) -> Any:
+    def complete_task(self, *, task_id: str, completed_at: Any, heartbeat_at: Any, result_json: Any) -> Any:
         """Return an UPDATE statement that completes a task."""
         return (
             sql
@@ -193,7 +183,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def fail_task(self, *, task_id: str, completed_at: str, heartbeat_at: str, error: str) -> Any:
+    def fail_task(self, *, task_id: str, completed_at: Any, heartbeat_at: Any, error: str) -> Any:
         """Return an UPDATE statement that permanently fails a task."""
         return (
             sql
@@ -209,7 +199,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def cancel_task(self, *, task_id: str, completed_at: str) -> Any:
+    def cancel_task(self, *, task_id: str, completed_at: Any) -> Any:
         """Return an UPDATE statement that cancels a due task."""
         return (
             sql
@@ -219,7 +209,7 @@ class SQLSpecQueueStore:
             .where_in(self._col("status"), _DUE_STATUSES)
         )
 
-    def touch_heartbeat(self, *, task_id: str, heartbeat_at: str) -> Any:
+    def touch_heartbeat(self, *, task_id: str, heartbeat_at: Any) -> Any:
         """Return an UPDATE statement that touches a running task heartbeat."""
         return (
             sql
@@ -238,7 +228,7 @@ class SQLSpecQueueStore:
             .where_in(self._col("id"), task_ids)
         )
 
-    def requeue_stale(self, *, cutoff: str) -> Any:
+    def requeue_stale(self, *, cutoff: Any) -> Any:
         """Return an UPDATE statement that requeues stale running tasks."""
         return (
             sql
@@ -255,7 +245,7 @@ class SQLSpecQueueStore:
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
 
-    def list_stale_running(self, *, cutoff: str) -> Any:
+    def list_stale_running(self, *, cutoff: Any) -> Any:
         """Return a SELECT statement for stale running tasks."""
         return (
             self
@@ -320,7 +310,7 @@ class SQLSpecQueueStore:
         """Return a SELECT statement for all queue records."""
         return self._select_all()
 
-    def list_completed_by_task(self, *, task_name: str, since: str | None = None, limit: int = 10) -> Any:
+    def list_completed_by_task(self, *, task_name: str, since: Any | None = None, limit: int = 10) -> Any:
         """Return a SELECT statement for completed records by task name."""
         statement = (
             self._select_all().where_eq(self._col("task_name"), task_name).where_eq(self._col("status"), "completed")
@@ -329,7 +319,7 @@ class SQLSpecQueueStore:
             statement = statement.where(f"{self._col('completed_at')} >= :completed_since", completed_since=since)
         return statement.order_by(sql.raw(f"{self._col('completed_at')} DESC")).limit(limit)
 
-    def count_terminal(self, *, before: str) -> Any:
+    def count_terminal(self, *, before: Any) -> Any:
         """Return a COUNT statement matching the same predicate as cleanup_terminal.
 
         Used by the backend to return a deterministic row count even when the
@@ -346,7 +336,7 @@ class SQLSpecQueueStore:
             )
         )
 
-    def cleanup_terminal(self, *, before: str) -> Any:
+    def cleanup_terminal(self, *, before: Any) -> Any:
         """Return a DELETE statement for terminal records before a cutoff."""
         return (
             sql
@@ -482,34 +472,37 @@ class SQLSpecQueueStore:
         return f"ix_{self.table_name.replace('.', '_')}_{suffix}"
 
     def _id_type(self) -> str:
-        return self._column_type(type(self).id_type, logical_type="text", fallback="TEXT")
+        return self._string_type(64)
 
     def _text_type(self) -> str:
-        return self._column_type(type(self).text_type, logical_type="text", fallback="TEXT")
+        return self._dialect_type("text", fallback="TEXT")
+
+    def _string_type(self, length: int | None = None) -> str:
+        return self._text_type() if length is None else f"VARCHAR({length})"
 
     def _indexed_text_type(self) -> str:
-        return self._column_type(type(self).indexed_text_type, logical_type="text", fallback=self._text_type())
+        return self._string_type(255)
 
     def _integer_type(self) -> str:
-        return self._column_type(type(self).integer_type, logical_type="integer", fallback="INTEGER")
+        return self._dialect_type("integer", fallback="INTEGER")
 
     def _json_type(self) -> str:
-        return self._column_type(type(self).json_type, logical_type="json", fallback=self._text_type())
+        return self._dialect_type("json", fallback=self._text_type())
 
     def _payload_json_type(self, column_name: str) -> str:
-        return self.payload_json_type or self._json_type()
+        return self._json_type()
 
     def _result_json_type(self, column_name: str) -> str:
-        return self.result_json_type or self._json_type()
+        return self._json_type()
 
     def _metadata_json_type(self, column_name: str) -> str:
-        return self.metadata_json_type or self._json_type()
+        return self._json_type()
 
     def _timestamp_type(self) -> str:
-        return self._column_type(type(self).timestamp_type, logical_type="timestamp", fallback=self._text_type())
+        return self._dialect_type("timestamp", fallback=self._text_type())
 
     def _error_type(self) -> str:
-        return self._column_type(type(self).error_type, logical_type="text", fallback=self._text_type())
+        return self._text_type()
 
     def _serialize_json(self, value: Any) -> str:
         return to_json(value)
@@ -530,9 +523,7 @@ class SQLSpecQueueStore:
         except ValueError:
             return None
 
-    def _column_type(self, override: str | None, *, logical_type: str, fallback: str) -> str:
-        if override is not None:
-            return override
+    def _dialect_type(self, logical_type: str, *, fallback: str) -> str:
         dialect_config = self._dialect_config()
         if dialect_config is not None and logical_type in dialect_config.type_mappings:
             return dialect_config.get_optimal_type(logical_type)

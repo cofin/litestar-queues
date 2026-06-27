@@ -4,7 +4,7 @@ Two flavours of tests live here:
 
 1. **Registry-parametrized tests** consume the ``queue_backend`` fixture exposed by
    the integration conftest, exercising shared queue-backend contracts across
-   every registered backend (memory + 12 SQLSpec adapters).
+   every registered backend (memory + SQLSpec adapters).
 2. **SQLSpec-pinned tests** target SQLSpec-specific behaviour (config resolution,
    store factory dispatch, packaged migrations, etc.) and use the aiosqlite-pinned
    ``sqlspec_backend`` fixture defined in the local ``conftest.py``.
@@ -12,9 +12,8 @@ Two flavours of tests live here:
 
 import sqlite3
 import sys
-from importlib.util import find_spec
-from pkgutil import iter_modules
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -34,7 +33,6 @@ from litestar_queues.backends.sqlspec.stores import (
     AdbcQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
-    ArrowOdbcQueueStore,
     AsyncmyQueueStore,
     AsyncpgQueueStore,
     BigQueryQueueStore,
@@ -57,10 +55,9 @@ from litestar_queues.backends.sqlspec.stores import (
     SqliteQueueStore,
     create_queue_store,
 )
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from litestar_queues.backends import BaseQueueBackend
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
@@ -238,7 +235,6 @@ from litestar_queues.backends.sqlspec.stores import (
     AdbcQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
-    ArrowOdbcQueueStore,
     AsyncmyQueueStore,
     AsyncpgQueueStore,
     BigQueryQueueStore,
@@ -274,7 +270,6 @@ expected = (
     ("adbc", "adbc", "FakeAdbcConfig", AdbcQueueStore),
     ("aiomysql", "mysql", "AiomysqlConfig", AiomysqlQueueStore),
     ("aiosqlite", "sqlite", "AiosqliteConfig", AiosqliteQueueStore),
-    ("arrow_odbc", "sqlite", "ArrowOdbcConfig", ArrowOdbcQueueStore),
     ("asyncmy", "mysql", "AsyncmyConfig", AsyncmyQueueStore),
     ("asyncpg", "postgres", "AsyncpgConfig", AsyncpgQueueStore),
     ("bigquery", "bigquery", "BigQueryConfig", BigQueryQueueStore),
@@ -327,6 +322,46 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "queue" in pending_statement.sql
 
 
+def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> None:
+    with pytest.raises(QueueConfigurationError, match="arrow_odbc"):
+        create_queue_store(
+            _fake_adapter_config("arrow_odbc", dialect="sqlite", config_type_name="ArrowOdbcConfig"),
+            table_name="queue_tasks",
+        )
+
+
+def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> None:
+    import sqlspec.adapters
+
+    event_store_adapters = {
+        event_store.parent.parent.name
+        for adapter_path in (Path(base) for base in sqlspec.adapters.__path__)
+        for event_store in adapter_path.glob("*/events/store.py")
+    }
+    supported_adapters = {
+        "adbc",
+        "aiomysql",
+        "aiosqlite",
+        "asyncmy",
+        "asyncpg",
+        "bigquery",
+        "cockroach_asyncpg",
+        "cockroach_psycopg",
+        "duckdb",
+        "mssql_python",
+        "mysqlconnector",
+        "oracledb",
+        "psqlpy",
+        "psycopg",
+        "pymysql",
+        "spanner",
+        "sqlite",
+    }
+
+    assert event_store_adapters <= supported_adapters
+    assert "arrow_odbc" not in event_store_adapters
+
+
 @pytest.mark.parametrize(
     (
         "adapter_name",
@@ -344,14 +379,14 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
             "FakeAdbcConfig",
             {"driver_name": "adbc_driver_postgresql"},
             AdbcQueueStore,
-            "WHERE status IN",
+            'WHERE "status" IN',
         ),
         ("adbc", "bigquery", "FakeAdbcConfig", {"driver_name": "adbc_driver_bigquery"}, AdbcQueueStore, "CLUSTER BY"),
         ("adbc", None, "FakeAdbcConfig", {"driver_name": "adbc_driver_snowflake"}, AdbcQueueStore, "VARIANT"),
         ("aiomysql", "mysql", "AiomysqlConfig", {}, AiomysqlQueueStore, "ENGINE=InnoDB"),
         ("aiosqlite", "sqlite", "AiosqliteConfig", {}, AiosqliteQueueStore, '"queue_tasks"'),
         ("asyncmy", "mysql", "AsyncmyConfig", {}, AsyncmyQueueStore, "ENGINE=InnoDB"),
-        ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, "WHERE status IN"),
+        ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, 'WHERE "status" IN'),
         ("bigquery", "bigquery", "BigQueryConfig", {}, BigQueryQueueStore, "CREATE TABLE"),
         ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig", {}, CockroachAsyncpgQueueStore, "TIMESTAMPTZ"),
         (
@@ -375,9 +410,9 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
         ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
         ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
-        ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, "WHERE status IN"),
-        ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, "WHERE status IN"),
-        ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, "WHERE status IN"),
+        ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, 'WHERE "status" IN'),
+        ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
+        ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, 'WHERE "status" IN'),
         ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
         ("spanner", "spanner", "SpannerConfig", {}, SpannerQueueStore, "PRIMARY KEY"),
         ("sqlite", "sqlite", "SqliteConfig", {}, SqliteQueueStore, '"queue_tasks"'),
@@ -420,9 +455,9 @@ async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(adapter_name: 
 
     ddl = "\n".join(store.create_statements())
 
-    assert "status(32), queue(191), execution_backend(191)" in ddl
-    assert "status(32), heartbeat_at" in ddl
-    assert "task_key VARCHAR(255) UNIQUE" in ddl
+    assert "`status`(32), `queue`(191), `execution_backend`(191)" in ddl
+    assert "`status`(32), `heartbeat_at`" in ddl
+    assert "`task_key` VARCHAR(255) UNIQUE" in ddl
 
 
 async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_keys(

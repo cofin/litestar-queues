@@ -68,16 +68,12 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     def _id_type(self) -> str:
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
-            return self._column_type(None, logical_type="text", fallback="STRING")
-        if self.adbc_dialect == _ADBC_DIALECT_DUCKDB:
-            return "VARCHAR"
+            return "STRING"
         return super()._id_type()
 
     def _indexed_text_type(self) -> str:
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
             return "STRING"
-        if self.adbc_dialect == _ADBC_DIALECT_DUCKDB:
-            return "VARCHAR"
         return super()._indexed_text_type()
 
     def _integer_type(self) -> str:
@@ -87,16 +83,20 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     def _json_type(self) -> str:
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_DUCKDB}:
-            return self._column_type(None, logical_type="json", fallback="JSON")
+            return self._dialect_type("json", fallback="JSON")
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
-            return self._column_type(None, logical_type="json", fallback="JSONB")
+            return self._dialect_type("json", fallback="JSONB")
+        if self.adbc_dialect in {_ADBC_DIALECT_FLIGHTSQL, _ADBC_DIALECT_SQLITE}:
+            return "TEXT"
         return super()._json_type()
 
     def _timestamp_type(self) -> str:
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_DUCKDB}:
-            return self._column_type(None, logical_type="timestamp", fallback="TIMESTAMP")
+            return self._dialect_type("timestamp", fallback="TIMESTAMP")
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
-            return self._column_type(None, logical_type="timestamp", fallback="TIMESTAMPTZ")
+            return "TIMESTAMPTZ"
+        if self.adbc_dialect in {_ADBC_DIALECT_FLIGHTSQL, _ADBC_DIALECT_SQLITE}:
+            return "TIMESTAMP"
         return super()._timestamp_type()
 
     def _data_dictionary_dialect_name(self) -> str | None:
