@@ -6,7 +6,7 @@ constructed fake configs (no Oracle service required).
 """
 
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -22,6 +22,51 @@ class FakeOracleConfig(SimpleNamespace):
     extension_config: dict[str, object]
     statement_config: SimpleNamespace
     connection_config: dict[str, object]
+
+
+class FakeOracleVersionInfo:
+    """Oracle version feature probe used by storage-detection tests."""
+
+    def __init__(self, *, native_json: bool = False, json_blob: bool = True) -> None:
+        self.native_json = native_json
+        self.json_blob = json_blob
+
+    def supports_native_json(self) -> bool:
+        return self.native_json
+
+    def supports_json_blob(self) -> bool:
+        return self.json_blob
+
+
+class FakeOracleDriver:
+    """Fake Oracle driver exposing SQLSpec's cached version hook shape."""
+
+    def __init__(self, version_info: FakeOracleVersionInfo | None) -> None:
+        self.calls = 0
+        self.version_info = version_info
+
+    async def _detect_oracle_version(self) -> FakeOracleVersionInfo | None:
+        self.calls += 1
+        return self.version_info
+
+
+class FakeSyncOracleDriver:
+    """Fake sync Oracle driver wrapped by the backend sync bridge."""
+
+    def __init__(self, version_info: FakeOracleVersionInfo | None) -> None:
+        self.calls = 0
+        self.version_info = version_info
+
+    def _detect_oracle_version(self) -> FakeOracleVersionInfo | None:
+        self.calls += 1
+        return self.version_info
+
+
+class FakeManagedDriver:
+    """Minimal stand-in for the backend's sync-driver bridge."""
+
+    def __init__(self, driver: FakeSyncOracleDriver) -> None:
+        self._driver = driver
 
 
 def _fake_oracle_config(
@@ -75,3 +120,27 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
     assert store.deserialize_json("kwargs_json", serialized) == {"ok": True}
     if queue_settings.get("json_storage") != "blob":
         assert store.deserialize_json("result_json", "ok") == "ok"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("driver", "expected_json_fragment"),
+    (
+        (FakeOracleDriver(FakeOracleVersionInfo(native_json=True)), "JSON"),
+        (FakeOracleDriver(FakeOracleVersionInfo(json_blob=True)), "BLOB CHECK (args_json IS JSON)"),
+        (FakeOracleDriver(FakeOracleVersionInfo(native_json=False, json_blob=False)), "BLOB"),
+        (FakeManagedDriver(FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=True))), "JSON"),
+    ),
+)
+async def test_sqlspec_backend_oracledb_detects_json_storage_from_driver_version(
+    driver: Any, expected_json_fragment: str
+) -> None:
+    store = create_queue_store(_fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks")
+
+    first_ddl = "\n".join(await store.create_statements_for_driver(driver))
+    second_ddl = "\n".join(await store.create_statements_for_driver(driver))
+
+    assert expected_json_fragment in first_ddl
+    assert second_ddl == first_ddl
+    raw_driver = getattr(driver, "_driver", driver)
+    assert raw_driver.calls == 1

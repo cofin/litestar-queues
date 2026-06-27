@@ -1,6 +1,6 @@
 """psqlpy SQLSpec queue store."""
 
-from typing import Any
+from typing import Any, ClassVar
 
 from litestar_queues.backends.sqlspec.stores._families import PostgresQueueStore
 
@@ -12,8 +12,8 @@ class PsqlpyQueueStore(PostgresQueueStore):
 
     __slots__ = ()
 
-    auto_native_json_columns = frozenset()
-    table_storage_parameters = True
+    auto_native_json_columns: ClassVar[frozenset[str]] = frozenset()
+    table_storage_parameters: ClassVar[bool] = True
 
     def __init__(self, config: Any, *, native_json_columns: frozenset[str] | None = None, **kwargs: Any) -> None:
         super().__init__(

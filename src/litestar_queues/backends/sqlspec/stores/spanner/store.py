@@ -1,5 +1,7 @@
 """spanner SQLSpec queue store."""
 
+from typing import ClassVar, Literal
+
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
 __all__ = ("SpannerQueueStore",)
@@ -10,8 +12,8 @@ class SpannerQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect = "spanner"
-    identifier_quote_style = "backtick"
+    data_dictionary_dialect: ClassVar[str | None] = "spanner"
+    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "backtick"
 
     def create_statements(self) -> list[str]:
         """Return statements that create Spanner queue artifacts."""

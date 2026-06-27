@@ -1,5 +1,7 @@
 """bigquery SQLSpec queue store."""
 
+from typing import ClassVar, Literal
+
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
 __all__ = ("BigQueryQueueStore",)
@@ -10,8 +12,8 @@ class BigQueryQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect = "bigquery"
-    identifier_quote_style = "backtick"
+    data_dictionary_dialect: ClassVar[str | None] = "bigquery"
+    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "backtick"
 
     def create_statements(self) -> list[str]:
         """Return statements that create BigQuery queue artifacts."""

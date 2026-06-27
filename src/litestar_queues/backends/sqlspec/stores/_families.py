@@ -1,5 +1,7 @@
 """Shared SQLSpec queue store implementations for dialect families."""
 
+from typing import ClassVar, Final, Literal
+
 from sqlspec import sql
 from sqlspec.utils.text import split_qualified_identifier
 
@@ -7,15 +9,23 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
 __all__ = ("MySQLQueueStore", "PostgresQueueStore", "SQLServerQueueStore")
 
+_NVARCHAR_MAX_THRESHOLD: Final = 4000
+_QUALIFIED_IDENTIFIER_MIN_PARTS: Final = 2
+
 
 class PostgresQueueStore(SQLSpecQueueStore):
     """Postgres-family queue store with partial indexes."""
 
     __slots__ = ()
 
-    data_dictionary_dialect = "postgres"
-    table_storage_parameters = False
-    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
+    data_dictionary_dialect: ClassVar[str | None] = "postgres"
+    table_storage_parameters: ClassVar[bool] = False
+    auto_native_json_columns: ClassVar[frozenset[str]] = frozenset({
+        "args_json",
+        "kwargs_json",
+        "metadata_json",
+        "result_json",
+    })
 
     def create_statements(self) -> list[str]:
         """Return statements that create Postgres-family queue artifacts."""
@@ -27,11 +37,9 @@ class PostgresQueueStore(SQLSpecQueueStore):
         statements = [create_table, *self._create_index_statements()]
         if type(self).table_storage_parameters:
             statements.append(
-                (
-                    f"ALTER TABLE {self._quoted_table_name()} SET ("
-                    "autovacuum_vacuum_scale_factor = 0.05, "
-                    "autovacuum_analyze_scale_factor = 0.02)"
-                )
+                f"ALTER TABLE {self._quoted_table_name()} SET ("
+                "autovacuum_vacuum_scale_factor = 0.05, "
+                "autovacuum_analyze_scale_factor = 0.02)"
             )
         return statements
 
@@ -79,9 +87,14 @@ class MySQLQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect = "mysql"
-    identifier_quote_style = "backtick"
-    auto_native_json_columns = frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
+    data_dictionary_dialect: ClassVar[str | None] = "mysql"
+    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "backtick"
+    auto_native_json_columns: ClassVar[frozenset[str]] = frozenset({
+        "args_json",
+        "kwargs_json",
+        "metadata_json",
+        "result_json",
+    })
 
     def create_statements(self) -> list[str]:
         """Return statements that create MySQL-family queue artifacts."""
@@ -142,8 +155,8 @@ class SQLServerQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect = "mssql"
-    identifier_quote_style = "none"
+    data_dictionary_dialect: ClassVar[str | None] = "mssql"
+    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "none"
 
     def create_statements(self) -> list[str]:
         """Return statements that create SQL Server queue artifacts."""
@@ -207,7 +220,7 @@ class SQLServerQueueStore(SQLSpecQueueStore):
     def _wrap_create_index(self, suffix: str, columns: str) -> str:
         index_name = self._index_name(suffix)
         return (
-            "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+            "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
             f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{_object_name(self.table_name)}')) "
             f"BEGIN CREATE INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()}({columns}); END"
         )
@@ -215,7 +228,7 @@ class SQLServerQueueStore(SQLSpecQueueStore):
     def _wrap_drop_index(self, suffix: str) -> str:
         index_name = self._index_name(suffix)
         return (
-            "IF EXISTS (SELECT 1 FROM sys.indexes "
+            "IF EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
             f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{_object_name(self.table_name)}')) "
             f"DROP INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()};"
         )
@@ -224,7 +237,7 @@ class SQLServerQueueStore(SQLSpecQueueStore):
         return f"IF OBJECT_ID(N'{_object_name(self.table_name)}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};"
 
     def _string_type(self, length: int | None = None) -> str:
-        if length is None or length >= 4000:
+        if length is None or length >= _NVARCHAR_MAX_THRESHOLD:
             return "NVARCHAR(MAX)"
         return f"NVARCHAR({length})"
 
@@ -234,7 +247,7 @@ class SQLServerQueueStore(SQLSpecQueueStore):
 
 def _object_name(table_name: str) -> str:
     parts = split_qualified_identifier(table_name, quote_chars='"')
-    if len(parts) < 2:
+    if len(parts) < _QUALIFIED_IDENTIFIER_MIN_PARTS:
         schema_name = "dbo"
         bare_table_name = parts[0] if parts else table_name
     else:

@@ -19,10 +19,7 @@ classifiers = [
   "Topic :: Software Development",
   "Typing :: Typed",
 ]
-dependencies = [
-  "litestar>=2.24.0",
-  "typing_extensions>=4.0.0",
-]
+dependencies = ["litestar>=2.24.0", "typing_extensions>=4.0.0"]
 description = "Task queue plugin for Litestar"
 keywords = ["litestar", "queue", "tasks", "workers", "background-jobs"]
 license = { text = "MIT" }
@@ -79,14 +76,9 @@ dev = [
   "pyright",
   # - Testing
   "anyio",
-  "coverage[toml]",
-  "pytest",
-  "pytest-timeout",
-  "pytest-cov",
-  "pytest-mock",
-  "pytest-sugar",
-  "pytest-xdist",
+
   { include-group = "docs" },
+  { include-group = "tests" },
 ]
 docs = [
   "auto-pytabs[sphinx]>=0.4.0",
@@ -99,30 +91,27 @@ docs = [
   "sphinx-togglebutton>=0.3.2",
   "litestar-sphinx-theme @ git+https://github.com/litestar-org/litestar-sphinx-theme.git@v3",
 ]
-test-adapters = [
+tests = [
+  "coverage[toml]",
+  "pytest",
+  "pytest-timeout",
+  "pytest-cov",
+  "pytest-mock",
+  "pytest-sugar",
+  "pytest-xdist",
   # Real-service fixtures for the integration tier
   "pytest-databases[postgres,mysql,oracle,redis,valkey,bigquery,spanner]>=0.16.0",
   # Redis + Valkey clients used directly by integration tests
   "redis>=5.0.0",
   "valkey>=6.0.0",
-  # In-process / file-backed SQL adapters
-  "aiosqlite>=0.20.0",
-  "duckdb>=1.1.0",
   "adbc-driver-sqlite>=1.2.0",
-  # Postgres async + sync drivers
-  "asyncpg>=0.30.0",
-  "psycopg[binary]>=3.2.0",
-  "psycopg-pool>=3.2.0",
-  "psqlpy>=0.10.0",
   # MySQL async + sync drivers
-  "asyncmy>=0.2.0",
-  "aiomysql>=0.2.0",
   "pymysql>=1.1.0",
   "mysql-connector-python>=9.0.0",
-  # Oracle
-  "oracledb>=2.5.0",
+  "pyarrow",
+  "numpy",
   # BigQuery + Spanner emulators and SQLSpec adapters
-  "sqlspec[bigquery,spanner]>=0.51.0",
+  "sqlspec[bigquery,spanner,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,adbc,arrow-odbc,aioodbc,fsspec,litestar,cloud-sql,cockroachdb,mysql-connector,mssql-python]>=0.51.0",
 ]
 
 #####################
@@ -163,14 +152,7 @@ source = ["src/litestar_queues"]
 # Tools             #
 #####################
 [tool.ruff]
-exclude = [
-  ".venv",
-  "node_modules",
-  "tmp",
-  ".tmp",
-  ".bugs",
-  "docs/_build",
-]
+exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build"]
 include = [
   "pyproject.toml",
   "src/litestar_queues/**/*.py",
@@ -248,6 +230,8 @@ ban-relative-imports = "all"
 "docs/**/*.*" = ["A", "B", "D", "DTZ", "ERA", "RET", "S", "TC"]
 "src/litestar_queues/_cli.py" = ["BLE001"]
 "src/litestar_queues/backends/advanced_alchemy/mixins.py" = ["N805", "PLW3201"]
+"src/litestar_queues/backends/sqlspec/backend.py" = ["BLE001"]
+"src/litestar_queues/backends/sqlspec/stores/**/*.*" = ["SLF001"]
 "src/litestar_queues/execution/cloudrun/backend.py" = ["BLE001"]
 "src/litestar_queues/service.py" = ["BLE001"]
 "src/tests/**/*" = [
@@ -268,17 +252,7 @@ ban-relative-imports = "all"
   "T201",
   "TID252",
 ]
-"src/litestar_queues/backends/sqlspec/backend.py" = ["BLE001"]
-"src/litestar_queues/backends/sqlspec/stores/**/*.*" = ["SLF001"]
-"tools/**/*.*" = [
-  "BLE001",
-  "D",
-  "DOC502",
-  "S310",
-  "S404",
-  "S603",
-  "S607",
-]
+"tools/**/*.*" = ["BLE001", "D", "DOC502", "S310", "S404", "S603", "S607"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12
@@ -306,6 +280,8 @@ strict-imports = false
 disallow_any_generics = false
 disallow_untyped_decorators = true
 implicit_reexport = false
+mypy_path = "src"
+packages = ["litestar_queues", "tests"]
 show_error_codes = true
 strict = true
 warn_redundant_casts = true
@@ -313,19 +289,17 @@ warn_return_any = true
 warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
-mypy_path = "src"
-packages = ["litestar_queues", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["google.cloud.*"]
 ignore_missing_imports = true
+module = ["google.cloud.*"]
 
 [tool.codespell]
 skip = "uv.lock"
 
 [tool.pyright]
-pythonVersion = "3.10"
 include = ["src/litestar_queues"]
-typeCheckingMode = "standard"
-reportOptionalMemberAccess = "warning"
+pythonVersion = "3.10"
 reportAssignmentType = "warning"
+reportOptionalMemberAccess = "warning"
+typeCheckingMode = "standard"

@@ -41,7 +41,6 @@ from litestar_queues.backends.sqlspec.stores import (
     CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
     MssqlPythonAsyncQueueStore,
-    MssqlPythonQueueStore,
     MssqlPythonSyncQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
@@ -406,6 +405,8 @@ def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> 
             "TIMESTAMPTZ",
         ),
         ("duckdb", "duckdb", "DuckDBConfig", {}, DuckDBQueueStore, "JSON"),
+        ("mssql_python", "tsql", "MssqlPythonConfig", {}, MssqlPythonSyncQueueStore, "DATETIME2(6)"),
+        ("mssql_python", "tsql", "MssqlPythonAsyncConfig", {}, MssqlPythonAsyncQueueStore, "DATETIME2(6)"),
         ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", {}, MysqlConnectorSyncQueueStore, "ENGINE=InnoDB"),
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
         ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
@@ -455,7 +456,8 @@ async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(adapter_name: 
 
     ddl = "\n".join(store.create_statements())
 
-    assert "`status`(32), `queue`(191), `execution_backend`(191)" in ddl
+    assert "`status`(32), `queue`(191)" in ddl
+    assert "`execution_backend`(191), `scheduled_at`" in ddl
     assert "`status`(32), `heartbeat_at`" in ddl
     assert "`task_key` VARCHAR(255) UNIQUE" in ddl
 

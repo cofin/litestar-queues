@@ -151,7 +151,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if not self._manage_schema:
             return
         async with self._session() as driver:
-            for statement in self._get_store().create_statements():
+            for statement in await _create_schema_statements(self._get_store(), driver):
                 await driver.execute_script(statement)
             await driver.commit()
 
@@ -962,6 +962,16 @@ def _queue_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
         return {}
     extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
     return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
+
+
+async def _create_schema_statements(store: Any, driver: Any) -> list[str]:
+    create_for_driver = getattr(store, "create_statements_for_driver", None)
+    if callable(create_for_driver):
+        result = create_for_driver(driver)
+        if isawaitable(result):
+            return cast("list[str]", await result)
+        return cast("list[str]", result)
+    return cast("list[str]", store.create_statements())
 
 
 def _events_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
