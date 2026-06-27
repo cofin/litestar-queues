@@ -1,7 +1,7 @@
 """Integration-tier pytest fixtures and pytest-databases plugin registration."""
 
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -51,6 +51,16 @@ async def queue_backend(request: pytest.FixtureRequest, tmp_path: "Path") -> "As
             with suppress(Exception):
                 await _drop_queue_tables(backend)
         await backend.close()
+
+
+@pytest.fixture
+def queue_backend_case(request: pytest.FixtureRequest) -> "BackendCase":
+    """Return the ``BackendCase`` backing the active ``queue_backend`` parametrization.
+
+    Lets capability-sensitive tests (e.g. concurrency, which single-writer
+    sync drivers cannot satisfy) introspect the case without re-parametrizing.
+    """
+    return cast("BackendCase", request.node.callspec.params["queue_backend"])
 
 
 async def _drop_queue_tables(backend: "BaseQueueBackend") -> None:

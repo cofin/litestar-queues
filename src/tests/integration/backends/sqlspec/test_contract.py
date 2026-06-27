@@ -10,6 +10,7 @@ Two flavours of tests live here:
    ``sqlspec_backend`` fixture defined in the local ``conftest.py``.
 """
 
+import asyncio
 import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
@@ -58,6 +59,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from litestar_queues.backends import BaseQueueBackend
+    from tests.integration._backends import BackendCase
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
 pytestmark = pytest.mark.anyio
@@ -113,6 +115,71 @@ async def test_backend_contract_enqueue_claim_complete_cycle(queue_backend: "Bas
     stored = await queue_backend.get_task(record.id)
     assert stored is not None
     assert stored.status == "completed"
+
+
+async def test_backend_contract_concurrent_claim_next_never_double_claims(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> None:
+    """Concurrent ``claim_next`` must never hand the same task to two workers.
+
+    On adapters that advertise SKIP LOCKED (Postgres family, MySQL 8+, …) the
+    claim selects under ``FOR UPDATE SKIP LOCKED``; on the rest it falls back to
+    the optimistic CAS claim. Either way the invariant is identical: no task is
+    claimed twice, and every due task is eventually claimed exactly once. Runs
+    against the real container behind each ``queue_backend`` case.
+
+    Single-writer sync drivers (sqlite, duckdb, …) share one DBAPI connection
+    and cannot be driven concurrently through the bridge; their CAS strategy is
+    asserted by the capability-introspection tests instead.
+    """
+    if "sync-driver" in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: single-writer sync driver cannot claim concurrently")
+
+    task_count = 8
+    enqueued_ids = {(await queue_backend.enqueue("tasks.contract.contended", priority=5)).id for _ in range(task_count)}
+
+    burst = await asyncio.gather(*(queue_backend.claim_next() for _ in range(task_count)))
+    claimed = [record for record in burst if record is not None]
+    claimed_ids = [record.id for record in claimed]
+
+    # The CAS-loop fallback can leave stragglers under contention; drain them so
+    # completeness is asserted without weakening the no-double-claim invariant.
+    while (straggler := await queue_backend.claim_next()) is not None:
+        claimed.append(straggler)
+        claimed_ids.append(straggler.id)
+
+    assert all(record.status == "running" for record in claimed)
+    assert len(claimed_ids) == len(set(claimed_ids)), "a task was claimed by more than one worker"
+    assert set(claimed_ids) == enqueued_ids, "every due task should be claimed exactly once"
+
+
+async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_backend: "BaseQueueBackend") -> None:
+    """Stale recovery must requeue every stale running task.
+
+    For SQLSpec backends the per-row stale-recovery writes are batched into a
+    single ``StatementStack`` / ``execute_stack`` call (pipelined on Oracle
+    >=23ai and psycopg, sequential elsewhere). This asserts the batched writes
+    actually apply on the real container behind each adapter.
+    """
+    stale_count = 5
+    records = [
+        await queue_backend.enqueue(f"tasks.contract.stale.{index}", max_retries=3) for index in range(stale_count)
+    ]
+    for record in records:
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+
+    # A negative window puts the cutoff slightly in the future so every
+    # just-claimed task counts as stale regardless of the adapter's timestamp
+    # precision (Oracle/DuckDB truncate sub-second, so stale_after=0 would race).
+    result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
+
+    assert result.requeued == stale_count
+    for record in records:
+        stored = await queue_backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.retry_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +504,64 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert isinstance(store, expected_store_type)
     assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
     assert expected_sql_fragment in "\n".join(store.create_statements())
+
+
+def _event_hinted_config(
+    adapter_name: str, *, select_for_update: bool, skip_locked: bool, dialect: str | None = None
+) -> FakeSQLSpecConfig:
+    """Fake adapter config advertising SQLSpec event runtime hints."""
+    from sqlspec.extensions.events import EventRuntimeHints
+
+    config = _fake_adapter_config(adapter_name, dialect=dialect)
+    config.get_event_runtime_hints = lambda: EventRuntimeHints(  # type: ignore[attr-defined]
+        select_for_update=select_for_update, skip_locked=skip_locked
+    )
+    return config
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "select_for_update", "skip_locked", "expected"),
+    (
+        ("asyncpg", True, True, True),
+        ("asyncmy", True, True, True),
+        ("psqlpy", True, True, True),
+        ("aiosqlite", False, False, False),
+        ("duckdb", False, False, False),
+        # Oracle supports FOR UPDATE SKIP LOCKED, but its config advertises False today
+        # (sqlspec FR litestar-org/sqlspec#544); the gate must honour the config, not guess.
+        ("oracledb", False, False, False),
+    ),
+)
+def test_sqlspec_store_supports_skip_locked_follows_config_event_hints(
+    adapter_name: str, select_for_update: bool, skip_locked: bool, expected: bool
+) -> None:
+    """``supports_skip_locked`` gates off the adapter config's event runtime hints."""
+    store = create_queue_store(
+        _event_hinted_config(adapter_name, select_for_update=select_for_update, skip_locked=skip_locked),
+        table_name="queue_tasks",
+    )
+
+    assert store.supports_skip_locked is expected
+
+
+def test_sqlspec_store_supports_skip_locked_defaults_false_without_hints() -> None:
+    """A config that does not advertise event hints degrades to optimistic CAS."""
+    store = create_queue_store(_fake_adapter_config("aiosqlite", dialect="sqlite"), table_name="queue_tasks")
+
+    assert store.supports_skip_locked is False
+
+
+def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect() -> None:
+    """``select_claimable`` builds a due-task SELECT that locks rows with SKIP LOCKED."""
+    store = create_queue_store(
+        _event_hinted_config("asyncpg", select_for_update=True, skip_locked=True, dialect="postgres"),
+        table_name="queue_tasks",
+    )
+
+    built = store.select_claimable(now="2026-01-01T00:00:00+00:00", limit=1, queue="default").build(dialect="postgres")
+
+    assert "FOR UPDATE SKIP LOCKED" in built.sql
+    assert 'FROM "queue_tasks"' in built.sql
 
 
 @pytest.mark.parametrize(

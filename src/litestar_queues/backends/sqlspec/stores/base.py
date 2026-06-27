@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from sqlspec import sql
 from sqlspec.data_dictionary import get_dialect_config
+from sqlspec.extensions.events import get_runtime_hints
 from sqlspec.utils.serializers import from_json, to_json
 from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
@@ -91,6 +92,21 @@ class SQLSpecQueueStore:
         dialect = getattr(statement_config, "dialect", None)
         return str(dialect) if dialect is not None else None
 
+    @property
+    def supports_skip_locked(self) -> bool:
+        """Whether the adapter supports ``SELECT ... FOR UPDATE SKIP LOCKED``.
+
+        Resolved from the adapter config's event runtime hints
+        (``select_for_update`` and ``skip_locked``). SQLSpec 0.51 exposes no
+        locking capability through ``data_dictionary`` feature flags, so the
+        config-level hints are the runtime signal. Adapters that do not
+        advertise the hints (sqlite, duckdb, oracle today, mssql) degrade to
+        the optimistic-CAS claim. This is a deliberate workaround pending a
+        first-class capability flag upstream (litestar-org/sqlspec#544).
+        """
+        hints = get_runtime_hints(_adapter_name(self._config), self._config)
+        return bool(hints.select_for_update and hints.skip_locked)
+
     def create_statements(self) -> list[str]:
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
@@ -137,6 +153,21 @@ class SQLSpecQueueStore:
         return statement.order_by(
             sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
         ).limit(limit)
+
+    def select_claimable(
+        self, *, now: Any, limit: int, queue: str | None = None, execution_backend: str | None = None
+    ) -> Any:
+        """Return a due-task SELECT that locks rows with ``FOR UPDATE SKIP LOCKED``.
+
+        Mirrors :meth:`list_pending` but adds row-level locking so competing
+        workers each claim a distinct row instead of colliding on the optimistic
+        CAS claim. Callers must only use this on adapters that report
+        :attr:`supports_skip_locked`; on dialects without locking support
+        sqlglot drops the clause, so it is never relied upon as a guarantee.
+        """
+        return self.list_pending(now=now, limit=limit, queue=queue, execution_backend=execution_backend).for_update(
+            skip_locked=True
+        )
 
     def claim_task(self, *, task_id: str, due_at: Any, started_at: Any, heartbeat_at: Any) -> Any:
         """Return an UPDATE statement that claims a due task."""

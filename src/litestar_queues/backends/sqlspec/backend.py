@@ -9,7 +9,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlspec import SQLSpec
+from sqlspec import SQLSpec, StatementStack
 from sqlspec.extensions.events import normalize_event_channel_name
 from sqlspec.utils.sync_tools import async_
 
@@ -271,6 +271,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def claim_next(
         self, *, queue: str | None = None, execution_backend: str | None = None
     ) -> QueuedTaskRecord | None:
+        store = self._get_store()
+        if store.supports_skip_locked:
+            return await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
             task_id = UUID(str(row["id"]))
@@ -278,6 +281,51 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if claimed is not None:
                 return claimed
         return None
+
+    async def _claim_next_skip_locked(
+        self, store: Any, *, queue: str | None, execution_backend: str | None
+    ) -> QueuedTaskRecord | None:
+        """Claim the next due task under ``SELECT ... FOR UPDATE SKIP LOCKED``.
+
+        Locks a single due row and claims it inside one transaction so
+        competing workers skip the locked row instead of colliding on the
+        optimistic CAS claim. The v1 fenced-claim contract is preserved: a row
+        that cannot be transitioned to ``running`` yields ``None``.
+        """
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                now = _utc_now()
+                rows = await driver.select(
+                    store.select_claimable(
+                        now=_serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
+                    )
+                )
+                if not rows:
+                    await driver.rollback()
+                    return None
+                record = self._record_from_row(cast("dict[str, Any]", rows[0]))
+                result = await driver.execute(
+                    store.claim_task(
+                        task_id=str(record.id),
+                        due_at=_serialize_datetime(now),
+                        heartbeat_at=_serialize_datetime(now),
+                        started_at=_serialize_datetime(now),
+                    )
+                )
+                if result.rows_affected == 0:
+                    await driver.rollback()
+                    return None
+                updated_row = await self._select_task(driver, record.id)
+                if updated_row is None or self._record_from_row(updated_row).status != "running":
+                    await driver.rollback()
+                    return None
+                await driver.commit()
+                return self._record_from_row(updated_row)
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
 
     async def complete_task(
         self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
@@ -421,43 +469,52 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
         cutoff = _utc_now() - stale_after
+        store = self._get_store()
+        result = StaleTaskRecoveryResult()
         async with self._session() as driver:
-            await driver.begin()
-            try:
-                rows = await driver.select(self._get_store().list_stale_running(cutoff=_serialize_datetime(cutoff)))
-                result = StaleTaskRecoveryResult()
-                for row in cast("list[dict[str, Any]]", rows):
-                    record = self._record_from_row(row)
-                    requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
-                    if requeue_on_stale and record.retry_count < record.max_retries:
-                        await driver.execute(
-                            self._get_store().retry_task(
-                                task_id=str(record.id),
-                                error="Task heartbeat stale",
-                                retry_count=record.retry_count + 1,
-                            )
+            rows = await driver.select(store.list_stale_running(cutoff=_serialize_datetime(cutoff)))
+            stack = StatementStack()
+            for row in cast("list[dict[str, Any]]", rows):
+                record = self._record_from_row(row)
+                requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
+                if requeue_on_stale and record.retry_count < record.max_retries:
+                    stack = stack.push_execute(
+                        store.retry_task(
+                            task_id=str(record.id), error="Task heartbeat stale", retry_count=record.retry_count + 1
                         )
-                        result.requeued += 1
-                    else:
-                        now = _utc_now()
-                        await driver.execute(
-                            self._get_store().fail_task(
-                                task_id=str(record.id),
-                                completed_at=_serialize_datetime(now),
-                                heartbeat_at=_serialize_datetime(now),
-                                error="Task heartbeat stale",
-                            )
+                    )
+                    result.requeued += 1
+                else:
+                    now = _utc_now()
+                    stack = stack.push_execute(
+                        store.fail_task(
+                            task_id=str(record.id),
+                            completed_at=_serialize_datetime(now),
+                            heartbeat_at=_serialize_datetime(now),
+                            error="Task heartbeat stale",
                         )
-                        result.failed += 1
-                        result.failed_task_ids.append(record.id)
-                        if not requeue_on_stale:
-                            result.handler_needed += 1
-                            result.handler_needed_task_ids.append(record.id)
-                await driver.commit()
-            except Exception:
+                    )
+                    result.failed += 1
+                    result.failed_task_ids.append(record.id)
+                    if not requeue_on_stale:
+                        result.handler_needed += 1
+                        result.handler_needed_task_ids.append(record.id)
+            if stack:
+                # Reset any implicit read transaction the SELECT may have opened so
+                # ``execute_stack`` reliably owns (begins AND commits) the write
+                # transaction across adapters whose transaction state after a read
+                # differs — mysql-connector leaves an implicit transaction open
+                # (autocommit off), while DuckDB does not track one at all.
                 with suppress(Exception):
                     await driver.rollback()
-                raise
+                # Batch the per-row stale-recovery writes into one atomic stack.
+                # ``continue_on_error=False`` (the default) runs them fail-fast in a
+                # single transaction that execute_stack owns and rolls back on error;
+                # on Oracle >=23ai (run_pipeline) and psycopg (libpq pipeline) the
+                # batch collapses to one round-trip, while other adapters degrade to
+                # sequential execution. The classification above still drives the
+                # operator-semantics id lists regardless of the write path.
+                await driver.execute_stack(stack)
         return result
 
     async def set_execution_ref(
