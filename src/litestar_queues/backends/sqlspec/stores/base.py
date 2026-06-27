@@ -248,6 +248,15 @@ class SQLSpecQueueStore:
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
 
+    def list_stale_running(self, *, cutoff: str) -> Any:
+        """Return a SELECT statement for stale running tasks."""
+        return (
+            self
+            ._select_all()
+            .where_eq(self._col("status"), "running")
+            .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
+        )
+
     def clear_key(self, *, task_id: str) -> Any:
         """Return an UPDATE statement that releases a terminal task key."""
         return (

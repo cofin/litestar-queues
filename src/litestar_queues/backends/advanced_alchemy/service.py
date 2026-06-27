@@ -1,11 +1,12 @@
 """Advanced Alchemy queue persistence service."""
 
 from datetime import datetime, timedelta, timezone
-from importlib import import_module
-from typing import Any, Protocol, cast
+from typing import Any, cast
 from uuid import UUID
 
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
+from advanced_alchemy.utils.serialization import decode_json as _decode_json
+from advanced_alchemy.utils.serialization import encode_json as _encode_json
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
@@ -83,7 +84,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         self, *, limit: int, queue: str | None, execution_backend: str | None
     ) -> list[QueuedTaskRecord]:
         statement = self._pending_statement(queue=queue, execution_backend=execution_backend).limit(limit)
-        models = await self.list(statement=statement)
+        models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
     async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
@@ -196,12 +197,35 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         criteria = [model_type.status == "running"]
         if stale_after > timedelta(0):
             criteria.append(or_(model_type.heartbeat_at.is_(None), model_type.heartbeat_at <= cutoff))
-        result = await self.repository.session.execute(
-            update(model_type)
-            .where(*criteria)
-            .values(status="pending", started_at=None, heartbeat_at=None, retry_count=model_type.retry_count + 1)
-        )
-        return StaleTaskRecoveryResult(requeued=int(result.rowcount or 0))
+        models = (await self.repository.session.execute(select(model_type).where(*criteria))).scalars().all()
+        result = StaleTaskRecoveryResult()
+        for model in models:
+            metadata = _deserialize_json(str(model.metadata_json))
+            requeue_on_stale = metadata.get("requeue_on_stale", True) is not False
+            if requeue_on_stale and int(model.retry_count) < int(model.max_retries):
+                await self.repository.session.execute(
+                    update(model_type)
+                    .where(model_type.id == model.id)
+                    .values(
+                        status="pending",
+                        started_at=None,
+                        heartbeat_at=None,
+                        retry_count=int(model.retry_count) + 1,
+                        error="Task heartbeat stale",
+                    )
+                )
+                result.requeued += 1
+            else:
+                now = _utc_now()
+                await self.repository.session.execute(
+                    update(model_type)
+                    .where(model_type.id == model.id)
+                    .values(status="failed", completed_at=now, heartbeat_at=now, error="Task heartbeat stale")
+                )
+                result.failed += 1
+                if not requeue_on_stale:
+                    result.handler_needed += 1
+        return result
 
     async def set_execution_ref(
         self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None
@@ -242,7 +266,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         )
         if limit is not None:
             statement = statement.limit(limit)
-        models = await self.list(statement=statement)
+        models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
     async def get_statistics(self) -> QueueStatistics:
@@ -264,7 +288,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if since is not None:
             criteria.append(model_type.completed_at >= since)
         statement = select(model_type).where(and_(*criteria)).order_by(desc(model_type.completed_at)).limit(limit)
-        models = await self.list(statement=statement)
+        models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
     async def cleanup_terminal(self, before: datetime) -> int:
@@ -362,25 +386,16 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return select(model_type).where(and_(*criteria)).order_by(desc(model_type.priority), model_type.created_at)
 
 
-class _AdvancedAlchemySerialization(Protocol):
-    def encode_json(self, data: Any) -> str: ...
-
-    def decode_json(self, data: str) -> Any: ...
-
-
-_serialization = cast("_AdvancedAlchemySerialization", import_module("advanced_alchemy._serialization"))
-
-
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _serialize_json(value: Any) -> str:
-    return str(_serialization.encode_json(value))
+    return str(_encode_json(value))
 
 
 def _deserialize_json(value: str) -> Any:
-    return _serialization.decode_json(value)
+    return _decode_json(value)
 
 
 def _coerce_datetime(value: Any) -> datetime | None:

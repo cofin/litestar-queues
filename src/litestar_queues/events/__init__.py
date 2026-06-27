@@ -1,6 +1,6 @@
 """Realtime queue event contracts and publishers."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.context import (
@@ -20,6 +20,9 @@ from litestar_queues.events.models import (
 )
 from litestar_queues.events.publisher import QueueEventConfig, QueueEventPublisher
 from litestar_queues.events.sinks import InMemoryQueueEventSink, NoopQueueEventSink, QueueEventSink
+
+if TYPE_CHECKING:
+    from litestar_queues.events.litestar import ChannelsQueueEventSink, stream_queue_events
 
 __all__ = (
     "ChannelsQueueEventSink",
@@ -53,5 +56,6 @@ def __getattr__(name: str) -> Any:
     if name == "stream_queue_events":
         from litestar_queues.events.litestar import stream_queue_events
 
+        return stream_queue_events
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

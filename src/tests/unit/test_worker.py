@@ -353,6 +353,7 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
     @task("tasks.sync_context")
     def sync_context(*, _job_id: str) -> dict[str, str | None]:
         context = get_current_task_context()
+        assert context is not None
         return {
             "job_id": _job_id,
             "context_task_id": context.task_id,

@@ -164,7 +164,7 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert cancelled is not None
     assert cancelled.status == "cancelled"
 
-    running = await advanced_alchemy_backend.enqueue("tasks.heartbeat")
+    running = await advanced_alchemy_backend.enqueue("tasks.heartbeat", max_retries=1)
     claimed = await advanced_alchemy_backend.claim_task(running.id)
 
     assert claimed is not None
@@ -184,6 +184,17 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert requeued is not None
     assert requeued.status == "pending"
     assert requeued.retry_count == 1
+
+    exhausted = await advanced_alchemy_backend.enqueue("tasks.exhausted", max_retries=0)
+    exhausted_claim = await advanced_alchemy_backend.claim_task(exhausted.id)
+    assert exhausted_claim is not None
+    exhausted_result = await advanced_alchemy_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+    exhausted_stored = await advanced_alchemy_backend.get_task(exhausted.id)
+
+    assert exhausted_result.failed == 1
+    assert exhausted_stored is not None
+    assert exhausted_stored.status == "failed"
+    assert exhausted_stored.error == "Task heartbeat stale"
 
 
 async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(

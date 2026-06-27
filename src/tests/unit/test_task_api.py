@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
+from typing import Any
 
 import pytest
 
@@ -258,7 +259,7 @@ async def test_schedule_config_rejects_unsupported_or_invalid_cron_syntax(cron: 
         {"cron": "0 0 * * *", "timezone": "Not/AZone"},
     ],
 )
-async def test_schedule_config_rejects_invalid_schedule_values(kwargs: dict[str, object]) -> None:
+async def test_schedule_config_rejects_invalid_schedule_values(kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         ScheduleConfig(task_name="tasks.invalid_values", **kwargs)
 

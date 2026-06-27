@@ -381,7 +381,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     if record.status != "running" or record.retry_count != expected_retry_count:
                         await driver.rollback()
                         return False
-                await driver.execute(
+                result = await driver.execute(
                     self._get_store().touch_heartbeat(
                         task_id=str(task_id), heartbeat_at=_serialize_datetime(_utc_now())
                     )
@@ -391,7 +391,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return True
+        return int(result.rows_affected) == 1
 
     async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
         if not task_ids:
@@ -424,13 +424,39 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                result = await driver.execute(self._get_store().requeue_stale(cutoff=_serialize_datetime(cutoff)))
+                rows = await driver.select(self._get_store().list_stale_running(cutoff=_serialize_datetime(cutoff)))
+                result = StaleTaskRecoveryResult()
+                for row in cast("list[dict[str, Any]]", rows):
+                    record = self._record_from_row(row)
+                    requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
+                    if requeue_on_stale and record.retry_count < record.max_retries:
+                        await driver.execute(
+                            self._get_store().retry_task(
+                                task_id=str(record.id),
+                                error="Task heartbeat stale",
+                                retry_count=record.retry_count + 1,
+                            )
+                        )
+                        result.requeued += 1
+                    else:
+                        now = _utc_now()
+                        await driver.execute(
+                            self._get_store().fail_task(
+                                task_id=str(record.id),
+                                completed_at=_serialize_datetime(now),
+                                heartbeat_at=_serialize_datetime(now),
+                                error="Task heartbeat stale",
+                            )
+                        )
+                        result.failed += 1
+                        if not requeue_on_stale:
+                            result.handler_needed += 1
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return StaleTaskRecoveryResult(requeued=int(result.rows_affected))
+        return result
 
     async def set_execution_ref(
         self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None

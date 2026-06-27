@@ -143,7 +143,7 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
     assert await redis_backend.cancel_task(cancellable.id) is True
     assert await redis_backend.cancel_task(cancellable.id) is False
 
-    running = await redis_backend.enqueue("tasks.running", execution_backend="cloudrun")
+    running = await redis_backend.enqueue("tasks.running", execution_backend="cloudrun", max_retries=1)
     claimed = await redis_backend.claim_task(running.id)
     assert claimed is not None
 

@@ -101,7 +101,7 @@ async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_ba
     assert await valkey_backend.cancel_task(cancellable.id) is True
     assert await valkey_backend.cancel_task(cancellable.id) is False
 
-    running = await valkey_backend.enqueue("tasks.running", execution_backend="cloudrun")
+    running = await valkey_backend.enqueue("tasks.running", execution_backend="cloudrun", max_retries=1)
     claimed = await valkey_backend.claim_task(running.id)
     assert claimed is not None
 

@@ -479,7 +479,7 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert cancelled is not None
     assert cancelled.status == "cancelled"
 
-    running = await sqlspec_backend.enqueue("tasks.heartbeat")
+    running = await sqlspec_backend.enqueue("tasks.heartbeat", max_retries=1)
     claimed = await sqlspec_backend.claim_task(running.id)
 
     assert claimed is not None
@@ -499,6 +499,17 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert requeued is not None
     assert requeued.status == "pending"
     assert requeued.retry_count == 1
+
+    exhausted = await sqlspec_backend.enqueue("tasks.exhausted", max_retries=0)
+    exhausted_claim = await sqlspec_backend.claim_task(exhausted.id)
+    assert exhausted_claim is not None
+    exhausted_result = await sqlspec_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+    exhausted_stored = await sqlspec_backend.get_task(exhausted.id)
+
+    assert exhausted_result.failed == 1
+    assert exhausted_stored is not None
+    assert exhausted_stored.status == "failed"
+    assert exhausted_stored.error == "Task heartbeat stale"
 
 
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: SQLSpecQueueBackend) -> None:
