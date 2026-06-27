@@ -68,7 +68,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     def _id_type(self) -> str:
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
-            return "STRING"
+            return self._column_type(None, logical_type="text", fallback="STRING")
         if self.adbc_dialect == _ADBC_DIALECT_DUCKDB:
             return "VARCHAR"
         return super()._id_type()
@@ -86,35 +86,47 @@ class AdbcQueueStore(SQLSpecQueueStore):
         return super()._integer_type()
 
     def _json_type(self) -> str:
-        if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
-            return "JSONB"
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_DUCKDB}:
-            return "JSON"
+            return self._column_type(None, logical_type="json", fallback="JSON")
+        if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
+            return self._column_type(None, logical_type="json", fallback="JSONB")
         return super()._json_type()
 
     def _timestamp_type(self) -> str:
-        if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
-            return "TIMESTAMPTZ"
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_DUCKDB}:
-            return "TIMESTAMP"
+            return self._column_type(None, logical_type="timestamp", fallback="TIMESTAMP")
+        if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
+            return self._column_type(None, logical_type="timestamp", fallback="TIMESTAMPTZ")
         return super()._timestamp_type()
 
+    def _data_dictionary_dialect_name(self) -> str | None:
+        if self.adbc_dialect in {
+            _ADBC_DIALECT_BIGQUERY,
+            _ADBC_DIALECT_DUCKDB,
+            _ADBC_DIALECT_POSTGRES,
+            _ADBC_DIALECT_SQLITE,
+        }:
+            return self.adbc_dialect
+        return super()._data_dictionary_dialect_name()
+
     def _postgres_index_statements(self) -> list[str]:
-        table_name = self.table_name
+        table_name = self._quoted_table_name()
         return [
             (
-                f"CREATE INDEX IF NOT EXISTS {self._index_name('pending')} "
-                f"ON {table_name} ({self._col('queue')}, {self._col('execution_backend')}, "
-                f"{self._col('priority')} DESC, {self._col('created_at')}) "
-                f"WHERE {self._col('status')} IN ('pending', 'scheduled')"
+                f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('pending')} "
+                f"ON {table_name} ({self._quoted_col('queue')}, {self._quoted_col('execution_backend')}, "
+                f"{self._quoted_col('priority')} DESC, {self._quoted_col('created_at')}) "
+                f"WHERE {self._quoted_col('status')} IN ('pending', 'scheduled')"
             ),
             (
-                f"CREATE INDEX IF NOT EXISTS {self._index_name('scheduled')} "
-                f"ON {table_name} ({self._col('scheduled_at')}) WHERE {self._col('status')} = 'scheduled'"
+                f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('scheduled')} "
+                f"ON {table_name} ({self._quoted_col('scheduled_at')}) "
+                f"WHERE {self._quoted_col('status')} = 'scheduled'"
             ),
             (
-                f"CREATE INDEX IF NOT EXISTS {self._index_name('heartbeat')} "
-                f"ON {table_name} ({self._col('heartbeat_at')}) WHERE {self._col('status')} = 'running'"
+                f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('heartbeat')} "
+                f"ON {table_name} ({self._quoted_col('heartbeat_at')}) "
+                f"WHERE {self._quoted_col('status')} = 'running'"
             ),
         ]
 

@@ -16,6 +16,8 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
 
     __slots__ = ("_in_memory", "_json_storage")
 
+    data_dictionary_dialect = "oracle"
+    identifier_quote_style = "none"
     id_type = "VARCHAR2(64)"
     indexed_text_type = "VARCHAR2(255)"
     integer_type = "NUMBER(10)"
@@ -85,6 +87,8 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
 
     __slots__ = ("_in_memory", "_json_storage")
 
+    data_dictionary_dialect = "oracle"
+    identifier_quote_style = "none"
     id_type = "VARCHAR2(64)"
     indexed_text_type = "VARCHAR2(255)"
     integer_type = "NUMBER(10)"
@@ -213,26 +217,26 @@ def _create_table_block(store: SQLSpecQueueStore, storage_type: _OracleJSONStora
     return f"""
     BEGIN
         EXECUTE IMMEDIATE 'CREATE TABLE {table_name} (
-            {store._col("id")} VARCHAR2(64) PRIMARY KEY,
-            {store._col("task_name")} VARCHAR2(255) NOT NULL,
+            {store._col("id")} {store._id_type()} PRIMARY KEY,
+            {store._col("task_name")} {store._indexed_text_type()} NOT NULL,
             {store._col("args_json")} {_json_column_type(store._col("args_json"), storage_type)} NOT NULL,
             {store._col("kwargs_json")} {_json_column_type(store._col("kwargs_json"), storage_type)} NOT NULL,
-            {store._col("queue")} VARCHAR2(255) NOT NULL,
-            {store._col("execution_backend")} VARCHAR2(255) NOT NULL,
-            {store._col("execution_profile")} VARCHAR2(255),
-            {store._col("execution_ref")} VARCHAR2(255),
-            {store._col("status")} VARCHAR2(255) NOT NULL,
-            {store._col("priority")} NUMBER(10) NOT NULL,
-            {store._col("max_retries")} NUMBER(10) NOT NULL,
-            {store._col("retry_count")} NUMBER(10) NOT NULL,
-            {store._col("scheduled_at")} VARCHAR2(64),
-            {store._col("created_at")} VARCHAR2(64) NOT NULL,
-            {store._col("started_at")} VARCHAR2(64),
-            {store._col("completed_at")} VARCHAR2(64),
-            {store._col("heartbeat_at")} VARCHAR2(64),
+            {store._col("queue")} {store._indexed_text_type()} NOT NULL,
+            {store._col("execution_backend")} {store._indexed_text_type()} NOT NULL,
+            {store._col("execution_profile")} {store._indexed_text_type()},
+            {store._col("execution_ref")} {store._indexed_text_type()},
+            {store._col("status")} {store._indexed_text_type()} NOT NULL,
+            {store._col("priority")} {store._integer_type()} NOT NULL,
+            {store._col("max_retries")} {store._integer_type()} NOT NULL,
+            {store._col("retry_count")} {store._integer_type()} NOT NULL,
+            {store._col("scheduled_at")} {store._timestamp_type()},
+            {store._col("created_at")} {store._timestamp_type()} NOT NULL,
+            {store._col("started_at")} {store._timestamp_type()},
+            {store._col("completed_at")} {store._timestamp_type()},
+            {store._col("heartbeat_at")} {store._timestamp_type()},
             {store._col("result_json")} {_json_column_type(store._col("result_json"), storage_type)} NOT NULL,
-            {store._col("error")} VARCHAR2(4000),
-            {store._col("task_key")} VARCHAR2(255) UNIQUE,
+            {store._col("error")} {store._error_type()},
+            {store._col("task_key")} {store._indexed_text_type()} UNIQUE,
             {store._col("metadata_json")} {_json_column_type(store._col("metadata_json"), storage_type)} NOT NULL
         ){in_memory_clause}';
     EXCEPTION

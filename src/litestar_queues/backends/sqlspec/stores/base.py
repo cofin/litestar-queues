@@ -1,10 +1,12 @@
 """Shared SQLSpec queue store primitives."""
 
 from collections.abc import Mapping
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from sqlspec import sql
+from sqlspec.data_dictionary import get_dialect_config
 from sqlspec.utils.serializers import from_json, to_json
+from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import (
@@ -13,6 +15,9 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_native_json_columns,
     validate_table_name,
 )
+
+if TYPE_CHECKING:
+    from sqlspec.data_dictionary import DialectConfig
 
 __all__ = ("SQLSpecQueueStore",)
 
@@ -47,16 +52,18 @@ class SQLSpecQueueStore:
 
     __slots__ = ("_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
 
-    id_type = "TEXT"
-    text_type = "TEXT"
-    indexed_text_type = "TEXT"
-    integer_type = "INTEGER"
-    json_type = "TEXT"
-    payload_json_type: str | None = None
-    result_json_type: str | None = None
-    metadata_json_type: str | None = None
-    timestamp_type = "TEXT"
-    error_type = "TEXT"
+    data_dictionary_dialect: ClassVar[str | None] = None
+    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "double"
+    id_type: ClassVar[str | None] = None
+    text_type: ClassVar[str | None] = None
+    indexed_text_type: ClassVar[str | None] = None
+    integer_type: ClassVar[str | None] = "INTEGER"
+    json_type: ClassVar[str | None] = None
+    payload_json_type: ClassVar[str | None] = None
+    result_json_type: ClassVar[str | None] = None
+    metadata_json_type: ClassVar[str | None] = None
+    timestamp_type: ClassVar[str | None] = None
+    error_type: ClassVar[str | None] = None
     # Per-store opt-in: canonical JSON columns whose driver round-trips
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
@@ -472,19 +479,22 @@ class SQLSpecQueueStore:
         return {self._col(column): value for column, value in values.items()}
 
     def _index_name(self, suffix: str) -> str:
-        return validate_table_name(f"ix_{self.table_name}_{suffix}")
+        return f"ix_{self.table_name.replace('.', '_')}_{suffix}"
 
     def _id_type(self) -> str:
-        return self.id_type
+        return self._column_type(type(self).id_type, logical_type="text", fallback="TEXT")
+
+    def _text_type(self) -> str:
+        return self._column_type(type(self).text_type, logical_type="text", fallback="TEXT")
 
     def _indexed_text_type(self) -> str:
-        return self.indexed_text_type
+        return self._column_type(type(self).indexed_text_type, logical_type="text", fallback=self._text_type())
 
     def _integer_type(self) -> str:
-        return self.integer_type
+        return self._column_type(type(self).integer_type, logical_type="integer", fallback="INTEGER")
 
     def _json_type(self) -> str:
-        return self.json_type
+        return self._column_type(type(self).json_type, logical_type="json", fallback=self._text_type())
 
     def _payload_json_type(self, column_name: str) -> str:
         return self.payload_json_type or self._json_type()
@@ -496,10 +506,10 @@ class SQLSpecQueueStore:
         return self.metadata_json_type or self._json_type()
 
     def _timestamp_type(self) -> str:
-        return self.timestamp_type
+        return self._column_type(type(self).timestamp_type, logical_type="timestamp", fallback=self._text_type())
 
     def _error_type(self) -> str:
-        return self.error_type
+        return self._column_type(type(self).error_type, logical_type="text", fallback=self._text_type())
 
     def _serialize_json(self, value: Any) -> str:
         return to_json(value)
@@ -507,6 +517,44 @@ class SQLSpecQueueStore:
     def _to_sql(self, statement: Any) -> str:
         built = statement.build(dialect=self.dialect_name)
         return cast("str", built.sql)
+
+    def _data_dictionary_dialect_name(self) -> str | None:
+        return type(self).data_dictionary_dialect or self.dialect_name
+
+    def _dialect_config(self) -> "DialectConfig | None":
+        dialect_name = self._data_dictionary_dialect_name()
+        if dialect_name is None:
+            return None
+        try:
+            return get_dialect_config(dialect_name)
+        except ValueError:
+            return None
+
+    def _column_type(self, override: str | None, *, logical_type: str, fallback: str) -> str:
+        if override is not None:
+            return override
+        dialect_config = self._dialect_config()
+        if dialect_config is not None and logical_type in dialect_config.type_mappings:
+            return dialect_config.get_optimal_type(logical_type)
+        return fallback
+
+    def _quoted_table_name(self) -> str:
+        return self._quote_identifier(self.table_name)
+
+    def _quoted_index_name(self, suffix: str) -> str:
+        return self._quote_identifier(self._index_name(suffix))
+
+    def _quoted_col(self, canonical: str) -> str:
+        return self._quote_identifier(self._col(canonical))
+
+    def _quote_identifier(self, identifier: str) -> str:
+        if type(self).identifier_quote_style == "none":
+            return identifier
+        quote = quote_backtick_identifier if type(self).identifier_quote_style == "backtick" else quote_identifier
+        parts = split_qualified_identifier(identifier)
+        if not parts:
+            return quote(identifier)
+        return ".".join(quote(part) for part in parts)
 
 
 def _configured_table_name(config: Any, table_name: str | None) -> str:
