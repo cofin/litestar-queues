@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from litestar import Litestar, Response, post
 from litestar.background_tasks import BackgroundTask
+from litestar.di import NamedDependency
 from litestar.testing import AsyncTestClient
 
 from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, QueueService, task
@@ -82,7 +83,7 @@ async def test_queued_background_task_custom_service() -> None:
         return None
 
     @post("/test-custom")
-    async def custom_handler(queue_service: QueueService) -> Response[dict[str, str]]:
+    async def custom_handler(queue_service: NamedDependency[QueueService]) -> Response[dict[str, str]]:
         return Response({"status": "ok"}, background=QueuedBackgroundTask(custom_task, 88, service=queue_service))
 
     app = Litestar(route_handlers=[custom_handler], plugins=[_build_plugin()])
@@ -103,7 +104,7 @@ async def test_di_provides_application_scoped_service() -> None:
     injected: list[QueueService] = []
 
     @post("/test-di")
-    async def di_handler(queue_service: QueueService) -> dict[str, str]:
+    async def di_handler(queue_service: NamedDependency[QueueService]) -> dict[str, str]:
         injected.append(queue_service)
         return {"status": "ok"}
 

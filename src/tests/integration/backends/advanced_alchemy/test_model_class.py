@@ -120,7 +120,7 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
     )
     await backend.open()
     try:
-        enqueued = await backend.enqueue("tasks.stale")
+        enqueued = await backend.enqueue("tasks.stale", max_retries=1)
         claimed = await backend.claim_task(enqueued.id)
         requeued = await backend.requeue_stale_running(stale_after=timedelta(seconds=0))
         stored = await backend.get_task(enqueued.id)

@@ -58,6 +58,17 @@ html_css_files = ["style.css"]
 html_title = "Litestar Queues"
 html_favicon = "_static/favicon.ico"
 html_context = {"source_type": "github", "source_user": "litestar-org", "source_repo": "litestar-queues"}
+pygments_style = "sphinx"
+pygments_dark_style = "sphinx"
+
+try:
+    from shibuya._pygments import ShibuyaPygmentsBridge
+except ModuleNotFoundError:
+    pass
+else:
+    # Avoid plugin-style scanning so docs builds are not affected by unrelated
+    # third-party Pygments entry points in the active environment.
+    ShibuyaPygmentsBridge.dark_style_name = "pygments_styles.github_dark_default.GitHubDarkDefaultStyle"
 
 html_theme_options: dict[str, Any] = {
     "logo_target": "/",

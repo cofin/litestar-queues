@@ -29,6 +29,8 @@ queue service lifecycle:
 The plugin registers a ``QueueService`` dependency, stores the opened service on
 application state, loads configured task modules during startup, initializes
 registered schedules, and starts a local worker when ``start_worker=True``.
+Route handlers should request the dependency explicitly with
+``queue_service: NamedDependency[QueueService]``.
 
 Standalone Service
 ==================

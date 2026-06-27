@@ -258,7 +258,8 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         if sqlalchemy_config is None:
             msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
-        async with sqlalchemy_config.get_session() as session:
+        session_maker = sqlalchemy_config.create_session_maker()
+        async with session_maker() as session:
             yield session
 
     @asynccontextmanager

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from litestar import Litestar, post
+from litestar.di import NamedDependency
 from litestar.testing import TestClient
 
 pytest.importorskip("advanced_alchemy")
@@ -45,7 +46,7 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     )
 
     @post("/enqueue")
-    async def enqueue(queue_service: QueueService) -> dict[str, str]:
+    async def enqueue(queue_service: NamedDependency[QueueService]) -> dict[str, str]:
         result = await queue_service.enqueue("tasks.litestar_aa", execution_backend="local")
         return {"task_id": str(result.id), "status": str(result.status)}
 

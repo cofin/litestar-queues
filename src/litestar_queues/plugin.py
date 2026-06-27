@@ -3,6 +3,8 @@ import contextlib
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+from litestar.plugins import InitPlugin
+
 from litestar_queues.config import QueueConfig
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules, set_default_service
@@ -19,7 +21,7 @@ if TYPE_CHECKING:
 __all__ = ("QueuePlugin",)
 
 
-class QueuePlugin:
+class QueuePlugin(InitPlugin):
     """Litestar plugin for queue service dependency registration and lifecycle."""
 
     __slots__ = ("_config", "_event_publisher", "_queue_backend", "_service", "_worker", "_worker_task")

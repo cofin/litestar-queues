@@ -131,7 +131,6 @@ test-adapters = [
 [tool.pytest.ini_options]
 addopts = "-ra -q"
 filterwarnings = [
-  "ignore:Call to deprecated function 'set_async_context'.*:DeprecationWarning:advanced_alchemy._listeners",
   "ignore::DeprecationWarning:pkg_resources.*",
   "ignore::DeprecationWarning:xdist.*",
   "ignore::DeprecationWarning:importlib._bootstrap",

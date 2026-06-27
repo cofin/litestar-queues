@@ -60,9 +60,10 @@ def test_plugin_with_litestar_app(app: "Litestar", queue_plugin: "QueuePlugin") 
 def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> None:
     """``QueuePlugin`` satisfies ``CLIPluginProtocol`` and is registered on ``app.plugins.cli``."""
     from litestar import Litestar
-    from litestar.plugins import CLIPluginProtocol
+    from litestar.plugins import CLIPluginProtocol, InitPlugin
 
     app = Litestar(plugins=[queue_plugin])
+    assert isinstance(queue_plugin, InitPlugin)
     assert isinstance(queue_plugin, CLIPluginProtocol)
     assert any(p is queue_plugin for p in app.plugins.cli)
 

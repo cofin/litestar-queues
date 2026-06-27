@@ -158,8 +158,11 @@ You can also pass an explicit ``QueueService`` instance to the helper:
 
 .. code-block:: python
 
+   from litestar.di import NamedDependency
+
+
    @post("/trigger")
-   async def trigger(queue_service: QueueService) -> Response[dict[str, str]]:
+   async def trigger(queue_service: NamedDependency[QueueService]) -> Response[dict[str, str]]:
        return Response(
            {"status": "queued"},
            background=QueuedBackgroundTask(background_process, 42, service=queue_service)

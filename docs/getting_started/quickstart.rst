@@ -18,6 +18,7 @@ Attach the queue plugin to a Litestar application:
 .. code-block:: python
 
    from litestar import Litestar, post
+   from litestar.di import NamedDependency
    from litestar_queues import QueueConfig, QueuePlugin, QueueService
 
 
@@ -29,7 +30,7 @@ Attach the queue plugin to a Litestar application:
 
 
    @post("/accounts/{account_id:str}/sync")
-   async def create_task(account_id: str, queue_service: QueueService) -> dict[str, str]:
+   async def create_task(account_id: str, queue_service: NamedDependency[QueueService]) -> dict[str, str]:
        result = await queue_service.enqueue(sync_account, account_id)
        return {"task_id": str(result.id), "status": result.status or "queued"}
 
