@@ -99,6 +99,14 @@ deduplicated scheduled record per registered schedule key. If a pending
 scheduled record exists but the schedule metadata has changed, startup cancels
 the old record and creates a new one with the updated definition.
 
+Cron schedules use five fields: minute, hour, day-of-month, month, and
+day-of-week. Litestar Queues supports wildcards, lists, ranges, named months and
+weekdays, positive steps, Sunday as ``0`` or ``7``, and ``?`` in the two day
+fields. It does not support Quartz-style extensions such as seconds or year
+fields, ``@reboot``, ``L``, ``W``, or ``#`` modifiers. Rewrite those schedules as
+multiple supported cron expressions or move the advanced calendar rule into
+application code.
+
 Realtime Updates
 ----------------
 

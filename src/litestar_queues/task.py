@@ -40,6 +40,7 @@ TaskCallable = Callable[P, T | Awaitable[T]]
 AnyTaskCallable = Callable[..., Any]
 
 CRON_FIELD_COUNT = 5
+CRON_SEARCH_YEARS = 8
 SUNDAY_CRON_VALUE = 7
 
 _task_registry: dict[str, "Task[Any, Any]"] = {}
@@ -47,6 +48,17 @@ _schedule_registry: dict[str, "ScheduleConfig"] = {}
 _loaded_modules: set[str] = set()
 _RANDOM = random.SystemRandom()
 _default_service_holder: list["QueueService | None"] = [None]
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedCron:
+    minutes: set[int]
+    hours: set[int]
+    days: set[int]
+    months: set[int]
+    weekdays: set[int]
+    day_of_month_restricted: bool
+    day_of_week_restricted: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,11 +78,24 @@ class ScheduleConfig:
         if self.cron is not None and self.interval is not None:
             msg = "Cannot specify both cron and interval"
             raise ValueError(msg)
+        interval = _coerce_interval(self.interval)
+        initial_delay = _coerce_interval(self.initial_delay) or timedelta()
+        jitter = _coerce_interval(self.jitter) or timedelta()
+        if interval is not None and interval <= timedelta():
+            msg = "Schedule interval must be positive"
+            raise ValueError(msg)
+        if initial_delay < timedelta():
+            msg = "Schedule initial_delay cannot be negative"
+            raise ValueError(msg)
+        if jitter < timedelta():
+            msg = "Schedule jitter cannot be negative"
+            raise ValueError(msg)
+        _get_timezone(self.timezone)
         if self.cron is not None:
             self._parse_cron()
-        object.__setattr__(self, "interval", _coerce_interval(self.interval))
-        object.__setattr__(self, "initial_delay", _coerce_interval(self.initial_delay) or timedelta())
-        object.__setattr__(self, "jitter", _coerce_interval(self.jitter) or timedelta())
+        object.__setattr__(self, "interval", interval)
+        object.__setattr__(self, "initial_delay", initial_delay)
+        object.__setattr__(self, "jitter", jitter)
 
     def get_next_run(self, after: datetime | None = None, *, use_initial_delay: bool = False) -> datetime:
         """Calculate the next scheduled run time.
@@ -110,7 +135,7 @@ class ScheduleConfig:
             "timezone": self.timezone,
         }
 
-    def _parse_cron(self) -> tuple[set[int], set[int], set[int], set[int], set[int]]:
+    def _parse_cron(self) -> _ParsedCron:
         if self.cron is None:
             msg = "Cron expression is not configured"
             raise ValueError(msg)
@@ -127,6 +152,11 @@ class ScheduleConfig:
         expression = aliases.get(self.cron, self.cron)
         parts = expression.split()
         if len(parts) != CRON_FIELD_COUNT:
+            msg = f"Invalid cron expression: {self.cron}"
+            raise ValueError(msg)
+        day_field = parts[2]
+        weekday_field = parts[4]
+        if day_field == "?" and weekday_field == "?":
             msg = f"Invalid cron expression: {self.cron}"
             raise ValueError(msg)
 
@@ -146,31 +176,34 @@ class ScheduleConfig:
         }
         weekday_names = {"FRI": 5, "MON": 1, "SAT": 6, "SUN": 0, "THU": 4, "TUE": 2, "WED": 3}
         try:
-            return (
-                _expand_cron_field(parts[0], minimum=0, maximum=59),
-                _expand_cron_field(parts[1], minimum=0, maximum=23),
-                _expand_cron_field(parts[2], minimum=1, maximum=31),
-                _expand_cron_field(parts[3], minimum=1, maximum=12, names=month_names),
-                _expand_cron_field(parts[4], minimum=0, maximum=7, names=weekday_names, normalize_sunday=True),
+            return _ParsedCron(
+                minutes=_expand_cron_field(parts[0], minimum=0, maximum=59),
+                hours=_expand_cron_field(parts[1], minimum=0, maximum=23),
+                days=_expand_cron_field(day_field, minimum=1, maximum=31, allow_question=True),
+                months=_expand_cron_field(parts[3], minimum=1, maximum=12, names=month_names),
+                weekdays=_expand_cron_field(
+                    weekday_field, minimum=0, maximum=7, names=weekday_names, normalize_sunday=True, allow_question=True
+                ),
+                day_of_month_restricted=day_field not in {"*", "?"},
+                day_of_week_restricted=weekday_field not in {"*", "?"},
             )
         except (KeyError, TypeError, ValueError) as exc:
             msg = f"Invalid cron expression: {self.cron}"
             raise ValueError(msg) from exc
 
     def _get_next_cron_run(self, after: datetime) -> datetime:
-        minutes, hours, days, months, weekdays = self._parse_cron()
-        tz = zoneinfo.ZoneInfo(self.timezone)
+        parsed = self._parse_cron()
+        tz = _get_timezone(self.timezone)
         candidate = after.astimezone(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
-        max_attempts = 366 * 24 * 60
+        max_attempts = CRON_SEARCH_YEARS * 366 * 24 * 60
 
         for _ in range(max_attempts):
             cron_weekday = (candidate.weekday() + 1) % 7
             if (
-                candidate.minute in minutes
-                and candidate.hour in hours
-                and candidate.day in days
-                and candidate.month in months
-                and cron_weekday in weekdays
+                candidate.minute in parsed.minutes
+                and candidate.hour in parsed.hours
+                and candidate.month in parsed.months
+                and _cron_day_matches(parsed, day=candidate.day, weekday=cron_weekday)
             ):
                 return candidate.astimezone(timezone.utc)
             candidate += timedelta(minutes=1)
@@ -722,6 +755,22 @@ def _coerce_interval(value: float | timedelta | None) -> timedelta | None:
     return timedelta(seconds=value)
 
 
+def _get_timezone(name: str) -> zoneinfo.ZoneInfo:
+    try:
+        return zoneinfo.ZoneInfo(name)
+    except zoneinfo.ZoneInfoNotFoundError as exc:
+        msg = f"Invalid timezone: {name}"
+        raise ValueError(msg) from exc
+
+
+def _cron_day_matches(parsed: _ParsedCron, *, day: int, weekday: int) -> bool:
+    day_matches = day in parsed.days
+    weekday_matches = weekday in parsed.weekdays
+    if parsed.day_of_month_restricted and parsed.day_of_week_restricted:
+        return day_matches or weekday_matches
+    return day_matches and weekday_matches
+
+
 def _parse_cron_value(value: str, names: dict[str, int]) -> int:
     normalized = value.upper()
     if normalized in names:
@@ -730,9 +779,18 @@ def _parse_cron_value(value: str, names: dict[str, int]) -> int:
 
 
 def _expand_cron_field(
-    field: str, *, minimum: int, maximum: int, names: dict[str, int] | None = None, normalize_sunday: bool = False
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+    names: dict[str, int] | None = None,
+    normalize_sunday: bool = False,
+    allow_question: bool = False,
 ) -> set[int]:
     names = names or {}
+    if allow_question and field == "?":
+        return set(range(minimum, maximum + 1))
+
     values: set[int] = set()
 
     for raw_part in field.split(","):
@@ -762,7 +820,7 @@ def _expand_cron_field(
             start = _parse_cron_value(range_part, names)
             end = maximum if "/" in part else start
 
-        if start > end and not normalize_sunday:
+        if start > end:
             msg = f"Invalid cron range: {raw_part}"
             raise ValueError(msg)
 

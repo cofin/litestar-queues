@@ -101,3 +101,38 @@ async def test_initialize_schedules_replaces_changed_schedule_definition() -> No
     assert active_record.id != old_record.id
     assert active_record.status == "scheduled"
     assert active_record.metadata["schedule"]["interval"] == pytest.approx(300.0)
+
+
+async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> None:
+    @task(
+        "jobs.weekly_reschedule",
+        cron="0 0 ? * MON",
+        timezone="America/New_York",
+        execution_backend="cloudrun",
+        execution_profile="worker-heavy",
+        description="Generate weekly operational summary.",
+        log_level="info",
+        quiet_success=True,
+    )
+    async def weekly_reschedule() -> dict[str, bool]:
+        return {"ok": True}
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        records = await service.initialize_schedules()
+        first_record = records[0]
+        completed_record = await service.get_queue_backend().complete_task(first_record.id, result={"ok": True})
+        assert completed_record is not None
+
+        await service._reschedule_if_needed(completed_record)
+        rescheduled_record = await service.get_queue_backend().get_task_by_key("scheduled:jobs.weekly_reschedule")
+
+    assert rescheduled_record is not None
+    assert rescheduled_record.id != first_record.id
+    assert rescheduled_record.status == "scheduled"
+    assert rescheduled_record.execution_backend == "cloudrun"
+    assert rescheduled_record.execution_profile == "worker-heavy"
+    assert rescheduled_record.metadata["description"] == "Generate weekly operational summary."
+    assert rescheduled_record.metadata["log_level"] == "info"
+    assert rescheduled_record.metadata["quiet_success"] is True
+    assert rescheduled_record.metadata["schedule"]["cron"] == "0 0 ? * MON"
+    assert rescheduled_record.metadata["schedule"]["timezone"] == "America/New_York"
