@@ -16,6 +16,7 @@ pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
 from sqlspec import SQLSpec
+from sqlspec.utils.sync_tools import get_default_async_executor, shutdown_default_async_executor
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
@@ -42,6 +43,30 @@ async def test_sqlspec_backend_default_heartbeat_uses_main_pool(sqlspec_backend:
     touched = await sqlspec_backend.get_task(claimed.id)
     assert touched is not None
     assert touched.heartbeat_at is not None
+
+
+async def test_sqlspec_backend_sync_sessions_use_sqlspec_managed_async_executor(
+    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sync SQLSpec drivers are bridged through sqlspec.async_()."""
+    from sqlspec.adapters.sqlite import SqliteConfig
+
+    shutdown_default_async_executor()
+    monkeypatch.setenv("SQLSPEC_ASYNC_THREAD_LIMIT", "1")
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=SqliteConfig(connection_config={"database": str(tmp_path / "sync-queue.db")})
+        )
+    )
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.sync_bridge")
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert get_default_async_executor()._max_workers == 1
+    finally:
+        await backend.close()
+        shutdown_default_async_executor()
 
 
 async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_writes(

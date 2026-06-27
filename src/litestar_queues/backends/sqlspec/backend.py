@@ -11,7 +11,7 @@ from uuid import UUID
 
 from sqlspec import SQLSpec
 from sqlspec.extensions.events import normalize_event_channel_name
-from sqlspec.utils.sync_tools import ensure_async_, with_ensure_async_
+from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
@@ -868,14 +868,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
 
 
-class _AsyncDriverWrapper:
-    """Expose sync SQLSpec driver methods as awaitable for queue backend use.
-
-    The SQLSpec queue backend awaits driver methods like ``execute`` and ``commit``;
-    sync drivers return values directly. ``sqlspec.utils.sync_tools.ensure_async_``
-    wraps each callable on demand so the backend's ``async with self._session()``
-    path is uniform across sync and async configs.
-    """
+class _ManagedAsyncDriver:
+    """Expose sync SQLSpec driver methods through SQLSpec's managed async bridge."""
 
     __slots__ = ("_driver",)
 
@@ -885,7 +879,7 @@ class _AsyncDriverWrapper:
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._driver, name)
         if callable(attr):
-            return ensure_async_(attr)
+            return async_(attr)
         return attr
 
 
@@ -894,10 +888,9 @@ async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIt
     """Yield a SQLSpec driver regardless of sync/async config.
 
     Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``PyMysqlConfig``, etc.)
-    return sync context managers; this helper wraps them via
-    ``sqlspec.utils.sync_tools.with_ensure_async_`` so ``__aenter__`` works, and
-    wraps the yielded driver via :class:`_AsyncDriverWrapper` so individual method
-    calls are awaitable.
+    return sync context managers and sync drivers. They are bridged with
+    ``sqlspec.utils.sync_tools.async_`` so blocking operations use SQLSpec's
+    managed executor and honor ``SQLSPEC_ASYNC_THREAD_LIMIT``.
 
     Yields:
         A SQLSpec driver whose methods can be awaited regardless of whether the
@@ -907,9 +900,16 @@ async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIt
     if sqlspec_config.is_async:
         async with session_cm as driver:
             yield driver
+        return
+
+    driver = await async_(session_cm.__enter__)()
+    try:
+        yield _ManagedAsyncDriver(driver)
+    except BaseException as exc:
+        if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
+            raise
     else:
-        async with with_ensure_async_(session_cm) as driver:
-            yield _AsyncDriverWrapper(driver)
+        await async_(session_cm.__exit__)(None, None, None)
 
 
 def _utc_now() -> datetime:
