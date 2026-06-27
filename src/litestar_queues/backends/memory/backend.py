@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from litestar_queues.backends.base import BaseQueueBackend
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
+from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -109,10 +109,16 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.heartbeat_at = now
             return record
 
-    async def complete_task(self, task_id: "UUID", *, result: Any = None) -> QueuedTaskRecord | None:
+    async def complete_task(
+        self, task_id: "UUID", *, result: Any = None, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
+                return None
+            if expected_retry_count is not None and (
+                record.status != "running" or record.retry_count != expected_retry_count
+            ):
                 return None
             now = _utc_now()
             record.status = "completed"
@@ -122,10 +128,16 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.error = None
             return record
 
-    async def fail_task(self, task_id: "UUID", error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
+    async def fail_task(
+        self, task_id: "UUID", error: str, *, retry: bool = True, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
+                return None
+            if expected_retry_count is not None and (
+                record.status != "running" or record.retry_count != expected_retry_count
+            ):
                 return None
 
             record.error = error
@@ -151,30 +163,50 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.completed_at = _utc_now()
             return True
 
-    async def touch_heartbeat(self, task_id: "UUID") -> None:
+    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: int | None = None) -> bool:
         record = self._records.get(task_id)
-        if record is not None and record.status == "running":
-            record.heartbeat_at = _utc_now()
+        if record is None or record.status != "running":
+            return False
+        if expected_retry_count is not None and record.retry_count != expected_retry_count:
+            return False
+        record.heartbeat_at = _utc_now()
+        return True
 
-    async def null_heartbeats(self, task_ids: "list[UUID]") -> None:
+    async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: int | None = None) -> None:
         task_id_set = set(task_ids)
         async with self._lock:
             for task_id, record in self._records.items():
                 if task_id in task_id_set:
+                    if expected_retry_count is not None and record.retry_count != expected_retry_count:
+                        continue
                     record.heartbeat_at = None
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
         cutoff = _utc_now() - stale_after
-        count = 0
+        result = StaleTaskRecoveryResult()
         async with self._lock:
             for record in self._records.values():
-                if record.status == "running" and (record.heartbeat_at is None or record.heartbeat_at < cutoff):
+                if record.status != "running":
+                    continue
+                if record.heartbeat_at is not None and record.heartbeat_at >= cutoff:
+                    result.skipped += 1
+                    continue
+                requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
+                if requeue_on_stale and record.retry_count < record.max_retries:
                     record.status = "pending"
                     record.started_at = None
                     record.heartbeat_at = None
                     record.retry_count += 1
-                    count += 1
-        return count
+                    result.requeued += 1
+                    continue
+                record.status = "failed"
+                record.completed_at = _utc_now()
+                record.heartbeat_at = None
+                record.error = "Task heartbeat stale"
+                result.failed += 1
+                if not requeue_on_stale:
+                    result.handler_needed += 1
+        return result
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: str, execution_ref: str, *, execution_profile: str | None = None

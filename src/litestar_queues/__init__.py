@@ -51,7 +51,13 @@ from litestar_queues.execution import (
     get_execution_backend_class,
     list_execution_backends,
 )
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
+from litestar_queues.models import (
+    QueueBackendCapabilities,
+    QueuedTaskRecord,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+    TaskStatus,
+)
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.service import QueueService
 from litestar_queues.task import (
@@ -100,6 +106,7 @@ __all__ = (
     "QueuedBackgroundTask",
     "QueuedTaskRecord",
     "ScheduleConfig",
+    "StaleTaskRecoveryResult",
     "Task",
     "TaskDependencyResolver",
     "TaskExecutionContext",

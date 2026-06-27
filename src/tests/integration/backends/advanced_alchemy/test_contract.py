@@ -177,7 +177,8 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at
 
-    assert await advanced_alchemy_backend.requeue_stale_running(stale_after=timedelta(seconds=0)) == 1
+    stale_result = await advanced_alchemy_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+    assert stale_result.requeued == 1
     requeued = await advanced_alchemy_backend.get_task(claimed.id)
 
     assert requeued is not None

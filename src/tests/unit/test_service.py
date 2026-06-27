@@ -1,8 +1,11 @@
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService
+from litestar_queues import InMemoryQueueEventSink, QueueConfig, QueueEventConfig, QueueService
+from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.events import QueueEventPublisher
 
 if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
@@ -37,6 +40,25 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
 
     assert result.status == "completed"
     assert result.result == "ok"
+
+
+async def test_enqueue_can_override_requeue_on_stale_metadata() -> None:
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("stale.override", requeue_on_stale=True)
+    async def stale_override() -> str:
+        return "ok"
+
+    service = QueueService(QueueConfig(execution_backend="local"))
+
+    async with service:
+        result = await service.enqueue(stale_override, requeue_on_stale=False)
+
+    assert result.record is not None
+    assert result.record.metadata["requeue_on_stale"] is False
 
 
 async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> None:
@@ -153,3 +175,26 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> None:
 
     assert result.status == "completed"
     assert captured == [None]
+
+
+async def test_recover_stale_tasks_publishes_summary_event() -> None:
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink)
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.stale", max_retries=0, metadata={"requeue_on_stale": True})
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+
+    async with QueueService(
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True)),
+        queue_backend=backend,
+        event_publisher=publisher,
+    ) as service:
+        result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-stale")
+
+    assert result.failed == 1
+    event = next(event for event in sink.events if event.type == "worker.stale_recovery")
+    assert event.scope == "worker"
+    assert event.worker_id == "worker-stale"
+    assert event.payload == {"requeued": 0, "failed": 1, "skipped": 0, "handler_needed": 0}

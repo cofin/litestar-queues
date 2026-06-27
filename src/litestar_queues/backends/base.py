@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
-from litestar_queues.models import QueueBackendCapabilities, QueueStatistics
+from litestar_queues.models import QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from datetime import datetime, timedelta
@@ -89,31 +89,61 @@ class BaseQueueBackend:
             return None
         return await self.claim_task(records[0].id)
 
-    async def complete_task(self, task_id: "UUID", *, result: Any = None) -> "QueuedTaskRecord | None":
-        """Mark a task as completed."""
+    async def complete_task(
+        self, task_id: "UUID", *, result: Any = None, expected_retry_count: int | None = None
+    ) -> "QueuedTaskRecord | None":
+        """Mark a task as completed.
+
+        Args:
+            task_id: Queue record identifier.
+            result: Task result payload.
+            expected_retry_count: When provided, update only if the record is
+                still running with this retry count.
+        """
         raise NotImplementedError
 
-    async def fail_task(self, task_id: "UUID", error: str, *, retry: bool = True) -> "QueuedTaskRecord | None":
-        """Mark a task as failed or retry it."""
+    async def fail_task(
+        self, task_id: "UUID", error: str, *, retry: bool = True, expected_retry_count: int | None = None
+    ) -> "QueuedTaskRecord | None":
+        """Mark a task as failed or retry it.
+
+        Args:
+            task_id: Queue record identifier.
+            error: Error message to persist.
+            retry: Whether retry policy may requeue the task.
+            expected_retry_count: When provided, update only if the record is
+                still running with this retry count.
+        """
         raise NotImplementedError
 
     async def cancel_task(self, task_id: "UUID") -> bool:
         """Cancel a task if it has not started."""
         raise NotImplementedError
 
-    async def touch_heartbeat(self, task_id: "UUID") -> None:
-        """Update the heartbeat timestamp for a running task."""
-
-    async def null_heartbeats(self, task_ids: "list[UUID]") -> None:
-        """Clear heartbeat timestamps for task IDs."""
-
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> int:
-        """Requeue running tasks with stale heartbeats.
+    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: int | None = None) -> bool:
+        """Update the heartbeat timestamp for a running task.
 
         Returns:
-            Number of requeued tasks.
+            True when a running record matched the optional retry-count fence.
         """
-        return 0
+        return False
+
+    async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: int | None = None) -> None:
+        """Clear heartbeat timestamps for task IDs.
+
+        Args:
+            task_ids: Queue record identifiers.
+            expected_retry_count: When provided, clear only records that still
+                match this retry count.
+        """
+
+    async def requeue_stale_running(self, *, stale_after: "timedelta") -> StaleTaskRecoveryResult:
+        """Recover running tasks with stale heartbeats.
+
+        Returns:
+            Summary of requeued, failed, skipped, and handler-needed records.
+        """
+        return StaleTaskRecoveryResult()
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: str, execution_ref: str, *, execution_profile: str | None = None

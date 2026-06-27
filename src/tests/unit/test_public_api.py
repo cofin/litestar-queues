@@ -24,6 +24,7 @@ def test_public_exports() -> None:
         QueuePlugin,
         QueueService,
         ScheduleConfig,
+        StaleTaskRecoveryResult,
         Task,
         TaskResult,
         Worker,
@@ -56,6 +57,7 @@ def test_public_exports() -> None:
         "QueuePlugin",
         "QueueService",
         "ScheduleConfig",
+        "StaleTaskRecoveryResult",
         "Task",
         "TaskResult",
         "Worker",
@@ -95,6 +97,7 @@ def test_public_exports() -> None:
     assert issubclass(QueueError, Exception)
     assert AsyncServiceProvider(QueueConfig()) is not None
     assert ScheduleConfig(task_name="example", interval=1).task_name == "example"
+    assert StaleTaskRecoveryResult().requeued == 0
     assert QueuedTaskRecord(task_name="example").task_name == "example"
     assert CloudRunExecutionBackend is not None
     assert CloudRunExecutionConfig(project_id="example", job_name="worker").resolve_job_name() == "worker"

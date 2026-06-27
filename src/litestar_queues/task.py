@@ -318,6 +318,7 @@ class Task(Generic[P, T]):
         "_priority",
         "_queue",
         "_quiet_success",
+        "_requeue_on_stale",
         "_retries",
         "_run_after",
         "_timeout",
@@ -339,6 +340,7 @@ class Task(Generic[P, T]):
         description: str | None = None,
         log_level: str | None = None,
         quiet_success: bool | None = None,
+        requeue_on_stale: bool | None = None,
     ) -> None:
         self._func = func
         self._name = name
@@ -353,6 +355,7 @@ class Task(Generic[P, T]):
         self._description = description
         self._log_level = log_level
         self._quiet_success = quiet_success
+        self._requeue_on_stale = requeue_on_stale
 
     @property
     def name(self) -> str:
@@ -415,6 +418,11 @@ class Task(Generic[P, T]):
         return self._quiet_success
 
     @property
+    def requeue_on_stale(self) -> bool:
+        """Return whether stale running records should be requeued when retries remain."""
+        return self._requeue_on_stale is not False
+
+    @property
     def function(self) -> TaskCallable[P, T]:
         """Return the wrapped callable."""
         return self._func
@@ -464,6 +472,8 @@ class Task(Generic[P, T]):
             metadata["log_level"] = self._log_level
         if self._quiet_success is not None:
             metadata["quiet_success"] = self._quiet_success
+        if self._requeue_on_stale is not None:
+            metadata["requeue_on_stale"] = self._requeue_on_stale
         return metadata
 
     def using(
@@ -480,6 +490,7 @@ class Task(Generic[P, T]):
         description: str | None = None,
         log_level: str | None = None,
         quiet_success: bool | None = None,
+        requeue_on_stale: bool | None = None,
     ) -> "Task[P, T]":
         """Return a configured copy with enqueue overrides."""
         return Task(
@@ -496,6 +507,7 @@ class Task(Generic[P, T]):
             description=description if description is not None else self._description,
             log_level=log_level if log_level is not None else self._log_level,
             quiet_success=quiet_success if quiet_success is not None else self._quiet_success,
+            requeue_on_stale=requeue_on_stale if requeue_on_stale is not None else self._requeue_on_stale,
         )
 
     async def enqueue(self, *args: P.args, **kwargs: P.kwargs) -> TaskResult:
@@ -646,6 +658,7 @@ def task(
     description: str | None = None,
     log_level: str | None = None,
     quiet_success: bool | None = None,
+    requeue_on_stale: bool | None = None,
     cron: str | None = None,
     interval: float | timedelta | None = None,
     timezone: str = "UTC",
@@ -670,6 +683,7 @@ def task(
     description: str | None = None,
     log_level: str | None = None,
     quiet_success: bool | None = None,
+    requeue_on_stale: bool | None = None,
     cron: str | None = None,
     interval: float | timedelta | None = None,
     timezone: str = "UTC",
@@ -721,6 +735,7 @@ def task(
             description=description,
             log_level=log_level,
             quiet_success=quiet_success,
+            requeue_on_stale=requeue_on_stale,
         )
         _task_registry[task_name] = task_obj
         if schedule is not None:

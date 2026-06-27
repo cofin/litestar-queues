@@ -6,6 +6,7 @@ from typing_extensions import Self
 
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
+from litestar_queues.events.models import QueueEvent
 from litestar_queues.exceptions import NonRetryableError
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled_tasks, get_task_registry
 
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
-    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
 
 __all__ = ("QueueService",)
 
@@ -106,6 +107,7 @@ class QueueService:
         description: str | None = None,
         log_level: str | None = None,
         quiet_success: bool | None = None,
+        requeue_on_stale: bool | None = None,
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> TaskResult:
@@ -132,6 +134,8 @@ class QueueService:
             effective_metadata["log_level"] = log_level
         if quiet_success is not None:
             effective_metadata["quiet_success"] = quiet_success
+        if requeue_on_stale is not None:
+            effective_metadata["requeue_on_stale"] = requeue_on_stale
         if timeout is not None:
             effective_metadata["timeout"] = timeout
         record = await self.get_queue_backend().enqueue(
@@ -225,17 +229,25 @@ class QueueService:
             await task_context.lifecycle("task.cancelled")
             raise
         except NonRetryableError as exc:
-            updated = await self.get_queue_backend().fail_task(record.id, str(exc), retry=False)
-            failed = updated or record
+            updated = await self.get_queue_backend().fail_task(
+                record.id, str(exc), retry=False, expected_retry_count=record.retry_count
+            )
+            if updated is None:
+                return await self._current_or_claimed(record)
+            failed = updated
             await task_context.lifecycle(
                 "task.failed",
                 message=str(exc),
                 payload={"status": failed.status, "retry_count": failed.retry_count, "will_retry": False},
             )
-            return updated or record
+            return updated
         except Exception as exc:
-            updated = await self.get_queue_backend().fail_task(record.id, str(exc))
-            failed = updated or record
+            updated = await self.get_queue_backend().fail_task(
+                record.id, str(exc), expected_retry_count=record.retry_count
+            )
+            if updated is None:
+                return await self._current_or_claimed(record)
+            failed = updated
             await task_context.lifecycle(
                 "task.failed",
                 message=str(exc),
@@ -251,13 +263,34 @@ class QueueService:
         finally:
             _reset_task_context(context_token)
 
-        updated = await self.get_queue_backend().complete_task(record.id, result=result)
-        completed = updated or record
+        updated = await self.get_queue_backend().complete_task(
+            record.id, result=result, expected_retry_count=record.retry_count
+        )
+        if updated is None:
+            return await self._current_or_claimed(record)
+        completed = updated
         await task_context.lifecycle(
             "task.completed", payload={"status": completed.status, "retry_count": completed.retry_count}
         )
         await self._reschedule_if_needed(completed)
         return completed
+
+    async def recover_stale_tasks(
+        self, *, stale_after: timedelta, worker_id: str | None = None
+    ) -> "StaleTaskRecoveryResult":
+        """Recover stale running tasks and publish a worker summary event."""
+        result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after)
+        if result.requeued or result.failed or result.skipped or result.handler_needed:
+            await self.get_event_publisher().publish(
+                QueueEvent(
+                    type="worker.stale_recovery",
+                    scope="worker",
+                    worker_id=worker_id,
+                    message="Recovered stale running tasks",
+                    payload=result.to_payload(),
+                )
+            )
+        return result
 
     async def initialize_schedules(self) -> "list[QueuedTaskRecord]":
         """Create queue records for registered recurring schedules.
@@ -329,6 +362,9 @@ class QueueService:
             execution_profile=record.execution_profile,
             metadata={**record.metadata, "schedule": schedule.as_metadata()},
         )
+
+    async def _current_or_claimed(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        return await self.get_queue_backend().get_task(record.id) or record
 
 
 def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:

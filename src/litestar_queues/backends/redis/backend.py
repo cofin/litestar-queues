@@ -19,7 +19,13 @@ from redis import asyncio as redis_asyncio
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
+from litestar_queues.models import (
+    QueueBackendCapabilities,
+    QueuedTaskRecord,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+    TaskStatus,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -212,7 +218,9 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
             return record
 
-    async def complete_task(self, task_id: UUID, *, result: Any = None) -> QueuedTaskRecord | None:
+    async def complete_task(
+        self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         """Mark a task as completed.
 
         Returns:
@@ -221,6 +229,10 @@ class RedisQueueBackend(BaseQueueBackend):
         async with self._lock(f"task:{task_id}", wait=True):
             record = await self.get_task(task_id)
             if record is None:
+                return None
+            if expected_retry_count is not None and (
+                record.status != "running" or record.retry_count != expected_retry_count
+            ):
                 return None
             now = _utc_now()
             record.status = "completed"
@@ -231,7 +243,9 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
             return record
 
-    async def fail_task(self, task_id: UUID, error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
+    async def fail_task(
+        self, task_id: UUID, error: str, *, retry: bool = True, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         """Mark a task as failed or retry it.
 
         Returns:
@@ -240,6 +254,10 @@ class RedisQueueBackend(BaseQueueBackend):
         async with self._lock(f"task:{task_id}", wait=True):
             record = await self.get_task(task_id)
             if record is None:
+                return None
+            if expected_retry_count is not None and (
+                record.status != "running" or record.retry_count != expected_retry_count
+            ):
                 return None
             record.error = error
             if retry and record.retry_count < record.max_retries:
@@ -272,52 +290,74 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
             return True
 
-    async def touch_heartbeat(self, task_id: UUID) -> None:
+    async def touch_heartbeat(self, task_id: UUID, *, expected_retry_count: int | None = None) -> bool:
         """Update the heartbeat timestamp for a running task."""
         async with self._lock(f"task:{task_id}", wait=True):
             record = await self.get_task(task_id)
             if record is None or record.status != "running":
-                return
+                return False
+            if expected_retry_count is not None and record.retry_count != expected_retry_count:
+                return False
             record.heartbeat_at = _utc_now()
             await self._save_record(record)
+            return True
 
-    async def null_heartbeats(self, task_ids: list[UUID]) -> None:
+    async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
         """Clear heartbeat timestamps for task IDs."""
         for task_id in task_ids:
             async with self._lock(f"task:{task_id}", wait=True):
                 record = await self.get_task(task_id)
                 if record is None:
                     continue
+                if expected_retry_count is not None and record.retry_count != expected_retry_count:
+                    continue
                 record.heartbeat_at = None
                 await self._save_record(record)
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
         """Requeue running tasks with stale heartbeats.
 
         Returns:
-            Number of requeued records.
+            Summary of recovered records.
         """
         cutoff = _utc_now() - stale_after
-        count = 0
+        result = StaleTaskRecoveryResult()
         for record in await self._list_records():
-            if record.status != "running" or (record.heartbeat_at is not None and record.heartbeat_at >= cutoff):
+            if record.status != "running":
+                continue
+            if record.heartbeat_at is not None and record.heartbeat_at >= cutoff:
+                result.skipped += 1
                 continue
             async with self._lock(f"task:{record.id}", wait=False) as acquired:
                 if not acquired:
+                    result.skipped += 1
                     continue
                 latest = await self.get_task(record.id)
                 if latest is None or latest.status != "running":
+                    result.skipped += 1
                     continue
                 if latest.heartbeat_at is not None and latest.heartbeat_at >= cutoff:
+                    result.skipped += 1
                     continue
-                latest.status = "pending"
-                latest.started_at = None
-                latest.heartbeat_at = None
-                latest.retry_count += 1
+                requeue_on_stale = latest.metadata.get("requeue_on_stale", True) is not False
+                if requeue_on_stale and latest.retry_count < latest.max_retries:
+                    latest.status = "pending"
+                    latest.started_at = None
+                    latest.heartbeat_at = None
+                    latest.retry_count += 1
+                    result.requeued += 1
+                else:
+                    latest.status = "failed"
+                    latest.completed_at = _utc_now()
+                    latest.heartbeat_at = None
+                    latest.error = "Task heartbeat stale"
+                    result.failed += 1
+                    if not requeue_on_stale:
+                        result.handler_needed += 1
                 await self._save_record(latest)
-                await self.notify_new_task(latest)
-                count += 1
-        return count
+                if latest.status in _DUE_STATUSES:
+                    await self.notify_new_task(latest)
+        return result
 
     async def set_execution_ref(
         self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None

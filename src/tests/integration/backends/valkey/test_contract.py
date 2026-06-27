@@ -108,11 +108,11 @@ async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_ba
     await valkey_backend.set_execution_ref(claimed.id, "cloudrun", "jobs/abc-123", execution_profile="batch-small")
     await valkey_backend.null_heartbeats([claimed.id])
     running_external = await valkey_backend.list_running_external()
-    stale_count = await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+    stale_result = await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
 
     assert [record.id for record in running_external] == [claimed.id]
     assert running_external[0].execution_ref == "jobs/abc-123"
-    assert stale_count == 1
+    assert stale_result.requeued == 1
     requeued = await valkey_backend.get_task(claimed.id)
     assert requeued is not None
     assert requeued.status == "pending"

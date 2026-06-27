@@ -8,6 +8,7 @@ import pytest
 from litestar_queues import QueueConfig, QueueService, Worker, non_retryable, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
+from litestar_queues.models import StaleTaskRecoveryResult
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -146,7 +147,7 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
         super().__init__()
         self.requeue_calls: list[timedelta] = []
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
         self.requeue_calls.append(stale_after)
         return await super().requeue_stale_running(stale_after=stale_after)
 

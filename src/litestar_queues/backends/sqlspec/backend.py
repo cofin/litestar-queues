@@ -24,7 +24,13 @@ from litestar_queues.backends.sqlspec.schema import (
 )
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, TaskStatus
+from litestar_queues.models import (
+    QueueBackendCapabilities,
+    QueuedTaskRecord,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+    TaskStatus,
+)
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -273,12 +279,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 return claimed
         return None
 
-    async def complete_task(self, task_id: UUID, *, result: Any = None) -> QueuedTaskRecord | None:
+    async def complete_task(
+        self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         now = _utc_now()
         store = self._get_store()
         async with self._session() as driver:
             await driver.begin()
             try:
+                if expected_retry_count is not None:
+                    existing_row = await self._select_task(driver, task_id)
+                    if existing_row is None:
+                        await driver.rollback()
+                        return None
+                    existing = self._record_from_row(existing_row)
+                    if existing.status != "running" or existing.retry_count != expected_retry_count:
+                        await driver.rollback()
+                        return None
                 updated = await driver.execute(
                     store.complete_task(
                         task_id=str(task_id),
@@ -295,7 +312,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return self._record_from_row(row) if row is not None else None
 
-    async def fail_task(self, task_id: UUID, error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
+    async def fail_task(
+        self, task_id: UUID, error: str, *, retry: bool = True, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -305,6 +324,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     return None
 
                 record = self._record_from_row(row)
+                if expected_retry_count is not None and (
+                    record.status != "running" or record.retry_count != expected_retry_count
+                ):
+                    await driver.rollback()
+                    return None
                 if retry and record.retry_count < record.max_retries:
                     await driver.execute(
                         self._get_store().retry_task(
@@ -344,10 +368,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return int(result.rows_affected) == 1
 
-    async def touch_heartbeat(self, task_id: UUID) -> None:
+    async def touch_heartbeat(self, task_id: UUID, *, expected_retry_count: int | None = None) -> bool:
         async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
+                if expected_retry_count is not None:
+                    row = await self._select_task(driver, task_id)
+                    if row is None:
+                        await driver.rollback()
+                        return False
+                    record = self._record_from_row(row)
+                    if record.status != "running" or record.retry_count != expected_retry_count:
+                        await driver.rollback()
+                        return False
                 await driver.execute(
                     self._get_store().touch_heartbeat(
                         task_id=str(task_id), heartbeat_at=_serialize_datetime(_utc_now())
@@ -358,21 +391,35 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 with suppress(Exception):
                     await driver.rollback()
                 raise
+        return True
 
-    async def null_heartbeats(self, task_ids: list[UUID]) -> None:
+    async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
         if not task_ids:
             return
         async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
-                await driver.execute(self._get_store().null_heartbeats(task_ids=[str(task_id) for task_id in task_ids]))
+                filtered_task_ids = task_ids
+                if expected_retry_count is not None:
+                    filtered_task_ids = []
+                    for task_id in task_ids:
+                        row = await self._select_task(driver, task_id)
+                        if row is None:
+                            continue
+                        record = self._record_from_row(row)
+                        if record.retry_count == expected_retry_count:
+                            filtered_task_ids.append(task_id)
+                if filtered_task_ids:
+                    await driver.execute(
+                        self._get_store().null_heartbeats(task_ids=[str(task_id) for task_id in filtered_task_ids])
+                    )
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
         cutoff = _utc_now() - stale_after
         async with self._session() as driver:
             await driver.begin()
@@ -383,7 +430,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return int(result.rows_affected)
+        return StaleTaskRecoveryResult(requeued=int(result.rows_affected))
 
     async def set_execution_ref(
         self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None

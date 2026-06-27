@@ -492,7 +492,8 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at
 
-    assert await sqlspec_backend.requeue_stale_running(stale_after=timedelta(seconds=0)) == 1
+    stale_result = await sqlspec_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+    assert stale_result.requeued == 1
     requeued = await sqlspec_backend.get_task(claimed.id)
 
     assert requeued is not None

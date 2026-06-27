@@ -79,6 +79,71 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
     assert await queue_backend.get_task(running.id) is not None
 
 
+async def test_backend_contract_recovers_stale_running_records_with_memory_reference(
+    queue_backend: "BaseQueueBackend",
+) -> None:
+    if not isinstance(queue_backend, InMemoryQueueBackend):
+        pytest.skip("policy-aware stale recovery parity is covered by backend-specific follow-up work")
+
+    requeued = await queue_backend.enqueue("tasks.stale.requeue", max_retries=1, metadata={"requeue_on_stale": True})
+    failed = await queue_backend.enqueue("tasks.stale.fail", max_retries=0, metadata={"requeue_on_stale": True})
+    handler_needed = await queue_backend.enqueue(
+        "tasks.stale.handler", max_retries=3, metadata={"requeue_on_stale": False}
+    )
+    for record in (requeued, failed, handler_needed):
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+
+    result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stored_requeued = await queue_backend.get_task(requeued.id)
+    stored_failed = await queue_backend.get_task(failed.id)
+    stored_handler_needed = await queue_backend.get_task(handler_needed.id)
+
+    assert result.requeued == 1
+    assert result.failed == 2
+    assert result.handler_needed == 1
+    assert stored_requeued is not None
+    assert stored_requeued.status == "pending"
+    assert stored_requeued.retry_count == 1
+    assert stored_failed is not None
+    assert stored_failed.status == "failed"
+    assert stored_handler_needed is not None
+    assert stored_handler_needed.status == "failed"
+
+
+async def test_backend_contract_fences_heartbeat_and_terminal_updates_with_memory_reference(
+    queue_backend: "BaseQueueBackend",
+) -> None:
+    if not isinstance(queue_backend, InMemoryQueueBackend):
+        pytest.skip("retry-count fencing parity is covered by backend-specific follow-up work")
+
+    record = await queue_backend.enqueue("tasks.stale.fenced", max_retries=1)
+    claimed = await queue_backend.claim_task(record.id)
+    assert claimed is not None
+    expected_retry_count = claimed.retry_count
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+
+    assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count + 1) is False
+    assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count) is True
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    assert stale_result.requeued == 1
+
+    reclaimed = await queue_backend.claim_task(record.id)
+    assert reclaimed is not None
+    heartbeat = reclaimed.heartbeat_at
+    assert await queue_backend.complete_task(record.id, result="late", expected_retry_count=expected_retry_count) is None
+    assert await queue_backend.fail_task(record.id, "late", expected_retry_count=expected_retry_count) is None
+    await queue_backend.null_heartbeats([record.id], expected_retry_count=expected_retry_count)
+    stored = await queue_backend.get_task(record.id)
+
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.retry_count == 1
+    assert stored.heartbeat_at == heartbeat
+
+
 async def test_memory_backend_notifications_wake_waiters() -> None:
     backend = InMemoryQueueBackend()
     waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))

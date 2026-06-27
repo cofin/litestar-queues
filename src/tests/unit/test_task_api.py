@@ -96,19 +96,23 @@ async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> N
 
 
 async def test_task_using_returns_configured_copy_without_mutating_original() -> None:
-    @task("email.send", priority=1, retries=1)
+    @task("email.send", priority=1, retries=1, requeue_on_stale=False)
     async def send_email(address: str) -> str:
         return address
 
-    overridden = send_email.using(priority=20, key="email:1", queue="high")
+    overridden = send_email.using(priority=20, key="email:1", queue="high", requeue_on_stale=True)
 
     assert overridden is not send_email
     assert overridden.name == send_email.name
     assert send_email.priority == 1
     assert send_email.queue == "default"
+    assert send_email.requeue_on_stale is False
     assert overridden.priority == 20
     assert overridden.queue == "high"
     assert overridden.key == "email:1"
+    assert overridden.requeue_on_stale is True
+    assert send_email.metadata()["requeue_on_stale"] is False
+    assert overridden.metadata()["requeue_on_stale"] is True
     assert await overridden("user@example.com") == "user@example.com"
 
 

@@ -129,7 +129,7 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
 
     assert claimed is not None
     assert claimed.heartbeat_at == fixed_now
-    assert requeued == 1
+    assert requeued.requeued == 1
     assert stored is not None
     assert stored.status == "pending"
 

@@ -3,7 +3,14 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-__all__ = ("TERMINAL_STATUSES", "QueueBackendCapabilities", "QueueStatistics", "QueuedTaskRecord", "TaskStatus")
+__all__ = (
+    "TERMINAL_STATUSES",
+    "QueueBackendCapabilities",
+    "QueueStatistics",
+    "QueuedTaskRecord",
+    "StaleTaskRecoveryResult",
+    "TaskStatus",
+)
 
 TaskStatus = Literal["pending", "scheduled", "running", "completed", "failed", "cancelled"]
 """Queue task lifecycle states."""
@@ -41,6 +48,25 @@ class QueueStatistics:
     def total(self) -> int:
         """Return the total number of known queue records."""
         return self.pending + self.scheduled + self.running + self.completed + self.failed + self.cancelled
+
+
+@dataclass(slots=True)
+class StaleTaskRecoveryResult:
+    """Summary of stale running task recovery."""
+
+    requeued: int = 0
+    failed: int = 0
+    skipped: int = 0
+    handler_needed: int = 0
+
+    def to_payload(self) -> dict[str, int]:
+        """Return a JSON-compatible event payload."""
+        return {
+            "requeued": self.requeued,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "handler_needed": self.handler_needed,
+        }
 
 
 @dataclass(slots=True)

@@ -162,7 +162,12 @@ class QueueConfig:
             ImmediateExecutionBackend,
             LocalExecutionBackend,
         )
-        from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
+        from litestar_queues.models import (
+            QueueBackendCapabilities,
+            QueuedTaskRecord,
+            QueueStatistics,
+            StaleTaskRecoveryResult,
+        )
         from litestar_queues.service import QueueService
         from litestar_queues.task import ScheduleConfig, Task, TaskResult
         from litestar_queues.worker import Worker
@@ -194,6 +199,7 @@ class QueueConfig:
             "QueueService": QueueService,
             "QueueStatistics": QueueStatistics,
             "ScheduleConfig": ScheduleConfig,
+            "StaleTaskRecoveryResult": StaleTaskRecoveryResult,
             "Task": Task,
             "TaskDependencyResolver": TaskDependencyResolver,
             "ExecutionBackendConfigProtocol": ExecutionBackendConfigProtocol,

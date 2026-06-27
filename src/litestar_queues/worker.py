@@ -153,14 +153,16 @@ class Worker:
         return reconciled
 
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> None:
-        heartbeat_task = asyncio.create_task(self._heartbeat(record.id))
+        heartbeat_task = asyncio.create_task(self._heartbeat(record.id, expected_retry_count=record.retry_count))
         try:
             await self._service.get_execution_backend().execute(self._service, record, worker_id=self._worker_id)
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
-            await self._service.get_queue_backend().null_heartbeats([record.id])
+            await self._service.get_queue_backend().null_heartbeats(
+                [record.id], expected_retry_count=record.retry_count
+            )
 
     async def _dispatch_external(self, records: "list[QueuedTaskRecord]") -> int:
         execution_backend = self._service.get_execution_backend()
@@ -179,7 +181,7 @@ class Worker:
         if now - self._last_stale_check_at < self._stale_check_interval:
             return
         self._last_stale_check_at = now
-        await self._service.get_queue_backend().requeue_stale_running(stale_after=self._stale_after)
+        await self._service.recover_stale_tasks(stale_after=self._stale_after, worker_id=self._worker_id)
 
     async def _maybe_reconcile_external(self) -> None:
         if self._reconcile_interval <= 0:
@@ -191,10 +193,12 @@ class Worker:
         self._last_reconcile_at = now
         await self.reconcile_external()
 
-    async def _heartbeat(self, task_id: "UUID") -> None:
+    async def _heartbeat(self, task_id: "UUID", expected_retry_count: int | None = None) -> None:
         while True:
             await asyncio.sleep(self._heartbeat_interval)
-            await self._service.get_queue_backend().touch_heartbeat(task_id)
+            await self._service.get_queue_backend().touch_heartbeat(
+                task_id, expected_retry_count=expected_retry_count
+            )
 
     async def _wait_for_work(self) -> None:
         queue_backend = self._service.get_queue_backend()

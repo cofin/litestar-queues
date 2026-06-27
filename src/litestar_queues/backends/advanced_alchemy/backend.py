@@ -11,7 +11,7 @@ from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics
+from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -133,27 +133,31 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         async with self._operation() as service:
             return await service.claim_next(queue=queue, execution_backend=execution_backend)
 
-    async def complete_task(self, task_id: UUID, *, result: Any = None) -> QueuedTaskRecord | None:
+    async def complete_task(
+        self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         async with self._operation() as service:
-            return await service.complete_task(task_id, result=result)
+            return await service.complete_task(task_id, result=result, expected_retry_count=expected_retry_count)
 
-    async def fail_task(self, task_id: UUID, error: str, *, retry: bool = True) -> QueuedTaskRecord | None:
+    async def fail_task(
+        self, task_id: UUID, error: str, *, retry: bool = True, expected_retry_count: int | None = None
+    ) -> QueuedTaskRecord | None:
         async with self._operation() as service:
-            return await service.fail_task(task_id, error, retry=retry)
+            return await service.fail_task(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
 
     async def cancel_task(self, task_id: UUID) -> bool:
         async with self._operation() as service:
             return await service.cancel_task(task_id)
 
-    async def touch_heartbeat(self, task_id: UUID) -> None:
+    async def touch_heartbeat(self, task_id: UUID, *, expected_retry_count: int | None = None) -> bool:
         async with self._heartbeat_operation() as service:
-            await service.touch_heartbeat(task_id)
+            return await service.touch_heartbeat(task_id, expected_retry_count=expected_retry_count)
 
-    async def null_heartbeats(self, task_ids: list[UUID]) -> None:
+    async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
         async with self._heartbeat_operation() as service:
-            await service.null_heartbeats(task_ids)
+            await service.null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> int:
+    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
         async with self._operation() as service:
             return await service.requeue_stale_running(stale_after=stale_after)
 

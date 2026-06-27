@@ -18,6 +18,7 @@ QueueEventType = Literal[
     "task.failed",
     "task.cancelled",
     "worker.heartbeat",
+    "worker.stale_recovery",
 ]
 
 
