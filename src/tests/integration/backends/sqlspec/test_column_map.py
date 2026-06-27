@@ -217,8 +217,8 @@ def test_native_json_columns_bypass_text_serialization(
     )
     payload = {"nested": ["value"]}
 
-    assert store.serialize_json_column("kwargs_json", payload) is payload
-    assert store.serialize_json_column("args_json", payload) == '{"nested":["value"]}'
+    assert store.serialize_json("kwargs_json", payload) is payload
+    assert store.serialize_json("args_json", payload) == '{"nested":["value"]}'
 
 
 @pytest.mark.parametrize(

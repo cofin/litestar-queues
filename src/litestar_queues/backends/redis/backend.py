@@ -352,8 +352,10 @@ class RedisQueueBackend(BaseQueueBackend):
                     latest.heartbeat_at = None
                     latest.error = "Task heartbeat stale"
                     result.failed += 1
+                    result.failed_task_ids.append(latest.id)
                     if not requeue_on_stale:
                         result.handler_needed += 1
+                        result.handler_needed_task_ids.append(latest.id)
                 await self._save_record(latest)
                 if latest.status in _DUE_STATUSES:
                     await self.notify_new_task(latest)

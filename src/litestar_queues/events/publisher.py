@@ -12,7 +12,9 @@ __all__ = ("QueueEventConfig", "QueueEventPublisher")
 
 logger = logging.getLogger(__name__)
 
-_LIFECYCLE_EVENT_TYPES = frozenset({"task.started", "task.completed", "task.failed", "task.cancelled"})
+_LIFECYCLE_EVENT_TYPES = frozenset(
+    {"task.started", "task.completed", "task.failed", "task.cancelled", "task.claim_lost", "task.stale_failed"}
+)
 
 
 @dataclass(slots=True)

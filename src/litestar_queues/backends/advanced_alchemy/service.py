@@ -223,8 +223,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                     .values(status="failed", completed_at=now, heartbeat_at=now, error="Task heartbeat stale")
                 )
                 result.failed += 1
+                task_id = UUID(str(model.id))
+                result.failed_task_ids.append(task_id)
                 if not requeue_on_stale:
                     result.handler_needed += 1
+                    result.handler_needed_task_ids.append(task_id)
         return result
 
     async def set_execution_ref(

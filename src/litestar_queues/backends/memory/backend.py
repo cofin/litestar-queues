@@ -204,8 +204,10 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 record.heartbeat_at = None
                 record.error = "Task heartbeat stale"
                 result.failed += 1
+                result.failed_task_ids.append(record.id)
                 if not requeue_on_stale:
                     result.handler_needed += 1
+                    result.handler_needed_task_ids.append(record.id)
         return result
 
     async def set_execution_ref(

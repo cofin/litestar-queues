@@ -58,6 +58,8 @@ class StaleTaskRecoveryResult:
     failed: int = 0
     skipped: int = 0
     handler_needed: int = 0
+    failed_task_ids: list[UUID] = field(default_factory=list)
+    handler_needed_task_ids: list[UUID] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, int]:
         """Return a JSON-compatible event payload."""

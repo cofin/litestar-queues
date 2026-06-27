@@ -58,7 +58,7 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
             return []
         return [_drop_index_block(self, "heartbeat"), _drop_index_block(self, "pending"), _drop_table_block(self)]
 
-    def serialize_json_column(self, canonical: str, value: Any) -> str | bytes:
+    def serialize_json(self, canonical: str, value: Any) -> str | bytes:
         """Serialize Oracle JSON according to configured storage.
 
         Returns:
@@ -73,14 +73,7 @@ class OracledbSyncQueueStore(SQLSpecQueueStore):
             The decoded Python JSON value.
         """
         if canonical in self._native_json_columns:
-            if value is None:
-                return None
-            read = getattr(value, "read", None)
-            if callable(read):
-                value = read()
-            if isinstance(value, (str, bytes)):
-                return from_json(value)
-            return value
+            return _deserialize_native_oracle_json(value)
         return _deserialize_oracle_json(value)
 
     def _index_name(self, suffix: str) -> str:
@@ -103,13 +96,8 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
-        if self._json_storage in (_OracleJSONStorageType.JSON_NATIVE, _OracleJSONStorageType.BLOB_JSON):
-            self._native_json_columns = self._native_json_columns | frozenset({
-                "args_json",
-                "kwargs_json",
-                "metadata_json",
-                "result_json",
-            })
+        if self._json_storage in {_OracleJSONStorageType.JSON_NATIVE, _OracleJSONStorageType.BLOB_JSON}:
+            self._native_json_columns |= frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
 
     def create_statements(self) -> list[str]:
         """Return statements that create oracledb async queue artifacts."""
@@ -134,7 +122,7 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
             return []
         return [_drop_index_block(self, "heartbeat"), _drop_index_block(self, "pending"), _drop_table_block(self)]
 
-    def serialize_json_column(self, canonical: str, value: Any) -> str | bytes:
+    def serialize_json(self, canonical: str, value: Any) -> str | bytes:
         """Serialize Oracle JSON according to configured storage.
 
         Returns:
@@ -149,14 +137,7 @@ class OracledbAsyncQueueStore(SQLSpecQueueStore):
             The decoded Python JSON value.
         """
         if canonical in self._native_json_columns:
-            if value is None:
-                return None
-            read = getattr(value, "read", None)
-            if callable(read):
-                value = read()
-            if isinstance(value, (str, bytes)):
-                return from_json(value)
-            return value
+            return _deserialize_native_oracle_json(value)
         return _deserialize_oracle_json(value)
 
     def _index_name(self, suffix: str) -> str:
@@ -206,6 +187,20 @@ def _deserialize_oracle_json(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
     return from_json(value)
+
+
+def _deserialize_native_oracle_json(value: Any) -> Any:
+    if value is None:
+        return None
+    read = getattr(value, "read", None)
+    if callable(read):
+        value = read()
+    if isinstance(value, (str, bytes)):
+        try:
+            return from_json(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _index_name(store: SQLSpecQueueStore, suffix: str) -> str:

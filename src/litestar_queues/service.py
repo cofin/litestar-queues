@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,17 @@ if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
 
 __all__ = ("QueueService",)
+
+logger = logging.getLogger(__name__)
+
+_LOG_LEVELS = {
+    "critical": logging.CRITICAL,
+    "error": logging.ERROR,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+}
 
 
 class QueueService:
@@ -242,35 +254,37 @@ class QueueService:
             result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
         except asyncio.CancelledError:
             await task_context.lifecycle("task.cancelled")
+            self._log_task_event("Queue task cancelled", record, level=logging.WARNING)
             raise
         except NonRetryableError as exc:
             updated = await self.get_queue_backend().fail_task(
                 record.id, str(exc), retry=False, expected_retry_count=record.retry_count
             )
             if updated is None:
-                return await self._current_or_claimed(record)
+                return await self.publish_claim_lost(record, phase="fail", task_context=task_context)
             failed = updated
-            await task_context.lifecycle(
-                "task.failed",
-                message=str(exc),
-                payload={"status": failed.status, "retry_count": failed.retry_count, "will_retry": False},
-            )
+            payload = {"status": failed.status, "retry_count": failed.retry_count, "will_retry": False}
+            await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
+            self._log_task_event("Queue task failed", failed, level=logging.ERROR, payload=payload)
             return updated
         except Exception as exc:
             updated = await self.get_queue_backend().fail_task(
                 record.id, str(exc), expected_retry_count=record.retry_count
             )
             if updated is None:
-                return await self._current_or_claimed(record)
+                return await self.publish_claim_lost(record, phase="fail", task_context=task_context)
             failed = updated
-            await task_context.lifecycle(
-                "task.failed",
-                message=str(exc),
-                payload={
-                    "status": failed.status,
-                    "retry_count": failed.retry_count,
-                    "will_retry": failed.status == "pending",
-                },
+            payload = {
+                "status": failed.status,
+                "retry_count": failed.retry_count,
+                "will_retry": failed.status == "pending",
+            }
+            await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
+            self._log_task_event(
+                "Queue task failed",
+                failed,
+                level=logging.WARNING if failed.status == "pending" else logging.ERROR,
+                payload=payload,
             )
             if failed.status == "failed":
                 await self._reschedule_if_needed(failed)
@@ -282,11 +296,12 @@ class QueueService:
             record.id, result=result, expected_retry_count=record.retry_count
         )
         if updated is None:
-            return await self._current_or_claimed(record)
+            return await self.publish_claim_lost(record, phase="complete", task_context=task_context)
         completed = updated
         await task_context.lifecycle(
             "task.completed", payload={"status": completed.status, "retry_count": completed.retry_count}
         )
+        self._log_task_completed(completed)
         await self._reschedule_if_needed(completed)
         return completed
 
@@ -296,6 +311,7 @@ class QueueService:
         """Recover stale running tasks and publish a worker summary event."""
         result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after)
         if result.requeued or result.failed or result.skipped or result.handler_needed:
+            await self._publish_stale_failed_events(result, worker_id=worker_id)
             await self.get_event_publisher().publish(
                 QueueEvent(
                     type="worker.stale_recovery",
@@ -381,6 +397,109 @@ class QueueService:
     async def _current_or_claimed(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         return await self.get_queue_backend().get_task(record.id) or record
 
+    async def publish_claim_lost(
+        self,
+        record: "QueuedTaskRecord",
+        *,
+        phase: str,
+        task_context: TaskExecutionContext | None = None,
+        worker_id: str | None = None,
+        expected_retry_count: int | None = None,
+    ) -> "QueuedTaskRecord":
+        """Publish an ownership-loss event and return the current record state."""
+        current = await self._current_or_claimed(record)
+        expected = record.retry_count if expected_retry_count is None else expected_retry_count
+        payload = {
+            "phase": phase,
+            "expected_retry_count": expected,
+            "current_status": current.status,
+            "current_retry_count": current.retry_count,
+        }
+        message = "Queue task ownership lost"
+        if task_context is not None:
+            await task_context.lifecycle("task.claim_lost", message=message, payload=payload)
+        else:
+            await self.get_event_publisher().publish(
+                QueueEvent(
+                    type="task.claim_lost",
+                    scope="task",
+                    task_id=str(record.id),
+                    task_name=record.task_name,
+                    queue=record.queue,
+                    worker_id=worker_id,
+                    execution_backend=record.execution_backend,
+                    execution_profile=record.execution_profile,
+                    attempt=expected + 1,
+                    message=message,
+                    payload=payload,
+                )
+            )
+        self._log_task_event(message, current, level=logging.WARNING, payload=payload)
+        return current
+
+    async def _publish_stale_failed_events(
+        self, result: "StaleTaskRecoveryResult", *, worker_id: str | None
+    ) -> None:
+        handler_needed_ids = set(result.handler_needed_task_ids)
+        for task_id in result.failed_task_ids:
+            record = await self.get_queue_backend().get_task(task_id)
+            if record is None:
+                continue
+            requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
+            payload = {
+                "status": record.status,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
+                "requeue_on_stale": requeue_on_stale,
+                "handler_needed": record.id in handler_needed_ids,
+            }
+            await self.get_event_publisher().publish(
+                QueueEvent(
+                    type="task.stale_failed",
+                    scope="task",
+                    task_id=str(record.id),
+                    task_name=record.task_name,
+                    queue=record.queue,
+                    worker_id=worker_id,
+                    execution_backend=record.execution_backend,
+                    execution_profile=record.execution_profile,
+                    attempt=record.retry_count + 1,
+                    message=record.error or "Task heartbeat stale",
+                    payload=payload,
+                )
+            )
+            self._log_task_event("Queue task failed after stale heartbeat", record, level=logging.ERROR, payload=payload)
+
+    def _log_task_completed(self, record: "QueuedTaskRecord") -> None:
+        if record.metadata.get("quiet_success") is True:
+            return
+        self._log_task_event("Queue task completed", record, level=_coerce_log_level(record.metadata.get("log_level")))
+
+    def _log_task_event(
+        self,
+        message: str,
+        record: "QueuedTaskRecord",
+        *,
+        level: int,
+        payload: "Mapping[str, object] | None" = None,
+    ) -> None:
+        logger.log(
+            level,
+            message,
+            extra={
+                "queue_task_id": str(record.id),
+                "queue_task_name": record.task_name,
+                "queue_task_queue": record.queue,
+                "queue_task_status": record.status,
+                "queue_task_retry_count": record.retry_count,
+                "queue_task_max_retries": record.max_retries,
+                "queue_task_execution_backend": record.execution_backend,
+                "queue_task_execution_profile": record.execution_profile,
+                "queue_task_description": record.metadata.get("description"),
+                "queue_task_event_payload": dict(payload or {}),
+            },
+        )
+
 
 def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:
     if value is None:
@@ -388,3 +507,9 @@ def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:
     if isinstance(value, timedelta):
         return value
     return timedelta(seconds=value)
+
+
+def _coerce_log_level(value: object, default: int = logging.INFO) -> int:
+    if not isinstance(value, str):
+        return default
+    return _LOG_LEVELS.get(value.lower(), default)

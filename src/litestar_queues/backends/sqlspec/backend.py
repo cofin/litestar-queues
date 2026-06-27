@@ -301,7 +301,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         task_id=str(task_id),
                         completed_at=_serialize_datetime(now),
                         heartbeat_at=_serialize_datetime(now),
-                        result_json=store.serialize_json_column("result_json", result),
+                        result_json=store.serialize_json("result_json", result),
                     )
                 )
                 row = await self._select_task(driver, task_id) if updated.rows_affected else None
@@ -449,8 +449,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             )
                         )
                         result.failed += 1
+                        result.failed_task_ids.append(record.id)
                         if not requeue_on_stale:
                             result.handler_needed += 1
+                            result.handler_needed_task_ids.append(record.id)
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -813,7 +815,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     def _params_from_record(self, record: QueuedTaskRecord) -> dict[str, Any]:
         store = self._get_store()
         return {
-            "args_json": store.serialize_json_column("args_json", list(record.args)),
+            "args_json": store.serialize_json("args_json", list(record.args)),
             "completed_at": _serialize_datetime(record.completed_at),
             "created_at": _serialize_datetime(record.created_at),
             "error": record.error,
@@ -822,12 +824,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "execution_ref": record.execution_ref,
             "heartbeat_at": _serialize_datetime(record.heartbeat_at),
             "id": str(record.id),
-            "kwargs_json": store.serialize_json_column("kwargs_json", record.kwargs),
+            "kwargs_json": store.serialize_json("kwargs_json", record.kwargs),
             "max_retries": record.max_retries,
-            "metadata_json": store.serialize_json_column("metadata_json", record.metadata),
+            "metadata_json": store.serialize_json("metadata_json", record.metadata),
             "priority": record.priority,
             "queue": record.queue,
-            "result_json": store.serialize_json_column("result_json", record.result),
+            "result_json": store.serialize_json("result_json", record.result),
             "retry_count": record.retry_count,
             "scheduled_at": _serialize_datetime(record.scheduled_at),
             "started_at": _serialize_datetime(record.started_at),

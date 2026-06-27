@@ -117,6 +117,8 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         status = await self.check_execution_status(record.execution_ref)
         if status.running:
             return None
+        if record.status != "running":
+            return None
 
         queue_backend = service.get_queue_backend()
         if status.succeeded:
@@ -125,13 +127,23 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
                 result=record.result
                 if record.result is not None
                 else {"cloudrun_execution": record.execution_ref, "status": "succeeded"},
+                expected_retry_count=record.retry_count,
             )
 
         if status.cancelled:
-            return await queue_backend.fail_task(record.id, "Cloud Run execution cancelled", retry=False)
+            return await queue_backend.fail_task(
+                record.id,
+                "Cloud Run execution cancelled",
+                retry=False,
+                expected_retry_count=record.retry_count,
+            )
 
         if status.failed:
-            return await queue_backend.fail_task(record.id, status.error or "Cloud Run execution failed")
+            return await queue_backend.fail_task(
+                record.id,
+                status.error or "Cloud Run execution failed",
+                expected_retry_count=record.retry_count,
+            )
 
         return None
 

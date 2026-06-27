@@ -64,18 +64,34 @@ async def execute_cloudrun_task(
 
         claimed = await queue.get_queue_backend().claim_task(record.id)
         if claimed is None:
+            await queue.publish_claim_lost(record, phase="claim")
             return CloudRunExitCode.CLAIM_LOST
 
-        heartbeat_task = asyncio.create_task(_heartbeat_loop(queue, claimed.id))
+        expected_retry_count = claimed.retry_count
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count)
+        )
+        execution_task = asyncio.create_task(queue.execute_record(claimed))
         try:
-            updated = await queue.execute_record(claimed)
+            done, _pending = await asyncio.wait({heartbeat_task, execution_task}, return_when=asyncio.FIRST_COMPLETED)
+            if heartbeat_task in done and not heartbeat_task.result():
+                execution_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await execution_task
+                await queue.publish_claim_lost(
+                    claimed,
+                    phase="heartbeat",
+                    expected_retry_count=expected_retry_count,
+                )
+                return CloudRunExitCode.CLAIM_LOST
+            updated = await execution_task
         except asyncio.CancelledError:
             return CloudRunExitCode.CANCELLED
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
-            await queue.get_queue_backend().null_heartbeats([claimed.id])
+            await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
 
     if updated.status == "completed":
         return CloudRunExitCode.SUCCESS
@@ -93,11 +109,14 @@ def main() -> None:
     raise SystemExit(int(asyncio.run(execute_cloudrun_task())))
 
 
-async def _heartbeat_loop(queue: QueueService, task_id: UUID) -> None:
+async def _heartbeat_loop(queue: QueueService, task_id: UUID, *, expected_retry_count: int) -> bool:
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
-        await queue.get_queue_backend().touch_heartbeat(task_id)
+        if not await queue.get_queue_backend().touch_heartbeat(
+            task_id, expected_retry_count=expected_retry_count
+        ):
+            return False
 
 
 @contextlib.asynccontextmanager

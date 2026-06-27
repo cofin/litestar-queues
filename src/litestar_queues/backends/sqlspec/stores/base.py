@@ -351,7 +351,7 @@ class SQLSpecQueueStore:
             )
         )
 
-    def serialize_json_column(self, canonical: str, value: Any) -> Any:
+    def serialize_json(self, canonical: str, value: Any) -> Any:
         """Serialize a JSON value for a canonical queue column.
 
         Native JSON columns (driver registers a JSON codec — e.g.

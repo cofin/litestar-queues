@@ -1,6 +1,8 @@
+import asyncio
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypedDict, cast
 
 import pytest
@@ -10,6 +12,8 @@ from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from litestar_queues.execution.cloudrun._typing import CloudRunJobsClient
 
 pytestmark = pytest.mark.anyio
@@ -242,6 +246,39 @@ async def test_cloudrun_reconcile_treats_transient_status_errors_as_running() ->
     assert stored.status == "running"
 
 
+async def test_cloudrun_reconcile_does_not_terminal_write_after_stale_retry_reassigns_row() -> None:
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        executions_client=FakeExecutionsClient(FakeCloudRunExecution(succeeded_count=1)),
+    )
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
+    await service.open()
+    try:
+        record = await queue_backend.enqueue("tasks.remote", execution_backend="cloudrun", max_retries=1)
+        await queue_backend.set_execution_ref(record.id, "cloudrun", "executions/run-1")
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+        stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+
+        updated = await backend.reconcile(service, claimed)
+        stored = await queue_backend.get_task(record.id)
+    finally:
+        await service.close()
+
+    assert stale_result.requeued == 1
+    assert updated is None
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.retry_count == 1
+    assert stored.result is None
+
+
 async def test_worker_dispatches_external_records_without_claiming_them() -> None:
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
@@ -309,6 +346,48 @@ async def test_cloudrun_entrypoint_claims_and_executes_persisted_record() -> Non
     assert exit_code == CloudRunExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
+
+
+async def test_cloudrun_entrypoint_returns_claim_lost_when_heartbeat_loses_ownership() -> None:
+    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
+
+    heartbeat_seen = asyncio.Event()
+    release_task = asyncio.Event()
+    task_id: UUID | None = None
+
+    @task("tasks.entrypoint_claim_lost")
+    async def entrypoint_claim_lost() -> str:
+        assert task_id is not None
+        stored = await queue_backend.get_task(task_id)
+        assert stored is not None
+        stored.status = "pending"
+        stored.retry_count += 1
+        stored.started_at = None
+        stored.heartbeat_at = None
+        heartbeat_seen.set()
+        await release_task.wait()
+        return "too late"
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+    ) as service:
+        result = await service.enqueue(entrypoint_claim_lost.using(execution_backend="cloudrun"), retries=1)
+        task_id = result.id
+        runner = asyncio.create_task(
+            execute_cloudrun_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": str(result.id)})
+        )
+        await asyncio.wait_for(heartbeat_seen.wait(), timeout=1)
+        try:
+            exit_code = await runner
+        finally:
+            release_task.set()
+        stored = await queue_backend.get_task(result.id)
+
+    assert exit_code == CloudRunExitCode.CLAIM_LOST
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.retry_count == 1
 
 
 async def test_cloudrun_entrypoint_returns_deterministic_error_codes() -> None:
