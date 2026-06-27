@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +27,7 @@ __all__ = ("QueueService",)
 class QueueService:
     """High-level facade for queue and execution backends."""
 
-    __slots__ = ("_config", "_event_publisher", "_execution_backend", "_queue_backend")
+    __slots__ = ("_config", "_event_publisher", "_execution_backend", "_queue_backend", "_sync_executor")
 
     def __init__(
         self,
@@ -41,6 +42,7 @@ class QueueService:
         self._queue_backend = queue_backend
         self._execution_backend = execution_backend
         self._event_publisher = event_publisher
+        self._sync_executor: ThreadPoolExecutor | None = None
 
     @property
     def config(self) -> "QueueConfig":
@@ -73,6 +75,11 @@ class QueueService:
         """
         await self.get_queue_backend().open()
         await self.get_execution_backend().open()
+        if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
+            self._sync_executor = ThreadPoolExecutor(
+                max_workers=self._config.sync_executor_max_workers,
+                thread_name_prefix=self._config.sync_executor_thread_name_prefix,
+            )
         return self
 
     async def close(self) -> None:
@@ -81,6 +88,9 @@ class QueueService:
             await self._execution_backend.close()
         if self._queue_backend is not None:
             await self._queue_backend.close()
+        if self._sync_executor is not None:
+            self._sync_executor.shutdown(wait=True, cancel_futures=True)
+            self._sync_executor = None
 
     async def __aenter__(self) -> Self:
         await self.open()
@@ -223,7 +233,12 @@ class QueueService:
         try:
             await task_context.lifecycle("task.started")
             extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
-            coroutine = task_obj.execute_record(record, task_context=task_context, extra_kwargs=extra_kwargs)
+            coroutine = task_obj.execute_record(
+                record,
+                task_context=task_context,
+                extra_kwargs=extra_kwargs,
+                sync_executor=self._sync_executor,
+            )
             result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
         except asyncio.CancelledError:
             await task_context.lifecycle("task.cancelled")

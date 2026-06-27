@@ -112,6 +112,7 @@ class QueuePlugin:
                 stale_check_interval=self._config.worker_stale_check_interval,
                 graceful_shutdown_timeout=self._config.worker_graceful_shutdown_timeout,
                 final_cancel_timeout=self._config.worker_final_cancel_timeout,
+                queues=self._config.worker_queues,
             )
             self._worker_task = asyncio.create_task(self._worker.start())
             await asyncio.sleep(0)
@@ -121,7 +122,6 @@ class QueuePlugin:
         if self._worker is not None:
             await self._worker.stop()
         if self._worker_task is not None:
-            self._worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
             self._worker_task = None

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import inspect
 import pkgutil
 import random
@@ -7,12 +8,14 @@ import zoneinfo
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from importlib import import_module, reload
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 from typing_extensions import ParamSpec, Self
 
 if TYPE_CHECKING:
+    from concurrent.futures import Executor
     from types import ModuleType
     from uuid import UUID
 
@@ -444,6 +447,7 @@ class Task(Generic[P, T]):
         *,
         task_context: "TaskExecutionContext | None" = None,
         extra_kwargs: "Mapping[str, object] | None" = None,
+        sync_executor: "Executor | None" = None,
     ) -> T:
         """Execute this task for a queued record in worker context.
 
@@ -461,7 +465,7 @@ class Task(Generic[P, T]):
             coroutine_func = cast("Callable[..., Awaitable[T]]", self._func)
             return await coroutine_func(*record.args, **kwargs)
         sync_func = cast("Callable[..., T]", self._func)
-        return await asyncio.to_thread(sync_func, *record.args, **kwargs)
+        return await _run_sync_callable(sync_func, record.args, kwargs, sync_executor=sync_executor)
 
     def metadata(self, values: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return enqueue metadata for this task."""
@@ -784,6 +788,16 @@ def _cron_day_matches(parsed: _ParsedCron, *, day: int, weekday: int) -> bool:
     if parsed.day_of_month_restricted and parsed.day_of_week_restricted:
         return day_matches or weekday_matches
     return day_matches and weekday_matches
+
+
+async def _run_sync_callable(
+    func: "Callable[..., T]", args: tuple[Any, ...], kwargs: dict[str, Any], *, sync_executor: "Executor | None"
+) -> T:
+    if sync_executor is None:
+        return await asyncio.to_thread(func, *args, **kwargs)
+    context = contextvars.copy_context()
+    call = partial(context.run, func, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(sync_executor, call)
 
 
 def _parse_cron_value(value: str, names: dict[str, int]) -> int:

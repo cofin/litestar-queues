@@ -38,7 +38,7 @@ def queues_group() -> None:
     "--queue",
     "queues",
     multiple=True,
-    help="Queue name to process. Repeatable. Currently advisory; backend-side filtering is not yet enforced.",
+    help="Queue name to process. Repeatable.",
 )
 @click.option(
     "--max-concurrency", type=click.IntRange(min=1), default=None, help="Override worker_max_concurrency for this run."
@@ -60,15 +60,12 @@ def run_command(
     if config.task_modules:
         load_task_modules(config.task_modules)
 
-    if queues:
-        click.echo(
-            f"--queue is advisory; backend-side filtering is not yet enforced. Selected: {', '.join(queues)}", err=True
-        )
-
     effective_concurrency = max_concurrency or config.worker_max_concurrency
     effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker_graceful_shutdown_timeout
 
-    exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout))
+    effective_queues = queues or config.worker_queues
+
+    exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues))
     ctx.exit(exit_code)
 
 
@@ -105,7 +102,9 @@ def register(cli: click.Group) -> None:
     cli.add_command(queues_group)
 
 
-async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: float) -> int:
+async def _run_worker(
+    plugin: QueuePlugin, max_concurrency: int, drain_timeout: float, queues: tuple[str, ...] = ()
+) -> int:
     config = plugin.config
     service = _open_service(plugin)
     await service.open()
@@ -120,18 +119,21 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
         stale_check_interval=config.worker_stale_check_interval,
         graceful_shutdown_timeout=drain_timeout,
         final_cancel_timeout=config.worker_final_cancel_timeout,
+        queues=queues,
     )
 
     loop = asyncio.get_running_loop()
     stop_count = {"n": 0}
     stop_task: asyncio.Task[None] | None = None
+    forced_stop = {"value": False}
 
     def _request_stop() -> None:
         nonlocal stop_task
         stop_count["n"] += 1
         if stop_count["n"] >= FORCE_STOP_SIGNAL_COUNT:
-            for task_ in asyncio.all_tasks(loop):
-                task_.cancel()
+            forced_stop["value"] = True
+            if stop_task is None or stop_task.done():
+                stop_task = asyncio.create_task(worker.stop(force=True))
             return
         if stop_task is None or stop_task.done():
             stop_task = asyncio.create_task(worker.stop())
@@ -150,6 +152,8 @@ async def _run_worker(plugin: QueuePlugin, max_concurrency: int, drain_timeout: 
     try:
         try:
             await asyncio.wait_for(worker_task, timeout=None)
+            if forced_stop["value"]:
+                exit_code = 2
         except asyncio.CancelledError:
             with contextlib.suppress(BaseException):
                 await asyncio.wait_for(worker_task, timeout=config.worker_final_cancel_timeout)

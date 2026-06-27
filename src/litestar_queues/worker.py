@@ -29,7 +29,9 @@ class Worker:
         "_last_stale_check_at",
         "_max_concurrency",
         "_poll_interval",
+        "_queues",
         "_reconcile_interval",
+        "_running_tasks",
         "_service",
         "_stale_after",
         "_stale_check_interval",
@@ -51,6 +53,7 @@ class Worker:
         graceful_shutdown_timeout: float = 30,
         final_cancel_timeout: float = 5,
         worker_id: str | None = None,
+        queues: tuple[str, ...] = (),
     ) -> None:
         """Initialize the worker."""
         self._service = service
@@ -64,6 +67,8 @@ class Worker:
         self._graceful_shutdown_timeout = graceful_shutdown_timeout
         self._final_cancel_timeout = final_cancel_timeout
         self._worker_id = worker_id if worker_id is not None else f"worker-{os.getpid()}"
+        self._queues = queues
+        self._running_tasks: set[asyncio.Task[None]] = set()
         self._stop_event = asyncio.Event()
         self._is_running = False
         self._last_reconcile_at = 0.0
@@ -93,9 +98,13 @@ class Worker:
         finally:
             self._is_running = False
 
-    async def stop(self) -> None:
-        """Stop the worker loop."""
+    async def stop(self, *, force: bool = False) -> None:
+        """Stop the worker loop and drain or cancel in-flight work."""
         self._stop_event.set()
+        if force:
+            await self._cancel_running()
+            return
+        await self._drain_running()
 
     async def run_once(self) -> int:
         """Process one batch of due tasks.
@@ -105,9 +114,10 @@ class Worker:
         """
         queue_backend = self._service.get_queue_backend()
         execution_backend = self._service.get_execution_backend()
-        records = await queue_backend.list_pending(
-            limit=self._batch_size, execution_backend=execution_backend_name(self._service.config.execution_backend)
-        )
+        available = min(self._batch_size, max(0, self._max_concurrency - len(self._running_tasks)))
+        if available <= 0:
+            return 0
+        records = await self._list_pending(limit=available)
         if execution_backend.is_external:
             return await self._dispatch_external(records)
 
@@ -120,14 +130,38 @@ class Worker:
         if not claimed_records:
             return 0
 
-        semaphore = asyncio.Semaphore(self._max_concurrency)
-
-        async def run_claimed(claimed_record: "QueuedTaskRecord") -> None:
-            async with semaphore:
-                await self._execute_claimed(claimed_record)
-
-        await asyncio.gather(*(run_claimed(record) for record in claimed_records))
+        tasks = [self._track_execution(record) for record in claimed_records]
+        await asyncio.gather(*tasks, return_exceptions=True)
         return len(claimed_records)
+
+    async def _list_pending(self, *, limit: int) -> "list[QueuedTaskRecord]":
+        queue_backend = self._service.get_queue_backend()
+        execution_backend_name_ = execution_backend_name(self._service.config.execution_backend)
+        if not self._queues:
+            return await queue_backend.list_pending(limit=limit, execution_backend=execution_backend_name_)
+
+        records: list["QueuedTaskRecord"] = []
+        seen: set[object] = set()
+        for queue in self._queues:
+            if len(records) >= limit:
+                break
+            queue_records = await queue_backend.list_pending(
+                limit=limit - len(records), queue=queue, execution_backend=execution_backend_name_
+            )
+            for record in queue_records:
+                if record.id in seen:
+                    continue
+                seen.add(record.id)
+                records.append(record)
+                if len(records) >= limit:
+                    break
+        return records
+
+    def _track_execution(self, record: "QueuedTaskRecord") -> asyncio.Task[None]:
+        task = asyncio.create_task(self._execute_claimed(record))
+        self._running_tasks.add(task)
+        task.add_done_callback(self._running_tasks.discard)
+        return task
 
     async def reconcile_external(self, *, limit: int | None = None) -> int:
         """Reconcile externally dispatched records.
@@ -199,6 +233,26 @@ class Worker:
             await self._service.get_queue_backend().touch_heartbeat(
                 task_id, expected_retry_count=expected_retry_count
             )
+
+    async def _drain_running(self) -> None:
+        if not self._running_tasks:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tuple(self._running_tasks), return_exceptions=True),
+                timeout=self._graceful_shutdown_timeout,
+            )
+        except TimeoutError:
+            await self._cancel_running()
+
+    async def _cancel_running(self) -> None:
+        tasks = tuple(self._running_tasks)
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=self._final_cancel_timeout)
 
     async def _wait_for_work(self) -> None:
         queue_backend = self._service.get_queue_backend()

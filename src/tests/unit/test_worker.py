@@ -1,15 +1,30 @@
 import asyncio
 import os
+import threading
 from contextlib import suppress
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import pytest
+from litestar import Litestar
+from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueueService, Worker, non_retryable, task
+from litestar_queues import (
+    QueueConfig,
+    QueuePlugin,
+    QueueService,
+    Worker,
+    get_current_task_context,
+    non_retryable,
+    task,
+)
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
 from litestar_queues.models import StaleTaskRecoveryResult
 from litestar_queues.task import clear_task_registry
+
+if TYPE_CHECKING:
+    from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -119,6 +134,55 @@ async def test_worker_processes_batch_with_configured_concurrency() -> None:
     assert second.status == "completed"
 
 
+class _LimitRecordingInMemoryQueueBackend(InMemoryQueueBackend):
+    __slots__ = ("list_limits",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_limits: list[int] = []
+
+    async def list_pending(
+        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
+    ) -> list["QueuedTaskRecord"]:
+        self.list_limits.append(limit)
+        return await super().list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+
+
+async def test_worker_does_not_over_claim_beyond_available_concurrency() -> None:
+    backend = _LimitRecordingInMemoryQueueBackend()
+
+    @task("tasks.capacity")
+    async def capacity(value: int) -> int:
+        return value
+
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        for value in range(5):
+            await service.enqueue(capacity, value)
+        worker = Worker(service, batch_size=10, max_concurrency=2)
+
+        assert await worker.run_once() == 2
+
+    assert backend.list_limits[0] == 2
+
+
+async def test_worker_queue_filter_restricts_claimed_records() -> None:
+    @task("tasks.filtered")
+    async def filtered(value: str) -> str:
+        return value
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        default_result = await service.enqueue(filtered, "default")
+        priority_result = await service.enqueue(filtered.using(queue="priority"), "priority")
+        worker = Worker(service, queues=("priority",))
+
+        assert await worker.run_once() == 1
+        await default_result.refresh()
+        await priority_result.refresh()
+
+    assert default_result.status == "pending"
+    assert priority_result.status == "completed"
+
+
 async def test_worker_start_wakes_from_backend_notifications() -> None:
     @task("tasks.notified_worker")
     async def notified_worker(value: int) -> int:
@@ -226,3 +290,80 @@ async def test_worker_id_propagates_into_published_events() -> None:
     assert lifecycle_events, "Expected at least one lifecycle event"
     for event in lifecycle_events:
         assert event.worker_id == "worker-test"
+
+
+async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @task("tasks.stuck")
+    async def stuck() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        result = await service.enqueue(stuck)
+        worker = Worker(service, graceful_shutdown_timeout=0.01, final_cancel_timeout=0.2)
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        await worker.stop()
+        await asyncio.wait_for(worker_task, timeout=1)
+        await result.refresh()
+
+    assert cancelled.is_set()
+    assert result.status == "running"
+
+
+async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @task("tasks.plugin_drain")
+    async def plugin_drain() -> str:
+        started.set()
+        await release.wait()
+        return "ok"
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            execution_backend="local",
+            start_worker=True,
+            worker_poll_interval=0.01,
+            worker_graceful_shutdown_timeout=1,
+        )
+    )
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        service = app.state[plugin.config.queue_service_state_key]
+        result = await service.enqueue(plugin_drain)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        release.set()
+
+    await result.refresh()
+    assert result.status == "completed"
+
+
+async def test_sync_task_uses_configured_executor_and_preserves_task_context() -> None:
+    @task("tasks.sync_context")
+    def sync_context(*, _job_id: str) -> dict[str, str | None]:
+        context = get_current_task_context()
+        return {
+            "job_id": _job_id,
+            "context_task_id": context.task_id,
+            "thread_name": threading.current_thread().name,
+        }
+
+    async with QueueService(
+        QueueConfig(execution_backend="immediate", sync_executor_max_workers=1, sync_executor_thread_name_prefix="lq")
+    ) as service:
+        result = await service.enqueue(sync_context)
+
+    assert isinstance(result.result, dict)
+    assert result.result["job_id"] == result.result["context_task_id"]
+    assert str(result.result["thread_name"]).startswith("lq")
