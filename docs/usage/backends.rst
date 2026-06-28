@@ -555,6 +555,99 @@ PostgreSQL SQLSpec adapters can use SQLSpec's native ``listen_notify`` backend;
 other adapters can use the durable ``table_queue`` backend. Queue notification
 channel names must be valid SQLSpec event identifiers.
 
+SQLSpec Observability
+~~~~~~~~~~~~~~~~~~~~~
+
+The SQLSpec backend uses SQLSpec's ``ObservabilityRuntime`` for queue-domain
+counters and spans. SQL statements executed by the backend already flow through
+SQLSpec driver spans and statement observers, so query spans inherit SQLSpec
+correlation context automatically.
+
+Queue counters are recorded with these reserved names:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Metric
+     - Meaning
+   * - ``queue.enqueue``
+     - Queue records inserted by ``enqueue`` or ``enqueue_many``.
+   * - ``queue.claim``
+     - Records successfully claimed for execution.
+   * - ``queue.complete``
+     - Records completed successfully.
+   * - ``queue.fail``
+     - Records moved to terminal failure by ``fail_task``.
+   * - ``queue.retry``
+     - Records requeued for another attempt.
+   * - ``queue.stale_recovered``
+     - Stale running records handled by stale recovery.
+   * - ``queue.notify``
+     - Worker wakeup notifications published through SQLSpec Events.
+   * - ``queue.claim_lost``
+     - Fenced completion or failure attempts rejected after ownership changed.
+   * - ``queue.stale_failed``
+     - Stale records moved to terminal failure.
+
+Counters are available from SQLSpec diagnostics:
+
+.. code-block:: python
+
+   runtime = sqlspec_config.get_observability_runtime()
+   queue_metrics = runtime.metrics_snapshot()
+
+Set ``queue_observability=False`` on ``SQLSpecBackendConfig`` to disable only the
+queue-domain counters and custom queue spans. SQLSpec driver query spans and
+statement observers remain controlled by the SQLSpec config.
+
+OpenTelemetry tracing and Prometheus statement metrics are enabled through
+SQLSpec's optional extensions:
+
+.. code-block:: python
+
+   from sqlspec import SQLSpec
+   from sqlspec.adapters.asyncpg import AsyncpgConfig
+   from sqlspec.extensions.otel import enable_tracing
+   from sqlspec.extensions.prometheus import enable_metrics
+
+   from litestar_queues import QueueConfig
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+
+   observability = enable_tracing(
+       resource_attributes={"service.name": "queue-worker"},
+   )
+   observability = enable_metrics(base_config=observability)
+
+   sqlspec = SQLSpec(observability_config=observability)
+   sqlspec_config = AsyncpgConfig(
+       pool_config={"dsn": "postgresql://queue@db/queues"},
+   )
+   sqlspec.add_config(sqlspec_config)
+
+   config = QueueConfig(
+       queue_backend=SQLSpecBackendConfig(
+           sqlspec=sqlspec,
+           sqlspec_config=sqlspec_config,
+       ),
+       execution_backend="local",
+   )
+
+Pool, connection, session, and query lifecycle hooks remain SQLSpec-owned. Attach
+them to the same runtime when you need adapter-level lifecycle events:
+
+.. code-block:: python
+
+   def record_query_complete(context: dict[str, object]) -> None:
+       ...
+
+   runtime = sqlspec_config.get_observability_runtime()
+   runtime.register_lifecycle_hook("on_query_complete", record_query_complete)
+
+SQLSpec's Prometheus helper records bounded statement metrics such as
+``sqlspec_driver_query_total`` and ``sqlspec_driver_query_duration_seconds``.
+Applications that want the queue-domain counters in Prometheus can expose the
+``metrics_snapshot()`` values through their own metrics bridge.
+
 Shared SQLSpec Extension Config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

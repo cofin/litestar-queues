@@ -42,6 +42,7 @@ class SQLSpecBackendConfig:
     event_queue_table: str | None = None
     event_poll_interval: float | None = None
     event_settings: dict[str, Any] = field(default_factory=dict)
+    queue_observability: bool = True
     column_map: Mapping[str, str] = field(default_factory=dict)
     native_json_columns: frozenset[str] = field(default_factory=frozenset)
     manage_schema: bool = True
