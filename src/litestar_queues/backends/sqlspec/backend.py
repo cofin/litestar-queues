@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlspec import SQLSpec, StatementStack
-from sqlspec.extensions.events import normalize_event_channel_name
+from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends.base import BaseQueueBackend
@@ -42,6 +42,30 @@ _DURABLE_NOTIFICATION_BACKENDS = frozenset({"advanced_queue", "listen_notify_dur
 _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
+_NOTIFY_TRANSPORT_POLLING = "polling"
+# Adapter families that can push worker wakeups. Postgres-over-asyncpg ships the
+# durable LISTEN/NOTIFY hybrid; psycopg/psqlpy fall back to the durable table
+# queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
+_NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
+_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
+
+
+def _adapter_notify_transport(adapter_name: str | None) -> str:
+    """Return the default wakeup transport for a SQLSpec adapter.
+
+    The wakeup transport is gated purely by adapter knowledge so backends only
+    advertise push wakeups where the driver can deliver them.
+
+    Returns:
+        ``"listen_notify_durable"`` for asyncpg, ``"table_queue"`` for
+        psycopg/psqlpy, otherwise ``"polling"``.
+    """
+    if adapter_name in _NOTIFY_DURABLE_ADAPTERS:
+        return "listen_notify_durable"
+    if adapter_name in _NOTIFY_TABLE_QUEUE_ADAPTERS:
+        return "table_queue"
+    return _NOTIFY_TRANSPORT_POLLING
+
 
 class SQLSpecQueueBackend(BaseQueueBackend):
     """SQLSpec-backed queue backend."""
@@ -63,6 +87,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_notification_channel",
         "_notifications_enabled",
         "_notifications_requested",
+        "_notify_transport",
         "_opened",
         "_owns_event_channel",
         "_owns_sqlspec",
@@ -96,6 +121,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._owns_event_channel = self._event_channel is None
         self._notifications_requested = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
+        self._notify_transport = backend_config.notify_transport
         self._event_backend = backend_config.event_backend
         self._event_queue_table = backend_config.event_queue_table
         self._event_poll_interval = backend_config.event_poll_interval
@@ -688,68 +714,127 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         sqlspec_config = self._get_sqlspec_config()
         queue_settings = _queue_extension_settings(sqlspec_config)
         events_settings = _events_extension_settings(sqlspec_config)
-        events_settings = self._configure_notification_overrides(sqlspec_config, queue_settings, events_settings)
 
-        notifications_requested = self._notifications_requested
-        if notifications_requested is None and "notifications" in queue_settings:
-            notifications_requested = bool(queue_settings["notifications"])
-        events_configured = bool(events_settings) or _EVENT_EXTENSION_NAME in cast(
-            "dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}
-        )
-        self._notifications_enabled = bool(
-            self._event_channel is not None or notifications_requested is True or events_configured
-        )
-        if notifications_requested is False:
+        notifications_requested = self._resolve_notifications_requested(queue_settings)
+        transport = self._select_notify_transport(sqlspec_config, queue_settings, events_settings)
+
+        if not self._notifications_should_enable(
+            notifications_requested, transport, sqlspec_config, queue_settings, events_settings
+        ):
             self._notifications_enabled = False
-        if not self._notifications_enabled:
             self._notification_backend = None
             return
 
+        self._notifications_enabled = True
         self._resolve_notification_channel()
         if self._event_channel is None:
+            self._apply_event_settings(sqlspec_config, queue_settings, events_settings, transport)
             self._event_channel = self._get_or_create_sqlspec().event_channel(sqlspec_config)
             self._owns_event_channel = True
+        else:
+            # An injected channel already owns its backend; still resolve the
+            # configured poll interval so wait_for_notifications honors it.
+            self._resolve_event_poll_interval(queue_settings, events_settings)
         self._notification_backend = cast("str | None", getattr(self._event_channel, "_backend_name", None))
 
-    def _configure_notification_overrides(
+    def _resolve_notifications_requested(self, queue_settings: dict[str, Any]) -> bool | None:
+        notifications_requested = self._notifications_requested
+        if notifications_requested is None and "notifications" in queue_settings:
+            notifications_requested = bool(queue_settings["notifications"])
+        return notifications_requested
+
+    def _select_notify_transport(
         self, sqlspec_config: Any, queue_settings: dict[str, Any], events_settings: dict[str, Any]
-    ) -> dict[str, Any]:
+    ) -> str:
+        """Resolve the effective wakeup transport.
+
+        Explicit ``queue_backend_config`` selections win over
+        ``extension_config`` defaults, which in turn win over the per-adapter
+        capability gate.
+
+        Returns:
+            A wakeup transport name (``listen_notify``, ``listen_notify_durable``,
+            ``table_queue``, or ``polling``), or an events backend name carried
+            over from existing ``event_backend`` configuration.
+        """
+        explicit = self._notify_transport or _setting(queue_settings, "notify_transport")
+        if explicit is None:
+            explicit = (
+                self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
+            )
+        if explicit is not None:
+            return str(explicit)
+        return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
+
+    def _notifications_should_enable(
+        self,
+        notifications_requested: bool | None,
+        transport: str,
+        sqlspec_config: Any,
+        queue_settings: dict[str, Any],
+        events_settings: dict[str, Any],
+    ) -> bool:
+        """Decide whether push wakeups are active for the resolved transport.
+
+        Notifications stay opt-in: a bare backend config never auto-enables an
+        events channel (which keeps the frozen claim/lease contract and the
+        zero-config polling default intact). When a signal is present but the
+        adapter is gated to ``polling``, wakeups degrade to interval polling.
+
+        Returns:
+            True when an events channel should back worker wakeups.
+        """
+        if notifications_requested is False:
+            return False
+        if self._event_channel is not None:
+            return True
+        events_present = _EVENT_EXTENSION_NAME in cast(
+            "dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}
+        )
+        explicit_signal = (
+            self._notify_transport is not None
+            or "notify_transport" in queue_settings
+            or self._event_backend is not None
+            or "event_backend" in queue_settings
+            or bool(events_settings)
+            or events_present
+            or notifications_requested is True
+        )
+        return explicit_signal and transport != _NOTIFY_TRANSPORT_POLLING
+
+    def _resolve_event_poll_interval(self, queue_settings: dict[str, Any], events_settings: dict[str, Any]) -> None:
+        configured_poll_interval = self._event_poll_interval
+        if configured_poll_interval is None:
+            configured_poll_interval = _setting(queue_settings, "event_poll_interval")
+        if configured_poll_interval is None and "poll_interval" in events_settings:
+            configured_poll_interval = events_settings["poll_interval"]
+        if configured_poll_interval is not None:
+            self._event_poll_interval = float(configured_poll_interval)
+
+    def _apply_event_settings(
+        self, sqlspec_config: Any, queue_settings: dict[str, Any], events_settings: dict[str, Any], transport: str
+    ) -> None:
         merged_event_settings = dict(events_settings)
         for name in _QUEUE_SETTING_EVENT_SETTINGS:
             configured_events = queue_settings.get(name)
             if isinstance(configured_events, dict):
                 merged_event_settings.update(configured_events)
         merged_event_settings.update(self._event_settings)
+        merged_event_settings["backend"] = transport
 
-        configured_backend = self._event_backend or _setting(queue_settings, "event_backend")
         configured_queue_table = self._event_queue_table or _setting(queue_settings, "event_queue_table")
-        configured_poll_interval = self._event_poll_interval
-        if configured_poll_interval is None:
-            configured_poll_interval = _setting(queue_settings, "event_poll_interval")
-        if configured_poll_interval is None and "poll_interval" in merged_event_settings:
-            configured_poll_interval = merged_event_settings["poll_interval"]
-
-        if configured_backend is not None:
-            merged_event_settings["backend"] = str(configured_backend)
         if configured_queue_table is not None:
             merged_event_settings["queue_table"] = str(configured_queue_table)
-        if configured_poll_interval is not None:
-            self._event_poll_interval = float(configured_poll_interval)
-            merged_event_settings["poll_interval"] = self._event_poll_interval
 
-        notifications_requested = self._notifications_requested
-        if notifications_requested is None and "notifications" in queue_settings:
-            notifications_requested = bool(queue_settings["notifications"])
-        should_store_event_settings = bool(merged_event_settings) or notifications_requested is True
-        if not should_store_event_settings:
-            return merged_event_settings
+        self._resolve_event_poll_interval(queue_settings, merged_event_settings)
+        if self._event_poll_interval is not None:
+            merged_event_settings["poll_interval"] = self._event_poll_interval
 
         extension_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}))
         extension_config[_EVENT_EXTENSION_NAME] = merged_event_settings
         sqlspec_config.extension_config = extension_config
         migration_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "migration_config", {}) or {}))
         sqlspec_config.set_migration_config(migration_config)
-        return merged_event_settings
 
     def _get_or_create_sqlspec(self) -> SQLSpec:
         if self._sqlspec is None:
