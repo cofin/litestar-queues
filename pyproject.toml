@@ -252,7 +252,7 @@ ban-relative-imports = "all"
   "T201",
   "TID252",
 ]
-"tools/**/*.*" = ["BLE001", "D", "DOC502", "S310", "S404", "S603", "S607"]
+"tools/**/*.*" = ["BLE001", "D", "DOC502", "S310", "S404", "S603", "S607", "T201"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12

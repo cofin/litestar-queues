@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 __all__ = (
     "TERMINAL_STATUSES",
+    "EnqueueSpec",
     "QueueBackendCapabilities",
     "QueueStatistics",
     "QueuedTaskRecord",
@@ -69,6 +70,27 @@ class StaleTaskRecoveryResult:
             "skipped": self.skipped,
             "handler_needed": self.handler_needed,
         }
+
+
+@dataclass(slots=True)
+class EnqueueSpec:
+    """A single task specification for bulk enqueue via ``enqueue_many``.
+
+    Mirrors the keyword arguments of :meth:`BaseQueueBackend.enqueue` so a batch
+    of tasks can be described declaratively and submitted in one call.
+    """
+
+    task_name: str
+    args: tuple[Any, ...] = ()
+    kwargs: dict[str, Any] | None = None
+    queue: str = "default"
+    priority: int = 0
+    max_retries: int = 0
+    scheduled_at: datetime | None = None
+    key: str | None = None
+    execution_backend: str = "local"
+    execution_profile: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

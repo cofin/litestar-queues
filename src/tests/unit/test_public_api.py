@@ -44,6 +44,7 @@ def test_public_exports() -> None:
         "CloudRunExecutionBackend",
         "CloudRunExecutionConfig",
         "CloudRunExecutionStatus",
+        "EnqueueSpec",
         "ExecutionBackendConfig",
         "ExecutionBackendConfigProtocol",
         "ImmediateExecutionBackend",

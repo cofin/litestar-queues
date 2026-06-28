@@ -6,11 +6,12 @@ from typing_extensions import Self
 from litestar_queues.models import QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime, timedelta
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
 
 __all__ = ("BaseQueueBackend",)
 
@@ -57,6 +58,31 @@ class BaseQueueBackend:
     ) -> "QueuedTaskRecord":
         """Persist a queued task."""
         raise NotImplementedError
+
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+        """Persist multiple queued tasks, returning records in input order.
+
+        The default implementation issues one :meth:`enqueue` per spec, which
+        preserves per-key deduplication and ordering. Backends with a native
+        bulk path (e.g. SQLSpec COPY/Arrow/``execute_many``) override this for
+        throughput while keeping the same semantics.
+        """
+        return [
+            await self.enqueue(
+                spec.task_name,
+                args=spec.args,
+                kwargs=spec.kwargs,
+                queue=spec.queue,
+                priority=spec.priority,
+                max_retries=spec.max_retries,
+                scheduled_at=spec.scheduled_at,
+                key=spec.key,
+                execution_backend=spec.execution_backend,
+                execution_profile=spec.execution_profile,
+                metadata=spec.metadata,
+            )
+            for spec in specs
+        ]
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         """Return a queued task by ID."""

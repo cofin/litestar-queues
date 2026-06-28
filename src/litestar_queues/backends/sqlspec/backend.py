@@ -1,7 +1,7 @@
 """SQLSpec queue backend."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
@@ -25,6 +25,7 @@ from litestar_queues.backends.sqlspec.schema import (
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
+    EnqueueSpec,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
@@ -239,6 +240,42 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         await self.notify_new_task(record)
         return record
+
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> list[QueuedTaskRecord]:
+        """Persist many tasks via the adapter's fastest bulk path.
+
+        Resolves existing deduplication keys in one round trip, then inserts the
+        remaining rows through the native Arrow ingest path
+        (:meth:`load_from_records`) when the adapter supports it, otherwise via a
+        batched ``execute_many``. Returns records in input order, with existing
+        non-terminal keyed tasks returned as-is (no duplicate insert) to match
+        the semantics of :meth:`enqueue`.
+        """
+        if not specs:
+            return []
+
+        store = self._get_store()
+        now = _utc_now()
+        keyed = [spec.key for spec in specs if spec.key is not None]
+
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                existing_by_key = await self._existing_records_by_key(driver, store, keyed)
+                results, to_insert, terminal_keys = self._plan_bulk_enqueue(specs, existing_by_key, now)
+                for task_id in terminal_keys:
+                    await driver.execute(store.clear_key(task_id=str(task_id)))
+                if to_insert:
+                    await self._bulk_insert(driver, store, to_insert)
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+
+        for record in to_insert:
+            await self.notify_new_task(record)
+        return results
 
     async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
         async with self._session() as driver:
@@ -593,13 +630,24 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
 
     async def get_statistics(self) -> QueueStatistics:
-        async with self._session() as driver:
-            rows = await driver.select(self._get_store().list_all())
         statistics = QueueStatistics()
-        for row in cast("list[dict[str, Any]]", rows):
-            status = _coerce_status(row["status"])
-            setattr(statistics, status, getattr(statistics, status) + 1)
+        async with self._session() as driver:
+            async for row in driver.select_stream(self._get_store().list_all()):
+                status = _coerce_status(cast("dict[str, Any]", row)["status"])
+                setattr(statistics, status, getattr(statistics, status) + 1)
         return statistics
+
+    async def iter_all(self, *, chunk_size: int = 1000) -> "AsyncIterator[QueuedTaskRecord]":
+        """Stream every queue record without materializing the full table.
+
+        Uses SQLSpec ``select_stream`` so large administrative scans and exports
+        consume rows in chunks of ``chunk_size`` rather than loading the entire
+        result set into memory. The backend session stays open for the duration
+        of iteration, so callers should consume the iterator promptly.
+        """
+        async with self._session() as driver:
+            async for row in driver.select_stream(self._get_store().list_all(), chunk_size=chunk_size):
+                yield self._record_from_row(cast("dict[str, Any]", row))
 
     async def list_completed_by_task(
         self, task_name: str, *, since: datetime | None = None, limit: int = 10
@@ -953,6 +1001,92 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def _clear_key(self, driver: Any, task_id: UUID) -> None:
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
+
+    async def _existing_records_by_key(self, driver: Any, store: Any, keys: list[str]) -> dict[str, QueuedTaskRecord]:
+        """Return a map of deduplication key to existing record for the given keys."""
+        existing: dict[str, QueuedTaskRecord] = {}
+        if not keys:
+            return existing
+        rows = await driver.select(store.select_tasks_by_keys(keys))
+        for row in cast("list[dict[str, Any]]", rows):
+            record = self._record_from_row(row)
+            if record.key is not None:
+                existing[record.key] = record
+        return existing
+
+    def _plan_bulk_enqueue(
+        self, specs: "Sequence[EnqueueSpec]", existing_by_key: dict[str, QueuedTaskRecord], now: datetime
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord], list[UUID]]":
+        """Resolve deduplication keys and build records, preserving input order.
+
+        Returns the ordered result records, the subset that must be inserted, and
+        the ids of terminal-key rows whose key must be cleared before insert.
+        Active (non-terminal) keys, whether already persisted or earlier in the
+        batch, reuse the existing record instead of inserting a duplicate.
+        """
+        results: list[QueuedTaskRecord] = []
+        to_insert: list[QueuedTaskRecord] = []
+        terminal_keys_to_clear: list[UUID] = []
+        batch_new_by_key: dict[str, QueuedTaskRecord] = {}
+        for spec in specs:
+            key = spec.key
+            if key is not None:
+                reused = self._reuse_for_key(key, existing_by_key, batch_new_by_key, terminal_keys_to_clear)
+                if reused is not None:
+                    results.append(reused)
+                    continue
+            record = self._record_from_spec(spec, now)
+            results.append(record)
+            to_insert.append(record)
+            if key is not None:
+                batch_new_by_key[key] = record
+        return results, to_insert, terminal_keys_to_clear
+
+    @staticmethod
+    def _reuse_for_key(
+        key: str,
+        existing_by_key: dict[str, QueuedTaskRecord],
+        batch_new_by_key: dict[str, QueuedTaskRecord],
+        terminal_keys_to_clear: list[UUID],
+    ) -> QueuedTaskRecord | None:
+        """Return the record to reuse for ``key``, or ``None`` if a new row is needed.
+
+        Records a terminal key for clearing so its row can be replaced.
+        """
+        active = existing_by_key.get(key)
+        if active is not None and not active.is_terminal:
+            return active
+        earlier = batch_new_by_key.get(key)
+        if earlier is not None:
+            return earlier
+        if active is not None:
+            terminal_keys_to_clear.append(active.id)
+            del existing_by_key[key]
+        return None
+
+    def _record_from_spec(self, spec: EnqueueSpec, now: datetime) -> QueuedTaskRecord:
+        return QueuedTaskRecord(
+            task_name=spec.task_name,
+            args=spec.args,
+            kwargs=dict(spec.kwargs or {}),
+            queue=spec.queue,
+            execution_backend=spec.execution_backend,
+            execution_profile=spec.execution_profile,
+            status="scheduled" if spec.scheduled_at is not None and spec.scheduled_at > now else "pending",
+            priority=spec.priority,
+            max_retries=spec.max_retries,
+            scheduled_at=spec.scheduled_at,
+            key=spec.key,
+            metadata=dict(spec.metadata or {}),
+        )
+
+    async def _bulk_insert(self, driver: Any, store: Any, records: list[QueuedTaskRecord]) -> None:
+        """Insert records using the adapter's fastest available bulk tier."""
+        values = store.bulk_values([self._params_from_record(record) for record in records])
+        if store.supports_native_bulk_ingest:
+            await driver.load_from_records(store.table_name, values)
+            return
+        await driver.execute_many(store.insert_tasks_template(), values)
 
     def _params_from_record(self, record: QueuedTaskRecord) -> dict[str, Any]:
         store = self._get_store()

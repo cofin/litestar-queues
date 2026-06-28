@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         list_execution_backends,
     )
     from litestar_queues.models import (
+        EnqueueSpec,
         QueueBackendCapabilities,
         QueuedTaskRecord,
         QueueStatistics,
@@ -87,6 +88,7 @@ _EXPORTS = {
     "CloudRunExecutionBackend": "litestar_queues.execution",
     "CloudRunExecutionConfig": "litestar_queues.execution",
     "CloudRunExecutionStatus": "litestar_queues.execution",
+    "EnqueueSpec": "litestar_queues.models",
     "ExecutionBackendConfig": "litestar_queues.config",
     "ExecutionBackendConfigProtocol": "litestar_queues.config",
     "ImmediateExecutionBackend": "litestar_queues.execution",
@@ -149,6 +151,7 @@ __all__ = (
     "CloudRunExecutionBackend",
     "CloudRunExecutionConfig",
     "CloudRunExecutionStatus",
+    "EnqueueSpec",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
     "ImmediateExecutionBackend",

@@ -1,6 +1,8 @@
 """Shared SQLSpec queue store primitives."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from functools import cache
+from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from sqlspec import sql
@@ -107,6 +109,21 @@ class SQLSpecQueueStore:
         hints = get_runtime_hints(_adapter_name(self._config), self._config)
         return bool(hints.select_for_update and hints.skip_locked)
 
+    @property
+    def supports_native_bulk_ingest(self) -> bool:
+        """Whether the adapter can ingest records via the native Arrow import path.
+
+        Gated on the SQLSpec config's ``supports_native_arrow_import`` ClassVar
+        (asyncpg COPY, MySQL/Oracle/SQL Server executemany-Arrow, DuckDB/ADBC
+        zero-copy, Spanner batch mutations) *and* ``pyarrow`` being importable,
+        since :meth:`load_from_records` normalizes rows through an Arrow table.
+        Adapters without the capability fall back to the universal
+        ``execute_many`` bulk tier, so this only ever upgrades throughput.
+        """
+        if not getattr(type(self._config), "supports_native_arrow_import", False):
+            return False
+        return _pyarrow_available()
+
     def create_statements(self) -> list[str]:
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
@@ -128,6 +145,29 @@ class SQLSpecQueueStore:
         mapped_values = self._mapped_values(values)
         return sql.insert(self.table_name).columns(*mapped_values.keys()).values(**mapped_values)
 
+    def insert_tasks_template(self) -> str:
+        """Return a parametrized multi-row INSERT for ``driver.execute_many``.
+
+        The template carries one named placeholder per physical column so a
+        sequence of :meth:`bulk_values` rows can be batched in a single
+        ``execute_many`` call. Identifiers are quoted per the store dialect.
+        """
+        columns = [self._col(canonical) for canonical in _TASK_COLUMNS]
+        quoted_columns = ", ".join(self._quote_identifier(column) for column in columns)
+        placeholders = ", ".join(f":{column}" for column in columns)
+        # Identifiers come from the fixed _TASK_COLUMNS tuple and are dialect-quoted;
+        # every value is a bound :name placeholder, so there is no injection surface.
+        return f"INSERT INTO {self._quoted_table_name()} ({quoted_columns}) VALUES ({placeholders})"  # noqa: S608
+
+    def bulk_values(self, rows: "Sequence[dict[str, Any]]") -> "list[dict[str, Any]]":
+        """Return column-mapped parameter rows for bulk insert.
+
+        Shared by the ``execute_many`` template path and the native
+        ``load_from_records`` Arrow path; both consume physical-column keys.
+        JSON serialization is already applied upstream by the backend.
+        """
+        return [self._mapped_values(row) for row in rows]
+
     def select_task(self, task_id: str) -> Any:
         """Return a SELECT statement for one task id."""
         return self._select_all().where_eq(self._col("id"), task_id)
@@ -135,6 +175,14 @@ class SQLSpecQueueStore:
     def select_task_by_key(self, key: str) -> Any:
         """Return a SELECT statement for one task key."""
         return self._select_all().where_eq(self._col("task_key"), key)
+
+    def select_tasks_by_keys(self, keys: "Sequence[str]") -> Any:
+        """Return a SELECT statement for all tasks matching any of ``keys``.
+
+        Used by bulk enqueue to resolve existing deduplication keys in a single
+        round trip before inserting the remaining rows.
+        """
+        return self._select_all().where_in(self._col("task_key"), list(keys))
 
     def list_pending(
         self, *, now: Any, limit: int, queue: str | None = None, execution_backend: str | None = None
@@ -592,3 +640,9 @@ def _adapter_name(config: Any) -> str:
     if module_name.startswith("sqlspec.adapters."):
         return module_name.split(".")[2]
     return ""
+
+
+@cache
+def _pyarrow_available() -> bool:
+    """Return whether ``pyarrow`` is importable, caching the lookup."""
+    return find_spec("pyarrow") is not None
