@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-async def test_redis_backend_pubsub_notifications_wake_waiters(redis_backend: "RedisQueueBackend") -> None:
+async def test_redis_backend_pubsub_notifications_wake_waiters(redis_backend: "RedisQueueBackend") -> "None":
     waiter = asyncio.create_task(redis_backend.wait_for_notifications(timeout=2.0))
     # Real Redis requires the SUBSCRIBE roundtrip to land before the
     # sibling enqueue publishes; a bare ``asyncio.sleep(0)`` is too brief.

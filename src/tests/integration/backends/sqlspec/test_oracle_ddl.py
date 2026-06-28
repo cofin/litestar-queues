@@ -19,33 +19,33 @@ from litestar_queues.backends.sqlspec.stores import OracledbAsyncQueueStore, Ora
 class FakeOracleConfig(SimpleNamespace):
     """Structural config used by Oracle store dispatch tests."""
 
-    extension_config: dict[str, object]
-    statement_config: SimpleNamespace
-    connection_config: dict[str, object]
+    extension_config: "dict[str, object]"
+    statement_config: "SimpleNamespace"
+    connection_config: "dict[str, object]"
 
 
 class FakeOracleVersionInfo:
     """Oracle version feature probe used by storage-detection tests."""
 
-    def __init__(self, *, native_json: bool = False, json_blob: bool = True) -> None:
+    def __init__(self, *, native_json: "bool" = False, json_blob: "bool" = True) -> "None":
         self.native_json = native_json
         self.json_blob = json_blob
 
-    def supports_native_json(self) -> bool:
+    def supports_native_json(self) -> "bool":
         return self.native_json
 
-    def supports_json_blob(self) -> bool:
+    def supports_json_blob(self) -> "bool":
         return self.json_blob
 
 
 class FakeOracleDriver:
     """Fake Oracle driver exposing SQLSpec's cached version hook shape."""
 
-    def __init__(self, version_info: FakeOracleVersionInfo | None) -> None:
+    def __init__(self, version_info: "FakeOracleVersionInfo | None") -> "None":
         self.calls = 0
         self.version_info = version_info
 
-    async def _detect_oracle_version(self) -> FakeOracleVersionInfo | None:
+    async def _detect_oracle_version(self) -> "FakeOracleVersionInfo | None":
         self.calls += 1
         return self.version_info
 
@@ -53,11 +53,11 @@ class FakeOracleDriver:
 class FakeSyncOracleDriver:
     """Fake sync Oracle driver wrapped by the backend sync bridge."""
 
-    def __init__(self, version_info: FakeOracleVersionInfo | None) -> None:
+    def __init__(self, version_info: "FakeOracleVersionInfo | None") -> "None":
         self.calls = 0
         self.version_info = version_info
 
-    def _detect_oracle_version(self) -> FakeOracleVersionInfo | None:
+    def _detect_oracle_version(self) -> "FakeOracleVersionInfo | None":
         self.calls += 1
         return self.version_info
 
@@ -65,13 +65,13 @@ class FakeSyncOracleDriver:
 class FakeManagedDriver:
     """Minimal stand-in for the backend's sync-driver bridge."""
 
-    def __init__(self, driver: FakeSyncOracleDriver) -> None:
+    def __init__(self, driver: "FakeSyncOracleDriver") -> "None":
         self._driver = driver
 
 
 def _fake_oracle_config(
-    *, config_type_name: str, extension_config: dict[str, object] | None = None
-) -> FakeOracleConfig:
+    *, config_type_name: "str", extension_config: "dict[str, object] | None" = None
+) -> "FakeOracleConfig":
     config_type = cast(
         "type[FakeOracleConfig]",
         type(config_type_name, (FakeOracleConfig,), {"__module__": "sqlspec.adapters.oracledb.config"}),
@@ -96,12 +96,12 @@ def _fake_oracle_config(
     ),
 )
 def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
-    config_type_name: str,
-    expected_store_type: type[object],
-    queue_settings: dict[str, object],
-    expected_json_fragment: str,
-    expected_serialized_type: type[object],
-) -> None:
+    config_type_name: "str",
+    expected_store_type: "type[object]",
+    queue_settings: "dict[str, object]",
+    expected_json_fragment: "str",
+    expected_serialized_type: "type[object]",
+) -> "None":
     store = create_queue_store(
         _fake_oracle_config(config_type_name=config_type_name, extension_config={QUEUE_EXTENSION_NAME: queue_settings}),
         table_name="queue_tasks",
@@ -133,8 +133,8 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
     ),
 )
 async def test_sqlspec_backend_oracledb_detects_json_storage_from_driver_version(
-    driver: Any, expected_json_fragment: str
-) -> None:
+    driver: "Any", expected_json_fragment: "str"
+) -> "None":
     store = create_queue_store(_fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks")
 
     assert isinstance(store, OracledbAsyncQueueStore)

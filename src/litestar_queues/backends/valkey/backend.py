@@ -23,14 +23,14 @@ __all__ = ("ValkeyQueueBackend",)
 class ValkeyQueueBackend(RedisQueueBackend):
     """Valkey-backed queue backend."""
 
-    _backend_name: ClassVar[str] = "valkey"
+    _backend_name: "ClassVar[str]" = "valkey"
 
     def __init__(
-        self, config: "QueueConfig | None" = None, *, backend_config: ValkeyBackendConfig | None = None
-    ) -> None:
+        self, config: "QueueConfig | None" = None, *, backend_config: "ValkeyBackendConfig | None" = None
+    ) -> "None":
         backend_config = backend_config or ValkeyBackendConfig()
         super().__init__(config=config, backend_config=cast("Any", backend_config))
 
-    def _create_client(self, url: str) -> Any:
+    def _create_client(self, url: "str") -> "Any":
         from_url = cast("Any", valkey_asyncio.from_url)
         return from_url(url, decode_responses=True)

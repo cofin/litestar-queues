@@ -26,7 +26,7 @@ pytestmark = pytest.mark.anyio
 
 async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     queue_backend: "BaseQueueBackend",
-) -> None:
+) -> "None":
     local = await queue_backend.enqueue("tasks.local", priority=100, execution_backend="local")
     external = await queue_backend.enqueue(
         "tasks.remote", execution_backend="cloudrun", execution_profile="batch-small"
@@ -52,7 +52,7 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert stored_local.status == "pending"
 
 
-async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_backend: "BaseQueueBackend") -> None:
+async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_backend: "BaseQueueBackend") -> "None":
     completed = await queue_backend.enqueue("tasks.report")
     claimed_completed = await queue_backend.claim_task(completed.id)
     assert claimed_completed is not None
@@ -81,7 +81,7 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
 
 async def test_backend_contract_recovers_stale_running_records_with_memory_reference(
     queue_backend: "BaseQueueBackend",
-) -> None:
+) -> "None":
     if not isinstance(queue_backend, InMemoryQueueBackend):
         pytest.skip("policy-aware stale recovery parity is covered by backend-specific follow-up work")
 
@@ -114,7 +114,7 @@ async def test_backend_contract_recovers_stale_running_records_with_memory_refer
 
 async def test_backend_contract_fences_heartbeat_and_terminal_updates_with_memory_reference(
     queue_backend: "BaseQueueBackend",
-) -> None:
+) -> "None":
     if not isinstance(queue_backend, InMemoryQueueBackend):
         pytest.skip("retry-count fencing parity is covered by backend-specific follow-up work")
 
@@ -146,7 +146,7 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates_with_memor
     assert stored.heartbeat_at == heartbeat
 
 
-async def test_memory_backend_notifications_wake_waiters() -> None:
+async def test_memory_backend_notifications_wake_waiters() -> "None":
     backend = InMemoryQueueBackend()
     waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
 
@@ -156,16 +156,16 @@ async def test_memory_backend_notifications_wake_waiters() -> None:
     assert await backend.wait_for_notifications(timeout=0.01) is False
 
 
-async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backend: "BaseQueueBackend") -> None:
+async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backend: "BaseQueueBackend") -> "None":
     clear_task_registry()
 
     async def resolver(
         _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
-    ) -> dict[str, object]:
+    ) -> "dict[str, object]":
         return {"injected_service": "from-resolver"}
 
     @task("contract.resolver.merge")
-    async def consume(**kwargs: object) -> dict[str, object]:
+    async def consume(**kwargs: "object") -> "dict[str, object]":
         return {"injected_service": kwargs["injected_service"]}
 
     config = QueueConfig(task_dependency_resolver=resolver)
@@ -180,16 +180,16 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backe
     assert result.result["injected_service"] == "from-resolver"
 
 
-async def test_task_dependency_resolver_cannot_override_sentinels(queue_backend: "BaseQueueBackend") -> None:
+async def test_task_dependency_resolver_cannot_override_sentinels(queue_backend: "BaseQueueBackend") -> "None":
     clear_task_registry()
 
     async def resolver(
         _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
-    ) -> dict[str, object]:
+    ) -> "dict[str, object]":
         return {"_job_id": "hijacked", "_task_context": "hijacked"}
 
     @task("contract.resolver.sentinels")
-    async def sentinels(**kwargs: object) -> dict[str, object]:
+    async def sentinels(**kwargs: "object") -> "dict[str, object]":
         task_context = kwargs["_task_context"]
         assert isinstance(task_context, TaskExecutionContext)
         return {
@@ -215,7 +215,7 @@ async def test_task_dependency_resolver_cannot_override_sentinels(queue_backend:
 
 async def test_task_dependency_resolver_exception_records_failure_and_retries(
     queue_backend: "BaseQueueBackend",
-) -> None:
+) -> "None":
     clear_task_registry()
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink)
@@ -224,7 +224,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
 
     async def resolver(
         _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
-    ) -> dict[str, object]:
+    ) -> "dict[str, object]":
         attempts["count"] += 1
         if attempts["count"] == 1:
             msg = "resolver boom"
@@ -232,7 +232,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
         return {}
 
     @task("contract.resolver.retry", retries=1)
-    async def succeed() -> str:
+    async def succeed() -> "str":
         return "ok"
 
     config = QueueConfig(
@@ -267,21 +267,21 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     assert failed_index < completed_index
 
 
-async def test_task_dependency_resolver_default_is_none_with_no_invocation(queue_backend: "BaseQueueBackend") -> None:
+async def test_task_dependency_resolver_default_is_none_with_no_invocation(queue_backend: "BaseQueueBackend") -> "None":
     clear_task_registry()
     config = QueueConfig()
     assert config.task_dependency_resolver is None
 
     @task("contract.resolver.default")
-    async def default() -> str:
+    async def default() -> "str":
         return "ok"
 
     service = QueueService(config, queue_backend=queue_backend)
-    captured: list[object] = []
+    captured: "list[object]" = []
 
     original = Task.execute_record
 
-    async def spy(self: "Task[..., object]", record: "QueuedTaskRecord", **kwargs: object) -> object:
+    async def spy(self: "Task[..., object]", record: "QueuedTaskRecord", **kwargs: "object") -> "object":
         extra_kwargs = kwargs.get("extra_kwargs")
         task_context = kwargs.get("task_context")
         assert extra_kwargs is None or isinstance(extra_kwargs, dict)
@@ -300,9 +300,9 @@ async def test_task_dependency_resolver_default_is_none_with_no_invocation(queue
     assert captured == [None]
 
 
-async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_delay() -> None:
+async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_delay() -> "None":
     @task("tasks.external", execution_backend="local")
-    async def external_task() -> str:
+    async def external_task() -> "str":
         return "ok"
 
     delayed = external_task.using(

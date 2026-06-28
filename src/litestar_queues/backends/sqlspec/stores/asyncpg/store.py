@@ -12,4 +12,4 @@ class AsyncpgQueueStore(PostgresQueueStore):
 
     __slots__ = ()
 
-    table_storage_parameters: ClassVar[bool] = True
+    table_storage_parameters: "ClassVar[bool]" = True

@@ -10,11 +10,13 @@ pytestmark = pytest.mark.anyio
 
 
 class _UpperJitterRandom:
-    def uniform(self, _lower: float, upper: float) -> float:
+    def uniform(self, _lower: "float", upper: "float") -> "float":
         return upper
 
 
-async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
     task_module = import_module("litestar_queues.task")
     monkeypatch.setattr(task_module, "_RANDOM", _UpperJitterRandom())
 
@@ -25,7 +27,7 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(monk
         description="Generate a weekly workspace report.",
         log_level="info",
     )
-    async def weekly_report() -> dict[str, bool]:
+    async def weekly_report() -> "dict[str, bool]":
         return {"ok": True}
 
     @task(
@@ -40,7 +42,7 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(monk
         log_level="debug",
         quiet_success=True,
     )
-    async def distributed_task() -> dict[str, bool]:
+    async def distributed_task() -> "dict[str, bool]":
         return {"ok": True}
 
     before = datetime.now(UTC)
@@ -70,9 +72,9 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(monk
     assert before + timedelta(seconds=90) <= distributed_record.scheduled_at <= after + timedelta(seconds=91)
 
 
-async def test_initialize_schedules_replaces_changed_schedule_definition() -> None:
+async def test_initialize_schedules_replaces_changed_schedule_definition() -> "None":
     @task("jobs.changed_schedule", interval=60)
-    async def changed_schedule() -> str:
+    async def changed_schedule() -> "str":
         return "old"
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:
@@ -86,7 +88,7 @@ async def test_initialize_schedules_replaces_changed_schedule_definition() -> No
         clear_task_registry()
 
         @task("jobs.changed_schedule", interval=300)
-        async def changed_schedule_new() -> str:
+        async def changed_schedule_new() -> "str":
             return "new"
 
         records = await service.initialize_schedules()
@@ -103,7 +105,7 @@ async def test_initialize_schedules_replaces_changed_schedule_definition() -> No
     assert active_record.metadata["schedule"]["interval"] == pytest.approx(300.0)
 
 
-async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> None:
+async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> "None":
     @task(
         "jobs.weekly_reschedule",
         cron="0 0 ? * MON",
@@ -114,7 +116,7 @@ async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> 
         log_level="info",
         quiet_success=True,
     )
-    async def weekly_reschedule() -> dict[str, bool]:
+    async def weekly_reschedule() -> "dict[str, bool]":
         return {"ok": True}
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:

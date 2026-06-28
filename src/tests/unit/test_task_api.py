@@ -19,7 +19,7 @@ from litestar_queues.events import NoopQueueEventSink, QueueEventPublisher
 from litestar_queues.task import clear_task_registry
 
 
-def _build_test_context(record: QueuedTaskRecord) -> TaskExecutionContext:
+def _build_test_context(record: "QueuedTaskRecord") -> "TaskExecutionContext":
     return TaskExecutionContext(
         task_id=str(record.id),
         task_name=record.task_name,
@@ -36,17 +36,17 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> None:
+def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-async def test_task_decorator_registers_and_calls_async_and_sync_functions() -> None:
+async def test_task_decorator_registers_and_calls_async_and_sync_functions() -> "None":
     @task("math.add", queue="critical", priority=10, retries=2, timeout=5)
-    async def add(left: int, right: int) -> int:
+    async def add(left: "int", right: "int") -> "int":
         return left + right
 
     @task
-    def uppercase(value: str) -> str:
+    def uppercase(value: "str") -> "str":
         return value.upper()
 
     registry = get_task_registry()
@@ -63,9 +63,9 @@ async def test_task_decorator_registers_and_calls_async_and_sync_functions() -> 
     assert await uppercase("queue") == "QUEUE"
 
 
-async def test_task_execute_record_merges_extra_kwargs_into_call() -> None:
+async def test_task_execute_record_merges_extra_kwargs_into_call() -> "None":
     @task("inject.consume")
-    async def consume(**kwargs: object) -> dict[str, object]:
+    async def consume(**kwargs: "object") -> "dict[str, object]":
         return dict(kwargs)
 
     record = QueuedTaskRecord(task_name="inject.consume", kwargs={"existing": "from_record"})
@@ -80,9 +80,9 @@ async def test_task_execute_record_merges_extra_kwargs_into_call() -> None:
     assert result["another"] == 42
 
 
-async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> None:
+async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> "None":
     @task("inject.sentinels")
-    async def sentinels(**kwargs: object) -> dict[str, object]:
+    async def sentinels(**kwargs: "object") -> "dict[str, object]":
         return dict(kwargs)
 
     record = QueuedTaskRecord(task_name="inject.sentinels")
@@ -96,9 +96,9 @@ async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> N
     assert result["_task_context"] is context
 
 
-async def test_task_using_returns_configured_copy_without_mutating_original() -> None:
+async def test_task_using_returns_configured_copy_without_mutating_original() -> "None":
     @task("email.send", priority=1, retries=1, requeue_on_stale=False)
-    async def send_email(address: str) -> str:
+    async def send_email(address: "str") -> "str":
         return address
 
     overridden = send_email.using(priority=20, key="email:1", queue="high", requeue_on_stale=True)
@@ -117,9 +117,9 @@ async def test_task_using_returns_configured_copy_without_mutating_original() ->
     assert await overridden("user@example.com") == "user@example.com"
 
 
-async def test_task_enqueue_uses_immediate_memory_service_by_default() -> None:
+async def test_task_enqueue_uses_immediate_memory_service_by_default() -> "None":
     @task("tasks.double")
-    async def double(value: int) -> int:
+    async def double(value: "int") -> "int":
         return value * 2
 
     result = await double.enqueue(21)
@@ -130,9 +130,9 @@ async def test_task_enqueue_uses_immediate_memory_service_by_default() -> None:
     assert result.error is None
 
 
-async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_result() -> None:
+async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_result() -> "None":
     @task("tasks.greet")
-    async def greet(name: str) -> dict[str, str]:
+    async def greet(name: "str") -> "dict[str, str]":
         return {"message": f"hello {name}"}
 
     async with QueueService(QueueConfig(execution_backend="immediate")) as service:
@@ -143,7 +143,7 @@ async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_
     assert result.result == {"message": "hello Ada"}
 
 
-async def test_schedule_config_supports_interval_and_basic_cron_next_run() -> None:
+async def test_schedule_config_supports_interval_and_basic_cron_next_run() -> "None":
     interval = ScheduleConfig(task_name="tasks.interval", interval=timedelta(minutes=5))
     base = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
 
@@ -165,13 +165,13 @@ async def test_schedule_config_supports_interval_and_basic_cron_next_run() -> No
         ("@annually", datetime(2027, 1, 1, 0, 0, tzinfo=UTC)),
     ],
 )
-async def test_schedule_config_supports_cron_aliases(cron: str, expected: datetime) -> None:
+async def test_schedule_config_supports_cron_aliases(cron: "str", expected: "datetime") -> "None":
     schedule = ScheduleConfig(task_name=f"tasks.{cron.removeprefix('@')}", cron=cron)
 
     assert schedule.get_next_run(datetime(2026, 5, 3, 12, 34, tzinfo=UTC)) == expected
 
 
-async def test_schedule_config_supports_cron_names_ranges_lists_steps_and_sunday_aliases() -> None:
+async def test_schedule_config_supports_cron_names_ranges_lists_steps_and_sunday_aliases() -> "None":
     business_hours = ScheduleConfig(task_name="tasks.business_hours", cron="*/15 9-17 * JAN,MAR MON-FRI")
     sunday_zero = ScheduleConfig(task_name="tasks.sunday_zero", cron="0 0 * * 0")
     sunday_seven = ScheduleConfig(task_name="tasks.sunday_seven", cron="0 0 * * 7")
@@ -183,7 +183,7 @@ async def test_schedule_config_supports_cron_names_ranges_lists_steps_and_sunday
     assert sunday_seven.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(2026, 5, 3, 0, 0, tzinfo=UTC)
 
 
-async def test_schedule_config_supports_question_mark_and_posix_day_matching() -> None:
+async def test_schedule_config_supports_question_mark_and_posix_day_matching() -> "None":
     monday_only = ScheduleConfig(task_name="tasks.monday_only", cron="0 0 ? * MON")
     first_of_month_or_monday = ScheduleConfig(task_name="tasks.dom_or_dow", cron="0 0 1 * MON")
 
@@ -193,21 +193,21 @@ async def test_schedule_config_supports_question_mark_and_posix_day_matching() -
     )
 
 
-async def test_schedule_config_searches_far_enough_for_leap_day_cron() -> None:
+async def test_schedule_config_searches_far_enough_for_leap_day_cron() -> "None":
     schedule = ScheduleConfig(task_name="tasks.leap_day", cron="0 0 29 2 *")
 
     assert schedule.get_next_run(datetime(2026, 3, 1, 0, 0, tzinfo=UTC)) == datetime(2028, 2, 29, 0, 0, tzinfo=UTC)
 
 
-async def test_schedule_config_returns_cron_runs_in_utc_from_configured_timezone() -> None:
+async def test_schedule_config_returns_cron_runs_in_utc_from_configured_timezone() -> "None":
     schedule = ScheduleConfig(task_name="tasks.local_time", cron="0 3 * * *", timezone="America/New_York")
 
     assert schedule.get_next_run(datetime(2026, 1, 1, 7, 59, tzinfo=UTC)) == datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
 
 
-async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch: "pytest.MonkeyPatch") -> "None":
     class FixedRandom:
-        def uniform(self, _lower: float, _upper: float) -> float:
+        def uniform(self, _lower: "float", _upper: "float") -> "float":
             return 2.5
 
     task_module = import_module("litestar_queues.task")
@@ -233,7 +233,7 @@ async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch:
         "0 0 ? * ?",
     ],
 )
-async def test_schedule_config_rejects_unsupported_or_invalid_cron_syntax(cron: str) -> None:
+async def test_schedule_config_rejects_unsupported_or_invalid_cron_syntax(cron: "str") -> "None":
     with pytest.raises(ValueError, match="Invalid cron expression"):
         ScheduleConfig(task_name="tasks.invalid_cron", cron=cron)
 
@@ -249,14 +249,14 @@ async def test_schedule_config_rejects_unsupported_or_invalid_cron_syntax(cron: 
         {"cron": "0 0 * * *", "timezone": "Not/AZone"},
     ],
 )
-async def test_schedule_config_rejects_invalid_schedule_values(kwargs: dict[str, Any]) -> None:
+async def test_schedule_config_rejects_invalid_schedule_values(kwargs: "dict[str, Any]") -> "None":
     with pytest.raises(ValueError):
         ScheduleConfig(task_name="tasks.invalid_values", **kwargs)
 
 
-async def test_task_decorator_registers_interval_schedule() -> None:
+async def test_task_decorator_registers_interval_schedule() -> "None":
     @task("tasks.scheduled", interval=60)
-    async def scheduled() -> str:
+    async def scheduled() -> "str":
         return "ok"
 
     schedules = get_scheduled_tasks()

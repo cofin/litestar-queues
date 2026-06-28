@@ -208,7 +208,7 @@ __all__ = (
 )
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: "str") -> "Any":
     """Lazily load package-root exports."""
     module_name = _EXPORTS.get(name)
     if module_name is None:
@@ -219,6 +219,6 @@ def __getattr__(name: str) -> Any:
     return value
 
 
-def __dir__() -> list[str]:
+def __dir__() -> "list[str]":
     """Return the package root export names for interactive use."""
     return sorted((*globals(), *__all__))

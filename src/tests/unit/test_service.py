@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-async def test_service_context_manager_returns_service() -> None:
+async def test_service_context_manager_returns_service() -> "None":
     """Test that the service can be used as an async context manager."""
     config = QueueConfig()
 
@@ -22,7 +22,7 @@ async def test_service_context_manager_returns_service() -> None:
         assert service.config is config
 
 
-async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
+async def test_service_placeholder_enqueue_reports_unimplemented() -> "None":
     """Test that service enqueue runs through the immediate backend."""
     from litestar_queues import task
     from litestar_queues.task import clear_task_registry
@@ -30,7 +30,7 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
     clear_task_registry()
 
     @task("example")
-    async def example() -> str:
+    async def example() -> "str":
         return "ok"
 
     service = QueueService(QueueConfig())
@@ -42,14 +42,14 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> None:
     assert result.result == "ok"
 
 
-async def test_enqueue_can_override_requeue_on_stale_metadata() -> None:
+async def test_enqueue_can_override_requeue_on_stale_metadata() -> "None":
     from litestar_queues import task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
 
     @task("stale.override", requeue_on_stale=True)
-    async def stale_override() -> str:
+    async def stale_override() -> "str":
         return "ok"
 
     service = QueueService(QueueConfig(execution_backend="local"))
@@ -61,23 +61,23 @@ async def test_enqueue_can_override_requeue_on_stale_metadata() -> None:
     assert result.record.metadata["requeue_on_stale"] is False
 
 
-async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> None:
+async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> "None":
     """Configured resolver fires before task body and its kwargs reach the callable."""
     from litestar_queues import Task, TaskExecutionContext, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
 
-    invocations: list[tuple[str, str]] = []
+    invocations: "list[tuple[str, str]]" = []
 
     async def resolver(
         _task: "Task[..., object]", record: "QueuedTaskRecord", context: "TaskExecutionContext"
-    ) -> dict[str, object]:
+    ) -> "dict[str, object]":
         invocations.append((str(record.id), context.task_id))
         return {"injected_service": "from_resolver"}
 
     @task("resolver.consume")
-    async def consume(**kwargs: object) -> dict[str, object]:
+    async def consume(**kwargs: "object") -> "dict[str, object]":
         return dict(kwargs)
 
     config = QueueConfig(task_dependency_resolver=resolver)
@@ -92,7 +92,7 @@ async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs
     assert len(invocations) == 1
 
 
-async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None:
+async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "None":
     """Resolver fires after the task.started event and before task.completed."""
     import time
 
@@ -105,16 +105,16 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink)
 
-    timeline: dict[str, float] = {}
+    timeline: "dict[str, float]" = {}
 
     async def resolver(
         _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
-    ) -> dict[str, object]:
+    ) -> "dict[str, object]":
         timeline["resolver"] = time.monotonic()
         return {}
 
     @task("resolver.order")
-    async def order(**_kwargs: object) -> str:
+    async def order(**_kwargs: "object") -> "str":
         timeline["body"] = time.monotonic()
         return "ok"
 
@@ -142,7 +142,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> None
     assert started_index < completed_index
 
 
-async def test_execute_record_no_resolver_skips_invocation_path() -> None:
+async def test_execute_record_no_resolver_skips_invocation_path() -> "None":
     """No resolver configured -> no extra_kwargs reach Task.execute_record."""
     from unittest.mock import patch
 
@@ -152,16 +152,16 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> None:
     clear_task_registry()
 
     @task("resolver.absent")
-    async def absent() -> str:
+    async def absent() -> "str":
         return "ok"
 
     config = QueueConfig()
     service = QueueService(config)
 
     original = Task.execute_record
-    captured: list[object] = []
+    captured: "list[object]" = []
 
-    async def spy(self: "Task[..., object]", record: "QueuedTaskRecord", **kwargs: object) -> object:
+    async def spy(self: "Task[..., object]", record: "QueuedTaskRecord", **kwargs: "object") -> "object":
         extra_kwargs = kwargs.get("extra_kwargs")
         task_context = kwargs.get("task_context")
         assert extra_kwargs is None or isinstance(extra_kwargs, dict)
@@ -177,7 +177,7 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> None:
     assert captured == [None]
 
 
-async def test_recover_stale_tasks_publishes_summary_event() -> None:
+async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink)
     backend = InMemoryQueueBackend()

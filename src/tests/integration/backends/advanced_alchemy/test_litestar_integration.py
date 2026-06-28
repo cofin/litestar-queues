@@ -1,13 +1,12 @@
-from pathlib import Path
-
 import pytest
 from litestar import Litestar, post
-from litestar.di import NamedDependency
 from litestar.testing import TestClient
 
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlalchemy")
+
+from typing import TYPE_CHECKING
 
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig, SQLAlchemyPlugin
@@ -16,13 +15,18 @@ from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 from litestar_queues.task import clear_task_registry
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from litestar.di import NamedDependency
+
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> None:
+def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-def _sqlite_config(path: Path) -> SQLAlchemyAsyncConfig:
+def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
 
 
@@ -30,9 +34,9 @@ class LitestarQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "litestar_integration_queue_tasks"
 
 
-def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(tmp_path: Path) -> None:
+def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(tmp_path: "Path") -> "None":
     @task("tasks.litestar_aa")
-    async def litestar_aa_task() -> str:
+    async def litestar_aa_task() -> "str":
         return "ok"
 
     alchemy_config = _sqlite_config(tmp_path / "litestar.db")
@@ -46,7 +50,7 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     )
 
     @post("/enqueue")
-    async def enqueue(queue_service: NamedDependency[QueueService]) -> dict[str, str]:
+    async def enqueue(queue_service: "NamedDependency[QueueService]") -> "dict[str, str]":
         result = await queue_service.enqueue("tasks.litestar_aa", execution_backend="local")
         return {"task_id": str(result.id), "status": str(result.status)}
 
@@ -61,7 +65,7 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     assert queue_plugin.config.queue_backend.sqlalchemy_config is alchemy_config
 
 
-def test_advanced_alchemy_backend_does_not_create_sqlalchemy_litestar_plugin() -> None:
+def test_advanced_alchemy_backend_does_not_create_sqlalchemy_litestar_plugin() -> "None":
     from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
 
     with pytest.raises(TypeError):

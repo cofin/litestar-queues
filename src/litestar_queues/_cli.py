@@ -29,7 +29,7 @@ FORCE_STOP_SIGNAL_COUNT = 2
 
 
 @click.group(name="queues", help="litestar-queues operations.")
-def queues_group() -> None:
+def queues_group() -> "None":
     pass
 
 
@@ -47,8 +47,8 @@ def queues_group() -> None:
 )
 @click.pass_context
 def run_command(
-    ctx: click.Context, queues: tuple[str, ...], max_concurrency: int | None, drain_timeout: float | None
-) -> None:
+    ctx: "click.Context", queues: "tuple[str, ...]", max_concurrency: "int | None", drain_timeout: "float | None"
+) -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     config = plugin.config
@@ -73,7 +73,7 @@ def run_command(
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 @click.pass_context
-def status_command(ctx: click.Context, queue_filter: str | None, as_json: bool) -> None:
+def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "bool") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     exit_code = asyncio.run(_status_run(plugin, queue_filter, as_json))
@@ -85,21 +85,21 @@ def status_command(ctx: click.Context, queue_filter: str | None, as_json: bool) 
 )
 @click.option("--minutes", type=click.IntRange(min=1), default=5, help="Staleness threshold in minutes (default 5).")
 @click.pass_context
-def scheduler_health_command(ctx: click.Context, minutes: int) -> None:
+def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     exit_code = asyncio.run(_scheduler_health_run(plugin, minutes))
     ctx.exit(exit_code)
 
 
-def register(cli: click.Group) -> None:
+def register(cli: "click.Group") -> "None":
     """Attach the ``queues`` subcommand group to ``cli``."""
     cli.add_command(queues_group)
 
 
 async def _run_worker(
-    plugin: QueuePlugin, max_concurrency: int, drain_timeout: float, queues: tuple[str, ...] = ()
-) -> int:
+    plugin: "QueuePlugin", max_concurrency: "int", drain_timeout: "float", queues: "tuple[str, ...]" = ()
+) -> "int":
     config = plugin.config
     service = _open_service(plugin)
     await service.open()
@@ -119,10 +119,10 @@ async def _run_worker(
 
     loop = asyncio.get_running_loop()
     stop_count = {"n": 0}
-    stop_task: asyncio.Task[None] | None = None
+    stop_task: "asyncio.Task[None] | None" = None
     forced_stop = {"value": False}
 
-    def _request_stop() -> None:
+    def _request_stop() -> "None":
         nonlocal stop_task
         stop_count["n"] += 1
         if stop_count["n"] >= FORCE_STOP_SIGNAL_COUNT:
@@ -133,7 +133,7 @@ async def _run_worker(
         if stop_task is None or stop_task.done():
             stop_task = asyncio.create_task(worker.stop())
 
-    def _register_signal_handler(sig: signal.Signals) -> None:
+    def _register_signal_handler(sig: "signal.Signals") -> "None":
         try:
             loop.add_signal_handler(sig, _request_stop)
         except NotImplementedError:
@@ -162,7 +162,7 @@ async def _run_worker(
     return exit_code
 
 
-async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bool) -> int:
+async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json: "bool") -> "int":
     if queue_filter is not None:
         click.echo(f"--queue is advisory; backend filtering not yet enforced (selected: {queue_filter})", err=True)
 
@@ -176,7 +176,7 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
         return 1
     await service.close()
 
-    payload: dict[str, int] = {
+    payload: "dict[str, int]" = {
         "pending": stats.pending,
         "scheduled": stats.scheduled,
         "running": stats.running,
@@ -197,7 +197,7 @@ async def _status_run(plugin: QueuePlugin, queue_filter: str | None, as_json: bo
     return 0
 
 
-async def _scheduler_health_run(plugin: QueuePlugin, minutes: int) -> int:
+async def _scheduler_health_run(plugin: "QueuePlugin", minutes: "int") -> "int":
     config = plugin.config
     canary = config.scheduler_canary_task
     if config.task_modules:
@@ -225,13 +225,13 @@ async def _scheduler_health_run(plugin: QueuePlugin, minutes: int) -> int:
     return 4
 
 
-def _ensure_env(ctx: click.Context) -> LitestarEnv:
+def _ensure_env(ctx: "click.Context") -> "LitestarEnv":
     if not isinstance(ctx.obj, LitestarEnv):
         ctx.obj = ctx.obj()
     return ctx.ensure_object(LitestarEnv)
 
 
-def _resolve_plugin(env: LitestarEnv) -> QueuePlugin:
+def _resolve_plugin(env: "LitestarEnv") -> "QueuePlugin":
     for plugin in env.app.plugins:
         if isinstance(plugin, QueuePlugin):
             return plugin
@@ -239,7 +239,7 @@ def _resolve_plugin(env: LitestarEnv) -> QueuePlugin:
     raise RuntimeError(msg)
 
 
-def _open_service(plugin: QueuePlugin) -> "QueueService":
+def _open_service(plugin: "QueuePlugin") -> "QueueService":
     """Return a ``QueueService`` reusing the plugin's cached backend.
 
     CLI subcommands run outside Litestar's lifespan, so the plugin's

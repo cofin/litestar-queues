@@ -16,7 +16,7 @@ from litestar_queues.backends import InMemoryQueueBackend
 pytestmark = pytest.mark.anyio
 
 
-async def test_enqueue_many_persists_all_specs_in_order() -> None:
+async def test_enqueue_many_persists_all_specs_in_order() -> "None":
     backend = InMemoryQueueBackend()
 
     records = await backend.enqueue_many([
@@ -35,13 +35,13 @@ async def test_enqueue_many_persists_all_specs_in_order() -> None:
         assert await backend.get_task(record.id) is not None
 
 
-async def test_enqueue_many_empty_returns_empty_list() -> None:
+async def test_enqueue_many_empty_returns_empty_list() -> "None":
     backend = InMemoryQueueBackend()
 
     assert await backend.enqueue_many([]) == []
 
 
-async def test_enqueue_many_honors_scheduled_status() -> None:
+async def test_enqueue_many_honors_scheduled_status() -> "None":
     backend = InMemoryQueueBackend()
     later = datetime.now(UTC) + timedelta(minutes=5)
 
@@ -50,7 +50,7 @@ async def test_enqueue_many_honors_scheduled_status() -> None:
     assert record.status == "scheduled"
 
 
-async def test_enqueue_many_deduplicates_active_keys() -> None:
+async def test_enqueue_many_deduplicates_active_keys() -> "None":
     backend = InMemoryQueueBackend()
     first = await backend.enqueue("tasks.sync", key="sync:1", kwargs={"v": 1})
 

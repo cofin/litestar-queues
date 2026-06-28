@@ -1,12 +1,15 @@
 """Schema and migration helpers for the SQLSpec queue backend."""
 
-from collections.abc import Mapping
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlspec.utils.text import quote_identifier, split_qualified_identifier
 
 from litestar_queues.exceptions import QueueConfigurationError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = (
     "DEFAULT_TABLE_NAME",
@@ -44,7 +47,7 @@ _CANONICAL_COLUMNS = frozenset({
 _JSON_COLUMNS = frozenset({"args_json", "kwargs_json", "result_json", "metadata_json"})
 
 
-def validate_table_name(table_name: str) -> str:
+def validate_table_name(table_name: "str") -> "str":
     """Validate a SQL identifier used for the queue table name.
 
     Returns:
@@ -67,7 +70,7 @@ def validate_table_name(table_name: str) -> str:
     return ".".join(parts)
 
 
-def validate_column_map(column_map: Mapping[str, str]) -> dict[str, str]:
+def validate_column_map(column_map: "Mapping[str, str]") -> "dict[str, str]":
     """Validate a canonical-to-adopter column map.
 
     Returns:
@@ -77,7 +80,7 @@ def validate_column_map(column_map: Mapping[str, str]) -> dict[str, str]:
         QueueConfigurationError: If a canonical name is unknown or a mapped
             name is not a valid SQL identifier.
     """
-    resolved: dict[str, str] = {}
+    resolved: "dict[str, str]" = {}
     for canonical, mapped in column_map.items():
         if canonical not in _CANONICAL_COLUMNS:
             msg = f"Unknown canonical column in column_map: {canonical!r}"
@@ -89,7 +92,7 @@ def validate_column_map(column_map: Mapping[str, str]) -> dict[str, str]:
     return resolved
 
 
-def validate_native_json_columns(columns: frozenset[str]) -> frozenset[str]:
+def validate_native_json_columns(columns: "frozenset[str]") -> "frozenset[str]":
     """Validate native JSON passthrough columns.
 
     Returns:
@@ -105,17 +108,17 @@ def validate_native_json_columns(columns: frozenset[str]) -> frozenset[str]:
     return columns
 
 
-def migration_paths() -> tuple[str, ...]:
+def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
     return (str(migration_directory().joinpath("0001_create_queue_tasks.py")),)
 
 
-def migration_directory() -> Path:
+def migration_directory() -> "Path":
     """Return the packaged SQLSpec queue extension migration directory."""
     return Path(str(files("litestar_queues.backends.sqlspec").joinpath("migrations")))
 
 
-def _is_unquoted_identifier_part(identifier: str) -> bool:
+def _is_unquoted_identifier_part(identifier: "str") -> "bool":
     """Return whether a SQLSpec-split identifier part is safe unquoted text."""
     return (
         identifier.isascii()

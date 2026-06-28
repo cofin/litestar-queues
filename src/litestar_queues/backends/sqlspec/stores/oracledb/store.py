@@ -20,25 +20,25 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     _json_storage: "_OracleJSONStorageType | None"
 
-    data_dictionary_dialect: ClassVar[str | None] = "oracle"
-    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "none"
+    data_dictionary_dialect: "ClassVar[str | None]" = "oracle"
+    identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "none"
 
-    def create_statements(self) -> list[str]:
+    def create_statements(self) -> "list[str]":
         """Return statements that create Oracle queue artifacts."""
         return self._create_statements_with_storage(self._configured_json_storage())
 
-    async def create_statements_for_driver(self, driver: Any) -> list[str]:
+    async def create_statements_for_driver(self, driver: "Any") -> "list[str]":
         """Return schema statements using cached Oracle version-aware JSON storage."""
         storage_type = await self._detect_json_storage_type(driver)
         return self._create_statements_with_storage(storage_type)
 
-    def drop_statements(self) -> list[str]:
+    def drop_statements(self) -> "list[str]":
         """Return statements that drop Oracle queue artifacts."""
         if not self._manage_schema:
             return []
         return [_drop_index_block(self, "heartbeat"), _drop_index_block(self, "pending"), _drop_table_block(self)]
 
-    def serialize_json(self, canonical: str, value: Any) -> str | bytes:
+    def serialize_json(self, canonical: "str", value: "Any") -> "str | bytes":
         """Serialize Oracle JSON according to configured storage.
 
         Returns:
@@ -46,7 +46,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         """
         return _serialize_oracle_json(value, self._configured_json_storage())
 
-    def deserialize_json(self, canonical: str, value: Any) -> Any:
+    def deserialize_json(self, canonical: "str", value: "Any") -> "Any":
         """Deserialize Oracle JSON, BLOB, or LOB values.
 
         Returns:
@@ -56,23 +56,23 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             return _deserialize_native_oracle_json(value)
         return _deserialize_oracle_json(value)
 
-    def _string_type(self, length: int | None = None) -> str:
+    def _string_type(self, length: "int | None" = None) -> "str":
         return "CLOB" if length is None else f"VARCHAR2({length})"
 
-    def _integer_type(self) -> str:
+    def _integer_type(self) -> "str":
         return "NUMBER(10)"
 
-    def _error_type(self) -> str:
+    def _error_type(self) -> "str":
         return "VARCHAR2(4000)"
 
-    def _index_name(self, suffix: str) -> str:
+    def _index_name(self, suffix: "str") -> "str":
         return _index_name(self, suffix)
 
     def _configured_json_storage(self) -> "_OracleJSONStorageType":
         configured = self._json_storage
         return configured if configured is not None else _OracleJSONStorageType.BLOB_JSON
 
-    def _create_statements_with_storage(self, storage_type: "_OracleJSONStorageType") -> list[str]:
+    def _create_statements_with_storage(self, storage_type: "_OracleJSONStorageType") -> "list[str]":
         if not self._manage_schema:
             return []
         self._apply_json_storage(storage_type)
@@ -89,7 +89,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             _create_index_block(self, "heartbeat", f"{self._col('status')}, {self._col('heartbeat_at')}"),
         ]
 
-    async def _detect_json_storage_type(self, driver: Any) -> "_OracleJSONStorageType":
+    async def _detect_json_storage_type(self, driver: "Any") -> "_OracleJSONStorageType":
         configured = self._json_storage
         if configured is not None:
             return configured
@@ -108,9 +108,9 @@ class OracledbSyncQueueStore(_OracledbQueueStore):
 
     __slots__ = ("_in_memory",)
 
-    _in_memory: bool
+    _in_memory: "bool"
 
-    def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
+    def __init__(self, config: "Any", *, table_name: "str | None" = None, **kwargs: "Any") -> "None":
         super().__init__(config, table_name=table_name, **kwargs)
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
@@ -124,9 +124,9 @@ class OracledbAsyncQueueStore(_OracledbQueueStore):
 
     __slots__ = ("_in_memory",)
 
-    _in_memory: bool
+    _in_memory: "bool"
 
-    def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
+    def __init__(self, config: "Any", *, table_name: "str | None" = None, **kwargs: "Any") -> "None":
         super().__init__(config, table_name=table_name, **kwargs)
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
@@ -141,12 +141,12 @@ class _OracleJSONStorageType(str, Enum):
     BLOB_PLAIN = "blob"
 
 
-def _queue_settings(config: Any) -> dict[str, Any]:
+def _queue_settings(config: "Any") -> "dict[str, Any]":
     extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
     return cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
 
 
-def _json_storage_from_settings(settings: dict[str, Any]) -> "_OracleJSONStorageType | None":
+def _json_storage_from_settings(settings: "dict[str, Any]") -> "_OracleJSONStorageType | None":
     configured = settings.get("json_storage")
     if configured is None:
         return None
@@ -159,7 +159,7 @@ def _json_storage_from_settings(settings: dict[str, Any]) -> "_OracleJSONStorage
     return _OracleJSONStorageType.BLOB_JSON
 
 
-def _json_storage_from_version_info(version_info: Any) -> _OracleJSONStorageType:
+def _json_storage_from_version_info(version_info: "Any") -> "_OracleJSONStorageType":
     if version_info is None:
         return _OracleJSONStorageType.BLOB_JSON
     supports_native_json = getattr(version_info, "supports_native_json", None)
@@ -171,14 +171,14 @@ def _json_storage_from_version_info(version_info: Any) -> _OracleJSONStorageType
     return _OracleJSONStorageType.BLOB_PLAIN
 
 
-async def _oracle_version_info(driver: Any) -> Any:
+async def _oracle_version_info(driver: "Any") -> "Any":
     sync_driver = getattr(driver, "_driver", None)
     if sync_driver is not None:
         return await async_(_sync_oracle_version_info)(sync_driver)
     return await _async_oracle_version_info(driver)
 
 
-def _sync_oracle_version_info(driver: Any) -> Any:
+def _sync_oracle_version_info(driver: "Any") -> "Any":
     detect_version = getattr(driver, "_detect_oracle_version", None)
     if callable(detect_version):
         return detect_version()
@@ -189,7 +189,7 @@ def _sync_oracle_version_info(driver: Any) -> Any:
     return None
 
 
-async def _async_oracle_version_info(driver: Any) -> Any:
+async def _async_oracle_version_info(driver: "Any") -> "Any":
     detect_version = getattr(driver, "_detect_oracle_version", None)
     if callable(detect_version):
         version_info = detect_version()
@@ -206,7 +206,7 @@ async def _async_oracle_version_info(driver: Any) -> Any:
     return None
 
 
-def _json_column_type(column_name: str, storage_type: _OracleJSONStorageType) -> str:
+def _json_column_type(column_name: "str", storage_type: "_OracleJSONStorageType") -> "str":
     if storage_type == _OracleJSONStorageType.JSON_NATIVE:
         return "JSON"
     if storage_type == _OracleJSONStorageType.BLOB_JSON:
@@ -214,13 +214,13 @@ def _json_column_type(column_name: str, storage_type: _OracleJSONStorageType) ->
     return "BLOB"
 
 
-def _serialize_oracle_json(value: Any, storage_type: _OracleJSONStorageType) -> str | bytes:
+def _serialize_oracle_json(value: "Any", storage_type: "_OracleJSONStorageType") -> "str | bytes":
     if storage_type == _OracleJSONStorageType.JSON_NATIVE:
         return to_json(value)
     return to_json(value, as_bytes=True)
 
 
-def _deserialize_oracle_json(value: Any) -> Any:
+def _deserialize_oracle_json(value: "Any") -> "Any":
     if value is None:
         return None
     read = getattr(value, "read", None)
@@ -231,7 +231,7 @@ def _deserialize_oracle_json(value: Any) -> Any:
     return from_json(value)
 
 
-def _deserialize_native_oracle_json(value: Any) -> Any:
+def _deserialize_native_oracle_json(value: "Any") -> "Any":
     if value is None:
         return None
     read = getattr(value, "read", None)
@@ -245,11 +245,11 @@ def _deserialize_native_oracle_json(value: Any) -> Any:
     return value
 
 
-def _index_name(store: SQLSpecQueueStore, suffix: str) -> str:
+def _index_name(store: "SQLSpecQueueStore", suffix: "str") -> "str":
     return SQLSpecQueueStore._index_name(store, suffix)[:30]
 
 
-def _create_table_block(store: SQLSpecQueueStore, storage_type: _OracleJSONStorageType, in_memory: bool) -> str:
+def _create_table_block(store: "SQLSpecQueueStore", storage_type: "_OracleJSONStorageType", in_memory: "bool") -> "str":
     table_name = store.table_name
     in_memory_clause = " INMEMORY PRIORITY HIGH" if in_memory else ""
     return f"""
@@ -286,7 +286,7 @@ def _create_table_block(store: SQLSpecQueueStore, storage_type: _OracleJSONStora
     """
 
 
-def _create_index_block(store: SQLSpecQueueStore, suffix: str, columns: str) -> str:
+def _create_index_block(store: "SQLSpecQueueStore", suffix: "str", columns: "str") -> "str":
     return f"""
     BEGIN
         EXECUTE IMMEDIATE 'CREATE INDEX {_index_name(store, suffix)}
@@ -300,7 +300,7 @@ def _create_index_block(store: SQLSpecQueueStore, suffix: str, columns: str) -> 
     """
 
 
-def _drop_index_block(store: SQLSpecQueueStore, suffix: str) -> str:
+def _drop_index_block(store: "SQLSpecQueueStore", suffix: "str") -> "str":
     return f"""
     BEGIN
         EXECUTE IMMEDIATE 'DROP INDEX {_index_name(store, suffix)}';
@@ -313,7 +313,7 @@ def _drop_index_block(store: SQLSpecQueueStore, suffix: str) -> str:
     """
 
 
-def _drop_table_block(store: SQLSpecQueueStore) -> str:
+def _drop_table_block(store: "SQLSpecQueueStore") -> "str":
     return f"""
     BEGIN
         EXECUTE IMMEDIATE 'DROP TABLE {store.table_name}';

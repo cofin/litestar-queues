@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-def test_top_level_litestar_queues_import_does_not_pull_in_redis_or_valkey() -> None:
+def test_top_level_litestar_queues_import_does_not_pull_in_redis_or_valkey() -> "None":
     """Importing ``litestar_queues`` must NOT import the redis or valkey clients."""
     code = """
 import builtins
@@ -52,7 +52,7 @@ assert "valkey" not in sys.modules
     assert result.returncode == 0, result.stderr
 
 
-def test_redis_valkey_backends_are_registered() -> None:
+def test_redis_valkey_backends_are_registered() -> "None":
     from litestar_queues.backends.redis import RedisQueueBackend
     from litestar_queues.backends.valkey import ValkeyQueueBackend
 
@@ -64,7 +64,7 @@ def test_redis_valkey_backends_are_registered() -> None:
 
 async def test_redis_backend_deduplicates_active_keys_and_replaces_terminal_keys(
     redis_backend: "RedisQueueBackend",
-) -> None:
+) -> "None":
     first = await redis_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
     duplicate = await redis_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
 
@@ -83,7 +83,7 @@ async def test_redis_backend_deduplicates_active_keys_and_replaces_terminal_keys
 
 async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execution(
     redis_backend: "RedisQueueBackend",
-) -> None:
+) -> "None":
     later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await redis_backend.enqueue("tasks.low", priority=1, execution_backend="local")
@@ -108,7 +108,7 @@ async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execu
     assert stored_low.status == "pending"
 
 
-async def test_redis_backend_releases_locks_by_token_via_lua_script(redis_backend: "RedisQueueBackend") -> None:
+async def test_redis_backend_releases_locks_by_token_via_lua_script(redis_backend: "RedisQueueBackend") -> "None":
     """Verify the token-checked release script against real Redis Lua semantics."""
     client = await redis_backend._get_client()
     lock_key = redis_backend._lock_key("task:test")
@@ -123,7 +123,7 @@ async def test_redis_backend_releases_locks_by_token_via_lua_script(redis_backen
     assert await client.get(lock_key) is None
 
 
-async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_backend: "RedisQueueBackend") -> None:
+async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_backend: "RedisQueueBackend") -> "None":
     flaky = await redis_backend.enqueue("tasks.flaky", max_retries=1)
 
     await redis_backend.claim_task(flaky.id)

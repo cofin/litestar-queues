@@ -14,6 +14,7 @@ from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from types import TracebackType
     from uuid import UUID
 
     from litestar_queues.backends import BaseQueueBackend
@@ -48,17 +49,17 @@ class QueueService:
         queue_backend: "BaseQueueBackend | None" = None,
         execution_backend: "BaseExecutionBackend | None" = None,
         event_publisher: "QueueEventPublisher | None" = None,
-    ) -> None:
+    ) -> "None":
         """Initialize the queue service."""
         self._config = config
         self._queue_backend = queue_backend
         self._execution_backend = execution_backend
         self._event_publisher = event_publisher
-        self._sync_executor: ThreadPoolExecutor | None = None
+        self._sync_executor: "ThreadPoolExecutor | None" = None
 
     @property
     def config(self) -> "QueueConfig":
-        """Return the queue configuration."""
+        """Queue configuration."""
         return self._config
 
     def get_queue_backend(self) -> "BaseQueueBackend":
@@ -79,7 +80,7 @@ class QueueService:
             self._event_publisher = self._config.get_event_publisher()
         return self._event_publisher
 
-    async def open(self) -> Self:
+    async def open(self) -> "Self":
         """Open queue and execution backends.
 
         Returns:
@@ -94,7 +95,7 @@ class QueueService:
             )
         return self
 
-    async def close(self) -> None:
+    async def close(self) -> "None":
         """Close queue and execution backends."""
         if self._execution_backend is not None:
             await self._execution_backend.close()
@@ -104,35 +105,38 @@ class QueueService:
             self._sync_executor.shutdown(wait=True, cancel_futures=True)
             self._sync_executor = None
 
-    async def __aenter__(self) -> Self:
+    async def __aenter__(self) -> "Self":
         await self.open()
         return self
 
     async def __aexit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
-    ) -> None:
+        self,
+        exc_type: "type[BaseException] | None",  # noqa: PYI036
+        exc_val: "BaseException | None",  # noqa: PYI036
+        exc_tb: "TracebackType | None",  # noqa: PYI036
+    ) -> "None":
         await self.close()
 
     async def enqueue(
         self,
-        task: str | Task[Any, Any],
-        *args: Any,
+        task: "str | Task[Any, Any]",
+        *args: "Any",
         scheduled_at: "datetime | None" = None,
-        run_after: float | timedelta | None = None,
-        key: str | None = None,
-        queue: str | None = None,
-        priority: int | None = None,
-        retries: int | None = None,
-        timeout: float | None = None,
-        execution_backend: str | None = None,
-        execution_profile: str | None = None,
-        description: str | None = None,
-        log_level: str | None = None,
-        quiet_success: bool | None = None,
-        requeue_on_stale: bool | None = None,
-        metadata: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> TaskResult:
+        run_after: "float | timedelta | None" = None,
+        key: "str | None" = None,
+        queue: "str | None" = None,
+        priority: "int | None" = None,
+        retries: "int | None" = None,
+        timeout: "float | None" = None,
+        execution_backend: "str | None" = None,
+        execution_profile: "str | None" = None,
+        description: "str | None" = None,
+        log_level: "str | None" = None,
+        quiet_success: "bool | None" = None,
+        requeue_on_stale: "bool | None" = None,
+        metadata: "dict[str, Any] | None" = None,
+        **kwargs: "Any",
+    ) -> "TaskResult":
         """Enqueue a registered task.
 
         Returns:
@@ -181,7 +185,7 @@ class QueueService:
                 await self.get_execution_backend().execute(self, claimed)
         return result
 
-    def resolve_task(self, task: str | Task[Any, Any]) -> Task[Any, Any]:
+    def resolve_task(self, task: "str | Task[Any, Any]") -> "Task[Any, Any]":
         """Resolve a task name or wrapper to a registered task.
 
         Returns:
@@ -204,7 +208,7 @@ class QueueService:
         return await self.get_queue_backend().get_task(task_id)
 
     async def claim_next(
-        self, *, queue: str | None = None, execution_backend: str | None = None
+        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
         """Claim the next due queued task.
 
@@ -213,7 +217,7 @@ class QueueService:
         """
         return await self.get_queue_backend().claim_next(queue=queue, execution_backend=execution_backend)
 
-    async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: str | None = None) -> "QueuedTaskRecord":
+    async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: "str | None" = None) -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.
 
         Args:
@@ -303,7 +307,7 @@ class QueueService:
         return completed
 
     async def recover_stale_tasks(
-        self, *, stale_after: timedelta, worker_id: str | None = None
+        self, *, stale_after: "timedelta", worker_id: "str | None" = None
     ) -> "StaleTaskRecoveryResult":
         """Recover stale running tasks and publish a worker summary event."""
         result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after)
@@ -326,7 +330,7 @@ class QueueService:
         Returns:
             The created or reused schedule records.
         """
-        records: list["QueuedTaskRecord"] = []
+        records: 'list["QueuedTaskRecord"]' = []
         queue_backend = self.get_queue_backend()
         for task_name, schedule in get_scheduled_tasks().items():
             task_obj = self.resolve_task(task_name)
@@ -354,7 +358,7 @@ class QueueService:
         return records
 
     async def _resolve_task_dependencies(
-        self, task: Task[..., object], record: "QueuedTaskRecord", task_context: TaskExecutionContext
+        self, task: "Task[..., object]", record: "QueuedTaskRecord", task_context: "TaskExecutionContext"
     ) -> "Mapping[str, object] | None":
         """Invoke the configured task dependency resolver, if any.
 
@@ -366,7 +370,7 @@ class QueueService:
             return None
         return await resolver(task, record, task_context)
 
-    async def _reschedule_if_needed(self, record: "QueuedTaskRecord") -> None:
+    async def _reschedule_if_needed(self, record: "QueuedTaskRecord") -> "None":
         schedule_data = record.metadata.get("schedule")
         if not isinstance(schedule_data, dict) or record.completed_at is None:
             return
@@ -398,10 +402,10 @@ class QueueService:
         self,
         record: "QueuedTaskRecord",
         *,
-        phase: str,
-        task_context: TaskExecutionContext | None = None,
-        worker_id: str | None = None,
-        expected_retry_count: int | None = None,
+        phase: "str",
+        task_context: "TaskExecutionContext | None" = None,
+        worker_id: "str | None" = None,
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord":
         """Publish an ownership-loss event and return the current record state."""
         current = await self._current_or_claimed(record)
@@ -434,7 +438,9 @@ class QueueService:
         self._log_task_event(message, current, level=logging.WARNING, payload=payload)
         return current
 
-    async def _publish_stale_failed_events(self, result: "StaleTaskRecoveryResult", *, worker_id: str | None) -> None:
+    async def _publish_stale_failed_events(
+        self, result: "StaleTaskRecoveryResult", *, worker_id: "str | None"
+    ) -> "None":
         handler_needed_ids = set(result.handler_needed_task_ids)
         for task_id in result.failed_task_ids:
             record = await self.get_queue_backend().get_task(task_id)
@@ -467,14 +473,14 @@ class QueueService:
                 "Queue task failed after stale heartbeat", record, level=logging.ERROR, payload=payload
             )
 
-    def _log_task_completed(self, record: "QueuedTaskRecord") -> None:
+    def _log_task_completed(self, record: "QueuedTaskRecord") -> "None":
         if record.metadata.get("quiet_success") is True:
             return
         self._log_task_event("Queue task completed", record, level=_coerce_log_level(record.metadata.get("log_level")))
 
     def _log_task_event(
-        self, message: str, record: "QueuedTaskRecord", *, level: int, payload: "Mapping[str, object] | None" = None
-    ) -> None:
+        self, message: "str", record: "QueuedTaskRecord", *, level: "int", payload: "Mapping[str, object] | None" = None
+    ) -> "None":
         logger.log(
             level,
             message,
@@ -493,7 +499,7 @@ class QueueService:
         )
 
 
-def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:
+def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":
     if value is None:
         return None
     if isinstance(value, timedelta):
@@ -501,7 +507,7 @@ def _coerce_timedelta(value: float | timedelta | None) -> timedelta | None:
     return timedelta(seconds=value)
 
 
-def _coerce_log_level(value: object, default: int = logging.INFO) -> int:
+def _coerce_log_level(value: "object", default: "int" = logging.INFO) -> "int":
     if not isinstance(value, str):
         return default
     return _LOG_LEVELS.get(value.lower(), default)

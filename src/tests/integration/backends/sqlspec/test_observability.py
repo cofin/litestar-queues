@@ -21,12 +21,12 @@ pytestmark = pytest.mark.anyio
 class RecordingSpanManager:
     __slots__ = ("ended", "is_enabled", "started")
 
-    def __init__(self) -> None:
+    def __init__(self) -> "None":
         self.is_enabled = True
-        self.started: list[tuple[str, dict[str, Any]]] = []
-        self.ended: list[tuple[tuple[str, dict[str, Any]] | None, Exception | None]] = []
+        self.started: "list[tuple[str, dict[str, Any]]]" = []
+        self.ended: "list[tuple[tuple[str, dict[str, Any]] | None, Exception | None]]" = []
 
-    def start_span(self, name: str, attributes: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
+    def start_span(self, name: "str", attributes: "dict[str, Any] | None" = None) -> "tuple[str, dict[str, Any]]":
         span = (name, dict(attributes or {}))
         self.started.append(span)
         return span
@@ -34,14 +34,14 @@ class RecordingSpanManager:
     def start_query_span(
         self,
         *,
-        driver: str,
-        adapter: str,
-        bind_key: str | None,
-        sql: str,
-        operation: str,
-        connection_info: dict[str, Any],
-        correlation_id: str | None,
-    ) -> tuple[str, dict[str, Any]]:
+        driver: "str",
+        adapter: "str",
+        bind_key: "str | None",
+        sql: "str",
+        operation: "str",
+        connection_info: "dict[str, Any]",
+        correlation_id: "str | None",
+    ) -> "tuple[str, dict[str, Any]]":
         attributes = {
             "db.operation": operation,
             "db.statement": sql,
@@ -55,13 +55,13 @@ class RecordingSpanManager:
             attributes["sqlspec.correlation_id"] = correlation_id
         return self.start_span("sqlspec.query", attributes)
 
-    def end_span(self, span: tuple[str, dict[str, Any]] | None, *, error: Exception | None = None) -> None:
+    def end_span(self, span: "tuple[str, dict[str, Any]] | None", *, error: "Exception | None" = None) -> "None":
         self.ended.append((span, error))
 
 
-async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_path: "Path") -> None:
-    statement_events: list[StatementEvent] = []
-    lifecycle_events: list[dict[str, Any]] = []
+async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_path: "Path") -> "None":
+    statement_events: "list[StatementEvent]" = []
+    lifecycle_events: "list[dict[str, Any]]" = []
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "queue.db")},
         observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
@@ -105,7 +105,7 @@ async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_pat
         await backend.close()
 
 
-async def _exercise_observed_queue_operations(backend: SQLSpecQueueBackend) -> None:
+async def _exercise_observed_queue_operations(backend: "SQLSpecQueueBackend") -> "None":
     completed_seed = await backend.enqueue("tasks.observed.complete")
     completed_claim = await backend.claim_task(completed_seed.id)
     assert completed_claim is not None
@@ -140,8 +140,8 @@ async def _exercise_observed_queue_operations(backend: SQLSpecQueueBackend) -> N
     )
 
 
-async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: "Path") -> None:
-    statement_events: list[StatementEvent] = []
+async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: "Path") -> "None":
+    statement_events: "list[StatementEvent]" = []
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "queue-disabled.db")},
         observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
@@ -164,13 +164,15 @@ async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: 
 class StubEventChannel:
     __slots__ = ("_backend_name", "published")
 
-    def __init__(self) -> None:
+    def __init__(self) -> "None":
         self._backend_name = "table_queue"
-        self.published: list[tuple[str, dict[str, object], dict[str, object] | None]] = []
+        self.published: "list[tuple[str, dict[str, object], dict[str, object] | None]]" = []
 
-    async def publish(self, channel: str, payload: dict[str, object], metadata: dict[str, object] | None = None) -> str:
+    async def publish(
+        self, channel: "str", payload: "dict[str, object]", metadata: "dict[str, object] | None" = None
+    ) -> "str":
         self.published.append((channel, payload, metadata))
         return f"event-{len(self.published)}"
 
-    async def shutdown(self) -> None:
+    async def shutdown(self) -> "None":
         return None

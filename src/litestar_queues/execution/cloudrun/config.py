@@ -13,18 +13,18 @@ __all__ = ("CloudRunExecutionConfig",)
 class CloudRunExecutionConfig:
     """Configuration for Cloud Run Jobs execution."""
 
-    backend_name: ClassVar[str] = "cloudrun"
-    project_id: str
-    region: str = "us-central1"
-    job_name: str | None = None
-    profiles: dict[str, str] = field(default_factory=dict)
-    timeout: int = 300
-    poll_interval: float = 5.0
-    env_prefix: str = "LITESTAR_QUEUES"
-    extra_env: dict[str, str] = field(default_factory=dict)
-    fallback_execution_backend: str | None = "local"
+    backend_name: "ClassVar[str]" = "cloudrun"
+    project_id: "str"
+    region: "str" = "us-central1"
+    job_name: "str | None" = None
+    profiles: "dict[str, str]" = field(default_factory=dict)
+    timeout: "int" = 300
+    poll_interval: "float" = 5.0
+    env_prefix: "str" = "LITESTAR_QUEUES"
+    extra_env: "dict[str, str]" = field(default_factory=dict)
+    fallback_execution_backend: "str | None" = "local"
 
-    def resolve_job_name(self, profile: str | None = None) -> str:
+    def resolve_job_name(self, profile: "str | None" = None) -> "str":
         """Return the Cloud Run Job name for a profile.
 
         Returns:
@@ -42,13 +42,13 @@ class CloudRunExecutionConfig:
         msg = "CloudRunExecutionConfig requires job_name or profiles['default']."
         raise QueueConfigurationError(msg)
 
-    def env_name(self, suffix: str) -> str:
+    def env_name(self, suffix: "str") -> "str":
         """Return an environment variable name using the configured prefix."""
         normalized = suffix.upper().removeprefix(f"{self.env_prefix}_")
         return f"{self.env_prefix}_{normalized}"
 
 
-def _execution_config_from_queue_config(config: "QueueConfig | None") -> CloudRunExecutionConfig:
+def _execution_config_from_queue_config(config: "QueueConfig | None") -> "CloudRunExecutionConfig":
     """Resolve Cloud Run execution config from a QueueConfig.
 
     Returns:

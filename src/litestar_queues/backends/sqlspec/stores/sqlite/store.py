@@ -12,7 +12,7 @@ class SqliteQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect: ClassVar[str | None] = "sqlite"
+    data_dictionary_dialect: "ClassVar[str | None]" = "sqlite"
 
-    def _json_type(self) -> str:
+    def _json_type(self) -> "str":
         return "TEXT"

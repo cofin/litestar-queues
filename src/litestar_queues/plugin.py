@@ -26,21 +26,21 @@ class QueuePlugin(InitPlugin):
 
     __slots__ = ("_config", "_event_publisher", "_queue_backend", "_service", "_worker", "_worker_task")
 
-    def __init__(self, config: "QueueConfig | None" = None) -> None:
+    def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the queue plugin."""
         self._config = config or QueueConfig()
-        self._service: QueueService | None = None
+        self._service: "QueueService | None" = None
         self._queue_backend: "BaseQueueBackend | None" = None
         self._event_publisher: "QueueEventPublisher | None" = None
-        self._worker: Worker | None = None
-        self._worker_task: asyncio.Task[None] | None = None
+        self._worker: "Worker | None" = None
+        self._worker_task: "asyncio.Task[None] | None" = None
 
     @property
     def config(self) -> "QueueConfig":
-        """Return the plugin configuration."""
+        """Plugin configuration."""
         return self._config
 
-    def get_service(self, state: "State | None" = None) -> QueueService:
+    def get_service(self, state: "State | None" = None) -> "QueueService":
         """Return a QueueService for this plugin."""
         if self._service is not None:
             return self._service
@@ -67,7 +67,7 @@ class QueuePlugin(InitPlugin):
         app_config.on_shutdown.append(self._on_shutdown)
         return app_config
 
-    def on_cli_init(self, cli: "object") -> None:
+    def on_cli_init(self, cli: "object") -> "None":
         """Attach the ``queues`` subcommand group to the Litestar CLI.
 
         Args:
@@ -81,7 +81,7 @@ class QueuePlugin(InitPlugin):
 
         register(cast("Any", cli))
 
-    async def _on_startup(self, app: "Litestar") -> None:
+    async def _on_startup(self, app: "Litestar") -> "None":
         if self._config.task_modules:
             load_task_modules(self._config.task_modules)
 
@@ -120,7 +120,7 @@ class QueuePlugin(InitPlugin):
             await asyncio.sleep(0)
             app.state[self._config.queue_worker_state_key] = self._worker
 
-    async def _on_shutdown(self, app: "Litestar") -> None:
+    async def _on_shutdown(self, app: "Litestar") -> "None":
         if self._worker is not None:
             await self._worker.stop()
         if self._worker_task is not None:

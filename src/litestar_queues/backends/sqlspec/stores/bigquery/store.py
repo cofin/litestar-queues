@@ -12,10 +12,10 @@ class BigQueryQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect: ClassVar[str | None] = "bigquery"
-    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "backtick"
+    data_dictionary_dialect: "ClassVar[str | None]" = "bigquery"
+    identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "backtick"
 
-    def create_statements(self) -> list[str]:
+    def create_statements(self) -> "list[str]":
         """Return statements that create BigQuery queue artifacts."""
         if not self._manage_schema:
             return []
@@ -47,15 +47,15 @@ class BigQueryQueueStore(SQLSpecQueueStore):
             """
         ]
 
-    def drop_statements(self) -> list[str]:
+    def drop_statements(self) -> "list[str]":
         """Return statements that drop BigQuery queue artifacts."""
         if not self._manage_schema:
             return []
         return [f"DROP TABLE IF EXISTS {self._quoted_table_name()}"]
 
-    def _string_type(self, length: int | None = None) -> str:
+    def _string_type(self, length: "int | None" = None) -> "str":
         del length
         return "STRING"
 
-    def _integer_type(self) -> str:
+    def _integer_type(self) -> "str":
         return "INT64"

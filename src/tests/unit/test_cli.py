@@ -38,7 +38,7 @@ def _evict_support_modules() -> "Iterator[None]":
     _loaded_modules.discard("tests._factories.queue_tasks")
 
 
-def _runner_invoke(app_target: str, args: list[str], monkeypatch: pytest.MonkeyPatch) -> "Result":
+def _runner_invoke(app_target: "str", args: "list[str]", monkeypatch: "pytest.MonkeyPatch") -> "Result":
     """Invoke ``litestar`` CLI with the configured app target via ``CliRunner``.
 
     Returns:
@@ -52,7 +52,7 @@ def _runner_invoke(app_target: str, args: list[str], monkeypatch: pytest.MonkeyP
     return runner.invoke(litestar_group, args, catch_exceptions=False)
 
 
-def test_litestar_queues_help_lists_subcommands(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_litestar_queues_help_lists_subcommands(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
@@ -61,7 +61,7 @@ def test_litestar_queues_help_lists_subcommands(monkeypatch: pytest.MonkeyPatch)
     assert "scheduler-health" in result.stdout
 
 
-def test_cli_module_exposes_public_command_callbacks() -> None:
+def test_cli_module_exposes_public_command_callbacks() -> "None":
     from litestar_queues import _cli
 
     expected_callbacks = {
@@ -78,7 +78,7 @@ def test_cli_module_exposes_public_command_callbacks() -> None:
         assert not hasattr(_cli, f"_{callback_name}")
 
 
-def test_status_subcommand_default_table(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_subcommand_default_table(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "status"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
@@ -86,7 +86,7 @@ def test_status_subcommand_default_table(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "total" in result.stdout
 
 
-def test_status_subcommand_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_subcommand_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "status", "--json"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
@@ -96,14 +96,14 @@ def test_status_subcommand_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all(isinstance(payload[key], int) for key in expected_keys)
 
 
-def test_status_subcommand_advisory_queue_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_subcommand_advisory_queue_filter(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "status", "--queue", "billing"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "advisory" in result.stderr.lower()
 
 
-def test_scheduler_health_returns_4_when_no_canary_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scheduler_health_returns_4_when_no_canary_runs(monkeypatch: "pytest.MonkeyPatch") -> "None":
     """Canary task is registered but never executed, so the health check is stale."""
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "scheduler-health", "--minutes", "5"], monkeypatch)
 
@@ -111,18 +111,18 @@ def test_scheduler_health_returns_4_when_no_canary_runs(monkeypatch: pytest.Monk
     assert "stale" in result.stderr.lower()
 
 
-def test_scheduler_health_returns_3_when_canary_not_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scheduler_health_returns_3_when_canary_not_registered(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke("tests.support.cli_app_missing_canary:app", ["queues", "scheduler-health"], monkeypatch)
 
     assert result.exit_code == 3
     assert "canary" in result.stderr.lower()
 
 
-def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: "pytest.MonkeyPatch") -> "None":
     """Seed a completed canary record and assert exit 0 with healthy message."""
     import anyio
 
-    async def _seed_canary() -> None:
+    async def _seed_canary() -> "None":
         import importlib
 
         cli_app = importlib.import_module("tests.support.cli_app")

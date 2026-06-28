@@ -1,6 +1,5 @@
 """Shared SQLSpec queue store primitives."""
 
-from collections.abc import Mapping, Sequence
 from functools import cache
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -20,6 +19,8 @@ from litestar_queues.backends.sqlspec.schema import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from sqlspec.data_dictionary import DialectConfig
 
 __all__ = ("SQLSpecQueueStore",)
@@ -55,8 +56,8 @@ class SQLSpecQueueStore:
 
     __slots__ = ("_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
 
-    data_dictionary_dialect: ClassVar[str | None] = None
-    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "double"
+    data_dictionary_dialect: "ClassVar[str | None]" = None
+    identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "double"
     # Per-store opt-in: canonical JSON columns whose driver round-trips
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
@@ -64,17 +65,17 @@ class SQLSpecQueueStore:
     # whose driver returns JSON columns as plain strings (DuckDB, SQLite,
     # ADBC) keep the default empty frozenset. Unioned with adopter-supplied
     # ``native_json_columns`` at ``__init__``.
-    auto_native_json_columns: ClassVar[frozenset[str]] = frozenset()
+    auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
 
     def __init__(
         self,
-        config: Any,
+        config: "Any",
         *,
-        table_name: str | None = None,
-        column_map: Mapping[str, str] | None = None,
-        native_json_columns: frozenset[str] | None = None,
-        manage_schema: bool = True,
-    ) -> None:
+        table_name: "str | None" = None,
+        column_map: "Mapping[str, str] | None" = None,
+        native_json_columns: "frozenset[str] | None" = None,
+        manage_schema: "bool" = True,
+    ) -> "None":
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
         self._column_map = validate_column_map(column_map or {})
@@ -83,19 +84,19 @@ class SQLSpecQueueStore:
         self._manage_schema = manage_schema
 
     @property
-    def table_name(self) -> str:
-        """Return the configured queue table name."""
+    def table_name(self) -> "str":
+        """Configured queue table name."""
         return self._table_name
 
     @property
-    def dialect_name(self) -> str | None:
-        """Return the SQLSpec dialect configured for this store."""
+    def dialect_name(self) -> "str | None":
+        """SQLSpec dialect configured for this store."""
         statement_config = getattr(self._config, "statement_config", None)
         dialect = getattr(statement_config, "dialect", None)
         return str(dialect) if dialect is not None else None
 
     @property
-    def supports_skip_locked(self) -> bool:
+    def supports_skip_locked(self) -> "bool":
         """Whether the adapter supports ``SELECT ... FOR UPDATE SKIP LOCKED``.
 
         Resolved from the adapter config's event runtime hints
@@ -110,7 +111,7 @@ class SQLSpecQueueStore:
         return bool(hints.select_for_update and hints.skip_locked)
 
     @property
-    def supports_native_bulk_ingest(self) -> bool:
+    def supports_native_bulk_ingest(self) -> "bool":
         """Whether the adapter can ingest records via the native Arrow import path.
 
         Gated on the SQLSpec config's ``supports_native_arrow_import`` ClassVar
@@ -124,13 +125,13 @@ class SQLSpecQueueStore:
             return False
         return _pyarrow_available()
 
-    def create_statements(self) -> list[str]:
+    def create_statements(self) -> "list[str]":
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
             return []
         return [self._to_sql(self._create_table_statement()), *self._create_index_statements()]
 
-    def drop_statements(self) -> list[str]:
+    def drop_statements(self) -> "list[str]":
         """Return statements that drop queue artifacts."""
         if not self._manage_schema:
             return []
@@ -140,12 +141,12 @@ class SQLSpecQueueStore:
             self._to_sql(sql.drop_table(self.table_name).if_exists()),
         ]
 
-    def insert_task(self, values: dict[str, Any]) -> Any:
+    def insert_task(self, values: "dict[str, Any]") -> "Any":
         """Return an INSERT statement for a queued task."""
         mapped_values = self._mapped_values(values)
         return sql.insert(self.table_name).columns(*mapped_values.keys()).values(**mapped_values)
 
-    def insert_tasks_template(self) -> str:
+    def insert_tasks_template(self) -> "str":
         """Return a parametrized multi-row INSERT for ``driver.execute_many``.
 
         The template carries one named placeholder per physical column so a
@@ -177,15 +178,15 @@ class SQLSpecQueueStore:
         """
         return [{self._col(column): row[column] for column in _TASK_COLUMNS} for row in rows]
 
-    def select_task(self, task_id: str) -> Any:
+    def select_task(self, task_id: "str") -> "Any":
         """Return a SELECT statement for one task id."""
         return self._select_all().where_eq(self._col("id"), task_id)
 
-    def select_task_by_key(self, key: str) -> Any:
+    def select_task_by_key(self, key: "str") -> "Any":
         """Return a SELECT statement for one task key."""
         return self._select_all().where_eq(self._col("task_key"), key)
 
-    def select_tasks_by_keys(self, keys: "Sequence[str]") -> Any:
+    def select_tasks_by_keys(self, keys: "Sequence[str]") -> "Any":
         """Return a SELECT statement for all tasks matching any of ``keys``.
 
         Used by bulk enqueue to resolve existing deduplication keys in a single
@@ -194,8 +195,8 @@ class SQLSpecQueueStore:
         return self._select_all().where_in(self._col("task_key"), list(keys))
 
     def list_pending(
-        self, *, now: Any, limit: int, queue: str | None = None, execution_backend: str | None = None
-    ) -> Any:
+        self, *, now: "Any", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "Any":
         """Return a SELECT statement for due pending tasks."""
         statement = (
             self
@@ -212,8 +213,8 @@ class SQLSpecQueueStore:
         ).limit(limit)
 
     def select_claimable(
-        self, *, now: Any, limit: int, queue: str | None = None, execution_backend: str | None = None
-    ) -> Any:
+        self, *, now: "Any", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "Any":
         """Return a due-task SELECT that locks rows with ``FOR UPDATE SKIP LOCKED``.
 
         Mirrors :meth:`list_pending` but adds row-level locking so competing
@@ -226,7 +227,7 @@ class SQLSpecQueueStore:
             skip_locked=True
         )
 
-    def claim_task(self, *, task_id: str, due_at: Any, started_at: Any, heartbeat_at: Any) -> Any:
+    def claim_task(self, *, task_id: "str", due_at: "Any", started_at: "Any", heartbeat_at: "Any") -> "Any":
         """Return an UPDATE statement that claims a due task."""
         return (
             sql
@@ -237,7 +238,7 @@ class SQLSpecQueueStore:
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
         )
 
-    def complete_task(self, *, task_id: str, completed_at: Any, heartbeat_at: Any, result_json: Any) -> Any:
+    def complete_task(self, *, task_id: "str", completed_at: "Any", heartbeat_at: "Any", result_json: "Any") -> "Any":
         """Return an UPDATE statement that completes a task."""
         return (
             sql
@@ -254,7 +255,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def retry_task(self, *, task_id: str, error: str, retry_count: int) -> Any:
+    def retry_task(self, *, task_id: "str", error: "str", retry_count: "int") -> "Any":
         """Return an UPDATE statement that schedules a retry."""
         return (
             sql
@@ -271,7 +272,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def fail_task(self, *, task_id: str, completed_at: Any, heartbeat_at: Any, error: str) -> Any:
+    def fail_task(self, *, task_id: "str", completed_at: "Any", heartbeat_at: "Any", error: "str") -> "Any":
         """Return an UPDATE statement that permanently fails a task."""
         return (
             sql
@@ -287,7 +288,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def cancel_task(self, *, task_id: str, completed_at: Any) -> Any:
+    def cancel_task(self, *, task_id: "str", completed_at: "Any") -> "Any":
         """Return an UPDATE statement that cancels a due task."""
         return (
             sql
@@ -297,7 +298,7 @@ class SQLSpecQueueStore:
             .where_in(self._col("status"), _DUE_STATUSES)
         )
 
-    def touch_heartbeat(self, *, task_id: str, heartbeat_at: Any) -> Any:
+    def touch_heartbeat(self, *, task_id: "str", heartbeat_at: "Any") -> "Any":
         """Return an UPDATE statement that touches a running task heartbeat."""
         return (
             sql
@@ -307,7 +308,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("status"), "running")
         )
 
-    def null_heartbeats(self, *, task_ids: list[str]) -> Any:
+    def null_heartbeats(self, *, task_ids: "list[str]") -> "Any":
         """Return an UPDATE statement that clears task heartbeats."""
         return (
             sql
@@ -316,7 +317,7 @@ class SQLSpecQueueStore:
             .where_in(self._col("id"), task_ids)
         )
 
-    def requeue_stale(self, *, cutoff: Any) -> Any:
+    def requeue_stale(self, *, cutoff: "Any") -> "Any":
         """Return an UPDATE statement that requeues stale running tasks."""
         return (
             sql
@@ -333,7 +334,7 @@ class SQLSpecQueueStore:
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
 
-    def list_stale_running(self, *, cutoff: Any) -> Any:
+    def list_stale_running(self, *, cutoff: "Any") -> "Any":
         """Return a SELECT statement for stale running tasks."""
         return (
             self
@@ -342,7 +343,7 @@ class SQLSpecQueueStore:
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
 
-    def clear_key(self, *, task_id: str) -> Any:
+    def clear_key(self, *, task_id: "str") -> "Any":
         """Return an UPDATE statement that releases a terminal task key."""
         return (
             sql
@@ -352,8 +353,8 @@ class SQLSpecQueueStore:
         )
 
     def set_execution_ref(
-        self, *, task_id: str, execution_backend: str, execution_ref: str, execution_profile: str | None
-    ) -> Any:
+        self, *, task_id: "str", execution_backend: "str", execution_ref: "str", execution_profile: "str | None"
+    ) -> "Any":
         """Return an UPDATE statement that stores an external execution reference."""
         return (
             sql
@@ -368,7 +369,9 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def set_execution_backend(self, *, task_id: str, execution_backend: str, execution_profile: str | None) -> Any:
+    def set_execution_backend(
+        self, *, task_id: "str", execution_backend: "str", execution_profile: "str | None"
+    ) -> "Any":
         """Return an UPDATE statement that changes execution routing."""
         return (
             sql
@@ -383,7 +386,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def list_running_external(self, *, limit: int | None = None) -> Any:
+    def list_running_external(self, *, limit: "int | None" = None) -> "Any":
         """Return a SELECT statement for externally dispatched records."""
         statement = (
             self
@@ -394,11 +397,11 @@ class SQLSpecQueueStore:
         )
         return statement.limit(limit) if limit is not None else statement
 
-    def list_all(self) -> Any:
+    def list_all(self) -> "Any":
         """Return a SELECT statement for all queue records."""
         return self._select_all()
 
-    def list_completed_by_task(self, *, task_name: str, since: Any | None = None, limit: int = 10) -> Any:
+    def list_completed_by_task(self, *, task_name: "str", since: "Any | None" = None, limit: "int" = 10) -> "Any":
         """Return a SELECT statement for completed records by task name."""
         statement = (
             self._select_all().where_eq(self._col("task_name"), task_name).where_eq(self._col("status"), "completed")
@@ -407,7 +410,7 @@ class SQLSpecQueueStore:
             statement = statement.where(f"{self._col('completed_at')} >= :completed_since", completed_since=since)
         return statement.order_by(sql.raw(f"{self._col('completed_at')} DESC")).limit(limit)
 
-    def count_terminal(self, *, before: Any) -> Any:
+    def count_terminal(self, *, before: "Any") -> "Any":
         """Return a COUNT statement matching the same predicate as cleanup_terminal.
 
         Used by the backend to return a deterministic row count even when the
@@ -424,7 +427,7 @@ class SQLSpecQueueStore:
             )
         )
 
-    def cleanup_terminal(self, *, before: Any) -> Any:
+    def cleanup_terminal(self, *, before: "Any") -> "Any":
         """Return a DELETE statement for terminal records before a cutoff."""
         return (
             sql
@@ -436,7 +439,7 @@ class SQLSpecQueueStore:
             )
         )
 
-    def serialize_json(self, canonical: str, value: Any) -> Any:
+    def serialize_json(self, canonical: "str", value: "Any") -> "Any":
         """Serialize a JSON value for a canonical queue column.
 
         Native JSON columns (driver registers a JSON codec — e.g.
@@ -458,7 +461,7 @@ class SQLSpecQueueStore:
             return self._serialize_json(value)
         return self._serialize_json(value)
 
-    def deserialize_json(self, canonical: str, value: Any) -> Any:
+    def deserialize_json(self, canonical: "str", value: "Any") -> "Any":
         """Deserialize a task JSON value returned by the database driver.
 
         When ``canonical`` is in ``_native_json_columns`` the driver has
@@ -481,15 +484,15 @@ class SQLSpecQueueStore:
 
         return from_json(value)
 
-    def _col(self, canonical: str) -> str:
+    def _col(self, canonical: "str") -> "str":
         """Return the configured database column name for ``canonical``."""
         return self._column_map.get(canonical, canonical)
 
-    def _select_all(self) -> Any:
+    def _select_all(self) -> "Any":
         columns = tuple(self._select_column(canonical) for canonical in _TASK_COLUMNS)
         return sql.select(*columns).from_(self.table_name)
 
-    def _create_table_statement(self) -> Any:
+    def _create_table_statement(self) -> "Any":
         return (
             sql
             .create_table(self.table_name)
@@ -517,7 +520,7 @@ class SQLSpecQueueStore:
             .column(self._col("metadata_json"), self._metadata_json_type("metadata_json"), not_null=True)
         )
 
-    def _create_index_statements(self) -> list[str]:
+    def _create_index_statements(self) -> "list[str]":
         return [
             self._to_sql(
                 sql
@@ -547,59 +550,59 @@ class SQLSpecQueueStore:
             ),
         ]
 
-    def _select_column(self, canonical: str) -> str:
+    def _select_column(self, canonical: "str") -> "str":
         column = self._col(canonical)
         if column == canonical:
             return canonical
         return f"{column} AS {canonical}"
 
-    def _mapped_values(self, values: dict[str, Any]) -> dict[str, Any]:
+    def _mapped_values(self, values: "dict[str, Any]") -> "dict[str, Any]":
         return {self._col(column): value for column, value in values.items()}
 
-    def _index_name(self, suffix: str) -> str:
+    def _index_name(self, suffix: "str") -> "str":
         return f"ix_{self.table_name.replace('.', '_')}_{suffix}"
 
-    def _id_type(self) -> str:
+    def _id_type(self) -> "str":
         return self._string_type(64)
 
-    def _text_type(self) -> str:
+    def _text_type(self) -> "str":
         return self._dialect_type("text", fallback="TEXT")
 
-    def _string_type(self, length: int | None = None) -> str:
+    def _string_type(self, length: "int | None" = None) -> "str":
         return self._text_type() if length is None else f"VARCHAR({length})"
 
-    def _indexed_text_type(self) -> str:
+    def _indexed_text_type(self) -> "str":
         return self._string_type(255)
 
-    def _integer_type(self) -> str:
+    def _integer_type(self) -> "str":
         return self._dialect_type("integer", fallback="INTEGER")
 
-    def _json_type(self) -> str:
+    def _json_type(self) -> "str":
         return self._dialect_type("json", fallback=self._text_type())
 
-    def _payload_json_type(self, column_name: str) -> str:
+    def _payload_json_type(self, column_name: "str") -> "str":
         return self._json_type()
 
-    def _result_json_type(self, column_name: str) -> str:
+    def _result_json_type(self, column_name: "str") -> "str":
         return self._json_type()
 
-    def _metadata_json_type(self, column_name: str) -> str:
+    def _metadata_json_type(self, column_name: "str") -> "str":
         return self._json_type()
 
-    def _timestamp_type(self) -> str:
+    def _timestamp_type(self) -> "str":
         return self._dialect_type("timestamp", fallback=self._text_type())
 
-    def _error_type(self) -> str:
+    def _error_type(self) -> "str":
         return self._text_type()
 
-    def _serialize_json(self, value: Any) -> str:
+    def _serialize_json(self, value: "Any") -> "str":
         return to_json(value)
 
-    def _to_sql(self, statement: Any) -> str:
+    def _to_sql(self, statement: "Any") -> "str":
         built = statement.build(dialect=self.dialect_name)
         return cast("str", built.sql)
 
-    def _data_dictionary_dialect_name(self) -> str | None:
+    def _data_dictionary_dialect_name(self) -> "str | None":
         return type(self).data_dictionary_dialect or self.dialect_name
 
     def _dialect_config(self) -> "DialectConfig | None":
@@ -611,22 +614,22 @@ class SQLSpecQueueStore:
         except ValueError:
             return None
 
-    def _dialect_type(self, logical_type: str, *, fallback: str) -> str:
+    def _dialect_type(self, logical_type: "str", *, fallback: "str") -> "str":
         dialect_config = self._dialect_config()
         if dialect_config is not None and logical_type in dialect_config.type_mappings:
             return dialect_config.get_optimal_type(logical_type)
         return fallback
 
-    def _quoted_table_name(self) -> str:
+    def _quoted_table_name(self) -> "str":
         return self._quote_identifier(self.table_name)
 
-    def _quoted_index_name(self, suffix: str) -> str:
+    def _quoted_index_name(self, suffix: "str") -> "str":
         return self._quote_identifier(self._index_name(suffix))
 
-    def _quoted_col(self, canonical: str) -> str:
+    def _quoted_col(self, canonical: "str") -> "str":
         return self._quote_identifier(self._col(canonical))
 
-    def _quote_identifier(self, identifier: str) -> str:
+    def _quote_identifier(self, identifier: "str") -> "str":
         if type(self).identifier_quote_style == "none":
             return identifier
         quote = quote_backtick_identifier if type(self).identifier_quote_style == "backtick" else quote_identifier
@@ -636,7 +639,7 @@ class SQLSpecQueueStore:
         return ".".join(quote(part) for part in parts)
 
 
-def _configured_table_name(config: Any, table_name: str | None) -> str:
+def _configured_table_name(config: "Any", table_name: "str | None") -> "str":
     if table_name is not None:
         return validate_table_name(table_name)
     extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
@@ -644,7 +647,7 @@ def _configured_table_name(config: Any, table_name: str | None) -> str:
     return validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
 
 
-def _adapter_name(config: Any) -> str:
+def _adapter_name(config: "Any") -> "str":
     module_name = type(config).__module__
     if module_name.startswith("sqlspec.adapters."):
         return module_name.split(".")[2]
@@ -652,6 +655,6 @@ def _adapter_name(config: Any) -> str:
 
 
 @cache
-def _pyarrow_available() -> bool:
+def _pyarrow_available() -> "bool":
     """Return whether ``pyarrow`` is importable, caching the lookup."""
     return find_spec("pyarrow") is not None

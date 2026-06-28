@@ -14,8 +14,8 @@ __all__ = ("AdvancedAlchemyBackendConfig",)
 class AdvancedAlchemyBackendConfig:
     """Configuration values for the Advanced Alchemy queue backend."""
 
-    backend_name: ClassVar[str] = "advanced-alchemy"
+    backend_name: "ClassVar[str]" = "advanced-alchemy"
     sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None
     heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None
-    model_class: type[Any] | None = None
-    create_schema: bool = False
+    model_class: "type[Any] | None" = None
+    create_schema: "bool" = False

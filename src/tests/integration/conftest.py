@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-async def queue_backend(request: pytest.FixtureRequest, tmp_path: "Path") -> "AsyncIterator[BaseQueueBackend]":
+async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "AsyncIterator[BaseQueueBackend]":
     """Yield an opened queue backend parametrized over QUEUE_BACKENDS.
 
     For service-backed adapters (Postgres, MySQL, Oracle), tests share the same
@@ -23,7 +23,7 @@ async def queue_backend(request: pytest.FixtureRequest, tmp_path: "Path") -> "As
     prevent cross-test data leakage. In-process adapters get a unique tmp_path
     DB file per test so no extra cleanup is required.
     """
-    case: BackendCase = request.param
+    case: "BackendCase" = request.param
     for extra in case.extras:
         pytest.importorskip(extra)
 
@@ -54,7 +54,7 @@ async def queue_backend(request: pytest.FixtureRequest, tmp_path: "Path") -> "As
 
 
 @pytest.fixture
-def queue_backend_case(request: pytest.FixtureRequest) -> "BackendCase":
+def queue_backend_case(request: "pytest.FixtureRequest") -> "BackendCase":
     """Return the ``BackendCase`` backing the active ``queue_backend`` parametrization.
 
     Lets capability-sensitive tests (e.g. concurrency, which single-writer
@@ -63,7 +63,7 @@ def queue_backend_case(request: pytest.FixtureRequest) -> "BackendCase":
     return cast("BackendCase", request.node.callspec.params["queue_backend"])
 
 
-async def _drop_queue_tables(backend: "BaseQueueBackend") -> None:
+async def _drop_queue_tables(backend: "BaseQueueBackend") -> "None":
     """Drop the queue + events tables for service-backed SQLSpec adapters."""
     sqlspec_config = getattr(backend, "_sqlspec_config", None)
     sqlspec_manager = getattr(backend, "_sqlspec", None)
@@ -84,7 +84,7 @@ async def _drop_queue_tables(backend: "BaseQueueBackend") -> None:
                 await driver.execute_script(ddl)
 
 
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
     """Parametrize any test consuming the `queue_backend` fixture across QUEUE_BACKENDS.
 
     Cases tagged with ``skip-upstream`` are known to hang or fail before the
@@ -95,7 +95,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "queue_backend" in metafunc.fixturenames:
         params = []
         for case in QUEUE_BACKENDS:
-            marks: list[pytest.MarkDecorator] = []
+            marks: "list[pytest.MarkDecorator]" = []
             if "skip-upstream" in case.capabilities:
                 marks.append(
                     pytest.mark.skip(reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)")

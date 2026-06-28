@@ -46,38 +46,38 @@ CRON_FIELD_COUNT = 5
 CRON_SEARCH_YEARS = 8
 SUNDAY_CRON_VALUE = 7
 
-_task_registry: dict[str, "Task[Any, Any]"] = {}
-_schedule_registry: dict[str, "ScheduleConfig"] = {}
-_loaded_modules: set[str] = set()
+_task_registry: 'dict[str, "Task[Any, Any]"]' = {}
+_schedule_registry: 'dict[str, "ScheduleConfig"]' = {}
+_loaded_modules: "set[str]" = set()
 _RANDOM = random.SystemRandom()
-_default_service_holder: list["QueueService | None"] = [None]
+_default_service_holder: 'list["QueueService | None"]' = [None]
 
 
 @dataclass(frozen=True, slots=True)
 class _ParsedCron:
-    minutes: set[int]
-    hours: set[int]
-    days: set[int]
-    months: set[int]
-    weekdays: set[int]
-    day_of_month_restricted: bool
-    day_of_week_restricted: bool
+    minutes: "set[int]"
+    hours: "set[int]"
+    days: "set[int]"
+    months: "set[int]"
+    weekdays: "set[int]"
+    day_of_month_restricted: "bool"
+    day_of_week_restricted: "bool"
 
 
 @dataclass(frozen=True, slots=True)
 class ScheduleConfig:
     """Configuration for a recurring task schedule."""
 
-    task_name: str
-    cron: str | None = None
-    interval: timedelta | int | float | None = None
-    timezone: str = "UTC"
-    initial_delay: timedelta | int | float = 0
-    jitter: timedelta | int | float = 0
-    max_instances: int = 1
-    timeout: float | None = None
+    task_name: "str"
+    cron: "str | None" = None
+    interval: "timedelta | int | float | None" = None
+    timezone: "str" = "UTC"
+    initial_delay: "timedelta | int | float" = 0
+    jitter: "timedelta | int | float" = 0
+    max_instances: "int" = 1
+    timeout: "float | None" = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> "None":
         if self.cron is not None and self.interval is not None:
             msg = "Cannot specify both cron and interval"
             raise ValueError(msg)
@@ -100,7 +100,7 @@ class ScheduleConfig:
         object.__setattr__(self, "initial_delay", initial_delay)
         object.__setattr__(self, "jitter", jitter)
 
-    def get_next_run(self, after: datetime | None = None, *, use_initial_delay: bool = False) -> datetime:
+    def get_next_run(self, after: "datetime | None" = None, *, use_initial_delay: "bool" = False) -> "datetime":
         """Calculate the next scheduled run time.
 
         Returns:
@@ -122,7 +122,7 @@ class ScheduleConfig:
             raise ValueError(msg)
         return self._apply_jitter(self._get_next_cron_run(base))
 
-    def as_metadata(self) -> dict[str, Any]:
+    def as_metadata(self) -> "dict[str, Any]":
         """Return a JSON-compatible metadata representation."""
         interval = cast("timedelta | None", self.interval)
         initial_delay = cast("timedelta", self.initial_delay)
@@ -138,7 +138,7 @@ class ScheduleConfig:
             "timezone": self.timezone,
         }
 
-    def _parse_cron(self) -> _ParsedCron:
+    def _parse_cron(self) -> "_ParsedCron":
         if self.cron is None:
             msg = "Cron expression is not configured"
             raise ValueError(msg)
@@ -194,7 +194,7 @@ class ScheduleConfig:
             msg = f"Invalid cron expression: {self.cron}"
             raise ValueError(msg) from exc
 
-    def _get_next_cron_run(self, after: datetime) -> datetime:
+    def _get_next_cron_run(self, after: "datetime") -> "datetime":
         parsed = self._parse_cron()
         tz = _get_timezone(self.timezone)
         candidate = after.astimezone(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
@@ -214,7 +214,7 @@ class ScheduleConfig:
         msg = f"No matching run found for cron expression: {self.cron}"
         raise ValueError(msg)
 
-    def _apply_jitter(self, value: datetime) -> datetime:
+    def _apply_jitter(self, value: "datetime") -> "datetime":
         jitter = cast("timedelta", self.jitter)
         jitter_seconds = jitter.total_seconds()
         if jitter_seconds <= 0:
@@ -230,11 +230,11 @@ class TaskResult:
     def __init__(
         self,
         task_id: "UUID",
-        task_name: str,
+        task_name: "str",
         *,
         service: "QueueService | None" = None,
         record: "QueuedTaskRecord | None" = None,
-    ) -> None:
+    ) -> "None":
         self._task_id = task_id
         self._task_name = task_name
         self._service = service
@@ -242,35 +242,35 @@ class TaskResult:
 
     @property
     def id(self) -> "UUID":
-        """Return the queue record ID."""
+        """Queue record ID."""
         return self._task_id
 
     @property
-    def task_name(self) -> str:
-        """Return the registered task name."""
+    def task_name(self) -> "str":
+        """Registered task name."""
         return self._task_name
 
     @property
     def status(self) -> "TaskStatus | None":
-        """Return the cached task status."""
+        """Cached task status."""
         return self._cached_record.status if self._cached_record is not None else None
 
     @property
-    def result(self) -> Any:
-        """Return the cached task result."""
+    def result(self) -> "Any":
+        """Cached task result."""
         return self._cached_record.result if self._cached_record is not None else None
 
     @property
-    def error(self) -> str | None:
-        """Return the cached task error."""
+    def error(self) -> "str | None":
+        """Cached task error."""
         return self._cached_record.error if self._cached_record is not None else None
 
     @property
     def record(self) -> "QueuedTaskRecord | None":
-        """Return the cached queue record."""
+        """Cached queue record."""
         return self._cached_record
 
-    async def refresh(self) -> Self:
+    async def refresh(self) -> "Self":
         """Refresh this handle from its queue service.
 
         Returns:
@@ -285,7 +285,7 @@ class TaskResult:
         self._cached_record = await self._service.get_task(self._task_id)
         return self
 
-    async def wait(self, *, timeout: float | None = None, poll_interval: float = 0.1) -> Self:
+    async def wait(self, *, timeout: "float | None" = None, poll_interval: "float" = 0.1) -> "Self":
         """Wait until the task reaches a terminal status.
 
         Returns:
@@ -329,22 +329,22 @@ class Task(Generic[P, T]):
 
     def __init__(
         self,
-        func: TaskCallable[P, T],
+        func: "TaskCallable[P, T]",
         *,
-        name: str,
-        queue: str = "default",
-        priority: int = 0,
-        retries: int = 0,
-        timeout: float | None = None,
-        execution_backend: str | None = None,
-        execution_profile: str | None = None,
-        key: str | None = None,
-        run_after: float | timedelta | None = None,
-        description: str | None = None,
-        log_level: str | None = None,
-        quiet_success: bool | None = None,
-        requeue_on_stale: bool | None = None,
-    ) -> None:
+        name: "str",
+        queue: "str" = "default",
+        priority: "int" = 0,
+        retries: "int" = 0,
+        timeout: "float | None" = None,
+        execution_backend: "str | None" = None,
+        execution_profile: "str | None" = None,
+        key: "str | None" = None,
+        run_after: "float | timedelta | None" = None,
+        description: "str | None" = None,
+        log_level: "str | None" = None,
+        quiet_success: "bool | None" = None,
+        requeue_on_stale: "bool | None" = None,
+    ) -> "None":
         self._func = func
         self._name = name
         self._queue = queue
@@ -361,76 +361,76 @@ class Task(Generic[P, T]):
         self._requeue_on_stale = requeue_on_stale
 
     @property
-    def name(self) -> str:
-        """Return the registered task name."""
+    def name(self) -> "str":
+        """Registered task name."""
         return self._name
 
     @property
-    def queue(self) -> str:
-        """Return the default queue name."""
+    def queue(self) -> "str":
+        """Default queue name."""
         return self._queue
 
     @property
-    def priority(self) -> int:
-        """Return the default priority."""
+    def priority(self) -> "int":
+        """Default priority."""
         return self._priority
 
     @property
-    def retries(self) -> int:
-        """Return the maximum retry count."""
+    def retries(self) -> "int":
+        """Maximum retry count."""
         return self._retries
 
     @property
-    def timeout(self) -> float | None:
-        """Return the execution timeout."""
+    def timeout(self) -> "float | None":
+        """Execution timeout."""
         return self._timeout
 
     @property
-    def execution_backend(self) -> str | None:
-        """Return the task-specific execution backend override."""
+    def execution_backend(self) -> "str | None":
+        """Task-specific execution backend override."""
         return self._execution_backend
 
     @property
-    def execution_profile(self) -> str | None:
-        """Return the task-specific execution profile override."""
+    def execution_profile(self) -> "str | None":
+        """Task-specific execution profile override."""
         return self._execution_profile
 
     @property
-    def key(self) -> str | None:
-        """Return the default deduplication key."""
+    def key(self) -> "str | None":
+        """Default deduplication key."""
         return self._key
 
     @property
-    def run_after(self) -> timedelta | None:
-        """Return the relative delay for enqueue operations."""
+    def run_after(self) -> "timedelta | None":
+        """Relative delay for enqueue operations."""
         return self._run_after
 
     @property
-    def description(self) -> str | None:
-        """Return the task description metadata."""
+    def description(self) -> "str | None":
+        """Task description metadata."""
         return self._description
 
     @property
-    def log_level(self) -> str | None:
-        """Return the task log level metadata."""
+    def log_level(self) -> "str | None":
+        """Task log level metadata."""
         return self._log_level
 
     @property
-    def quiet_success(self) -> bool | None:
-        """Return whether successful completion logging should be quiet."""
+    def quiet_success(self) -> "bool | None":
+        """Whether successful completion logging should be quiet."""
         return self._quiet_success
 
     @property
-    def requeue_on_stale(self) -> bool:
-        """Return whether stale running records should be requeued when retries remain."""
+    def requeue_on_stale(self) -> "bool":
+        """Whether stale running records should be requeued when retries remain."""
         return self._requeue_on_stale is not False
 
     @property
-    def function(self) -> TaskCallable[P, T]:
-        """Return the wrapped callable."""
+    def function(self) -> "TaskCallable[P, T]":
+        """Wrapped callable."""
         return self._func
 
-    async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    async def __call__(self, *args: "P.args", **kwargs: "P.kwargs") -> "T":
         """Execute the wrapped callable directly.
 
         Returns:
@@ -448,7 +448,7 @@ class Task(Generic[P, T]):
         task_context: "TaskExecutionContext | None" = None,
         extra_kwargs: "Mapping[str, object] | None" = None,
         sync_executor: "Executor | None" = None,
-    ) -> T:
+    ) -> "T":
         """Execute this task for a queued record in worker context.
 
         Returns:
@@ -467,7 +467,7 @@ class Task(Generic[P, T]):
         sync_func = cast("Callable[..., T]", self._func)
         return await _run_sync_callable(sync_func, record.args, kwargs, sync_executor=sync_executor)
 
-    def metadata(self, values: dict[str, Any] | None = None) -> dict[str, Any]:
+    def metadata(self, values: "dict[str, Any] | None" = None) -> "dict[str, Any]":
         """Return enqueue metadata for this task."""
         metadata = dict(values or {})
         if self._description is not None:
@@ -483,18 +483,18 @@ class Task(Generic[P, T]):
     def using(
         self,
         *,
-        queue: str | None = None,
-        priority: int | None = None,
-        retries: int | None = None,
-        timeout: float | None = None,
-        execution_backend: str | None = None,
-        execution_profile: str | None = None,
-        key: str | None = None,
-        run_after: float | timedelta | None = None,
-        description: str | None = None,
-        log_level: str | None = None,
-        quiet_success: bool | None = None,
-        requeue_on_stale: bool | None = None,
+        queue: "str | None" = None,
+        priority: "int | None" = None,
+        retries: "int | None" = None,
+        timeout: "float | None" = None,
+        execution_backend: "str | None" = None,
+        execution_profile: "str | None" = None,
+        key: "str | None" = None,
+        run_after: "float | timedelta | None" = None,
+        description: "str | None" = None,
+        log_level: "str | None" = None,
+        quiet_success: "bool | None" = None,
+        requeue_on_stale: "bool | None" = None,
     ) -> "Task[P, T]":
         """Return a configured copy with enqueue overrides."""
         return Task(
@@ -514,7 +514,7 @@ class Task(Generic[P, T]):
             requeue_on_stale=requeue_on_stale if requeue_on_stale is not None else self._requeue_on_stale,
         )
 
-    async def enqueue(self, *args: P.args, **kwargs: P.kwargs) -> TaskResult:
+    async def enqueue(self, *args: "P.args", **kwargs: "P.kwargs") -> "TaskResult":
         """Enqueue this task using the configured default service or fall back to an immediate service.
 
         Returns:
@@ -531,14 +531,14 @@ class Task(Generic[P, T]):
         async with QueueService(QueueConfig(execution_backend="immediate")) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
-    def _accepts_job_id(self) -> bool:
+    def _accepts_job_id(self) -> "bool":
         signature = inspect.signature(self._func)
         parameters = signature.parameters
         return "_job_id" in parameters or any(
             param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         )
 
-    def _accepts_task_context(self) -> bool:
+    def _accepts_task_context(self) -> "bool":
         signature = inspect.signature(self._func)
         parameters = signature.parameters
         return "_task_context" in parameters or any(
@@ -546,12 +546,12 @@ class Task(Generic[P, T]):
         )
 
 
-def get_task_registry() -> dict[str, Task[Any, Any]]:
+def get_task_registry() -> "dict[str, Task[Any, Any]]":
     """Return the global task registry."""
     return _task_registry
 
 
-def get_scheduled_tasks() -> dict[str, ScheduleConfig]:
+def get_scheduled_tasks() -> "dict[str, ScheduleConfig]":
     """Return the global scheduled task registry."""
     return _schedule_registry
 
@@ -561,12 +561,12 @@ def get_default_service() -> "QueueService | None":
     return _default_service_holder[0]
 
 
-def set_default_service(service: "QueueService | None") -> None:
+def set_default_service(service: "QueueService | None") -> "None":
     """Set the global default QueueService instance."""
     _default_service_holder[0] = service
 
 
-def clear_task_registry() -> None:
+def clear_task_registry() -> "None":
     """Clear task and schedule registries."""
     _task_registry.clear()
     _schedule_registry.clear()
@@ -574,7 +574,7 @@ def clear_task_registry() -> None:
     _default_service_holder[0] = None
 
 
-def load_task_modules(modules: tuple[str, ...] | list[str], *, force_reload: bool = False) -> int:
+def load_task_modules(modules: "tuple[str, ...] | list[str]", *, force_reload: "bool" = False) -> "int":
     """Import configured task modules so decorators register tasks.
 
     Returns:
@@ -594,7 +594,7 @@ def load_task_modules(modules: tuple[str, ...] | list[str], *, force_reload: boo
     return loaded
 
 
-def discover_tasks(package: str, subpackage: str = "jobs", *, force_reload: bool = False) -> tuple[str, ...]:
+def discover_tasks(package: "str", subpackage: "str" = "jobs", *, force_reload: "bool" = False) -> "tuple[str, ...]":
     """Walk ``package`` and import every ``<package>.<...>.<subpackage>.<...>`` module.
 
     Adopters with ``app.domain.<x>.jobs/`` layouts can call this once at
@@ -620,7 +620,7 @@ def discover_tasks(package: str, subpackage: str = "jobs", *, force_reload: bool
         msg = f"discover_tasks requires a package; {package!r} is a module"
         raise ModuleNotFoundError(msg)
 
-    matched: list[str] = []
+    matched: "list[str]" = []
     for _, module_name, _is_package in pkgutil.walk_packages(cast("Any", root).__path__, prefix=f"{root.__name__}."):
         if subpackage not in module_name.split(".")[1:]:
             continue
@@ -639,62 +639,62 @@ def discover_tasks(package: str, subpackage: str = "jobs", *, force_reload: bool
 
 
 @overload
-def task(func: Callable[P, Awaitable[T]], /) -> Task[P, T]: ...
+def task(func: "Callable[P, Awaitable[T]]", /) -> "Task[P, T]": ...
 
 
 @overload
-def task(func: Callable[P, T], /) -> Task[P, T]: ...
+def task(func: "Callable[P, T]", /) -> "Task[P, T]": ...
 
 
 @overload
 def task(
-    name: str | None = None,
+    name: "str | None" = None,
     /,
     *,
-    queue: str = "default",
-    priority: int = 0,
-    retries: int = 0,
-    timeout: float | None = None,
-    execution_backend: str | None = None,
-    execution_profile: str | None = None,
-    key: str | None = None,
-    run_after: float | timedelta | None = None,
-    description: str | None = None,
-    log_level: str | None = None,
-    quiet_success: bool | None = None,
-    requeue_on_stale: bool | None = None,
-    cron: str | None = None,
-    interval: float | timedelta | None = None,
-    timezone: str = "UTC",
-    initial_delay: float | timedelta = 0,
-    jitter: float | timedelta = 0,
-    max_instances: int = 1,
-) -> Callable[[AnyTaskCallable], Task[Any, Any]]: ...
+    queue: "str" = "default",
+    priority: "int" = 0,
+    retries: "int" = 0,
+    timeout: "float | None" = None,
+    execution_backend: "str | None" = None,
+    execution_profile: "str | None" = None,
+    key: "str | None" = None,
+    run_after: "float | timedelta | None" = None,
+    description: "str | None" = None,
+    log_level: "str | None" = None,
+    quiet_success: "bool | None" = None,
+    requeue_on_stale: "bool | None" = None,
+    cron: "str | None" = None,
+    interval: "float | timedelta | None" = None,
+    timezone: "str" = "UTC",
+    initial_delay: "float | timedelta" = 0,
+    jitter: "float | timedelta" = 0,
+    max_instances: "int" = 1,
+) -> "Callable[[AnyTaskCallable], Task[Any, Any]]": ...
 
 
 def task(
-    func_or_name: AnyTaskCallable | str | None = None,
+    func_or_name: "AnyTaskCallable | str | None" = None,
     /,
     *,
-    queue: str = "default",
-    priority: int = 0,
-    retries: int = 0,
-    timeout: float | None = None,
-    execution_backend: str | None = None,
-    execution_profile: str | None = None,
-    key: str | None = None,
-    run_after: float | timedelta | None = None,
-    description: str | None = None,
-    log_level: str | None = None,
-    quiet_success: bool | None = None,
-    requeue_on_stale: bool | None = None,
-    cron: str | None = None,
-    interval: float | timedelta | None = None,
-    timezone: str = "UTC",
-    initial_delay: float | timedelta = 0,
-    jitter: float | timedelta = 0,
-    max_instances: int = 1,
-) -> Task[Any, Any] | Callable[[AnyTaskCallable], Task[Any, Any]]:
+    queue: "str" = "default",
+    priority: "int" = 0,
+    retries: "int" = 0,
+    timeout: "float | None" = None,
+    execution_backend: "str | None" = None,
+    execution_profile: "str | None" = None,
+    key: "str | None" = None,
+    run_after: "float | timedelta | None" = None,
+    description: "str | None" = None,
+    log_level: "str | None" = None,
+    quiet_success: "bool | None" = None,
+    requeue_on_stale: "bool | None" = None,
+    cron: "str | None" = None,
+    interval: "float | timedelta | None" = None,
+    timezone: "str" = "UTC",
+    initial_delay: "float | timedelta" = 0,
+    jitter: "float | timedelta" = 0,
+    max_instances: "int" = 1,
+) -> "Task[Any, Any] | Callable[[AnyTaskCallable], Task[Any, Any]]":
     """Register a callable as a queue task.
 
     Returns:
@@ -723,9 +723,9 @@ def task(
         else None
     )
 
-    def decorator(func: AnyTaskCallable) -> Task[Any, Any]:
+    def decorator(func: "AnyTaskCallable") -> "Task[Any, Any]":
         task_name = explicit_name or func.__name__
-        task_obj: Task[Any, Any] = Task(
+        task_obj: "Task[Any, Any]" = Task(
             cast("TaskCallable[..., Any]", func),
             name=task_name,
             queue=queue,
@@ -760,13 +760,13 @@ def task(
     return decorator
 
 
-def _ensure_utc(value: datetime) -> datetime:
+def _ensure_utc(value: "datetime") -> "datetime":
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
 
 
-def _coerce_interval(value: float | timedelta | None) -> timedelta | None:
+def _coerce_interval(value: "float | timedelta | None") -> "timedelta | None":
     if value is None:
         return None
     if isinstance(value, timedelta):
@@ -774,7 +774,7 @@ def _coerce_interval(value: float | timedelta | None) -> timedelta | None:
     return timedelta(seconds=value)
 
 
-def _get_timezone(name: str) -> zoneinfo.ZoneInfo:
+def _get_timezone(name: "str") -> "zoneinfo.ZoneInfo":
     try:
         return zoneinfo.ZoneInfo(name)
     except zoneinfo.ZoneInfoNotFoundError as exc:
@@ -782,7 +782,7 @@ def _get_timezone(name: str) -> zoneinfo.ZoneInfo:
         raise ValueError(msg) from exc
 
 
-def _cron_day_matches(parsed: _ParsedCron, *, day: int, weekday: int) -> bool:
+def _cron_day_matches(parsed: "_ParsedCron", *, day: "int", weekday: "int") -> "bool":
     day_matches = day in parsed.days
     weekday_matches = weekday in parsed.weekdays
     if parsed.day_of_month_restricted and parsed.day_of_week_restricted:
@@ -791,8 +791,8 @@ def _cron_day_matches(parsed: _ParsedCron, *, day: int, weekday: int) -> bool:
 
 
 async def _run_sync_callable(
-    func: "Callable[..., T]", args: tuple[Any, ...], kwargs: dict[str, Any], *, sync_executor: "Executor | None"
-) -> T:
+    func: "Callable[..., T]", args: "tuple[Any, ...]", kwargs: "dict[str, Any]", *, sync_executor: "Executor | None"
+) -> "T":
     if sync_executor is None:
         return await asyncio.to_thread(func, *args, **kwargs)
     context = contextvars.copy_context()
@@ -800,7 +800,7 @@ async def _run_sync_callable(
     return await asyncio.get_running_loop().run_in_executor(sync_executor, call)
 
 
-def _parse_cron_value(value: str, names: dict[str, int]) -> int:
+def _parse_cron_value(value: "str", names: "dict[str, int]") -> "int":
     normalized = value.upper()
     if normalized in names:
         return names[normalized]
@@ -808,19 +808,19 @@ def _parse_cron_value(value: str, names: dict[str, int]) -> int:
 
 
 def _expand_cron_field(
-    field: str,
+    field: "str",
     *,
-    minimum: int,
-    maximum: int,
-    names: dict[str, int] | None = None,
-    normalize_sunday: bool = False,
-    allow_question: bool = False,
-) -> set[int]:
+    minimum: "int",
+    maximum: "int",
+    names: "dict[str, int] | None" = None,
+    normalize_sunday: "bool" = False,
+    allow_question: "bool" = False,
+) -> "set[int]":
     names = names or {}
     if allow_question and field == "?":
         return set(range(minimum, maximum + 1))
 
-    values: set[int] = set()
+    values: "set[int]" = set()
 
     for raw_part in field.split(","):
         part = raw_part.strip()
@@ -865,7 +865,7 @@ def _expand_cron_field(
     return values
 
 
-def _load_child_modules(module: "ModuleType", *, force_reload: bool) -> int:
+def _load_child_modules(module: "ModuleType", *, force_reload: "bool") -> "int":
     if not hasattr(module, "__path__"):
         return 0
     loaded = 0

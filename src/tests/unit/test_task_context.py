@@ -15,18 +15,18 @@ from litestar_queues.events import (
 pytestmark = pytest.mark.anyio
 
 
-def test_current_task_context_helpers_outside_task() -> None:
+def test_current_task_context_helpers_outside_task() -> "None":
     assert get_current_task_context() is None
     with pytest.raises(RuntimeError, match="No queue task execution context"):
         require_current_task_context()
 
 
-async def test_task_context_is_bound_and_helpers_publish_task_events() -> None:
+async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None":
     sink = InMemoryQueueEventSink()
-    captured_context: TaskExecutionContext | None = None
+    captured_context: "TaskExecutionContext | None" = None
 
     @task("tasks.with_context")
-    async def with_context(*, _task_context: TaskExecutionContext) -> str:
+    async def with_context(*, _task_context: "TaskExecutionContext") -> "str":
         nonlocal captured_context
         captured_context = _task_context
         assert get_current_task_context() is _task_context
@@ -58,12 +58,12 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> None:
     assert all(event.task_id == str(result.id) for event in sink.events)
 
 
-async def test_task_context_keyword_is_not_injected_when_callable_does_not_accept_it() -> None:
+async def test_task_context_keyword_is_not_injected_when_callable_does_not_accept_it() -> "None":
     sink = InMemoryQueueEventSink()
-    received_kwargs: dict[str, object] | None = None
+    received_kwargs: "dict[str, object] | None" = None
 
     @task("tasks.plain")
-    async def plain() -> dict[str, object]:
+    async def plain() -> "dict[str, object]":
         nonlocal received_kwargs
         received_kwargs = {}
         await publish_task_progress(percent=50)

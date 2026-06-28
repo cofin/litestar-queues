@@ -9,102 +9,103 @@ so any test that asks for the ``queue_backend`` fixture is auto-parametrized
 across the registry. Per-adapter behavior gating uses ``case.capabilities``.
 """
 
-from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from pathlib import Path
+
     from litestar_queues.backends import BaseQueueBackend
 
 
 class PostgresService(Protocol):
     """pytest-databases Postgres service attributes used by backend builders."""
 
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str
+    host: "str"
+    port: "int"
+    user: "str"
+    password: "str"
+    database: "str"
 
 
 class MySQLService(Protocol):
     """pytest-databases MySQL service attributes used by backend builders."""
 
-    host: str
-    port: int
-    user: str
-    password: str
-    db: str
+    host: "str"
+    port: "int"
+    user: "str"
+    password: "str"
+    db: "str"
 
 
 class OracleService(Protocol):
     """pytest-databases Oracle service attributes used by backend builders."""
 
-    host: str
-    port: int
-    user: str
-    password: str
-    service_name: str
+    host: "str"
+    port: "int"
+    user: "str"
+    password: "str"
+    service_name: "str"
 
 
 class BigQueryService(Protocol):
     """pytest-databases BigQuery service attributes used by backend builders."""
 
-    project: str
-    dataset: str
-    credentials: object
-    client_options: object
+    project: "str"
+    dataset: "str"
+    credentials: "object"
+    client_options: "object"
 
 
 class SpannerService(Protocol):
     """pytest-databases Spanner service attributes used by backend builders."""
 
-    project: str
-    instance_name: str
-    database_name: str
-    credentials: object
-    client_options: object
+    project: "str"
+    instance_name: "str"
+    database_name: "str"
+    credentials: "object"
+    client_options: "object"
 
 
 class SpannerOperation(Protocol):
     """Synchronous Spanner emulator operation result used by the test bootstrap."""
 
-    def result(self, timeout: int) -> object:
+    def result(self, timeout: "int") -> "object":
         """Wait for the operation to complete."""
 
 
 class SpannerDatabase(Protocol):
     """Spanner database methods used by the test bootstrap."""
 
-    def exists(self) -> bool:
+    def exists(self) -> "bool":
         """Return whether the database exists."""
 
-    def create(self) -> SpannerOperation:
+    def create(self) -> "SpannerOperation":
         """Create the database."""
 
 
 class SpannerInstance(Protocol):
     """Spanner instance methods used by the test bootstrap."""
 
-    def exists(self) -> bool:
+    def exists(self) -> "bool":
         """Return whether the instance exists."""
 
-    def create(self) -> SpannerOperation:
+    def create(self) -> "SpannerOperation":
         """Create the instance."""
 
-    def database(self, database_name: str) -> SpannerDatabase:
+    def database(self, database_name: "str") -> "SpannerDatabase":
         """Return a database handle."""
 
 
 class SpannerClient(Protocol):
     """Spanner client methods used by the test bootstrap."""
 
-    def instance(self, instance_id: str, *, configuration_name: str, display_name: str) -> SpannerInstance:
+    def instance(self, instance_id: "str", *, configuration_name: "str", display_name: "str") -> "SpannerInstance":
         """Return an instance handle."""
 
-    def close(self) -> None:
+    def close(self) -> "None":
         """Close the client."""
 
 
@@ -112,20 +113,20 @@ class SpannerClient(Protocol):
 class FixtureCtx:
     """Per-test fixture context handed to a BackendCase builder."""
 
-    tmp_path: Path
-    service: object | None = None
-    table_name: str | None = None
+    tmp_path: "Path"
+    service: "object | None" = None
+    table_name: "str | None" = None
 
 
 @dataclass(frozen=True, slots=True)
 class BackendCase:
     """One row in the parametrize matrix."""
 
-    name: str
-    extras: frozenset[str]
-    service_attr: str | None
-    build: Callable[[FixtureCtx], Awaitable["BaseQueueBackend"]]
-    capabilities: frozenset[str]
+    name: "str"
+    extras: "frozenset[str]"
+    service_attr: "str | None"
+    build: 'Callable[[FixtureCtx], Awaitable["BaseQueueBackend"]]'
+    capabilities: "frozenset[str]"
 
 
 # ---------------------------------------------------------------------------
@@ -134,13 +135,13 @@ class BackendCase:
 # ---------------------------------------------------------------------------
 
 
-async def _build_memory(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_memory(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from litestar_queues.backends import InMemoryQueueBackend
 
     return InMemoryQueueBackend()
 
 
-def _sqlspec_backend(sqlspec_config: object, *, table_name: str | None = None) -> "BaseQueueBackend":
+def _sqlspec_backend(sqlspec_config: "object", *, table_name: "str | None" = None) -> "BaseQueueBackend":
     """Return a SQLSpec backend configured through the typed config object.
 
     ``table_name`` is set per-case by the fixture so adapters sharing the
@@ -154,7 +155,7 @@ def _sqlspec_backend(sqlspec_config: object, *, table_name: str | None = None) -
     )
 
 
-async def _build_aiosqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_aiosqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
     return _sqlspec_backend(
@@ -163,7 +164,7 @@ async def _build_aiosqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.sqlite import SqliteConfig
 
     return _sqlspec_backend(
@@ -171,7 +172,7 @@ async def _build_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_duckdb(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_duckdb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.duckdb import DuckDBConfig
 
     return _sqlspec_backend(
@@ -179,7 +180,7 @@ async def _build_duckdb(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_adbc_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_adbc_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.adbc import AdbcConfig
 
     return _sqlspec_backend(
@@ -188,7 +189,7 @@ async def _build_adbc_sqlite(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_postgres_asyncpg(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_postgres_asyncpg(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.asyncpg import AsyncpgConfig
 
     svc = cast("PostgresService", ctx.service)
@@ -207,7 +208,7 @@ async def _build_postgres_asyncpg(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_postgres_psycopg(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_postgres_psycopg(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.psycopg import PsycopgAsyncConfig
 
     svc = cast("PostgresService", ctx.service)
@@ -226,7 +227,7 @@ async def _build_postgres_psycopg(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_postgres_psqlpy(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_postgres_psqlpy(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.psqlpy import PsqlpyConfig
 
     svc = cast("PostgresService", ctx.service)
@@ -245,7 +246,7 @@ async def _build_postgres_psqlpy(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_mysql_asyncmy(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_mysql_asyncmy(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.asyncmy import AsyncmyConfig
 
     svc = cast("MySQLService", ctx.service)
@@ -264,7 +265,7 @@ async def _build_mysql_asyncmy(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_mysql_aiomysql(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_mysql_aiomysql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.aiomysql import AiomysqlConfig
 
     svc = cast("MySQLService", ctx.service)
@@ -283,7 +284,7 @@ async def _build_mysql_aiomysql(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_mysql_pymysql(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_mysql_pymysql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.pymysql import PyMysqlConfig
 
     svc = cast("MySQLService", ctx.service)
@@ -302,7 +303,7 @@ async def _build_mysql_pymysql(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_mysql_mysqlconnector(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_mysql_mysqlconnector(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.mysqlconnector import MysqlConnectorAsyncConfig
 
     svc = cast("MySQLService", ctx.service)
@@ -321,7 +322,7 @@ async def _build_mysql_mysqlconnector(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_oracle_oracledb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.oracledb import OracleAsyncConfig
 
     svc = cast("OracleService", ctx.service)
@@ -340,7 +341,7 @@ async def _build_oracle_oracledb(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_bigquery(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_bigquery(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.bigquery import BigQueryConfig
 
     svc = cast("BigQueryService", ctx.service)
@@ -359,7 +360,7 @@ async def _build_bigquery(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-async def _build_spanner(ctx: FixtureCtx) -> "BaseQueueBackend":
+async def _build_spanner(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.spanner import SpannerSyncConfig
 
     svc = cast("SpannerService", ctx.service)
@@ -381,7 +382,7 @@ async def _build_spanner(ctx: FixtureCtx) -> "BaseQueueBackend":
     )
 
 
-def _ensure_spanner_database(service: SpannerService) -> None:
+def _ensure_spanner_database(service: "SpannerService") -> "None":
     """Create the Spanner emulator instance and database used by SQLSpec tests."""
     from google.api_core.exceptions import AlreadyExists
     from google.cloud.spanner import Client
@@ -410,7 +411,7 @@ def _ensure_spanner_database(service: SpannerService) -> None:
 # litestar-queues-27b).
 # When the upstream fixes land, drop the capability from the BackendCase to flip
 # the case back to a hard-pass requirement.
-QUEUE_BACKENDS: tuple[BackendCase, ...] = (
+QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
     BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
     BackendCase(
         "aiosqlite",

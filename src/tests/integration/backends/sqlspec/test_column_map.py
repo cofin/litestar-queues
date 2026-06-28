@@ -2,7 +2,6 @@
 
 import importlib
 import sqlite3
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -12,14 +11,16 @@ import pytest
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
-from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.stores import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
+
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 pytestmark = pytest.mark.anyio
 
@@ -49,8 +50,8 @@ ADOPTER_COLUMN_MAP = {
 
 
 def test_column_map_resolves_generated_statement_columns(
-    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
-) -> None:
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
     """Every statement variant uses mapped columns while SELECT aliases preserve canonical rows."""
     store = create_queue_store(
         sqlite_config_factory(tmp_path / "statements.db"), table_name="adopter_jobs", column_map=ADOPTER_COLUMN_MAP
@@ -118,8 +119,8 @@ def test_column_map_resolves_generated_statement_columns(
 
 
 async def test_column_map_operates_against_adopter_owned_sqlite_table(
-    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
-) -> None:
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
     """The backend can run end-to-end against a table that uses adopter names."""
     db_path = tmp_path / "adopter.db"
     _create_adopter_sqlite_schema(db_path)
@@ -185,8 +186,8 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
 
 
 async def test_manage_schema_false_emits_no_schema_ddl(
-    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
-) -> None:
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
     """Schema creation, drop, migrations, and open() stay hands-off when opted out."""
     db_path = tmp_path / "no-schema.db"
     config = sqlite_config_factory(db_path)
@@ -209,8 +210,8 @@ async def test_manage_schema_false_emits_no_schema_ddl(
 
 
 def test_native_json_columns_bypass_text_serialization(
-    tmp_path: "Path", sqlite_config_factory: Callable[["Path"], AiosqliteConfig]
-) -> None:
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
     """Native JSON columns pass Python values to SQLSpec while text JSON remains encoded."""
     store = create_queue_store(
         sqlite_config_factory(tmp_path / "native-json.db"), native_json_columns=frozenset({"kwargs_json"})
@@ -233,14 +234,14 @@ def test_native_json_columns_bypass_text_serialization(
     ),
 )
 def test_backend_config_validates_column_map_and_native_json_columns(
-    config_factory: Callable[[], SQLSpecBackendConfig], match: str
-) -> None:
+    config_factory: "Callable[[], SQLSpecBackendConfig]", match: "str"
+) -> "None":
     """Configuration mistakes fail before runtime SQL execution."""
     with pytest.raises(QueueConfigurationError, match=match):
         config_factory()
 
 
-def _create_adopter_sqlite_schema(path: "Path") -> None:
+def _create_adopter_sqlite_schema(path: "Path") -> "None":
     columns = ADOPTER_COLUMN_MAP
     with sqlite3.connect(path) as connection:
         connection.execute(

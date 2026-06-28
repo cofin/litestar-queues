@@ -1,4 +1,4 @@
-def test_public_exports() -> None:
+def test_public_exports() -> "None":
     """Test that the package exposes the public queue API.
 
     Optional backends (advanced_alchemy, sqlspec, redis, valkey) are NOT in the
@@ -111,7 +111,7 @@ def test_public_exports() -> None:
     assert callable(task)
 
 
-def test_optional_backends_resolve_lazily_via_factory() -> None:
+def test_optional_backends_resolve_lazily_via_factory() -> "None":
     """Optional backends are not top-level exports but are resolvable by name through the factory."""
     from litestar_queues import get_queue_backend_class
     from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
@@ -125,7 +125,7 @@ def test_optional_backends_resolve_lazily_via_factory() -> None:
     assert get_queue_backend_class("valkey") is ValkeyQueueBackend
 
 
-def test_optional_backend_configs_live_on_submodules() -> None:
+def test_optional_backend_configs_live_on_submodules() -> "None":
     """Backend-specific config dataclasses are not top-level exports."""
     from litestar_queues.backends.redis import RedisBackendConfig
     from litestar_queues.backends.valkey import ValkeyBackendConfig
@@ -134,7 +134,7 @@ def test_optional_backend_configs_live_on_submodules() -> None:
     assert ValkeyBackendConfig(url="valkey://example").url == "valkey://example"
 
 
-def test_task_dependency_resolver_is_re_exported_from_package_root() -> None:
+def test_task_dependency_resolver_is_re_exported_from_package_root() -> "None":
     """TaskDependencyResolver is part of the package root surface."""
     import litestar_queues
     from litestar_queues import TaskDependencyResolver
@@ -144,7 +144,7 @@ def test_task_dependency_resolver_is_re_exported_from_package_root() -> None:
     assert "TaskDependencyResolver" in litestar_queues.__all__
 
 
-def test_task_dependency_resolver_config_surface() -> None:
+def test_task_dependency_resolver_config_surface() -> "None":
     """The TaskDependencyResolver alias and config field are part of the config module surface."""
     from litestar_queues import config as config_module
     from litestar_queues.config import QueueConfig, TaskDependencyResolver

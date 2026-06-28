@@ -7,7 +7,6 @@ exercise the universal ``execute_many`` tier and prove both produce identical
 results.
 """
 
-from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -17,13 +16,14 @@ from litestar_queues import EnqueueSpec
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
     from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(params=["native", "fallback"])
-def bulk_tier(request: pytest.FixtureRequest, sqlspec_backend: SQLSpecQueueBackend) -> Iterator[str]:
+def bulk_tier(request: "pytest.FixtureRequest", sqlspec_backend: "SQLSpecQueueBackend") -> "Iterator[str]":
     """Select the bulk tier by toggling the store's native-ingest capability."""
     store = sqlspec_backend._get_store()
     if request.param == "fallback":
@@ -38,7 +38,7 @@ def bulk_tier(request: pytest.FixtureRequest, sqlspec_backend: SQLSpecQueueBacke
         yield request.param
 
 
-async def test_enqueue_many_persists_and_roundtrips(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
+async def test_enqueue_many_persists_and_roundtrips(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     specs = [
         EnqueueSpec(task_name="tasks.a", args=(1, "x"), kwargs={"k": 1}, metadata={"m": [1]}, priority=3),
         EnqueueSpec(task_name="tasks.b", kwargs={"k": 2}, queue="reports"),
@@ -64,7 +64,7 @@ async def test_enqueue_many_persists_and_roundtrips(sqlspec_backend: SQLSpecQueu
     assert nested.metadata == {"nested": {"deep": True}}
 
 
-async def test_enqueue_many_matches_single_enqueue(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
+async def test_enqueue_many_matches_single_enqueue(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     single = await sqlspec_backend.enqueue("tasks.parity", args=(7,), kwargs={"a": "b"}, metadata={"z": 9}, priority=4)
     (bulk,) = await sqlspec_backend.enqueue_many([
         EnqueueSpec(task_name="tasks.parity", args=(7,), kwargs={"a": "b"}, metadata={"z": 9}, priority=4)
@@ -81,7 +81,7 @@ async def test_enqueue_many_matches_single_enqueue(sqlspec_backend: SQLSpecQueue
     assert bulk_fetched.status == single_fetched.status
 
 
-async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
+async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await sqlspec_backend.enqueue_many([
@@ -96,7 +96,9 @@ async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: SQLSpecQueu
     assert fetched.status == "scheduled"
 
 
-async def test_enqueue_many_deduplicates_active_keys(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
+async def test_enqueue_many_deduplicates_active_keys(
+    sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str"
+) -> "None":
     first = await sqlspec_backend.enqueue("tasks.sync", key="sync:1", kwargs={"v": 1})
 
     records = await sqlspec_backend.enqueue_many([
@@ -112,7 +114,7 @@ async def test_enqueue_many_deduplicates_active_keys(sqlspec_backend: SQLSpecQue
     assert stats.total == 2  # the duplicate key did not create a new row
 
 
-async def test_enqueue_many_replaces_terminal_keys(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
+async def test_enqueue_many_replaces_terminal_keys(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     first = await sqlspec_backend.enqueue("tasks.sync", key="sync:term", kwargs={"v": 1})
     await sqlspec_backend.complete_task(first.id, result={"ok": True})
 
@@ -127,11 +129,11 @@ async def test_enqueue_many_replaces_terminal_keys(sqlspec_backend: SQLSpecQueue
     assert refetched.id == replacement.id
 
 
-async def test_enqueue_many_empty_returns_empty(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
+async def test_enqueue_many_empty_returns_empty(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     assert await sqlspec_backend.enqueue_many([]) == []
 
 
-def test_bulk_values_orders_columns_to_match_create_table() -> None:
+def test_bulk_values_orders_columns_to_match_create_table() -> "None":
     """``bulk_values`` must yield physical columns in CREATE TABLE order.
 
     The native Arrow ingest path inserts positionally on some adapters
@@ -180,7 +182,7 @@ async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend
         await backend.close()
 
 
-async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: SQLSpecQueueBackend) -> None:
+async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpecQueueBackend") -> "None":
     """The native Arrow ingest path must place every column in its DDL slot.
 
     Regression guard for positional ingest adapters: the bulk path emitted

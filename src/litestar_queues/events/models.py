@@ -27,16 +27,16 @@ QueueEventType = Literal[
 class QueueEventActor(msgspec.Struct, rename="camel", kw_only=True):
     """Actor reference for a queue event."""
 
-    type: str | None = None
-    id: str | None = None
-    name: str | None = None
+    type: "str | None" = None
+    id: "str | None" = None
+    name: "str | None" = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> "dict[str, Any]":
         """Return the camelCase wire mapping for this actor."""
         return cast("dict[str, Any]", msgspec.to_builtins(self))
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "QueueEventActor":
+    def from_dict(cls, data: "dict[str, Any]") -> "QueueEventActor":
         """Build an actor reference from a camelCase mapping.
 
         Returns:
@@ -48,16 +48,16 @@ class QueueEventActor(msgspec.Struct, rename="camel", kw_only=True):
 class QueueEventEntityRef(msgspec.Struct, rename="camel", kw_only=True):
     """Entity reference for a queue event."""
 
-    type: str
-    id: str
-    name: str | None = None
+    type: "str"
+    id: "str"
+    name: "str | None" = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> "dict[str, Any]":
         """Return the camelCase wire mapping for this entity reference."""
         return cast("dict[str, Any]", msgspec.to_builtins(self))
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "QueueEventEntityRef":
+    def from_dict(cls, data: "dict[str, Any]") -> "QueueEventEntityRef":
         """Build an entity reference from a camelCase mapping.
 
         Returns:
@@ -74,31 +74,31 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
     events. Payload contents are passed through verbatim.
     """
 
-    type: str
-    scope: QueueEventScope
-    id: str = msgspec.field(default_factory=lambda: uuid4().hex)
-    scope_key: str | None = None
-    task_id: str | None = None
-    task_name: str | None = None
-    queue: str | None = None
-    worker_id: str | None = None
-    execution_backend: str | None = None
-    execution_profile: str | None = None
-    attempt: int | None = None
-    sequence: int | None = None
-    level: str | None = None
-    message: str | None = None
-    progress_current: int | float | None = None
-    progress_total: int | float | None = None
-    progress_percent: float | None = None
-    actor: QueueEventActor | None = None
-    entity: QueueEventEntityRef | None = None
-    payload: dict[str, Any] = msgspec.field(default_factory=dict)
-    occurred_at: datetime = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
-    schema_version: int = 1
-    event_key: str | None = None
+    type: "str"
+    scope: "QueueEventScope"
+    id: "str" = msgspec.field(default_factory=lambda: uuid4().hex)
+    scope_key: "str | None" = None
+    task_id: "str | None" = None
+    task_name: "str | None" = None
+    queue: "str | None" = None
+    worker_id: "str | None" = None
+    execution_backend: "str | None" = None
+    execution_profile: "str | None" = None
+    attempt: "int | None" = None
+    sequence: "int | None" = None
+    level: "str | None" = None
+    message: "str | None" = None
+    progress_current: "int | float | None" = None
+    progress_total: "int | float | None" = None
+    progress_percent: "float | None" = None
+    actor: "QueueEventActor | None" = None
+    entity: "QueueEventEntityRef | None" = None
+    payload: "dict[str, Any]" = msgspec.field(default_factory=dict)
+    occurred_at: "datetime" = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+    schema_version: "int" = 1
+    event_key: "str | None" = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> "dict[str, Any]":
         """Return the stable camelCase JSON-compatible event envelope.
 
         Null-valued top-level fields are preserved so subscribers can rely on a
@@ -107,12 +107,12 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
         """
         return cast("dict[str, Any]", msgspec.to_builtins(self))
 
-    def to_json(self) -> bytes:
+    def to_json(self) -> "bytes":
         """Return the event envelope as camelCase JSON bytes."""
         return msgspec.json.encode(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "QueueEvent":
+    def from_dict(cls, data: "dict[str, Any]") -> "QueueEvent":
         """Build an event from a camelCase mapping.
 
         Returns:
@@ -121,7 +121,7 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
         return msgspec.convert(data, cls)
 
     @classmethod
-    def from_json(cls, data: str | bytes | bytearray) -> "QueueEvent":
+    def from_json(cls, data: "str | bytes | bytearray") -> "QueueEvent":
         """Build an event from camelCase JSON text or bytes.
 
         Returns:

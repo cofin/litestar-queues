@@ -1,39 +1,42 @@
 """Execution backend registry and factory functions."""
 
-from collections.abc import Callable
 from importlib import import_module
 from inspect import signature
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.config import ExecutionBackendConfig, QueueConfig, execution_backend_name
-from litestar_queues.execution.base import BaseExecutionBackend
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from litestar_queues.execution.base import BaseExecutionBackend
 
 __all__ = ("execution_backend", "get_execution_backend", "get_execution_backend_class", "list_execution_backends")
 
-_execution_backend_registry: dict[str, type[BaseExecutionBackend]] = {}
+_execution_backend_registry: "dict[str, type[BaseExecutionBackend]]" = {}
 
-_BUILTIN_BACKENDS: dict[str, str] = {
+_BUILTIN_BACKENDS: "dict[str, str]" = {
     "cloudrun": "litestar_queues.execution.cloudrun:CloudRunExecutionBackend",
     "immediate": "litestar_queues.execution.immediate:ImmediateExecutionBackend",
     "local": "litestar_queues.execution.local:LocalExecutionBackend",
 }
 
 
-def execution_backend(name: str) -> Callable[[type[BaseExecutionBackend]], type[BaseExecutionBackend]]:
+def execution_backend(name: "str") -> "Callable[[type[BaseExecutionBackend]], type[BaseExecutionBackend]]":
     """Decorator to register an execution backend class with a short name.
 
     Returns:
         A decorator that registers the backend class.
     """
 
-    def decorator(cls: type[BaseExecutionBackend]) -> type[BaseExecutionBackend]:
+    def decorator(cls: "type[BaseExecutionBackend]") -> "type[BaseExecutionBackend]":
         _execution_backend_registry[name] = cls
         return cls
 
     return decorator
 
 
-def get_execution_backend_class(backend_path: str) -> type[BaseExecutionBackend]:
+def get_execution_backend_class(backend_path: "str") -> "type[BaseExecutionBackend]":
     """Get an execution backend class by short name or import path.
 
     Returns:
@@ -63,8 +66,8 @@ def get_execution_backend_class(backend_path: str) -> type[BaseExecutionBackend]
 
 
 def get_execution_backend(
-    backend: ExecutionBackendConfig = "immediate", config: QueueConfig | None = None
-) -> BaseExecutionBackend:
+    backend: "ExecutionBackendConfig" = "immediate", config: "QueueConfig | None" = None
+) -> "BaseExecutionBackend":
     """Get an instantiated execution backend.
 
     Returns:
@@ -76,7 +79,7 @@ def get_execution_backend(
     """
     execution_config = None if isinstance(backend, str) else backend
     backend_class = get_execution_backend_class(execution_backend_name(backend))
-    backend_kwargs: dict[str, Any] = {"config": config}
+    backend_kwargs: "dict[str, Any]" = {"config": config}
     if execution_config is not None:
         backend_kwargs["execution_config"] = execution_config
 
@@ -91,10 +94,10 @@ def get_execution_backend(
     return backend_class(**backend_kwargs)
 
 
-def list_execution_backends() -> list[str]:
+def list_execution_backends() -> "list[str]":
     """Return registered execution backend names."""
     return sorted({*_execution_backend_registry, *_BUILTIN_BACKENDS})
 
 
-def _backend_class(value: Any) -> type[BaseExecutionBackend]:
+def _backend_class(value: "Any") -> "type[BaseExecutionBackend]":
     return cast("type[BaseExecutionBackend]", value)

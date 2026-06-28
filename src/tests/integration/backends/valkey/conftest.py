@@ -16,13 +16,13 @@ if TYPE_CHECKING:
 class ValkeyService(Protocol):
     """pytest-databases Valkey service attributes used by the backend fixture."""
 
-    host: str
-    port: int
-    db: int
+    host: "str"
+    port: "int"
+    db: "int"
 
 
 @pytest.fixture
-async def valkey_backend(valkey_service: ValkeyService) -> "AsyncIterator[ValkeyQueueBackend]":
+async def valkey_backend(valkey_service: "ValkeyService") -> "AsyncIterator[ValkeyQueueBackend]":
     """Yield an opened ``ValkeyQueueBackend`` namespaced under a unique prefix."""
     from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
 

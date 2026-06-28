@@ -24,18 +24,18 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
-SqliteConfigFactory: TypeAlias = Callable[["Path"], AiosqliteConfig]
-EventPayload: TypeAlias = dict[str, object]
-EventMetadata: TypeAlias = dict[str, object]
+SqliteConfigFactory: "TypeAlias" = Callable[["Path"], AiosqliteConfig]
+EventPayload: "TypeAlias" = dict[str, object]
+EventMetadata: "TypeAlias" = dict[str, object]
 
 
-def _sqlite_config(path: "Path") -> AiosqliteConfig:
+def _sqlite_config(path: "Path") -> "AiosqliteConfig":
     """Return an aiosqlite SQLSpec config pointing at ``path``."""
     return AiosqliteConfig(connection_config={"database": str(path)})
 
 
 @pytest.fixture
-def sqlite_config_factory() -> SqliteConfigFactory:
+def sqlite_config_factory() -> "SqliteConfigFactory":
     """Return the ``_sqlite_config`` helper as a fixture."""
     return _sqlite_config
 
@@ -57,9 +57,9 @@ async def sqlspec_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBacken
 class StubEvent:
     """Test-double event passed by ``StubAsyncEventChannel``."""
 
-    event_id: str
-    payload: EventPayload
-    metadata: EventMetadata | None = None
+    event_id: "str"
+    payload: "EventPayload"
+    metadata: "EventMetadata | None" = None
 
 
 class StubAsyncEventChannel:
@@ -67,19 +67,19 @@ class StubAsyncEventChannel:
 
     __slots__ = ("_backend_name", "_events", "acked", "published")
 
-    def __init__(self, backend_name: str = "table_queue") -> None:
+    def __init__(self, backend_name: "str" = "table_queue") -> "None":
         self._backend_name = backend_name
-        self.acked: list[str] = []
-        self.published: list[tuple[str, EventPayload, EventMetadata | None]] = []
-        self._events: asyncio.Queue[StubEvent] = asyncio.Queue()
+        self.acked: "list[str]" = []
+        self.published: "list[tuple[str, EventPayload, EventMetadata | None]]" = []
+        self._events: "asyncio.Queue[StubEvent]" = asyncio.Queue()
 
-    async def publish(self, channel: str, payload: EventPayload, metadata: EventMetadata | None = None) -> str:
+    async def publish(self, channel: "str", payload: "EventPayload", metadata: "EventMetadata | None" = None) -> "str":
         event_id = f"event-{len(self.published) + 1}"
         self.published.append((channel, payload, metadata))
         await self._events.put(StubEvent(event_id, payload, metadata))
         return event_id
 
-    async def iter_events(self, channel: str, *, poll_interval: float | None = None) -> AsyncIterator[StubEvent]:
+    async def iter_events(self, channel: "str", *, poll_interval: "float | None" = None) -> "AsyncIterator[StubEvent]":
         while True:
             if poll_interval is None:
                 event = await self._events.get()
@@ -91,8 +91,8 @@ class StubAsyncEventChannel:
             if channel == self.published[-1][0]:
                 yield event
 
-    async def ack(self, event_id: str) -> None:
+    async def ack(self, event_id: "str") -> "None":
         self.acked.append(event_id)
 
-    async def shutdown(self) -> None:
+    async def shutdown(self) -> "None":
         return None

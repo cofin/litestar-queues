@@ -70,7 +70,7 @@ else:
     # third-party Pygments entry points in the active environment.
     ShibuyaPygmentsBridge.dark_style_name = "pygments_styles.github_dark_default.GitHubDarkDefaultStyle"
 
-html_theme_options: dict[str, Any] = {
+html_theme_options: "dict[str, Any]" = {
     "logo_target": "/",
     "github_repo_name": "litestar-queues",
     "github_url": "https://github.com/litestar-org/litestar-queues",

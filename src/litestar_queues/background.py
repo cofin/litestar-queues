@@ -15,8 +15,8 @@ class QueuedBackgroundTask(BackgroundTask):
     """Background task that enqueues a queue task after the response is sent."""
 
     def __init__(
-        self, task: "str | Task[Any, Any]", *args: Any, service: "QueueService | None" = None, **kwargs: Any
-    ) -> None:
+        self, task: "str | Task[Any, Any]", *args: "Any", service: "QueueService | None" = None, **kwargs: "Any"
+    ) -> "None":
         """Initialize a queued background task.
 
         Args:

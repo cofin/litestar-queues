@@ -12,10 +12,10 @@ class SpannerQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect: ClassVar[str | None] = "spanner"
-    identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "backtick"
+    data_dictionary_dialect: "ClassVar[str | None]" = "spanner"
+    identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "backtick"
 
-    def create_statements(self) -> list[str]:
+    def create_statements(self) -> "list[str]":
         """Return statements that create Spanner queue artifacts."""
         if not self._manage_schema:
             return []
@@ -57,7 +57,7 @@ class SpannerQueueStore(SQLSpecQueueStore):
             ),
         ]
 
-    def drop_statements(self) -> list[str]:
+    def drop_statements(self) -> "list[str]":
         """Return statements that drop Spanner queue artifacts."""
         if not self._manage_schema:
             return []
@@ -67,8 +67,8 @@ class SpannerQueueStore(SQLSpecQueueStore):
             f"DROP TABLE {self._quoted_table_name()}",
         ]
 
-    def _string_type(self, length: int | None = None) -> str:
+    def _string_type(self, length: "int | None" = None) -> "str":
         return f"STRING({length})" if length is not None else "STRING(MAX)"
 
-    def _integer_type(self) -> str:
+    def _integer_type(self) -> "str":
         return "INT64"

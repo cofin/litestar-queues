@@ -5,7 +5,7 @@ from litestar import Litestar
 from litestar_queues import QueueConfig, QueuePlugin
 
 
-def create_app() -> Litestar:
+def create_app() -> "Litestar":
     plugin = QueuePlugin(
         QueueConfig(
             queue_backend="memory",

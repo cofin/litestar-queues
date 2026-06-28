@@ -12,7 +12,7 @@ class CockroachPsycopgSyncQueueStore(PostgresQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect: ClassVar[str | None] = "cockroachdb"
+    data_dictionary_dialect: "ClassVar[str | None]" = "cockroachdb"
 
 
 class CockroachPsycopgAsyncQueueStore(PostgresQueueStore):
@@ -20,4 +20,4 @@ class CockroachPsycopgAsyncQueueStore(PostgresQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect: ClassVar[str | None] = "cockroachdb"
+    data_dictionary_dialect: "ClassVar[str | None]" = "cockroachdb"

@@ -6,25 +6,26 @@ factories. Each ``AAEngineCase`` knows how to build a config from a
 ``AdvancedAlchemyBackendConfig(create_schema=True)`` and owns lifecycle.
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from tests.integration._backends import FixtureCtx, MySQLService, OracleService, PostgresService
-
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
+    from tests.integration._backends import FixtureCtx, MySQLService, OracleService, PostgresService
 
 
 @dataclass(frozen=True, slots=True)
 class AAEngineCase:
     """One Advanced Alchemy engine row in the parametrize matrix."""
 
-    name: str
-    extras: frozenset[str]
-    service_attr: str | None
-    build_config: Callable[[FixtureCtx], "SQLAlchemyAsyncConfig"]
-    capabilities: frozenset[str]
+    name: "str"
+    extras: "frozenset[str]"
+    service_attr: "str | None"
+    build_config: 'Callable[[FixtureCtx], "SQLAlchemyAsyncConfig"]'
+    capabilities: "frozenset[str]"
 
 
 # ---------------------------------------------------------------------------
@@ -34,13 +35,13 @@ class AAEngineCase:
 # ---------------------------------------------------------------------------
 
 
-def _config_aiosqlite(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
+def _config_aiosqlite(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{ctx.tmp_path / 'queue-aa-aiosqlite.db'}")
 
 
-def _config_postgres_asyncpg(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
+def _config_postgres_asyncpg(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
     svc = cast("PostgresService", ctx.service)
@@ -50,7 +51,7 @@ def _config_postgres_asyncpg(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     )
 
 
-def _config_mysql_asyncmy(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
+def _config_mysql_asyncmy(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
     svc = cast("MySQLService", ctx.service)
@@ -60,7 +61,7 @@ def _config_mysql_asyncmy(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
     )
 
 
-def _config_oracle_oracledb(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
+def _config_oracle_oracledb(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
     svc = cast("OracleService", ctx.service)
@@ -75,7 +76,7 @@ def _config_oracle_oracledb(ctx: FixtureCtx) -> "SQLAlchemyAsyncConfig":
 # ``xfail-upstream`` is honored by the integration conftest the same way
 # Ch.3 honors it: cases tagged with the capability are wrapped in
 # pytest.param(..., marks=xfail). When upstream fixes land, drop the flag.
-AA_ENGINES: tuple[AAEngineCase, ...] = (
+AA_ENGINES: "tuple[AAEngineCase, ...]" = (
     AAEngineCase(
         "aa-aiosqlite",
         frozenset({"aiosqlite", "sqlalchemy", "advanced_alchemy"}),

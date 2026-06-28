@@ -7,7 +7,6 @@ and concurrent-heartbeat correctness. All cases pin to aiosqlite.
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 import pytest
@@ -21,6 +20,7 @@ from sqlspec.utils.sync_tools import get_default_async_executor, shutdown_defaul
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-async def test_sqlspec_backend_default_heartbeat_uses_main_pool(sqlspec_backend: SQLSpecQueueBackend) -> None:
+async def test_sqlspec_backend_default_heartbeat_uses_main_pool(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     """When heartbeat_pool_config is None, heartbeat writes use the main pool."""
     record = await sqlspec_backend.enqueue("tasks.heartbeat")
     claimed = await sqlspec_backend.claim_task(record.id)
@@ -46,8 +46,8 @@ async def test_sqlspec_backend_default_heartbeat_uses_main_pool(sqlspec_backend:
 
 
 async def test_sqlspec_backend_sync_sessions_use_sqlspec_managed_async_executor(
-    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch
-) -> None:
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
     """Sync SQLSpec drivers are bridged through sqlspec.async_()."""
     from sqlspec.adapters.sqlite import SqliteConfig
 
@@ -70,8 +70,8 @@ async def test_sqlspec_backend_sync_sessions_use_sqlspec_managed_async_executor(
 
 
 async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_writes(
-    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch, sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
     """touch_heartbeat / null_heartbeats hit the dedicated pool only."""
     queue_path = tmp_path / "queue.db"
     main_config = sqlite_config_factory(queue_path)
@@ -99,14 +99,14 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
         heartbeat_calls = 0
 
         @contextlib.asynccontextmanager
-        async def counting_session(self: SQLSpecQueueBackend) -> AsyncIterator[object]:
+        async def counting_session(self: "SQLSpecQueueBackend") -> "AsyncIterator[object]":
             nonlocal main_calls
             main_calls += 1
             async with original_session(self) as driver:
                 yield driver
 
         @contextlib.asynccontextmanager
-        async def counting_heartbeat(self: SQLSpecQueueBackend) -> AsyncIterator[object]:
+        async def counting_heartbeat(self: "SQLSpecQueueBackend") -> "AsyncIterator[object]":
             nonlocal heartbeat_calls
             heartbeat_calls += 1
             async with original_heartbeat(self) as driver:
@@ -126,17 +126,17 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
 
 async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
     tmp_path: "Path",
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: "pytest.MonkeyPatch",
+    caplog: "pytest.LogCaptureFixture",
     sqlite_config_factory: "SqliteConfigFactory",
-) -> None:
+) -> "None":
     """Dedicated pool registration failure does not prevent backend.open()."""
     main_config = sqlite_config_factory(tmp_path / "main.db")
     bad_heartbeat_config = sqlite_config_factory(tmp_path / "main.db")
 
     real_add_config = SQLSpec.add_config
 
-    def failing_add_config(self: SQLSpec, config: "AiosqliteConfig") -> "AiosqliteConfig":
+    def failing_add_config(self: "SQLSpec", config: "AiosqliteConfig") -> "AiosqliteConfig":
         if config is bad_heartbeat_config:
             msg = "simulated heartbeat pool registration failure"
             raise RuntimeError(msg)
@@ -166,7 +166,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
 
 async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heartbeats(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     """Many concurrent heartbeats on the dedicated pool must not deadlock."""
     queue_path = tmp_path / "queue.db"
     main_config = sqlite_config_factory(queue_path)

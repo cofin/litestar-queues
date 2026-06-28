@@ -1,11 +1,7 @@
 """SQLSpec backend configuration."""
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
-
-from sqlspec import SQLSpec
-from sqlspec.extensions.events import AsyncEventChannel
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from litestar_queues.backends.sqlspec.schema import (
     validate_column_map,
@@ -14,11 +10,17 @@ from litestar_queues.backends.sqlspec.schema import (
 )
 from litestar_queues.exceptions import QueueConfigurationError
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from sqlspec import SQLSpec
+    from sqlspec.extensions.events import AsyncEventChannel
+
 __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "NOTIFY_TRANSPORTS", "SQLSpecBackendConfig")
 
 DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 
-NOTIFY_TRANSPORTS: frozenset[str] = frozenset({"listen_notify", "listen_notify_durable", "table_queue", "polling"})
+NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({"listen_notify", "listen_notify_durable", "table_queue", "polling"})
 """Valid worker-wakeup transports for :attr:`SQLSpecBackendConfig.notify_transport`.
 
 ``listen_notify``/``listen_notify_durable`` push wakeups through native
@@ -31,27 +33,27 @@ disables push wakeups so workers fall back to interval polling.
 class SQLSpecBackendConfig:
     """Configuration values for the SQLSpec queue backend."""
 
-    backend_name: ClassVar[str] = "sqlspec"
-    sqlspec: SQLSpec | None = None
-    sqlspec_config: Any | None = None
-    heartbeat_pool_config: Any | None = None
-    table_name: str | None = None
-    create_schema: bool | None = None
-    run_migrations: bool | None = None
-    event_channel: AsyncEventChannel | None = None
-    notifications: bool | None = None
-    notification_channel: str | None = None
-    notify_transport: str | None = None
-    event_backend: str | None = None
-    event_queue_table: str | None = None
-    event_poll_interval: float | None = None
-    event_settings: dict[str, Any] = field(default_factory=dict)
-    queue_observability: bool = True
-    column_map: Mapping[str, str] = field(default_factory=dict)
-    native_json_columns: frozenset[str] = field(default_factory=frozenset)
-    manage_schema: bool = True
+    backend_name: "ClassVar[str]" = "sqlspec"
+    sqlspec: "SQLSpec | None" = None
+    sqlspec_config: "Any | None" = None
+    heartbeat_pool_config: "Any | None" = None
+    table_name: "str | None" = None
+    create_schema: "bool | None" = None
+    run_migrations: "bool | None" = None
+    event_channel: "AsyncEventChannel | None" = None
+    notifications: "bool | None" = None
+    notification_channel: "str | None" = None
+    notify_transport: "str | None" = None
+    event_backend: "str | None" = None
+    event_queue_table: "str | None" = None
+    event_poll_interval: "float | None" = None
+    event_settings: "dict[str, Any]" = field(default_factory=dict)
+    queue_observability: "bool" = True
+    column_map: "Mapping[str, str]" = field(default_factory=dict)
+    native_json_columns: "frozenset[str]" = field(default_factory=frozenset)
+    manage_schema: "bool" = True
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> "None":
         """Validate adopter-owned table and wakeup-transport configuration."""
         if self.table_name is not None:
             self.table_name = validate_table_name(self.table_name)

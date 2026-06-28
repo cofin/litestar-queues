@@ -21,18 +21,18 @@ class AdbcQueueStore(SQLSpecQueueStore):
 
     __slots__ = ("_dialect",)
 
-    def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
+    def __init__(self, config: "Any", *, table_name: "str | None" = None, **kwargs: "Any") -> "None":
         super().__init__(config, table_name=table_name, **kwargs)
-        self._dialect: str | None = None
+        self._dialect: "str | None" = None
 
     @property
-    def adbc_dialect(self) -> str:
-        """Return the detected ADBC database dialect."""
+    def adbc_dialect(self) -> "str":
+        """Detected ADBC database dialect."""
         if self._dialect is None:
             self._dialect = self._detect_dialect()
         return self._dialect
 
-    def create_statements(self) -> list[str]:
+    def create_statements(self) -> "list[str]":
         """Return statements that create adbc queue artifacts."""
         if not self._manage_schema:
             return []
@@ -44,7 +44,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
             return [self._to_sql(self._create_table_statement()), *self._postgres_index_statements()]
         return super().create_statements()
 
-    def drop_statements(self) -> list[str]:
+    def drop_statements(self) -> "list[str]":
         """Return statements that drop adbc queue artifacts."""
         if not self._manage_schema:
             return []
@@ -59,29 +59,29 @@ class AdbcQueueStore(SQLSpecQueueStore):
             ]
         return super().drop_statements()
 
-    def _create_index_statements(self) -> list[str]:
+    def _create_index_statements(self) -> "list[str]":
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
             return self._postgres_index_statements()
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_SNOWFLAKE}:
             return []
         return super()._create_index_statements()
 
-    def _id_type(self) -> str:
+    def _id_type(self) -> "str":
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
             return "STRING"
         return super()._id_type()
 
-    def _indexed_text_type(self) -> str:
+    def _indexed_text_type(self) -> "str":
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
             return "STRING"
         return super()._indexed_text_type()
 
-    def _integer_type(self) -> str:
+    def _integer_type(self) -> "str":
         if self.adbc_dialect == _ADBC_DIALECT_BIGQUERY:
             return "INT64"
         return super()._integer_type()
 
-    def _json_type(self) -> str:
+    def _json_type(self) -> "str":
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_DUCKDB}:
             return self._dialect_type("json", fallback="JSON")
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
@@ -90,7 +90,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
             return "TEXT"
         return super()._json_type()
 
-    def _timestamp_type(self) -> str:
+    def _timestamp_type(self) -> "str":
         if self.adbc_dialect in {_ADBC_DIALECT_BIGQUERY, _ADBC_DIALECT_DUCKDB}:
             return self._dialect_type("timestamp", fallback="TIMESTAMP")
         if self.adbc_dialect == _ADBC_DIALECT_POSTGRES:
@@ -99,7 +99,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
             return "TIMESTAMP"
         return super()._timestamp_type()
 
-    def _data_dictionary_dialect_name(self) -> str | None:
+    def _data_dictionary_dialect_name(self) -> "str | None":
         if self.adbc_dialect in {
             _ADBC_DIALECT_BIGQUERY,
             _ADBC_DIALECT_DUCKDB,
@@ -109,7 +109,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
             return self.adbc_dialect
         return super()._data_dictionary_dialect_name()
 
-    def _postgres_index_statements(self) -> list[str]:
+    def _postgres_index_statements(self) -> "list[str]":
         table_name = self._quoted_table_name()
         return [
             (
@@ -130,7 +130,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
             ),
         ]
 
-    def _bigquery_create_table_statement(self) -> str:
+    def _bigquery_create_table_statement(self) -> "str":
         table_name = self.table_name
         return f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -160,7 +160,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
             {self._col("execution_backend")}, {self._col("scheduled_at")}
         """
 
-    def _snowflake_create_table_statement(self) -> str:
+    def _snowflake_create_table_statement(self) -> "str":
         return f"""
         CREATE TABLE IF NOT EXISTS {self.table_name} (
             {self._col("id")} VARCHAR(64) PRIMARY KEY,
@@ -187,7 +187,7 @@ class AdbcQueueStore(SQLSpecQueueStore):
         )
         """
 
-    def _detect_dialect(self) -> str:
+    def _detect_dialect(self) -> "str":
         connection_config = cast("dict[str, Any]", getattr(self._config, "connection_config", {}) or {})
         driver_name = str(connection_config.get("driver_name", "")).lower()
         uri = str(connection_config.get("uri", "")).lower()

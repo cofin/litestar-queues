@@ -20,23 +20,22 @@ from litestar_queues import (
 )
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
-from litestar_queues.models import StaleTaskRecoveryResult
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
-    from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> None:
+def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-async def test_worker_run_once_processes_pending_local_task() -> None:
+async def test_worker_run_once_processes_pending_local_task() -> "None":
     @task("tasks.worker")
-    async def worker_task(value: int) -> int:
+    async def worker_task(value: "int") -> "int":
         return value + 1
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:
@@ -50,11 +49,11 @@ async def test_worker_run_once_processes_pending_local_task() -> None:
     assert result.result == 42
 
 
-async def test_worker_retries_failed_task_until_success() -> None:
+async def test_worker_retries_failed_task_until_success() -> "None":
     attempts = 0
 
     @task("tasks.flaky", retries=1)
-    async def flaky() -> str:
+    async def flaky() -> "str":
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -80,11 +79,11 @@ async def test_worker_retries_failed_task_until_success() -> None:
     assert result.result == "ok"
 
 
-async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -> None:
-    captured_job_id: str | None = None
+async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -> "None":
+    captured_job_id: "str | None" = None
 
     @task("tasks.permanent", retries=3)
-    async def permanent_failure(*, _job_id: str) -> None:
+    async def permanent_failure(*, _job_id: "str") -> "None":
         nonlocal captured_job_id
         captured_job_id = _job_id
         non_retryable("permanent failure")
@@ -103,13 +102,13 @@ async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -
     assert result.record.retry_count == 0
 
 
-async def test_worker_processes_batch_with_configured_concurrency() -> None:
+async def test_worker_processes_batch_with_configured_concurrency() -> "None":
     started = 0
     both_started = asyncio.Event()
     release = asyncio.Event()
 
     @task("tasks.concurrent")
-    async def concurrent_task(value: int) -> int:
+    async def concurrent_task(value: "int") -> "int":
         nonlocal started
         started += 1
         if started == 2:
@@ -137,22 +136,22 @@ async def test_worker_processes_batch_with_configured_concurrency() -> None:
 class _LimitRecordingInMemoryQueueBackend(InMemoryQueueBackend):
     __slots__ = ("list_limits",)
 
-    def __init__(self) -> None:
+    def __init__(self) -> "None":
         super().__init__()
-        self.list_limits: list[int] = []
+        self.list_limits: "list[int]" = []
 
     async def list_pending(
-        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
-    ) -> list["QueuedTaskRecord"]:
+        self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> 'list["QueuedTaskRecord"]':
         self.list_limits.append(limit)
         return await super().list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
 
 
-async def test_worker_does_not_over_claim_beyond_available_concurrency() -> None:
+async def test_worker_does_not_over_claim_beyond_available_concurrency() -> "None":
     backend = _LimitRecordingInMemoryQueueBackend()
 
     @task("tasks.capacity")
-    async def capacity(value: int) -> int:
+    async def capacity(value: "int") -> "int":
         return value
 
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
@@ -165,9 +164,9 @@ async def test_worker_does_not_over_claim_beyond_available_concurrency() -> None
     assert backend.list_limits[0] == 2
 
 
-async def test_worker_queue_filter_restricts_claimed_records() -> None:
+async def test_worker_queue_filter_restricts_claimed_records() -> "None":
     @task("tasks.filtered")
-    async def filtered(value: str) -> str:
+    async def filtered(value: "str") -> "str":
         return value
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:
@@ -183,9 +182,9 @@ async def test_worker_queue_filter_restricts_claimed_records() -> None:
     assert priority_result.status == "completed"
 
 
-async def test_worker_start_wakes_from_backend_notifications() -> None:
+async def test_worker_start_wakes_from_backend_notifications() -> "None":
     @task("tasks.notified_worker")
-    async def notified_worker(value: int) -> int:
+    async def notified_worker(value: "int") -> "int":
         return value + 1
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:
@@ -207,16 +206,16 @@ async def test_worker_start_wakes_from_backend_notifications() -> None:
 class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
     __slots__ = ("requeue_calls",)
 
-    def __init__(self) -> None:
+    def __init__(self) -> "None":
         super().__init__()
-        self.requeue_calls: list[timedelta] = []
+        self.requeue_calls: "list[timedelta]" = []
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
+    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
         self.requeue_calls.append(stale_after)
         return await super().requeue_stale_running(stale_after=stale_after)
 
 
-async def test_worker_periodic_requeue_calls_backend_on_cadence() -> None:
+async def test_worker_periodic_requeue_calls_backend_on_cadence() -> "None":
     backend = _CountingInMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
         worker = Worker(service, stale_after=timedelta(seconds=30), stale_check_interval=0.0)
@@ -228,7 +227,7 @@ async def test_worker_periodic_requeue_calls_backend_on_cadence() -> None:
     assert backend.requeue_calls[0] == timedelta(seconds=30)
 
 
-async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> None:
+async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> "None":
     backend = _CountingInMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
         worker = Worker(service)  # stale_after defaults to None
@@ -239,7 +238,7 @@ async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> None:
     assert backend.requeue_calls == []
 
 
-async def test_worker_periodic_requeue_respects_cadence_window() -> None:
+async def test_worker_periodic_requeue_respects_cadence_window() -> "None":
     backend = _CountingInMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
         worker = Worker(
@@ -255,25 +254,25 @@ async def test_worker_periodic_requeue_respects_cadence_window() -> None:
     assert len(backend.requeue_calls) == 1
 
 
-async def test_worker_default_worker_id_uses_pid() -> None:
+async def test_worker_default_worker_id_uses_pid() -> "None":
     async with QueueService(QueueConfig()) as service:
         worker = Worker(service)
 
     assert worker.worker_id == f"worker-{os.getpid()}"
 
 
-async def test_worker_explicit_worker_id_overrides_default() -> None:
+async def test_worker_explicit_worker_id_overrides_default() -> "None":
     async with QueueService(QueueConfig()) as service:
         worker = Worker(service, worker_id="worker-alpha-7")
 
     assert worker.worker_id == "worker-alpha-7"
 
 
-async def test_worker_id_propagates_into_published_events() -> None:
+async def test_worker_id_propagates_into_published_events() -> "None":
     sink = InMemoryQueueEventSink()
 
     @task("tasks.worker_id_event")
-    async def worker_id_task() -> str:
+    async def worker_id_task() -> "str":
         return "ok"
 
     async with QueueService(
@@ -292,12 +291,12 @@ async def test_worker_id_propagates_into_published_events() -> None:
         assert event.worker_id == "worker-test"
 
 
-async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> None:
+async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> "None":
     started = asyncio.Event()
     cancelled = asyncio.Event()
 
     @task("tasks.stuck")
-    async def stuck() -> None:
+    async def stuck() -> "None":
         started.set()
         try:
             await asyncio.Event().wait()
@@ -319,12 +318,12 @@ async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> None:
     assert result.status == "running"
 
 
-async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> None:
+async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
     started = asyncio.Event()
     release = asyncio.Event()
 
     @task("tasks.plugin_drain")
-    async def plugin_drain() -> str:
+    async def plugin_drain() -> "str":
         started.set()
         await release.wait()
         return "ok"
@@ -346,9 +345,9 @@ async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> None:
     assert result.status == "completed"
 
 
-async def test_sync_task_uses_configured_executor_and_preserves_task_context() -> None:
+async def test_sync_task_uses_configured_executor_and_preserves_task_context() -> "None":
     @task("tasks.sync_context")
-    def sync_context(*, _job_id: str) -> dict[str, str | None]:
+    def sync_context(*, _job_id: "str") -> "dict[str, str | None]":
         context = get_current_task_context()
         assert context is not None
         return {"job_id": _job_id, "context_task_id": context.task_id, "thread_name": threading.current_thread().name}

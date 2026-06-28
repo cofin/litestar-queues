@@ -16,13 +16,13 @@ if TYPE_CHECKING:
 class RedisService(Protocol):
     """pytest-databases Redis service attributes used by the backend fixture."""
 
-    host: str
-    port: int
-    db: int
+    host: "str"
+    port: "int"
+    db: "int"
 
 
 @pytest.fixture
-async def redis_backend(redis_service: RedisService) -> "AsyncIterator[RedisQueueBackend]":
+async def redis_backend(redis_service: "RedisService") -> "AsyncIterator[RedisQueueBackend]":
     """Yield an opened ``RedisQueueBackend`` namespaced under a unique prefix."""
     from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 

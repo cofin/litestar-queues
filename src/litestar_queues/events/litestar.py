@@ -1,11 +1,13 @@
 """Litestar Channels helpers for queue events."""
 
 import inspect
-from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.events.models import QueueEvent
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Sequence
 
 __all__ = ("ChannelsQueueEventSink", "stream_queue_events")
 
@@ -15,15 +17,15 @@ class ChannelsQueueEventSink:
 
     __slots__ = ("_channels_backend",)
 
-    def __init__(self, channels_backend: object) -> None:
+    def __init__(self, channels_backend: "object") -> "None":
         self._channels_backend = channels_backend
 
     @property
-    def channels_backend(self) -> object:
-        """Return the wrapped Channels backend or plugin."""
+    def channels_backend(self) -> "object":
+        """Wrapped Channels backend or plugin."""
         return self._channels_backend
 
-    async def publish(self, event: QueueEvent, *, channels: Sequence[str]) -> None:
+    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish an event to Litestar Channels."""
         data = event.to_json()
         channels_backend = cast("Any", self._channels_backend)
@@ -36,8 +38,8 @@ class ChannelsQueueEventSink:
 
 
 async def stream_queue_events(
-    socket: Any, channels: Sequence[str], *, history: int = 0, channels_backend: object | None = None
-) -> None:
+    socket: "Any", channels: "Sequence[str]", *, history: "int" = 0, channels_backend: "object | None" = None
+) -> "None":
     """Stream queue events from an app-owned Channels subscription to a WebSocket.
 
     The caller owns route paths, guards, tenant filtering, and authorization.
@@ -51,7 +53,7 @@ async def stream_queue_events(
         raise RuntimeError(msg)
 
     await socket.accept()
-    seen_dedup_keys: set[str] = set()
+    seen_dedup_keys: "set[str]" = set()
     async with _event_stream(backend, channels, history=history) as events:
         async for raw_event in events:
             event = _decode_event(raw_event)
@@ -71,7 +73,7 @@ async def stream_queue_events(
                 raise
 
 
-def _resolve_channels_backend(socket: Any) -> object | None:
+def _resolve_channels_backend(socket: "Any") -> "object | None":
     if hasattr(socket, "channels_plugin"):
         return cast("object", socket.channels_plugin)
     scope = getattr(socket, "scope", None)
@@ -95,8 +97,8 @@ def _resolve_channels_backend(socket: Any) -> object | None:
 
 @asynccontextmanager
 async def _event_stream(
-    backend: object, channels: Sequence[str], *, history: int
-) -> AsyncIterator[AsyncIterator[bytes]]:
+    backend: "object", channels: "Sequence[str]", *, history: "int"
+) -> "AsyncIterator[AsyncIterator[bytes]]":
     if hasattr(backend, "start_subscription"):
         typed_backend = cast("Any", backend)
         async with typed_backend.start_subscription(list(channels), history=history) as subscriber:
@@ -115,13 +117,13 @@ async def _event_stream(
         await typed_backend.unsubscribe(list(channels))
 
 
-async def _backend_events(events: AsyncIterator[tuple[str, bytes]], channels: set[str]) -> AsyncIterator[bytes]:
+async def _backend_events(events: "AsyncIterator[tuple[str, bytes]]", channels: "set[str]") -> "AsyncIterator[bytes]":
     async for channel, payload in events:
         if channel in channels:
             yield payload
 
 
-def _decode_event(raw_event: bytes | str) -> QueueEvent | None:
+def _decode_event(raw_event: "bytes | str") -> "QueueEvent | None":
     try:
         return QueueEvent.from_json(raw_event)
     except (KeyError, TypeError, ValueError):

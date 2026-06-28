@@ -12,11 +12,11 @@ DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues:queue_notifications"
 class RedisBackendConfig:
     """Configuration for the Redis queue backend."""
 
-    backend_name: ClassVar[str] = "redis"
-    url: str = "redis://localhost:6379/0"
-    key_prefix: str = "litestar_queues"
-    notifications: bool = True
-    notification_channel: str = DEFAULT_NOTIFICATION_CHANNEL
-    lock_timeout: float = 5.0
-    poll_interval: float = 0.1
-    client: Any | None = None
+    backend_name: "ClassVar[str]" = "redis"
+    url: "str" = "redis://localhost:6379/0"
+    key_prefix: "str" = "litestar_queues"
+    notifications: "bool" = True
+    notification_channel: "str" = DEFAULT_NOTIFICATION_CHANNEL
+    lock_timeout: "float" = 5.0
+    poll_interval: "float" = 0.1
+    client: "Any | None" = None

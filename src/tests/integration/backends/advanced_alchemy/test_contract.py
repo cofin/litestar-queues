@@ -8,9 +8,8 @@ Oracle async configs) by the subdir conftest.
 
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from subprocess import run
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
@@ -33,15 +32,18 @@ from litestar_queues.backends.advanced_alchemy import (
 )
 from litestar_queues.task import clear_task_registry
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> None:
+def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-def _sqlite_config(path: Path) -> SQLAlchemyAsyncConfig:
+def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
 
 
@@ -49,28 +51,28 @@ class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "aa_contract_queue_tasks"
 
 
-def _postgresql_dialect() -> Any:
+def _postgresql_dialect() -> "Any":
     return postgresql.dialect()  # type: ignore[no-untyped-call]
 
 
-def _sqlite_dialect() -> Any:
+def _sqlite_dialect() -> "Any":
     return sqlite.dialect()
 
 
-def _mysql_dialect() -> Any:
+def _mysql_dialect() -> "Any":
     return mysql.dialect()
 
 
-def _oracle_dialect() -> Any:
+def _oracle_dialect() -> "Any":
     return oracle.dialect()  # type: ignore[no-untyped-call]
 
 
-async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> None:
+async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> "None":
     assert "advanced-alchemy" in list_queue_backends()
     assert get_queue_backend_class("advanced-alchemy") is AdvancedAlchemyQueueBackend
 
 
-def test_top_level_litestar_queues_import_does_not_require_advanced_alchemy() -> None:
+def test_top_level_litestar_queues_import_does_not_require_advanced_alchemy() -> "None":
     """Importing ``litestar_queues`` must succeed without advanced_alchemy installed."""
     code = """
 import builtins
@@ -98,7 +100,7 @@ assert QueueConfig().queue_backend == "memory"
     assert result.returncode == 0, result.stderr
 
 
-async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path: Path) -> None:
+async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path: "Path") -> "None":
     backend_config = AdvancedAlchemyBackendConfig(
         sqlalchemy_config=_sqlite_config(tmp_path / "configured.db"), model_class=ContractQueueTask, create_schema=True
     )
@@ -107,14 +109,14 @@ async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path
     assert backend_config.create_schema is True
 
 
-def test_advanced_alchemy_mixin_uses_native_json_column_types() -> None:
+def test_advanced_alchemy_mixin_uses_native_json_column_types() -> "None":
     column_type = ContractQueueTask.__table__.c.args_json.type
 
     assert column_type.compile(dialect=_postgresql_dialect()) == "JSONB"
     assert column_type.compile(dialect=_sqlite_dialect()) == "JSON"
 
 
-def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects() -> None:
+def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects() -> "None":
     from litestar_queues.backends.advanced_alchemy.service import (
         _build_claim_candidate_statement,
         _supports_skip_locked_claim,
@@ -153,7 +155,7 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
     assert "FETCH FIRST" not in oracle_sql
 
 
-def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialects() -> None:
+def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialects() -> "None":
     from litestar_queues.backends.advanced_alchemy.service import (
         _build_keyed_enqueue_upsert,
         _supports_native_keyed_enqueue,
@@ -190,8 +192,8 @@ def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialect
 
 
 async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_terminal_keys(
-    advanced_alchemy_backend: AdvancedAlchemyQueueBackend,
-) -> None:
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
     first = await advanced_alchemy_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
     duplicate = await advanced_alchemy_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
 
@@ -211,8 +213,8 @@ async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_te
 
 
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
-    advanced_alchemy_backend: AdvancedAlchemyQueueBackend,
-) -> None:
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
     later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await advanced_alchemy_backend.enqueue("tasks.low", priority=1)
@@ -234,8 +236,8 @@ async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
 
 
 async def test_advanced_alchemy_backend_fail_task_retries_then_fails_permanently(
-    advanced_alchemy_backend: AdvancedAlchemyQueueBackend,
-) -> None:
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
     record = await advanced_alchemy_backend.enqueue("tasks.flaky", max_retries=1)
 
     await advanced_alchemy_backend.claim_task(record.id)
@@ -255,8 +257,8 @@ async def test_advanced_alchemy_backend_fail_task_retries_then_fails_permanently
 
 
 async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_running(
-    advanced_alchemy_backend: AdvancedAlchemyQueueBackend,
-) -> None:
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
     pending = await advanced_alchemy_backend.enqueue("tasks.cancel")
 
     assert await advanced_alchemy_backend.cancel_task(pending.id)
@@ -300,8 +302,8 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
 
 
 async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
-    advanced_alchemy_backend: AdvancedAlchemyQueueBackend,
-) -> None:
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
     local = await advanced_alchemy_backend.enqueue("tasks.local", priority=100, execution_backend="local")
     external = await advanced_alchemy_backend.enqueue(
         "tasks.remote", execution_backend="cloudrun", execution_profile="batch-small"
@@ -340,9 +342,9 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     assert await advanced_alchemy_backend.get_task(completed.id) is None
 
 
-async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: Path) -> None:
+async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: "Path") -> "None":
     @task("tasks.aa")
-    async def aa_task() -> str:
+    async def aa_task() -> "str":
         return "ok"
 
     queue_config = QueueConfig(

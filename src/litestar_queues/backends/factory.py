@@ -1,18 +1,21 @@
 """Queue backend registry and factory functions."""
 
-from collections.abc import Callable
 from importlib import import_module
 from inspect import signature
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.config import QueueBackendConfig, QueueConfig, queue_backend_name
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from litestar_queues.backends.base import BaseQueueBackend
 
 __all__ = ("get_queue_backend", "get_queue_backend_class", "list_queue_backends", "queue_backend")
 
-_queue_backend_registry: dict[str, type[BaseQueueBackend]] = {}
+_queue_backend_registry: "dict[str, type[BaseQueueBackend]]" = {}
 
-_BUILTIN_BACKENDS: dict[str, str] = {
+_BUILTIN_BACKENDS: "dict[str, str]" = {
     "advanced-alchemy": "litestar_queues.backends.advanced_alchemy:AdvancedAlchemyQueueBackend",
     "memory": "litestar_queues.backends.memory:InMemoryQueueBackend",
     "redis": "litestar_queues.backends.redis:RedisQueueBackend",
@@ -21,21 +24,21 @@ _BUILTIN_BACKENDS: dict[str, str] = {
 }
 
 
-def queue_backend(name: str) -> Callable[[type[BaseQueueBackend]], type[BaseQueueBackend]]:
+def queue_backend(name: "str") -> "Callable[[type[BaseQueueBackend]], type[BaseQueueBackend]]":
     """Decorator to register a queue backend class with a short name.
 
     Returns:
         A decorator that registers the backend class.
     """
 
-    def decorator(cls: type[BaseQueueBackend]) -> type[BaseQueueBackend]:
+    def decorator(cls: "type[BaseQueueBackend]") -> "type[BaseQueueBackend]":
         _queue_backend_registry[name] = cls
         return cls
 
     return decorator
 
 
-def get_queue_backend_class(backend_path: str) -> type[BaseQueueBackend]:
+def get_queue_backend_class(backend_path: "str") -> "type[BaseQueueBackend]":
     """Get a queue backend class by short name or import path.
 
     Optional backends are imported lazily on first lookup so unused adapters do
@@ -67,7 +70,9 @@ def get_queue_backend_class(backend_path: str) -> type[BaseQueueBackend]:
     return _backend_class(getattr(module, class_name))
 
 
-def get_queue_backend(backend: QueueBackendConfig = "memory", config: QueueConfig | None = None) -> BaseQueueBackend:
+def get_queue_backend(
+    backend: "QueueBackendConfig" = "memory", config: "QueueConfig | None" = None
+) -> "BaseQueueBackend":
     """Get an instantiated queue backend.
 
     Returns:
@@ -79,7 +84,7 @@ def get_queue_backend(backend: QueueBackendConfig = "memory", config: QueueConfi
     """
     backend_config = None if isinstance(backend, str) else backend
     backend_class = get_queue_backend_class(queue_backend_name(backend))
-    backend_kwargs: dict[str, Any] = {"config": config}
+    backend_kwargs: "dict[str, Any]" = {"config": config}
     if backend_config is not None:
         backend_kwargs["backend_config"] = backend_config
 
@@ -94,10 +99,10 @@ def get_queue_backend(backend: QueueBackendConfig = "memory", config: QueueConfi
     return backend_class(**backend_kwargs)
 
 
-def list_queue_backends() -> list[str]:
+def list_queue_backends() -> "list[str]":
     """Return registered queue backend names (built-ins + dynamically registered)."""
     return sorted({*_queue_backend_registry, *_BUILTIN_BACKENDS})
 
 
-def _backend_class(value: Any) -> type[BaseQueueBackend]:
+def _backend_class(value: "Any") -> "type[BaseQueueBackend]":
     return cast("type[BaseQueueBackend]", value)

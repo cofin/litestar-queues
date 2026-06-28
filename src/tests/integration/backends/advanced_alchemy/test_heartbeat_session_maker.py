@@ -8,7 +8,6 @@ aiosqlite so they run without Docker.
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 import pytest
@@ -28,6 +27,7 @@ from litestar_queues.backends.advanced_alchemy import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-def _sqlite_config(path: "Path") -> SQLAlchemyAsyncConfig:
+def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
     """Return an aiosqlite Advanced Alchemy config pointing at ``path``."""
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
 
@@ -44,7 +44,7 @@ class HeartbeatQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "heartbeat_queue_tasks"
 
 
-async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(tmp_path: "Path") -> None:
+async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(tmp_path: "Path") -> "None":
     """When heartbeat_session_maker is None, heartbeat writes use the main session."""
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(
@@ -68,8 +68,8 @@ async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(tmp_
 
 
 async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_writes(
-    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch
-) -> None:
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
     """touch_heartbeat / null_heartbeats use the dedicated heartbeat sessionmaker."""
     queue_path = tmp_path / "queue.db"
     main_config = _sqlite_config(queue_path)
@@ -98,14 +98,14 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_write
         heartbeat_calls = 0
 
         @contextlib.asynccontextmanager
-        async def counting_operation(self: AdvancedAlchemyQueueBackend) -> AsyncIterator["QueueTaskService"]:
+        async def counting_operation(self: "AdvancedAlchemyQueueBackend") -> 'AsyncIterator["QueueTaskService"]':
             nonlocal operation_calls
             operation_calls += 1
             async with original_operation(self) as service:
                 yield service
 
         @contextlib.asynccontextmanager
-        async def counting_heartbeat(self: AdvancedAlchemyQueueBackend) -> AsyncIterator["QueueTaskService"]:
+        async def counting_heartbeat(self: "AdvancedAlchemyQueueBackend") -> 'AsyncIterator["QueueTaskService"]':
             nonlocal heartbeat_calls
             heartbeat_calls += 1
             async with original_heartbeat(self) as service:
@@ -126,7 +126,7 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_write
 
 async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_handles_concurrent_heartbeats(
     tmp_path: "Path",
-) -> None:
+) -> "None":
     """Many concurrent heartbeats over the dedicated maker must not deadlock."""
     queue_path = tmp_path / "queue.db"
     main_config = _sqlite_config(queue_path)

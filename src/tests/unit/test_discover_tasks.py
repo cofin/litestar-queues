@@ -1,9 +1,12 @@
 """Tests for the ``discover_tasks`` walker."""
 
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
@@ -11,7 +14,7 @@ _FIXTURE_PACKAGE = "tests.support.discover_tasks_pkg"
 _EXPECTED_TASKS = ("discover.bar.notify", "discover.baz.inner.run", "discover.foo.send")
 
 
-def _drop_fixture_modules() -> None:
+def _drop_fixture_modules() -> "None":
     """Evict the fixture tree from ``sys.modules`` so reload semantics are testable."""
     for module_name in list(sys.modules):
         if module_name == _FIXTURE_PACKAGE or module_name.startswith(f"{_FIXTURE_PACKAGE}."):
@@ -19,12 +22,12 @@ def _drop_fixture_modules() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_discover_state() -> None:
+def _clean_discover_state() -> "None":
     """Force a clean slate between tests; ``clean_task_registry`` already clears _task_registry."""
     _drop_fixture_modules()
 
 
-def test_discover_tasks_walks_jobs_subpackages_at_every_depth() -> None:
+def test_discover_tasks_walks_jobs_subpackages_at_every_depth() -> "None":
     """``discover_tasks`` imports shallow, sibling, and deeply-nested ``.jobs.`` modules."""
     from litestar_queues import discover_tasks, get_task_registry
 
@@ -35,7 +38,7 @@ def test_discover_tasks_walks_jobs_subpackages_at_every_depth() -> None:
         assert task_name in get_task_registry()
 
 
-def test_discover_tasks_returns_sorted_deduplicated_names() -> None:
+def test_discover_tasks_returns_sorted_deduplicated_names() -> "None":
     """The return tuple is sorted, deduplicated, and idempotent across repeated calls."""
     from litestar_queues import discover_tasks
 
@@ -46,7 +49,7 @@ def test_discover_tasks_returns_sorted_deduplicated_names() -> None:
     assert first == second
 
 
-def test_discover_tasks_respects_subpackage_argument() -> None:
+def test_discover_tasks_respects_subpackage_argument() -> "None":
     """When ``subpackage`` matches no modules, the walker returns the empty tuple."""
     from litestar_queues import discover_tasks
 
@@ -55,7 +58,7 @@ def test_discover_tasks_respects_subpackage_argument() -> None:
     assert discovered == ()
 
 
-def test_discover_tasks_force_reload_reimports() -> None:
+def test_discover_tasks_force_reload_reimports() -> "None":
     """``force_reload=True`` re-imports modules even when already in ``sys.modules``."""
     from litestar_queues import discover_tasks
     from litestar_queues.task import clear_task_registry
@@ -69,7 +72,7 @@ def test_discover_tasks_force_reload_reimports() -> None:
         assert task_name in discovered
 
 
-def test_discover_tasks_rejects_non_package_module() -> None:
+def test_discover_tasks_rejects_non_package_module() -> "None":
     """Passing a plain module instead of a package raises ``ModuleNotFoundError``."""
     from litestar_queues import discover_tasks
 
@@ -77,7 +80,7 @@ def test_discover_tasks_rejects_non_package_module() -> None:
         discover_tasks(f"{_FIXTURE_PACKAGE}.foo.jobs.send")
 
 
-def test_discover_tasks_skips_non_jobs_siblings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_tasks_skips_non_jobs_siblings(tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch") -> "None":
     """Modules outside any ``.jobs.`` subpackage are not imported by the walker."""
     from litestar_queues import discover_tasks
 

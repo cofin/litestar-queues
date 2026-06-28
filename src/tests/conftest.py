@@ -28,13 +28,13 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-def anyio_backend() -> str:
+def anyio_backend() -> "str":
     """Return the async backend to use for tests."""
     return "asyncio"
 
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> None:
+def clean_task_registry() -> "None":
     """Clear queue task registries before each test."""
     from litestar_queues.task import clear_task_registry
 

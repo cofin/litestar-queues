@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-def test_plugin_instantiation_with_defaults() -> None:
+def test_plugin_instantiation_with_defaults() -> "None":
     """Test that the plugin can be instantiated with default configuration."""
     from litestar_queues import QueuePlugin
 
@@ -20,7 +20,7 @@ def test_plugin_instantiation_with_defaults() -> None:
     assert plugin.config.start_worker is False
 
 
-def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> None:
+def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None":
     """Test that the plugin can be instantiated with custom configuration."""
     from litestar_queues import QueuePlugin
 
@@ -29,7 +29,7 @@ def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> None:
     assert plugin.config.start_worker is False
 
 
-def test_config_defaults() -> None:
+def test_config_defaults() -> "None":
     """Test that the configuration has sensible defaults."""
     from litestar_queues import QueueConfig
 
@@ -43,7 +43,7 @@ def test_config_defaults() -> None:
     assert config.scheduler_canary_task == "scheduler.heartbeat"
 
 
-def test_scheduler_canary_task_is_overridable() -> None:
+def test_scheduler_canary_task_is_overridable() -> "None":
     """Operators can override the canary task name used by scheduler-health."""
     from litestar_queues import QueueConfig
 
@@ -51,13 +51,13 @@ def test_scheduler_canary_task_is_overridable() -> None:
     assert config.scheduler_canary_task == "ops.healthcheck"
 
 
-def test_plugin_with_litestar_app(app: "Litestar", queue_plugin: "QueuePlugin") -> None:
+def test_plugin_with_litestar_app(app: "Litestar", queue_plugin: "QueuePlugin") -> "None":
     """Test that the plugin integrates with a Litestar application."""
     assert queue_plugin in app.plugins
     assert queue_plugin.config.queue_backend == "memory"
 
 
-def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> None:
+def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> "None":
     """``QueuePlugin`` satisfies ``CLIPluginProtocol`` and is registered on ``app.plugins.cli``."""
     from litestar import Litestar
     from litestar.plugins import CLIPluginProtocol, InitPlugin
@@ -68,7 +68,7 @@ def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> 
     assert any(p is queue_plugin for p in app.plugins.cli)
 
 
-def test_plugin_registers_dependencies_and_state() -> None:
+def test_plugin_registers_dependencies_and_state() -> "None":
     """Test that the plugin registers dependencies, state, and signature namespace."""
     from litestar.config.app import AppConfig
 

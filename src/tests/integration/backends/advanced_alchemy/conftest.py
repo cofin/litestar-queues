@@ -29,10 +29,10 @@ class MappedQueueModel(Protocol):
     __table__: "Table"
 
 
-_QUEUE_MODEL: type[object] | None = None
+_QUEUE_MODEL: "type[object] | None" = None
 
 
-def _queue_model() -> type[object]:
+def _queue_model() -> "type[object]":
     """Return the app-owned queue model used by integration tests."""
     global _QUEUE_MODEL  # noqa: PLW0603
     if _QUEUE_MODEL is None:
@@ -49,7 +49,7 @@ def _queue_model() -> type[object]:
 
 @pytest.fixture
 async def advanced_alchemy_backend(
-    request: pytest.FixtureRequest, tmp_path: "Path"
+    request: "pytest.FixtureRequest", tmp_path: "Path"
 ) -> "AsyncIterator[AdvancedAlchemyQueueBackend]":
     """Yield an opened Advanced Alchemy queue backend parametrized over AA_ENGINES.
 
@@ -60,7 +60,7 @@ async def advanced_alchemy_backend(
     """
     from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
 
-    case: AAEngineCase = request.param
+    case: "AAEngineCase" = request.param
     for extra in case.extras:
         pytest.importorskip(extra)
 
@@ -90,7 +90,7 @@ async def advanced_alchemy_backend(
         await backend.close()
 
 
-async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> None:
+async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> "None":
     """Drop the queue table for service-backed engines.
 
     Uses the dialect-aware ``Table.drop()`` path for the queue table so
@@ -108,7 +108,7 @@ async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> None:
             await connection.run_sync(model_class.__table__.drop, checkfirst=True)
 
 
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
     """Parametrize ``advanced_alchemy_backend`` consumers over AA_ENGINES.
 
     Cases tagged with ``xfail-upstream`` are wrapped in
@@ -119,7 +119,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "advanced_alchemy_backend" in metafunc.fixturenames:
         params = []
         for case in AA_ENGINES:
-            marks: list[pytest.MarkDecorator] = []
+            marks: "list[pytest.MarkDecorator]" = []
             if "xfail-upstream" in case.capabilities:
                 marks.append(
                     pytest.mark.xfail(

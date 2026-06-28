@@ -12,4 +12,4 @@ class DuckDBQueueStore(SQLSpecQueueStore):
 
     __slots__ = ()
 
-    data_dictionary_dialect: ClassVar[str | None] = "duckdb"
+    data_dictionary_dialect: "ClassVar[str | None]" = "duckdb"

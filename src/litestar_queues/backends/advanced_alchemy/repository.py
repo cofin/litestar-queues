@@ -11,7 +11,7 @@ class QueueTaskRepository(SQLAlchemyAsyncRepository[Any]):
     """Repository for queue task records."""
 
     @classmethod
-    def for_model(cls, model_class: type[Any]) -> type["QueueTaskRepository"]:
+    def for_model(cls, model_class: "type[Any]") -> 'type["QueueTaskRepository"]':
         """Return a repository subclass bound to ``model_class``."""
         return cast(
             "type[QueueTaskRepository]",

@@ -23,19 +23,19 @@ pytestmark = pytest.mark.anyio
 class FakeSQLSpecConfig(SimpleNamespace):
     """Structural config used by SQLSpec store dispatch tests."""
 
-    extension_config: dict[str, object]
-    statement_config: SimpleNamespace
-    connection_config: dict[str, object]
+    extension_config: "dict[str, object]"
+    statement_config: "SimpleNamespace"
+    connection_config: "dict[str, object]"
 
 
 def _fake_adapter_config(
-    adapter_name: str,
+    adapter_name: "str",
     *,
-    dialect: str | None = None,
-    config_type_name: str | None = None,
-    connection_config: dict[str, object] | None = None,
-    extension_config: dict[str, object] | None = None,
-) -> FakeSQLSpecConfig:
+    dialect: "str | None" = None,
+    config_type_name: "str | None" = None,
+    connection_config: "dict[str, object] | None" = None,
+    extension_config: "dict[str, object] | None" = None,
+) -> "FakeSQLSpecConfig":
     config_type = cast(
         "type[FakeSQLSpecConfig]",
         type(
@@ -51,7 +51,7 @@ def _fake_adapter_config(
     return config
 
 
-async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> None:
+async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> "None":
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(config=_fake_adapter_config("bigquery", dialect="bigquery"))
 
@@ -61,7 +61,7 @@ async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> 
     assert not any("CREATE INDEX" in statement for statement in statements)
 
 
-async def test_sqlspec_backend_exposes_packaged_migration_assets() -> None:
+async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
     assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]

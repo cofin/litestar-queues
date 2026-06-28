@@ -1,7 +1,6 @@
 """Advanced Alchemy custom queue model integration tests."""
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
@@ -18,12 +17,14 @@ from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sqlalchemy import Table
 
 pytestmark = pytest.mark.anyio
 
 
-def _sqlite_config(path: Path) -> SQLAlchemyAsyncConfig:
+def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
 
 
@@ -33,15 +34,15 @@ class MappedQueueModel(Protocol):
     __table__: "Table"
 
 
-def _table(model: type[object]) -> "Table":
+def _table(model: "type[object]") -> "Table":
     return cast("MappedQueueModel", model).__table__
 
 
-def _column_names(model: type[object]) -> set[str]:
+def _column_names(model: "type[object]") -> "set[str]":
     return {column.name for column in _table(model).columns}
 
 
-def _index_names(model: type[object]) -> set[str]:
+def _index_names(model: "type[object]") -> "set[str]":
     return {str(index.name) for index in _table(model).indexes if index.name is not None}
 
 
@@ -61,7 +62,7 @@ class AbstractQueueTaskModel(QueueTaskModelMixin):
     __abstract__ = True
 
 
-def test_queue_task_model_mixin_adds_queue_schema_to_app_owned_model() -> None:
+def test_queue_task_model_mixin_adds_queue_schema_to_app_owned_model() -> "None":
     assert {"id", "created_at", "updated_at"} <= _column_names(BareQueueTaskModel)
     assert {"task_name", "kwargs_json", "execution_ref", "metadata_json"} <= _column_names(BareQueueTaskModel)
     assert {
@@ -71,7 +72,7 @@ def test_queue_task_model_mixin_adds_queue_schema_to_app_owned_model() -> None:
     } <= _index_names(BareQueueTaskModel)
 
 
-def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> None:
+def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> "None":
     assert {"id", "created_at", "updated_at"} <= _column_names(AppQueueTask)
     assert {"task_name", "kwargs_json", "execution_ref", "metadata_json"} <= _column_names(AppQueueTask)
     assert {
@@ -81,7 +82,7 @@ def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> 
     } <= _index_names(AppQueueTask)
 
 
-async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: Path) -> None:
+async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: "Path") -> "None":
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(
             sqlalchemy_config=_sqlite_config(tmp_path / "custom-model.db"),
@@ -105,8 +106,8 @@ async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: Path
 
 
 async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
     from litestar_queues.backends.advanced_alchemy import service as service_module
 
     fixed_now = datetime(2026, 5, 25, tzinfo=UTC)
@@ -134,7 +135,7 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
     assert stored.status == "pending"
 
 
-def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: Path) -> None:
+def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: "Path") -> "None":
     config = _sqlite_config(tmp_path / "invalid-model.db")
 
     with pytest.raises(QueueConfigurationError, match="model_class is required"):

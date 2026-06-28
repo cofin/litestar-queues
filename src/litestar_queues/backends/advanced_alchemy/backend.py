@@ -1,10 +1,7 @@
 """Advanced Alchemy queue backend."""
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
 
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
@@ -14,6 +11,10 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from datetime import datetime, timedelta
+    from uuid import UUID
+
     from litestar_queues.config import QueueConfig
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
@@ -32,8 +33,8 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     )
 
     def __init__(
-        self, config: "QueueConfig | None" = None, *, backend_config: AdvancedAlchemyBackendConfig | None = None
-    ) -> None:
+        self, config: "QueueConfig | None" = None, *, backend_config: "AdvancedAlchemyBackendConfig | None" = None
+    ) -> "None":
         super().__init__(config=config)
         backend_config = backend_config or AdvancedAlchemyBackendConfig()
         self._sqlalchemy_config = backend_config.sqlalchemy_config
@@ -43,11 +44,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._opened = False
 
     @property
-    def capabilities(self) -> QueueBackendCapabilities:
-        """Return backend behavior capabilities."""
+    def capabilities(self) -> "QueueBackendCapabilities":
+        """Backend behavior capabilities."""
         return QueueBackendCapabilities()
 
-    async def open(self) -> bool:
+    async def open(self) -> "bool":
         """Open Advanced Alchemy resources.
 
         Returns:
@@ -61,11 +62,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._opened = True
         return True
 
-    async def close(self) -> None:
+    async def close(self) -> "None":
         """Close backend-owned resources."""
         self._opened = False
 
-    async def create_schema(self) -> None:
+    async def create_schema(self) -> "None":
         """Create the queue task table and indexes."""
         if self._sqlalchemy_config is not None:
             engine = self._sqlalchemy_config.get_engine()
@@ -79,19 +80,19 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     async def enqueue(
         self,
-        task_name: str,
+        task_name: "str",
         *,
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
-        queue: str = "default",
-        priority: int = 0,
-        max_retries: int = 0,
-        scheduled_at: datetime | None = None,
-        key: str | None = None,
-        execution_backend: str = "local",
-        execution_profile: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> QueuedTaskRecord:
+        args: "tuple[Any, ...]" = (),
+        kwargs: "dict[str, Any] | None" = None,
+        queue: "str" = "default",
+        priority: "int" = 0,
+        max_retries: "int" = 0,
+        scheduled_at: "datetime | None" = None,
+        key: "str | None" = None,
+        execution_backend: "str" = "local",
+        execution_profile: "str | None" = None,
+        metadata: "dict[str, Any] | None" = None,
+    ) -> "QueuedTaskRecord":
         async with self._operation() as service:
             record = await service.enqueue(
                 task_name,
@@ -109,69 +110,69 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
+    async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         async with self._service() as service:
             return await service.get_task(task_id)
 
-    async def get_task_by_key(self, key: str) -> QueuedTaskRecord | None:
+    async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
         async with self._service() as service:
             return await service.get_task_by_key(key)
 
     async def list_pending(
-        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
-    ) -> list[QueuedTaskRecord]:
+        self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
             return await service.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
 
-    async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
+    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.claim_task(task_id)
 
     async def claim_next(
-        self, *, queue: str | None = None, execution_backend: str | None = None
-    ) -> QueuedTaskRecord | None:
+        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.claim_next(queue=queue, execution_backend=execution_backend)
 
     async def complete_task(
-        self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.complete_task(task_id, result=result, expected_retry_count=expected_retry_count)
 
     async def fail_task(
-        self, task_id: UUID, error: str, *, retry: bool = True, expected_retry_count: int | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.fail_task(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
 
-    async def cancel_task(self, task_id: UUID) -> bool:
+    async def cancel_task(self, task_id: "UUID") -> "bool":
         async with self._operation() as service:
             return await service.cancel_task(task_id)
 
-    async def touch_heartbeat(self, task_id: UUID, *, expected_retry_count: int | None = None) -> bool:
+    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         async with self._heartbeat_operation() as service:
             return await service.touch_heartbeat(task_id, expected_retry_count=expected_retry_count)
 
-    async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
+    async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         async with self._heartbeat_operation() as service:
             await service.null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
+    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
         async with self._operation() as service:
             return await service.requeue_stale_running(stale_after=stale_after)
 
     async def set_execution_ref(
-        self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.set_execution_ref(
                 task_id, execution_backend, execution_ref, execution_profile=execution_profile
             )
 
     async def set_execution_backend(
-        self, task_id: UUID, execution_backend: str, *, execution_profile: str | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             record = await service.set_execution_backend(
                 task_id, execution_backend, execution_profile=execution_profile
@@ -180,35 +181,35 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             await self.notify_new_task(record)
         return record
 
-    async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
+    async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
             return await service.list_running_external(limit=limit)
 
-    async def get_statistics(self) -> QueueStatistics:
+    async def get_statistics(self) -> "QueueStatistics":
         async with self._service() as service:
             return await service.get_statistics()
 
     async def list_completed_by_task(
-        self, task_name: str, *, since: datetime | None = None, limit: int = 10
-    ) -> list[QueuedTaskRecord]:
+        self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
+    ) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
             return await service.list_completed_by_task(task_name, since=since, limit=limit)
 
-    async def cleanup_terminal(self, before: datetime) -> int:
+    async def cleanup_terminal(self, before: "datetime") -> "int":
         async with self._operation() as service:
             return await service.cleanup_terminal(before)
 
-    def _ensure_configured(self) -> None:
+    def _ensure_configured(self) -> "None":
         if self._sqlalchemy_config is None:
             msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
 
-    def _ensure_opened(self) -> None:
+    def _ensure_opened(self) -> "None":
         if not self._opened:
             msg = "AdvancedAlchemyQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
 
-    def _resolve_model_classes(self, model_class: type[Any] | None) -> tuple[type[Any], type["QueueTaskService"]]:
+    def _resolve_model_classes(self, model_class: "type[Any] | None") -> 'tuple[type[Any], type["QueueTaskService"]]':
         if model_class is None:
             msg = "AdvancedAlchemyBackendConfig.model_class is required and must inherit QueueTaskModelMixin."
             raise QueueConfigurationError(msg)
@@ -252,7 +253,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         return model_class, QueueTaskService.for_model(model_class)
 
     @asynccontextmanager
-    async def _session(self) -> AsyncIterator[Any]:
+    async def _session(self) -> "AsyncIterator[Any]":
         self._ensure_configured()
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None:
@@ -263,19 +264,19 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             yield session
 
     @asynccontextmanager
-    async def _service(self) -> AsyncIterator["QueueTaskService"]:
+    async def _service(self) -> 'AsyncIterator["QueueTaskService"]':
         self._ensure_opened()
         async with self._session() as session:
             yield self._service_class(session=session)
 
     @asynccontextmanager
-    async def _operation(self) -> AsyncIterator["QueueTaskService"]:
+    async def _operation(self) -> 'AsyncIterator["QueueTaskService"]':
         self._ensure_opened()
         async with self._session() as session, session.begin():
             yield self._service_class(session=session)
 
     @asynccontextmanager
-    async def _heartbeat_operation(self) -> AsyncIterator["QueueTaskService"]:
+    async def _heartbeat_operation(self) -> 'AsyncIterator["QueueTaskService"]':
         """Yield a ``QueueTaskService`` bound to the dedicated heartbeat session maker.
 
         Falls back to :meth:`_operation` when ``heartbeat_session_maker`` is not

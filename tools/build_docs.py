@@ -7,7 +7,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("output")
 
 
-def build(output_dir: str) -> None:
+def build(output_dir: "str") -> "None":
     subprocess.run(["make", "docs"], check=True)
 
     docs_src_path = Path("docs/_build/html")
@@ -24,7 +24,7 @@ def build(output_dir: str) -> None:
             shutil.copy2(item, dest)
 
 
-def main() -> None:
+def main() -> "None":
     args = parser.parse_args()
     build(output_dir=args.output)
 

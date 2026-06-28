@@ -18,40 +18,42 @@ correctness while this captures throughput.
 import argparse
 import asyncio
 import time
-from collections.abc import Callable
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from litestar_queues import EnqueueSpec
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
-def _aiosqlite_config(directory: str) -> Any:
+
+def _aiosqlite_config(directory: "str") -> "Any":
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
     return AiosqliteConfig(connection_config={"database": f"{directory}/benchmark.db"})
 
 
-def _asyncpg_config(dsn: str) -> Any:
+def _asyncpg_config(dsn: "str") -> "Any":
     from sqlspec.adapters.asyncpg import AsyncpgConfig
 
     return AsyncpgConfig(connection_config={"dsn": dsn})
 
 
-def _duckdb_config(directory: str) -> Any:
+def _duckdb_config(directory: "str") -> "Any":
     from sqlspec.adapters.duckdb import DuckDBConfig
 
     return DuckDBConfig(connection_config={"database": f"{directory}/benchmark.duckdb"})
 
 
-_ADAPTERS: dict[str, Callable[[str, str | None], Any]] = {
+_ADAPTERS: "dict[str, Callable[[str, str | None], Any]]" = {
     "aiosqlite": lambda directory, _dsn: _aiosqlite_config(directory),
     "duckdb": lambda directory, _dsn: _duckdb_config(directory),
     "asyncpg": lambda _directory, dsn: _asyncpg_config(dsn or ""),
 }
 
 
-async def _time_path(label: str, rows: int, run: Callable[[], Any]) -> float:
+async def _time_path(label: "str", rows: "int", run: "Callable[[], Any]") -> "float":
     start = time.perf_counter()
     await run()
     elapsed = time.perf_counter() - start
@@ -59,7 +61,7 @@ async def _time_path(label: str, rows: int, run: Callable[[], Any]) -> float:
     return elapsed
 
 
-async def _run(adapter: str, dsn: str | None, rows: int) -> None:
+async def _run(adapter: "str", dsn: "str | None", rows: "int") -> "None":
     with TemporaryDirectory() as directory:
         config = _ADAPTERS[adapter](directory, dsn)
 
@@ -68,7 +70,7 @@ async def _run(adapter: str, dsn: str | None, rows: int) -> None:
         try:
             print(f"adapter={adapter} rows={rows}\n")
 
-            async def per_row() -> None:
+            async def per_row() -> "None":
                 for index in range(rows):
                     await single_backend.enqueue("bench.task", args=(index,), kwargs={"n": index})
 
@@ -81,7 +83,7 @@ async def _run(adapter: str, dsn: str | None, rows: int) -> None:
         try:
             specs = [EnqueueSpec(task_name="bench.task", args=(index,), kwargs={"n": index}) for index in range(rows)]
 
-            async def bulk() -> None:
+            async def bulk() -> "None":
                 await bulk_backend.enqueue_many(specs)
 
             bulk_elapsed = await _time_path("enqueue_many", rows, bulk)
@@ -92,7 +94,7 @@ async def _run(adapter: str, dsn: str | None, rows: int) -> None:
         print(f"\n  speedup: {single_elapsed / bulk_elapsed:.1f}x")
 
 
-def main() -> None:
+def main() -> "None":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", choices=sorted(_ADAPTERS), default="aiosqlite")
     parser.add_argument("--dsn", default=None, help="Connection DSN for server adapters (e.g. asyncpg).")

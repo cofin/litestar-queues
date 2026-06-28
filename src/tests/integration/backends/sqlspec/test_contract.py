@@ -68,21 +68,21 @@ pytestmark = pytest.mark.anyio
 class FakeSQLSpecConfig(SimpleNamespace):
     """Structural config used by SQLSpec store dispatch tests."""
 
-    extension_config: dict[str, object]
-    statement_config: SimpleNamespace
-    connection_config: dict[str, object]
+    extension_config: "dict[str, object]"
+    statement_config: "SimpleNamespace"
+    connection_config: "dict[str, object]"
 
 
 def _fake_adapter_config(
-    adapter_name: str,
+    adapter_name: "str",
     *,
-    dialect: str | None = None,
-    config_type_name: str | None = None,
-    connection_config: dict[str, object] | None = None,
-    extension_config: dict[str, object] | None = None,
-    supports_native_arrow_import: bool | None = None,
-) -> FakeSQLSpecConfig:
-    class_attrs: dict[str, object] = {"__module__": f"sqlspec.adapters.{adapter_name}.config"}
+    dialect: "str | None" = None,
+    config_type_name: "str | None" = None,
+    connection_config: "dict[str, object] | None" = None,
+    extension_config: "dict[str, object] | None" = None,
+    supports_native_arrow_import: "bool | None" = None,
+) -> "FakeSQLSpecConfig":
+    class_attrs: "dict[str, object]" = {"__module__": f"sqlspec.adapters.{adapter_name}.config"}
     if supports_native_arrow_import is not None:
         class_attrs["supports_native_arrow_import"] = supports_native_arrow_import
     config_type = cast(
@@ -103,7 +103,7 @@ def _fake_adapter_config(
 # ---------------------------------------------------------------------------
 
 
-async def test_backend_contract_enqueue_claim_complete_cycle(queue_backend: "BaseQueueBackend") -> None:
+async def test_backend_contract_enqueue_claim_complete_cycle(queue_backend: "BaseQueueBackend") -> "None":
     """A backend must support the full enqueue → claim → complete cycle."""
     record = await queue_backend.enqueue("tasks.contract.cycle", priority=10)
 
@@ -121,7 +121,7 @@ async def test_backend_contract_enqueue_claim_complete_cycle(queue_backend: "Bas
 
 async def test_backend_contract_concurrent_claim_next_never_double_claims(
     queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
-) -> None:
+) -> "None":
     """Concurrent ``claim_next`` must never hand the same task to two workers.
 
     On adapters that advertise SKIP LOCKED (Postgres family, MySQL 8+, …) the
@@ -155,7 +155,7 @@ async def test_backend_contract_concurrent_claim_next_never_double_claims(
     assert set(claimed_ids) == enqueued_ids, "every due task should be claimed exactly once"
 
 
-async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_backend: "BaseQueueBackend") -> None:
+async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_backend: "BaseQueueBackend") -> "None":
     """Stale recovery must requeue every stale running task.
 
     For SQLSpec backends the per-row stale-recovery writes are batched into a
@@ -189,7 +189,7 @@ async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_
 # ---------------------------------------------------------------------------
 
 
-async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridge(tmp_path: "Path") -> None:
+async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridge(tmp_path: "Path") -> "None":
     """SQLSpecQueueBackend must support sync SQLSpec configs via sqlspec.utils.sync_tools."""
     from sqlspec.adapters.sqlite import SqliteConfig
 
@@ -213,12 +213,12 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
         await backend.close()
 
 
-async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> None:
+async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> "None":
     assert "sqlspec" in list_queue_backends()
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
 
 
-def test_top_level_litestar_queues_import_does_not_pull_in_sqlspec() -> None:
+def test_top_level_litestar_queues_import_does_not_pull_in_sqlspec() -> "None":
     """Importing ``litestar_queues`` must succeed without sqlspec installed."""
     code = """
 import builtins
@@ -244,7 +244,7 @@ assert "sqlspec" not in sys.modules
     assert result.returncode == 0, result.stderr
 
 
-def test_sqlspec_backend_store_factory_does_not_import_optional_adapter_drivers() -> None:
+def test_sqlspec_backend_store_factory_does_not_import_optional_adapter_drivers() -> "None":
     code = """
 import builtins
 from types import SimpleNamespace
@@ -370,7 +370,7 @@ for adapter_name, dialect, config_type_name, expected_store in expected:
 
 async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     backend_config = SQLSpecBackendConfig(table_name="queue_tasks")
     store = create_queue_store(sqlite_config_factory(tmp_path / "queue.db"), table_name=backend_config.table_name)
 
@@ -390,7 +390,7 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "queue" in pending_statement.sql
 
 
-def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> None:
+def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> "None":
     with pytest.raises(QueueConfigurationError, match="arrow_odbc"):
         create_queue_store(
             _fake_adapter_config("arrow_odbc", dialect="sqlite", config_type_name="ArrowOdbcConfig"),
@@ -398,7 +398,7 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> None:
         )
 
 
-def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> None:
+def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> "None":
     import sqlspec.adapters
 
     event_store_adapters = {
@@ -489,13 +489,13 @@ def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> 
     ),
 )
 async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
-    adapter_name: str,
-    dialect: str | None,
-    config_type_name: str,
-    connection_config: dict[str, object],
-    expected_store_type: type[object],
-    expected_sql_fragment: str,
-) -> None:
+    adapter_name: "str",
+    dialect: "str | None",
+    config_type_name: "str",
+    connection_config: "dict[str, object]",
+    expected_store_type: "type[object]",
+    expected_sql_fragment: "str",
+) -> "None":
     store = create_queue_store(
         _fake_adapter_config(
             adapter_name, dialect=dialect, config_type_name=config_type_name, connection_config=connection_config
@@ -509,8 +509,8 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
 
 
 def _event_hinted_config(
-    adapter_name: str, *, select_for_update: bool, skip_locked: bool, dialect: str | None = None
-) -> FakeSQLSpecConfig:
+    adapter_name: "str", *, select_for_update: "bool", skip_locked: "bool", dialect: "str | None" = None
+) -> "FakeSQLSpecConfig":
     """Fake adapter config advertising SQLSpec event runtime hints."""
     from sqlspec.extensions.events import EventRuntimeHints
 
@@ -537,8 +537,8 @@ def _event_hinted_config(
     ),
 )
 def test_sqlspec_store_supports_skip_locked_follows_config_event_hints(
-    adapter_name: str, select_for_update: bool, skip_locked: bool, expected: bool
-) -> None:
+    adapter_name: "str", select_for_update: "bool", skip_locked: "bool", expected: "bool"
+) -> "None":
     """``supports_skip_locked`` gates off the adapter config's event runtime hints."""
     store = create_queue_store(
         _event_hinted_config(adapter_name, select_for_update=select_for_update, skip_locked=skip_locked),
@@ -548,14 +548,14 @@ def test_sqlspec_store_supports_skip_locked_follows_config_event_hints(
     assert store.supports_skip_locked is expected
 
 
-def test_sqlspec_store_supports_skip_locked_defaults_false_without_hints() -> None:
+def test_sqlspec_store_supports_skip_locked_defaults_false_without_hints() -> "None":
     """A config that does not advertise event hints degrades to optimistic CAS."""
     store = create_queue_store(_fake_adapter_config("aiosqlite", dialect="sqlite"), table_name="queue_tasks")
 
     assert store.supports_skip_locked is False
 
 
-def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect() -> None:
+def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect() -> "None":
     """``select_claimable`` builds a due-task SELECT that locks rows with SKIP LOCKED."""
     store = create_queue_store(
         _event_hinted_config("asyncpg", select_for_update=True, skip_locked=True, dialect="postgres"),
@@ -577,7 +577,7 @@ def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect()
         ("[tenant].[queue_tasks]", "tenant.queue_tasks"),
     ),
 )
-def test_sqlspec_backend_accepts_sqlspec_qualified_table_names(table_name: str, expected: str) -> None:
+def test_sqlspec_backend_accepts_sqlspec_qualified_table_names(table_name: "str", expected: "str") -> "None":
     """Table-name validation follows SQLSpec's identifier splitter."""
     backend_config = SQLSpecBackendConfig(table_name=table_name)
     store = create_queue_store(
@@ -592,7 +592,7 @@ def test_sqlspec_backend_accepts_sqlspec_qualified_table_names(table_name: str, 
 @pytest.mark.parametrize(
     "table_name", ("", "queue tasks", "queue;drop", "schema.", ".queue_tasks", "schema..queue_tasks")
 )
-def test_sqlspec_backend_rejects_invalid_table_names(table_name: str) -> None:
+def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None":
     with pytest.raises(QueueConfigurationError, match="Invalid SQLSpec queue table name"):
         SQLSpecBackendConfig(table_name=table_name)
 
@@ -633,13 +633,13 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: str) -> None:
     ),
 )
 def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
-    adapter_name: str,
-    dialect: str | None,
-    config_type_name: str,
-    connection_config: dict[str, object],
-    expected_fragment: str,
-    native_json_columns: frozenset[str],
-) -> None:
+    adapter_name: "str",
+    dialect: "str | None",
+    config_type_name: "str",
+    connection_config: "dict[str, object]",
+    expected_fragment: "str",
+    native_json_columns: "frozenset[str]",
+) -> "None":
     """Pin the matrix-visible JSON codec and bulk-ingest capability per store."""
     pytest.importorskip("pyarrow")
     store = create_queue_store(
@@ -668,7 +668,9 @@ def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
         ("pymysql", "PyMysqlConfig"),
     ),
 )
-async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(adapter_name: str, config_type_name: str) -> None:
+async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(
+    adapter_name: "str", config_type_name: "str"
+) -> "None":
     store = create_queue_store(
         _fake_adapter_config(adapter_name, dialect="mysql", config_type_name=config_type_name), table_name="queue_tasks"
     )
@@ -682,8 +684,8 @@ async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(adapter_name: 
 
 
 async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_keys(
-    sqlspec_backend: SQLSpecQueueBackend,
-) -> None:
+    sqlspec_backend: "SQLSpecQueueBackend",
+) -> "None":
     first = await sqlspec_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
     duplicate = await sqlspec_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
 
@@ -700,7 +702,7 @@ async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_ke
     assert keyed.id == replacement.id
 
 
-async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: SQLSpecQueueBackend) -> None:
+async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await sqlspec_backend.enqueue("tasks.low", priority=1)
@@ -721,7 +723,9 @@ async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: SQL
     assert stored_scheduled.status == "scheduled"
 
 
-async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(sqlspec_backend: SQLSpecQueueBackend) -> None:
+async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(
+    sqlspec_backend: "SQLSpecQueueBackend",
+) -> "None":
     record = await sqlspec_backend.enqueue("tasks.flaky", max_retries=1)
 
     await sqlspec_backend.claim_task(record.id)
@@ -741,8 +745,8 @@ async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(sqlspec_
 
 
 async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
-    sqlspec_backend: SQLSpecQueueBackend,
-) -> None:
+    sqlspec_backend: "SQLSpecQueueBackend",
+) -> "None":
     pending = await sqlspec_backend.enqueue("tasks.cancel")
 
     assert await sqlspec_backend.cancel_task(pending.id)
@@ -785,7 +789,7 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert exhausted_stored.error == "Task heartbeat stale"
 
 
-async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: SQLSpecQueueBackend) -> None:
+async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     encoded_at = datetime.now(UTC)
 
     record = await sqlspec_backend.enqueue("tasks.metadata", metadata={"encoded_at": encoded_at})
@@ -795,14 +799,14 @@ async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: SQL
     assert stored.metadata["encoded_at"] == encoded_at.isoformat().replace("+00:00", "Z")
 
 
-def test_sqlspec_backend_does_not_create_sqlspec_litestar_plugin() -> None:
+def test_sqlspec_backend_does_not_create_sqlspec_litestar_plugin() -> "None":
     with pytest.raises(TypeError):
         SQLSpecQueueBackend(register_plugin=True)  # type: ignore[call-arg]
 
 
 async def test_sqlspec_backend_can_start_with_packaged_migrations(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     db_path = tmp_path / "migrated.db"
 
     first = SQLSpecQueueBackend(
@@ -834,7 +838,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
 
 async def test_sqlspec_backend_uses_configured_table_name(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     db_path = tmp_path / "custom-table.db"
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path), table_name="queue_tasks")
@@ -856,7 +860,7 @@ async def test_sqlspec_backend_uses_configured_table_name(
 
 async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_values_are_absent(
     tmp_path: "Path",
-) -> None:
+) -> "None":
     db_path = tmp_path / "extension-config.db"
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(db_path)},
@@ -878,7 +882,7 @@ async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_va
     assert "litestar_queue_tasks" not in table_names
 
 
-async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension_config(tmp_path: "Path") -> None:
+async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension_config(tmp_path: "Path") -> "None":
     db_path = tmp_path / "explicit-config.db"
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(db_path)},
@@ -904,9 +908,9 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
 
 async def test_queue_service_uses_sqlspec_backend_from_config(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     @task("tasks.lower", retries=1)
-    async def lowercase(value: str) -> str:
+    async def lowercase(value: "str") -> "str":
         return value.lower()
 
     config = QueueConfig(

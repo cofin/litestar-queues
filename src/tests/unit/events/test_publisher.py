@@ -1,6 +1,6 @@
 import subprocess
 import sys
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,16 +13,19 @@ from litestar_queues.events import (
     QueueEventSink,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 pytestmark = pytest.mark.anyio
 
 
 class FailingSink:
-    async def publish(self, event: QueueEvent, *, channels: Sequence[str]) -> None:
+    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         msg = f"publish failed for {event.type}"
         raise RuntimeError(msg)
 
 
-def test_queue_channels_normalize_parts_deterministically() -> None:
+def test_queue_channels_normalize_parts_deterministically() -> "None":
     assert QueueChannels.task("Task 1", topic="progress") == "litestar_queues:task:task_1:progress"
     assert QueueChannels.queue("critical/default") == "litestar_queues:queue:critical_default:events"
     assert QueueChannels.worker("worker@host") == "litestar_queues:worker:worker_host:events"
@@ -30,7 +33,7 @@ def test_queue_channels_normalize_parts_deterministically() -> None:
     assert QueueChannels.custom("tenant:acme") == "litestar_queues:custom:tenant:acme:events"
 
 
-async def test_queue_event_publisher_targets_configured_channels() -> None:
+async def test_queue_event_publisher_targets_configured_channels() -> "None":
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink, publish_queue_channel=True, publish_global_lifecycle=True)
     event = QueueEvent(
@@ -53,7 +56,7 @@ async def test_queue_event_publisher_targets_configured_channels() -> None:
     assert sink.events_for(QueueChannels.custom("external")) == [event]
 
 
-async def test_queue_event_publisher_failure_semantics() -> None:
+async def test_queue_event_publisher_failure_semantics() -> "None":
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1")
 
     await QueueEventPublisher(NoopQueueEventSink()).publish(event)
@@ -63,12 +66,12 @@ async def test_queue_event_publisher_failure_semantics() -> None:
         await QueueEventPublisher(FailingSink(), strict=True).publish(event)
 
 
-async def test_event_sink_fixture_is_parametrized_over_both_sinks(event_sink: QueueEventSink) -> None:
+async def test_event_sink_fixture_is_parametrized_over_both_sinks(event_sink: "QueueEventSink") -> "None":
     """The unit-tier `event_sink` fixture exposes both InMemory and Noop sinks."""
     assert isinstance(event_sink, (InMemoryQueueEventSink, NoopQueueEventSink))
 
 
-def test_event_imports_do_not_load_optional_driver_modules() -> None:
+def test_event_imports_do_not_load_optional_driver_modules() -> "None":
     code = """
 import sys
 import litestar_queues.events

@@ -9,7 +9,7 @@ from litestar_queues.events import QueueEvent
 pytestmark = pytest.mark.anyio
 
 
-async def test_queue_event_serialization_preserves_null_keys() -> None:
+async def test_queue_event_serialization_preserves_null_keys() -> "None":
     event = QueueEvent(
         type="task.progress",
         scope="task",
@@ -43,7 +43,7 @@ async def test_queue_event_serialization_preserves_null_keys() -> None:
     assert QueueEvent.from_json(event.to_json()).to_dict() == data
 
 
-async def test_queue_event_serialization_uses_camelcase_wire_format() -> None:
+async def test_queue_event_serialization_uses_camelcase_wire_format() -> "None":
     """Top-level keys use the public camelCase wire format."""
     event = QueueEvent(
         type="task.progress",
@@ -76,14 +76,14 @@ async def test_queue_event_serialization_uses_camelcase_wire_format() -> None:
         assert snake_key not in data
 
 
-async def test_queue_event_payload_keys_are_not_camelized() -> None:
+async def test_queue_event_payload_keys_are_not_camelized() -> "None":
     """User-supplied payload contents are passed through verbatim."""
     event = QueueEvent(type="task.event", scope="task", payload={"snake_inner": 1, "nested": {"deep_key": 2}})
     data = event.to_dict()
     assert data["payload"] == {"snake_inner": 1, "nested": {"deep_key": 2}}
 
 
-async def test_queue_event_round_trip_preserves_event_key() -> None:
+async def test_queue_event_round_trip_preserves_event_key() -> "None":
     """event_key survives to_json -> from_json round trip."""
     event = QueueEvent(type="task.completed", scope="task", task_id="t-1", event_key="dedup-xyz")
     encoded = event.to_json()
@@ -96,14 +96,14 @@ async def test_queue_event_round_trip_preserves_event_key() -> None:
     assert restored.task_id == "t-1"
 
 
-async def test_queue_event_occurred_at_uses_rfc3339_with_trailing_z() -> None:
+async def test_queue_event_occurred_at_uses_rfc3339_with_trailing_z() -> "None":
     """OccurredAt serializes to RFC 3339 UTC with a trailing Z so subscribers can rely on the format."""
     event = QueueEvent(type="task.started", scope="task")
     decoded = json.loads(event.to_json())
     assert decoded["occurredAt"].endswith("Z")
 
 
-async def test_queue_event_actor_and_entity_serialize_as_camelcase_dicts() -> None:
+async def test_queue_event_actor_and_entity_serialize_as_camelcase_dicts() -> "None":
     """Nested QueueEventActor / QueueEventEntityRef appear as native dicts on the wire."""
     from litestar_queues.events import QueueEventActor, QueueEventEntityRef
 
@@ -119,7 +119,7 @@ async def test_queue_event_actor_and_entity_serialize_as_camelcase_dicts() -> No
     assert data["entity"] == {"type": "report", "id": "r-1", "name": "weekly"}
 
 
-def test_queue_event_imports_do_not_load_sqlspec() -> None:
+def test_queue_event_imports_do_not_load_sqlspec() -> "None":
     """Importing the events module must not trigger optional sqlspec runtime."""
     code = """
 import sys
@@ -133,7 +133,7 @@ raise SystemExit(1 if 'sqlspec' in sys.modules else 0)
     assert result.returncode == 0, result.stdout
 
 
-async def test_queue_event_supports_event_key_field() -> None:
+async def test_queue_event_supports_event_key_field() -> "None":
     """QueueEvent has an event_key field that defaults to None and is settable."""
     default_event = QueueEvent(type="task.progress", scope="task")
     assert default_event.event_key is None

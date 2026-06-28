@@ -1,7 +1,6 @@
 """SQLSpec queue store factory."""
 
-from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from litestar_queues.backends.sqlspec.stores.adbc import AdbcQueueStore
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
@@ -29,9 +28,12 @@ from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.exceptions import QueueConfigurationError
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 __all__ = ("create_queue_store",)
 
-_ADAPTER_STORE_TYPES: dict[str, type[SQLSpecQueueStore]] = {
+_ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "adbc": AdbcQueueStore,
     "aiomysql": AiomysqlQueueStore,
     "aiosqlite": AiosqliteQueueStore,
@@ -50,13 +52,13 @@ _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAP
 
 
 def create_queue_store(
-    config: Any,
+    config: "Any",
     *,
-    table_name: str | None = None,
-    column_map: Mapping[str, str] | None = None,
-    native_json_columns: frozenset[str] | None = None,
-    manage_schema: bool = True,
-) -> SQLSpecQueueStore:
+    table_name: "str | None" = None,
+    column_map: "Mapping[str, str] | None" = None,
+    native_json_columns: "frozenset[str] | None" = None,
+    manage_schema: "bool" = True,
+) -> "SQLSpecQueueStore":
     """Create a queue store for a SQLSpec adapter configuration.
 
     Returns:
@@ -72,7 +74,7 @@ def create_queue_store(
     )
 
 
-def _adapter_store_type(config: Any) -> type[SQLSpecQueueStore]:
+def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
     name = _adapter_name(config)
     if name == "cockroach_psycopg":
         return _async_or_sync_store_type(
@@ -104,8 +106,8 @@ def _adapter_store_type(config: Any) -> type[SQLSpecQueueStore]:
 
 
 def _async_or_sync_store_type(
-    config: Any, *, async_store_type: type[SQLSpecQueueStore], sync_store_type: type[SQLSpecQueueStore]
-) -> type[SQLSpecQueueStore]:
+    config: "Any", *, async_store_type: "type[SQLSpecQueueStore]", sync_store_type: "type[SQLSpecQueueStore]"
+) -> "type[SQLSpecQueueStore]":
     config_type_name = type(config).__name__.lower()
     if "async" in config_type_name:
         return async_store_type

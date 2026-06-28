@@ -1,15 +1,17 @@
 import asyncio
 import contextlib
 import os
-from collections.abc import AsyncIterator, Callable, Mapping
 from enum import IntEnum
 from importlib import import_module
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from litestar_queues.config import QueueConfig
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Mapping
 
 __all__ = ("CloudRunExitCode", "execute_cloudrun_task", "main")
 
@@ -29,11 +31,11 @@ class CloudRunExitCode(IntEnum):
 
 async def execute_cloudrun_task(
     *,
-    config: QueueConfig | None = None,
-    service: QueueService | None = None,
-    service_factory: Callable[[], Any] | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CloudRunExitCode:
+    config: "QueueConfig | None" = None,
+    service: "QueueService | None" = None,
+    service_factory: "Callable[[], Any] | None" = None,
+    env: "Mapping[str, str] | None" = None,
+) -> "CloudRunExitCode":
     """Execute one persisted queue record in a Cloud Run task process.
 
     Returns:
@@ -96,7 +98,7 @@ async def execute_cloudrun_task(
     return CloudRunExitCode.FAILURE
 
 
-def main() -> None:
+def main() -> "None":
     """Console entry point for Cloud Run task execution.
 
     Raises:
@@ -105,7 +107,7 @@ def main() -> None:
     raise SystemExit(int(asyncio.run(execute_cloudrun_task())))
 
 
-async def _heartbeat_loop(queue: QueueService, task_id: UUID, *, expected_retry_count: int) -> bool:
+async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int") -> "bool":
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
@@ -116,11 +118,11 @@ async def _heartbeat_loop(queue: QueueService, task_id: UUID, *, expected_retry_
 @contextlib.asynccontextmanager
 async def _provide_service(
     *,
-    config: QueueConfig | None,
-    service: QueueService | None,
-    service_factory: Callable[[], Any] | None,
-    env: Mapping[str, str],
-) -> AsyncIterator[QueueService]:
+    config: "QueueConfig | None",
+    service: "QueueService | None",
+    service_factory: "Callable[[], Any] | None",
+    env: "Mapping[str, str]",
+) -> "AsyncIterator[QueueService]":
     if service is not None:
         yield service
         return
@@ -144,7 +146,7 @@ async def _provide_service(
         yield queue
 
 
-def _load_config_factory(config: QueueConfig | None, env: Mapping[str, str]) -> Callable[[], Any] | None:
+def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "Callable[[], Any] | None":
     env_var = _env_name(config, "CONFIG_FACTORY")
     import_path = env.get(env_var)
     if not import_path:
@@ -160,7 +162,7 @@ def _load_config_factory(config: QueueConfig | None, env: Mapping[str, str]) -> 
     return cast("Callable[[], Any]", factory)
 
 
-def _load_configured_task_modules(config: QueueConfig, env: Mapping[str, str]) -> None:
+def _load_configured_task_modules(config: "QueueConfig", env: "Mapping[str, str]") -> "None":
     modules = list(config.task_modules)
     env_modules = env.get(_env_name(config, "TASK_MODULES"))
     if env_modules:
@@ -169,7 +171,7 @@ def _load_configured_task_modules(config: QueueConfig, env: Mapping[str, str]) -
         load_task_modules(tuple(modules), force_reload=True)
 
 
-def _env_name(config: QueueConfig | None, suffix: str) -> str:
+def _env_name(config: "QueueConfig | None", suffix: "str") -> "str":
     raw_config = config.execution_backend if config is not None else None
     env_name = getattr(raw_config, "env_name", None)
     if callable(env_name):

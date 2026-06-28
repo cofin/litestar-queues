@@ -16,11 +16,11 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> None:
+def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> None:
+async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> "None":
     plugin = QueuePlugin(QueueConfig(execution_backend="local", task_modules=("tests._factories.queue_tasks",)))
     app = Litestar(plugins=[plugin])
 
@@ -35,7 +35,7 @@ async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> 
     assert scheduled.status == "scheduled"
 
 
-async def test_plugin_start_worker_creates_and_cleans_up_worker() -> None:
+async def test_plugin_start_worker_creates_and_cleans_up_worker() -> "None":
     plugin = QueuePlugin(QueueConfig(execution_backend="local", start_worker=True, worker_poll_interval=0.01))
     app = Litestar(plugins=[plugin])
 
@@ -47,7 +47,7 @@ async def test_plugin_start_worker_creates_and_cleans_up_worker() -> None:
     assert not worker.is_running
 
 
-def test_importing_litestar_queues_does_not_load_click() -> None:
+def test_importing_litestar_queues_does_not_load_click() -> "None":
     """``click`` is only pulled in when the CLI is actually invoked.
 
     Verified in a fresh subprocess so prior in-process imports cannot leak
@@ -65,7 +65,7 @@ def test_importing_litestar_queues_does_not_load_click() -> None:
     assert result.returncode == 0, result.stderr.decode()
 
 
-async def test_plugin_uses_registered_queue_backend_instance() -> None:
+async def test_plugin_uses_registered_queue_backend_instance() -> "None":
     class CustomQueueBackend(BaseQueueBackend):
         __slots__ = ()
 

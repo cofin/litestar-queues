@@ -22,7 +22,7 @@ pytestmark = [
 ]
 
 
-def test_run_subcommand_drains_on_sigterm() -> None:
+def test_run_subcommand_drains_on_sigterm() -> "None":
     env = os.environ.copy()
     env["LITESTAR_APP"] = "tests.support.cli_app:app"
     env["PYTHONPATH"] = "src" + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")

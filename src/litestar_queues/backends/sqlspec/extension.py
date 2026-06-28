@@ -1,21 +1,23 @@
 """SQLSpec queue extension configuration."""
 
-from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, migration_directory, validate_table_name
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = ("QUEUE_EXTENSION_NAME", "configure_queue_migration_extension", "queue_migration_directory")
 
 QUEUE_EXTENSION_NAME = "litestar_queues"
 
 
-def queue_migration_directory() -> Path:
+def queue_migration_directory() -> "Path":
     """Return the queue extension migration directory."""
     return migration_directory()
 
 
-def configure_queue_migration_extension(sqlspec_config: Any, *, table_name: str = DEFAULT_TABLE_NAME) -> None:
+def configure_queue_migration_extension(sqlspec_config: "Any", *, table_name: "str" = DEFAULT_TABLE_NAME) -> "None":
     """Register the packaged queue migration with SQLSpec's extension runner."""
     queue_settings = _configure_extension_settings(sqlspec_config, table_name=table_name)
     commands = sqlspec_config.get_migration_commands()
@@ -29,7 +31,7 @@ def configure_queue_migration_extension(sqlspec_config: Any, *, table_name: str 
         runner.context.extension_config = commands.extension_configs
 
 
-def _configure_extension_settings(sqlspec_config: Any, *, table_name: str) -> dict[str, Any]:
+def _configure_extension_settings(sqlspec_config: "Any", *, table_name: "str") -> "dict[str, Any]":
     extension_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}))
     queue_settings = dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
     queue_settings["table_name"] = validate_table_name(table_name)
@@ -39,7 +41,7 @@ def _configure_extension_settings(sqlspec_config: Any, *, table_name: str) -> di
     migration_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "migration_config", {}) or {}))
     include_extensions = migration_config.get("include_extensions")
     if include_extensions is None:
-        include_list: list[str] = []
+        include_list: "list[str]" = []
     elif isinstance(include_extensions, tuple):
         include_list = list(include_extensions)
     else:

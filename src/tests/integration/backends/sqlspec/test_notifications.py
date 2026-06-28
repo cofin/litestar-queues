@@ -43,7 +43,7 @@ pytestmark = pytest.mark.anyio
 
 async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     event_channel = StubAsyncEventChannel()
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
@@ -79,7 +79,7 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
         await backend.close()
 
 
-async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_path: "Path") -> None:
+async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_path: "Path") -> "None":
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "derived-notifications.db")},
         extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01, "queue_table": "queue_events"}},
@@ -109,7 +109,7 @@ async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_pat
 
 async def test_sqlspec_backend_notification_channel_uses_extension_config_with_explicit_override(
     tmp_path: "Path",
-) -> None:
+) -> "None":
     extension_channel = StubAsyncEventChannel()
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "extension-notifications.db")},
@@ -147,7 +147,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
 
 async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     sqlspec = SQLSpec()
     sqlspec_config = sqlite_config_factory(tmp_path / "litestar.db")
     sqlspec.add_config(sqlspec_config)
@@ -185,7 +185,7 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
         (None, "polling"),
     ],
 )
-def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", expected_transport: str) -> None:
+def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", expected_transport: "str") -> "None":
     """The wakeup transport is gated by adapter knowledge.
 
     Postgres-over-asyncpg gets the durable LISTEN/NOTIFY hybrid; psycopg/psqlpy
@@ -195,14 +195,14 @@ def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", ex
     assert _adapter_notify_transport(adapter_name) == expected_transport
 
 
-def test_notify_transport_config_rejects_unknown_value() -> None:
+def test_notify_transport_config_rejects_unknown_value() -> "None":
     with pytest.raises(QueueConfigurationError):
         SQLSpecBackendConfig(notify_transport="not-a-transport")
 
 
 async def test_sqlspec_backend_non_notify_adapter_polls(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
-) -> None:
+) -> "None":
     """A non-notify adapter degrades requested notifications to polling."""
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
@@ -225,7 +225,7 @@ async def test_sqlspec_backend_non_notify_adapter_polls(
         await backend.close()
 
 
-async def test_sqlspec_backend_notify_transport_override_enables_table_queue(tmp_path: "Path") -> None:
+async def test_sqlspec_backend_notify_transport_override_enables_table_queue(tmp_path: "Path") -> "None":
     """An explicit ``notify_transport`` overrides the adapter's polling default."""
     sqlspec_config = AiosqliteConfig(connection_config={"database": str(tmp_path / "override-table-queue.db")})
     backend = SQLSpecQueueBackend(
@@ -252,7 +252,7 @@ async def test_sqlspec_backend_notify_transport_override_enables_table_queue(tmp
         await backend.close()
 
 
-async def test_sqlspec_backend_notify_transport_polling_overrides_extension_config(tmp_path: "Path") -> None:
+async def test_sqlspec_backend_notify_transport_polling_overrides_extension_config(tmp_path: "Path") -> "None":
     """``queue_backend_config`` polling override beats an ``extension_config`` events default."""
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "override-polling.db")},
@@ -274,7 +274,7 @@ async def test_sqlspec_backend_notify_transport_polling_overrides_extension_conf
 
 async def test_sqlspec_backend_postgres_listen_notify_durable_wakes(
     postgres_service: "PostgresService", tmp_path: "Path"
-) -> None:
+) -> "None":
     """Postgres workers wake via NOTIFY with a durable fallback, no missed bursts."""
     pytest.importorskip("asyncpg")
     from sqlspec.adapters.asyncpg import AsyncpgConfig

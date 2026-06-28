@@ -1,7 +1,6 @@
 """SQLSpec queue backend."""
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
@@ -34,6 +33,8 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator, Sequence
+
     from litestar_queues.config import QueueConfig
 
 __all__ = ("SQLSpecQueueBackend",)
@@ -51,7 +52,7 @@ _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
 _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
 
 
-def _adapter_notify_transport(adapter_name: str | None) -> str:
+def _adapter_notify_transport(adapter_name: "str | None") -> "str":
     """Return the default wakeup transport for a SQLSpec adapter.
 
     The wakeup transport is gated purely by adapter knowledge so backends only
@@ -101,8 +102,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     )
 
     def __init__(
-        self, config: "QueueConfig | None" = None, *, backend_config: SQLSpecBackendConfig | None = None
-    ) -> None:
+        self, config: "QueueConfig | None" = None, *, backend_config: "SQLSpecBackendConfig | None" = None
+    ) -> "None":
         super().__init__(config=config)
         backend_config = backend_config or SQLSpecBackendConfig()
         self._column_map = validate_column_map(backend_config.column_map)
@@ -129,12 +130,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_poll_interval = backend_config.event_poll_interval
         self._event_settings = dict(backend_config.event_settings)
         self._queue_observability = backend_config.queue_observability
-        self._notification_backend: str | None = getattr(self._event_channel, "_backend_name", None)
+        self._notification_backend: "str | None" = getattr(self._event_channel, "_backend_name", None)
         self._notifications_enabled = self._event_channel is not None
-        self._store: Any | None = None
+        self._store: "Any | None" = None
         self._opened = False
 
-    async def open(self) -> bool:
+    async def open(self) -> "bool":
         """Open SQLSpec resources.
 
         Returns:
@@ -154,7 +155,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self.create_schema()
         return True
 
-    async def close(self) -> None:
+    async def close(self) -> "None":
         """Close SQLSpec resources."""
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
@@ -166,8 +167,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._opened = False
 
     @property
-    def capabilities(self) -> QueueBackendCapabilities:
-        """Return backend behavior capabilities."""
+    def capabilities(self) -> "QueueBackendCapabilities":
+        """Backend behavior capabilities."""
         notification_backend = self._notification_backend
         return QueueBackendCapabilities(
             supports_notifications=self._notifications_enabled,
@@ -175,7 +176,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             notifications_durable=notification_backend in _DURABLE_NOTIFICATION_BACKENDS,
         )
 
-    async def create_schema(self) -> None:
+    async def create_schema(self) -> "None":
         """Create the SQLSpec queue table and indexes."""
         if not self._manage_schema:
             return
@@ -184,7 +185,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.execute_script(statement)
             await driver.commit()
 
-    async def run_migrations(self) -> None:
+    async def run_migrations(self) -> "None":
         """Apply packaged SQLSpec migrations."""
         if not self._manage_schema:
             return
@@ -194,19 +195,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def enqueue(
         self,
-        task_name: str,
+        task_name: "str",
         *,
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
-        queue: str = "default",
-        priority: int = 0,
-        max_retries: int = 0,
-        scheduled_at: datetime | None = None,
-        key: str | None = None,
-        execution_backend: str = "local",
-        execution_profile: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> QueuedTaskRecord:
+        args: "tuple[Any, ...]" = (),
+        kwargs: "dict[str, Any] | None" = None,
+        queue: "str" = "default",
+        priority: "int" = 0,
+        max_retries: "int" = 0,
+        scheduled_at: "datetime | None" = None,
+        key: "str | None" = None,
+        execution_backend: "str" = "local",
+        execution_profile: "str | None" = None,
+        metadata: "dict[str, Any] | None" = None,
+    ) -> "QueuedTaskRecord":
         with self._observe_queue_operation("enqueue", queue=queue, task_name=task_name):
             async with self._session() as driver:
                 await driver.begin()
@@ -245,7 +246,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> list[QueuedTaskRecord]:
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
         """Persist many tasks via the adapter's fastest bulk path.
 
         Resolves existing deduplication keys in one round trip, then inserts the
@@ -283,23 +284,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self.notify_new_task(record)
         return results
 
-    async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
+    async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         async with self._session() as driver:
             row = await self._select_task(driver, task_id)
         return self._record_from_row(row) if row is not None else None
 
-    async def get_task_by_key(self, key: str) -> QueuedTaskRecord | None:
+    async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
         async with self._session() as driver:
             row = await self._select_task_by_key(driver, key)
         return self._record_from_row(row) if row is not None else None
 
     async def list_pending(
-        self, *, limit: int = 1, queue: str | None = None, execution_backend: str | None = None
-    ) -> list[QueuedTaskRecord]:
+        self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
         rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
 
-    async def claim_task(self, task_id: UUID) -> QueuedTaskRecord | None:
+    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         with self._observe_queue_operation("claim", task_id=str(task_id)):
             async with self._session() as driver:
                 await driver.begin()
@@ -342,8 +343,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return claimed
 
     async def claim_next(
-        self, *, queue: str | None = None, execution_backend: str | None = None
-    ) -> QueuedTaskRecord | None:
+        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         store = self._get_store()
         if store.supports_skip_locked:
             return await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
@@ -356,8 +357,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return None
 
     async def _claim_next_skip_locked(
-        self, store: Any, *, queue: str | None, execution_backend: str | None
-    ) -> QueuedTaskRecord | None:
+        self, store: "Any", *, queue: "str | None", execution_backend: "str | None"
+    ) -> "QueuedTaskRecord | None":
         """Claim the next due task under ``SELECT ... FOR UPDATE SKIP LOCKED``.
 
         Locks a single due row and claims it inside one transaction so
@@ -404,8 +405,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return claimed
 
     async def complete_task(
-        self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
         now = _utc_now()
         store = self._get_store()
         with self._observe_queue_operation("complete", task_id=str(task_id)):
@@ -442,8 +443,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return completed
 
     async def fail_task(
-        self, task_id: UUID, error: str, *, retry: bool = True, expected_retry_count: int | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):
             async with self._session() as driver:
                 await driver.begin()
@@ -490,7 +491,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._increment_queue_metric(metric)
         return updated_record
 
-    async def cancel_task(self, task_id: UUID) -> bool:
+    async def cancel_task(self, task_id: "UUID") -> "bool":
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -504,7 +505,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return int(result.rows_affected) == 1
 
-    async def touch_heartbeat(self, task_id: UUID, *, expected_retry_count: int | None = None) -> bool:
+    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
@@ -529,7 +530,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return int(result.rows_affected) == 1
 
-    async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
+    async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:
             return
         async with self._heartbeat_session() as driver:
@@ -555,7 +556,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     await driver.rollback()
                 raise
 
-    async def requeue_stale_running(self, *, stale_after: timedelta) -> StaleTaskRecoveryResult:
+    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         store = self._get_store()
         result = StaleTaskRecoveryResult()
@@ -614,8 +615,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return result
 
     async def set_execution_ref(
-        self, task_id: UUID, execution_backend: str, execution_ref: str, *, execution_profile: str | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -636,8 +637,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._record_from_row(row) if row is not None else None
 
     async def set_execution_backend(
-        self, task_id: UUID, execution_backend: str, *, execution_profile: str | None = None
-    ) -> QueuedTaskRecord | None:
+        self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -657,12 +658,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self.notify_new_task(record)
         return record
 
-    async def list_running_external(self, *, limit: int | None = None) -> list[QueuedTaskRecord]:
+    async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._session() as driver:
             rows = await driver.select(self._get_store().list_running_external(limit=limit))
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
 
-    async def get_statistics(self) -> QueueStatistics:
+    async def get_statistics(self) -> "QueueStatistics":
         statistics = QueueStatistics()
         async with self._session() as driver:
             async for row in driver.select_stream(self._get_store().list_all()):
@@ -670,7 +671,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 setattr(statistics, status, getattr(statistics, status) + 1)
         return statistics
 
-    async def iter_all(self, *, chunk_size: int = 1000) -> "AsyncIterator[QueuedTaskRecord]":
+    async def iter_all(self, *, chunk_size: "int" = 1000) -> "AsyncIterator[QueuedTaskRecord]":
         """Stream every queue record without materializing the full table.
 
         Uses SQLSpec ``select_stream`` so large administrative scans and exports
@@ -683,8 +684,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 yield self._record_from_row(cast("dict[str, Any]", row))
 
     async def list_completed_by_task(
-        self, task_name: str, *, since: datetime | None = None, limit: int = 10
-    ) -> list[QueuedTaskRecord]:
+        self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
+    ) -> "list[QueuedTaskRecord]":
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_completed_by_task(
@@ -693,7 +694,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             )
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
 
-    async def cleanup_terminal(self, before: datetime) -> int:
+    async def cleanup_terminal(self, before: "datetime") -> "int":
         store = self._get_store()
         before_str = _serialize_datetime(before)
         async with self._session() as driver:
@@ -714,7 +715,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return deleted
 
-    async def notify_new_task(self, record: QueuedTaskRecord) -> None:
+    async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a SQLSpec event when configured queue work becomes available."""
         if not self._notifications_enabled or self._event_channel is None or record.status not in _DUE_STATUSES:
             return
@@ -731,7 +732,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             )
         self._increment_queue_metric("notify")
 
-    async def wait_for_notifications(self, timeout: float | None = None) -> bool:
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait for a SQLSpec event when queue notifications are configured.
 
         Returns:
@@ -758,33 +759,33 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return True
 
     @staticmethod
-    def _default_sqlspec_config() -> Any:
+    def _default_sqlspec_config() -> "Any":
         from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
         return AiosqliteConfig()
 
-    def _resolve_table_name(self) -> str:
+    def _resolve_table_name(self) -> "str":
         if self._table_name is None:
             queue_settings = _queue_extension_settings(self._sqlspec_config)
             configured_table_name = _setting(queue_settings, "table_name") or DEFAULT_TABLE_NAME
             self._table_name = validate_table_name(str(configured_table_name))
         return self._table_name
 
-    def _resolve_create_schema(self) -> bool:
+    def _resolve_create_schema(self) -> "bool":
         if not self._manage_schema:
             return False
         return _resolve_bool(
             self._create_schema, _queue_extension_settings(self._sqlspec_config), "create_schema", True
         )
 
-    def _resolve_run_migrations(self) -> bool:
+    def _resolve_run_migrations(self) -> "bool":
         if not self._manage_schema:
             return False
         return _resolve_bool(
             self._run_migrations, _queue_extension_settings(self._sqlspec_config), "run_migrations", False
         )
 
-    def _resolve_notification_channel(self) -> str:
+    def _resolve_notification_channel(self) -> "str":
         if self._notification_channel is not None:
             self._notification_channel = _normalize_notification_channel(str(self._notification_channel))
         else:
@@ -793,7 +794,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._notification_channel = _normalize_notification_channel(str(configured_channel))
         return self._notification_channel
 
-    def _configure_notifications(self) -> None:
+    def _configure_notifications(self) -> "None":
         sqlspec_config = self._get_sqlspec_config()
         queue_settings = _queue_extension_settings(sqlspec_config)
         events_settings = _events_extension_settings(sqlspec_config)
@@ -820,15 +821,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._resolve_event_poll_interval(queue_settings, events_settings)
         self._notification_backend = cast("str | None", getattr(self._event_channel, "_backend_name", None))
 
-    def _resolve_notifications_requested(self, queue_settings: dict[str, Any]) -> bool | None:
+    def _resolve_notifications_requested(self, queue_settings: "dict[str, Any]") -> "bool | None":
         notifications_requested = self._notifications_requested
         if notifications_requested is None and "notifications" in queue_settings:
             notifications_requested = bool(queue_settings["notifications"])
         return notifications_requested
 
     def _select_notify_transport(
-        self, sqlspec_config: Any, queue_settings: dict[str, Any], events_settings: dict[str, Any]
-    ) -> str:
+        self, sqlspec_config: "Any", queue_settings: "dict[str, Any]", events_settings: "dict[str, Any]"
+    ) -> "str":
         """Resolve the effective wakeup transport.
 
         Explicit ``queue_backend_config`` selections win over
@@ -851,12 +852,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _notifications_should_enable(
         self,
-        notifications_requested: bool | None,
-        transport: str,
-        sqlspec_config: Any,
-        queue_settings: dict[str, Any],
-        events_settings: dict[str, Any],
-    ) -> bool:
+        notifications_requested: "bool | None",
+        transport: "str",
+        sqlspec_config: "Any",
+        queue_settings: "dict[str, Any]",
+        events_settings: "dict[str, Any]",
+    ) -> "bool":
         """Decide whether push wakeups are active for the resolved transport.
 
         Notifications stay opt-in: a bare backend config never auto-enables an
@@ -885,7 +886,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
         return explicit_signal and transport != _NOTIFY_TRANSPORT_POLLING
 
-    def _resolve_event_poll_interval(self, queue_settings: dict[str, Any], events_settings: dict[str, Any]) -> None:
+    def _resolve_event_poll_interval(
+        self, queue_settings: "dict[str, Any]", events_settings: "dict[str, Any]"
+    ) -> "None":
         configured_poll_interval = self._event_poll_interval
         if configured_poll_interval is None:
             configured_poll_interval = _setting(queue_settings, "event_poll_interval")
@@ -895,8 +898,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._event_poll_interval = float(configured_poll_interval)
 
     def _apply_event_settings(
-        self, sqlspec_config: Any, queue_settings: dict[str, Any], events_settings: dict[str, Any], transport: str
-    ) -> None:
+        self,
+        sqlspec_config: "Any",
+        queue_settings: "dict[str, Any]",
+        events_settings: "dict[str, Any]",
+        transport: "str",
+    ) -> "None":
         merged_event_settings = dict(events_settings)
         for name in _QUEUE_SETTING_EVENT_SETTINGS:
             configured_events = queue_settings.get(name)
@@ -919,12 +926,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         migration_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "migration_config", {}) or {}))
         sqlspec_config.set_migration_config(migration_config)
 
-    def _get_or_create_sqlspec(self) -> SQLSpec:
+    def _get_or_create_sqlspec(self) -> "SQLSpec":
         if self._sqlspec is None:
             self._sqlspec = SQLSpec()
         return self._sqlspec
 
-    def _get_sqlspec_config(self) -> Any:
+    def _get_sqlspec_config(self) -> "Any":
         if self._sqlspec_config is None:
             registered_configs = tuple(cast("dict[int, Any]", self._get_or_create_sqlspec().configs).values())
             if len(registered_configs) == 1:
@@ -939,7 +946,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 self._sqlspec_config = self._default_sqlspec_config()
         return self._sqlspec_config
 
-    def _get_store(self) -> Any:
+    def _get_store(self) -> "Any":
         if self._store is None:
             self._store = create_queue_store(
                 self._get_sqlspec_config(),
@@ -951,7 +958,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._store
 
     @asynccontextmanager
-    async def _session(self) -> AsyncIterator[Any]:
+    async def _session(self) -> "AsyncIterator[Any]":
         if not self._opened or self._sqlspec is None:
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
@@ -960,7 +967,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             yield driver
 
     @asynccontextmanager
-    async def _heartbeat_session(self) -> AsyncIterator[Any]:
+    async def _heartbeat_session(self) -> "AsyncIterator[Any]":
         """Yield a driver bound to the dedicated heartbeat pool when configured.
 
         Falls back to the main pool when ``heartbeat_pool_config`` is not set,
@@ -979,7 +986,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             yield driver
 
-    def _register_heartbeat_pool(self) -> None:
+    def _register_heartbeat_pool(self) -> "None":
         """Register the dedicated heartbeat pool with the SQLSpec manager.
 
         Best effort. On failure the backend logs a warning and continues with
@@ -1002,7 +1009,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return
         self._heartbeat_pool_registered = True
 
-    async def _close_heartbeat_pool(self) -> None:
+    async def _close_heartbeat_pool(self) -> "None":
         """Close the dedicated heartbeat pool if the backend opened one."""
         if not self._heartbeat_pool_registered or self._heartbeat_pool_config is None:
             return
@@ -1016,8 +1023,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._heartbeat_pool_registered = False
 
     async def _select_pending_rows(
-        self, *, limit: int, queue: str | None, execution_backend: str | None
-    ) -> list[dict[str, Any]]:
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "list[dict[str, Any]]":
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_pending(
@@ -1026,24 +1033,24 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             )
         return cast("list[dict[str, Any]]", rows)
 
-    async def _select_task(self, driver: Any, task_id: UUID) -> dict[str, Any] | None:
+    async def _select_task(self, driver: "Any", task_id: "UUID") -> "dict[str, Any] | None":
         row = await driver.select_one_or_none(self._get_store().select_task(str(task_id)))
         return cast("dict[str, Any] | None", row)
 
-    async def _select_task_by_key(self, driver: Any, key: str) -> dict[str, Any] | None:
+    async def _select_task_by_key(self, driver: "Any", key: "str") -> "dict[str, Any] | None":
         row = await driver.select_one_or_none(self._get_store().select_task_by_key(key))
         return cast("dict[str, Any] | None", row)
 
-    async def _clear_key(self, driver: Any, task_id: UUID) -> None:
+    async def _clear_key(self, driver: "Any", task_id: "UUID") -> "None":
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
 
-    def _get_observability_runtime(self) -> Any | None:
+    def _get_observability_runtime(self) -> "Any | None":
         if not self._queue_observability:
             return None
         return self._get_sqlspec_config().get_observability_runtime()
 
     @contextmanager
-    def _observe_queue_operation(self, operation: str, **attributes: Any) -> Iterator[None]:
+    def _observe_queue_operation(self, operation: "str", **attributes: "Any") -> "Iterator[None]":
         runtime = self._get_observability_runtime()
         if runtime is None:
             yield
@@ -1053,7 +1060,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             **{f"litestar_queues.{key}": value for key, value in attributes.items() if value is not None},
         }
         span = runtime.start_span(f"sqlspec.queue.{operation}", attributes=span_attributes)
-        error: Exception | None = None
+        error: "Exception | None" = None
         try:
             yield
         except Exception as exc:
@@ -1063,14 +1070,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if span is not None:
                 runtime.end_span(span, error=error)
 
-    def _increment_queue_metric(self, name: str, amount: float = 1.0) -> None:
+    def _increment_queue_metric(self, name: "str", amount: "float" = 1.0) -> "None":
         runtime = self._get_observability_runtime()
         if runtime is not None and amount:
             runtime.increment_metric(f"queue.{name}", amount)
 
-    async def _existing_records_by_key(self, driver: Any, store: Any, keys: list[str]) -> dict[str, QueuedTaskRecord]:
+    async def _existing_records_by_key(
+        self, driver: "Any", store: "Any", keys: "list[str]"
+    ) -> "dict[str, QueuedTaskRecord]":
         """Return a map of deduplication key to existing record for the given keys."""
-        existing: dict[str, QueuedTaskRecord] = {}
+        existing: "dict[str, QueuedTaskRecord]" = {}
         if not keys:
             return existing
         rows = await driver.select(store.select_tasks_by_keys(keys))
@@ -1081,7 +1090,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return existing
 
     def _plan_bulk_enqueue(
-        self, specs: "Sequence[EnqueueSpec]", existing_by_key: dict[str, QueuedTaskRecord], now: datetime
+        self, specs: "Sequence[EnqueueSpec]", existing_by_key: "dict[str, QueuedTaskRecord]", now: "datetime"
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord], list[UUID]]":
         """Resolve deduplication keys and build records, preserving input order.
 
@@ -1090,10 +1099,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Active (non-terminal) keys, whether already persisted or earlier in the
         batch, reuse the existing record instead of inserting a duplicate.
         """
-        results: list[QueuedTaskRecord] = []
-        to_insert: list[QueuedTaskRecord] = []
-        terminal_keys_to_clear: list[UUID] = []
-        batch_new_by_key: dict[str, QueuedTaskRecord] = {}
+        results: "list[QueuedTaskRecord]" = []
+        to_insert: "list[QueuedTaskRecord]" = []
+        terminal_keys_to_clear: "list[UUID]" = []
+        batch_new_by_key: "dict[str, QueuedTaskRecord]" = {}
         for spec in specs:
             key = spec.key
             if key is not None:
@@ -1110,11 +1119,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     @staticmethod
     def _reuse_for_key(
-        key: str,
-        existing_by_key: dict[str, QueuedTaskRecord],
-        batch_new_by_key: dict[str, QueuedTaskRecord],
-        terminal_keys_to_clear: list[UUID],
-    ) -> QueuedTaskRecord | None:
+        key: "str",
+        existing_by_key: "dict[str, QueuedTaskRecord]",
+        batch_new_by_key: "dict[str, QueuedTaskRecord]",
+        terminal_keys_to_clear: "list[UUID]",
+    ) -> "QueuedTaskRecord | None":
         """Return the record to reuse for ``key``, or ``None`` if a new row is needed.
 
         Records a terminal key for clearing so its row can be replaced.
@@ -1130,7 +1139,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             del existing_by_key[key]
         return None
 
-    def _record_from_spec(self, spec: EnqueueSpec, now: datetime) -> QueuedTaskRecord:
+    def _record_from_spec(self, spec: "EnqueueSpec", now: "datetime") -> "QueuedTaskRecord":
         return QueuedTaskRecord(
             task_name=spec.task_name,
             args=spec.args,
@@ -1146,7 +1155,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             metadata=dict(spec.metadata or {}),
         )
 
-    async def _bulk_insert(self, driver: Any, store: Any, records: list[QueuedTaskRecord]) -> None:
+    async def _bulk_insert(self, driver: "Any", store: "Any", records: "list[QueuedTaskRecord]") -> "None":
         """Insert records using the adapter's fastest available bulk tier."""
         values = store.bulk_values([self._params_from_record(record) for record in records])
         if store.supports_native_bulk_ingest:
@@ -1154,7 +1163,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return
         await driver.execute_many(store.insert_tasks_template(), values)
 
-    def _params_from_record(self, record: QueuedTaskRecord) -> dict[str, Any]:
+    def _params_from_record(self, record: "QueuedTaskRecord") -> "dict[str, Any]":
         store = self._get_store()
         return {
             "args_json": store.serialize_json("args_json", list(record.args)),
@@ -1180,7 +1189,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "task_name": record.task_name,
         }
 
-    def _record_from_row(self, row: dict[str, Any]) -> QueuedTaskRecord:
+    def _record_from_row(self, row: "dict[str, Any]") -> "QueuedTaskRecord":
         store = self._get_store()
         args = store.deserialize_json("args_json", row["args_json"])
         kwargs = store.deserialize_json("kwargs_json", row["kwargs_json"])
@@ -1215,10 +1224,10 @@ class _ManagedAsyncDriver:
 
     __slots__ = ("_driver",)
 
-    def __init__(self, driver: Any) -> None:
+    def __init__(self, driver: "Any") -> "None":
         self._driver = driver
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: "str") -> "Any":
         attr = getattr(self._driver, name)
         if callable(attr):
             return async_(attr)
@@ -1226,7 +1235,7 @@ class _ManagedAsyncDriver:
 
 
 @asynccontextmanager
-async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIterator[Any]":
+async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
 
     Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``PyMysqlConfig``, etc.)
@@ -1254,11 +1263,11 @@ async def _bridge_session(sqlspec_manager: Any, sqlspec_config: Any) -> "AsyncIt
         await async_(session_cm.__exit__)(None, None, None)
 
 
-def _utc_now() -> datetime:
+def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
 
-def _extract_count(result: Any) -> int:
+def _extract_count(result: "Any") -> "int":
     """Pull a non-negative ``COUNT(*)`` value off a SQLSpec result."""
     rows = getattr(result, "data", None) or []
     if rows:
@@ -1270,7 +1279,7 @@ def _extract_count(result: Any) -> int:
     return 0
 
 
-def _serialize_datetime(value: datetime | None) -> datetime | None:
+def _serialize_datetime(value: "datetime | None") -> "datetime | None":
     if value is None:
         return None
     if value.tzinfo is None:
@@ -1278,7 +1287,7 @@ def _serialize_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _deserialize_datetime(value: Any) -> datetime | None:
+def _deserialize_datetime(value: "Any") -> "datetime | None":
     if value is None:
         return None
     value_text = str(value)
@@ -1291,7 +1300,7 @@ def _deserialize_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _coerce_status(value: Any) -> TaskStatus:
+def _coerce_status(value: "Any") -> "TaskStatus":
     status = str(value)
     if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
         msg = f"Unknown queued task status from SQLSpec queue backend: {status!r}"
@@ -1299,14 +1308,14 @@ def _coerce_status(value: Any) -> TaskStatus:
     return cast("TaskStatus", status)
 
 
-def _queue_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
+def _queue_extension_settings(sqlspec_config: "Any | None") -> "dict[str, Any]":
     if sqlspec_config is None:
         return {}
     extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
     return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
 
 
-async def _create_schema_statements(store: Any, driver: Any) -> list[str]:
+async def _create_schema_statements(store: "Any", driver: "Any") -> "list[str]":
     create_for_driver = getattr(store, "create_statements_for_driver", None)
     if callable(create_for_driver):
         result = create_for_driver(driver)
@@ -1316,21 +1325,21 @@ async def _create_schema_statements(store: Any, driver: Any) -> list[str]:
     return cast("list[str]", store.create_statements())
 
 
-def _events_extension_settings(sqlspec_config: Any | None) -> dict[str, Any]:
+def _events_extension_settings(sqlspec_config: "Any | None") -> "dict[str, Any]":
     if sqlspec_config is None:
         return {}
     extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
     return dict(cast("dict[str, Any]", extension_config.get(_EVENT_EXTENSION_NAME, {}) or {}))
 
 
-def _setting(queue_settings: dict[str, Any], *names: str) -> Any:
+def _setting(queue_settings: "dict[str, Any]", *names: "str") -> "Any":
     for name in names:
         if name in queue_settings:
             return queue_settings[name]
     return None
 
 
-def _resolve_bool(value: bool | None, queue_settings: dict[str, Any], key: str, default: bool) -> bool:
+def _resolve_bool(value: "bool | None", queue_settings: "dict[str, Any]", key: "str", default: "bool") -> "bool":
     if value is not None:
         return value
     if key in queue_settings:
@@ -1338,7 +1347,7 @@ def _resolve_bool(value: bool | None, queue_settings: dict[str, Any], key: str, 
     return default
 
 
-def _normalize_notification_channel(channel: str) -> str:
+def _normalize_notification_channel(channel: "str") -> "str":
     try:
         return str(normalize_event_channel_name(channel))
     except Exception as exc:

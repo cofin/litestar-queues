@@ -27,11 +27,11 @@ _CLOUDRUN_EXTRA = "cloudrun"
 class CloudRunExecutionStatus:
     """Backend-neutral status for a Cloud Run execution."""
 
-    succeeded: bool = False
-    failed: bool = False
-    cancelled: bool = False
-    running: bool = True
-    error: str | None = None
+    succeeded: "bool" = False
+    failed: "bool" = False
+    cancelled: "bool" = False
+    running: "bool" = True
+    error: "str | None" = None
 
 
 class CloudRunExecutionBackend(BaseExecutionBackend):
@@ -43,29 +43,29 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         self,
         config: "QueueConfig | None" = None,
         *,
-        execution_config: CloudRunExecutionConfig | None = None,
+        execution_config: "CloudRunExecutionConfig | None" = None,
         jobs_client: "CloudRunJobsClient | None" = None,
         executions_client: "CloudRunExecutionsClient | None" = None,
-    ) -> None:
+    ) -> "None":
         super().__init__(config=config)
         self._execution_config = execution_config
         self.jobs_client = jobs_client
         self.executions_client = executions_client
 
     @property
-    def is_external(self) -> bool:
-        """Return whether this backend dispatches records to another process."""
+    def is_external(self) -> "bool":
+        """Whether this backend dispatches records to another process."""
         return True
 
     @property
-    def execution_config(self) -> CloudRunExecutionConfig:
-        """Return the resolved Cloud Run execution config."""
+    def execution_config(self) -> "CloudRunExecutionConfig":
+        """Resolved Cloud Run execution config."""
         if self._execution_config is None:
             self._execution_config = _execution_config_from_queue_config(self.config)
         return self._execution_config
 
     async def execute(
-        self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: str | None = None
+        self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: "str | None" = None
     ) -> "QueuedTaskRecord":
         """Dispatch a record and return its persisted state.
 
@@ -81,7 +81,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         await self.dispatch(service, record)
         return await service.get_queue_backend().get_task(record.id) or record
 
-    async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> str | None:
+    async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
         """Dispatch a queue record to Cloud Run Jobs.
 
         Returns:
@@ -142,7 +142,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
 
         return None
 
-    async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> bool:
+    async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> "bool":
         """Cloud Run Jobs do not expose per-execution cancellation here.
 
         Returns:
@@ -150,7 +150,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         """
         return False
 
-    async def check_execution_status(self, execution_ref: str) -> CloudRunExecutionStatus:
+    async def check_execution_status(self, execution_ref: "str") -> "CloudRunExecutionStatus":
         """Return Cloud Run execution status.
 
         Transient API failures are treated as still running so reconciliation does
@@ -172,7 +172,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             error=_execution_error(execution) if failed else None,
         )
 
-    def build_run_job_request(self, service: "QueueService", record: "QueuedTaskRecord") -> dict[str, Any]:
+    def build_run_job_request(self, service: "QueueService", record: "QueuedTaskRecord") -> "dict[str, Any]":
         """Build the Cloud Run Jobs API request for a queue record.
 
         Returns:
@@ -192,7 +192,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             },
         }
 
-    def build_environment(self, record: "QueuedTaskRecord") -> dict[str, str]:
+    def build_environment(self, record: "QueuedTaskRecord") -> "dict[str, str]":
         """Build generic environment variables for a Cloud Run task process.
 
         Returns:
@@ -230,7 +230,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return self.executions_client
 
 
-def _execution_error(execution: "CloudRunExecutionLike") -> str | None:
+def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":
     conditions = getattr(execution, "conditions", None) or []
     for condition in reversed(conditions):
         message = getattr(condition, "message", None)
