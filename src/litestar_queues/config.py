@@ -149,6 +149,8 @@ class QueueConfig:
         only when their driver extra is installed; missing extras silently drop
         the corresponding entries.
         """
+        from litestar.di import NamedDependency
+
         from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
         from litestar_queues.events import (
             InMemoryQueueEventSink,
@@ -189,6 +191,7 @@ class QueueConfig:
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
+            "NamedDependency": NamedDependency,
             "NonRetryableError": NonRetryableError,
             "NoopQueueEventSink": NoopQueueEventSink,
             "InMemoryQueueEventSink": InMemoryQueueEventSink,
