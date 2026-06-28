@@ -7,13 +7,17 @@ exercise the universal ``execute_many`` tier and prove both produce identical
 results.
 """
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import pytest
 
 from litestar_queues import EnqueueSpec
-from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
@@ -125,3 +129,86 @@ async def test_enqueue_many_replaces_terminal_keys(sqlspec_backend: SQLSpecQueue
 
 async def test_enqueue_many_empty_returns_empty(sqlspec_backend: SQLSpecQueueBackend, bulk_tier: str) -> None:
     assert await sqlspec_backend.enqueue_many([]) == []
+
+
+def test_bulk_values_orders_columns_to_match_create_table() -> None:
+    """``bulk_values`` must yield physical columns in CREATE TABLE order.
+
+    The native Arrow ingest path inserts positionally on some adapters
+    (DuckDB runs ``INSERT INTO t SELECT * FROM arrow``), so any mismatch
+    between bulk column order and the table DDL drops each value into the
+    wrong column. This pins the contract without needing a database; the
+    DuckDB roundtrip below proves the order matches the *real* DDL.
+    """
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    from litestar_queues.backends.sqlspec.stores.aiosqlite.store import AiosqliteQueueStore
+    from litestar_queues.backends.sqlspec.stores.base import _TASK_COLUMNS
+
+    store = AiosqliteQueueStore(AiosqliteConfig(connection_config={"database": ":memory:"}))
+    # Feed keys in alphabetical order — exactly what the backend's record
+    # serializer emits — and require they come back in DDL order.
+    alphabetical = {column: index for index, column in enumerate(sorted(_TASK_COLUMNS))}
+
+    (mapped,) = store.bulk_values([alphabetical])
+
+    assert list(mapped) == list(_TASK_COLUMNS)
+    assert mapped["kwargs_json"] == alphabetical["kwargs_json"]
+
+
+@pytest.fixture
+async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend]":
+    """Yield an opened DuckDB-backed SQLSpec queue backend.
+
+    DuckDB ingests Arrow positionally, unlike the name-binding aiosqlite and
+    asyncpg paths, so it is the canonical guard for bulk column ordering on
+    the native ingest tier.
+    """
+    pytest.importorskip("duckdb")
+    pytest.importorskip("pyarrow")
+    from sqlspec.adapters.duckdb import DuckDBConfig
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
+        )
+    )
+    await backend.open()
+    try:
+        yield backend
+    finally:
+        await backend.close()
+
+
+async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: SQLSpecQueueBackend) -> None:
+    """The native Arrow ingest path must place every column in its DDL slot.
+
+    Regression guard for positional ingest adapters: the bulk path emitted
+    columns alphabetically, so DuckDB's positional insert dropped the
+    ``kwargs_json`` string into the ``priority`` INT column and raised a
+    conversion error. Name-binding adapters (aiosqlite, asyncpg) masked it.
+    """
+    store = duckdb_backend._get_store()
+    assert store.supports_native_bulk_ingest is True
+
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    records = await duckdb_backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.a", args=(1, "x"), kwargs={"n": 0}, metadata={"m": [1]}, priority=7),
+        EnqueueSpec(task_name="tasks.later", scheduled_at=later, priority=2),
+    ])
+
+    assert [r.task_name for r in records] == ["tasks.a", "tasks.later"]
+
+    first = await duckdb_backend.get_task(records[0].id)
+    assert first is not None
+    assert first.task_name == "tasks.a"
+    assert first.args == (1, "x")
+    assert first.kwargs == {"n": 0}
+    assert first.metadata == {"m": [1]}
+    assert first.priority == 7
+    assert first.status == "pending"
+
+    later_task = await duckdb_backend.get_task(records[1].id)
+    assert later_task is not None
+    assert later_task.priority == 2
+    assert later_task.status == "scheduled"

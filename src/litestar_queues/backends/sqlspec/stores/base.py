@@ -165,8 +165,17 @@ class SQLSpecQueueStore:
         Shared by the ``execute_many`` template path and the native
         ``load_from_records`` Arrow path; both consume physical-column keys.
         JSON serialization is already applied upstream by the backend.
+
+        Columns are emitted in :data:`_TASK_COLUMNS` (CREATE TABLE) order.
+        This ordering is mandatory: the native Arrow ingest path inserts
+        positionally on some adapters (DuckDB runs
+        ``INSERT INTO t SELECT * FROM arrow``), so an Arrow column order that
+        differs from the table DDL silently lands each value in the wrong
+        column. Name-binding adapters (asyncpg COPY, SQLite) are order-immune,
+        which is exactly why a column scramble can pass on one adapter and
+        fail on another.
         """
-        return [self._mapped_values(row) for row in rows]
+        return [{self._col(column): row[column] for column in _TASK_COLUMNS} for row in rows]
 
     def select_task(self, task_id: str) -> Any:
         """Return a SELECT statement for one task id."""
