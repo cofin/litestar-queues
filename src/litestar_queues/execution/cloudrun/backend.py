@@ -132,17 +132,12 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
 
         if status.cancelled:
             return await queue_backend.fail_task(
-                record.id,
-                "Cloud Run execution cancelled",
-                retry=False,
-                expected_retry_count=record.retry_count,
+                record.id, "Cloud Run execution cancelled", retry=False, expected_retry_count=record.retry_count
             )
 
         if status.failed:
             return await queue_backend.fail_task(
-                record.id,
-                status.error or "Cloud Run execution failed",
-                expected_retry_count=record.retry_count,
+                record.id, status.error or "Cloud Run execution failed", expected_retry_count=record.retry_count
             )
 
         return None

@@ -16,7 +16,9 @@ __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
 class _OracledbQueueStore(SQLSpecQueueStore):
     """Shared Oracle DDL type hooks."""
 
-    __slots__ = ()
+    __slots__ = ("_json_storage",)
+
+    _json_storage: "_OracleJSONStorageType | None"
 
     data_dictionary_dialect: ClassVar[str | None] = "oracle"
     identifier_quote_style: ClassVar[Literal["double", "backtick", "none"]] = "none"
@@ -67,7 +69,8 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         return _index_name(self, suffix)
 
     def _configured_json_storage(self) -> "_OracleJSONStorageType":
-        return cast("_OracleJSONStorageType | None", getattr(self, "_json_storage", None)) or _OracleJSONStorageType.BLOB_JSON
+        configured = self._json_storage
+        return configured if configured is not None else _OracleJSONStorageType.BLOB_JSON
 
     def _create_statements_with_storage(self, storage_type: "_OracleJSONStorageType") -> list[str]:
         if not self._manage_schema:
@@ -87,7 +90,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         ]
 
     async def _detect_json_storage_type(self, driver: Any) -> "_OracleJSONStorageType":
-        configured = cast("_OracleJSONStorageType | None", getattr(self, "_json_storage", None))
+        configured = self._json_storage
         if configured is not None:
             return configured
         version_info = await _oracle_version_info(driver)
@@ -103,7 +106,9 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 class OracledbSyncQueueStore(_OracledbQueueStore):
     """oracledb sync SQLSpec queue statement store."""
 
-    __slots__ = ("_in_memory", "_json_storage")
+    __slots__ = ("_in_memory",)
+
+    _in_memory: bool
 
     def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
         super().__init__(config, table_name=table_name, **kwargs)
@@ -117,7 +122,9 @@ class OracledbSyncQueueStore(_OracledbQueueStore):
 class OracledbAsyncQueueStore(_OracledbQueueStore):
     """oracledb async SQLSpec queue statement store."""
 
-    __slots__ = ("_in_memory", "_json_storage")
+    __slots__ = ("_in_memory",)
+
+    _in_memory: bool
 
     def __init__(self, config: Any, *, table_name: str | None = None, **kwargs: Any) -> None:
         super().__init__(config, table_name=table_name, **kwargs)

@@ -189,16 +189,17 @@ async def test_quiet_success_suppresses_success_python_log_but_keeps_lifecycle_e
     assert quiet_result.status == "completed"
     event_types = [event.type for event in sink.events]
     assert event_types.count("task.completed") == 2
-    assert [event.message for event in sink.events if event.type == "task.log"] == ["visible task log", "quiet task log"]
+    assert [event.message for event in sink.events if event.type == "task.log"] == [
+        "visible task log",
+        "quiet task log",
+    ]
 
     completed_logs = [
         record
         for record in caplog.records
         if record.name == "litestar_queues.service" and record.getMessage() == "Queue task completed"
     ]
-    assert [getattr(record, "queue_task_name", None) for record in completed_logs] == [
-        "tasks.worker_visible_success"
-    ]
+    assert [getattr(record, "queue_task_name", None) for record in completed_logs] == ["tasks.worker_visible_success"]
     assert completed_logs[0].levelno == logging.INFO
 
 

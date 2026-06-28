@@ -137,6 +137,7 @@ async def test_sqlspec_backend_oracledb_detects_json_storage_from_driver_version
 ) -> None:
     store = create_queue_store(_fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks")
 
+    assert isinstance(store, OracledbAsyncQueueStore)
     first_ddl = "\n".join(await store.create_statements_for_driver(driver))
     second_ddl = "\n".join(await store.create_statements_for_driver(driver))
 

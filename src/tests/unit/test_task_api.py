@@ -179,21 +179,15 @@ async def test_schedule_config_supports_cron_names_ranges_lists_steps_and_sunday
     assert business_hours.get_next_run(datetime(2026, 1, 1, 8, 59, tzinfo=UTC)) == datetime(
         2026, 1, 1, 9, 0, tzinfo=UTC
     )
-    assert sunday_zero.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(
-        2026, 5, 3, 0, 0, tzinfo=UTC
-    )
-    assert sunday_seven.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(
-        2026, 5, 3, 0, 0, tzinfo=UTC
-    )
+    assert sunday_zero.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(2026, 5, 3, 0, 0, tzinfo=UTC)
+    assert sunday_seven.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(2026, 5, 3, 0, 0, tzinfo=UTC)
 
 
 async def test_schedule_config_supports_question_mark_and_posix_day_matching() -> None:
     monday_only = ScheduleConfig(task_name="tasks.monday_only", cron="0 0 ? * MON")
     first_of_month_or_monday = ScheduleConfig(task_name="tasks.dom_or_dow", cron="0 0 1 * MON")
 
-    assert monday_only.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=UTC)) == datetime(
-        2026, 5, 4, 0, 0, tzinfo=UTC
-    )
+    assert monday_only.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=UTC)) == datetime(2026, 5, 4, 0, 0, tzinfo=UTC)
     assert first_of_month_or_monday.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=UTC)) == datetime(
         2026, 5, 4, 0, 0, tzinfo=UTC
     )
@@ -202,17 +196,13 @@ async def test_schedule_config_supports_question_mark_and_posix_day_matching() -
 async def test_schedule_config_searches_far_enough_for_leap_day_cron() -> None:
     schedule = ScheduleConfig(task_name="tasks.leap_day", cron="0 0 29 2 *")
 
-    assert schedule.get_next_run(datetime(2026, 3, 1, 0, 0, tzinfo=UTC)) == datetime(
-        2028, 2, 29, 0, 0, tzinfo=UTC
-    )
+    assert schedule.get_next_run(datetime(2026, 3, 1, 0, 0, tzinfo=UTC)) == datetime(2028, 2, 29, 0, 0, tzinfo=UTC)
 
 
 async def test_schedule_config_returns_cron_runs_in_utc_from_configured_timezone() -> None:
     schedule = ScheduleConfig(task_name="tasks.local_time", cron="0 3 * * *", timezone="America/New_York")
 
-    assert schedule.get_next_run(datetime(2026, 1, 1, 7, 59, tzinfo=UTC)) == datetime(
-        2026, 1, 1, 8, 0, tzinfo=UTC
-    )
+    assert schedule.get_next_run(datetime(2026, 1, 1, 7, 59, tzinfo=UTC)) == datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
 
 
 async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch: pytest.MonkeyPatch) -> None:

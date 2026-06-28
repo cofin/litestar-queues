@@ -34,12 +34,7 @@ def queues_group() -> None:
 
 
 @queues_group.command(name="run", help="Start a standalone worker fleet.")
-@click.option(
-    "--queue",
-    "queues",
-    multiple=True,
-    help="Queue name to process. Repeatable.",
-)
+@click.option("--queue", "queues", multiple=True, help="Queue name to process. Repeatable.")
 @click.option(
     "--max-concurrency", type=click.IntRange(min=1), default=None, help="Override worker_max_concurrency for this run."
 )

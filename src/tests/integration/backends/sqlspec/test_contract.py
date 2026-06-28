@@ -80,13 +80,15 @@ def _fake_adapter_config(
     config_type_name: str | None = None,
     connection_config: dict[str, object] | None = None,
     extension_config: dict[str, object] | None = None,
+    supports_native_arrow_import: bool | None = None,
 ) -> FakeSQLSpecConfig:
+    class_attrs: dict[str, object] = {"__module__": f"sqlspec.adapters.{adapter_name}.config"}
+    if supports_native_arrow_import is not None:
+        class_attrs["supports_native_arrow_import"] = supports_native_arrow_import
     config_type = cast(
         "type[FakeSQLSpecConfig]",
         type(
-            config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
-            (FakeSQLSpecConfig,),
-            {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+            config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config", (FakeSQLSpecConfig,), class_attrs
         ),
     )
     config = config_type()
@@ -513,8 +515,10 @@ def _event_hinted_config(
     from sqlspec.extensions.events import EventRuntimeHints
 
     config = _fake_adapter_config(adapter_name, dialect=dialect)
-    config.get_event_runtime_hints = lambda: EventRuntimeHints(  # type: ignore[attr-defined]
-        select_for_update=select_for_update, skip_locked=skip_locked
+    setattr(
+        config,
+        "get_event_runtime_hints",
+        lambda: EventRuntimeHints(select_for_update=select_for_update, skip_locked=skip_locked),
     )
     return config
 
@@ -562,6 +566,96 @@ def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect()
 
     assert "FOR UPDATE SKIP LOCKED" in built.sql
     assert 'FROM "queue_tasks"' in built.sql
+
+
+@pytest.mark.parametrize(
+    ("table_name", "expected"),
+    (
+        ("queue_tasks", "queue_tasks"),
+        ("tenant.queue_tasks", "tenant.queue_tasks"),
+        ('"tenant"."queue_tasks"', "tenant.queue_tasks"),
+        ("[tenant].[queue_tasks]", "tenant.queue_tasks"),
+    ),
+)
+def test_sqlspec_backend_accepts_sqlspec_qualified_table_names(table_name: str, expected: str) -> None:
+    """Table-name validation follows SQLSpec's identifier splitter."""
+    backend_config = SQLSpecBackendConfig(table_name=table_name)
+    store = create_queue_store(
+        _fake_adapter_config("aiosqlite", dialect="sqlite"), table_name=backend_config.table_name
+    )
+
+    assert backend_config.table_name == expected
+    assert store.table_name == expected
+    assert ".".join(f'"{part}"' for part in expected.split(".")) in "\n".join(store.create_statements())
+
+
+@pytest.mark.parametrize(
+    "table_name", ("", "queue tasks", "queue;drop", "schema.", ".queue_tasks", "schema..queue_tasks")
+)
+def test_sqlspec_backend_rejects_invalid_table_names(table_name: str) -> None:
+    with pytest.raises(QueueConfigurationError, match="Invalid SQLSpec queue table name"):
+        SQLSpecBackendConfig(table_name=table_name)
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name", "connection_config", "expected_fragment", "native_json_columns"),
+    (
+        ("aiosqlite", "sqlite", "AiosqliteConfig", {}, '"args_json" TEXT NOT NULL', frozenset()),
+        ("duckdb", "duckdb", "DuckDBConfig", {}, '"args_json" JSON NOT NULL', frozenset()),
+        (
+            "asyncpg",
+            "postgres",
+            "AsyncpgConfig",
+            {},
+            '"args_json" JSONB NOT NULL',
+            frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
+        ),
+        (
+            "psqlpy",
+            "postgres",
+            "PsqlpyConfig",
+            {},
+            '"result_json" TEXT NOT NULL',
+            frozenset({"args_json", "kwargs_json", "metadata_json"}),
+        ),
+        (
+            "asyncmy",
+            "mysql",
+            "AsyncmyConfig",
+            {},
+            "`args_json` JSON NOT NULL",
+            frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
+        ),
+        ("mssql_python", "tsql", "MssqlPythonConfig", {}, "args_json NVARCHAR(MAX) NOT NULL", frozenset()),
+        ("bigquery", "bigquery", "BigQueryConfig", {}, "`args_json` JSON NOT NULL", frozenset()),
+        ("spanner", "spanner", "SpannerConfig", {}, "`args_json` JSON NOT NULL", frozenset()),
+        ("adbc", "sqlite", "FakeAdbcConfig", {"driver_name": "sqlite"}, '"args_json" TEXT NOT NULL', frozenset()),
+    ),
+)
+def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
+    adapter_name: str,
+    dialect: str | None,
+    config_type_name: str,
+    connection_config: dict[str, object],
+    expected_fragment: str,
+    native_json_columns: frozenset[str],
+) -> None:
+    """Pin the matrix-visible JSON codec and bulk-ingest capability per store."""
+    pytest.importorskip("pyarrow")
+    store = create_queue_store(
+        _fake_adapter_config(
+            adapter_name,
+            dialect=dialect,
+            config_type_name=config_type_name,
+            connection_config=connection_config,
+            supports_native_arrow_import=True,
+        ),
+        table_name="queue_tasks",
+    )
+
+    assert expected_fragment in "\n".join(store.create_statements())
+    assert store.supports_native_bulk_ingest is True
+    assert store._native_json_columns == native_json_columns
 
 
 @pytest.mark.parametrize(

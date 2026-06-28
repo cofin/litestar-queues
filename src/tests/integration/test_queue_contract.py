@@ -133,7 +133,9 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates_with_memor
     reclaimed = await queue_backend.claim_task(record.id)
     assert reclaimed is not None
     heartbeat = reclaimed.heartbeat_at
-    assert await queue_backend.complete_task(record.id, result="late", expected_retry_count=expected_retry_count) is None
+    assert (
+        await queue_backend.complete_task(record.id, result="late", expected_retry_count=expected_retry_count) is None
+    )
     assert await queue_backend.fail_task(record.id, "late", expected_retry_count=expected_retry_count) is None
     await queue_backend.null_heartbeats([record.id], expected_retry_count=expected_retry_count)
     stored = await queue_backend.get_task(record.id)

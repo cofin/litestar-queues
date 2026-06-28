@@ -78,11 +78,7 @@ async def execute_cloudrun_task(
                 execution_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await execution_task
-                await queue.publish_claim_lost(
-                    claimed,
-                    phase="heartbeat",
-                    expected_retry_count=expected_retry_count,
-                )
+                await queue.publish_claim_lost(claimed, phase="heartbeat", expected_retry_count=expected_retry_count)
                 return CloudRunExitCode.CLAIM_LOST
             updated = await execution_task
         except asyncio.CancelledError:
@@ -113,9 +109,7 @@ async def _heartbeat_loop(queue: QueueService, task_id: UUID, *, expected_retry_
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
-        if not await queue.get_queue_backend().touch_heartbeat(
-            task_id, expected_retry_count=expected_retry_count
-        ):
+        if not await queue.get_queue_backend().touch_heartbeat(task_id, expected_retry_count=expected_retry_count):
             return False
 
 

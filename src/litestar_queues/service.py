@@ -246,10 +246,7 @@ class QueueService:
             await task_context.lifecycle("task.started")
             extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
             coroutine = task_obj.execute_record(
-                record,
-                task_context=task_context,
-                extra_kwargs=extra_kwargs,
-                sync_executor=self._sync_executor,
+                record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
             )
             result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
         except asyncio.CancelledError:
@@ -437,9 +434,7 @@ class QueueService:
         self._log_task_event(message, current, level=logging.WARNING, payload=payload)
         return current
 
-    async def _publish_stale_failed_events(
-        self, result: "StaleTaskRecoveryResult", *, worker_id: str | None
-    ) -> None:
+    async def _publish_stale_failed_events(self, result: "StaleTaskRecoveryResult", *, worker_id: str | None) -> None:
         handler_needed_ids = set(result.handler_needed_task_ids)
         for task_id in result.failed_task_ids:
             record = await self.get_queue_backend().get_task(task_id)
@@ -468,7 +463,9 @@ class QueueService:
                     payload=payload,
                 )
             )
-            self._log_task_event("Queue task failed after stale heartbeat", record, level=logging.ERROR, payload=payload)
+            self._log_task_event(
+                "Queue task failed after stale heartbeat", record, level=logging.ERROR, payload=payload
+            )
 
     def _log_task_completed(self, record: "QueuedTaskRecord") -> None:
         if record.metadata.get("quiet_success") is True:
@@ -476,12 +473,7 @@ class QueueService:
         self._log_task_event("Queue task completed", record, level=_coerce_log_level(record.metadata.get("log_level")))
 
     def _log_task_event(
-        self,
-        message: str,
-        record: "QueuedTaskRecord",
-        *,
-        level: int,
-        payload: "Mapping[str, object] | None" = None,
+        self, message: str, record: "QueuedTaskRecord", *, level: int, payload: "Mapping[str, object] | None" = None
     ) -> None:
         logger.log(
             level,

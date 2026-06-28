@@ -228,6 +228,99 @@ Unsupported adapters fall back to the shared SQLSpec store. Applications should
 install the SQLSpec adapter driver they configure; Litestar Queues does not
 install every SQLSpec driver as a package dependency.
 
+SQLSpec Capability Matrix
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SQLSpec adapters use the strongest queue primitive their configured driver
+advertises, then fall back to the portable path when a capability is absent.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Adapter family
+     - Claim strategy
+     - JSON storage and codec
+     - Bulk insert
+     - Notifications
+     - Notes
+   * - ``aiosqlite`` / ``sqlite``
+     - Optimistic compare-and-swap.
+     - ``TEXT`` columns serialized with SQLSpec JSON.
+     - Native Arrow ``load_from_records`` when SQLSpec exposes it; otherwise
+       ``execute_many``.
+     - Polling unless an explicit SQLSpec table queue is configured.
+     - SQLite serializes writes, so the portable path is the concurrency guard.
+   * - ``duckdb``
+     - Optimistic compare-and-swap.
+     - ``JSON`` columns serialized with SQLSpec JSON.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - Positional Arrow ingest is contract-tested so column order matches the
+       table definition.
+   * - ``asyncpg`` / ``psycopg`` / ``cockroach_*``
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it;
+       compare-and-swap fallback otherwise.
+     - ``JSONB`` with native decoded JSON columns where the driver returns
+       Python values.
+     - Arrow ``load_from_records`` path.
+     - ``asyncpg`` uses durable LISTEN/NOTIFY; ``psycopg`` and ``psqlpy`` can
+       use SQLSpec's durable table queue.
+     - Stale-recovery statement batches use SQLSpec ``StatementStack``; psycopg
+       can collapse the batch through the driver pipeline.
+   * - ``psqlpy``
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it.
+     - ``JSONB`` payload/metadata columns with native decode; ``result_json``
+       stays text-backed for driver compatibility.
+     - Arrow ``load_from_records`` path.
+     - SQLSpec durable table queue.
+     - PostgreSQL storage parameters tune queue-table churn where supported.
+   * - ``asyncmy`` / ``aiomysql`` / ``mysqlconnector`` / ``pymysql``
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it.
+     - MySQL ``JSON`` columns with native decoded JSON values.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - Index prefixes keep InnoDB key length within portable bounds.
+   * - ``oracledb``
+     - Optimistic compare-and-swap until SQLSpec exposes an Oracle locking
+       capability hint.
+     - Version-aware ``JSON``, checked ``BLOB``, or plain ``BLOB`` storage.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - Oracle object names are kept within the adapter's identifier limits;
+       Oracle 23ai can pipeline stale-recovery statement batches.
+   * - ``mssql_python``
+     - Optimistic compare-and-swap.
+     - ``NVARCHAR`` JSON payload columns serialized with SQLSpec JSON.
+     - Arrow ``load_from_records`` path when SQLSpec exposes it; otherwise
+       ``execute_many``.
+     - Polling.
+     - T-SQL DDL uses SQL Server existence guards and bracket object names.
+   * - ``bigquery``
+     - Optimistic compare-and-swap.
+     - ``JSON`` columns.
+     - Arrow/load-job path when the adapter exposes native ingest.
+     - Polling.
+     - No primary-key or unique constraint is emitted because BigQuery does not
+       enforce them the same way as OLTP databases.
+   * - ``spanner``
+     - Optimistic compare-and-swap.
+     - ``JSON`` columns.
+     - Arrow/batch path when the adapter exposes native ingest.
+     - Polling.
+     - Primary key is declared inline with Spanner DDL.
+   * - ``adbc``
+     - Optimistic compare-and-swap.
+     - Dialect-detected JSON: ``JSON``/``JSONB`` for capable engines and
+       ``TEXT`` for SQLite/FlightSQL.
+     - Arrow-oriented native ingest when the SQLSpec adapter supports it.
+     - Polling.
+     - Dialect detection comes from the ADBC connection settings.
+
+Current upstream adapter limitations are tracked in tests instead of hidden
+behind fallback behavior: ADBC-SQLite has a nested-transaction issue, the
+BigQuery emulator client path can hang after schema creation, and the Spanner
+adapter currently attempts schema DDL through a read-only snapshot context.
+
 Advanced Alchemy
 ----------------
 
@@ -346,6 +439,41 @@ autogenerate, import this model in ``env.py`` and include its metadata in
 ``target_metadata``. Use ``create_schema`` only for local bootstrap or tests;
 production schema changes should be generated and reviewed in the application
 migration stream.
+
+Advanced Alchemy Capability Notes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Advanced Alchemy backend uses native SQLAlchemy and Advanced Alchemy
+features where the dialect supports them:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Dialect family
+     - Claim strategy
+     - JSON storage
+     - Keyed enqueue
+   * - PostgreSQL
+     - ``FOR UPDATE SKIP LOCKED`` candidate selection plus an ownership update.
+     - ``JSONB`` through Advanced Alchemy's ``JsonB`` type.
+     - Native ``ON CONFLICT`` upsert for keyed records.
+   * - MySQL / MariaDB
+     - ``FOR UPDATE SKIP LOCKED`` candidate selection plus an ownership update.
+     - Native JSON through Advanced Alchemy's ``JsonB`` abstraction.
+     - Native duplicate-key upsert for keyed records.
+   * - Oracle
+     - ``FOR UPDATE SKIP LOCKED`` without ``FETCH FIRST`` so Oracle can lock
+       candidate rows correctly.
+     - Oracle JSON/BLOB handling through Advanced Alchemy's ``JsonB`` type.
+     - Native ``MERGE`` for keyed records.
+   * - SQLite and other dialects
+     - Optimistic compare-and-swap.
+     - Native dialect JSON where SQLAlchemy provides it.
+     - Portable key-check and insert fallback.
+
+All paths keep the same public queue semantics: active keyed records deduplicate,
+terminal keyed records can be replaced, stale recovery returns the affected task
+IDs, and ownership-fence losses surface as normal queue lifecycle events.
 
 .. _aa-heartbeat-session-maker:
 

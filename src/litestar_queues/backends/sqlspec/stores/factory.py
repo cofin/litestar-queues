@@ -45,13 +45,7 @@ _ADAPTER_STORE_TYPES: dict[str, type[SQLSpecQueueStore]] = {
     "spanner": SpannerQueueStore,
     "sqlite": SqliteQueueStore,
 }
-_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({
-    "cockroach_psycopg",
-    "mssql_python",
-    "mysqlconnector",
-    "oracledb",
-    "psycopg",
-})
+_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"cockroach_psycopg", "mssql_python", "mysqlconnector", "oracledb", "psycopg"})
 _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAPTER_NAMES
 
 

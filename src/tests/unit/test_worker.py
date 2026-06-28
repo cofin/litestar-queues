@@ -331,10 +331,7 @@ async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> None:
 
     plugin = QueuePlugin(
         QueueConfig(
-            execution_backend="local",
-            start_worker=True,
-            worker_poll_interval=0.01,
-            worker_graceful_shutdown_timeout=1,
+            execution_backend="local", start_worker=True, worker_poll_interval=0.01, worker_graceful_shutdown_timeout=1
         )
     )
     app = Litestar(plugins=[plugin])
@@ -354,11 +351,7 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
     def sync_context(*, _job_id: str) -> dict[str, str | None]:
         context = get_current_task_context()
         assert context is not None
-        return {
-            "job_id": _job_id,
-            "context_task_id": context.task_id,
-            "thread_name": threading.current_thread().name,
-        }
+        return {"job_id": _job_id, "context_task_id": context.task_id, "thread_name": threading.current_thread().name}
 
     async with QueueService(
         QueueConfig(execution_backend="immediate", sync_executor_max_workers=1, sync_executor_thread_name_prefix="lq")

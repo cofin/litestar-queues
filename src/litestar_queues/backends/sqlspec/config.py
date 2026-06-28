@@ -7,7 +7,11 @@ from typing import Any, ClassVar
 from sqlspec import SQLSpec
 from sqlspec.extensions.events import AsyncEventChannel
 
-from litestar_queues.backends.sqlspec.schema import validate_column_map, validate_native_json_columns
+from litestar_queues.backends.sqlspec.schema import (
+    validate_column_map,
+    validate_native_json_columns,
+    validate_table_name,
+)
 from litestar_queues.exceptions import QueueConfigurationError
 
 __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "NOTIFY_TRANSPORTS", "SQLSpecBackendConfig")
@@ -49,6 +53,8 @@ class SQLSpecBackendConfig:
 
     def __post_init__(self) -> None:
         """Validate adopter-owned table and wakeup-transport configuration."""
+        if self.table_name is not None:
+            self.table_name = validate_table_name(self.table_name)
         self.column_map = validate_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
         if self.notify_transport is not None and self.notify_transport not in NOTIFY_TRANSPORTS:

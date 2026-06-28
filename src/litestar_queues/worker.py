@@ -230,9 +230,7 @@ class Worker:
     async def _heartbeat(self, task_id: "UUID", expected_retry_count: int | None = None) -> None:
         while True:
             await asyncio.sleep(self._heartbeat_interval)
-            await self._service.get_queue_backend().touch_heartbeat(
-                task_id, expected_retry_count=expected_retry_count
-            )
+            await self._service.get_queue_backend().touch_heartbeat(task_id, expected_retry_count=expected_retry_count)
 
     async def _drain_running(self) -> None:
         if not self._running_tasks:

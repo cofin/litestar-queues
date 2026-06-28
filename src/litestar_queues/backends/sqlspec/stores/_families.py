@@ -172,20 +172,14 @@ class SQLServerQueueStore(SQLSpecQueueStore):
                     f"{self._quoted_col('priority')}, {self._quoted_col('created_at')}"
                 ),
             ),
-            self._wrap_create_index(
-                "heartbeat", f"{self._quoted_col('status')}, {self._quoted_col('heartbeat_at')}"
-            ),
+            self._wrap_create_index("heartbeat", f"{self._quoted_col('status')}, {self._quoted_col('heartbeat_at')}"),
         ]
 
     def drop_statements(self) -> list[str]:
         """Return statements that drop SQL Server queue artifacts."""
         if not self._manage_schema:
             return []
-        return [
-            self._wrap_drop_index("heartbeat"),
-            self._wrap_drop_index("pending"),
-            self._wrap_drop_table(),
-        ]
+        return [self._wrap_drop_index("heartbeat"), self._wrap_drop_index("pending"), self._wrap_drop_table()]
 
     def _create_sqlserver_table_statement(self) -> str:
         return f"""
