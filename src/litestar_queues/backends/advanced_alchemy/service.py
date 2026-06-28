@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import UUID
 
+from advanced_alchemy.operations import OnConflictUpsert
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from advanced_alchemy.utils.serialization import decode_json as _decode_json
 from advanced_alchemy.utils.serialization import encode_json as _encode_json
@@ -16,6 +17,8 @@ __all__ = ("QueueTaskService",)
 
 _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+_SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"cockroachdb", "mariadb", "mysql", "oracle", "postgresql"})
+_NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"cockroachdb", "mariadb", "mysql", "oracle", "postgresql"})
 
 
 class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
@@ -69,8 +72,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             key=key,
             metadata=dict(metadata),
         )
-        await self.repository.add(self.model_from_record(record), auto_commit=False, auto_refresh=False)
-        return record
+        return await self._insert_task_record(record, key=key)
 
     async def get_task(self, task_id: UUID) -> QueuedTaskRecord | None:
         model = await self._select_task(task_id)
@@ -105,12 +107,33 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def claim_next(self, *, queue: str | None, execution_backend: str | None) -> QueuedTaskRecord | None:
+        if _supports_skip_locked_claim(self._dialect_name()):
+            return await self._claim_next_skip_locked(queue=queue, execution_backend=execution_backend)
+
         pending = await self.list_pending(limit=10, queue=queue, execution_backend=execution_backend)
         for record in pending:
             claimed = await self.claim_task(record.id)
             if claimed is not None:
                 return claimed
         return None
+
+    async def _claim_next_skip_locked(
+        self, *, queue: str | None, execution_backend: str | None
+    ) -> QueuedTaskRecord | None:
+        now = _utc_now()
+        dialect_name = self._dialect_name()
+        statement = _build_claim_candidate_statement(
+            self.model_type,
+            queue=queue,
+            execution_backend=execution_backend,
+            now=now,
+            limit=None if dialect_name == "oracle" else 1,
+            skip_locked=True,
+        )
+        row = (await self.repository.session.execute(statement)).scalars().first()
+        if row is None:
+            return None
+        return await self.claim_task(UUID(str(row.id)))
 
     async def complete_task(
         self, task_id: UUID, *, result: Any = None, expected_retry_count: int | None = None
@@ -179,7 +202,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         criteria = [model_type.id == task_id, model_type.status == "running"]
         if expected_retry_count is not None:
             criteria.append(model_type.retry_count == expected_retry_count)
-        result = await self.repository.session.execute(update(model_type).where(*criteria).values(heartbeat_at=_utc_now()))
+        result = await self.repository.session.execute(
+            update(model_type).where(*criteria).values(heartbeat_at=_utc_now())
+        )
         return int(result.rowcount or 0) == 1
 
     async def null_heartbeats(self, task_ids: list[UUID], *, expected_retry_count: int | None = None) -> None:
@@ -200,7 +225,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         models = (await self.repository.session.execute(select(model_type).where(*criteria))).scalars().all()
         result = StaleTaskRecoveryResult()
         for model in models:
-            metadata = _deserialize_json(str(model.metadata_json))
+            metadata = _deserialize_json(model.metadata_json)
             requeue_on_stale = metadata.get("requeue_on_stale", True) is not False
             if requeue_on_stale and int(model.retry_count) < int(model.max_retries):
                 await self.repository.session.execute(
@@ -375,30 +400,133 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def _select_task_by_key(self, key: str) -> Any | None:
         return await self.repository.get_one_or_none(task_key=key)
 
+    async def _insert_task_record(self, record: QueuedTaskRecord, *, key: str | None) -> QueuedTaskRecord:
+        model = self.model_from_record(record)
+        dialect_name = self._dialect_name()
+        if key is not None and _supports_native_keyed_enqueue(dialect_name):
+            values = _model_insert_values(model, self.model_type)
+            statement, params = _build_keyed_enqueue_upsert(
+                cast("Any", self.model_type.__table__), values, dialect_name=cast("str", dialect_name)
+            )
+            await self.repository.session.execute(statement, {**values, **params})
+            await self.repository.session.flush()
+            inserted = await self._select_task(record.id)
+            if inserted is not None:
+                return self.record_from_model(inserted)
+            existing = await self._select_task_by_key(key)
+            if existing is not None:
+                return self.record_from_model(existing)
+            return record
+
+        await self.repository.add(model, auto_commit=False, auto_refresh=False)
+        return record
+
+    def _dialect_name(self) -> str | None:
+        bind = self.repository.session.get_bind()
+        dialect = getattr(bind, "dialect", None)
+        return cast("str | None", getattr(dialect, "name", None))
+
     def _pending_statement(self, *, queue: str | None, execution_backend: str | None) -> Any:
-        now = _utc_now()
-        model_type = self.model_type
-        criteria = [
-            model_type.status.in_(_DUE_STATUSES),
-            or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
-        ]
-        if queue is not None:
-            criteria.append(model_type.queue == queue)
-        if execution_backend is not None:
-            criteria.append(model_type.execution_backend == execution_backend)
-        return select(model_type).where(and_(*criteria)).order_by(desc(model_type.priority), model_type.created_at)
+        return _build_claim_candidate_statement(
+            self.model_type,
+            queue=queue,
+            execution_backend=execution_backend,
+            now=_utc_now(),
+            limit=None,
+            skip_locked=False,
+        )
+
+
+def _supports_skip_locked_claim(dialect_name: str | None) -> bool:
+    return dialect_name in _SKIP_LOCKED_CLAIM_DIALECTS
+
+
+def _supports_native_keyed_enqueue(dialect_name: str | None) -> bool:
+    return dialect_name in _NATIVE_KEYED_ENQUEUE_DIALECTS
+
+
+def _build_claim_candidate_statement(
+    model_type: type[Any],
+    *,
+    queue: str | None,
+    execution_backend: str | None,
+    now: datetime,
+    limit: int | None,
+    skip_locked: bool,
+) -> Any:
+    criteria = [
+        model_type.status.in_(_DUE_STATUSES),
+        or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+    ]
+    if queue is not None:
+        criteria.append(model_type.queue == queue)
+    if execution_backend is not None:
+        criteria.append(model_type.execution_backend == execution_backend)
+    statement = select(model_type).where(and_(*criteria)).order_by(desc(model_type.priority), model_type.created_at)
+    if limit is not None:
+        statement = statement.limit(limit)
+    if skip_locked:
+        statement = statement.with_for_update(skip_locked=True)
+    return statement
+
+
+def _build_keyed_enqueue_upsert(table: Any, values: dict[str, Any], *, dialect_name: str) -> tuple[Any, dict[str, Any]]:
+    if dialect_name == "oracle":
+        return OnConflictUpsert.create_merge_upsert(
+            table=table,
+            values=values,
+            conflict_columns=["task_key"],
+            update_columns=[],
+            dialect_name=dialect_name,
+            validate_identifiers=True,
+        )
+    update_columns = ["task_key"]
+    return (
+        OnConflictUpsert.create_upsert(
+            table=table,
+            values=values,
+            conflict_columns=["task_key"],
+            update_columns=update_columns,
+            dialect_name=dialect_name,
+            validate_identifiers=True,
+        ),
+        {},
+    )
+
+
+def _model_insert_values(model: Any, model_type: type[Any]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for column in model_type.__table__.columns:
+        if not hasattr(model, column.name):
+            continue
+        value = getattr(model, column.name)
+        if value is None and column.name == "updated_at":
+            value = _utc_now()
+        if value is None and (column.default is not None or column.server_default is not None):
+            continue
+        values[column.name] = value
+    return values
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _serialize_json(value: Any) -> str:
-    return str(_encode_json(value))
+def _serialize_json(value: Any) -> Any:
+    return _decode_json(str(_encode_json(value)))
 
 
-def _deserialize_json(value: str) -> Any:
-    return _decode_json(value)
+def _deserialize_json(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bytes | bytearray | memoryview):
+        return _decode_json(bytes(value))
+    if isinstance(value, str):
+        try:
+            return _decode_json(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _coerce_datetime(value: Any) -> datetime | None:

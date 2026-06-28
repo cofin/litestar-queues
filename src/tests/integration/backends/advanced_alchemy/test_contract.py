@@ -10,8 +10,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import run
+from typing import Any
+from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import mysql, oracle, postgresql, sqlite
 
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("aiosqlite")
@@ -19,6 +22,7 @@ pytest.importorskip("sqlalchemy")
 
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+from advanced_alchemy.operations import MergeStatement
 
 from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
@@ -43,6 +47,22 @@ def _sqlite_config(path: Path) -> SQLAlchemyAsyncConfig:
 
 class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "aa_contract_queue_tasks"
+
+
+def _postgresql_dialect() -> Any:
+    return postgresql.dialect()  # type: ignore[no-untyped-call]
+
+
+def _sqlite_dialect() -> Any:
+    return sqlite.dialect()
+
+
+def _mysql_dialect() -> Any:
+    return mysql.dialect()
+
+
+def _oracle_dialect() -> Any:
+    return oracle.dialect()  # type: ignore[no-untyped-call]
 
 
 async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> None:
@@ -85,6 +105,88 @@ async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path
 
     assert backend_config.model_class is ContractQueueTask
     assert backend_config.create_schema is True
+
+
+def test_advanced_alchemy_mixin_uses_native_json_column_types() -> None:
+    column_type = ContractQueueTask.__table__.c.args_json.type
+
+    assert column_type.compile(dialect=_postgresql_dialect()) == "JSONB"
+    assert column_type.compile(dialect=_sqlite_dialect()) == "JSON"
+
+
+def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects() -> None:
+    from litestar_queues.backends.advanced_alchemy.service import (
+        _build_claim_candidate_statement,
+        _supports_skip_locked_claim,
+    )
+
+    claim_time = datetime.now(UTC)
+    postgres_statement = _build_claim_candidate_statement(
+        ContractQueueTask,
+        queue=None,
+        execution_backend=None,
+        now=claim_time,
+        limit=1,
+        skip_locked=_supports_skip_locked_claim("postgresql"),
+    )
+    sqlite_statement = _build_claim_candidate_statement(
+        ContractQueueTask,
+        queue=None,
+        execution_backend=None,
+        now=claim_time,
+        limit=1,
+        skip_locked=_supports_skip_locked_claim("sqlite"),
+    )
+    oracle_statement = _build_claim_candidate_statement(
+        ContractQueueTask,
+        queue=None,
+        execution_backend=None,
+        now=claim_time,
+        limit=None,
+        skip_locked=_supports_skip_locked_claim("oracle"),
+    )
+
+    assert "FOR UPDATE SKIP LOCKED" in str(postgres_statement.compile(dialect=_postgresql_dialect()))
+    assert "FOR UPDATE" not in str(sqlite_statement.compile(dialect=_sqlite_dialect()))
+    oracle_sql = str(oracle_statement.compile(dialect=_oracle_dialect()))
+    assert "FOR UPDATE SKIP LOCKED" in oracle_sql
+    assert "FETCH FIRST" not in oracle_sql
+
+
+def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialects() -> None:
+    from litestar_queues.backends.advanced_alchemy.service import (
+        _build_keyed_enqueue_upsert,
+        _supports_native_keyed_enqueue,
+    )
+
+    values = {
+        "id": uuid4(),
+        "task_name": "tasks.native_upsert",
+        "task_key": "native:upsert",
+        "args_json": [],
+        "kwargs_json": {},
+        "metadata_json": {},
+    }
+
+    postgres_statement, postgres_params = _build_keyed_enqueue_upsert(
+        ContractQueueTask.__table__, values, dialect_name="postgresql"
+    )
+    mysql_statement, mysql_params = _build_keyed_enqueue_upsert(
+        ContractQueueTask.__table__, values, dialect_name="mysql"
+    )
+    oracle_statement, oracle_params = _build_keyed_enqueue_upsert(
+        ContractQueueTask.__table__, values, dialect_name="oracle"
+    )
+
+    assert _supports_native_keyed_enqueue("postgresql")
+    assert not _supports_native_keyed_enqueue("sqlite")
+    assert "ON CONFLICT" in str(postgres_statement.compile(dialect=_postgresql_dialect()))
+    assert "ON DUPLICATE KEY UPDATE" in str(mysql_statement.compile(dialect=_mysql_dialect()))
+    assert isinstance(oracle_statement, MergeStatement)
+    assert "MERGE INTO" in str(oracle_statement.compile(dialect=_oracle_dialect()))
+    assert postgres_params == {}
+    assert mysql_params == {}
+    assert set(oracle_params).issubset(ContractQueueTask.__table__.c)
 
 
 async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_terminal_keys(

@@ -2,6 +2,7 @@
 
 from typing import Any, Protocol, cast
 
+from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
@@ -32,12 +33,12 @@ class QueueTaskModelMixin:
         return mapped_column(String(length=500), nullable=False)
 
     @declared_attr
-    def args_json(cls) -> Mapped[str]:
-        return mapped_column(Text(), default="[]", nullable=False)
+    def args_json(cls) -> Mapped[Any]:
+        return mapped_column(JsonB, default=list, nullable=False)
 
     @declared_attr
-    def kwargs_json(cls) -> Mapped[str]:
-        return mapped_column(Text(), default="{}", nullable=False)
+    def kwargs_json(cls) -> Mapped[Any]:
+        return mapped_column(JsonB, default=dict, nullable=False)
 
     @declared_attr
     def queue(cls) -> Mapped[str]:
@@ -88,8 +89,8 @@ class QueueTaskModelMixin:
         return mapped_column(DateTime(timezone=True), default=None)
 
     @declared_attr
-    def result_json(cls) -> Mapped[str]:
-        return mapped_column(Text(), default="null", nullable=False)
+    def result_json(cls) -> Mapped[Any]:
+        return mapped_column(JsonB, default=None, nullable=True)
 
     @declared_attr
     def error(cls) -> Mapped[str | None]:
@@ -100,8 +101,8 @@ class QueueTaskModelMixin:
         return mapped_column(String(length=500), unique=True, default=None)
 
     @declared_attr
-    def metadata_json(cls) -> Mapped[str]:
-        return mapped_column(Text(), default="{}", nullable=False)
+    def metadata_json(cls) -> Mapped[Any]:
+        return mapped_column(JsonB, default=dict, nullable=False)
 
 
 class _NamedTable(Protocol):
