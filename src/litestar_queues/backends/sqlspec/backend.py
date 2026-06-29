@@ -50,6 +50,7 @@ _NOTIFY_TRANSPORT_POLLING = "polling"
 # queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
 _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
 _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
+_STACK_COMMIT_AFTER_EXECUTE_ADAPTERS = frozenset({"pymysql"})
 
 
 def _adapter_notify_transport(adapter_name: "str | None") -> "str":
@@ -610,16 +611,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             result.handler_needed_task_ids.append(record.id)
                 if stack:
                     # Reset any implicit read transaction the SELECT may have opened so
-                    # the stack write transaction starts cleanly across adapters whose
-                    # transaction state after a read
-                    # differs — mysql-connector leaves an implicit transaction open
-                    # (autocommit off), while DuckDB does not track one at all.
+                    # SQLSpec's stack runner owns the write transaction. PyMySQL reports
+                    # an active transaction whenever autocommit is off, so SQLSpec skips
+                    # its internal commit there and needs an explicit post-stack commit.
                     with suppress(Exception):
                         await driver.rollback()
-                    await driver.begin()
                     try:
                         await driver.execute_stack(stack)
-                        await driver.commit()
+                        if resolve_adapter_name(self._get_sqlspec_config()) in _STACK_COMMIT_AFTER_EXECUTE_ADAPTERS:
+                            await driver.commit()
                     except Exception:
                         with suppress(Exception):
                             await driver.rollback()
