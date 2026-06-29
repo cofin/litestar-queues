@@ -51,6 +51,7 @@ _NOTIFY_TRANSPORT_POLLING = "polling"
 _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
 _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
 _STACK_COMMIT_AFTER_EXECUTE_ADAPTERS = frozenset({"pymysql"})
+_ROLLBACK_ON_SESSION_EXIT_ADAPTERS = frozenset({"pymysql"})
 
 
 def _adapter_notify_transport(adapter_name: "str | None") -> "str":
@@ -992,7 +993,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
         async with _bridge_session(self._get_or_create_sqlspec(), sqlspec_config) as driver:
-            yield driver
+            try:
+                yield driver
+            finally:
+                if resolve_adapter_name(sqlspec_config) in _ROLLBACK_ON_SESSION_EXIT_ADAPTERS:
+                    with suppress(Exception):
+                        await driver.rollback()
 
     @asynccontextmanager
     async def _heartbeat_session(self) -> "AsyncIterator[Any]":
@@ -1012,7 +1018,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         if self._heartbeat_pool_enabled and self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
             async with _bridge_session(self._sqlspec, self._heartbeat_pool_config) as driver:
-                yield driver
+                try:
+                    yield driver
+                finally:
+                    if resolve_adapter_name(self._heartbeat_pool_config) in _ROLLBACK_ON_SESSION_EXIT_ADAPTERS:
+                        with suppress(Exception):
+                            await driver.rollback()
         else:
             async with self._session() as driver:
                 yield driver
