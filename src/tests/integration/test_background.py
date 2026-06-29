@@ -22,7 +22,11 @@ def _records(service: "QueueService") -> "dict[str, QueuedTaskRecord]":
 
 
 def _build_plugin() -> "QueuePlugin":
-    return QueuePlugin(QueueConfig(queue_backend="memory", execution_backend="immediate", initialize_schedules=False))
+    return QueuePlugin(
+        QueueConfig(
+            queue_backend="memory", execution_backend="immediate", in_app_worker=False, initialize_schedules=False
+        )
+    )
 
 
 async def test_background_task_native_integration() -> "None":

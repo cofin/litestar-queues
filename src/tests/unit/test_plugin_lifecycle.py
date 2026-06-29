@@ -35,8 +35,8 @@ async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> 
     assert scheduled.status == "scheduled"
 
 
-async def test_plugin_start_worker_creates_and_cleans_up_worker() -> "None":
-    plugin = QueuePlugin(QueueConfig(execution_backend="local", start_worker=True, worker_poll_interval=0.01))
+async def test_plugin_in_app_worker_creates_and_cleans_up_worker() -> "None":
+    plugin = QueuePlugin(QueueConfig(in_app_worker=True, worker_poll_interval=0.01))
     app = Litestar(plugins=[plugin])
 
     async with AsyncTestClient(app=app):

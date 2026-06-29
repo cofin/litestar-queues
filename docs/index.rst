@@ -24,7 +24,7 @@ pluggable execution backends, and realtime task event delivery.
       :link-type: doc
 
       Install Litestar Queues, register your first task, and enqueue work from
-      a Litestar route or standalone service.
+      a Litestar route backed by an in-app or standalone worker.
 
    .. grid-item-card:: Usage Guides
       :link: usage/index

@@ -94,7 +94,10 @@ def test_public_exports() -> "None":
     assert get_execution_backend_class("local") is LocalExecutionBackend
     assert {"cloudrun", "immediate", "local"}.issubset(set(list_execution_backends()))
     assert QueuePlugin().config.queue_backend == "memory"
+    assert QueuePlugin().config.execution_backend == "local"
+    assert QueuePlugin().config.in_app_worker is True
     assert QueueService(QueueConfig()).config.queue_backend == "memory"
+    assert QueueService(QueueConfig()).config.execution_backend == "local"
     assert issubclass(QueueError, Exception)
     assert AsyncServiceProvider(QueueConfig()) is not None
     assert ScheduleConfig(task_name="example", interval=1).task_name == "example"

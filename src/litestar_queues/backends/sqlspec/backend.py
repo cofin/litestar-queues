@@ -110,7 +110,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
         self._sqlspec = backend_config.sqlspec
-        self._sqlspec_config = backend_config.sqlspec_config
+        self._sqlspec_config = backend_config.config
         self._heartbeat_pool_config = backend_config.heartbeat_pool_config
         self._heartbeat_pool_enabled = self._heartbeat_pool_config is not None
         self._heartbeat_pool_registered = False
@@ -952,7 +952,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             elif len(registered_configs) > 1:
                 msg = (
                     "SQLSpecQueueBackend received a SQLSpec manager with multiple configs; "
-                    "pass sqlspec_config to select the queue database."
+                    "pass config to select the queue database."
                 )
                 raise QueueConfigurationError(msg)
             else:

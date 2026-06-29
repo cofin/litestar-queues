@@ -126,7 +126,7 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
     _create_adopter_sqlite_schema(db_path)
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlite_config_factory(db_path),
+            config=sqlite_config_factory(db_path),
             table_name="adopter_jobs",
             column_map=ADOPTER_COLUMN_MAP,
             manage_schema=False,
@@ -191,7 +191,7 @@ async def test_manage_schema_false_emits_no_schema_ddl(
     """Schema creation, drop, migrations, and open() stay hands-off when opted out."""
     db_path = tmp_path / "no-schema.db"
     config = sqlite_config_factory(db_path)
-    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=config, manage_schema=False))
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=config, manage_schema=False))
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(config=config)
     setattr(config, "manage_schema", False)

@@ -47,7 +47,7 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
     event_channel = StubAsyncEventChannel()
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlite_config_factory(tmp_path / "notifications.db"),
+            config=sqlite_config_factory(tmp_path / "notifications.db"),
             event_channel=cast("AsyncEventChannel", event_channel),
             notification_channel="queue_notifications",
         )
@@ -86,7 +86,7 @@ async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_pat
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config,
+            config=sqlspec_config,
             create_schema=False,
             run_migrations=True,
             notifications=True,
@@ -117,7 +117,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
     )
     extension_backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config, event_channel=cast("AsyncEventChannel", extension_channel)
+            config=sqlspec_config, event_channel=cast("AsyncEventChannel", extension_channel)
         )
     )
     await extension_backend.open()
@@ -129,7 +129,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
     explicit_channel = StubAsyncEventChannel()
     explicit_backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config,
+            config=sqlspec_config,
             event_channel=cast("AsyncEventChannel", explicit_channel),
             notification_channel="explicit_notifications",
             table_name="explicit_notification_queue",
@@ -205,9 +205,7 @@ async def test_sqlspec_backend_non_notify_adapter_polls(
 ) -> "None":
     """A non-notify adapter degrades requested notifications to polling."""
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlite_config_factory(tmp_path / "polling.db"), notifications=True
-        )
+        backend_config=SQLSpecBackendConfig(config=sqlite_config_factory(tmp_path / "polling.db"), notifications=True)
     )
 
     await backend.open()
@@ -230,7 +228,7 @@ async def test_sqlspec_backend_notify_transport_override_enables_table_queue(tmp
     sqlspec_config = AiosqliteConfig(connection_config={"database": str(tmp_path / "override-table-queue.db")})
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config,
+            config=sqlspec_config,
             notify_transport="table_queue",
             create_schema=False,
             run_migrations=True,
@@ -260,7 +258,7 @@ async def test_sqlspec_backend_notify_transport_polling_overrides_extension_conf
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config, notify_transport="polling", create_schema=False, run_migrations=True
+            config=sqlspec_config, notify_transport="polling", create_schema=False, run_migrations=True
         )
     )
 
@@ -290,7 +288,7 @@ async def test_sqlspec_backend_postgres_listen_notify_durable_wakes(
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config,
+            config=sqlspec_config,
             table_name="lq_notify_asyncpg",
             notifications=True,
             create_schema=False,

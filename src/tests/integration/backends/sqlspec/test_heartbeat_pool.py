@@ -55,7 +55,7 @@ async def test_sqlspec_backend_sync_sessions_use_sqlspec_managed_async_executor(
     monkeypatch.setenv("SQLSPEC_ASYNC_THREAD_LIMIT", "1")
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=SqliteConfig(connection_config={"database": str(tmp_path / "sync-queue.db")})
+            config=SqliteConfig(connection_config={"database": str(tmp_path / "sync-queue.db")})
         )
     )
     await backend.open()
@@ -80,9 +80,7 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
     sqlspec.add_config(main_config)
 
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            sqlspec=sqlspec, sqlspec_config=main_config, heartbeat_pool_config=heartbeat_config
-        )
+        backend_config=SQLSpecBackendConfig(sqlspec=sqlspec, config=main_config, heartbeat_pool_config=heartbeat_config)
     )
     await backend.open()
     try:
@@ -145,7 +143,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
     monkeypatch.setattr(SQLSpec, "add_config", failing_add_config)
 
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(sqlspec_config=main_config, heartbeat_pool_config=bad_heartbeat_config)
+        backend_config=SQLSpecBackendConfig(config=main_config, heartbeat_pool_config=bad_heartbeat_config)
     )
     with caplog.at_level("WARNING", logger="litestar_queues"):
         await backend.open()
@@ -172,7 +170,7 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heart
     main_config = sqlite_config_factory(queue_path)
     heartbeat_config = sqlite_config_factory(queue_path)
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(sqlspec_config=main_config, heartbeat_pool_config=heartbeat_config)
+        backend_config=SQLSpecBackendConfig(config=main_config, heartbeat_pool_config=heartbeat_config)
     )
     await backend.open()
     try:

@@ -46,7 +46,7 @@ def queue_config() -> "QueueConfig":
     """Return a default queue configuration for testing."""
     from litestar_queues import QueueConfig
 
-    return QueueConfig(queue_backend="memory", start_worker=False)
+    return QueueConfig(queue_backend="memory", in_app_worker=False)
 
 
 @pytest.fixture

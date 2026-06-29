@@ -210,7 +210,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     def _resolve_model_classes(self, model_class: "type[Any] | None") -> 'tuple[type[Any], type["QueueTaskService"]]':
         if model_class is None:
-            msg = "AdvancedAlchemyBackendConfig.model_class is required and must inherit QueueTaskModelMixin."
+            msg = "AdvancedAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
             raise QueueConfigurationError(msg)
         try:
             valid_model = issubclass(model_class, QueueTaskModelMixin)

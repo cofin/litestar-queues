@@ -35,7 +35,7 @@ class SQLSpecBackendConfig:
 
     backend_name: "ClassVar[str]" = "sqlspec"
     sqlspec: "SQLSpec | None" = None
-    sqlspec_config: "Any | None" = None
+    config: "Any | None" = None
     heartbeat_pool_config: "Any | None" = None
     table_name: "str | None" = None
     create_schema: "bool | None" = None

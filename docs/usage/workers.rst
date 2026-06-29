@@ -8,7 +8,7 @@ executes them with the configured execution backend.
 Plugin Worker
 =============
 
-Set ``start_worker=True`` to run an in-process worker with the Litestar
+Set ``in_app_worker=True`` to run an in-app worker with the Litestar
 application:
 
 .. code-block:: python
@@ -16,16 +16,16 @@ application:
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
    config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+       queue_backend=SQLSpecBackendConfig(config=...),
        execution_backend="local",
-       start_worker=True,
+       in_app_worker=True,
        worker_batch_size=20,
        worker_max_concurrency=4,
    )
 
-This is useful for small deployments and tests. Larger deployments usually run
-workers as separate processes so web and background capacity can be scaled
-independently.
+This is useful for tests, local development, and lightweight deployments. For
+heavier production workloads, consider running workers as separate processes so
+web and background capacity can be scaled independently.
 
 Manual Worker
 =============

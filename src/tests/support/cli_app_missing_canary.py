@@ -10,7 +10,7 @@ def create_app() -> "Litestar":
         QueueConfig(
             queue_backend="memory",
             execution_backend="immediate",
-            start_worker=False,
+            in_app_worker=False,
             task_modules=(),
             scheduler_canary_task="not.a.registered.task",
         )

@@ -20,7 +20,7 @@ __all__ = (
     "validate_table_name",
 )
 
-DEFAULT_TABLE_NAME = "litestar_queue_tasks"
+DEFAULT_TABLE_NAME = "litestar_queue_task"
 _CANONICAL_COLUMNS = frozenset({
     "id",
     "task_name",

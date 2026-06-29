@@ -38,8 +38,8 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
 
     # Service-backed adapters share the same Docker database across the
     # session. Give each parametrized case its own queue table so adapters
-    # cannot collide via the shared default ``litestar_queue_tasks`` name.
-    table_name = f"litestar_queue_tasks_{case.name.replace('-', '_')}" if case.service_attr is not None else None
+    # cannot collide via the shared default ``litestar_queue_task`` name.
+    table_name = f"litestar_queue_task_{case.name.replace('-', '_')}" if case.service_attr is not None else None
     ctx = FixtureCtx(tmp_path=tmp_path, service=service, table_name=table_name)
 
     backend = await case.build(ctx)
@@ -68,7 +68,7 @@ async def _drop_queue_tables(backend: "BaseQueueBackend") -> "None":
     sqlspec_config = getattr(backend, "_sqlspec_config", None)
     sqlspec_manager = getattr(backend, "_sqlspec", None)
     if sqlspec_config is not None and sqlspec_manager is not None:
-        table_name = getattr(backend, "_table_name", None) or "litestar_queue_tasks"
+        table_name = getattr(backend, "_table_name", None) or "litestar_queue_task"
         store = getattr(backend, "_store", None)
         from litestar_queues.backends.sqlspec.backend import _bridge_session
 

@@ -82,6 +82,17 @@ def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> 
     } <= _index_names(AppQueueTask)
 
 
+def test_advanced_alchemy_backend_uses_default_model_class(tmp_path: "Path") -> "None":
+    from litestar_queues.backends.advanced_alchemy import QueueTaskModel
+
+    backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=_sqlite_config(tmp_path / "default-model.db"))
+    )
+
+    assert backend._model_class is QueueTaskModel
+    assert _table(QueueTaskModel).name == "litestar_queue_task"
+
+
 async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: "Path") -> "None":
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(
@@ -137,9 +148,6 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
 
 def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: "Path") -> "None":
     config = _sqlite_config(tmp_path / "invalid-model.db")
-
-    with pytest.raises(QueueConfigurationError, match="model_class is required"):
-        AdvancedAlchemyQueueBackend(backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config))
 
     with pytest.raises(QueueConfigurationError, match="QueueTaskModelMixin"):
         AdvancedAlchemyQueueBackend(

@@ -126,9 +126,9 @@ class QueueConfig:
     """Configuration for QueuePlugin."""
 
     queue_backend: "QueueBackendConfig" = "memory"
-    execution_backend: "ExecutionBackendConfig" = "immediate"
+    execution_backend: "ExecutionBackendConfig" = "local"
     task_dependency_resolver: "TaskDependencyResolver | None" = None
-    start_worker: "bool" = False
+    in_app_worker: "bool" = True
     queue_service_dependency_key: "str" = "queue_service"
     queue_service_state_key: "str" = "queue_service"
     queue_worker_state_key: "str" = "queue_worker"

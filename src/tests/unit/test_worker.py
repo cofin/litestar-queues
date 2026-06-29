@@ -330,7 +330,7 @@ async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
 
     plugin = QueuePlugin(
         QueueConfig(
-            execution_backend="local", start_worker=True, worker_poll_interval=0.01, worker_graceful_shutdown_timeout=1
+            execution_backend="local", in_app_worker=True, worker_poll_interval=0.01, worker_graceful_shutdown_timeout=1
         )
     )
     app = Litestar(plugins=[plugin])

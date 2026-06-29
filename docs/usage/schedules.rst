@@ -98,7 +98,7 @@ Configuration
        task_modules=("app.tasks",),
        initialize_schedules=True,
        execution_backend="local",
-       start_worker=True,
+       in_app_worker=True,
    )
 
 Set ``initialize_schedules=False`` when schedules are initialized by a separate

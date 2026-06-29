@@ -68,4 +68,4 @@ async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     content = paths[0].read_text()
     assert "create_queue_store" in content
     assert "return SQLSpecQueueStore(" not in content
-    assert "CREATE TABLE IF NOT EXISTS litestar_queue_tasks" not in content
+    assert "CREATE TABLE IF NOT EXISTS litestar_queue_task" not in content

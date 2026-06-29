@@ -98,7 +98,7 @@ class QueuePlugin(InitPlugin):
         if self._config.initialize_schedules:
             await self._service.initialize_schedules()
 
-        if self._config.start_worker:
+        if self._config.in_app_worker:
             self._worker = Worker(
                 self._service,
                 batch_size=self._config.worker_batch_size,

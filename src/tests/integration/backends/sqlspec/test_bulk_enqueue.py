@@ -176,7 +176,7 @@ async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend
 
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
+            config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
         )
     )
     await backend.open()

@@ -49,10 +49,10 @@ install: clean                                      ## Install the project and d
 	@echo "${OK} Installation complete"
 
 .PHONY: install-test-adapters
-install-test-adapters:                              ## Install extra DB driver packages for the full integration matrix
-	@echo "${INFO} Installing test adapter dependencies..."
-	@uv sync --group test-adapters $(UV_SYNC_ARGS)
-	@echo "${OK} Test adapter dependencies installed"
+install-test-adapters:                              ## Install test dependencies for the full integration matrix
+	@echo "${INFO} Installing test dependencies..."
+	@uv sync --group tests $(UV_SYNC_ARGS)
+	@echo "${OK} Test dependencies installed"
 
 .PHONY: destroy
 destroy:                                            ## Destroy the virtual environment

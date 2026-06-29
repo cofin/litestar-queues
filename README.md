@@ -44,13 +44,7 @@ from litestar_queues import QueueConfig, QueuePlugin, task
 async def sync_account(account_id: str) -> dict[str, str]:
     return {"account_id": account_id, "status": "synced"}
 
-config = QueueConfig(
-    queue_backend="memory",
-    execution_backend="local",
-    start_worker=True,
-)
-
-app = Litestar(plugins=[QueuePlugin(config=config)])
+app = Litestar(plugins=[QueuePlugin(config=QueueConfig())])
 ```
 
 The plugin registers a `queue_service` dependency for route handlers:
@@ -67,33 +61,36 @@ async def create_task(account_id: str, queue_service: NamedDependency[QueueServi
     return {"task_id": str(result.id), "status": result.status or "queued"}
 ```
 
-For scripts and tests that do not need a worker, task wrappers can enqueue with
-the default immediate memory service:
+Queue names are routing labels for tasks. They are separate from the queue
+backend (`memory`, `redis`, and so on). Set a task's default queue with the
+decorator, override it with `task.using(queue="...")`, or pass
+`queue="..."` to `queue_service.enqueue()`. Tasks use the `"default"` queue
+when no queue is set.
+
+Workers process every queue unless you filter them:
 
 ```python
-result = await sync_account.enqueue("acct-123")
-
-assert result.status == "completed"
-assert result.result == {"account_id": "acct-123", "status": "synced"}
+config = QueueConfig(worker_queues=("accounts",))
 ```
 
-## Standalone Usage
+```console
+LITESTAR_APP=app.asgi:app litestar queues run --queue accounts
+LITESTAR_APP=app.asgi:app litestar queues run --queue emails
+```
 
-Use the config helper directly outside of a Litestar application:
+`litestar queues run --queue ...` applies only to that standalone worker
+process and overrides `QueueConfig.worker_queues` for the run.
+
+The default configuration runs a worker inside the Litestar application process.
+For heavier deployments, use a shared backend, set `in_app_worker=False` in the
+web app, and run workers separately:
 
 ```python
-from litestar_queues import QueueConfig, task
+config = QueueConfig(in_app_worker=False)
+```
 
-
-@task("reports.refresh")
-async def refresh_report(report_id: str) -> str:
-    return report_id
-
-config = QueueConfig(queue_backend="memory")
-
-async with config.provide_service() as queue_service:
-    result = await queue_service.enqueue(refresh_report, "report-123")
-    await result.refresh()
+```console
+LITESTAR_APP=app.asgi:app litestar queues run --drain-timeout 30
 ```
 
 ## Available Backend Names
@@ -122,7 +119,7 @@ from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
 config = QueueConfig(
     queue_backend=SQLSpecBackendConfig(
-        sqlspec_config=AiosqliteConfig(
+        config=AiosqliteConfig(
             connection_config={"database": "queue.db"},
         ),
         run_migrations=True,
@@ -144,7 +141,6 @@ from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
 from litestar_queues import QueueConfig
 from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig
-from myapp.models import AppQueueTask
 
 alchemy_config = SQLAlchemyAsyncConfig(
     connection_string="sqlite+aiosqlite:///queue.db",
@@ -153,7 +149,6 @@ alchemy_config = SQLAlchemyAsyncConfig(
 config = QueueConfig(
     queue_backend=AdvancedAlchemyBackendConfig(
         sqlalchemy_config=alchemy_config,
-        model_class=AppQueueTask,
         create_schema=True,
     ),
     execution_backend="local",
@@ -162,8 +157,12 @@ config = QueueConfig(
 
 Litestar applications should register Advanced Alchemy's `SQLAlchemyPlugin`
 directly and pass the same `SQLAlchemyAsyncConfig` into the queue backend. The
-queue backend uses operation-scoped sessions from that config and does not
-append database plugins itself.
+queue backend defaults to a `litestar_queue_task` table through its built-in
+model. Override `model_class` when an application needs a custom table name,
+base class, or migration ownership. When the app imports its queue config at
+startup, Advanced Alchemy's metadata includes that model for Alembic
+autogenerate. The backend uses operation-scoped sessions from that config and
+does not append database plugins itself.
 
 The `redis` queue backend is available when the Redis extra is installed:
 
@@ -219,7 +218,7 @@ async def render_report(report_id: str) -> None:
     ...
 
 config = QueueConfig(
-    queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+    queue_backend=SQLSpecBackendConfig(config=...),
     execution_backend=CloudRunExecutionConfig(
         project_id="example-project",
         region="us-central1",
@@ -255,9 +254,9 @@ sqlspec_config = AiosqliteConfig(
     },
 )
 
-config = QueueConfig(
+queue_config = QueueConfig(
     queue_backend=SQLSpecBackendConfig(
-        sqlspec_config=sqlspec_config,
+        config=sqlspec_config,
         create_schema=False,
         run_migrations=True,
         notifications=True,

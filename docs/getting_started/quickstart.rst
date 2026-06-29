@@ -22,40 +22,26 @@ Attach the queue plugin to a Litestar application:
    from litestar_queues import QueueConfig, QueuePlugin, QueueService
 
 
-   config = QueueConfig(
-       queue_backend="memory",
-       execution_backend="local",
-       start_worker=True,
-   )
-
-
    @post("/accounts/{account_id:str}/sync")
    async def create_task(account_id: str, queue_service: NamedDependency[QueueService]) -> dict[str, str]:
        result = await queue_service.enqueue(sync_account, account_id)
        return {"task_id": str(result.id), "status": result.status or "queued"}
 
 
-   app = Litestar(route_handlers=[create_task], plugins=[QueuePlugin(config=config)])
+   app = Litestar(route_handlers=[create_task], plugins=[QueuePlugin(config=QueueConfig())])
 
-For scripts and tests that do not need an app worker, use a standalone service:
-
-.. code-block:: python
-
-   from litestar_queues import QueueConfig, QueueService
-
-
-   async with QueueService(QueueConfig(execution_backend="immediate")) as queue_service:
-       result = await queue_service.enqueue(sync_account, "acct-123")
-       assert result.status == "completed"
-       assert result.result == {"account_id": "acct-123", "status": "synced"}
-
-The task wrapper also exposes ``enqueue()`` with the default immediate
-in-memory service:
+The default configuration runs a worker inside the Litestar application process.
+That keeps local and lightweight deployments simple. For heavier deployments,
+use a shared queue backend, disable the in-app worker in the web process, and run
+workers separately:
 
 .. code-block:: python
 
-   result = await sync_account.enqueue("acct-123")
-   await result.refresh()
+   config = QueueConfig(in_app_worker=False)
+
+.. code-block:: console
+
+   $ LITESTAR_APP=app.asgi:app litestar queues run --drain-timeout 30
 
 Next Steps
 ==========

@@ -1,6 +1,6 @@
 """Advanced Alchemy backend configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
@@ -10,6 +10,12 @@ if TYPE_CHECKING:
 __all__ = ("AdvancedAlchemyBackendConfig",)
 
 
+def _default_model_class() -> "type[Any]":
+    from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+
+    return QueueTaskModel
+
+
 @dataclass(slots=True)
 class AdvancedAlchemyBackendConfig:
     """Configuration values for the Advanced Alchemy queue backend."""
@@ -17,5 +23,5 @@ class AdvancedAlchemyBackendConfig:
     backend_name: "ClassVar[str]" = "advanced-alchemy"
     sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None
     heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None
-    model_class: "type[Any] | None" = None
+    model_class: "type[Any] | None" = field(default_factory=_default_model_class)
     create_schema: "bool" = False

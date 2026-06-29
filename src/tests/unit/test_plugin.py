@@ -16,8 +16,8 @@ def test_plugin_instantiation_with_defaults() -> "None":
 
     plugin = QueuePlugin()
     assert plugin.config.queue_backend == "memory"
-    assert plugin.config.execution_backend == "immediate"
-    assert plugin.config.start_worker is False
+    assert plugin.config.execution_backend == "local"
+    assert plugin.config.in_app_worker is True
 
 
 def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None":
@@ -26,7 +26,7 @@ def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None"
 
     plugin = QueuePlugin(config=queue_config)
     assert plugin.config.queue_backend == "memory"
-    assert plugin.config.start_worker is False
+    assert plugin.config.in_app_worker is False
 
 
 def test_config_defaults() -> "None":
@@ -35,12 +35,20 @@ def test_config_defaults() -> "None":
 
     config = QueueConfig()
     assert config.queue_backend == "memory"
-    assert config.execution_backend == "immediate"
+    assert config.execution_backend == "local"
     assert config.queue_service_dependency_key == "queue_service"
     assert config.queue_service_state_key == "queue_service"
     assert config.queue_worker_state_key == "queue_worker"
-    assert config.start_worker is False
+    assert config.in_app_worker is True
     assert config.scheduler_canary_task == "scheduler.heartbeat"
+
+
+def test_in_app_worker_controls_plugin_worker_startup() -> "None":
+    """The in_app_worker setting should control plugin worker startup."""
+    from litestar_queues import QueueConfig
+
+    config = QueueConfig(in_app_worker=False)
+    assert config.in_app_worker is False
 
 
 def test_scheduler_canary_task_is_overridable() -> "None":

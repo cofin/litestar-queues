@@ -1,9 +1,9 @@
 Testing
 -------
 
-The memory queue backend is the default backend for tests and local
-development. Combine it with immediate execution when a test needs completed
-results without a worker:
+With ``QueuePlugin``, the default ``QueueConfig`` uses the memory queue backend,
+local execution, and an in-app worker. Use immediate execution when a test needs
+completed results without running a worker:
 
 .. code-block:: python
 
@@ -13,7 +13,7 @@ results without a worker:
    async def double(value: int) -> int:
        return value * 2
 
-   config = QueueConfig(queue_backend="memory", execution_backend="immediate")
+   config = QueueConfig(execution_backend="immediate")
 
    async with QueueService(config) as queue_service:
        result = await queue_service.enqueue(double, 21)

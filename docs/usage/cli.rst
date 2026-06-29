@@ -33,9 +33,9 @@ this for sidecar worker containers, ``systemd`` units, or Cloud Run jobs.
 
 Options:
 
-* ``--queue NAME`` (repeatable, advisory) — selects queues to process.
-  Backend-side filtering is not yet enforced; the flag logs an advisory
-  warning to ``stderr``.
+* ``--queue NAME`` (repeatable) — only claims records from the named queues.
+  When omitted, the worker uses :attr:`QueueConfig.worker_queues`; when both
+  are empty, it claims from every queue.
 * ``--max-concurrency N`` — overrides
   :attr:`QueueConfig.worker_max_concurrency` for this run.
 * ``--drain-timeout SECONDS`` — wait time after ``SIGTERM``/``SIGINT``

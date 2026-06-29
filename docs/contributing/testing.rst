@@ -22,7 +22,7 @@ behavior:
 
    uv run pytest src/tests/unit
 
-Install adapter dependencies before running the full integration matrix:
+Install test dependencies before running the full integration matrix:
 
 .. code-block:: bash
 
@@ -56,7 +56,7 @@ the test, and drops queue artifacts on teardown for service-backed adapters.
 Adding a Backend
 ----------------
 
-1. Add the driver or emulator dependency to the ``test-adapters`` group when it
+1. Add the driver or emulator dependency to the ``tests`` group when it
    is not already installed by another test dependency.
 2. Make the service fixture available to the integration tier. Prefer an
    upstream pytest-databases plugin; use a narrow wrapper fixture only when the

@@ -46,7 +46,7 @@ Configure SQLSpec queue persistence by passing a SQLSpec adapter config through
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
-           sqlspec_config=AiosqliteConfig(
+           config=AiosqliteConfig(
                connection_config={"database": "queue.db"},
            ),
        ),
@@ -62,7 +62,7 @@ migration can set ``run_migrations=True``:
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
-           sqlspec_config=AiosqliteConfig(
+           config=AiosqliteConfig(
                connection_config={"database": "queue.db"},
            ),
            create_schema=False,
@@ -96,7 +96,7 @@ config to the queue backend:
                QueueConfig(
                    queue_backend=SQLSpecBackendConfig(
                        sqlspec=sqlspec,
-                       sqlspec_config=sqlspec_config,
+                       config=sqlspec_config,
                    ),
                    execution_backend="local",
                )
@@ -141,7 +141,7 @@ writes run on a small dedicated pool:
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
-           sqlspec_config=main_config,
+           config=main_config,
            heartbeat_pool_config=heartbeat_config,
        ),
        execution_backend="local",
@@ -331,19 +331,14 @@ Advanced Alchemy and SQLAlchemy:
 
    pip install litestar-queues[advanced-alchemy]
 
-Configure the queue backend with an app-owned queue model and
-``SQLAlchemyAsyncConfig``:
+Configure the queue backend with ``SQLAlchemyAsyncConfig``:
 
 .. code-block:: python
 
-   from advanced_alchemy.base import UUIDAuditBase
    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
    from litestar_queues import QueueConfig
-   from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
-
-   class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
-       __tablename__ = "app_queue_tasks"
+   from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig
 
    alchemy_config = SQLAlchemyAsyncConfig(
        connection_string="sqlite+aiosqlite:///queue.db",
@@ -352,13 +347,13 @@ Configure the queue backend with an app-owned queue model and
    config = QueueConfig(
        queue_backend=AdvancedAlchemyBackendConfig(
            sqlalchemy_config=alchemy_config,
-           model_class=AppQueueTask,
            create_schema=True,
        ),
        execution_backend="local",
    )
 
-Queue operations use fresh operation-scoped sessions opened from
+Queue operations use one queue table by default: ``litestar_queue_task``.
+They run through fresh operation-scoped sessions opened from
 ``sqlalchemy_config`` and commit or roll back queue mutations explicitly.
 
 Litestar applications should register Advanced Alchemy's first-party plugin
@@ -374,7 +369,7 @@ directly and pass the same config to the queue backend:
    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 
    class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
-       __tablename__ = "app_queue_tasks"
+       __tablename__ = "app_queue_task"
 
    alchemy_config = SQLAlchemyAsyncConfig(
        connection_string="sqlite+aiosqlite:///queue.db",
@@ -399,15 +394,20 @@ directly and pass the same config to the queue backend:
 The queue plugin does not append ``SQLAlchemyPlugin`` or consume request-scoped
 ``db_session`` dependencies. Applications that manage schema with Alembic should
 import the queue model they use into their Alembic environment so autogenerate
-can include the queue table in the application migration stream.
+can include the queue table in the application migration stream. The default
+model is ``QueueTaskModel`` and uses the ``litestar_queue_task`` table. It is
+imported when ``AdvancedAlchemyBackendConfig()`` is constructed, so app startup
+normally puts it on Advanced Alchemy's base metadata before migration
+autogenerate runs.
 
 App-Owned Queue Model
 ~~~~~~~~~~~~~~~~~~~~~
 
-Advanced Alchemy support uses only an application-owned model. Compose
-``QueueTaskModelMixin`` with an Advanced Alchemy base that provides compatible
-``id`` and ``created_at`` columns, then pass the resulting model class to the
-backend:
+Advanced Alchemy support includes a default queue model. Override it when the
+application needs its own table name, base class, bind metadata, or Alembic
+ownership. Compose ``QueueTaskModelMixin`` with an Advanced Alchemy base that
+provides compatible ``id`` and ``created_at`` columns, then pass the resulting
+model class to the backend:
 
 .. code-block:: python
 
@@ -418,7 +418,7 @@ backend:
    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
 
    class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
-       __tablename__ = "app_queue_tasks"
+       __tablename__ = "app_queue_task"
 
    alchemy_config = SQLAlchemyAsyncConfig(
        connection_string="sqlite+aiosqlite:///queue.db",
@@ -621,7 +621,7 @@ app-owned and can use any queue backend that supports execution references:
        ...
 
    config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+       queue_backend=SQLSpecBackendConfig(config=...),
        execution_backend=CloudRunExecutionConfig(
            project_id="example-project",
            region="us-central1",
@@ -670,7 +670,7 @@ configured. To wake workers through SQLSpec Events, configure the SQLSpec
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
-           sqlspec_config=sqlspec_config,
+           config=sqlspec_config,
            create_schema=False,
            run_migrations=True,
            notifications=True,
@@ -755,7 +755,7 @@ SQLSpec's optional extensions:
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
            sqlspec=sqlspec,
-           sqlspec_config=sqlspec_config,
+           config=sqlspec_config,
        ),
        execution_backend="local",
    )
@@ -789,7 +789,7 @@ precedence:
        connection_config={"database": "queue.db"},
        extension_config={
            "litestar_queues": {
-               "table_name": "app_queue_tasks",
+               "table_name": "app_queue_task",
                "notification_channel": "app_queue_notifications",
            }
        },

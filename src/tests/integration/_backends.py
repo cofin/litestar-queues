@@ -150,9 +150,7 @@ def _sqlspec_backend(sqlspec_config: "object", *, table_name: "str | None" = Non
     """
     from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
-    return SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, table_name=table_name)
-    )
+    return SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, table_name=table_name))
 
 
 async def _build_aiosqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":

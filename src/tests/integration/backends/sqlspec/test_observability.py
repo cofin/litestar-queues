@@ -68,7 +68,7 @@ async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_pat
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            sqlspec_config=sqlspec_config, event_channel=cast("Any", StubEventChannel()), notifications=True
+            config=sqlspec_config, event_channel=cast("Any", StubEventChannel()), notifications=True
         )
     )
     await backend.open()
@@ -146,9 +146,7 @@ async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: 
         connection_config={"database": str(tmp_path / "queue-disabled.db")},
         observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
     )
-    backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, queue_observability=False)
-    )
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_observability=False))
     await backend.open()
     try:
         with CorrelationContext.context("queue-observability-disabled"):
