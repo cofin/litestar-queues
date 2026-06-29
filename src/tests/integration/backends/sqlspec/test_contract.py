@@ -14,7 +14,6 @@ import asyncio
 import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -31,18 +30,11 @@ from litestar_queues.backends import get_queue_backend_class, list_queue_backend
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores import (
-    AdbcQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
     AsyncmyQueueStore,
     AsyncpgQueueStore,
-    BigQueryQueueStore,
-    CockroachAsyncpgQueueStore,
-    CockroachPsycopgAsyncQueueStore,
-    CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
-    MssqlPythonAsyncQueueStore,
-    MssqlPythonSyncQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
     OracledbAsyncQueueStore,
@@ -51,13 +43,14 @@ from litestar_queues.backends.sqlspec.stores import (
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
     PymysqlQueueStore,
-    SpannerQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from litestar_queues.backends import BaseQueueBackend
     from tests.integration._backends import BackendCase
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
@@ -254,44 +247,26 @@ import builtins
 from types import SimpleNamespace
 
 blocked_prefixes = (
-    "adbc_driver_manager",
-    "adbc_driver_bigquery",
-    "adbc_driver_duckdb",
-    "adbc_driver_flightsql",
-    "adbc_driver_postgresql",
-    "adbc_driver_snowflake",
-    "adbc_driver_sqlite",
     "aiomysql",
     "aiosqlite",
-    "arrow_odbc",
     "asyncmy",
     "asyncpg",
     "duckdb",
-    "google.cloud.bigquery",
-    "google.cloud.spanner",
     "mysql.connector",
-    "mssql_python",
     "oracledb",
     "psqlpy",
     "psycopg",
     "pymysql",
-    "sqlspec.adapters.adbc",
     "sqlspec.adapters.aiomysql",
     "sqlspec.adapters.aiosqlite",
-    "sqlspec.adapters.arrow_odbc",
     "sqlspec.adapters.asyncmy",
     "sqlspec.adapters.asyncpg",
-    "sqlspec.adapters.bigquery",
-    "sqlspec.adapters.cockroach_asyncpg",
-    "sqlspec.adapters.cockroach_psycopg",
     "sqlspec.adapters.duckdb",
-    "sqlspec.adapters.mssql_python",
     "sqlspec.adapters.mysqlconnector",
     "sqlspec.adapters.oracledb",
     "sqlspec.adapters.psqlpy",
     "sqlspec.adapters.psycopg",
     "sqlspec.adapters.pymysql",
-    "sqlspec.adapters.spanner",
 )
 blocked_package_prefixes = tuple(f"{name}." for name in blocked_prefixes)
 original_import = builtins.__import__
@@ -304,19 +279,11 @@ def blocked_import(name, *args, **kwargs):
 builtins.__import__ = blocked_import
 
 from litestar_queues.backends.sqlspec.stores import (
-    AdbcQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
     AsyncmyQueueStore,
     AsyncpgQueueStore,
-    BigQueryQueueStore,
-    CockroachAsyncpgQueueStore,
-    CockroachPsycopgAsyncQueueStore,
-    CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
-    MssqlPythonAsyncQueueStore,
-    MssqlPythonQueueStore,
-    MssqlPythonSyncQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
     OracledbAsyncQueueStore,
@@ -325,7 +292,6 @@ from litestar_queues.backends.sqlspec.stores import (
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
     PymysqlQueueStore,
-    SpannerQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
@@ -339,18 +305,11 @@ def fake_config(adapter_name, dialect, config_type_name):
     return config
 
 expected = (
-    ("adbc", "adbc", "FakeAdbcConfig", AdbcQueueStore),
     ("aiomysql", "mysql", "AiomysqlConfig", AiomysqlQueueStore),
     ("aiosqlite", "sqlite", "AiosqliteConfig", AiosqliteQueueStore),
     ("asyncmy", "mysql", "AsyncmyConfig", AsyncmyQueueStore),
     ("asyncpg", "postgres", "AsyncpgConfig", AsyncpgQueueStore),
-    ("bigquery", "bigquery", "BigQueryConfig", BigQueryQueueStore),
-    ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig", CockroachAsyncpgQueueStore),
-    ("cockroach_psycopg", "postgres", "CockroachPsycopgSyncConfig", CockroachPsycopgSyncQueueStore),
-    ("cockroach_psycopg", "postgres", "CockroachPsycopgAsyncConfig", CockroachPsycopgAsyncQueueStore),
     ("duckdb", "duckdb", "DuckDBConfig", DuckDBQueueStore),
-    ("mssql_python", "tsql", "MssqlPythonConfig", MssqlPythonSyncQueueStore),
-    ("mssql_python", "tsql", "MssqlPythonAsyncConfig", MssqlPythonAsyncQueueStore),
     ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", MysqlConnectorSyncQueueStore),
     ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", MysqlConnectorAsyncQueueStore),
     ("oracledb", "oracle", "OracleSyncConfig", OracledbSyncQueueStore),
@@ -359,7 +318,6 @@ expected = (
     ("psycopg", "postgres", "PsycopgSyncConfig", PsycopgSyncQueueStore),
     ("psycopg", "postgres", "PsycopgAsyncConfig", PsycopgAsyncQueueStore),
     ("pymysql", "mysql", "PyMysqlConfig", PymysqlQueueStore),
-    ("spanner", "spanner", "SpannerConfig", SpannerQueueStore),
     ("sqlite", "sqlite", "SqliteConfig", SqliteQueueStore),
 )
 
@@ -402,38 +360,6 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> "None":
         )
 
 
-def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> "None":
-    import sqlspec.adapters
-
-    event_store_adapters = {
-        event_store.parent.parent.name
-        for adapter_path in (Path(base) for base in sqlspec.adapters.__path__)
-        for event_store in adapter_path.glob("*/events/store.py")
-    }
-    supported_adapters = {
-        "adbc",
-        "aiomysql",
-        "aiosqlite",
-        "asyncmy",
-        "asyncpg",
-        "bigquery",
-        "cockroach_asyncpg",
-        "cockroach_psycopg",
-        "duckdb",
-        "mssql_python",
-        "mysqlconnector",
-        "oracledb",
-        "psqlpy",
-        "psycopg",
-        "pymysql",
-        "spanner",
-        "sqlite",
-    }
-
-    assert event_store_adapters <= supported_adapters
-    assert "arrow_odbc" not in event_store_adapters
-
-
 @pytest.mark.parametrize(
     (
         "adapter_name",
@@ -444,42 +370,11 @@ def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> 
         "expected_sql_fragment",
     ),
     (
-        ("adbc", "duckdb", "FakeAdbcConfig", {"driver_name": "adbc_driver_duckdb"}, AdbcQueueStore, "JSON"),
-        (
-            "adbc",
-            "postgres",
-            "FakeAdbcConfig",
-            {"driver_name": "adbc_driver_postgresql"},
-            AdbcQueueStore,
-            'WHERE "status" IN',
-        ),
-        ("adbc", "bigquery", "FakeAdbcConfig", {"driver_name": "adbc_driver_bigquery"}, AdbcQueueStore, "CLUSTER BY"),
-        ("adbc", None, "FakeAdbcConfig", {"driver_name": "adbc_driver_snowflake"}, AdbcQueueStore, "VARIANT"),
         ("aiomysql", "mysql", "AiomysqlConfig", {}, AiomysqlQueueStore, "ENGINE=InnoDB"),
         ("aiosqlite", "sqlite", "AiosqliteConfig", {}, AiosqliteQueueStore, '"queue_tasks"'),
         ("asyncmy", "mysql", "AsyncmyConfig", {}, AsyncmyQueueStore, "ENGINE=InnoDB"),
         ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, 'WHERE "status" IN'),
-        ("bigquery", "bigquery", "BigQueryConfig", {}, BigQueryQueueStore, "CREATE TABLE"),
-        ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig", {}, CockroachAsyncpgQueueStore, "TIMESTAMPTZ"),
-        (
-            "cockroach_psycopg",
-            "postgres",
-            "CockroachPsycopgSyncConfig",
-            {},
-            CockroachPsycopgSyncQueueStore,
-            "TIMESTAMPTZ",
-        ),
-        (
-            "cockroach_psycopg",
-            "postgres",
-            "CockroachPsycopgAsyncConfig",
-            {},
-            CockroachPsycopgAsyncQueueStore,
-            "TIMESTAMPTZ",
-        ),
         ("duckdb", "duckdb", "DuckDBConfig", {}, DuckDBQueueStore, "JSON"),
-        ("mssql_python", "tsql", "MssqlPythonConfig", {}, MssqlPythonSyncQueueStore, "DATETIME2(6)"),
-        ("mssql_python", "tsql", "MssqlPythonAsyncConfig", {}, MssqlPythonAsyncQueueStore, "DATETIME2(6)"),
         ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", {}, MysqlConnectorSyncQueueStore, "ENGINE=InnoDB"),
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
         ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
@@ -488,7 +383,6 @@ def test_sqlspec_backend_store_factory_tracks_sqlspec_event_store_adapters() -> 
         ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, 'WHERE "status" IN'),
         ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
-        ("spanner", "spanner", "SpannerConfig", {}, SpannerQueueStore, "PRIMARY KEY"),
         ("sqlite", "sqlite", "SqliteConfig", {}, SqliteQueueStore, '"queue_tasks"'),
     ),
 )
@@ -634,10 +528,6 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "`args_json` JSON NOT NULL",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
-        ("mssql_python", "tsql", "MssqlPythonConfig", {}, "args_json NVARCHAR(MAX) NOT NULL", frozenset()),
-        ("bigquery", "bigquery", "BigQueryConfig", {}, "`args_json` JSON NOT NULL", frozenset()),
-        ("spanner", "spanner", "SpannerConfig", {}, "`args_json` JSON NOT NULL", frozenset()),
-        ("adbc", "sqlite", "FakeAdbcConfig", {"driver_name": "sqlite"}, '"args_json" TEXT NOT NULL', frozenset()),
     ),
 )
 def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(

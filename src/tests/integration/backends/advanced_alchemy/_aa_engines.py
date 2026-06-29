@@ -73,10 +73,6 @@ def _config_oracle_oracledb(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     )
 
 
-# ``xfail-adapter-blocker`` is honored by the integration conftest the same way
-# the shared backend matrix handles it: cases tagged with the capability are
-# wrapped in pytest.param(..., marks=xfail). When adapter fixes land, drop the
-# flag.
 AA_ENGINES: "tuple[AAEngineCase, ...]" = (
     AAEngineCase(
         "aa-aiosqlite",

@@ -106,21 +106,11 @@ async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> "None":
 
 
 def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
-    """Parametrize ``advanced_alchemy_backend`` consumers over AA_ENGINES.
-
-    Cases tagged with ``xfail-adapter-blocker`` are wrapped in
-    ``pytest.param(..., marks=xfail)`` so the suite reports a clean signal
-    without failing CI. When the adapter fix lands, drop the capability
-    from the AAEngineCase to flip the case back to a hard-pass requirement.
-    """
+    """Parametrize ``advanced_alchemy_backend`` consumers over AA_ENGINES."""
     if "advanced_alchemy_backend" in metafunc.fixturenames:
         params = []
         for case in AA_ENGINES:
             marks: "list[pytest.MarkDecorator]" = []
-            if "xfail-adapter-blocker" in case.capabilities:
-                marks.append(
-                    pytest.mark.xfail(reason=f"{case.name}: known Advanced Alchemy adapter limitation", strict=False)
-                )
             if case.service_attr is not None:
                 marks.append(pytest.mark.xdist_group(case.name))
             params.append(pytest.param(case, marks=marks, id=case.name))

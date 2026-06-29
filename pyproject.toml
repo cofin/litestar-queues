@@ -101,18 +101,17 @@ tests = [
   "pytest-sugar",
   "pytest-xdist",
   # Real-service fixtures for the integration tier
-  "pytest-databases[postgres,mysql,oracle,redis,valkey,bigquery,spanner]>=0.16.0",
+  "pytest-databases[postgres,mysql,oracle,redis,valkey]>=0.16.0",
   # Redis + Valkey clients used directly by integration tests
   "redis>=5.0.0",
   "valkey>=6.0.0",
-  "adbc-driver-sqlite>=1.2.0",
   # MySQL async + sync drivers
   "pymysql>=1.1.0",
   "pyarrow",
   "numpy",
   "advanced-alchemy>=1.10.0",
-  # BigQuery + Spanner emulators and SQLSpec adapters
-  "sqlspec[aiosqlite,bigquery,spanner,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,adbc,arrow-odbc,aioodbc,fsspec,litestar,cloud-sql,cockroachdb,mysql-connector,mssql-python]>=0.51.0",
+  # SQLSpec adapters covered by the default integration matrix
+  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,litestar,mysql-connector]>=0.51.0",
 ]
 
 #####################

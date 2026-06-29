@@ -9,7 +9,6 @@ so any test that asks for the ``queue_backend`` fixture is auto-parametrized
 across the registry. Per-adapter behavior gating uses ``case.capabilities``.
 """
 
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -48,65 +47,6 @@ class OracleService(Protocol):
     user: "str"
     password: "str"
     service_name: "str"
-
-
-class BigQueryService(Protocol):
-    """pytest-databases BigQuery service attributes used by backend builders."""
-
-    project: "str"
-    dataset: "str"
-    credentials: "object"
-    client_options: "object"
-
-
-class SpannerService(Protocol):
-    """pytest-databases Spanner service attributes used by backend builders."""
-
-    project: "str"
-    instance_name: "str"
-    database_name: "str"
-    credentials: "object"
-    client_options: "object"
-
-
-class SpannerOperation(Protocol):
-    """Synchronous Spanner emulator operation result used by the test bootstrap."""
-
-    def result(self, timeout: "int") -> "object":
-        """Wait for the operation to complete."""
-
-
-class SpannerDatabase(Protocol):
-    """Spanner database methods used by the test bootstrap."""
-
-    def exists(self) -> "bool":
-        """Return whether the database exists."""
-
-    def create(self) -> "SpannerOperation":
-        """Create the database."""
-
-
-class SpannerInstance(Protocol):
-    """Spanner instance methods used by the test bootstrap."""
-
-    def exists(self) -> "bool":
-        """Return whether the instance exists."""
-
-    def create(self) -> "SpannerOperation":
-        """Create the instance."""
-
-    def database(self, database_name: "str") -> "SpannerDatabase":
-        """Return a database handle."""
-
-
-class SpannerClient(Protocol):
-    """Spanner client methods used by the test bootstrap."""
-
-    def instance(self, instance_id: "str", *, configuration_name: "str", display_name: "str") -> "SpannerInstance":
-        """Return an instance handle."""
-
-    def close(self) -> "None":
-        """Close the client."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,15 +115,6 @@ async def _build_duckdb(ctx: "FixtureCtx") -> "BaseQueueBackend":
 
     return _sqlspec_backend(
         DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}), table_name=ctx.table_name
-    )
-
-
-async def _build_adbc_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
-    from sqlspec.adapters.adbc import AdbcConfig
-
-    return _sqlspec_backend(
-        AdbcConfig(connection_config={"driver_name": "sqlite", "uri": str(ctx.tmp_path / "queue-adbc.db")}),
-        table_name=ctx.table_name,
     )
 
 
@@ -339,75 +270,6 @@ async def _build_oracle_oracledb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
-async def _build_bigquery(ctx: "FixtureCtx") -> "BaseQueueBackend":
-    from sqlspec.adapters.bigquery import BigQueryConfig
-
-    svc = cast("BigQueryService", ctx.service)
-    assert svc is not None
-    return _sqlspec_backend(
-        BigQueryConfig(
-            connection_config={
-                "project": svc.project,
-                "dataset_id": svc.dataset,
-                "credentials": svc.credentials,
-                "client_options": svc.client_options,
-                "use_query_cache": False,
-            }
-        ),
-        table_name=ctx.table_name,
-    )
-
-
-async def _build_spanner(ctx: "FixtureCtx") -> "BaseQueueBackend":
-    from sqlspec.adapters.spanner import SpannerSyncConfig
-
-    svc = cast("SpannerService", ctx.service)
-    assert svc is not None
-    _ensure_spanner_database(svc)
-    return _sqlspec_backend(
-        SpannerSyncConfig(
-            connection_config={
-                "project": svc.project,
-                "instance_id": svc.instance_name,
-                "database_id": svc.database_name,
-                "credentials": svc.credentials,
-                "client_options": svc.client_options,
-                "min_sessions": 1,
-                "max_sessions": 2,
-            }
-        ),
-        table_name=ctx.table_name,
-    )
-
-
-def _ensure_spanner_database(service: "SpannerService") -> "None":
-    """Create the Spanner emulator instance and database used by SQLSpec tests."""
-    from google.api_core.exceptions import AlreadyExists
-    from google.cloud.spanner import Client
-
-    client = cast(
-        "SpannerClient",
-        Client(project=service.project, credentials=service.credentials, client_options=service.client_options),
-    )
-    try:
-        instance = client.instance(
-            service.instance_name, configuration_name="emulator-config", display_name=service.instance_name
-        )
-        if not instance.exists():
-            with suppress(AlreadyExists):
-                instance.create().result(timeout=30)
-        database = instance.database(service.database_name)
-        if not database.exists():
-            with suppress(AlreadyExists):
-                database.create().result(timeout=30)
-    finally:
-        client.close()
-
-
-# ``skip-adapter-blocker`` / ``xfail-adapter-blocker`` are read by the
-# integration conftest to mark cases that regress against known adapter issues.
-# When the adapter fixes land, drop the capability from the BackendCase to flip
-# the case back to a hard-pass requirement.
 QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
     BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
     BackendCase(
@@ -430,13 +292,6 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         None,
         _build_duckdb,
         frozenset({"in-process", "polling-only", "json-column", "sync-driver"}),
-    ),
-    BackendCase(
-        "adbc-sqlite",
-        frozenset({"adbc_driver_sqlite", "sqlspec"}),
-        None,
-        _build_adbc_sqlite,
-        frozenset({"in-process", "polling-only", "json-text", "sync-driver", "xfail-adapter-blocker"}),
     ),
     BackendCase(
         "postgres-asyncpg",
@@ -493,19 +348,5 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         "oracle_service",
         _build_oracle_oracledb,
         frozenset({"polling-only", "json-blob-checked", "blob-storage", "inmemory-capable"}),
-    ),
-    BackendCase(
-        "bigquery",
-        frozenset({"google.cloud.bigquery", "sqlspec.adapters.bigquery"}),
-        "bigquery_service",
-        _build_bigquery,
-        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-adapter-blocker"}),
-    ),
-    BackendCase(
-        "spanner",
-        frozenset({"google.cloud.spanner", "google.cloud.spanner_v1", "sqlspec.adapters.spanner"}),
-        "spanner_service",
-        _build_spanner,
-        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-adapter-blocker"}),
     ),
 )

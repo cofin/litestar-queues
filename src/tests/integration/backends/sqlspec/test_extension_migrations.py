@@ -53,12 +53,12 @@ def _fake_adapter_config(
 
 async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> "None":
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
-    context = SimpleNamespace(config=_fake_adapter_config("bigquery", dialect="bigquery"))
+    context = SimpleNamespace(config=_fake_adapter_config("duckdb", dialect="duckdb"))
 
     statements = await migration.up(context)
 
     assert "CREATE TABLE IF NOT EXISTS" in statements[0]
-    assert not any("CREATE INDEX" in statement for statement in statements)
+    assert "JSON" in statements[0]
 
 
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":

@@ -535,12 +535,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 elif rows_affected == 0:
                     touched = False
                 else:
-                    row = await self._select_task(driver, task_id)
-                    record = self._record_from_row(row) if row is not None else None
+                    touched_row = await self._select_task(driver, task_id)
+                    touched_record = self._record_from_row(touched_row) if touched_row is not None else None
                     touched = (
-                        record is not None
-                        and record.status == "running"
-                        and (expected_retry_count is None or record.retry_count == expected_retry_count)
+                        touched_record is not None
+                        and touched_record.status == "running"
+                        and (expected_retry_count is None or touched_record.retry_count == expected_retry_count)
                     )
                 await driver.commit()
             except Exception:
