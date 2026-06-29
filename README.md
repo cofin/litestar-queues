@@ -83,6 +83,44 @@ Call the route:
 curl -X POST http://127.0.0.1:8000/accounts/acct-123/sync
 ```
 
+Trigger the same job in whichever form fits the caller:
+
+```python
+# 1. Pass the decorated task object.
+await queue_service.enqueue(sync_account, account_id)
+
+# 2. Pass the registered task name when the caller should not import the task.
+await queue_service.enqueue("accounts.sync", account_id)
+
+# 3. Use the task helper when the QueuePlugin has an active default service.
+await sync_account.enqueue(account_id)
+```
+
+If you enqueue by string to avoid importing the task function, make sure the
+module is loaded at startup so the decorator can register the task name:
+
+```python
+app = Litestar(
+    route_handlers=[create_sync_job],
+    plugins=[
+        QueuePlugin(
+            config=QueueConfig(task_modules=("app.accounts.tasks",)),
+        ),
+    ],
+)
+```
+
+All three forms can still override execution for one job:
+
+```python
+await queue_service.enqueue(
+    "accounts.sync",
+    account_id,
+    execution_backend="cloudrun",
+    execution_profile="heavy",
+)
+```
+
 By default, Litestar Queues uses in-memory queue storage and starts a local
 worker inside the Litestar process. That is useful for learning, tests, and
 small local apps. For production, use a persistent queue backend and usually run
