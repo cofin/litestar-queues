@@ -103,8 +103,8 @@ class Worker:
         self._stop_event.set()
         if force:
             await self._cancel_running()
-            return
-        await self._drain_running()
+        else:
+            await self._drain_running()
 
     async def run_once(self) -> "int":
         """Process one batch of due tasks.

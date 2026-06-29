@@ -24,7 +24,11 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture(params=["native", "fallback"])
 def bulk_tier(request: "pytest.FixtureRequest", sqlspec_backend: "SQLSpecQueueBackend") -> "Iterator[str]":
-    """Select the bulk tier by toggling the store's native-ingest capability."""
+    """Select the bulk tier by toggling the store's native-ingest capability.
+
+    Yields:
+        Selected bulk tier name.
+    """
     store = sqlspec_backend._get_store()
     if request.param == "fallback":
         original = type(store).supports_native_bulk_ingest

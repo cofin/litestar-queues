@@ -48,7 +48,11 @@ __all__ = (
 
 
 def __getattr__(name: "str") -> "Any":
-    """Lazy load Litestar integration classes to avoid unnecessary imports."""
+    """Lazy load Litestar integration classes to avoid unnecessary imports.
+
+    Returns:
+        The requested optional Litestar integration export.
+    """
     if name == "ChannelsQueueEventSink":
         from litestar_queues.events.litestar import ChannelsQueueEventSink
 

@@ -67,21 +67,20 @@ async def _drop_queue_tables(backend: "BaseQueueBackend") -> "None":
     """Drop the queue + events tables for service-backed SQLSpec adapters."""
     sqlspec_config = getattr(backend, "_sqlspec_config", None)
     sqlspec_manager = getattr(backend, "_sqlspec", None)
-    if sqlspec_config is None or sqlspec_manager is None:
-        return
-    table_name = getattr(backend, "_table_name", None) or "litestar_queue_tasks"
-    store = getattr(backend, "_store", None)
-    from litestar_queues.backends.sqlspec.backend import _bridge_session
+    if sqlspec_config is not None and sqlspec_manager is not None:
+        table_name = getattr(backend, "_table_name", None) or "litestar_queue_tasks"
+        store = getattr(backend, "_store", None)
+        from litestar_queues.backends.sqlspec.backend import _bridge_session
 
-    async with _bridge_session(sqlspec_manager, sqlspec_config) as driver:
-        for ddl in (
-            *(store.drop_statements() if store is not None else ()),
-            f'DROP TABLE IF EXISTS "{table_name}"',
-            'DROP TABLE IF EXISTS "ddl_migrations"',
-            'DROP TABLE IF EXISTS "sqlspec_async_events"',
-        ):
-            with suppress(Exception):
-                await driver.execute_script(ddl)
+        async with _bridge_session(sqlspec_manager, sqlspec_config) as driver:
+            for ddl in (
+                *(store.drop_statements() if store is not None else ()),
+                f'DROP TABLE IF EXISTS "{table_name}"',
+                'DROP TABLE IF EXISTS "ddl_migrations"',
+                'DROP TABLE IF EXISTS "sqlspec_async_events"',
+            ):
+                with suppress(Exception):
+                    await driver.execute_script(ddl)
 
 
 def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":

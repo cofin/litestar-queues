@@ -77,7 +77,6 @@ if TYPE_CHECKING:
         get_scheduled_tasks,
         get_task_registry,
         load_task_modules,
-        task,
     )
     from litestar_queues.worker import Worker
 
@@ -209,7 +208,11 @@ __all__ = (
 
 
 def __getattr__(name: "str") -> "Any":
-    """Lazily load package-root exports."""
+    """Lazily load package-root exports.
+
+    Returns:
+        The requested package-root export.
+    """
     module_name = _EXPORTS.get(name)
     if module_name is None:
         msg = f"module {__name__!r} has no attribute {name!r}"

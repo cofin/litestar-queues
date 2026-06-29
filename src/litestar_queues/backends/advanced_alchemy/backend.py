@@ -72,11 +72,10 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             engine = self._sqlalchemy_config.get_engine()
             async with engine.begin() as connection:
                 await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
-            return
-
-        async with self._session() as session, session.begin():
-            connection = await session.connection()
-            await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
+        else:
+            async with self._session() as session, session.begin():
+                connection = await session.connection()
+                await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
 
     async def enqueue(
         self,
@@ -282,11 +281,14 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         Falls back to :meth:`_operation` when ``heartbeat_session_maker`` is not
         configured. The dedicated engine is supplied and owned by the adopter;
         :meth:`close` does not dispose it.
+
+        Yields:
+            Queue task service bound to the heartbeat or default operation.
         """
         self._ensure_opened()
         if self._heartbeat_session_maker is None:
             async with self._operation() as service:
                 yield service
-            return
-        async with self._heartbeat_session_maker() as session, session.begin():
-            yield self._service_class(session=session)
+        else:
+            async with self._heartbeat_session_maker() as session, session.begin():
+                yield self._service_class(session=session)

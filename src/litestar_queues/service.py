@@ -309,7 +309,11 @@ class QueueService:
     async def recover_stale_tasks(
         self, *, stale_after: "timedelta", worker_id: "str | None" = None
     ) -> "StaleTaskRecoveryResult":
-        """Recover stale running tasks and publish a worker summary event."""
+        """Recover stale running tasks and publish a worker summary event.
+
+        Returns:
+            Summary of recovered, failed, skipped, and handler-needed tasks.
+        """
         result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after)
         if result.requeued or result.failed or result.skipped or result.handler_needed:
             await self._publish_stale_failed_events(result, worker_id=worker_id)
@@ -407,7 +411,11 @@ class QueueService:
         worker_id: "str | None" = None,
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord":
-        """Publish an ownership-loss event and return the current record state."""
+        """Publish an ownership-loss event and return the current record state.
+
+        Returns:
+            Current queue task record state.
+        """
         current = await self._current_or_claimed(record)
         expected = record.retry_count if expected_retry_count is None else expected_retry_count
         payload = {

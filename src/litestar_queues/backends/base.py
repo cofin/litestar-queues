@@ -67,6 +67,9 @@ class BaseQueueBackend:
         preserves per-key deduplication and ordering. Backends with a native
         bulk path (e.g. SQLSpec COPY/Arrow/``execute_many``) override this for
         throughput while keeping the same semantics.
+
+        Returns:
+            Queue task records in the same order as ``specs``.
         """
         return [
             await self.enqueue(

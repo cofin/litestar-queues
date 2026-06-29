@@ -178,20 +178,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def create_schema(self) -> "None":
         """Create the SQLSpec queue table and indexes."""
-        if not self._manage_schema:
-            return
-        async with self._session() as driver:
-            for statement in await _create_schema_statements(self._get_store(), driver):
-                await driver.execute_script(statement)
-            await driver.commit()
+        if self._manage_schema:
+            async with self._session() as driver:
+                for statement in await _create_schema_statements(self._get_store(), driver):
+                    await driver.execute_script(statement)
+                await driver.commit()
 
     async def run_migrations(self) -> "None":
         """Apply packaged SQLSpec migrations."""
-        if not self._manage_schema:
-            return
-        sqlspec_config = self._get_sqlspec_config()
-        configure_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name())
-        await sqlspec_config.migrate_up(echo=False)
+        if self._manage_schema:
+            sqlspec_config = self._get_sqlspec_config()
+            configure_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name())
+            await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
         self,
@@ -255,6 +253,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         batched ``execute_many``. Returns records in input order, with existing
         non-terminal keyed tasks returned as-is (no duplicate insert) to match
         the semantics of :meth:`enqueue`.
+
+        Returns:
+            Queue task records in the same order as ``specs``.
         """
         if not specs:
             return []
@@ -365,6 +366,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         competing workers skip the locked row instead of colliding on the
         optimistic CAS claim. The v1 fenced-claim contract is preserved: a row
         that cannot be transitioned to ``running`` yields ``None``.
+
+        Returns:
+            The claimed task record, if a claim was available.
         """
         with self._observe_queue_operation("claim", queue=queue, execution_backend=execution_backend):
             async with self._session() as driver:
@@ -666,7 +670,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def get_statistics(self) -> "QueueStatistics":
         statistics = QueueStatistics()
         async with self._session() as driver:
-            async for row in driver.select_stream(self._get_store().list_all()):
+            async for row in _select_stream(driver, self._get_store().list_all()):
                 status = _coerce_status(cast("dict[str, Any]", row)["status"])
                 setattr(statistics, status, getattr(statistics, status) + 1)
         return statistics
@@ -678,10 +682,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         consume rows in chunks of ``chunk_size`` rather than loading the entire
         result set into memory. The backend session stays open for the duration
         of iteration, so callers should consume the iterator promptly.
+
+        Yields:
+            Queue task records from the backing SQLSpec table.
         """
-        async with self._session() as driver:
-            async for row in driver.select_stream(self._get_store().list_all(), chunk_size=chunk_size):
+        session = self._session()
+        driver = await session.__aenter__()
+        try:
+            async for row in _select_stream(driver, self._get_store().list_all(), chunk_size=chunk_size):
                 yield self._record_from_row(cast("dict[str, Any]", row))
+        except BaseException as exc:
+            if not await session.__aexit__(type(exc), exc, exc.__traceback__):
+                raise
+        else:
+            await session.__aexit__(None, None, None)
 
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
@@ -717,20 +731,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a SQLSpec event when configured queue work becomes available."""
-        if not self._notifications_enabled or self._event_channel is None or record.status not in _DUE_STATUSES:
-            return
-        with self._observe_queue_operation("notify", task_id=str(record.id), queue=record.queue):
-            await self._event_channel.publish(
-                self._resolve_notification_channel(),
-                {
-                    "task_id": str(record.id),
-                    "task_name": record.task_name,
-                    "queue": record.queue,
-                    "execution_backend": record.execution_backend,
-                },
-                {"event_type": "litestar_queues.task_available"},
-            )
-        self._increment_queue_metric("notify")
+        if self._notifications_enabled and self._event_channel is not None and record.status in _DUE_STATUSES:
+            with self._observe_queue_operation("notify", task_id=str(record.id), queue=record.queue):
+                await self._event_channel.publish(
+                    self._resolve_notification_channel(),
+                    {
+                        "task_id": str(record.id),
+                        "task_name": record.task_name,
+                        "queue": record.queue,
+                        "execution_backend": record.execution_backend,
+                    },
+                    {"event_type": "litestar_queues.task_available"},
+                )
+            self._increment_queue_metric("notify")
 
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait for a SQLSpec event when queue notifications are configured.
@@ -973,6 +986,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Falls back to the main pool when ``heartbeat_pool_config`` is not set,
         or when the dedicated pool failed to register at ``open()`` time.
 
+        Yields:
+            A SQLSpec driver bound to the heartbeat or main pool.
+
         Raises:
             RuntimeError: When ``open()`` has not been called on the backend.
         """
@@ -982,9 +998,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._heartbeat_pool_enabled and self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
             async with _bridge_session(self._sqlspec, self._heartbeat_pool_config) as driver:
                 yield driver
-            return
-        async with self._session() as driver:
-            yield driver
+        else:
+            async with self._session() as driver:
+                yield driver
 
     def _register_heartbeat_pool(self) -> "None":
         """Register the dedicated heartbeat pool with the SQLSpec manager.
@@ -992,35 +1008,34 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Best effort. On failure the backend logs a warning and continues with
         the main pool for heartbeats.
         """
-        if not self._heartbeat_pool_enabled or self._heartbeat_pool_config is None:
-            return
-        if self._heartbeat_pool_registered:
-            return
-        try:
-            self._get_or_create_sqlspec().add_config(self._heartbeat_pool_config)
-        except Exception:
-            getLogger("litestar_queues").warning(
-                "SQLSpecQueueBackend heartbeat pool registration failed; "
-                "falling back to main pool for heartbeat writes.",
-                exc_info=True,
-            )
-            self._heartbeat_pool_enabled = False
-            self._heartbeat_pool_registered = False
-            return
-        self._heartbeat_pool_registered = True
+        if (
+            self._heartbeat_pool_enabled
+            and self._heartbeat_pool_config is not None
+            and not self._heartbeat_pool_registered
+        ):
+            try:
+                self._get_or_create_sqlspec().add_config(self._heartbeat_pool_config)
+            except Exception:
+                getLogger("litestar_queues").warning(
+                    "SQLSpecQueueBackend heartbeat pool registration failed; "
+                    "falling back to main pool for heartbeat writes.",
+                    exc_info=True,
+                )
+                self._heartbeat_pool_enabled = False
+                self._heartbeat_pool_registered = False
+            else:
+                self._heartbeat_pool_registered = True
 
     async def _close_heartbeat_pool(self) -> "None":
         """Close the dedicated heartbeat pool if the backend opened one."""
-        if not self._heartbeat_pool_registered or self._heartbeat_pool_config is None:
-            return
-
-        try:
-            close_result = self._heartbeat_pool_config.close_pool()
-            if isawaitable(close_result):
-                await close_result
-        except Exception:
-            getLogger("litestar_queues").debug("SQLSpecQueueBackend heartbeat pool close failed.", exc_info=True)
-        self._heartbeat_pool_registered = False
+        if self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
+            try:
+                close_result = self._heartbeat_pool_config.close_pool()
+                if isawaitable(close_result):
+                    await close_result
+            except Exception:
+                getLogger("litestar_queues").debug("SQLSpecQueueBackend heartbeat pool close failed.", exc_info=True)
+            self._heartbeat_pool_registered = False
 
     async def _select_pending_rows(
         self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
@@ -1098,6 +1113,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         the ids of terminal-key rows whose key must be cleared before insert.
         Active (non-terminal) keys, whether already persisted or earlier in the
         batch, reuse the existing record instead of inserting a duplicate.
+
+        Returns:
+            Ordered result records, records to insert, and terminal-key ids to clear.
         """
         results: "list[QueuedTaskRecord]" = []
         to_insert: "list[QueuedTaskRecord]" = []
@@ -1139,7 +1157,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             del existing_by_key[key]
         return None
 
-    def _record_from_spec(self, spec: "EnqueueSpec", now: "datetime") -> "QueuedTaskRecord":
+    @staticmethod
+    def _record_from_spec(spec: "EnqueueSpec", now: "datetime") -> "QueuedTaskRecord":
         return QueuedTaskRecord(
             task_name=spec.task_name,
             args=spec.args,
@@ -1160,8 +1179,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         values = store.bulk_values([self._params_from_record(record) for record in records])
         if store.supports_native_bulk_ingest:
             await driver.load_from_records(store.table_name, values)
-            return
-        await driver.execute_many(store.insert_tasks_template(), values)
+        else:
+            await driver.execute_many(store.insert_tasks_template(), values)
 
     def _params_from_record(self, record: "QueuedTaskRecord") -> "dict[str, Any]":
         store = self._get_store()
@@ -1251,16 +1270,36 @@ async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "Asy
     if sqlspec_config.is_async:
         async with session_cm as driver:
             yield driver
-        return
-
-    driver = await async_(session_cm.__enter__)()
-    try:
-        yield _ManagedAsyncDriver(driver)
-    except BaseException as exc:
-        if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
-            raise
     else:
-        await async_(session_cm.__exit__)(None, None, None)
+        driver = await async_(session_cm.__enter__)()
+        try:
+            yield _ManagedAsyncDriver(driver)
+        except BaseException as exc:
+            if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
+                raise
+        else:
+            await async_(session_cm.__exit__)(None, None, None)
+
+
+async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[Any]":
+    """Yield rows from SQLSpec async and sync stream implementations.
+
+    Yields:
+        Rows returned by the SQLSpec statement.
+    """
+    if isinstance(driver, _ManagedAsyncDriver):
+        rows = await driver.select(statement)
+        for row in rows:
+            yield row
+    else:
+        if chunk_size is None:
+            stream = driver.select_stream(statement)
+        else:
+            stream = driver.select_stream(statement, chunk_size=chunk_size)
+        if isawaitable(stream):
+            stream = await stream
+        async for row in stream:
+            yield row
 
 
 def _utc_now() -> "datetime":
@@ -1268,7 +1307,11 @@ def _utc_now() -> "datetime":
 
 
 def _extract_count(result: "Any") -> "int":
-    """Pull a non-negative ``COUNT(*)`` value off a SQLSpec result."""
+    """Pull a non-negative ``COUNT(*)`` value off a SQLSpec result.
+
+    Returns:
+        The count value from the first result row, or ``0`` when unavailable.
+    """
     rows = getattr(result, "data", None) or []
     if rows:
         row = rows[0]

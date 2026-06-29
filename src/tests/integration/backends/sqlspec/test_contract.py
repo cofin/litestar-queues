@@ -209,6 +209,10 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
         stored = await backend.get_task(record.id)
         assert stored is not None
         assert stored.status == "completed"
+        statistics = await backend.get_statistics()
+        streamed = [record async for record in backend.iter_all()]
+        assert statistics.completed == 1
+        assert [record.id for record in streamed] == [stored.id]
     finally:
         await backend.close()
 
@@ -511,7 +515,11 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
 def _event_hinted_config(
     adapter_name: "str", *, select_for_update: "bool", skip_locked: "bool", dialect: "str | None" = None
 ) -> "FakeSQLSpecConfig":
-    """Fake adapter config advertising SQLSpec event runtime hints."""
+    """Fake adapter config advertising SQLSpec event runtime hints.
+
+    Returns:
+        Adapter config with event runtime hints attached.
+    """
     from sqlspec.extensions.events import EventRuntimeHints
 
     config = _fake_adapter_config(adapter_name, dialect=dialect)

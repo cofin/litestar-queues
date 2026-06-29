@@ -97,16 +97,13 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close owned Redis-protocol client resources."""
-        if not self._owns_client or self._client is None:
-            return
-        close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
-        if close is None:
+        if self._owns_client and self._client is not None:
+            close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
             self._client = None
-            return
-        result = close()
-        if inspect.isawaitable(result):
-            await result
-        self._client = None
 
     async def enqueue(
         self,
@@ -291,7 +288,11 @@ class RedisQueueBackend(BaseQueueBackend):
             return True
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
-        """Update the heartbeat timestamp for a running task."""
+        """Update the heartbeat timestamp for a running task.
+
+        Returns:
+            True when the heartbeat was updated.
+        """
         async with self._lock(f"task:{task_id}", wait=True):
             record = await self.get_task(task_id)
             if record is None or record.status != "running":
@@ -457,16 +458,15 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a Redis-protocol pub/sub message when work is available."""
-        if not self._notifications or record.status not in _DUE_STATUSES:
-            return
-        payload = _json_dumps({
-            "task_id": str(record.id),
-            "task_name": record.task_name,
-            "queue": record.queue,
-            "execution_backend": record.execution_backend,
-        })
-        client = await self._get_client()
-        await client.publish(self._notification_channel, payload)
+        if self._notifications and record.status in _DUE_STATUSES:
+            payload = _json_dumps({
+                "task_id": str(record.id),
+                "task_name": record.task_name,
+                "queue": record.queue,
+                "execution_backend": record.execution_backend,
+            })
+            client = await self._get_client()
+            await client.publish(self._notification_channel, payload)
 
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait for a Redis-protocol pub/sub message when notifications are enabled.
@@ -769,9 +769,8 @@ async def _close_pubsub(pubsub: "Any", channel: "str") -> "None":
             with suppress(Exception):
                 await result
     close = getattr(pubsub, "aclose", None) or getattr(pubsub, "close", None)
-    if close is None:
-        return
-    result = close()
-    if inspect.isawaitable(result):
-        with suppress(Exception):
-            await result
+    if close is not None:
+        result = close()
+        if inspect.isawaitable(result):
+            with suppress(Exception):
+                await result

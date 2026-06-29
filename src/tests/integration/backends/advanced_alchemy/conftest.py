@@ -99,13 +99,12 @@ async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> "None":
     """
 
     sqlalchemy_config = backend._sqlalchemy_config
-    if sqlalchemy_config is None:
-        return
-    model_class = cast("MappedQueueModel", backend._model_class)
-    engine = sqlalchemy_config.get_engine()
-    async with engine.begin() as connection:
-        with suppress(Exception):
-            await connection.run_sync(model_class.__table__.drop, checkfirst=True)
+    if sqlalchemy_config is not None:
+        model_class = cast("MappedQueueModel", backend._model_class)
+        engine = sqlalchemy_config.get_engine()
+        async with engine.begin() as connection:
+            with suppress(Exception):
+                await connection.run_sync(model_class.__table__.drop, checkfirst=True)
 
 
 def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":

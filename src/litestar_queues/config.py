@@ -106,9 +106,19 @@ class AsyncServiceProvider:
             self._service = None
 
     async def __aiter__(self) -> 'AsyncIterator["QueueService"]':
-        """Yield a managed QueueService for Litestar dependency injection."""
-        async with self as service:
+        """Yield a managed QueueService for Litestar dependency injection.
+
+        Yields:
+            Managed queue service instance.
+        """
+        service = await self.__aenter__()
+        try:
             yield service
+        except BaseException as exc:
+            await self.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            await self.__aexit__(None, None, None)
 
 
 @dataclass(slots=True)

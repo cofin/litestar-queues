@@ -93,6 +93,7 @@ docs = [
 ]
 tests = [
   "coverage[toml]",
+  "pydantic>=2.0.0",
   "pytest",
   "pytest-timeout",
   "pytest-cov",
@@ -174,7 +175,10 @@ skip-magic-trailing-comma = true
 
 [tool.ruff.lint]
 extend-safe-fixes = ["TC"]
+explicit-preview-rules = true
+extend-select = ["ASYNC119", "DOC201", "DOC402"]
 fixable = ["ALL"]
+preview = true
 ignore = [
   "A003",
   "A005",
