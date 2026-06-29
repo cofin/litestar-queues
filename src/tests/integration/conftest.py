@@ -86,25 +86,19 @@ async def _drop_queue_tables(backend: "BaseQueueBackend") -> "None":
 def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
     """Parametrize any test consuming the `queue_backend` fixture across QUEUE_BACKENDS.
 
-    Cases tagged with ``skip-upstream`` are known to hang or fail before the
-    contract body can run. Cases tagged with ``xfail-upstream`` still run but
-    report a clean signal without failing CI. See
+    Cases tagged with ``skip-adapter-blocker`` are known to hang or fail before
+    the contract body can run. Cases tagged with ``xfail-adapter-blocker`` still
+    run but report a clean signal without failing CI. See
     ``tests/integration/_backends.py`` for the rationale.
     """
     if "queue_backend" in metafunc.fixturenames:
         params = []
         for case in QUEUE_BACKENDS:
             marks: "list[pytest.MarkDecorator]" = []
-            if "skip-upstream" in case.capabilities:
-                marks.append(
-                    pytest.mark.skip(reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)")
-                )
-            elif "xfail-upstream" in case.capabilities:
-                marks.append(
-                    pytest.mark.xfail(
-                        reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)", strict=False
-                    )
-                )
+            if "skip-adapter-blocker" in case.capabilities:
+                marks.append(pytest.mark.skip(reason=f"{case.name}: known SQLSpec adapter limitation"))
+            elif "xfail-adapter-blocker" in case.capabilities:
+                marks.append(pytest.mark.xfail(reason=f"{case.name}: known SQLSpec adapter limitation", strict=False))
             if case.service_attr is not None:
                 marks.append(pytest.mark.xdist_group(case.name))
             params.append(pytest.param(case, marks=marks, id=case.name))

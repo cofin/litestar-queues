@@ -404,10 +404,9 @@ def _ensure_spanner_database(service: "SpannerService") -> "None":
         client.close()
 
 
-# ``skip-upstream`` / ``xfail-upstream`` are read by the integration conftest
-# to mark cases that regress against known upstream issues (see bead
-# litestar-queues-27b).
-# When the upstream fixes land, drop the capability from the BackendCase to flip
+# ``skip-adapter-blocker`` / ``xfail-adapter-blocker`` are read by the
+# integration conftest to mark cases that regress against known adapter issues.
+# When the adapter fixes land, drop the capability from the BackendCase to flip
 # the case back to a hard-pass requirement.
 QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
     BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
@@ -437,7 +436,7 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"adbc_driver_sqlite", "sqlspec"}),
         None,
         _build_adbc_sqlite,
-        frozenset({"in-process", "polling-only", "json-text", "sync-driver", "xfail-upstream"}),
+        frozenset({"in-process", "polling-only", "json-text", "sync-driver", "xfail-adapter-blocker"}),
     ),
     BackendCase(
         "postgres-asyncpg",
@@ -500,13 +499,13 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"google.cloud.bigquery", "sqlspec.adapters.bigquery"}),
         "bigquery_service",
         _build_bigquery,
-        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-upstream"}),
+        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-adapter-blocker"}),
     ),
     BackendCase(
         "spanner",
         frozenset({"google.cloud.spanner", "google.cloud.spanner_v1", "sqlspec.adapters.spanner"}),
         "spanner_service",
         _build_spanner,
-        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-upstream"}),
+        frozenset({"emulator", "polling-only", "json-column", "sync-driver", "skip-adapter-blocker"}),
     ),
 )
