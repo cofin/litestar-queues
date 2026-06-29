@@ -13,7 +13,7 @@ Two flavours of tests live here:
 import asyncio
 import sqlite3
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -342,7 +342,7 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert any('"queue_tasks"' in statement for statement in store.create_statements())
 
     insert_statement = store.insert_task({"id": "task-1", "task_name": "tasks.sync"}).build(dialect="sqlite")
-    pending_statement = store.list_pending(now=datetime.now(UTC).isoformat(), limit=10, queue="default").build(
+    pending_statement = store.list_pending(now=datetime.now(timezone.utc).isoformat(), limit=10, queue="default").build(
         dialect="sqlite"
     )
 
@@ -601,7 +601,7 @@ async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_ke
 
 
 async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     low = await sqlspec_backend.enqueue("tasks.low", priority=1)
     scheduled = await sqlspec_backend.enqueue("tasks.later", priority=100, scheduled_at=later)
@@ -688,7 +688,7 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
 
 
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
-    encoded_at = datetime.now(UTC)
+    encoded_at = datetime.now(timezone.utc)
 
     record = await sqlspec_backend.enqueue("tasks.metadata", metadata={"encoded_at": encoded_at})
     stored = await sqlspec_backend.get_task(record.id)

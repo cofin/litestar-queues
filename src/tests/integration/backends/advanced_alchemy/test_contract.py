@@ -7,7 +7,7 @@ Oracle async configs) by the subdir conftest.
 """
 
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from subprocess import run
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -122,7 +122,7 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
         _supports_skip_locked_claim,
     )
 
-    claim_time = datetime.now(UTC)
+    claim_time = datetime.now(timezone.utc)
     postgres_statement = _build_claim_candidate_statement(
         ContractQueueTask,
         queue=None,
@@ -215,7 +215,7 @@ async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_te
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
     advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
 ) -> "None":
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     low = await advanced_alchemy_backend.enqueue("tasks.low", priority=1)
     scheduled = await advanced_alchemy_backend.enqueue("tasks.later", priority=100, scheduled_at=later)
@@ -308,7 +308,9 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     external = await advanced_alchemy_backend.enqueue(
         "tasks.remote", execution_backend="cloudrun", execution_profile="batch-small"
     )
-    completed = await advanced_alchemy_backend.enqueue("tasks.report", metadata={"encoded_at": datetime.now(UTC)})
+    completed = await advanced_alchemy_backend.enqueue(
+        "tasks.report", metadata={"encoded_at": datetime.now(timezone.utc)}
+    )
 
     pending = await advanced_alchemy_backend.list_pending(limit=10, execution_backend="cloudrun")
     claimed = await advanced_alchemy_backend.claim_next(execution_backend="cloudrun")
@@ -328,7 +330,7 @@ async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     stored_local = await advanced_alchemy_backend.get_task(local.id)
     statistics = await advanced_alchemy_backend.get_statistics()
     completed_records = await advanced_alchemy_backend.list_completed_by_task("tasks.report")
-    cleanup_count = await advanced_alchemy_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
+    cleanup_count = await advanced_alchemy_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
 
     assert [record.id for record in running_external] == [external.id]
     assert running_external[0].execution_ref == "jobs/abc-123"

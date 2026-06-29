@@ -7,7 +7,7 @@ notification-capability label (``valkey-pubsub``).
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -42,7 +42,7 @@ async def test_valkey_backend_deduplicates_active_keys_and_replaces_terminal_key
 async def test_valkey_backend_claims_due_tasks_once_by_priority_and_filters_execution(
     valkey_backend: "ValkeyQueueBackend",
 ) -> "None":
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     low = await valkey_backend.enqueue("tasks.low", priority=1, execution_backend="local")
     await valkey_backend.enqueue("tasks.later", priority=100, scheduled_at=later, execution_backend="local")
@@ -123,7 +123,7 @@ async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_ba
     await valkey_backend.complete_task(completed.id, result={"ok": True})
     statistics = await valkey_backend.get_statistics()
     completed_records = await valkey_backend.list_completed_by_task("tasks.completed")
-    cleanup_count = await valkey_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
+    cleanup_count = await valkey_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
 
     assert statistics.failed == 1
     assert statistics.cancelled == 1

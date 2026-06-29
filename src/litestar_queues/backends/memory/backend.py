@@ -284,7 +284,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return True
         try:
             await asyncio.wait_for(self._notification_event.wait(), timeout=timeout)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             return False
         self._notification_event.clear()
         return True

@@ -7,7 +7,7 @@ exercise the universal ``execute_many`` tier and prove both produce identical
 results.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -86,7 +86,7 @@ async def test_enqueue_many_matches_single_enqueue(sqlspec_backend: "SQLSpecQueu
 
 
 async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     records = await sqlspec_backend.enqueue_many([
         EnqueueSpec(task_name="tasks.now"),
@@ -197,7 +197,7 @@ async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpec
     store = duckdb_backend._get_store()
     assert store.supports_native_bulk_ingest is True
 
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
     records = await duckdb_backend.enqueue_many([
         EnqueueSpec(task_name="tasks.a", args=(1, "x"), kwargs={"n": 0}, metadata={"m": [1]}, priority=7),
         EnqueueSpec(task_name="tasks.later", scheduled_at=later, priority=2),

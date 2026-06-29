@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -67,7 +67,7 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
     stored_running = await queue_backend.get_task(claimed_running.id)
     statistics = await queue_backend.get_statistics()
     completed_records = await queue_backend.list_completed_by_task("tasks.report")
-    cleanup_count = await queue_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
+    cleanup_count = await queue_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
 
     assert stored_running is not None
     assert stored_running.heartbeat_at is None
@@ -315,4 +315,4 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
     assert result.record.metadata["log_level"] == "debug"
     assert result.record.metadata["quiet_success"] is True
     assert result.record.scheduled_at is not None
-    assert result.record.scheduled_at > datetime.now(UTC) + timedelta(minutes=4)
+    assert result.record.scheduled_at > datetime.now(timezone.utc) + timedelta(minutes=4)

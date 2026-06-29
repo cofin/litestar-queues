@@ -778,7 +778,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 event = await anext(stream)
             else:
                 event = await asyncio.wait_for(anext(stream), timeout=timeout)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             return False
         finally:
             await cast("Any", stream).aclose()

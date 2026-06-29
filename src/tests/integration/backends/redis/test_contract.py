@@ -9,7 +9,7 @@ directory's conftest.
 import asyncio
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -84,7 +84,7 @@ async def test_redis_backend_deduplicates_active_keys_and_replaces_terminal_keys
 async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execution(
     redis_backend: "RedisQueueBackend",
 ) -> "None":
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     low = await redis_backend.enqueue("tasks.low", priority=1, execution_backend="local")
     await redis_backend.enqueue("tasks.later", priority=100, scheduled_at=later, execution_backend="local")
@@ -165,7 +165,7 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
     await redis_backend.complete_task(completed.id, result={"ok": True})
     statistics = await redis_backend.get_statistics()
     completed_records = await redis_backend.list_completed_by_task("tasks.completed")
-    cleanup_count = await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
+    cleanup_count = await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
 
     assert statistics.failed == 1
     assert statistics.cancelled == 1

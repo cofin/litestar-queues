@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -186,7 +186,7 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     record = await backend.enqueue("tasks.stale", max_retries=0, metadata={"requeue_on_stale": True})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
         QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True)),

@@ -1,6 +1,6 @@
 """Advanced Alchemy custom queue model integration tests."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
@@ -121,7 +121,7 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
 ) -> "None":
     from litestar_queues.backends.advanced_alchemy import service as service_module
 
-    fixed_now = datetime(2026, 5, 25, tzinfo=UTC)
+    fixed_now = datetime(2026, 5, 25, tzinfo=timezone.utc)
     monkeypatch.setattr(service_module, "_utc_now", lambda: fixed_now)
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(

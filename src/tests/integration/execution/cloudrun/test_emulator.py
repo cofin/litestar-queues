@@ -2,7 +2,7 @@ import asyncio
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, TypedDict, cast
 
 import pytest
@@ -263,7 +263,7 @@ async def test_cloudrun_reconcile_does_not_terminal_write_after_stale_retry_reas
         await queue_backend.set_execution_ref(record.id, "cloudrun", "executions/run-1")
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
-        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+        claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
         stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
 
         updated = await backend.reconcile(service, claimed)

@@ -6,7 +6,7 @@ per-item loop. Adapter-specific fast paths are covered in the SQLSpec
 integration suite.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -43,7 +43,7 @@ async def test_enqueue_many_empty_returns_empty_list() -> "None":
 
 async def test_enqueue_many_honors_scheduled_status() -> "None":
     backend = InMemoryQueueBackend()
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     (record,) = await backend.enqueue_many([EnqueueSpec(task_name="tasks.later", scheduled_at=later)])
 

@@ -2,7 +2,7 @@
 
 import importlib
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -60,15 +60,18 @@ def test_column_map_resolves_generated_statement_columns(
     insert_sql = store.insert_task({"id": "task-1", "task_name": "tasks.sync"}).build(dialect="sqlite").sql
     select_sql = store.select_task("task-1").build(dialect="sqlite").sql
     pending_sql = (
-        store.list_pending(now=datetime.now(UTC).isoformat(), limit=10, queue="critical").build(dialect="sqlite").sql
+        store
+        .list_pending(now=datetime.now(timezone.utc).isoformat(), limit=10, queue="critical")
+        .build(dialect="sqlite")
+        .sql
     )
     claim_sql = (
         store
         .claim_task(
             task_id="task-1",
-            due_at=datetime.now(UTC).isoformat(),
-            heartbeat_at=datetime.now(UTC).isoformat(),
-            started_at=datetime.now(UTC).isoformat(),
+            due_at=datetime.now(timezone.utc).isoformat(),
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(timezone.utc).isoformat(),
         )
         .build(dialect="sqlite")
         .sql
@@ -77,22 +80,22 @@ def test_column_map_resolves_generated_statement_columns(
         store
         .complete_task(
             task_id="task-1",
-            completed_at=datetime.now(UTC).isoformat(),
-            heartbeat_at=datetime.now(UTC).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),
             result_json='{"ok": true}',
         )
         .build(dialect="sqlite")
         .sql
     )
-    stale_sql = store.requeue_stale(cutoff=datetime.now(UTC).isoformat()).build(dialect="sqlite").sql
+    stale_sql = store.requeue_stale(cutoff=datetime.now(timezone.utc).isoformat()).build(dialect="sqlite").sql
     external_sql = store.list_running_external(limit=10).build(dialect="sqlite").sql
     completed_sql = (
         store
-        .list_completed_by_task(task_name="tasks.sync", since=datetime.now(UTC).isoformat())
+        .list_completed_by_task(task_name="tasks.sync", since=datetime.now(timezone.utc).isoformat())
         .build(dialect="sqlite")
         .sql
     )
-    cleanup_sql = store.cleanup_terminal(before=datetime.now(UTC).isoformat()).build(dialect="sqlite").sql
+    cleanup_sql = store.cleanup_terminal(before=datetime.now(timezone.utc).isoformat()).build(dialect="sqlite").sql
     ddl_sql = "\n".join(store.create_statements())
 
     assert '"task_id"' in insert_sql
@@ -156,7 +159,7 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
         running_external = await backend.list_running_external(limit=10)
         completed = await backend.complete_task(claimed.id, result={"ok": True})
         completed_by_task = await backend.list_completed_by_task(
-            "tasks.adopter", since=datetime.now(UTC) - timedelta(minutes=1)
+            "tasks.adopter", since=datetime.now(timezone.utc) - timedelta(minutes=1)
         )
     finally:
         await backend.close()

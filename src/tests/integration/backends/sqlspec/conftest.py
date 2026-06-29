@@ -84,7 +84,7 @@ class StubAsyncEventChannel:
             else:
                 try:
                     event = await asyncio.wait_for(self._events.get(), timeout=poll_interval)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     continue
             if channel == self.published[-1][0]:
                 yield event

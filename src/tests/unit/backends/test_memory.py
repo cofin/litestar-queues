@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -32,7 +32,7 @@ async def test_memory_backend_deduplicates_active_keys_and_replaces_terminal_key
 
 async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle() -> "None":
     backend = InMemoryQueueBackend()
-    later = datetime.now(UTC) + timedelta(minutes=5)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     low = await backend.enqueue("tasks.low", priority=1)
     scheduled = await backend.enqueue("tasks.later", priority=100, scheduled_at=later)
@@ -73,7 +73,7 @@ async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -
     record = await backend.enqueue("tasks.stale", max_retries=1, metadata={"requeue_on_stale": True})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -93,7 +93,7 @@ async def test_memory_backend_fails_stale_running_task_when_retries_are_exhauste
     record = await backend.enqueue("tasks.stale_exhausted", max_retries=0, metadata={"requeue_on_stale": True})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -113,7 +113,7 @@ async def test_memory_backend_fails_stale_running_task_when_requeue_policy_is_di
     record = await backend.enqueue("tasks.stale_no_requeue", max_retries=3, metadata={"requeue_on_stale": False})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -145,7 +145,7 @@ async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() 
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
     claimed_retry_count = claimed.retry_count
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     stale_result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     assert stale_result.requeued == 1
@@ -179,7 +179,7 @@ async def test_memory_backend_null_heartbeats_is_fenced_by_retry_count() -> "Non
     first_claim = await backend.claim_task(record.id)
     assert first_claim is not None
     first_retry_count = first_claim.retry_count
-    first_claim.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    first_claim.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     assert result.requeued == 1
     second_claim = await backend.claim_task(record.id)

@@ -240,7 +240,7 @@ class Worker:
                 asyncio.gather(*tuple(self._running_tasks), return_exceptions=True),
                 timeout=self._graceful_shutdown_timeout,
             )
-        except TimeoutError:
+        except asyncio.TimeoutError:
             await self._cancel_running()
 
     async def _cancel_running(self) -> "None":
@@ -249,7 +249,7 @@ class Worker:
             return
         for task in tasks:
             task.cancel()
-        with contextlib.suppress(TimeoutError):
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=self._final_cancel_timeout)
 
     async def _wait_for_work(self) -> "None":
@@ -262,5 +262,5 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         for task in done:
-            with contextlib.suppress(TimeoutError):
+            with contextlib.suppress(asyncio.TimeoutError):
                 task.result()

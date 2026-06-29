@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any
 
@@ -145,30 +145,30 @@ async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_
 
 async def test_schedule_config_supports_interval_and_basic_cron_next_run() -> "None":
     interval = ScheduleConfig(task_name="tasks.interval", interval=timedelta(minutes=5))
-    base = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    base = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
 
     cron = ScheduleConfig(task_name="tasks.daily", cron="30 2 * * *")
 
-    assert interval.get_next_run(base) == datetime(2026, 5, 3, 12, 5, tzinfo=UTC)
-    assert cron.get_next_run(base) == datetime(2026, 5, 4, 2, 30, tzinfo=UTC)
+    assert interval.get_next_run(base) == datetime(2026, 5, 3, 12, 5, tzinfo=timezone.utc)
+    assert cron.get_next_run(base) == datetime(2026, 5, 4, 2, 30, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize(
     ("cron", "expected"),
     [
-        ("@hourly", datetime(2026, 5, 3, 13, 0, tzinfo=UTC)),
-        ("@daily", datetime(2026, 5, 4, 0, 0, tzinfo=UTC)),
-        ("@midnight", datetime(2026, 5, 4, 0, 0, tzinfo=UTC)),
-        ("@weekly", datetime(2026, 5, 10, 0, 0, tzinfo=UTC)),
-        ("@monthly", datetime(2026, 6, 1, 0, 0, tzinfo=UTC)),
-        ("@yearly", datetime(2027, 1, 1, 0, 0, tzinfo=UTC)),
-        ("@annually", datetime(2027, 1, 1, 0, 0, tzinfo=UTC)),
+        ("@hourly", datetime(2026, 5, 3, 13, 0, tzinfo=timezone.utc)),
+        ("@daily", datetime(2026, 5, 4, 0, 0, tzinfo=timezone.utc)),
+        ("@midnight", datetime(2026, 5, 4, 0, 0, tzinfo=timezone.utc)),
+        ("@weekly", datetime(2026, 5, 10, 0, 0, tzinfo=timezone.utc)),
+        ("@monthly", datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)),
+        ("@yearly", datetime(2027, 1, 1, 0, 0, tzinfo=timezone.utc)),
+        ("@annually", datetime(2027, 1, 1, 0, 0, tzinfo=timezone.utc)),
     ],
 )
 async def test_schedule_config_supports_cron_aliases(cron: "str", expected: "datetime") -> "None":
     schedule = ScheduleConfig(task_name=f"tasks.{cron.removeprefix('@')}", cron=cron)
 
-    assert schedule.get_next_run(datetime(2026, 5, 3, 12, 34, tzinfo=UTC)) == expected
+    assert schedule.get_next_run(datetime(2026, 5, 3, 12, 34, tzinfo=timezone.utc)) == expected
 
 
 async def test_schedule_config_supports_cron_names_ranges_lists_steps_and_sunday_aliases() -> "None":
@@ -176,33 +176,43 @@ async def test_schedule_config_supports_cron_names_ranges_lists_steps_and_sunday
     sunday_zero = ScheduleConfig(task_name="tasks.sunday_zero", cron="0 0 * * 0")
     sunday_seven = ScheduleConfig(task_name="tasks.sunday_seven", cron="0 0 * * 7")
 
-    assert business_hours.get_next_run(datetime(2026, 1, 1, 8, 59, tzinfo=UTC)) == datetime(
-        2026, 1, 1, 9, 0, tzinfo=UTC
+    assert business_hours.get_next_run(datetime(2026, 1, 1, 8, 59, tzinfo=timezone.utc)) == datetime(
+        2026, 1, 1, 9, 0, tzinfo=timezone.utc
     )
-    assert sunday_zero.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(2026, 5, 3, 0, 0, tzinfo=UTC)
-    assert sunday_seven.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=UTC)) == datetime(2026, 5, 3, 0, 0, tzinfo=UTC)
+    assert sunday_zero.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=timezone.utc)) == datetime(
+        2026, 5, 3, 0, 0, tzinfo=timezone.utc
+    )
+    assert sunday_seven.get_next_run(datetime(2026, 5, 2, 23, 59, tzinfo=timezone.utc)) == datetime(
+        2026, 5, 3, 0, 0, tzinfo=timezone.utc
+    )
 
 
 async def test_schedule_config_supports_question_mark_and_posix_day_matching() -> "None":
     monday_only = ScheduleConfig(task_name="tasks.monday_only", cron="0 0 ? * MON")
     first_of_month_or_monday = ScheduleConfig(task_name="tasks.dom_or_dow", cron="0 0 1 * MON")
 
-    assert monday_only.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=UTC)) == datetime(2026, 5, 4, 0, 0, tzinfo=UTC)
-    assert first_of_month_or_monday.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=UTC)) == datetime(
-        2026, 5, 4, 0, 0, tzinfo=UTC
+    assert monday_only.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)) == datetime(
+        2026, 5, 4, 0, 0, tzinfo=timezone.utc
+    )
+    assert first_of_month_or_monday.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)) == datetime(
+        2026, 5, 4, 0, 0, tzinfo=timezone.utc
     )
 
 
 async def test_schedule_config_searches_far_enough_for_leap_day_cron() -> "None":
     schedule = ScheduleConfig(task_name="tasks.leap_day", cron="0 0 29 2 *")
 
-    assert schedule.get_next_run(datetime(2026, 3, 1, 0, 0, tzinfo=UTC)) == datetime(2028, 2, 29, 0, 0, tzinfo=UTC)
+    assert schedule.get_next_run(datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)) == datetime(
+        2028, 2, 29, 0, 0, tzinfo=timezone.utc
+    )
 
 
 async def test_schedule_config_returns_cron_runs_in_utc_from_configured_timezone() -> "None":
     schedule = ScheduleConfig(task_name="tasks.local_time", cron="0 3 * * *", timezone="America/New_York")
 
-    assert schedule.get_next_run(datetime(2026, 1, 1, 7, 59, tzinfo=UTC)) == datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+    assert schedule.get_next_run(datetime(2026, 1, 1, 7, 59, tzinfo=timezone.utc)) == datetime(
+        2026, 1, 1, 8, 0, tzinfo=timezone.utc
+    )
 
 
 async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch: "pytest.MonkeyPatch") -> "None":
@@ -214,8 +224,8 @@ async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch:
     monkeypatch.setattr(task_module, "_RANDOM", FixedRandom())
     schedule = ScheduleConfig(task_name="tasks.jittered_cron", cron="0 0 * * *", jitter=10)
 
-    assert schedule.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=UTC)) == datetime(
-        2026, 5, 4, 0, 0, 2, 500000, tzinfo=UTC
+    assert schedule.get_next_run(datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)) == datetime(
+        2026, 5, 4, 0, 0, 2, 500000, tzinfo=timezone.utc
     )
 
 
