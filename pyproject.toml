@@ -105,8 +105,6 @@ tests = [
   # Redis + Valkey clients used directly by integration tests
   "redis>=5.0.0",
   "valkey>=6.0.0",
-  # MySQL async + sync drivers
-  "pymysql>=1.1.0",
   "pyarrow",
   "numpy",
   "advanced-alchemy>=1.10.0",

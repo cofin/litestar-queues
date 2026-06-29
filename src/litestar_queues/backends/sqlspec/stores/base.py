@@ -62,8 +62,8 @@ class SQLSpecQueueStore:
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
     # psqlpy PyJSON, MySQL JSON, Oracle JSON, etc.) override this. Stores
-    # whose driver returns JSON columns as plain strings (DuckDB, SQLite,
-    # ADBC) keep the default empty frozenset. Unioned with adopter-supplied
+    # whose driver returns JSON columns as plain strings (DuckDB, SQLite)
+    # keep the default empty frozenset. Unioned with adopter-supplied
     # ``native_json_columns`` at ``__init__``.
     auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
     bind_datetime_as_text: "ClassVar[bool]" = False
@@ -104,7 +104,7 @@ class SQLSpecQueueStore:
         (``select_for_update`` and ``skip_locked``). SQLSpec 0.51 exposes no
         locking capability through ``data_dictionary`` feature flags, so the
         config-level hints are the runtime signal. Adapters that do not
-        advertise the hints (sqlite, duckdb, oracle today, mssql) degrade to
+        advertise the hints (sqlite, duckdb, and oracle today) degrade to
         the optimistic-CAS claim. This is a deliberate workaround pending a
         first-class capability flag upstream (litestar-org/sqlspec#544).
         """
@@ -116,8 +116,8 @@ class SQLSpecQueueStore:
         """Whether the adapter can ingest records via the native Arrow import path.
 
         Gated on the SQLSpec config's ``supports_native_arrow_import`` ClassVar
-        (asyncpg COPY, MySQL/Oracle/SQL Server executemany-Arrow, DuckDB/ADBC
-        zero-copy, Spanner batch mutations) *and* ``pyarrow`` being importable,
+        (asyncpg COPY, MySQL/Oracle executemany-Arrow, or DuckDB zero-copy)
+        *and* ``pyarrow`` being importable,
         since :meth:`load_from_records` normalizes rows through an Arrow table.
         Adapters without the capability fall back to the universal
         ``execute_many`` bulk tier, so this only ever upgrades throughput.

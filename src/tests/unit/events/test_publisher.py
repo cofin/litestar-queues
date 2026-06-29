@@ -83,7 +83,6 @@ optional_roots = {
     "mysql",
     "oracledb",
     "psycopg",
-    "pymysql",
     "redis",
     "sqlspec",
     "valkey",

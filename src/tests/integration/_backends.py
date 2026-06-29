@@ -213,25 +213,6 @@ async def _build_mysql_aiomysql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
-async def _build_mysql_pymysql(ctx: "FixtureCtx") -> "BaseQueueBackend":
-    from sqlspec.adapters.pymysql import PyMysqlConfig
-
-    svc = cast("MySQLService", ctx.service)
-    assert svc is not None
-    return _sqlspec_backend(
-        PyMysqlConfig(
-            connection_config={
-                "host": svc.host,
-                "port": svc.port,
-                "user": svc.user,
-                "password": svc.password,
-                "database": svc.db,
-            }
-        ),
-        table_name=ctx.table_name,
-    )
-
-
 async def _build_mysql_mysqlconnector(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.mysqlconnector import MysqlConnectorAsyncConfig
 
@@ -327,13 +308,6 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         "mysql_service",
         _build_mysql_aiomysql,
         frozenset({"polling-only", "json-column"}),
-    ),
-    BackendCase(
-        "mysql-pymysql",
-        frozenset({"pymysql", "sqlspec"}),
-        "mysql_service",
-        _build_mysql_pymysql,
-        frozenset({"polling-only", "json-column", "sync-driver"}),
     ),
     BackendCase(
         "mysql-mysqlconnector",

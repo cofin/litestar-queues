@@ -42,7 +42,6 @@ from litestar_queues.backends.sqlspec.stores import (
     PsqlpyQueueStore,
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
-    PymysqlQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
@@ -256,7 +255,6 @@ blocked_prefixes = (
     "oracledb",
     "psqlpy",
     "psycopg",
-    "pymysql",
     "sqlspec.adapters.aiomysql",
     "sqlspec.adapters.aiosqlite",
     "sqlspec.adapters.asyncmy",
@@ -266,7 +264,6 @@ blocked_prefixes = (
     "sqlspec.adapters.oracledb",
     "sqlspec.adapters.psqlpy",
     "sqlspec.adapters.psycopg",
-    "sqlspec.adapters.pymysql",
 )
 blocked_package_prefixes = tuple(f"{name}." for name in blocked_prefixes)
 original_import = builtins.__import__
@@ -291,7 +288,6 @@ from litestar_queues.backends.sqlspec.stores import (
     PsqlpyQueueStore,
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
-    PymysqlQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
@@ -317,7 +313,6 @@ expected = (
     ("psqlpy", "postgres", "PsqlpyConfig", PsqlpyQueueStore),
     ("psycopg", "postgres", "PsycopgSyncConfig", PsycopgSyncQueueStore),
     ("psycopg", "postgres", "PsycopgAsyncConfig", PsycopgAsyncQueueStore),
-    ("pymysql", "mysql", "PyMysqlConfig", PymysqlQueueStore),
     ("sqlite", "sqlite", "SqliteConfig", SqliteQueueStore),
 )
 
@@ -352,10 +347,25 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "queue" in pending_statement.sql
 
 
-def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> "None":
-    with pytest.raises(QueueConfigurationError, match="arrow_odbc"):
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name"),
+    (
+        ("adbc", "sqlite", "AdbcConfig"),
+        ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
+        ("bigquery", "bigquery", "BigQueryConfig"),
+        ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig"),
+        ("cockroach_psycopg", "postgres", "CockroachPsycopgAsyncConfig"),
+        ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
+        ("pymysql", "mysql", "PyMysqlConfig"),
+        ("spanner", "spanner", "SpannerConfig"),
+    ),
+)
+def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
+    adapter_name: "str", dialect: "str | None", config_type_name: "str"
+) -> "None":
+    with pytest.raises(QueueConfigurationError, match=adapter_name):
         create_queue_store(
-            _fake_adapter_config("arrow_odbc", dialect="sqlite", config_type_name="ArrowOdbcConfig"),
+            _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
             table_name="queue_tasks",
         )
 
@@ -382,7 +392,6 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter() -> "None":
         ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, 'WHERE "status" IN'),
-        ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
         ("sqlite", "sqlite", "SqliteConfig", {}, SqliteQueueStore, '"queue_tasks"'),
     ),
 )
@@ -563,7 +572,6 @@ def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
         ("asyncmy", "AsyncmyConfig"),
         ("mysqlconnector", "MysqlConnectorSyncConfig"),
         ("mysqlconnector", "MysqlConnectorAsyncConfig"),
-        ("pymysql", "PyMysqlConfig"),
     ),
 )
 async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(

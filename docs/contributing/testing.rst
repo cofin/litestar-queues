@@ -31,7 +31,7 @@ Install test dependencies before running the full integration matrix:
 
 The integration tier intentionally relies on pytest-databases autoskip
 behavior. A test should request a service fixture such as ``postgres_service``,
-``redis_service``, ``bigquery_service``, or ``spanner_service`` and let the
+``mysql_service``, ``oracle_service``, ``redis_service``, or ``valkey_service`` and let the
 fixture skip when Docker or an emulator dependency is unavailable. Do not add
 custom "Docker is available" assertions to tests.
 

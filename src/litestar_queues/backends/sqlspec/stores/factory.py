@@ -2,20 +2,12 @@
 
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.sqlspec.stores.adbc import AdbcQueueStore
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
-from litestar_queues.backends.sqlspec.stores.bigquery import BigQueryQueueStore
-from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
-from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
-    CockroachPsycopgAsyncQueueStore,
-    CockroachPsycopgSyncQueueStore,
-)
 from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
-from litestar_queues.backends.sqlspec.stores.mssql_python import MssqlPythonAsyncQueueStore, MssqlPythonSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
@@ -23,8 +15,6 @@ from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
 from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
-from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
-from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -34,20 +24,15 @@ if TYPE_CHECKING:
 __all__ = ("create_queue_store",)
 
 _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
-    "adbc": AdbcQueueStore,
     "aiomysql": AiomysqlQueueStore,
     "aiosqlite": AiosqliteQueueStore,
     "asyncmy": AsyncmyQueueStore,
     "asyncpg": AsyncpgQueueStore,
-    "bigquery": BigQueryQueueStore,
-    "cockroach_asyncpg": CockroachAsyncpgQueueStore,
     "duckdb": DuckDBQueueStore,
     "psqlpy": PsqlpyQueueStore,
-    "pymysql": PymysqlQueueStore,
-    "spanner": SpannerQueueStore,
     "sqlite": SqliteQueueStore,
 }
-_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"cockroach_psycopg", "mssql_python", "mysqlconnector", "oracledb", "psycopg"})
+_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"mysqlconnector", "oracledb", "psycopg"})
 _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAPTER_NAMES
 
 
@@ -76,17 +61,9 @@ def create_queue_store(
 
 def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
     name = _adapter_name(config)
-    if name == "cockroach_psycopg":
-        return _async_or_sync_store_type(
-            config, async_store_type=CockroachPsycopgAsyncQueueStore, sync_store_type=CockroachPsycopgSyncQueueStore
-        )
     if name == "mysqlconnector":
         return _async_or_sync_store_type(
             config, async_store_type=MysqlConnectorAsyncQueueStore, sync_store_type=MysqlConnectorSyncQueueStore
-        )
-    if name == "mssql_python":
-        return _async_or_sync_store_type(
-            config, async_store_type=MssqlPythonAsyncQueueStore, sync_store_type=MssqlPythonSyncQueueStore
         )
     if name == "oracledb":
         return _async_or_sync_store_type(

@@ -1,16 +1,12 @@
 """Shared SQLSpec queue store implementations for dialect families."""
 
-from typing import ClassVar, Final, Literal
+from typing import ClassVar, Literal
 
 from sqlspec import sql
-from sqlspec.utils.text import split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
-__all__ = ("MySQLQueueStore", "PostgresQueueStore", "SQLServerQueueStore")
-
-_NVARCHAR_MAX_THRESHOLD: "Final" = 4000
-_QUALIFIED_IDENTIFIER_MIN_PARTS: "Final" = 2
+__all__ = ("MySQLQueueStore", "PostgresQueueStore")
 
 
 class PostgresQueueStore(SQLSpecQueueStore):
@@ -148,107 +144,3 @@ class MySQLQueueStore(SQLSpecQueueStore):
 
     def _timestamp_type(self) -> "str":
         return "DATETIME(6)"
-
-
-class SQLServerQueueStore(SQLSpecQueueStore):
-    """SQL Server queue store with T-SQL existence guards."""
-
-    __slots__ = ()
-
-    data_dictionary_dialect: "ClassVar[str | None]" = "mssql"
-    identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "none"
-
-    def create_statements(self) -> "list[str]":
-        """Return statements that create SQL Server queue artifacts."""
-        if not self._manage_schema:
-            return []
-        return [
-            self._wrap_create_table(self._create_sqlserver_table_statement()),
-            self._wrap_create_index(
-                "pending",
-                (
-                    f"{self._quoted_col('status')}, {self._quoted_col('queue')}, "
-                    f"{self._quoted_col('execution_backend')}, {self._quoted_col('scheduled_at')}, "
-                    f"{self._quoted_col('priority')}, {self._quoted_col('created_at')}"
-                ),
-            ),
-            self._wrap_create_index("heartbeat", f"{self._quoted_col('status')}, {self._quoted_col('heartbeat_at')}"),
-        ]
-
-    def drop_statements(self) -> "list[str]":
-        """Return statements that drop SQL Server queue artifacts."""
-        if not self._manage_schema:
-            return []
-        return [self._wrap_drop_index("heartbeat"), self._wrap_drop_index("pending"), self._wrap_drop_table()]
-
-    def _create_sqlserver_table_statement(self) -> "str":
-        return f"""
-        CREATE TABLE {self._quoted_table_name()} (
-            {self._quoted_col("id")} {self._id_type()} PRIMARY KEY,
-            {self._quoted_col("task_name")} {self._indexed_text_type()} NOT NULL,
-            {self._quoted_col("args_json")} {self._payload_json_type("args_json")} NOT NULL,
-            {self._quoted_col("kwargs_json")} {self._payload_json_type("kwargs_json")} NOT NULL,
-            {self._quoted_col("queue")} {self._indexed_text_type()} NOT NULL,
-            {self._quoted_col("execution_backend")} {self._indexed_text_type()} NOT NULL,
-            {self._quoted_col("execution_profile")} {self._indexed_text_type()},
-            {self._quoted_col("execution_ref")} {self._indexed_text_type()},
-            {self._quoted_col("status")} {self._indexed_text_type()} NOT NULL,
-            {self._quoted_col("priority")} {self._integer_type()} NOT NULL,
-            {self._quoted_col("max_retries")} {self._integer_type()} NOT NULL,
-            {self._quoted_col("retry_count")} {self._integer_type()} NOT NULL,
-            {self._quoted_col("scheduled_at")} {self._timestamp_type()},
-            {self._quoted_col("created_at")} {self._timestamp_type()} NOT NULL,
-            {self._quoted_col("started_at")} {self._timestamp_type()},
-            {self._quoted_col("completed_at")} {self._timestamp_type()},
-            {self._quoted_col("heartbeat_at")} {self._timestamp_type()},
-            {self._quoted_col("result_json")} {self._result_json_type("result_json")} NOT NULL,
-            {self._quoted_col("error")} {self._error_type()},
-            {self._quoted_col("task_key")} {self._indexed_text_type()} UNIQUE,
-            {self._quoted_col("metadata_json")} {self._metadata_json_type("metadata_json")} NOT NULL
-        )
-        """
-
-    def _wrap_create_table(self, statement: "str") -> "str":
-        return f"IF OBJECT_ID(N'{_object_name(self.table_name)}', N'U') IS NULL BEGIN {statement}; END"
-
-    def _wrap_create_index(self, suffix: "str", columns: "str") -> "str":
-        index_name = self._index_name(suffix)
-        return (
-            "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
-            f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{_object_name(self.table_name)}')) "
-            f"BEGIN CREATE INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()}({columns}); END"
-        )
-
-    def _wrap_drop_index(self, suffix: "str") -> "str":
-        index_name = self._index_name(suffix)
-        return (
-            "IF EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
-            f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{_object_name(self.table_name)}')) "
-            f"DROP INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()};"
-        )
-
-    def _wrap_drop_table(self) -> "str":
-        return f"IF OBJECT_ID(N'{_object_name(self.table_name)}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};"
-
-    def _string_type(self, length: "int | None" = None) -> "str":
-        if length is None or length >= _NVARCHAR_MAX_THRESHOLD:
-            return "NVARCHAR(MAX)"
-        return f"NVARCHAR({length})"
-
-    def _integer_type(self) -> "str":
-        return "INT"
-
-
-def _object_name(table_name: "str") -> "str":
-    parts = split_qualified_identifier(table_name, quote_chars='"')
-    if len(parts) < _QUALIFIED_IDENTIFIER_MIN_PARTS:
-        schema_name = "dbo"
-        bare_table_name = parts[0] if parts else table_name
-    else:
-        schema_name = ".".join(parts[:-1])
-        bare_table_name = parts[-1]
-    return f"{_quote_bracket_identifier(schema_name)}.{_quote_bracket_identifier(bare_table_name)}"
-
-
-def _quote_bracket_identifier(identifier: "str") -> "str":
-    return f"[{identifier.replace(']', ']]')}]"

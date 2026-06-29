@@ -175,9 +175,6 @@ claim/update statements where the database supports them.
    * - SQLSpec adapter
      - Queue store
      - Notes
-   * - ``adbc``
-     - ``AdbcQueueStore``
-     - Shared ADBC behavior.
    * - ``aiomysql``
      - ``AiomysqlQueueStore``
      - Async MySQL behavior.
@@ -190,15 +187,6 @@ claim/update statements where the database supports them.
    * - ``asyncpg``
      - ``AsyncpgQueueStore``
      - PostgreSQL behavior.
-   * - ``bigquery``
-     - ``BigQueryQueueStore``
-     - BigQuery DDL and JSON behavior.
-   * - ``cockroach_asyncpg``
-     - ``CockroachAsyncpgQueueStore``
-     - CockroachDB through asyncpg.
-   * - ``cockroach_psycopg``
-     - ``CockroachPsycopgAsyncQueueStore`` or ``CockroachPsycopgSyncQueueStore``
-     - Async and sync variants are selected from the SQLSpec config type.
    * - ``duckdb``
      - ``DuckDBQueueStore``
      - DuckDB-specific DDL and JSON behavior.
@@ -214,19 +202,13 @@ claim/update statements where the database supports them.
    * - ``psycopg``
      - ``PsycopgAsyncQueueStore`` or ``PsycopgSyncQueueStore``
      - Async and sync variants are selected from the SQLSpec config type.
-   * - ``pymysql``
-     - ``PymysqlQueueStore``
-     - Sync MySQL behavior.
-   * - ``spanner``
-     - ``SpannerQueueStore``
-     - Spanner-specific DDL and JSON behavior.
    * - ``sqlite``
      - ``SqliteQueueStore``
      - Sync SQLite behavior.
 
-Unsupported adapters fall back to the shared SQLSpec store. Applications should
-install the SQLSpec adapter driver they configure; Litestar Queues does not
-install every SQLSpec driver as a package dependency.
+Unsupported SQLSpec adapters raise ``QueueConfigurationError``. Applications
+should install the SQLSpec adapter driver they configure; Litestar Queues does
+not install every SQLSpec driver as a package dependency.
 
 SQLSpec Capability Matrix
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -257,7 +239,7 @@ advertises, then fall back to the portable path when a capability is absent.
      - Polling.
      - Positional Arrow ingest is contract-tested so column order matches the
        table definition.
-   * - ``asyncpg`` / ``psycopg`` / ``cockroach_*``
+   * - ``asyncpg`` / ``psycopg``
      - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it;
        compare-and-swap fallback otherwise.
      - ``JSONB`` with native decoded JSON columns where the driver returns
@@ -274,7 +256,7 @@ advertises, then fall back to the portable path when a capability is absent.
      - Arrow ``load_from_records`` path.
      - SQLSpec durable table queue.
      - PostgreSQL storage parameters tune queue-table churn where supported.
-   * - ``asyncmy`` / ``aiomysql`` / ``mysqlconnector`` / ``pymysql``
+   * - ``asyncmy`` / ``aiomysql`` / ``mysqlconnector``
      - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it.
      - MySQL ``JSON`` columns with native decoded JSON values.
      - Arrow ``load_from_records`` path.
@@ -288,38 +270,9 @@ advertises, then fall back to the portable path when a capability is absent.
      - Polling.
      - Oracle object names are kept within the adapter's identifier limits;
        Oracle 23ai can pipeline stale-recovery statement batches.
-   * - ``mssql_python``
-     - Optimistic compare-and-swap.
-     - ``NVARCHAR`` JSON payload columns serialized with SQLSpec JSON.
-     - Arrow ``load_from_records`` path when SQLSpec exposes it; otherwise
-       ``execute_many``.
-     - Polling.
-     - T-SQL DDL uses SQL Server existence guards and bracket object names.
-   * - ``bigquery``
-     - Optimistic compare-and-swap.
-     - ``JSON`` columns.
-     - Arrow/load-job path when the adapter exposes native ingest.
-     - Polling.
-     - No primary-key or unique constraint is emitted because BigQuery does not
-       enforce them the same way as OLTP databases.
-   * - ``spanner``
-     - Optimistic compare-and-swap.
-     - ``JSON`` columns.
-     - Arrow/batch path when the adapter exposes native ingest.
-     - Polling.
-     - Primary key is declared inline with Spanner DDL.
-   * - ``adbc``
-     - Optimistic compare-and-swap.
-     - Dialect-detected JSON: ``JSON``/``JSONB`` for capable engines and
-       ``TEXT`` for SQLite/FlightSQL.
-     - Arrow-oriented native ingest when the SQLSpec adapter supports it.
-     - Polling.
-     - Dialect detection comes from the ADBC connection settings.
 
-Current upstream adapter limitations are tracked in tests instead of hidden
-behind fallback behavior: ADBC-SQLite has a nested-transaction issue, the
-BigQuery emulator client path can hang after schema creation, and the Spanner
-adapter currently attempts schema DDL through a read-only snapshot context.
+Additional SQLSpec adapters can be added by implementing a queue store and
+registering it with the SQLSpec store factory.
 
 Advanced Alchemy
 ----------------

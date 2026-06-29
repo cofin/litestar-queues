@@ -50,8 +50,6 @@ _NOTIFY_TRANSPORT_POLLING = "polling"
 # queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
 _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
 _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
-_STACK_COMMIT_AFTER_EXECUTE_ADAPTERS = frozenset({"pymysql"})
-_ROLLBACK_ON_SESSION_EXIT_ADAPTERS = frozenset({"pymysql"})
 
 
 def _adapter_notify_transport(adapter_name: "str | None") -> "str":
@@ -612,15 +610,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             result.handler_needed_task_ids.append(record.id)
                 if stack:
                     # Reset any implicit read transaction the SELECT may have opened so
-                    # SQLSpec's stack runner owns the write transaction. PyMySQL reports
-                    # an active transaction whenever autocommit is off, so SQLSpec skips
-                    # its internal commit there and needs an explicit post-stack commit.
+                    # SQLSpec's stack runner owns the write transaction.
                     with suppress(Exception):
                         await driver.rollback()
                     try:
                         await driver.execute_stack(stack)
-                        if resolve_adapter_name(self._get_sqlspec_config()) in _STACK_COMMIT_AFTER_EXECUTE_ADAPTERS:
-                            await driver.commit()
                     except Exception:
                         with suppress(Exception):
                             await driver.rollback()
@@ -993,12 +987,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
         async with _bridge_session(self._get_or_create_sqlspec(), sqlspec_config) as driver:
-            try:
-                yield driver
-            finally:
-                if resolve_adapter_name(sqlspec_config) in _ROLLBACK_ON_SESSION_EXIT_ADAPTERS:
-                    with suppress(Exception):
-                        await driver.rollback()
+            yield driver
 
     @asynccontextmanager
     async def _heartbeat_session(self) -> "AsyncIterator[Any]":
@@ -1018,12 +1007,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         if self._heartbeat_pool_enabled and self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
             async with _bridge_session(self._sqlspec, self._heartbeat_pool_config) as driver:
-                try:
-                    yield driver
-                finally:
-                    if resolve_adapter_name(self._heartbeat_pool_config) in _ROLLBACK_ON_SESSION_EXIT_ADAPTERS:
-                        with suppress(Exception):
-                            await driver.rollback()
+                yield driver
         else:
             async with self._session() as driver:
                 yield driver
@@ -1292,7 +1276,7 @@ class _ManagedAsyncDriver:
 async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
 
-    Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``PyMysqlConfig``, etc.)
+    Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``MysqlConnectorSyncConfig``, etc.)
     return sync context managers and sync drivers. They are bridged with
     ``sqlspec.utils.sync_tools.async_`` so blocking operations use SQLSpec's
     managed executor and honor ``SQLSPEC_ASYNC_THREAD_LIMIT``.

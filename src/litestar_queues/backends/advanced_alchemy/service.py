@@ -17,8 +17,8 @@ __all__ = ("QueueTaskService",)
 
 _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
-_SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"cockroachdb", "mariadb", "mysql", "oracle", "postgresql"})
-_NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"cockroachdb", "mariadb", "mysql", "oracle", "postgresql"})
+_SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
+_NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
 
 
 class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
