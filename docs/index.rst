@@ -1,9 +1,18 @@
-Litestar Queues
-===============
+.. title:: Litestar Queues
 
-Litestar Queues provides task queue support for Litestar applications: typed task
-registration, queue persistence, worker lifecycle management, scheduled jobs,
-pluggable execution backends, and realtime task event delivery.
+.. meta::
+   :description: Task queues, workers, schedules, backend integrations, and realtime task events for Litestar applications.
+   :keywords: Litestar, task queue, workers, background jobs, schedules, Redis, Valkey, SQLSpec, Advanced Alchemy
+
+.. container:: title-with-logo
+
+   .. raw:: html
+
+      <h1 class="brand-text" aria-label="Litestar Queues">Litestar Queues</h1>
+
+Litestar Queues provides task queue support for Litestar applications: typed
+task registration, queue persistence, worker lifecycle management, scheduled
+jobs, pluggable execution backends, and realtime task event delivery.
 
 .. toctree::
    :hidden:

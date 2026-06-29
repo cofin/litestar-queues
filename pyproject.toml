@@ -20,8 +20,21 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = ["litestar>=2.24.0", "typing_extensions>=4.0.0"]
-description = "Task queue plugin for Litestar"
-keywords = ["litestar", "queue", "tasks", "workers", "background-jobs"]
+description = "Task queues, workers, schedules, and backend integrations for Litestar"
+keywords = [
+  "advanced-alchemy",
+  "background-jobs",
+  "cloud-run",
+  "litestar",
+  "queue",
+  "redis",
+  "scheduled-tasks",
+  "sqlspec",
+  "task-queue",
+  "tasks",
+  "valkey",
+  "workers",
+]
 license = { text = "MIT" }
 name = "litestar-queues"
 readme = "README.md"
@@ -29,12 +42,12 @@ requires-python = ">=3.10"
 version = "0.1.0"
 
 [project.urls]
-Changelog = "https://github.com/litestar-org/litestar-queues/releases/"
+Changelog = "https://github.com/cofin/litestar-queues/releases/"
 Discord = "https://discord.gg/litestar-919193495116337154"
-Documentation = "https://github.com/litestar-org/litestar-queues"
-Homepage = "https://github.com/litestar-org/litestar-queues"
-Issue = "https://github.com/litestar-org/litestar-queues/issues/"
-Source = "https://github.com/litestar-org/litestar-queues"
+Documentation = "https://cofin.github.io/litestar-queues/"
+Homepage = "https://cofin.github.io/litestar-queues/"
+Issue = "https://github.com/cofin/litestar-queues/issues/"
+Source = "https://github.com/cofin/litestar-queues"
 
 [project.scripts]
 litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint:main"
@@ -89,7 +102,7 @@ docs = [
   "sphinxcontrib-mermaid>=0.9.2",
   "sphinx-paramlinks>=0.6.0",
   "sphinx-togglebutton>=0.3.2",
-  "litestar-sphinx-theme @ git+https://github.com/litestar-org/litestar-sphinx-theme.git@v3",
+  "shibuya",
 ]
 tests = [
   "coverage[toml]",

@@ -1,115 +1,202 @@
-# litestar-queues
+# Litestar Queues
 
-Task queue support for Litestar applications. This package provides a typed
-task decorator, result handles, memory-backed queue persistence, immediate
-execution, local in-process workers, and Litestar plugin lifecycle wiring.
+[![PyPI](https://img.shields.io/pypi/v/litestar-queues)](https://pypi.org/project/litestar-queues/)
+[![Python](https://img.shields.io/pypi/pyversions/litestar-queues)](https://pypi.org/project/litestar-queues/)
+[![License](https://img.shields.io/pypi/l/litestar-queues)](https://github.com/cofin/litestar-queues/blob/main/LICENSE)
+[![CI](https://github.com/cofin/litestar-queues/actions/workflows/ci.yml/badge.svg)](https://github.com/cofin/litestar-queues/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-cofin.github.io-blue)](https://cofin.github.io/litestar-queues/)
 
-## Installation
+Litestar Queues adds background task queues to Litestar applications. Define a
+task with a decorator, enqueue it from a route handler or service, and let a
+worker run it now, later, after a retry, or on a schedule.
+
+Use it when a request should return quickly while work continues elsewhere:
+sending email, refreshing reports, syncing accounts, importing files, calling
+slow APIs, or running operational maintenance jobs.
+
+## What You Get
+
+- **Simple task API**: `@task(...)` registers async or sync callables with
+  defaults for queues, retries, priority, timeout, delay, and metadata.
+- **Litestar plugin**: `QueuePlugin` wires a managed `QueueService` into
+  Litestar dependency injection, app state, startup, shutdown, and CLI commands.
+- **Workers included**: run an in-app worker for local/lightweight apps or a
+  standalone worker process for production deployments.
+- **Scheduling**: run recurring interval or five-field cron tasks.
+- **Result tracking**: queued records move through `pending`, `scheduled`,
+  `running`, `completed`, `failed`, and `cancelled`.
+- **Pluggable backends**: start with the in-memory backend, then move to
+  SQLSpec, Advanced Alchemy, Redis, Valkey, or Cloud Run execution when needed.
+- **Realtime events**: publish lifecycle, progress, log, and custom task events
+  to your own Litestar Channels setup.
+
+## Install
 
 ```bash
 pip install litestar-queues
 ```
 
-Optional backend extras are reserved for deployments that need additional queue
-or execution integrations:
+The base install is intentionally small. It includes the task API, Litestar
+plugin, in-memory queue backend, immediate execution, and local workers.
+Persistent or remote integrations are optional extras.
 
-```bash
-# SQLSpec queue backend
-pip install litestar-queues[sqlspec]
+## Quick Start
 
-# Advanced Alchemy queue backend
-pip install litestar-queues[advanced-alchemy]
-
-# Redis queue backend
-pip install litestar-queues[redis]
-
-# Valkey queue backend
-pip install litestar-queues[valkey]
-
-# Cloud Run execution backend
-pip install litestar-queues[cloudrun]
-```
-
-The core install stays memory-only and does not require SQLSpec, Advanced
-Alchemy, Redis, Valkey, or Cloud Run client dependencies.
-
-## Usage
+Create an `app.py`:
 
 ```python
-from litestar import Litestar
-from litestar_queues import QueueConfig, QueuePlugin, task
+from litestar import Litestar, post
+from litestar.di import NamedDependency
+
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 
 
 @task("accounts.sync", queue="accounts", retries=3, timeout=300)
 async def sync_account(account_id: str) -> dict[str, str]:
     return {"account_id": account_id, "status": "synced"}
 
-app = Litestar(plugins=[QueuePlugin(config=QueueConfig())])
-```
-
-The plugin registers a `queue_service` dependency for route handlers:
-
-```python
-from litestar import post
-from litestar.di import NamedDependency
-from litestar_queues import QueueService
-
 
 @post("/accounts/{account_id:str}/sync")
-async def create_task(account_id: str, queue_service: NamedDependency[QueueService]) -> dict[str, str]:
+async def create_sync_job(
+    account_id: str,
+    queue_service: NamedDependency[QueueService],
+) -> dict[str, str]:
     result = await queue_service.enqueue(sync_account, account_id)
     return {"task_id": str(result.id), "status": result.status or "queued"}
+
+
+app = Litestar(
+    route_handlers=[create_sync_job],
+    plugins=[QueuePlugin(config=QueueConfig())],
+)
 ```
 
-Queue names are routing labels for tasks. They are separate from the queue
-backend (`memory`, `redis`, and so on). Set a task's default queue with the
-decorator, override it with `task.using(queue="...")`, or pass
-`queue="..."` to `queue_service.enqueue()`. Tasks use the `"default"` queue
-when no queue is set.
+Run the app:
 
-Workers process every queue unless you filter them:
+```bash
+LITESTAR_APP=app:app litestar run --reload
+```
+
+Call the route:
+
+```bash
+curl -X POST http://127.0.0.1:8000/accounts/acct-123/sync
+```
+
+Trigger the same job in whichever form fits the caller:
 
 ```python
-config = QueueConfig(worker_queues=("accounts",))
+# 1. Pass the decorated task object.
+await queue_service.enqueue(sync_account, account_id)
+
+# 2. Pass the registered task name when the caller should not import the task.
+await queue_service.enqueue("accounts.sync", account_id)
+
+# 3. Use the task helper when the QueuePlugin has an active default service.
+await sync_account.enqueue(account_id)
 ```
 
-```console
-LITESTAR_APP=app.asgi:app litestar queues run --queue accounts
-LITESTAR_APP=app.asgi:app litestar queues run --queue emails
+If you enqueue by string to avoid importing the task function, make sure the
+module is loaded at startup so the decorator can register the task name:
+
+```python
+app = Litestar(
+    route_handlers=[create_sync_job],
+    plugins=[
+        QueuePlugin(
+            config=QueueConfig(task_modules=("app.accounts.tasks",)),
+        ),
+    ],
+)
 ```
 
-`litestar queues run --queue ...` applies only to that standalone worker
-process and overrides `QueueConfig.worker_queues` for the run.
+All three forms can still override execution for one job:
 
-The default configuration runs a worker inside the Litestar application process.
-For heavier deployments, use a shared backend, set `in_app_worker=False` in the
-web app, and run workers separately:
+```python
+await queue_service.enqueue(
+    "accounts.sync",
+    account_id,
+    execution_backend="cloudrun",
+    execution_profile="heavy",
+)
+```
+
+By default, Litestar Queues uses in-memory queue storage and starts a local
+worker inside the Litestar process. That is useful for learning, tests, and
+small local apps. For production, use a persistent queue backend and usually run
+workers separately from the web process.
+
+## The Basic Model
+
+Litestar Queues keeps two decisions separate:
+
+- A **queue backend** stores task records and state.
+- An **execution backend** decides where claimed work runs.
+
+The default is `queue_backend="memory"` and `execution_backend="local"`.
+`memory` stores records inside the current Python process. `local` runs claimed
+tasks in the worker process. `immediate` is available for inline execution,
+mostly in tests.
+
+## Running Workers
+
+For local development, the in-app worker is the shortest path:
+
+```python
+config = QueueConfig(in_app_worker=True)
+```
+
+For heavier deployments, turn off the in-app worker in the web app:
 
 ```python
 config = QueueConfig(in_app_worker=False)
 ```
 
-```console
-LITESTAR_APP=app.asgi:app litestar queues run --drain-timeout 30
+Then run one or more standalone workers:
+
+```bash
+LITESTAR_APP=app:app litestar queues run --drain-timeout 30
 ```
 
-## Available Backend Names
+Workers process every queue by default. Restrict a worker to one or more queue
+names with `--queue`:
 
-| Backend | Type | Use Case |
-|---------|------|----------|
-| `memory` | queue | Tests and local development |
-| `immediate` | execution | Inline task execution |
-| `local` | execution | In-process worker execution |
-| `sqlspec` | queue | Optional SQLSpec-backed persistence |
-| `advanced-alchemy` | queue | Optional Advanced Alchemy persistence |
-| `redis` | queue | Optional Redis persistence |
-| `valkey` | queue | Optional Valkey persistence |
-| `cloudrun` | execution | Optional Cloud Run dispatch |
+```bash
+LITESTAR_APP=app:app litestar queues run --queue accounts --queue emails
+```
 
-The package registers optional backend names without importing their client
-libraries. Opening an optional backend requires the matching extra or an
-injected client. The `sqlspec` queue backend is available when the SQLSpec
-extra is installed:
+## Documentation
+
+- [Getting Started](https://cofin.github.io/litestar-queues/getting_started/index.html)
+- [Usage Guides](https://cofin.github.io/litestar-queues/usage/index.html)
+- [Backends](https://cofin.github.io/litestar-queues/usage/backends.html)
+- [API Reference](https://cofin.github.io/litestar-queues/reference/index.html)
+
+<details>
+<summary>Optional backend and execution choices</summary>
+
+Install only the extras your app needs:
+
+```bash
+pip install "litestar-queues[sqlspec]"
+pip install "litestar-queues[advanced-alchemy]"
+pip install "litestar-queues[redis]"
+pip install "litestar-queues[valkey]"
+pip install "litestar-queues[cloudrun]"
+```
+
+| Name | Type | Typical use |
+| --- | --- | --- |
+| `memory` | Queue backend | Tests, examples, and local in-process apps |
+| `sqlspec` | Queue backend | SQL-backed persistence through SQLSpec adapters |
+| `advanced-alchemy` | Queue backend | SQLAlchemy/Advanced Alchemy persistence |
+| `redis` | Queue backend | Redis-backed task records and worker wakeups |
+| `valkey` | Queue backend | Valkey-backed task records and worker wakeups |
+| `immediate` | Execution backend | Inline execution for tests and scripts |
+| `local` | Execution backend | In-process worker execution |
+| `cloudrun` | Execution backend | Dispatch to Google Cloud Run Jobs |
+
+SQLSpec example:
 
 ```python
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -117,151 +204,168 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from litestar_queues import QueueConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
-config = QueueConfig(
+queue_config = QueueConfig(
     queue_backend=SQLSpecBackendConfig(
-        config=AiosqliteConfig(
-            connection_config={"database": "queue.db"},
-        ),
+        config=AiosqliteConfig(connection_config={"database": "queue.db"}),
         run_migrations=True,
     ),
     execution_backend="local",
 )
 ```
 
-SQLSpec persists task arguments, keyword arguments, metadata, and results with
-SQLSpec's JSON serializer. Litestar applications should register SQLSpec's
-first-party plugin directly and pass the same `SQLSpec`/adapter config into
-`SQLSpecBackendConfig` when they want SQLSpec dependency injection.
-
-The `advanced-alchemy` queue backend is available when the Advanced Alchemy
-extra is installed:
-
-```python
-from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
-
-from litestar_queues import QueueConfig
-from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig
-
-alchemy_config = SQLAlchemyAsyncConfig(
-    connection_string="sqlite+aiosqlite:///queue.db",
-)
-
-config = QueueConfig(
-    queue_backend=AdvancedAlchemyBackendConfig(
-        sqlalchemy_config=alchemy_config,
-        create_schema=True,
-    ),
-    execution_backend="local",
-)
-```
-
-Litestar applications should register Advanced Alchemy's `SQLAlchemyPlugin`
-directly and pass the same `SQLAlchemyAsyncConfig` into the queue backend. The
-queue backend defaults to a `litestar_queue_task` table through its built-in
-model. Override `model_class` when an application needs a custom table name,
-base class, or migration ownership. When the app imports its queue config at
-startup, Advanced Alchemy's metadata includes that model for Alembic
-autogenerate. The backend uses operation-scoped sessions from that config and
-does not append database plugins itself.
-
-The `redis` queue backend is available when the Redis extra is installed:
+Redis example:
 
 ```python
 from litestar_queues import QueueConfig
 from litestar_queues.backends.redis import RedisBackendConfig
 
-config = QueueConfig(
-    queue_backend=RedisBackendConfig(
-        url="redis://localhost:6379/0",
-        key_prefix="litestar_queues",
-        notifications=True,
-    ),
+queue_config = QueueConfig(
+    queue_backend=RedisBackendConfig(url="redis://localhost:6379/0"),
     execution_backend="local",
 )
 ```
 
-The `valkey` queue backend uses the same queue contract with Valkey's asyncio
-client:
+</details>
+
+<details>
+<summary>Task options, scheduling, events, and background responses</summary>
+
+Task defaults can live on the decorator:
 
 ```python
-from litestar_queues import QueueConfig
-from litestar_queues.backends.valkey import ValkeyBackendConfig
-
-config = QueueConfig(
-    queue_backend=ValkeyBackendConfig(
-        url="redis://localhost:6379/0",
-        key_prefix="litestar_queues",
-        notifications=True,
-    ),
-    execution_backend="local",
+@task(
+    "reports.render",
+    queue="reports",
+    priority=10,
+    retries=2,
+    timeout=120,
+    run_after=30,
 )
+async def render_report(report_id: str) -> str:
+    return report_id
 ```
 
-Redis and Valkey store queue records in hashes indexed by a package key prefix,
-use a sorted set for delayed scheduling, use short-lived `SET NX` locks around
-claim and key-replacement mutations, and use pub/sub only for worker wakeups.
-Pub/sub notifications are not durable; a worker that misses a notification
-falls back to polling. Task arguments, keyword arguments, metadata, and results
-must be JSON serializable for these backends.
-
-The `cloudrun` execution backend is available when the Cloud Run extra is
-installed:
+Override those defaults for one enqueue call:
 
 ```python
-from litestar_queues import QueueConfig, task
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
-from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+result = await queue_service.enqueue(
+    render_report,
+    "report-1",
+    queue="slow-reports",
+    priority=1,
+    retries=5,
+    timeout=600,
+    metadata={"requested_by": "user-123"},
+)
+await result.wait(timeout=30)
+```
+
+Run recurring tasks with intervals or cron expressions:
+
+```python
+from datetime import timedelta
+
+from litestar_queues import task
 
 
-@task("reports.render", execution_backend="cloudrun", execution_profile="heavy")
-async def render_report(report_id: str) -> None:
+@task("reports.refresh", interval=timedelta(minutes=15), jitter=30)
+async def refresh_reports() -> None:
     ...
 
-config = QueueConfig(
-    queue_backend=SQLSpecBackendConfig(config=...),
-    execution_backend=CloudRunExecutionConfig(
-        project_id="example-project",
-        region="us-central1",
-        job_name="queue-worker",
-        profiles={"heavy": "queue-worker-heavy"},
-    ),
-)
+
+@task("billing.close-day", cron="0 0 * * *", timezone="UTC")
+async def close_billing_day() -> None:
+    ...
 ```
 
-Cloud Run dispatch stores an execution reference on the queue record. The
-package entry point `litestar-queues-cloudrun-worker` reads generic
-`LITESTAR_QUEUES_*` environment variables, loads the configured task modules,
-claims the persisted record, executes it with normal queue lifecycle semantics,
-and publishes task events through the configured event publisher. Applications
-own the queue backend configuration passed into the worker process.
-
-SQLSpec worker wakeups can use SQLSpec Events when configured:
+Publish progress from inside a running task:
 
 ```python
-from sqlspec.adapters.aiosqlite import AiosqliteConfig
+from litestar_queues.events import publish_task_log, publish_task_progress
 
-from litestar_queues import QueueConfig
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
-sqlspec_config = AiosqliteConfig(
-    connection_config={"database": "queue.db"},
-    extension_config={
-        "events": {
-            "backend": "table_queue",
-            "queue_table": "queue_events",
-            "poll_interval": 0.1,
-        }
-    },
-)
-
-queue_config = QueueConfig(
-    queue_backend=SQLSpecBackendConfig(
-        config=sqlspec_config,
-        create_schema=False,
-        run_migrations=True,
-        notifications=True,
-        notification_channel="queue_notifications",
-    ),
-    execution_backend="local",
-)
+@task("imports.process")
+async def process_import(path: str) -> None:
+    await publish_task_log("Import started")
+    await publish_task_progress(current=5, total=10, message="Halfway done")
 ```
+
+Queue work after a Litestar response is sent:
+
+```python
+from litestar import Response, post
+from litestar_queues import QueuedBackgroundTask
+
+
+@post("/trigger")
+async def trigger() -> Response[dict[str, str]]:
+    return Response(
+        {"status": "queued"},
+        background=QueuedBackgroundTask(process_import, "/tmp/data.csv"),
+    )
+```
+
+</details>
+
+<details>
+<summary>CLI commands</summary>
+
+`QueuePlugin` adds a `queues` command group to the Litestar CLI:
+
+```bash
+# Start a standalone worker.
+LITESTAR_APP=app:app litestar queues run --drain-timeout 30
+
+# Process only selected queues.
+LITESTAR_APP=app:app litestar queues run --queue accounts --max-concurrency 4
+
+# Print queue status counts.
+LITESTAR_APP=app:app litestar queues status
+
+# Emit queue status as JSON.
+LITESTAR_APP=app:app litestar queues status --json
+
+# Check whether a scheduler canary task completed recently.
+LITESTAR_APP=app:app litestar queues scheduler-health --minutes 5
+```
+
+Every command loads the application the same way the Litestar CLI does: via
+`LITESTAR_APP`, `--app`, or the standard app discovery paths.
+
+</details>
+
+<details>
+<summary>Development</summary>
+
+```bash
+# Install local development dependencies.
+make install
+
+# Run unit tests only.
+make test-unit
+
+# Run integration tests. Docker-backed services autoskip when unavailable.
+make test-integration
+
+# Build documentation.
+make docs
+
+# Run linting and type checks.
+make lint
+```
+
+The source lives under `src/litestar_queues`. Tests live under
+`src/tests/unit` and `src/tests/integration`.
+
+</details>
+
+## Links
+
+- Docs: <https://cofin.github.io/litestar-queues/>
+- Source: <https://github.com/cofin/litestar-queues>
+- Issues: <https://github.com/cofin/litestar-queues/issues>
+- Litestar: <https://litestar.dev/>
+
+## License
+
+MIT
