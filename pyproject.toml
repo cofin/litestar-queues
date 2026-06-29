@@ -108,11 +108,11 @@ tests = [
   "adbc-driver-sqlite>=1.2.0",
   # MySQL async + sync drivers
   "pymysql>=1.1.0",
-  "mysql-connector-python>=9.0.0",
   "pyarrow",
   "numpy",
+  "advanced-alchemy>=1.10.0",
   # BigQuery + Spanner emulators and SQLSpec adapters
-  "sqlspec[bigquery,spanner,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,adbc,arrow-odbc,aioodbc,fsspec,litestar,cloud-sql,cockroachdb,mysql-connector,mssql-python]>=0.51.0",
+  "sqlspec[aiosqlite,bigquery,spanner,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,adbc,arrow-odbc,aioodbc,fsspec,litestar,cloud-sql,cockroachdb,mysql-connector,mssql-python]>=0.51.0",
 ]
 
 #####################
@@ -174,11 +174,10 @@ preview = true
 skip-magic-trailing-comma = true
 
 [tool.ruff.lint]
-extend-safe-fixes = ["TC"]
 explicit-preview-rules = true
+extend-safe-fixes = ["TC"]
 extend-select = ["ASYNC119", "DOC201", "DOC402"]
 fixable = ["ALL"]
-preview = true
 ignore = [
   "A003",
   "A005",
@@ -217,6 +216,7 @@ ignore = [
   "TD003",
   "UP037",
 ]
+preview = true
 select = ["ALL"]
 
 [tool.ruff.lint.pydocstyle]

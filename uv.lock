@@ -281,6 +281,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiosqlite"
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
+]
+
+[[package]]
 name = "alabaster"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2075,13 +2084,13 @@ valkey = [
 [package.dev-dependencies]
 dev = [
     { name = "adbc-driver-sqlite" },
+    { name = "advanced-alchemy" },
     { name = "anyio" },
     { name = "auto-pytabs", extra = ["sphinx"] },
     { name = "coverage", extra = ["toml"] },
     { name = "litestar", extra = ["attrs", "pydantic", "standard"] },
     { name = "litestar-sphinx-theme" },
     { name = "mypy" },
-    { name = "mysql-connector-python" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -2110,7 +2119,7 @@ dev = [
     { name = "sphinx-paramlinks" },
     { name = "sphinx-togglebutton" },
     { name = "sphinxcontrib-mermaid" },
-    { name = "sqlspec", extra = ["adbc", "aiomysql", "aioodbc", "arrow-odbc", "asyncmy", "asyncpg", "bigquery", "cloud-sql", "cockroachdb", "duckdb", "fsspec", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "spanner"] },
+    { name = "sqlspec", extra = ["adbc", "aiomysql", "aioodbc", "aiosqlite", "arrow-odbc", "asyncmy", "asyncpg", "bigquery", "cloud-sql", "cockroachdb", "duckdb", "fsspec", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "spanner"] },
     { name = "valkey" },
 ]
 docs = [
@@ -2130,8 +2139,8 @@ docs = [
 ]
 tests = [
     { name = "adbc-driver-sqlite" },
+    { name = "advanced-alchemy" },
     { name = "coverage", extra = ["toml"] },
-    { name = "mysql-connector-python" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -2146,7 +2155,7 @@ tests = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "redis" },
-    { name = "sqlspec", extra = ["adbc", "aiomysql", "aioodbc", "arrow-odbc", "asyncmy", "asyncpg", "bigquery", "cloud-sql", "cockroachdb", "duckdb", "fsspec", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "spanner"] },
+    { name = "sqlspec", extra = ["adbc", "aiomysql", "aioodbc", "aiosqlite", "arrow-odbc", "asyncmy", "asyncpg", "bigquery", "cloud-sql", "cockroachdb", "duckdb", "fsspec", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "spanner"] },
     { name = "valkey" },
 ]
 
@@ -2165,13 +2174,13 @@ provides-extras = ["advanced-alchemy", "cloudrun", "redis", "sqlspec", "valkey"]
 [package.metadata.requires-dev]
 dev = [
     { name = "adbc-driver-sqlite", specifier = ">=1.2.0" },
+    { name = "advanced-alchemy", specifier = ">=1.10.0" },
     { name = "anyio" },
     { name = "auto-pytabs", extras = ["sphinx"], specifier = ">=0.4.0" },
     { name = "coverage", extras = ["toml"] },
     { name = "litestar", extras = ["standard", "attrs", "pydantic"] },
     { name = "litestar-sphinx-theme", git = "https://github.com/litestar-org/litestar-sphinx-theme.git?rev=v3" },
     { name = "mypy" },
-    { name = "mysql-connector-python", specifier = ">=9.0.0" },
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -2194,7 +2203,7 @@ dev = [
     { name = "sphinx-paramlinks", specifier = ">=0.6.0" },
     { name = "sphinx-togglebutton", specifier = ">=0.3.2" },
     { name = "sphinxcontrib-mermaid", specifier = ">=0.9.2" },
-    { name = "sqlspec", extras = ["bigquery", "spanner", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "adbc", "arrow-odbc", "aioodbc", "fsspec", "litestar", "cloud-sql", "cockroachdb", "mysql-connector", "mssql-python"], specifier = ">=0.51.0" },
+    { name = "sqlspec", extras = ["aiosqlite", "bigquery", "spanner", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "adbc", "arrow-odbc", "aioodbc", "fsspec", "litestar", "cloud-sql", "cockroachdb", "mysql-connector", "mssql-python"], specifier = ">=0.51.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 docs = [
@@ -2210,8 +2219,8 @@ docs = [
 ]
 tests = [
     { name = "adbc-driver-sqlite", specifier = ">=1.2.0" },
+    { name = "advanced-alchemy", specifier = ">=1.10.0" },
     { name = "coverage", extras = ["toml"] },
-    { name = "mysql-connector-python", specifier = ">=9.0.0" },
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -2224,7 +2233,7 @@ tests = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "redis", specifier = ">=5.0.0" },
-    { name = "sqlspec", extras = ["bigquery", "spanner", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "adbc", "arrow-odbc", "aioodbc", "fsspec", "litestar", "cloud-sql", "cockroachdb", "mysql-connector", "mssql-python"], specifier = ">=0.51.0" },
+    { name = "sqlspec", extras = ["aiosqlite", "bigquery", "spanner", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "adbc", "arrow-odbc", "aioodbc", "fsspec", "litestar", "cloud-sql", "cockroachdb", "mysql-connector", "mssql-python"], specifier = ">=0.51.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 
@@ -4975,6 +4984,9 @@ aiomysql = [
 ]
 aioodbc = [
     { name = "aioodbc" },
+]
+aiosqlite = [
+    { name = "aiosqlite" },
 ]
 arrow-odbc = [
     { name = "arrow-odbc" },
