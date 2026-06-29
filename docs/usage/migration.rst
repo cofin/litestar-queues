@@ -62,7 +62,7 @@ are imported only by their own public subpackages:
 
 Applications that already configure SQLSpec or Advanced Alchemy should keep
 owning those framework plugins and pass the configured objects to
-``QueueConfig.queue_backend_config``. ``litestar_queues`` does not register
+the typed queue backend config object. ``litestar_queues`` does not register
 SQLSpec or Advanced Alchemy plugins on behalf of the application.
 
 Schedules
@@ -99,6 +99,14 @@ deduplicated scheduled record per registered schedule key. If a pending
 scheduled record exists but the schedule metadata has changed, startup cancels
 the old record and creates a new one with the updated definition.
 
+Cron schedules use five fields: minute, hour, day-of-month, month, and
+day-of-week. Litestar Queues supports wildcards, lists, ranges, named months and
+weekdays, positive steps, Sunday as ``0`` or ``7``, and ``?`` in the two day
+fields. It does not support Quartz-style extensions such as seconds or year
+fields, ``@reboot``, ``L``, ``W``, or ``#`` modifiers. Rewrite those schedules as
+multiple supported cron expressions or move the advanced calendar rule into
+application code.
+
 Realtime Updates
 ----------------
 
@@ -109,11 +117,11 @@ contract:
 .. code-block:: python
 
    from litestar_queues import QueueConfig
+   from litestar_queues.backends.redis import RedisBackendConfig
    from litestar_queues.events import QueueEventConfig
 
    config = QueueConfig(
-       queue_backend="redis",
-       queue_backend_config={...},
+       queue_backend=RedisBackendConfig(url="redis://localhost:6379/0"),
        execution_backend="local",
        event_config=QueueEventConfig(
            enabled=True,

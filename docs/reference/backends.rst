@@ -49,11 +49,6 @@ SQLSpec
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: litestar_queues.backends.sqlspec.store
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 .. automodule:: litestar_queues.backends.sqlspec.stores.factory
    :members:
    :undoc-members:
@@ -72,7 +67,7 @@ Advanced Alchemy
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: litestar_queues.backends.advanced_alchemy.models
+.. automodule:: litestar_queues.backends.advanced_alchemy.mixins
    :members:
    :undoc-members:
    :show-inheritance:

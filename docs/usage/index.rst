@@ -52,6 +52,20 @@ Choose a Topic
       Select queue and execution backends while keeping optional drivers
       optional.
 
+   .. grid-item-card:: Dependency Resolver
+      :link: dependency-resolver
+      :link-type: doc
+
+      Inject services into task callables through an external DI container
+      with the optional ``task_dependency_resolver`` hook.
+
+   .. grid-item-card:: CLI
+      :link: cli
+      :link-type: doc
+
+      Run worker fleets, inspect queue status, and check scheduler health
+      via the ``litestar queues`` subcommand group.
+
 Recommended Path
 ----------------
 
@@ -72,7 +86,8 @@ Recommended Path
    schedules
    workers
    events
-   quickstart
    backends
+   cli
+   dependency-resolver
    testing
    migration

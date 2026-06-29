@@ -198,3 +198,5 @@ coverage.json
 .beads-credential-key
 GEMINI.md
 test-build
+.antigravitycli/
+opencode.json

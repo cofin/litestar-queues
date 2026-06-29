@@ -23,10 +23,10 @@ repos:
       - id: end-of-file-fixer
       - id: mixed-line-ending
       - id: trailing-whitespace
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: "v0.15.12"
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "v0.15.20"
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: ["--fix"]
       - id: ruff-format
   - repo: https://github.com/codespell-project/codespell
@@ -42,7 +42,7 @@ repos:
         exclude: "test*|tools"
         args: ["--use-tuple"]
   - repo: https://github.com/ariebovenberg/slotscheck
-    rev: v0.19.1
+    rev: v0.20.0
     hooks:
       - id: slotscheck
         exclude: "docs|.github"

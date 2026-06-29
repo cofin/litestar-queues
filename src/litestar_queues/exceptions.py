@@ -1,10 +1,4 @@
-__all__ = (
-    "MissingDependencyError",
-    "NonRetryableError",
-    "QueueConfigurationError",
-    "QueueError",
-    "non_retryable",
-)
+__all__ = ("MissingDependencyError", "NonRetryableError", "QueueConfigurationError", "QueueError", "non_retryable")
 
 
 class QueueError(Exception):
@@ -19,7 +13,7 @@ class NonRetryableError(QueueError):
     """Raised by a task to mark the current failure as permanent."""
 
 
-def non_retryable(message: str) -> None:
+def non_retryable(message: "str") -> "None":
     """Raise a non-retryable task failure.
 
     Raises:
@@ -31,7 +25,7 @@ def non_retryable(message: str) -> None:
 class MissingDependencyError(QueueError, ImportError):
     """Raised when a required optional dependency is not installed."""
 
-    def __init__(self, package: str, install_package: str | None = None) -> None:
+    def __init__(self, package: "str", install_package: "str | None" = None) -> "None":
         """Initialize missing dependency error.
 
         Args:

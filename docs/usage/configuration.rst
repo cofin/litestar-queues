@@ -20,7 +20,7 @@ queue service lifecycle:
    queue_config = QueueConfig(
        queue_backend="memory",
        execution_backend="local",
-       start_worker=True,
+       in_app_worker=True,
        task_modules=("app.tasks",),
    )
 
@@ -28,21 +28,27 @@ queue service lifecycle:
 
 The plugin registers a ``QueueService`` dependency, stores the opened service on
 application state, loads configured task modules during startup, initializes
-registered schedules, and starts a local worker when ``start_worker=True``.
+registered schedules, and starts a local worker when ``in_app_worker=True``.
+The default in-app worker is a low-friction setup for tests, local development,
+and lightweight deployments; heavier production workloads can run standalone
+workers when web and background capacity should scale independently.
+Route handlers should request the dependency explicitly with
+``queue_service: NamedDependency[QueueService]``.
 
-Standalone Service
-==================
+Worker Placement
+================
 
-Use ``QueueService`` directly in scripts, tests, or external worker entry
-points:
+By default, ``QueuePlugin`` starts a worker inside the Litestar application
+process. To split web and background capacity, use a shared queue backend,
+disable the in-app worker in the web process, and run a separate worker process:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, QueueService
+   queue_config = QueueConfig(in_app_worker=False)
 
+.. code-block:: console
 
-   async with QueueService(QueueConfig(queue_backend="memory")) as queue_service:
-       await queue_service.initialize_schedules()
+   $ LITESTAR_APP=app.asgi:app litestar queues run --drain-timeout 30
 
 Core Settings
 =============
@@ -55,24 +61,18 @@ Core Settings
      - Purpose
    * - ``queue_backend``
      - ``"memory"``
-     - Queue persistence backend name.
-   * - ``queue_backend_config``
-     - ``{}``
-     - Backend-specific settings or injected clients.
+     - Queue persistence backend name or typed backend config object.
    * - ``execution_backend``
-     - ``"immediate"``
-     - Default execution backend for enqueued records.
-   * - ``execution_backend_config``
-     - ``{}``
-     - Execution backend-specific settings.
+     - ``"local"``
+     - Default execution backend name or typed execution config object.
    * - ``task_modules``
      - ``()``
      - Modules imported on startup so task decorators register tasks.
    * - ``initialize_schedules``
      - ``True``
      - Create or refresh pending records for scheduled tasks on startup.
-   * - ``start_worker``
-     - ``False``
+   * - ``in_app_worker``
+     - ``True``
      - Start an in-process worker with the Litestar app.
 
 Dependency and State Keys
@@ -94,7 +94,7 @@ custom naming:
 Worker Settings
 ===============
 
-Worker settings are used when ``start_worker=True`` or when constructing a
+Worker settings are used when ``in_app_worker=True`` or when constructing a
 ``Worker`` manually:
 
 .. list-table::

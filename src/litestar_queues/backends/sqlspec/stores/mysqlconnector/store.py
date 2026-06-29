@@ -1,80 +1,17 @@
 """mysqlconnector SQLSpec queue stores."""
 
-from sqlspec import sql
-
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores._families import MySQLQueueStore
 
 __all__ = ("MysqlConnectorAsyncQueueStore", "MysqlConnectorSyncQueueStore")
 
 
-class MysqlConnectorSyncQueueStore(SQLSpecQueueStore):
+class MysqlConnectorSyncQueueStore(MySQLQueueStore):
     """mysqlconnector sync SQLSpec queue statement store."""
 
     __slots__ = ()
 
-    id_type = "VARCHAR(64)"
-    indexed_text_type = "VARCHAR(255)"
-    json_type = "JSON"
-    timestamp_type = "VARCHAR(64)"
-    error_type = "LONGTEXT"
 
-    def create_statements(self) -> list[str]:
-        """Return statements that create mysqlconnector sync queue artifacts."""
-        return [_create_table_statement(self)]
-
-    def drop_statements(self) -> list[str]:
-        """Return statements that drop mysqlconnector sync queue artifacts."""
-        return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
-
-
-class MysqlConnectorAsyncQueueStore(SQLSpecQueueStore):
+class MysqlConnectorAsyncQueueStore(MySQLQueueStore):
     """mysqlconnector async SQLSpec queue statement store."""
 
     __slots__ = ()
-
-    id_type = "VARCHAR(64)"
-    indexed_text_type = "VARCHAR(255)"
-    json_type = "JSON"
-    timestamp_type = "VARCHAR(64)"
-    error_type = "LONGTEXT"
-
-    def create_statements(self) -> list[str]:
-        """Return statements that create mysqlconnector async queue artifacts."""
-        return [_create_table_statement(self)]
-
-    def drop_statements(self) -> list[str]:
-        """Return statements that drop mysqlconnector async queue artifacts."""
-        return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
-
-
-def _create_table_statement(store: SQLSpecQueueStore) -> str:
-    table_name = store.table_name
-    return f"""
-    CREATE TABLE IF NOT EXISTS {table_name} (
-        id VARCHAR(64) PRIMARY KEY,
-        task_name VARCHAR(255) NOT NULL,
-        args_json {store._payload_json_type("args_json")} NOT NULL,
-        kwargs_json {store._payload_json_type("kwargs_json")} NOT NULL,
-        queue VARCHAR(255) NOT NULL,
-        execution_backend VARCHAR(255) NOT NULL,
-        execution_profile VARCHAR(255),
-        execution_ref VARCHAR(255),
-        status VARCHAR(255) NOT NULL,
-        priority INTEGER NOT NULL,
-        max_retries INTEGER NOT NULL,
-        retry_count INTEGER NOT NULL,
-        scheduled_at VARCHAR(64),
-        created_at VARCHAR(64) NOT NULL,
-        started_at VARCHAR(64),
-        completed_at VARCHAR(64),
-        heartbeat_at VARCHAR(64),
-        result_json {store._result_json_type("result_json")} NOT NULL,
-        error LONGTEXT,
-        task_key VARCHAR(255) UNIQUE,
-        metadata_json {store._metadata_json_type("metadata_json")} NOT NULL,
-        INDEX {store._index_name("pending")} (
-            status, queue, execution_backend, scheduled_at, priority, created_at
-        ),
-        INDEX {store._index_name("heartbeat")} (status, heartbeat_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    """

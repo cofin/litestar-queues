@@ -32,17 +32,34 @@ The default is best-effort publishing with warnings on sink failures.
 Event Envelope
 ==============
 
-``QueueEvent`` is a stable JSON-compatible envelope. It preserves null-valued
-fields so clients can rely on a consistent shape for lifecycle, progress, log,
-and custom events. Core fields include:
+``QueueEvent`` is a stable JSON-compatible envelope with a camelCase wire
+format. Field names on the wire are the camelCase aliases produced by
+``msgspec.Struct(rename="camel")``; the Python attribute names stay
+snake_case. Null-valued top-level fields are preserved so clients can rely on
+a consistent shape for lifecycle, progress, log, and custom events.
 
-* ``id`` and ``schema_version``,
-* ``type`` and ``scope``,
-* ``task_id``, ``task_name``, ``queue``, ``worker_id``,
-* execution backend and profile,
-* attempt and sequence,
-* progress, level, message, actor, entity, and payload fields,
-* ``occurred_at`` as an ISO timestamp.
+Core fields (Python name → wire name):
+
+* ``id`` → ``id``, ``schema_version`` → ``schemaVersion``
+* ``type`` → ``type``, ``scope`` → ``scope``, ``scope_key`` → ``scopeKey``
+* ``task_id`` → ``taskId``, ``task_name`` → ``taskName``
+* ``queue`` → ``queue``, ``worker_id`` → ``workerId``
+  (``workerId`` is populated for events emitted from worker-driven
+  executions; the default identity is ``worker-{pid}``. Service-driven
+  executions without an attached :class:`~litestar_queues.Worker` leave
+  it ``null``.)
+* ``execution_backend`` → ``executionBackend``,
+  ``execution_profile`` → ``executionProfile``
+* ``attempt``, ``sequence``, ``level``, ``message``
+* ``progress_current`` → ``progressCurrent``,
+  ``progress_total`` → ``progressTotal``,
+  ``progress_percent`` → ``progressPercent``
+* ``actor``, ``entity``, ``payload`` (payload contents are passed through
+  verbatim and are NOT renamed)
+* ``occurred_at`` → ``occurredAt`` (RFC 3339 UTC with a trailing ``Z``)
+* ``event_key`` → ``eventKey``: optional dedup key for
+  subscribers; ``stream_queue_events`` deduplicates on this when set and falls
+  back to ``id`` otherwise.
 
 Publishing From Tasks
 =====================
@@ -96,6 +113,11 @@ live updates:
 
 The application owns route paths, authorization, tenant filtering, and the
 Channels backend configuration.
+
+Subscribers connected through ``stream_queue_events`` receive at-most-once
+delivery per ``eventKey`` (or per ``id`` when no key is set) within a
+single connection. Set ``QueueEvent(..., event_key=...)`` at publish
+time when worker-level retries should not double-emit downstream.
 
 Testing Events
 ==============

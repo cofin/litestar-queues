@@ -1,15 +1,17 @@
 import asyncio
 import contextlib
 import os
-from collections.abc import AsyncIterator, Callable, Mapping
 from enum import IntEnum
 from importlib import import_module
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from litestar_queues.config import QueueConfig
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Mapping
 
 __all__ = ("CloudRunExitCode", "execute_cloudrun_task", "main")
 
@@ -29,11 +31,11 @@ class CloudRunExitCode(IntEnum):
 
 async def execute_cloudrun_task(
     *,
-    config: QueueConfig | None = None,
-    service: QueueService | None = None,
-    service_factory: Callable[[], Any] | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CloudRunExitCode:
+    config: "QueueConfig | None" = None,
+    service: "QueueService | None" = None,
+    service_factory: "Callable[[], Any] | None" = None,
+    env: "Mapping[str, str] | None" = None,
+) -> "CloudRunExitCode":
     """Execute one persisted queue record in a Cloud Run task process.
 
     Returns:
@@ -64,18 +66,30 @@ async def execute_cloudrun_task(
 
         claimed = await queue.get_queue_backend().claim_task(record.id)
         if claimed is None:
+            await queue.publish_claim_lost(record, phase="claim")
             return CloudRunExitCode.CLAIM_LOST
 
-        heartbeat_task = asyncio.create_task(_heartbeat_loop(queue, claimed.id))
+        expected_retry_count = claimed.retry_count
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count)
+        )
+        execution_task = asyncio.create_task(queue.execute_record(claimed))
         try:
-            updated = await queue.execute_record(claimed)
+            done, _pending = await asyncio.wait({heartbeat_task, execution_task}, return_when=asyncio.FIRST_COMPLETED)
+            if heartbeat_task in done and not heartbeat_task.result():
+                execution_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await execution_task
+                await queue.publish_claim_lost(claimed, phase="heartbeat", expected_retry_count=expected_retry_count)
+                return CloudRunExitCode.CLAIM_LOST
+            updated = await execution_task
         except asyncio.CancelledError:
             return CloudRunExitCode.CANCELLED
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
-            await queue.get_queue_backend().null_heartbeats([claimed.id])
+            await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
 
     if updated.status == "completed":
         return CloudRunExitCode.SUCCESS
@@ -84,7 +98,7 @@ async def execute_cloudrun_task(
     return CloudRunExitCode.FAILURE
 
 
-def main() -> None:
+def main() -> "None":
     """Console entry point for Cloud Run task execution.
 
     Raises:
@@ -93,21 +107,22 @@ def main() -> None:
     raise SystemExit(int(asyncio.run(execute_cloudrun_task())))
 
 
-async def _heartbeat_loop(queue: QueueService, task_id: UUID) -> None:
+async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int") -> "bool":
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
-        await queue.get_queue_backend().touch_heartbeat(task_id)
+        if not await queue.get_queue_backend().touch_heartbeat(task_id, expected_retry_count=expected_retry_count):
+            return False
 
 
 @contextlib.asynccontextmanager
 async def _provide_service(
     *,
-    config: QueueConfig | None,
-    service: QueueService | None,
-    service_factory: Callable[[], Any] | None,
-    env: Mapping[str, str],
-) -> AsyncIterator[QueueService]:
+    config: "QueueConfig | None",
+    service: "QueueService | None",
+    service_factory: "Callable[[], Any] | None",
+    env: "Mapping[str, str]",
+) -> "AsyncIterator[QueueService]":
     if service is not None:
         yield service
         return
@@ -131,7 +146,7 @@ async def _provide_service(
         yield queue
 
 
-def _load_config_factory(config: QueueConfig | None, env: Mapping[str, str]) -> Callable[[], Any] | None:
+def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "Callable[[], Any] | None":
     env_var = _env_name(config, "CONFIG_FACTORY")
     import_path = env.get(env_var)
     if not import_path:
@@ -147,7 +162,7 @@ def _load_config_factory(config: QueueConfig | None, env: Mapping[str, str]) -> 
     return cast("Callable[[], Any]", factory)
 
 
-def _load_configured_task_modules(config: QueueConfig, env: Mapping[str, str]) -> None:
+def _load_configured_task_modules(config: "QueueConfig", env: "Mapping[str, str]") -> "None":
     modules = list(config.task_modules)
     env_modules = env.get(_env_name(config, "TASK_MODULES"))
     if env_modules:
@@ -156,10 +171,8 @@ def _load_configured_task_modules(config: QueueConfig, env: Mapping[str, str]) -
         load_task_modules(tuple(modules), force_reload=True)
 
 
-def _env_name(config: QueueConfig | None, suffix: str) -> str:
-    raw_config = config.execution_backend_config if config is not None else {}
-    if isinstance(raw_config, dict) and "cloudrun" in raw_config:
-        raw_config = raw_config["cloudrun"]
+def _env_name(config: "QueueConfig | None", suffix: "str") -> "str":
+    raw_config = config.execution_backend if config is not None else None
     env_name = getattr(raw_config, "env_name", None)
     if callable(env_name):
         return str(env_name(suffix))

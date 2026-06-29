@@ -1,17 +1,19 @@
 """Advanced Alchemy queue task repository."""
 
-from litestar_queues.backends.advanced_alchemy._typing import missing_advanced_alchemy_error
-from litestar_queues.backends.advanced_alchemy.models import QueueTaskModel
+from typing import Any, cast
 
-try:
-    from advanced_alchemy.repository import SQLAlchemyAsyncRepository
-except ModuleNotFoundError as exc:
-    raise missing_advanced_alchemy_error(exc) from exc
+from advanced_alchemy.repository import SQLAlchemyAsyncRepository
 
 __all__ = ("QueueTaskRepository",)
 
 
-class QueueTaskRepository(SQLAlchemyAsyncRepository[QueueTaskModel]):
+class QueueTaskRepository(SQLAlchemyAsyncRepository[Any]):
     """Repository for queue task records."""
 
-    model_type = QueueTaskModel
+    @classmethod
+    def for_model(cls, model_class: "type[Any]") -> 'type["QueueTaskRepository"]':
+        """Return a repository subclass bound to ``model_class``."""
+        return cast(
+            "type[QueueTaskRepository]",
+            type(f"QueueTaskRepositoryFor{model_class.__name__}", (cls,), {"model_type": model_class}),
+        )

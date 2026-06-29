@@ -35,6 +35,47 @@ Use ``cron`` for calendar-based schedules:
 Cron aliases such as ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, and
 ``@yearly`` are supported.
 
+Supported Cron Syntax
+---------------------
+
+Litestar Queues accepts standard five-field cron expressions:
+
+.. code-block:: text
+
+   minute hour day-of-month month day-of-week
+
+The supported grammar includes:
+
+- ``*`` wildcards;
+- comma lists, such as ``JAN,MAR``;
+- numeric and named ranges, such as ``9-17`` and ``MON-FRI``;
+- positive steps, such as ``*/15``;
+- named months and weekdays;
+- Sunday as either ``0`` or ``7``; and
+- ``?`` in ``day-of-month`` or ``day-of-week`` to mean no specific value.
+
+When both ``day-of-month`` and ``day-of-week`` are restricted, either field may
+match. For example, ``0 0 1 * MON`` runs at midnight on the first day of the
+month and on Mondays.
+
+Unsupported Cron Syntax
+-----------------------
+
+Litestar Queues rejects cron extensions that are not part of the v1 grammar,
+including:
+
+- seconds fields;
+- year fields;
+- ``@reboot``;
+- ``L``, ``W``, and ``#`` day modifiers;
+- empty list items;
+- reversed ranges;
+- invalid names or out-of-range values; and
+- zero or negative step values.
+
+Use multiple schedules or application code for calendar rules that require
+unsupported cron extensions.
+
 Startup Synchronization
 =======================
 
@@ -57,7 +98,7 @@ Configuration
        task_modules=("app.tasks",),
        initialize_schedules=True,
        execution_backend="local",
-       start_worker=True,
+       in_app_worker=True,
    )
 
 Set ``initialize_schedules=False`` when schedules are initialized by a separate

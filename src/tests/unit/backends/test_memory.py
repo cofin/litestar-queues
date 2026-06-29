@@ -1,0 +1,220 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.task import clear_task_registry
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def clean_task_registry() -> "None":
+    clear_task_registry()
+
+
+async def test_memory_backend_deduplicates_active_keys_and_replaces_terminal_keys() -> "None":
+    backend = InMemoryQueueBackend()
+
+    first = await backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
+    duplicate = await backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
+
+    assert duplicate.id == first.id
+    assert duplicate.kwargs == {"account_id": "acct-1"}
+
+    await backend.complete_task(first.id, result={"ok": True})
+    replacement = await backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
+
+    assert replacement.id != first.id
+    assert replacement.kwargs == {"account_id": "acct-2"}
+
+
+async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle() -> "None":
+    backend = InMemoryQueueBackend()
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    low = await backend.enqueue("tasks.low", priority=1)
+    scheduled = await backend.enqueue("tasks.later", priority=100, scheduled_at=later)
+    high = await backend.enqueue("tasks.high", priority=10)
+
+    claimed = await backend.claim_next()
+
+    assert claimed is not None
+    assert claimed.id == high.id
+    assert claimed.status == "running"
+    assert claimed.started_at is not None
+    assert await backend.get_task(low.id) is low
+    assert (await backend.get_task(scheduled.id)) is scheduled
+
+
+async def test_memory_backend_fail_task_retries_then_fails_permanently() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.flaky", max_retries=1)
+
+    await backend.claim_task(record.id)
+    retried = await backend.fail_task(record.id, "first failure")
+
+    assert retried is record
+    assert retried.status == "pending"
+    assert retried.retry_count == 1
+
+    await backend.claim_task(record.id)
+    failed = await backend.fail_task(record.id, "second failure")
+
+    assert failed is record
+    assert failed.status == "failed"
+    assert failed.error == "second failure"
+    assert failed.completed_at is not None
+
+
+async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.stale", max_retries=1, metadata={"requeue_on_stale": True})
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stored = await backend.get_task(record.id)
+
+    assert result.requeued == 1
+    assert result.failed == 0
+    assert result.skipped == 0
+    assert stored is record
+    assert stored.status == "pending"
+    assert stored.retry_count == 1
+    assert stored.started_at is None
+    assert stored.heartbeat_at is None
+
+
+async def test_memory_backend_fails_stale_running_task_when_retries_are_exhausted() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.stale_exhausted", max_retries=0, metadata={"requeue_on_stale": True})
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stored = await backend.get_task(record.id)
+
+    assert result.requeued == 0
+    assert result.failed == 1
+    assert result.handler_needed == 0
+    assert stored is record
+    assert stored.status == "failed"
+    assert stored.error == "Task heartbeat stale"
+    assert stored.completed_at is not None
+    assert stored.heartbeat_at is None
+
+
+async def test_memory_backend_fails_stale_running_task_when_requeue_policy_is_disabled() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.stale_no_requeue", max_retries=3, metadata={"requeue_on_stale": False})
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stored = await backend.get_task(record.id)
+
+    assert result.requeued == 0
+    assert result.failed == 1
+    assert result.handler_needed == 1
+    assert stored is record
+    assert stored.status == "failed"
+    assert stored.retry_count == 0
+    assert stored.error == "Task heartbeat stale"
+
+
+async def test_memory_backend_heartbeat_is_fenced_by_status_and_retry_count() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.heartbeat", max_retries=1)
+
+    assert await backend.touch_heartbeat(record.id) is False
+
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    assert await backend.touch_heartbeat(record.id, expected_retry_count=claimed.retry_count + 1) is False
+    assert await backend.touch_heartbeat(record.id, expected_retry_count=claimed.retry_count) is True
+
+
+async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.fenced", max_retries=1)
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed_retry_count = claimed.retry_count
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    stale_result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    assert stale_result.requeued == 1
+
+    assert await backend.complete_task(record.id, result="late", expected_retry_count=claimed_retry_count) is None
+    assert await backend.fail_task(record.id, "late failure", expected_retry_count=claimed_retry_count) is None
+
+    stored = await backend.get_task(record.id)
+    assert stored is record
+    assert stored.status == "pending"
+    assert stored.retry_count == 1
+
+
+async def test_memory_backend_null_heartbeats_is_idempotent() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.cleanup")
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+
+    await backend.null_heartbeats([record.id])
+    await backend.null_heartbeats([record.id])
+    stored = await backend.get_task(record.id)
+
+    assert stored is record
+    assert stored.heartbeat_at is None
+
+
+async def test_memory_backend_null_heartbeats_is_fenced_by_retry_count() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.cleanup_fenced", max_retries=1)
+    first_claim = await backend.claim_task(record.id)
+    assert first_claim is not None
+    first_retry_count = first_claim.retry_count
+    first_claim.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    assert result.requeued == 1
+    second_claim = await backend.claim_task(record.id)
+    assert second_claim is not None
+    second_heartbeat = second_claim.heartbeat_at
+
+    await backend.null_heartbeats([record.id], expected_retry_count=first_retry_count)
+    stored = await backend.get_task(record.id)
+
+    assert stored is record
+    assert stored.heartbeat_at == second_heartbeat
+
+
+async def test_queue_service_memory_fixture_yields_running_service(queue_service_memory: "QueueService") -> "None":
+    """The unit-tier `queue_service_memory` fixture yields a running QueueService."""
+    assert queue_service_memory.config.queue_backend == "memory"
+    assert queue_service_memory.config.execution_backend == "local"
+
+
+async def test_queue_service_local_enqueue_persists_until_worker_processes_record() -> "None":
+    @task("tasks.upper", retries=1)
+    async def uppercase(value: "str") -> "str":
+        return value.upper()
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        result = await service.enqueue(uppercase, "queue")
+
+        pending_status = result.status
+        assert pending_status == "pending"
+
+        record = await service.claim_next()
+        assert record is not None
+        await service.execute_record(record)
+        await result.refresh()
+
+    completed_status = result.status
+    assert completed_status == "completed"
+    assert result.result == "QUEUE"

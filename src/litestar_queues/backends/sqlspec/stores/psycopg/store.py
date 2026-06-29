@@ -1,87 +1,23 @@
 """psycopg SQLSpec queue stores."""
 
-from sqlspec import sql
+from typing import ClassVar
 
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores._families import PostgresQueueStore
 
 __all__ = ("PsycopgAsyncQueueStore", "PsycopgSyncQueueStore")
 
 
-class PsycopgSyncQueueStore(SQLSpecQueueStore):
+class PsycopgSyncQueueStore(PostgresQueueStore):
     """psycopg sync SQLSpec queue statement store."""
 
     __slots__ = ()
 
-    json_type = "JSONB"
-    timestamp_type = "TIMESTAMPTZ"
-
-    def create_statements(self) -> list[str]:
-        """Return statements that create psycopg sync queue artifacts."""
-        return _create_statements(self)
-
-    def drop_statements(self) -> list[str]:
-        """Return statements that drop psycopg sync queue artifacts."""
-        return _drop_statements(self)
-
-    def _create_index_statements(self) -> list[str]:
-        return _create_index_statements(self)
+    table_storage_parameters: "ClassVar[bool]" = True
 
 
-class PsycopgAsyncQueueStore(SQLSpecQueueStore):
+class PsycopgAsyncQueueStore(PostgresQueueStore):
     """psycopg async SQLSpec queue statement store."""
 
     __slots__ = ()
 
-    json_type = "JSONB"
-    timestamp_type = "TIMESTAMPTZ"
-
-    def create_statements(self) -> list[str]:
-        """Return statements that create psycopg async queue artifacts."""
-        return _create_statements(self)
-
-    def drop_statements(self) -> list[str]:
-        """Return statements that drop psycopg async queue artifacts."""
-        return _drop_statements(self)
-
-    def _create_index_statements(self) -> list[str]:
-        return _create_index_statements(self)
-
-
-def _create_statements(store: SQLSpecQueueStore) -> list[str]:
-    return [
-        f"{store._to_sql(store._create_table_statement())} WITH (fillfactor = 80)",
-        *_create_index_statements(store),
-        (
-            f"ALTER TABLE {store.table_name} SET ("
-            "autovacuum_vacuum_scale_factor = 0.05, "
-            "autovacuum_analyze_scale_factor = 0.02)"
-        ),
-    ]
-
-
-def _drop_statements(store: SQLSpecQueueStore) -> list[str]:
-    return [
-        store._to_sql(sql.drop_index(store._index_name("heartbeat")).if_exists()),
-        store._to_sql(sql.drop_index(store._index_name("scheduled")).if_exists()),
-        store._to_sql(sql.drop_index(store._index_name("pending")).if_exists()),
-        store._to_sql(sql.drop_table(store.table_name).if_exists()),
-    ]
-
-
-def _create_index_statements(store: SQLSpecQueueStore) -> list[str]:
-    table_name = store.table_name
-    return [
-        (
-            f"CREATE INDEX IF NOT EXISTS {store._index_name('pending')} "
-            f"ON {table_name} (queue, execution_backend, priority DESC, created_at) "
-            "WHERE status IN ('pending', 'scheduled')"
-        ),
-        (
-            f"CREATE INDEX IF NOT EXISTS {store._index_name('scheduled')} "
-            f"ON {table_name} (scheduled_at) WHERE status = 'scheduled'"
-        ),
-        (
-            f"CREATE INDEX IF NOT EXISTS {store._index_name('heartbeat')} "
-            f"ON {table_name} (heartbeat_at) WHERE status = 'running'"
-        ),
-    ]
+    table_storage_parameters: "ClassVar[bool]" = True

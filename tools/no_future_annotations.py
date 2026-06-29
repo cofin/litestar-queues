@@ -3,8 +3,8 @@ import sys
 from pathlib import Path
 
 
-def main(argv: list[str]) -> int:
-    bad_files: list[str] = []
+def main(argv: "list[str]") -> "int":
+    bad_files: "list[str]" = []
     for raw in argv[1:]:
         path = Path(raw)
         if path.suffix != ".py":
