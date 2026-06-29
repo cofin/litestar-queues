@@ -610,20 +610,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             result.handler_needed_task_ids.append(record.id)
                 if stack:
                     # Reset any implicit read transaction the SELECT may have opened so
-                    # ``execute_stack`` reliably owns (begins AND commits) the write
-                    # transaction across adapters whose transaction state after a read
+                    # the stack write transaction starts cleanly across adapters whose
+                    # transaction state after a read
                     # differs — mysql-connector leaves an implicit transaction open
                     # (autocommit off), while DuckDB does not track one at all.
                     with suppress(Exception):
                         await driver.rollback()
-                    # Batch the per-row stale-recovery writes into one atomic stack.
-                    # ``continue_on_error=False`` (the default) runs them fail-fast in a
-                    # single transaction that execute_stack owns and rolls back on error;
-                    # on Oracle >=23ai (run_pipeline) and psycopg (libpq pipeline) the
-                    # batch collapses to one round-trip, while other adapters degrade to
-                    # sequential execution. The classification above still drives the
-                    # operator-semantics id lists regardless of the write path.
-                    await driver.execute_stack(stack)
+                    await driver.begin()
+                    try:
+                        await driver.execute_stack(stack)
+                        await driver.commit()
+                    except Exception:
+                        with suppress(Exception):
+                            await driver.rollback()
+                        raise
         recovered = result.requeued + result.failed
         if recovered:
             self._increment_queue_metric("stale_recovered", float(recovered))

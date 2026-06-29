@@ -71,8 +71,8 @@ class Worker:
         self._running_tasks: "set[asyncio.Task[None]]" = set()
         self._stop_event = asyncio.Event()
         self._is_running = False
-        self._last_reconcile_at = 0.0
-        self._last_stale_check_at = 0.0
+        self._last_reconcile_at = -float("inf")
+        self._last_stale_check_at = -float("inf")
 
     @property
     def is_running(self) -> "bool":

@@ -143,6 +143,8 @@ async def _run_worker(
         _register_signal_handler(sig)
 
     worker_task = asyncio.create_task(worker.start())
+    await asyncio.sleep(0)
+    click.echo("litestar queues worker started", err=True)
     exit_code = 0
     try:
         try:

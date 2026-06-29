@@ -46,10 +46,14 @@ jobs:
 
       - name: Test
         if: ${{ !inputs.coverage }}
+        env:
+          UV_PYTHON: ${{ inputs.python-version }}
         run: uv run pytest src/tests -n 2
 
       - name: Test with coverage
         if: ${{ inputs.coverage }}
+        env:
+          UV_PYTHON: ${{ inputs.python-version }}
         run: uv run pytest src/tests --cov=litestar_queues --cov-report=xml -n 2
 
       - uses: actions/upload-artifact@v7

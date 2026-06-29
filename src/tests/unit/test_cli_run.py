@@ -8,6 +8,7 @@ Skipped on Windows because SIGTERM is not meaningfully delivered there.
 """
 
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -20,6 +21,28 @@ pytestmark = [
     pytest.mark.timeout(15),
     pytest.mark.skipif(sys.platform.startswith("win"), reason="SIGTERM unavailable on Windows"),
 ]
+
+
+def _wait_for_worker_started(proc: "subprocess.Popen[bytes]", *, timeout: "float" = 8.0) -> "None":
+    """Wait until the worker command has installed signal handlers.
+
+    Returns:
+        None.
+    """
+    assert proc.stderr is not None
+    deadline = time.monotonic() + timeout
+    stderr = []
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        ready, _, _ = select.select([proc.stderr], [], [], 0.1)
+        if not ready:
+            continue
+        line = proc.stderr.readline().decode()
+        stderr.append(line)
+        if "litestar queues worker started" in line:
+            return
+    pytest.fail(f"worker did not report startup before SIGTERM; stderr={''.join(stderr)[-500:]!r}")
 
 
 def test_run_subcommand_drains_on_sigterm() -> "None":
@@ -35,7 +58,7 @@ def test_run_subcommand_drains_on_sigterm() -> "None":
     )
 
     try:
-        time.sleep(1.5)
+        _wait_for_worker_started(proc)
         assert proc.poll() is None, "worker exited before SIGTERM was sent"
         proc.send_signal(signal.SIGTERM)
         try:
