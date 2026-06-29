@@ -1,23 +1,55 @@
-/* Litestar Queues documentation theme */
+/* =============================================================================
+   Litestar Queues Documentation Theme - Litestar Branded (Shibuya)
+   Mirrors the SQLSpec documentation theme so the ecosystem stays consistent.
+   ============================================================================= */
+
+/* -----------------------------------------------------------------------------
+   Litestar Brand Colors
+   ----------------------------------------------------------------------------- */
 :root {
+  /* Brand colors */
   --litestar-navy: #202235;
   --litestar-gold: #edb641;
   --litestar-gold-light: #ffd480;
   --litestar-gold-dark: #d4a438;
   --litestar-gold-rgb: 237, 182, 65;
   --litestar-navy-rgb: 32, 34, 53;
+
+  /* Neutral grays */
   --litestar-gray-50: #f8fafc;
   --litestar-gray-100: #f1f5f9;
   --litestar-gray-200: #e2e8f0;
   --litestar-gray-300: #cbd5e1;
+  --litestar-gray-400: #94a3b8;
+  --litestar-gray-500: #64748b;
   --litestar-gray-600: #475569;
   --litestar-gray-700: #334155;
   --litestar-gray-800: #1e293b;
+  --litestar-gray-900: #0f172a;
+
+  /* Brand typography sizing (tuned for the two-word "Litestar Queues" wordmark) */
+  --brand-font-size-xl: 5rem;
+  --brand-font-size-lg: 4rem;
+  --brand-font-size-md: 3.25rem;
+  --brand-font-size-sm: 2.5rem;
+  --brand-font-size-xs: 2rem;
+  --brand-font-size-xxs: 1.7rem;
+
+  --brand-letter-spacing-xl: 0.18em;
+  --brand-letter-spacing-lg: 0.16em;
+  --brand-letter-spacing-md: 0.12em;
+  --brand-letter-spacing-sm: 0.08em;
+  --brand-letter-spacing-xs: 0.06em;
+
+  /* Code block colors - light mode defaults */
   --queues-code-bg: #f1f4f9;
   --queues-code-border: #d0d7e2;
   --queues-code-text: var(--litestar-navy);
 }
 
+/* -----------------------------------------------------------------------------
+   Shibuya Accent Color Overrides (Amber -> Litestar Gold)
+   ----------------------------------------------------------------------------- */
 html[data-accent-color="amber"] {
   --accent-9: var(--litestar-gold);
   --accent-10: var(--litestar-gold-dark);
@@ -30,36 +62,57 @@ html.dark[data-accent-color="amber"] {
   --accent-11: var(--litestar-gold-light);
 }
 
+/* -----------------------------------------------------------------------------
+   Light Mode Theme
+   ----------------------------------------------------------------------------- */
 html.light {
+  --sl-color-primary: var(--litestar-navy);
+  --sl-color-secondary: var(--litestar-gray-600);
+  --sl-color-accent: var(--litestar-gold);
+  --sl-color-text-1: var(--litestar-navy);
+  --sl-color-text-2: var(--litestar-gray-600);
   --sy-c-foot-background: var(--litestar-gray-50);
   --yue-c-text: var(--litestar-navy);
+  --brand-text-glow:
+    0 0 10px rgba(var(--litestar-navy-rgb), 0.3),
+    0 0 20px rgba(var(--litestar-navy-rgb), 0.2);
 }
 
+/* -----------------------------------------------------------------------------
+   Dark Mode Theme
+   ----------------------------------------------------------------------------- */
 html.dark,
 html[data-theme="dark"] {
+  --sl-color-text-1: var(--litestar-gray-100);
+  /* Global background - Litestar Navy */
   --sy-c-background: var(--litestar-navy);
   --sy-c-foot-background: var(--litestar-navy);
   --sy-c-background-dropback: rgba(var(--litestar-navy-rgb), 0.82);
-  --sy-c-surface: #2a2d40;
+  --sy-c-surface: #2a2d40; /* Slightly lighter navy for cards/sidebars */
+
   --sy-c-foot-text: var(--litestar-gray-300);
   --sy-c-foot-divider: var(--litestar-gray-700);
+
   --yue-c-text: var(--litestar-gray-100);
+  --brand-text-glow:
+    0 0 10px rgba(var(--litestar-gold-rgb), 0.4),
+    0 0 20px rgba(var(--litestar-gold-rgb), 0.2);
+
+  /* Code block colors - dark mode */
   --queues-code-bg: #1a1c2e;
   --queues-code-border: #2d3148;
   --queues-code-text: var(--litestar-gray-100);
 }
 
+/* -----------------------------------------------------------------------------
+   Typography
+   ----------------------------------------------------------------------------- */
 body {
   font-size: 1rem;
   line-height: 1.7;
 }
 
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
+h1, h2, h3, h4, h5, h6 {
   color: var(--litestar-navy);
   font-weight: 600;
 }
@@ -73,6 +126,7 @@ html.dark h6 {
   color: #e6edf3;
 }
 
+/* Links - neutral base, gold hover */
 a {
   color: var(--litestar-gray-600);
   transition: color 0.2s ease;
@@ -90,47 +144,68 @@ html.dark a:hover {
   color: var(--litestar-gold);
 }
 
+p {
+  font-size: 1.05em;
+}
+
+/* -----------------------------------------------------------------------------
+   Code Blocks
+   ----------------------------------------------------------------------------- */
 div.highlight {
   background: var(--queues-code-bg);
   border: 1px solid var(--queues-code-border);
-  border-left: 3px solid rgba(var(--litestar-gold-rgb), 0.35);
+  border-left: 3px solid rgba(var(--litestar-gold-rgb), 0.3);
   border-radius: 8px;
-  margin: 1rem 0;
   overflow: hidden;
+  margin: 1rem 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+html.dark div.highlight,
+html[data-theme="dark"] div.highlight {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 div.highlight pre {
   background: transparent;
   color: var(--queues-code-text);
-  font-size: 0.875rem;
-  font-variant-ligatures: none;
-  line-height: 1.7;
-  margin: 0;
+  white-space: pre;
   overflow-x: auto;
   padding: 1rem 1.25rem;
-  white-space: pre;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  font-variant-ligatures: none;
 }
 
+div.highlight pre code {
+  white-space: inherit;
+}
+
+/* Inline code - neutral styling */
 html.light code.literal,
 html.light code:not([class]) {
   background-color: var(--litestar-gray-100);
   border: 1px solid var(--litestar-gray-200);
-  border-radius: 4px;
   color: var(--litestar-navy);
-  font-size: 0.875em;
   padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.875em;
 }
 
 html.dark code.literal,
 html.dark code:not([class]) {
   background-color: var(--litestar-gray-800);
   border: 1px solid var(--litestar-gray-700);
-  border-radius: 4px;
   color: var(--litestar-gray-100);
-  font-size: 0.875em;
   padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.875em;
 }
 
+/* -----------------------------------------------------------------------------
+   Navigation / Header
+   ----------------------------------------------------------------------------- */
 .sy-head {
   border-bottom: 1px solid var(--litestar-gray-200);
 }
@@ -150,15 +225,19 @@ html.dark .sy-sidebar a:hover {
   color: var(--litestar-gold) !important;
 }
 
+/* Hide logo text in header (the logo image already carries the wordmark) */
 .sy-head-brand strong {
   display: none;
 }
 
+/* -----------------------------------------------------------------------------
+   Cards (sphinx-design)
+   ----------------------------------------------------------------------------- */
 .sd-card {
   border: 1px solid var(--litestar-gray-200);
   border-radius: 8px;
   margin-bottom: 1rem;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: all 0.2s ease;
 }
 
 .sd-card:hover {
@@ -186,96 +265,237 @@ html.dark .sd-card-title {
   color: var(--litestar-gray-100);
 }
 
+/* -----------------------------------------------------------------------------
+   Hero / Title Section
+   ----------------------------------------------------------------------------- */
 .title-with-logo {
-  align-items: center;
   display: flex;
+  align-items: center;
   justify-content: center;
-  margin: 4rem auto 2.5rem;
+  margin: 5rem auto 4rem;
+  width: 100%;
   padding: 0 2rem;
   user-select: none;
-  width: 100%;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 html[class] .title-with-logo .brand-text {
-  font-family: var(--sy-f-heading);
-  font-size: 4.5rem;
+  font-family: var(--sl-font-sans);
   font-weight: 300;
-  letter-spacing: 0;
-  line-height: 1.16;
-  margin: 0;
-  max-width: 100%;
-  text-align: center;
+  font-size: var(--brand-font-size-lg);
+  letter-spacing: var(--brand-letter-spacing-xl);
   text-transform: uppercase;
-  transition: color 0.2s ease, text-shadow 0.2s ease;
+  text-align: center;
+  line-height: 1.2;
+  max-width: 100%;
+  /* Two-word wordmark: allow it to wrap to two centered lines on large screens */
+  white-space: normal;
+  overflow: visible;
+  transition: color var(--sl-transition), text-shadow var(--sl-transition);
 }
 
 html.light .title-with-logo .brand-text {
   color: var(--litestar-navy);
-  text-shadow: 0 0 24px rgba(var(--litestar-gold-rgb), 0.14);
+  text-shadow:
+    0 0 20px rgba(var(--litestar-gold-rgb), 0.15),
+    0 0 40px rgba(var(--litestar-gold-rgb), 0.1);
 }
 
 html.dark .title-with-logo .brand-text {
   color: var(--litestar-gray-300);
   text-shadow:
     0 0 15px rgba(var(--litestar-gold-rgb), 0.3),
-    0 0 30px rgba(var(--litestar-gold-rgb), 0.18);
+    0 0 30px rgba(var(--litestar-gold-rgb), 0.2),
+    0 0 45px rgba(var(--litestar-gold-rgb), 0.1);
+}
+
+html[class] .title-with-logo h1.brand-text {
+  margin: 0;
+  padding: 0;
+  border: none;
 }
 
 .title-with-logo + p {
-  margin-top: 1.5rem;
+  margin-top: 2rem;
 }
 
-.sd-container-fluid {
-  gap: 1.5rem;
+/* Brand text animation */
+@keyframes fadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
+.title-with-logo .brand-text {
+  animation: fadeInScale 0.6s ease-out;
+}
+
+/* -----------------------------------------------------------------------------
+   Light/Dark Mode Visibility Toggles
+   ----------------------------------------------------------------------------- */
+.only-dark {
+  display: none;
+}
+
+html.dark .only-dark {
+  display: block;
+}
+
+html.dark .only-light {
+  display: none;
+}
+
+/* -----------------------------------------------------------------------------
+   Buttons
+   ----------------------------------------------------------------------------- */
+.buttons.wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.buttons.wrap .btn-no-wrap {
+  flex: 0 0 auto;
+}
+
+/* -----------------------------------------------------------------------------
+   Badges
+   ----------------------------------------------------------------------------- */
+#badges img {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+#badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 3em;
+}
+
+/* -----------------------------------------------------------------------------
+   Mermaid Diagrams (Dark Mode Fix)
+   ----------------------------------------------------------------------------- */
+html.dark .mermaid svg,
+html[data-theme="dark"] .mermaid svg {
+  background-color: white;
+  padding: 1em;
+  border-radius: 8px;
+}
+
+/* -----------------------------------------------------------------------------
+   Responsive Breakpoints
+   ----------------------------------------------------------------------------- */
+@media (min-width: 1400px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-xl);
+  }
+}
+
+@media (min-width: 1200px) and (max-width: 1399px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-lg);
+    letter-spacing: var(--brand-letter-spacing-lg);
+  }
+}
+
+@media (min-width: 992px) and (max-width: 1199px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-md);
+    letter-spacing: var(--brand-letter-spacing-md);
+  }
+}
+
+@media (max-width: 991px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-md);
+    letter-spacing: var(--brand-letter-spacing-lg);
+  }
+}
+
+@media (max-width: 767px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-sm);
+    letter-spacing: var(--brand-letter-spacing-md);
+  }
+  html[class] .title-with-logo {
+    margin: 2rem auto 1.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-xs);
+    letter-spacing: var(--brand-letter-spacing-sm);
+    line-height: 1.2;
+  }
+  html[class] .title-with-logo {
+    margin: 1.5rem auto 1rem;
+    padding: 0 1rem;
+  }
+}
+
+@media (max-width: 360px) {
+  html[class] .title-with-logo .brand-text {
+    font-size: var(--brand-font-size-xxs);
+    letter-spacing: var(--brand-letter-spacing-xs);
+  }
+}
+
+/* -----------------------------------------------------------------------------
+   Layout Overrides (Hide Right Sidebar & Expand Content)
+   ----------------------------------------------------------------------------- */
 .sy-rside {
   display: none !important;
 }
 
+@media (min-width: 768px) {
+  .sy-main {
+    max-width: none !important;
+  }
+}
+
 @media (min-width: 1280px) {
   .sy-main {
-    padding-right: 2rem;
     width: calc(100% - 18rem) !important;
+    padding-right: 2rem;
   }
 }
 
 .sy-content {
   max-width: none !important;
-  padding-bottom: 2rem;
   width: 100% !important;
 }
 
+/* -----------------------------------------------------------------------------
+   Component Spacing (Quick Navigation)
+   ----------------------------------------------------------------------------- */
+.sd-container-fluid {
+  gap: 1.5rem;
+}
+
+/* -----------------------------------------------------------------------------
+   Navigation Bar (Next/Prev)
+   ----------------------------------------------------------------------------- */
 .navigation {
-  border-top: 1px solid var(--sy-c-divider);
-  margin-bottom: 2rem !important;
-  margin-top: 4rem !important;
-  padding-top: 2rem;
   position: relative;
+  margin-top: 4rem !important;
+  margin-bottom: 2rem !important;
+  padding-top: 2rem;
+  border-top: 1px solid var(--sy-c-divider);
 }
 
-@media (max-width: 991px) {
-  html[class] .title-with-logo .brand-text {
-    font-size: 3.5rem;
-  }
+.sy-content {
+  padding-bottom: 2rem;
 }
 
-@media (max-width: 767px) {
-  .title-with-logo {
-    margin: 2rem auto 1.5rem;
-  }
-
-  html[class] .title-with-logo .brand-text {
-    font-size: 2.8rem;
-  }
-}
-
-@media (max-width: 480px) {
-  .title-with-logo {
-    padding: 0 1rem;
-  }
-
-  html[class] .title-with-logo .brand-text {
-    font-size: 2.25rem;
-  }
+.sy-foot {
+  padding-bottom: 2rem;
 }

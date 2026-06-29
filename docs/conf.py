@@ -56,6 +56,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "shibuya"
 html_static_path = ["_static"]
+html_js_files = ["versioning.js"]
 html_css_files = ["custom.css", "style.css"]
 html_title = "Litestar Queues"
 html_short_title = "Queues"
