@@ -320,9 +320,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     result = await driver.execute(
                         self._get_store().claim_task(
                             task_id=str(task_id),
-                            due_at=_serialize_datetime(now),
-                            heartbeat_at=_serialize_datetime(now),
-                            started_at=_serialize_datetime(now),
+                            due_at=self._serialize_datetime(now),
+                            heartbeat_at=self._serialize_datetime(now),
+                            started_at=self._serialize_datetime(now),
                         )
                     )
                     if result.rows_affected == 0:
@@ -377,7 +377,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     now = _utc_now()
                     rows = await driver.select(
                         store.select_claimable(
-                            now=_serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
+                            now=self._serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
                         )
                     )
                     if not rows:
@@ -387,9 +387,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     result = await driver.execute(
                         store.claim_task(
                             task_id=str(record.id),
-                            due_at=_serialize_datetime(now),
-                            heartbeat_at=_serialize_datetime(now),
-                            started_at=_serialize_datetime(now),
+                            due_at=self._serialize_datetime(now),
+                            heartbeat_at=self._serialize_datetime(now),
+                            started_at=self._serialize_datetime(now),
                         )
                     )
                     if result.rows_affected == 0:
@@ -430,8 +430,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     updated = await driver.execute(
                         store.complete_task(
                             task_id=str(task_id),
-                            completed_at=_serialize_datetime(now),
-                            heartbeat_at=_serialize_datetime(now),
+                            completed_at=self._serialize_datetime(now),
+                            heartbeat_at=self._serialize_datetime(now),
                             result_json=store.serialize_json("result_json", result),
                         )
                     )
@@ -478,8 +478,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         await driver.execute(
                             self._get_store().fail_task(
                                 task_id=str(task_id),
-                                completed_at=_serialize_datetime(now),
-                                heartbeat_at=_serialize_datetime(now),
+                                completed_at=self._serialize_datetime(now),
+                                heartbeat_at=self._serialize_datetime(now),
                                 error=error,
                             )
                         )
@@ -500,7 +500,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 result = await driver.execute(
-                    self._get_store().cancel_task(task_id=str(task_id), completed_at=_serialize_datetime(_utc_now()))
+                    self._get_store().cancel_task(
+                        task_id=str(task_id), completed_at=self._serialize_datetime(_utc_now())
+                    )
                 )
                 await driver.commit()
             except Exception:
@@ -524,15 +526,28 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         return False
                 result = await driver.execute(
                     self._get_store().touch_heartbeat(
-                        task_id=str(task_id), heartbeat_at=_serialize_datetime(_utc_now())
+                        task_id=str(task_id), heartbeat_at=self._serialize_datetime(_utc_now())
                     )
                 )
+                rows_affected = int(result.rows_affected)
+                if rows_affected == 1:
+                    touched = True
+                elif rows_affected == 0:
+                    touched = False
+                else:
+                    row = await self._select_task(driver, task_id)
+                    record = self._record_from_row(row) if row is not None else None
+                    touched = (
+                        record is not None
+                        and record.status == "running"
+                        and (expected_retry_count is None or record.retry_count == expected_retry_count)
+                    )
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return int(result.rows_affected) == 1
+        return touched
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:
@@ -566,7 +581,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         result = StaleTaskRecoveryResult()
         with self._observe_queue_operation("stale_recovered"):
             async with self._session() as driver:
-                rows = await driver.select(store.list_stale_running(cutoff=_serialize_datetime(cutoff)))
+                rows = await driver.select(store.list_stale_running(cutoff=self._serialize_datetime(cutoff)))
                 stack = StatementStack()
                 for row in cast("list[dict[str, Any]]", rows):
                     record = self._record_from_row(row)
@@ -583,8 +598,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         stack = stack.push_execute(
                             store.fail_task(
                                 task_id=str(record.id),
-                                completed_at=_serialize_datetime(now),
-                                heartbeat_at=_serialize_datetime(now),
+                                completed_at=self._serialize_datetime(now),
+                                heartbeat_at=self._serialize_datetime(now),
                                 error="Task heartbeat stale",
                             )
                         )
@@ -703,14 +718,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_completed_by_task(
-                    task_name=task_name, since=_serialize_datetime(since), limit=limit
+                    task_name=task_name, since=self._serialize_datetime(since), limit=limit
                 )
             )
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
 
     async def cleanup_terminal(self, before: "datetime") -> "int":
         store = self._get_store()
-        before_str = _serialize_datetime(before)
+        before_str = self._serialize_datetime(before)
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1043,7 +1058,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             rows = await driver.select(
                 self._get_store().list_pending(
-                    now=_serialize_datetime(_utc_now()), limit=limit, queue=queue, execution_backend=execution_backend
+                    now=self._serialize_datetime(_utc_now()),
+                    limit=limit,
+                    queue=queue,
+                    execution_backend=execution_backend,
                 )
             )
         return cast("list[dict[str, Any]]", rows)
@@ -1182,17 +1200,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         else:
             await driver.execute_many(store.insert_tasks_template(), values)
 
+    def _serialize_datetime(self, value: "datetime | None") -> "datetime | str | None":
+        serialized = _serialize_datetime(value)
+        if serialized is not None and self._get_store().bind_datetime_as_text:
+            return serialized.isoformat()
+        return serialized
+
     def _params_from_record(self, record: "QueuedTaskRecord") -> "dict[str, Any]":
         store = self._get_store()
         return {
             "args_json": store.serialize_json("args_json", list(record.args)),
-            "completed_at": _serialize_datetime(record.completed_at),
-            "created_at": _serialize_datetime(record.created_at),
+            "completed_at": self._serialize_datetime(record.completed_at),
+            "created_at": self._serialize_datetime(record.created_at),
             "error": record.error,
             "execution_backend": record.execution_backend,
             "execution_profile": record.execution_profile,
             "execution_ref": record.execution_ref,
-            "heartbeat_at": _serialize_datetime(record.heartbeat_at),
+            "heartbeat_at": self._serialize_datetime(record.heartbeat_at),
             "id": str(record.id),
             "kwargs_json": store.serialize_json("kwargs_json", record.kwargs),
             "max_retries": record.max_retries,
@@ -1201,8 +1225,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "queue": record.queue,
             "result_json": store.serialize_json("result_json", record.result),
             "retry_count": record.retry_count,
-            "scheduled_at": _serialize_datetime(record.scheduled_at),
-            "started_at": _serialize_datetime(record.started_at),
+            "scheduled_at": self._serialize_datetime(record.scheduled_at),
+            "started_at": self._serialize_datetime(record.started_at),
             "status": record.status,
             "task_key": record.key,
             "task_name": record.task_name,

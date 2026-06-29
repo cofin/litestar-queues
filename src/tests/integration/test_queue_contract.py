@@ -79,12 +79,7 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
     assert await queue_backend.get_task(running.id) is not None
 
 
-async def test_backend_contract_recovers_stale_running_records_with_memory_reference(
-    queue_backend: "BaseQueueBackend",
-) -> "None":
-    if not isinstance(queue_backend, InMemoryQueueBackend):
-        pytest.skip("policy-aware stale recovery parity is covered by backend-specific follow-up work")
-
+async def test_backend_contract_recovers_stale_running_records(queue_backend: "BaseQueueBackend") -> "None":
     requeued = await queue_backend.enqueue("tasks.stale.requeue", max_retries=1, metadata={"requeue_on_stale": True})
     failed = await queue_backend.enqueue("tasks.stale.fail", max_retries=0, metadata={"requeue_on_stale": True})
     handler_needed = await queue_backend.enqueue(
@@ -93,9 +88,11 @@ async def test_backend_contract_recovers_stale_running_records_with_memory_refer
     for record in (requeued, failed, handler_needed):
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
-        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
-    result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    # A negative window puts the cutoff slightly in the future so every
+    # just-claimed task counts as stale regardless of the adapter's timestamp
+    # precision or whether the backend stores records by reference.
+    result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
     stored_requeued = await queue_backend.get_task(requeued.id)
     stored_failed = await queue_backend.get_task(failed.id)
     stored_handler_needed = await queue_backend.get_task(handler_needed.id)
@@ -112,22 +109,15 @@ async def test_backend_contract_recovers_stale_running_records_with_memory_refer
     assert stored_handler_needed.status == "failed"
 
 
-async def test_backend_contract_fences_heartbeat_and_terminal_updates_with_memory_reference(
-    queue_backend: "BaseQueueBackend",
-) -> "None":
-    if not isinstance(queue_backend, InMemoryQueueBackend):
-        pytest.skip("retry-count fencing parity is covered by backend-specific follow-up work")
-
+async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_backend: "BaseQueueBackend") -> "None":
     record = await queue_backend.enqueue("tasks.stale.fenced", max_retries=1)
     claimed = await queue_backend.claim_task(record.id)
     assert claimed is not None
     expected_retry_count = claimed.retry_count
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count + 1) is False
     assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count) is True
-    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
-    stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
     assert stale_result.requeued == 1
 
     reclaimed = await queue_backend.claim_task(record.id)

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from tests.integration._backends import QUEUE_BACKENDS, BackendCase, FixtureCtx
+from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -37,9 +38,13 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 
     # Service-backed adapters share the same Docker database across the
-    # session. Give each parametrized case its own queue table so adapters
-    # cannot collide via the shared default ``litestar_queue_task`` name.
-    table_name = f"litestar_queue_task_{case.name.replace('-', '_')}" if case.service_attr is not None else None
+    # session. Give each parametrized test its own queue table so adapters and
+    # test cases cannot collide via the shared default name.
+    table_name = (
+        table_name_for_test("litestar_queue_task", case.name, request.node.nodeid)
+        if case.service_attr is not None
+        else None
+    )
     ctx = FixtureCtx(tmp_path=tmp_path, service=service, table_name=table_name)
 
     backend = await case.build(ctx)
@@ -48,8 +53,7 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
         yield backend
     finally:
         if case.service_attr is not None:
-            with suppress(Exception):
-                await _drop_queue_tables(backend)
+            await _drop_queue_tables(backend)
         await backend.close()
 
 

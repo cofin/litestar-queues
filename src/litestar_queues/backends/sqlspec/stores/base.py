@@ -66,6 +66,7 @@ class SQLSpecQueueStore:
     # ADBC) keep the default empty frozenset. Unioned with adopter-supplied
     # ``native_json_columns`` at ``__init__``.
     auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
+    bind_datetime_as_text: "ClassVar[bool]" = False
 
     def __init__(
         self,

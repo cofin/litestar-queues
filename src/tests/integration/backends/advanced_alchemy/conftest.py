@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 import pytest
 
 from tests.integration._backends import FixtureCtx
+from tests.integration._names import table_name_for_test
 from tests.integration.backends.advanced_alchemy._aa_engines import AA_ENGINES, AAEngineCase
 
 if TYPE_CHECKING:
@@ -29,22 +30,18 @@ class MappedQueueModel(Protocol):
     __table__: "Table"
 
 
-_QUEUE_MODEL: "type[object] | None" = None
-
-
-def _queue_model() -> "type[object]":
+def _queue_model(table_name: "str") -> "type[object]":
     """Return the app-owned queue model used by integration tests."""
-    global _QUEUE_MODEL  # noqa: PLW0603
-    if _QUEUE_MODEL is None:
-        from advanced_alchemy.base import UUIDAuditBase
+    from advanced_alchemy.base import UUIDAuditBase
 
-        from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
+    from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin
 
-        class IntegrationQueueTask(UUIDAuditBase, QueueTaskModelMixin):
-            __tablename__ = "aa_integration_queue_tasks"
-
-        _QUEUE_MODEL = IntegrationQueueTask
-    return _QUEUE_MODEL
+    suffix = table_name.rsplit("_", 1)[-1]
+    return type(
+        f"IntegrationQueueTask{suffix}",
+        (UUIDAuditBase, QueueTaskModelMixin),
+        {"__module__": __name__, "__tablename__": table_name},
+    )
 
 
 @pytest.fixture
@@ -75,9 +72,10 @@ async def advanced_alchemy_backend(
 
     ctx = FixtureCtx(tmp_path=tmp_path, service=service)
     config = case.build_config(ctx)
+    table_name = table_name_for_test("aa_queue_task", case.name, request.node.nodeid)
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=config, model_class=_queue_model(), create_schema=True
+            sqlalchemy_config=config, model_class=_queue_model(table_name), create_schema=True
         )
     )
     await backend.open()
