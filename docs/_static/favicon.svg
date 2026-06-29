@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Litestar Queues">
+  <rect width="64" height="64" rx="14" fill="#202235"/>
+  <rect x="16" y="18" width="32" height="28" rx="7" fill="#2a2d40" stroke="#edb641" stroke-width="2"/>
+  <path d="M23 27h18M23 34h12M39 34l5 5-5 5" stroke="#ffd480" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <title>Litestar Queues</title>
+</svg>

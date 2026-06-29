@@ -102,7 +102,7 @@ docs = [
   "sphinxcontrib-mermaid>=0.9.2",
   "sphinx-paramlinks>=0.6.0",
   "sphinx-togglebutton>=0.3.2",
-  "litestar-sphinx-theme @ git+https://github.com/litestar-org/litestar-sphinx-theme.git@v3",
+  "shibuya",
 ]
 tests = [
   "coverage[toml]",
