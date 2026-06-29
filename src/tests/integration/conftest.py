@@ -67,13 +67,13 @@ def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
     """Parametrize any test consuming the `queue_backend` fixture across QUEUE_BACKENDS.
 
     Service-backed cases are marked with an xdist group so tests sharing one
-    Docker service run serially per adapter.
+    Docker service run serially per service fixture.
     """
     if "queue_backend" in metafunc.fixturenames:
         params = []
         for case in QUEUE_BACKENDS:
             marks: "list[pytest.MarkDecorator]" = []
             if case.service_attr is not None:
-                marks.append(pytest.mark.xdist_group(case.name))
+                marks.append(pytest.mark.xdist_group(case.service_attr))
             params.append(pytest.param(case, marks=marks, id=case.name))
         metafunc.parametrize("queue_backend", params, indirect=True)
