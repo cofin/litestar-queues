@@ -57,7 +57,7 @@ html_static_path = ["_static"]
 html_css_files = ["style.css"]
 html_title = "Litestar Queues"
 html_favicon = "_static/favicon.ico"
-html_context = {"source_type": "github", "source_user": "litestar-org", "source_repo": "litestar-queues"}
+html_context = {"source_type": "github", "source_user": "cofin", "source_repo": "litestar-queues"}
 pygments_style = "sphinx"
 pygments_dark_style = "sphinx"
 
@@ -73,6 +73,6 @@ else:
 html_theme_options: "dict[str, Any]" = {
     "logo_target": "/",
     "github_repo_name": "litestar-queues",
-    "github_url": "https://github.com/litestar-org/litestar-queues",
+    "github_url": "https://github.com/cofin/litestar-queues",
     "navigation_with_keys": True,
 }
