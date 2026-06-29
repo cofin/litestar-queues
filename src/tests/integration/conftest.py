@@ -105,5 +105,7 @@ def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
                         reason=f"{case.name}: upstream SQLSpec/adapter blocker (see litestar-queues-27b)", strict=False
                     )
                 )
+            if case.service_attr is not None:
+                marks.append(pytest.mark.xdist_group(case.name))
             params.append(pytest.param(case, marks=marks, id=case.name))
         metafunc.parametrize("queue_backend", params, indirect=True)

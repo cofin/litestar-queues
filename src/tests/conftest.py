@@ -1,4 +1,3 @@
-from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,17 +11,14 @@ if TYPE_CHECKING:
 # at the project root because pytest requires ``pytest_plugins`` to live in the
 # top-level conftest.
 pytest_plugins = [
+    "pytest_databases.docker.bigquery",
     "pytest_databases.docker.postgres",
     "pytest_databases.docker.mysql",
     "pytest_databases.docker.oracle",
     "pytest_databases.docker.redis",
+    "pytest_databases.docker.spanner",
     "pytest_databases.docker.valkey",
 ]
-
-if find_spec("google.cloud.bigquery") is not None:
-    pytest_plugins.append("pytest_databases.docker.bigquery")
-if find_spec("google.cloud.spanner") is not None:
-    pytest_plugins.append("pytest_databases.docker.spanner")
 
 pytestmark = pytest.mark.anyio
 

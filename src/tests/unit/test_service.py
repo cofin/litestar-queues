@@ -33,7 +33,7 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> "None":
     async def example() -> "str":
         return "ok"
 
-    service = QueueService(QueueConfig())
+    service = QueueService(QueueConfig(execution_backend="immediate"))
 
     async with service:
         result = await service.enqueue("example")
@@ -80,7 +80,7 @@ async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs
     async def consume(**kwargs: "object") -> "dict[str, object]":
         return dict(kwargs)
 
-    config = QueueConfig(task_dependency_resolver=resolver)
+    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
     service = QueueService(config)
 
     async with service:
@@ -118,7 +118,9 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
         timeline["body"] = time.monotonic()
         return "ok"
 
-    config = QueueConfig(task_dependency_resolver=resolver, event_config=QueueEventConfig(enabled=True))
+    config = QueueConfig(
+        execution_backend="immediate", task_dependency_resolver=resolver, event_config=QueueEventConfig(enabled=True)
+    )
     service = QueueService(config, event_publisher=publisher)
 
     async with service:
@@ -155,7 +157,7 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> "None":
     async def absent() -> "str":
         return "ok"
 
-    config = QueueConfig()
+    config = QueueConfig(execution_backend="immediate")
     service = QueueService(config)
 
     original = Task.execute_record

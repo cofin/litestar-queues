@@ -168,7 +168,7 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backe
     async def consume(**kwargs: "object") -> "dict[str, object]":
         return {"injected_service": kwargs["injected_service"]}
 
-    config = QueueConfig(task_dependency_resolver=resolver)
+    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
@@ -198,7 +198,7 @@ async def test_task_dependency_resolver_cannot_override_sentinels(queue_backend:
             "ctx_task_name": task_context.task_name,
         }
 
-    config = QueueConfig(task_dependency_resolver=resolver)
+    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
@@ -269,7 +269,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
 
 async def test_task_dependency_resolver_default_is_none_with_no_invocation(queue_backend: "BaseQueueBackend") -> "None":
     clear_task_registry()
-    config = QueueConfig()
+    config = QueueConfig(execution_backend="immediate")
     assert config.task_dependency_resolver is None
 
     @task("contract.resolver.default")

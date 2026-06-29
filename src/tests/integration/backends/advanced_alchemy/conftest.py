@@ -126,5 +126,7 @@ def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
                         strict=False,
                     )
                 )
+            if case.service_attr is not None:
+                marks.append(pytest.mark.xdist_group(case.name))
             params.append(pytest.param(case, marks=marks, id=case.name))
         metafunc.parametrize("advanced_alchemy_backend", params, indirect=True)
