@@ -85,15 +85,14 @@ __all__ = ("setup",)
 
 
 html_theme_options: "dict[str, Any]" = {
-    "logo_target": "/",
     "github_url": "https://github.com/cofin/litestar-queues",
     "discord_url": "https://discord.gg/litestar-919193495116337154",
     "discussion_url": "https://github.com/cofin/litestar-queues/discussions",
     "navigation_with_keys": True,
     "globaltoc_expand_depth": 0,
     "accent_color": "amber",
-    "light_logo": "_static/logo-light.svg",
-    "dark_logo": "_static/logo-dark.svg",
+    "light_logo": "_static/logo-icon.svg",
+    "dark_logo": "_static/logo-icon.svg",
     "nav_links": [
         {
             "title": "Docs",
