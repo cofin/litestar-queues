@@ -40,6 +40,8 @@ The base install is intentionally small. It includes the task API, Litestar
 plugin, in-memory queue backend, immediate execution, and local workers.
 Persistent or remote integrations are optional extras.
 
+Litestar Queues supports Python 3.10 through 3.14.
+
 ## Quick Start
 
 Create an `app.py`:
@@ -290,7 +292,7 @@ async def process_import(path: str) -> None:
     await publish_task_progress(current=5, total=10, message="Halfway done")
 ```
 
-Queue work after a Litestar response is sent:
+Return the HTTP response first, then enqueue the job:
 
 ```python
 from litestar import Response, post
@@ -304,6 +306,12 @@ async def trigger() -> Response[dict[str, str]]:
         background=QueuedBackgroundTask(process_import, "/tmp/data.csv"),
     )
 ```
+
+`QueuedBackgroundTask` only saves the job in the queue. Your queue settings
+decide when the task runs.
+
+Use `await queue_service.enqueue(...)` inside the route when the job must be
+saved before the response is sent.
 
 </details>
 
