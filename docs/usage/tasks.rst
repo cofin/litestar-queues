@@ -109,12 +109,24 @@ move directly to the terminal ``failed`` state.
 Background Tasks
 ================
 
-Litestar provides a native background tasks feature to run operations after a response is sent. ``litestar-queues`` provides a seamless way to enqueue tasks using Litestar's background tasks.
+Litestar can run a small function after it sends the HTTP response. Use this
+when the route should return first and enqueue the queue job second.
+
+This only saves the job in the queue. Your queue settings decide when the task
+runs.
+
+If the job must be saved before the response is sent, enqueue inside the route
+instead:
+
+.. code-block:: python
+
+   result = await queue_service.enqueue(background_process, 42)
+   return {"task_id": str(result.id)}
 
 Native BackgroundTask
 ---------------------
 
-You can pass a task's ``enqueue`` method directly to Litestar's native ``BackgroundTask``:
+Pass the task's ``enqueue`` method to Litestar's ``BackgroundTask``:
 
 .. code-block:: python
 
@@ -136,7 +148,10 @@ You can pass a task's ``enqueue`` method directly to Litestar's native ``Backgro
 QueuedBackgroundTask Helper
 ---------------------------
 
-Alternatively, use the ``QueuedBackgroundTask`` helper class. This helper resolves the active ``QueueService`` automatically from the application plugin lifespan:
+Use ``QueuedBackgroundTask`` when you want to pass the queue task itself. It
+finds the app's active ``QueueService`` for you.
+
+``QueuePlugin`` must be registered on the app before you use this helper.
 
 .. code-block:: python
 
@@ -154,7 +169,8 @@ Alternatively, use the ``QueuedBackgroundTask`` helper class. This helper resolv
            background=QueuedBackgroundTask(background_process, 42)
        )
 
-You can also pass an explicit ``QueueService`` instance to the helper:
+If the route already receives ``QueueService`` from Litestar, pass it to the
+helper:
 
 .. code-block:: python
 
@@ -167,3 +183,15 @@ You can also pass an explicit ``QueueService`` instance to the helper:
            {"status": "queued"},
            background=QueuedBackgroundTask(background_process, 42, service=queue_service)
        )
+
+Which Form To Use
+-----------------
+
+Use ``await queue_service.enqueue(...)`` when the job must be saved before the
+route returns.
+
+Use ``BackgroundTask(background_process.enqueue, ...)`` when you want Litestar's
+standard background task behavior.
+
+Use ``QueuedBackgroundTask(background_process, ...)`` when you want a short
+helper that finds ``QueueService`` for you.
