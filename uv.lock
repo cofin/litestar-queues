@@ -1371,7 +1371,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extra = ["oracle", "postgres", "redis", "valkey"] },
+    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "valkey"] },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -1391,7 +1391,7 @@ dev = [
     { name = "sphinx-paramlinks" },
     { name = "sphinx-togglebutton" },
     { name = "sphinxcontrib-mermaid" },
-    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg"] },
+    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg"] },
     { name = "valkey" },
 ]
 docs = [
@@ -1419,13 +1419,13 @@ tests = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extra = ["oracle", "postgres", "redis", "valkey"] },
+    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "valkey"] },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "redis" },
-    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg"] },
+    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg"] },
     { name = "valkey" },
 ]
 
@@ -1455,7 +1455,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "oracle", "redis", "valkey"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", extras = ["postgres", "mysql", "oracle", "redis", "valkey", "cockroachdb"], specifier = ">=0.19.0" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -1471,7 +1471,7 @@ dev = [
     { name = "sphinx-paramlinks", specifier = ">=0.6.0" },
     { name = "sphinx-togglebutton", specifier = ">=0.3.2" },
     { name = "sphinxcontrib-mermaid", specifier = ">=0.9.2" },
-    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
+    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "cockroachdb", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 docs = [
@@ -1493,13 +1493,13 @@ tests = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "oracle", "redis", "valkey"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", extras = ["postgres", "mysql", "oracle", "redis", "valkey", "cockroachdb"], specifier = ">=0.19.0" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "redis", specifier = ">=5.0.0" },
-    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
+    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "cockroachdb", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 
@@ -2761,6 +2761,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+cockroachdb = [
+    { name = "psycopg" },
+]
 oracle = [
     { name = "oracledb" },
 ]
@@ -3478,6 +3481,10 @@ asyncmy = [
 ]
 asyncpg = [
     { name = "asyncpg" },
+]
+cockroachdb = [
+    { name = "asyncpg" },
+    { name = "psycopg", extra = ["binary", "pool"] },
 ]
 duckdb = [
     { name = "duckdb" },

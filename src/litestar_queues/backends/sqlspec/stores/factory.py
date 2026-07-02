@@ -7,6 +7,11 @@ from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStor
 from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
+from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
+    CockroachPsycopgAsyncQueueStore,
+    CockroachPsycopgSyncQueueStore,
+)
 from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
 from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
@@ -28,11 +33,12 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "aiosqlite": AiosqliteQueueStore,
     "asyncmy": AsyncmyQueueStore,
     "asyncpg": AsyncpgQueueStore,
+    "cockroach_asyncpg": CockroachAsyncpgQueueStore,
     "duckdb": DuckDBQueueStore,
     "psqlpy": PsqlpyQueueStore,
     "sqlite": SqliteQueueStore,
 }
-_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"mysqlconnector", "oracledb", "psycopg"})
+_ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"cockroach_psycopg", "mysqlconnector", "oracledb", "psycopg"})
 _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAPTER_NAMES
 
 
@@ -72,6 +78,10 @@ def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
     if name == "psycopg":
         return _async_or_sync_store_type(
             config, async_store_type=PsycopgAsyncQueueStore, sync_store_type=PsycopgSyncQueueStore
+        )
+    if name == "cockroach_psycopg":
+        return _async_or_sync_store_type(
+            config, async_store_type=CockroachPsycopgAsyncQueueStore, sync_store_type=CockroachPsycopgSyncQueueStore
         )
     if name in _ADAPTER_STORE_TYPES:
         return _ADAPTER_STORE_TYPES[name]

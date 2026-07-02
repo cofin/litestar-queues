@@ -6,7 +6,7 @@ from sqlspec import sql
 
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
-__all__ = ("MySQLQueueStore", "PostgresQueueStore")
+__all__ = ("CockroachQueueStore", "MySQLQueueStore", "PostgresQueueStore")
 
 
 class PostgresQueueStore(SQLSpecQueueStore):
@@ -76,6 +76,20 @@ class PostgresQueueStore(SQLSpecQueueStore):
 
     def _timestamp_type(self) -> "str":
         return "TIMESTAMPTZ"
+
+
+class CockroachQueueStore(PostgresQueueStore):
+    """Cockroach-family queue store with Postgres-compatible DDL."""
+
+    __slots__ = ()
+
+    data_dictionary_dialect: "ClassVar[str | None]" = "cockroachdb"
+    table_storage_parameters: "ClassVar[bool]" = False
+
+    @property
+    def supports_skip_locked(self) -> "bool":
+        """Cockroach claim transactions stay on the portable CAS path."""
+        return False
 
 
 class MySQLQueueStore(SQLSpecQueueStore):

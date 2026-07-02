@@ -34,6 +34,9 @@ from litestar_queues.backends.sqlspec.stores import (
     AiosqliteQueueStore,
     AsyncmyQueueStore,
     AsyncpgQueueStore,
+    CockroachAsyncpgQueueStore,
+    CockroachPsycopgAsyncQueueStore,
+    CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
@@ -251,6 +254,8 @@ blocked_prefixes = (
     "asyncmy",
     "asyncpg",
     "duckdb",
+    "cockroach_asyncpg",
+    "cockroach_psycopg",
     "mysql.connector",
     "oracledb",
     "psqlpy",
@@ -259,6 +264,8 @@ blocked_prefixes = (
     "sqlspec.adapters.aiosqlite",
     "sqlspec.adapters.asyncmy",
     "sqlspec.adapters.asyncpg",
+    "sqlspec.adapters.cockroach_asyncpg",
+    "sqlspec.adapters.cockroach_psycopg",
     "sqlspec.adapters.duckdb",
     "sqlspec.adapters.mysqlconnector",
     "sqlspec.adapters.oracledb",
@@ -281,6 +288,9 @@ from litestar_queues.backends.sqlspec.stores import (
     AsyncmyQueueStore,
     AsyncpgQueueStore,
     DuckDBQueueStore,
+    CockroachAsyncpgQueueStore,
+    CockroachPsycopgAsyncQueueStore,
+    CockroachPsycopgSyncQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
     OracledbAsyncQueueStore,
@@ -305,6 +315,9 @@ expected = (
     ("aiosqlite", "sqlite", "AiosqliteConfig", AiosqliteQueueStore),
     ("asyncmy", "mysql", "AsyncmyConfig", AsyncmyQueueStore),
     ("asyncpg", "postgres", "AsyncpgConfig", AsyncpgQueueStore),
+    ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig", CockroachAsyncpgQueueStore),
+    ("cockroach_psycopg", "postgres", "CockroachPsycopgAsyncConfig", CockroachPsycopgAsyncQueueStore),
+    ("cockroach_psycopg", "postgres", "CockroachPsycopgSyncConfig", CockroachPsycopgSyncQueueStore),
     ("duckdb", "duckdb", "DuckDBConfig", DuckDBQueueStore),
     ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", MysqlConnectorSyncQueueStore),
     ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", MysqlConnectorAsyncQueueStore),
@@ -353,8 +366,6 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
         ("adbc", "sqlite", "AdbcConfig"),
         ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
         ("bigquery", "bigquery", "BigQueryConfig"),
-        ("cockroach_asyncpg", "postgres", "CockroachAsyncpgConfig"),
-        ("cockroach_psycopg", "postgres", "CockroachPsycopgAsyncConfig"),
         ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
         ("pymysql", "mysql", "PyMysqlConfig"),
         ("spanner", "spanner", "SpannerConfig"),
@@ -371,6 +382,30 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
 
 
 @pytest.mark.parametrize(
+    ("adapter_name", "config_type_name", "expected_store_name"),
+    (
+        ("cockroach_asyncpg", "CockroachAsyncpgConfig", "CockroachAsyncpgQueueStore"),
+        ("cockroach_psycopg", "CockroachPsycopgAsyncConfig", "CockroachPsycopgAsyncQueueStore"),
+        ("cockroach_psycopg", "CockroachPsycopgSyncConfig", "CockroachPsycopgSyncQueueStore"),
+    ),
+)
+def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
+    adapter_name: "str", config_type_name: "str", expected_store_name: "str"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        table_name="queue_tasks",
+    )
+
+    created_statements = "\n".join(store.create_statements())
+    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    assert store.__class__.__name__ == expected_store_name
+    assert "WITH (fillfactor = 80)" not in created_statements
+    assert "autovacuum_vacuum_scale_factor" not in created_statements
+    assert store.supports_skip_locked is False
+
+
+@pytest.mark.parametrize(
     (
         "adapter_name",
         "dialect",
@@ -384,6 +419,30 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
         ("aiosqlite", "sqlite", "AiosqliteConfig", {}, AiosqliteQueueStore, '"queue_tasks"'),
         ("asyncmy", "mysql", "AsyncmyConfig", {}, AsyncmyQueueStore, "ENGINE=InnoDB"),
         ("asyncpg", "postgres", "AsyncpgConfig", {}, AsyncpgQueueStore, 'WHERE "status" IN'),
+        (
+            "cockroach_asyncpg",
+            "postgres",
+            "CockroachAsyncpgConfig",
+            {},
+            CockroachAsyncpgQueueStore,
+            'WHERE "status" IN',
+        ),
+        (
+            "cockroach_psycopg",
+            "postgres",
+            "CockroachPsycopgAsyncConfig",
+            {},
+            CockroachPsycopgAsyncQueueStore,
+            'WHERE "status" IN',
+        ),
+        (
+            "cockroach_psycopg",
+            "postgres",
+            "CockroachPsycopgSyncConfig",
+            {},
+            CockroachPsycopgSyncQueueStore,
+            'WHERE "status" IN',
+        ),
         ("duckdb", "duckdb", "DuckDBConfig", {}, DuckDBQueueStore, "JSON"),
         ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", {}, MysqlConnectorSyncQueueStore, "ENGINE=InnoDB"),
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
