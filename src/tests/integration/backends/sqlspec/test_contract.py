@@ -46,6 +46,7 @@ from litestar_queues.backends.sqlspec.stores import (
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
     PymysqlQueueStore,
+    SpannerQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
@@ -274,6 +275,8 @@ blocked_prefixes = (
     "sqlspec.adapters.oracledb",
     "sqlspec.adapters.psqlpy",
     "sqlspec.adapters.psycopg",
+    "sqlspec.adapters.spanner",
+    "google.cloud.spanner_v1",
 )
 blocked_package_prefixes = tuple(f"{name}." for name in blocked_prefixes)
 original_import = builtins.__import__
@@ -301,6 +304,7 @@ from litestar_queues.backends.sqlspec.stores import (
     PsqlpyQueueStore,
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
+    SpannerQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
@@ -329,6 +333,7 @@ expected = (
     ("psqlpy", "postgres", "PsqlpyConfig", PsqlpyQueueStore),
     ("psycopg", "postgres", "PsycopgSyncConfig", PsycopgSyncQueueStore),
     ("psycopg", "postgres", "PsycopgAsyncConfig", PsycopgAsyncQueueStore),
+    ("spanner", "spanner", "SpannerConfig", SpannerQueueStore),
     ("sqlite", "sqlite", "SqliteConfig", SqliteQueueStore),
 )
 
@@ -370,7 +375,6 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
         ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
         ("bigquery", "bigquery", "BigQueryConfig"),
         ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
-        ("spanner", "spanner", "SpannerConfig"),
     ),
 )
 def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
@@ -454,6 +458,7 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
         ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, 'WHERE "status" IN'),
+        ("spanner", "spanner", "SpannerConfig", {}, SpannerQueueStore, "CREATE UNIQUE NULL_FILTERED INDEX"),
         ("sqlite", "sqlite", "SqliteConfig", {}, SqliteQueueStore, '"queue_tasks"'),
     ),
 )
@@ -477,6 +482,18 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert expected_sql_fragment in "\n".join(store.create_statements())
 
 
+def test_sqlspec_spanner_store_uses_spanner_ddl_and_native_json_columns() -> "None":
+    store = create_queue_store(_fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerConfig"))
+
+    ddl = "\n".join(store.create_statements())
+
+    assert isinstance(store, SpannerQueueStore)
+    assert "STRING(64)" in ddl
+    assert "INT64" in ddl
+    assert "CREATE UNIQUE NULL_FILTERED INDEX" in ddl
+    assert store._native_json_columns == frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
+
+
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "expected"),
     (
@@ -484,6 +501,7 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
         ("asyncmy", "mysql", True),
         ("pymysql", "mysql", True),
         ("psqlpy", "postgres", True),
+        ("spanner", "spanner", False),
         ("aiosqlite", "sqlite", False),
         ("duckdb", "duckdb", False),
     ),
@@ -601,6 +619,14 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "PyMysqlConfig",
             {},
             "`args_json` JSON NOT NULL",
+            frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
+        ),
+        (
+            "spanner",
+            "spanner",
+            "SpannerConfig",
+            {},
+            "STRING(64)",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
     ),
