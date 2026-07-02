@@ -115,7 +115,7 @@ tests = [
   "pytest-sugar",
   "pytest-xdist",
   # Real-service fixtures for the integration tier
-  "pytest-databases[postgres,mysql,oracle,redis,valkey,cockroachdb]>=0.19.0",
+  "pytest-databases[postgres,mysql,mssql,oracle,redis,valkey,cockroachdb]>=0.19.0",
   # Redis + Valkey clients used directly by integration tests
   "redis>=5.0.0",
   "valkey>=6.0.0",
@@ -123,7 +123,7 @@ tests = [
   "numpy",
   "advanced-alchemy>=1.10.0",
   # SQLSpec adapters covered by the default integration matrix
-  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,cockroachdb,pymysql,litestar,mysql-connector]>=0.52.0",
+  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,cockroachdb,pymysql,litestar,mysql-connector,mssql-python,pymssql]>=0.52.0",
 ]
 
 #####################

@@ -50,6 +50,7 @@ from litestar_queues.backends.sqlspec.stores import (
     create_queue_store,
 )
 from litestar_queues.exceptions import QueueConfigurationError
+from tests.integration._backends import QUEUE_BACKENDS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -257,9 +258,11 @@ blocked_prefixes = (
     "duckdb",
     "cockroach_asyncpg",
     "cockroach_psycopg",
+    "mssql_python",
     "mysql.connector",
     "pymysql",
     "oracledb",
+    "pymssql",
     "psqlpy",
     "psycopg",
     "sqlspec.adapters.aiomysql",
@@ -269,9 +272,11 @@ blocked_prefixes = (
     "sqlspec.adapters.cockroach_asyncpg",
     "sqlspec.adapters.cockroach_psycopg",
     "sqlspec.adapters.duckdb",
+    "sqlspec.adapters.mssql_python",
     "sqlspec.adapters.mysqlconnector",
     "sqlspec.adapters.pymysql",
     "sqlspec.adapters.oracledb",
+    "sqlspec.adapters.pymssql",
     "sqlspec.adapters.psqlpy",
     "sqlspec.adapters.psycopg",
 )
@@ -364,12 +369,56 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
 
 
 @pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name", "expected_store_name"),
+    (
+        ("mssql_python", "tsql", "MssqlPythonConfig", "MssqlPythonQueueStore"),
+        ("mssql_python", "tsql", "MssqlPythonAsyncConfig", "MssqlPythonQueueStore"),
+        ("pymssql", "tsql", "PymssqlConfig", "PymssqlQueueStore"),
+    ),
+)
+def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
+    adapter_name: "str", dialect: "str | None", config_type_name: "str", expected_store_name: "str"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+    )
+
+    assert store.__class__.__name__ == expected_store_name
+    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name"),
+    (
+        ("mssql_python", "tsql", "MssqlPythonConfig"),
+        ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
+        ("pymssql", "tsql", "PymssqlConfig"),
+    ),
+)
+def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
+    adapter_name: "str", dialect: "str | None", config_type_name: "str"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+    )
+
+    ddl = "\n".join(store.create_statements())
+
+    assert "NVARCHAR(255)" in ddl
+    assert "NVARCHAR(MAX)" in ddl
+    assert "DATETIME2(6)" in ddl
+    assert " INT " in f" {ddl} "
+    assert "CREATE UNIQUE INDEX" in ddl
+    assert "task_key IS NOT NULL" in ddl
+    assert store.supports_skip_locked is False
+
+
+@pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name"),
     (
         ("adbc", "sqlite", "AdbcConfig"),
         ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
         ("bigquery", "bigquery", "BigQueryConfig"),
-        ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
         ("spanner", "spanner", "SpannerConfig"),
     ),
 )
@@ -475,6 +524,16 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert isinstance(store, expected_store_type)
     assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
     assert expected_sql_fragment in "\n".join(store.create_statements())
+
+
+def test_sqlspec_backend_registry_includes_sql_server_adapters() -> "None":
+    names = {case.name for case in QUEUE_BACKENDS}
+    service_attrs = {case.name: case.service_attr for case in QUEUE_BACKENDS}
+
+    assert "mssql-python" in names
+    assert "pymssql" in names
+    assert service_attrs["mssql-python"] == "mssql_service"
+    assert service_attrs["pymssql"] == "mssql_service"
 
 
 @pytest.mark.parametrize(

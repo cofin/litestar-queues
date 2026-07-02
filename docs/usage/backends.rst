@@ -199,6 +199,12 @@ claim/update statements where the database supports them.
    * - ``pymysql``
      - ``PymysqlQueueStore``
      - Sync MySQL behavior.
+   * - ``mssql_python``
+     - ``MssqlPythonQueueStore``
+     - Async and sync SQL Server configs share the same queue store.
+   * - ``pymssql``
+     - ``PymssqlQueueStore``
+     - Sync-only SQL Server adapter.
    * - ``oracledb``
      - ``OracledbAsyncQueueStore`` or ``OracledbSyncQueueStore``
      - Uses Oracle-specific DDL and JSON column choices.
@@ -289,6 +295,19 @@ advertises, then fall back to the portable path when a capability is absent.
      - Arrow ``load_from_records`` path.
      - Polling.
      - Sync MySQL behavior uses the same InnoDB prefix guard.
+   * - ``mssql_python``
+     - Optimistic compare-and-swap.
+     - ``NVARCHAR(MAX)`` text columns serialized with SQLSpec JSON.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - SQL Server support keeps the portable claim path and shares the same
+       queue store across sync and async configs.
+   * - ``pymssql``
+     - Optimistic compare-and-swap.
+     - ``NVARCHAR(MAX)`` text columns serialized with SQLSpec JSON.
+     - ``execute_many`` path.
+     - Polling.
+     - Sync-only SQL Server adapter with the same portable claim path.
    * - ``oracledb``
      - ``FOR UPDATE SKIP LOCKED`` through SQLSpec's Oracle data-dictionary
        capability.

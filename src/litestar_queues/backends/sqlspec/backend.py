@@ -589,43 +589,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("stale_recovered"):
             async with self._session() as driver:
                 rows = await driver.select(store.list_stale_running(cutoff=self._serialize_datetime(cutoff)))
-                stack = StatementStack()
-                for row in cast("list[dict[str, Any]]", rows):
-                    record = self._record_from_row(row)
-                    requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
-                    if requeue_on_stale and record.retry_count < record.max_retries:
-                        stack = stack.push_execute(
-                            store.retry_task(
-                                task_id=str(record.id), error="Task heartbeat stale", retry_count=record.retry_count + 1
-                            )
-                        )
-                        result.requeued += 1
-                    else:
-                        now = _utc_now()
-                        stack = stack.push_execute(
-                            store.fail_task(
-                                task_id=str(record.id),
-                                completed_at=self._serialize_datetime(now),
-                                heartbeat_at=self._serialize_datetime(now),
-                                error="Task heartbeat stale",
-                            )
-                        )
-                        result.failed += 1
-                        result.failed_task_ids.append(record.id)
-                        if not requeue_on_stale:
-                            result.handler_needed += 1
-                            result.handler_needed_task_ids.append(record.id)
-                if stack:
-                    # Reset any implicit read transaction the SELECT may have opened so
-                    # SQLSpec's stack runner owns the write transaction.
-                    with suppress(Exception):
-                        await driver.rollback()
-                    try:
-                        await driver.execute_stack(stack)
-                    except Exception:
-                        with suppress(Exception):
-                            await driver.rollback()
-                        raise
+            statements = self._build_stale_recovery_statements(store, cast("list[dict[str, Any]]", rows), result)
+            if statements:
+                await self._apply_stale_recovery_statements(store, statements)
         recovered = result.requeued + result.failed
         if recovered:
             self._increment_queue_metric("stale_recovered", float(recovered))
@@ -634,6 +600,65 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if result.failed:
             self._increment_queue_metric("stale_failed", float(result.failed))
         return result
+
+    def _build_stale_recovery_statements(
+        self, store: "Any", rows: "list[dict[str, Any]]", result: "StaleTaskRecoveryResult"
+    ) -> "list[Any]":
+        statements: "list[Any]" = []
+        for row in rows:
+            record = self._record_from_row(row)
+            requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
+            if requeue_on_stale and record.retry_count < record.max_retries:
+                statements.append(
+                    store.retry_task(
+                        task_id=str(record.id), error="Task heartbeat stale", retry_count=record.retry_count + 1
+                    )
+                )
+                result.requeued += 1
+            else:
+                now = _utc_now()
+                statements.append(
+                    store.fail_task(
+                        task_id=str(record.id),
+                        completed_at=self._serialize_datetime(now),
+                        heartbeat_at=self._serialize_datetime(now),
+                        error="Task heartbeat stale",
+                    )
+                )
+                result.failed += 1
+                result.failed_task_ids.append(record.id)
+                if not requeue_on_stale:
+                    result.handler_needed += 1
+                    result.handler_needed_task_ids.append(record.id)
+        return statements
+
+    async def _apply_stale_recovery_statements(self, store: "Any", statements: "list[Any]") -> "None":
+        if getattr(store, "data_dictionary_dialect", None) == "mssql":
+            await self._apply_sql_server_stale_recovery_statements(statements)
+            return
+        async with self._session() as write_driver:
+            stack = StatementStack()
+            for statement in statements:
+                stack = stack.push_execute(statement)
+            await write_driver.execute_stack(stack)
+
+    async def _apply_sql_server_stale_recovery_statements(self, statements: "list[Any]") -> "None":
+        for statement in statements:
+            async with self._session() as write_driver:
+                await self._apply_sql_server_stale_recovery_statement(write_driver, statement)
+
+    async def _apply_sql_server_stale_recovery_statement(self, write_driver: "Any", statement: "Any") -> "None":
+        if isinstance(write_driver, _ManagedAsyncDriver):
+            await write_driver.run_sync(_execute_mssql_stale_recovery_sync, [statement])
+            return
+        await write_driver.begin()
+        try:
+            await write_driver.execute(statement)
+            await write_driver.commit()
+        except Exception:
+            with suppress(Exception):
+                await write_driver.rollback()
+            raise
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -1278,6 +1303,14 @@ class _ManagedAsyncDriver:
             return async_(attr)
         return attr
 
+    async def run_sync(self, function: "Any", /, *args: "Any", **kwargs: "Any") -> "Any":
+        """Run a sync helper against the wrapped driver on SQLSpec's executor.
+
+        Returns:
+            The helper result after it runs on SQLSpec's managed executor.
+        """
+        return await async_(function)(self._driver, *args, **kwargs)
+
 
 @asynccontextmanager
 async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
@@ -1326,6 +1359,19 @@ async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | 
             stream = await stream
         async for row in stream:
             yield row
+
+
+def _execute_mssql_stale_recovery_sync(driver: "Any", statements: "list[Any]") -> None:
+    """Execute SQL Server stale-recovery writes on one sync connection thread."""
+    driver.begin()
+    try:
+        for statement in statements:
+            driver.execute(statement)
+        driver.commit()
+    except Exception:
+        with suppress(Exception):
+            driver.rollback()
+        raise
 
 
 def _utc_now() -> "datetime":
