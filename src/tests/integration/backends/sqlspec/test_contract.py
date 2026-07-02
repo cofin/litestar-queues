@@ -415,63 +415,58 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert expected_sql_fragment in "\n".join(store.create_statements())
 
 
-def _event_hinted_config(
-    adapter_name: "str", *, select_for_update: "bool", skip_locked: "bool", dialect: "str | None" = None
-) -> "FakeSQLSpecConfig":
-    """Fake adapter config advertising SQLSpec event runtime hints.
-
-    Returns:
-        Adapter config with event runtime hints attached.
-    """
-    from sqlspec.extensions.events import EventRuntimeHints
-
-    config = _fake_adapter_config(adapter_name, dialect=dialect)
-    setattr(
-        config,
-        "get_event_runtime_hints",
-        lambda: EventRuntimeHints(select_for_update=select_for_update, skip_locked=skip_locked),
-    )
-    return config
-
-
 @pytest.mark.parametrize(
-    ("adapter_name", "select_for_update", "skip_locked", "expected"),
+    ("adapter_name", "dialect", "expected"),
     (
-        ("asyncpg", True, True, True),
-        ("asyncmy", True, True, True),
-        ("psqlpy", True, True, True),
-        ("aiosqlite", False, False, False),
-        ("duckdb", False, False, False),
-        # Oracle supports FOR UPDATE SKIP LOCKED, but its config advertises False today
-        # (sqlspec FR litestar-org/sqlspec#544); the gate must honour the config, not guess.
-        ("oracledb", False, False, False),
+        ("asyncpg", "postgres", True),
+        ("asyncmy", "mysql", True),
+        ("psqlpy", "postgres", True),
+        ("aiosqlite", "sqlite", False),
+        ("duckdb", "duckdb", False),
     ),
 )
-def test_sqlspec_store_supports_skip_locked_follows_config_event_hints(
-    adapter_name: "str", select_for_update: "bool", skip_locked: "bool", expected: "bool"
+def test_sqlspec_store_supports_skip_locked_follows_data_dictionary_flags(
+    adapter_name: "str", dialect: "str", expected: "bool"
 ) -> "None":
-    """``supports_skip_locked`` gates off the adapter config's event runtime hints."""
-    store = create_queue_store(
-        _event_hinted_config(adapter_name, select_for_update=select_for_update, skip_locked=skip_locked),
-        table_name="queue_tasks",
-    )
+    """``supports_skip_locked`` gates off SQLSpec data-dictionary feature flags."""
+    store = create_queue_store(_fake_adapter_config(adapter_name, dialect=dialect), table_name="queue_tasks")
 
     assert store.supports_skip_locked is expected
 
 
-def test_sqlspec_store_supports_skip_locked_defaults_false_without_hints() -> "None":
-    """A config that does not advertise event hints degrades to optimistic CAS."""
-    store = create_queue_store(_fake_adapter_config("aiosqlite", dialect="sqlite"), table_name="queue_tasks")
+def test_sqlspec_oracledb_async_store_supports_skip_locked_from_data_dictionary() -> "None":
+    """Async Oracle uses SQLSpec 0.52's Oracle SKIP LOCKED capability."""
+    store = create_queue_store(
+        _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleAsyncConfig"),
+        table_name="queue_tasks",
+    )
+
+    assert isinstance(store, OracledbAsyncQueueStore)
+    assert store.supports_skip_locked is True
+    assert store.claim_select_stream_chunk_size == 1
+
+
+def test_sqlspec_oracledb_sync_store_uses_cas_until_safe_streaming_claims() -> "None":
+    """Sync Oracle stays on CAS because the sync bridge cannot bound locked rows."""
+    store = create_queue_store(
+        _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleSyncConfig"),
+        table_name="queue_tasks",
+    )
+
+    assert isinstance(store, OracledbSyncQueueStore)
+    assert store.supports_skip_locked is False
+
+
+def test_sqlspec_store_supports_skip_locked_defaults_false_without_dialect() -> "None":
+    """A config without dialect metadata degrades to optimistic CAS."""
+    store = create_queue_store(_fake_adapter_config("aiosqlite", dialect=None), table_name="queue_tasks")
 
     assert store.supports_skip_locked is False
 
 
 def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect() -> "None":
     """``select_claimable`` builds a due-task SELECT that locks rows with SKIP LOCKED."""
-    store = create_queue_store(
-        _event_hinted_config("asyncpg", select_for_update=True, skip_locked=True, dialect="postgres"),
-        table_name="queue_tasks",
-    )
+    store = create_queue_store(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
 
     built = store.select_claimable(now="2026-01-01T00:00:00+00:00", limit=1, queue="default").build(dialect="postgres")
 

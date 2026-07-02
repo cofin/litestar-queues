@@ -57,7 +57,7 @@ litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
 redis = ["redis>=5.0.0"]
-sqlspec = ["sqlspec>=0.51.0"]
+sqlspec = ["sqlspec>=0.52.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -123,7 +123,7 @@ tests = [
   "numpy",
   "advanced-alchemy>=1.10.0",
   # SQLSpec adapters covered by the default integration matrix
-  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,litestar,mysql-connector]>=0.51.0",
+  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,litestar,mysql-connector]>=0.52.0",
 ]
 
 #####################

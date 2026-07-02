@@ -20,12 +20,20 @@ __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "NOTIFY_TRANSPORTS", "SQLSpecBackendC
 
 DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 
-NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({"listen_notify", "listen_notify_durable", "table_queue", "polling"})
+NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({
+    "aq",
+    "listen_notify",
+    "listen_notify_durable",
+    "polling",
+    "table_queue",
+    "txeventq",
+})
 """Valid worker-wakeup transports for :attr:`SQLSpecBackendConfig.notify_transport`.
 
 ``listen_notify``/``listen_notify_durable`` push wakeups through native
-LISTEN/NOTIFY, ``table_queue`` uses the durable events table, and ``polling``
-disables push wakeups so workers fall back to interval polling.
+LISTEN/NOTIFY, ``table_queue`` uses the durable events table, ``aq`` and
+``txeventq`` use Oracle Advanced Queuing backends, and ``polling`` disables
+push wakeups so workers fall back to interval polling.
 """
 
 

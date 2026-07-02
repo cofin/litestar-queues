@@ -240,8 +240,8 @@ advertises, then fall back to the portable path when a capability is absent.
      - Positional Arrow ingest is contract-tested so column order matches the
        table definition.
    * - ``asyncpg`` / ``psycopg``
-     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it;
-       compare-and-swap fallback otherwise.
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec's data dictionary marks the
+       dialect support; compare-and-swap fallback otherwise.
      - ``JSONB`` with native decoded JSON columns where the driver returns
        Python values.
      - Arrow ``load_from_records`` path.
@@ -250,24 +250,27 @@ advertises, then fall back to the portable path when a capability is absent.
      - Stale-recovery statement batches use SQLSpec ``StatementStack``; psycopg
        can collapse the batch through the driver pipeline.
    * - ``psqlpy``
-     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it.
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec's data dictionary marks the
+       dialect support.
      - ``JSONB`` payload/metadata columns with native decode; ``result_json``
        stays text-backed for driver compatibility.
      - Arrow ``load_from_records`` path.
      - SQLSpec durable table queue.
      - PostgreSQL storage parameters tune queue-table churn where supported.
    * - ``asyncmy`` / ``aiomysql`` / ``mysqlconnector``
-     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec event hints advertise it.
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec's data dictionary marks the
+       dialect support.
      - MySQL ``JSON`` columns with native decoded JSON values.
      - Arrow ``load_from_records`` path.
      - Polling.
      - Index prefixes keep InnoDB key length within portable bounds.
    * - ``oracledb``
-     - Optimistic compare-and-swap until SQLSpec exposes an Oracle locking
-       capability hint.
+     - ``FOR UPDATE SKIP LOCKED`` through SQLSpec's Oracle data-dictionary
+       capability.
      - Version-aware ``JSON``, checked ``BLOB``, or plain ``BLOB`` storage.
      - Arrow ``load_from_records`` path.
-     - Polling.
+     - Polling by default; explicit ``aq`` or ``txeventq`` when Oracle queues
+       are provisioned.
      - Oracle object names are kept within the adapter's identifier limits;
        Oracle 23ai can pipeline stale-recovery statement batches.
 
@@ -633,8 +636,44 @@ configured. To wake workers through SQLSpec Events, configure the SQLSpec
    )
 
 PostgreSQL SQLSpec adapters can use SQLSpec's native ``listen_notify`` backend;
-other adapters can use the durable ``table_queue`` backend. Queue notification
-channel names must be valid SQLSpec event identifiers.
+other adapters can use the durable ``table_queue`` backend. Oracle adapters can
+use native ``aq`` or ``txeventq`` transports when the database user has AQ
+privileges and the target queues are provisioned. These Oracle transports stay
+explicit because queue provisioning is DBA-owned:
+
+.. code-block:: python
+
+   from sqlspec.adapters.oracledb import OracleAsyncConfig
+
+   oracle_config = OracleAsyncConfig(
+       connection_config={
+           "host": "db.example.com",
+           "port": 1521,
+           "service_name": "FREEPDB1",
+           "user": "queue_app",
+           "password": "...",
+           "min": 1,
+           "max": 5,
+       },
+       extension_config={
+           "events": {
+               "backend": "txeventq",
+               "aq_queue": "LQ_EVENTS_TXQ",
+           }
+       },
+   )
+
+   config = QueueConfig(
+       queue_backend=SQLSpecBackendConfig(
+           config=oracle_config,
+           notifications=True,
+           notify_transport="txeventq",
+           event_settings={"aq_queue": "LQ_EVENTS_TXQ"},
+       ),
+       execution_backend="local",
+   )
+
+Queue notification channel names must be valid SQLSpec event identifiers.
 
 SQLSpec Observability
 ~~~~~~~~~~~~~~~~~~~~~

@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from sqlspec import sql
 from sqlspec.data_dictionary import get_dialect_config
-from sqlspec.extensions.events import get_runtime_hints
 from sqlspec.utils.serializers import from_json, to_json
 from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
@@ -58,6 +57,7 @@ class SQLSpecQueueStore:
 
     data_dictionary_dialect: "ClassVar[str | None]" = None
     identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "double"
+    claim_select_stream_chunk_size: "ClassVar[int | None]" = None
     # Per-store opt-in: canonical JSON columns whose driver round-trips
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
@@ -100,16 +100,17 @@ class SQLSpecQueueStore:
     def supports_skip_locked(self) -> "bool":
         """Whether the adapter supports ``SELECT ... FOR UPDATE SKIP LOCKED``.
 
-        Resolved from the adapter config's event runtime hints
-        (``select_for_update`` and ``skip_locked``). SQLSpec 0.51 exposes no
-        locking capability through ``data_dictionary`` feature flags, so the
-        config-level hints are the runtime signal. Adapters that do not
-        advertise the hints (sqlite, duckdb, and oracle today) degrade to
-        the optimistic-CAS claim. This is a deliberate workaround pending a
-        first-class capability flag upstream (litestar-org/sqlspec#544).
+        Resolved from SQLSpec's data dictionary. Some dialects expose
+        ``supports_skip_locked`` as a static flag; version-gated dialects
+        expose the minimum supported version instead, which is treated as an
+        adapter capability until live server-version checks are introduced.
         """
-        hints = get_runtime_hints(_adapter_name(self._config), self._config)
-        return bool(hints.select_for_update and hints.skip_locked)
+        dialect_config = self._dialect_config()
+        if dialect_config is None or dialect_config.get_feature_flag("supports_for_update") is not True:
+            return False
+        return dialect_config.get_feature_flag("supports_skip_locked") is True or (
+            dialect_config.get_feature_version("supports_skip_locked") is not None
+        )
 
     @property
     def supports_native_bulk_ingest(self) -> "bool":
