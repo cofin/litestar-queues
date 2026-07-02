@@ -250,6 +250,8 @@ import builtins
 from types import SimpleNamespace
 
 blocked_prefixes = (
+    "adbc_driver_manager",
+    "adbc_driver_sqlite",
     "aiomysql",
     "aiosqlite",
     "asyncmy",
@@ -262,6 +264,7 @@ blocked_prefixes = (
     "oracledb",
     "psqlpy",
     "psycopg",
+    "sqlspec.adapters.adbc",
     "sqlspec.adapters.aiomysql",
     "sqlspec.adapters.aiosqlite",
     "sqlspec.adapters.asyncmy",
@@ -286,6 +289,7 @@ def blocked_import(name, *args, **kwargs):
 builtins.__import__ = blocked_import
 
 from litestar_queues.backends.sqlspec.stores import (
+    AdbcSqliteQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
     AsyncmyQueueStore,
@@ -314,6 +318,7 @@ def fake_config(adapter_name, dialect, config_type_name):
     return config
 
 expected = (
+    ("adbc", "sqlite", "AdbcConfig", AdbcSqliteQueueStore),
     ("aiomysql", "mysql", "AiomysqlConfig", AiomysqlQueueStore),
     ("aiosqlite", "sqlite", "AiosqliteConfig", AiosqliteQueueStore),
     ("asyncmy", "mysql", "AsyncmyConfig", AsyncmyQueueStore),
@@ -363,10 +368,25 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "queue" in pending_statement.sql
 
 
+def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(
+            "adbc",
+            dialect="sqlite",
+            config_type_name="AdbcConfig",
+            connection_config={"driver_name": "adbc_driver_sqlite", "uri": "/tmp/queue.db"},
+        ),
+        table_name="queue_tasks",
+    )
+
+    assert store.__class__.__name__ == "AdbcSqliteQueueStore"
+    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.adbc.")
+    assert '"queue_tasks"' in "\n".join(store.create_statements())
+
+
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name"),
     (
-        ("adbc", "sqlite", "AdbcConfig"),
         ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
         ("bigquery", "bigquery", "BigQueryConfig"),
         ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
@@ -379,6 +399,20 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
     with pytest.raises(QueueConfigurationError, match=adapter_name):
         create_queue_store(
             _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
+            table_name="queue_tasks",
+        )
+
+
+@pytest.mark.parametrize(("dialect",), (("bigquery",), ("postgres",)))
+def test_sqlspec_backend_rejects_non_sqlite_adbc_adapter(dialect: "str") -> "None":
+    with pytest.raises(QueueConfigurationError, match="sqlite"):
+        create_queue_store(
+            _fake_adapter_config(
+                "adbc",
+                dialect=dialect,
+                config_type_name="AdbcConfig",
+                connection_config={"driver_name": "adbc_driver_sqlite", "uri": "/tmp/queue.db"},
+            ),
             table_name="queue_tasks",
         )
 
