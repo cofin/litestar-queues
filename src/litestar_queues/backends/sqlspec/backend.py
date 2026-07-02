@@ -590,26 +590,27 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             async with self._session() as driver:
                 rows = await driver.select(store.list_stale_running(cutoff=self._serialize_datetime(cutoff)))
                 stack = StatementStack()
+                statements: "list[Any]" = []
                 for row in cast("list[dict[str, Any]]", rows):
                     record = self._record_from_row(row)
                     requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                     if requeue_on_stale and record.retry_count < record.max_retries:
-                        stack = stack.push_execute(
-                            store.retry_task(
-                                task_id=str(record.id), error="Task heartbeat stale", retry_count=record.retry_count + 1
-                            )
+                        statement = store.retry_task(
+                            task_id=str(record.id), error="Task heartbeat stale", retry_count=record.retry_count + 1
                         )
+                        statements.append(statement)
+                        stack = stack.push_execute(statement)
                         result.requeued += 1
                     else:
                         now = _utc_now()
-                        stack = stack.push_execute(
-                            store.fail_task(
-                                task_id=str(record.id),
-                                completed_at=self._serialize_datetime(now),
-                                heartbeat_at=self._serialize_datetime(now),
-                                error="Task heartbeat stale",
-                            )
+                        statement = store.fail_task(
+                            task_id=str(record.id),
+                            completed_at=self._serialize_datetime(now),
+                            heartbeat_at=self._serialize_datetime(now),
+                            error="Task heartbeat stale",
                         )
+                        statements.append(statement)
+                        stack = stack.push_execute(statement)
                         result.failed += 1
                         result.failed_task_ids.append(record.id)
                         if not requeue_on_stale:
@@ -618,14 +619,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 if stack:
                     # Reset any implicit read transaction the SELECT may have opened so
                     # SQLSpec's stack runner owns the write transaction.
-                    with suppress(Exception):
-                        await driver.rollback()
-                    try:
-                        await driver.execute_stack(stack)
-                    except Exception:
-                        with suppress(Exception):
-                            await driver.rollback()
-                        raise
+                    await self._apply_stale_recovery_statements(driver, store, stack, statements)
         recovered = result.requeued + result.failed
         if recovered:
             self._increment_queue_metric("stale_recovered", float(recovered))
@@ -634,6 +628,34 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if result.failed:
             self._increment_queue_metric("stale_failed", float(result.failed))
         return result
+
+    async def _apply_stale_recovery_statements(
+        self, driver: "Any", store: "Any", stack: "StatementStack", statements: "list[Any]"
+    ) -> "None":
+        """Apply stale-recovery writes with the adapter's supported transaction path.
+
+        Returns:
+            None.
+        """
+        with suppress(Exception):
+            await driver.rollback()
+        if store.skip_explicit_begin:
+            await driver.begin()
+            try:
+                for statement in statements:
+                    await driver.execute(statement)
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+            return
+        try:
+            await driver.execute_stack(stack)
+        except Exception:
+            with suppress(Exception):
+                await driver.rollback()
+            raise
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -993,7 +1015,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
-        async with _bridge_session(self._get_or_create_sqlspec(), sqlspec_config) as driver:
+        async with _bridge_session(
+            self._get_or_create_sqlspec(), sqlspec_config, skip_explicit_begin=self._get_store().skip_explicit_begin
+        ) as driver:
             yield driver
 
     @asynccontextmanager
@@ -1204,7 +1228,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _serialize_datetime(self, value: "datetime | None") -> "datetime | str | None":
         serialized = _serialize_datetime(value)
-        if serialized is not None and self._get_store().bind_datetime_as_text:
+        store = self._get_store()
+        if serialized is not None and store.bind_datetime_as_text:
+            formatter = getattr(store, "serialize_datetime_text", None)
+            if callable(formatter):
+                return cast("str", formatter(serialized))
             return serialized.isoformat()
         return serialized
 
@@ -1267,12 +1295,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 class _ManagedAsyncDriver:
     """Expose sync SQLSpec driver methods through SQLSpec's managed async bridge."""
 
-    __slots__ = ("_driver",)
+    __slots__ = ("_driver", "_skip_explicit_begin")
 
-    def __init__(self, driver: "Any") -> "None":
+    def __init__(self, driver: "Any", *, skip_explicit_begin: "bool" = False) -> "None":
         self._driver = driver
+        self._skip_explicit_begin = skip_explicit_begin
 
     def __getattr__(self, name: "str") -> "Any":
+        if name == "begin" and self._skip_explicit_begin:
+            return _noop_async
         attr = getattr(self._driver, name)
         if callable(attr):
             return async_(attr)
@@ -1280,7 +1311,9 @@ class _ManagedAsyncDriver:
 
 
 @asynccontextmanager
-async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
+async def _bridge_session(
+    sqlspec_manager: "Any", sqlspec_config: "Any", *, skip_explicit_begin: "bool" = False
+) -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
 
     Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``MysqlConnectorSyncConfig``, etc.)
@@ -1299,12 +1332,16 @@ async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "Asy
     else:
         driver = await async_(session_cm.__enter__)()
         try:
-            yield _ManagedAsyncDriver(driver)
+            yield _ManagedAsyncDriver(driver, skip_explicit_begin=skip_explicit_begin)
         except BaseException as exc:
             if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
                 raise
         else:
             await async_(session_cm.__exit__)(None, None, None)
+
+
+async def _noop_async(*_args: "Any", **_kwargs: "Any") -> "None":
+    return None
 
 
 async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[Any]":

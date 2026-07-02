@@ -32,6 +32,7 @@ from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores import (
     AiomysqlQueueStore,
     AiosqliteQueueStore,
+    ArrowOdbcQueueStore,
     AsyncmyQueueStore,
     AsyncpgQueueStore,
     CockroachAsyncpgQueueStore,
@@ -76,6 +77,7 @@ def _fake_adapter_config(
     config_type_name: "str | None" = None,
     connection_config: "dict[str, object] | None" = None,
     extension_config: "dict[str, object] | None" = None,
+    driver_features: "dict[str, object] | None" = None,
     supports_native_arrow_import: "bool | None" = None,
 ) -> "FakeSQLSpecConfig":
     class_attrs: "dict[str, object]" = {"__module__": f"sqlspec.adapters.{adapter_name}.config"}
@@ -91,6 +93,7 @@ def _fake_adapter_config(
     config.extension_config = extension_config or {}
     config.statement_config = SimpleNamespace(dialect=dialect)
     config.connection_config = connection_config or {}
+    config.driver_features = driver_features or {}
     return config
 
 
@@ -218,6 +221,32 @@ async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> "None
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
 
 
+def test_sqlspec_backend_serializes_text_bound_datetimes_as_iso_by_default() -> "None":
+    backend = SQLSpecQueueBackend()
+    backend._store = SimpleNamespace(bind_datetime_as_text=True)
+
+    serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=timezone.utc))
+
+    assert serialized == "2026-07-02T12:34:56.789012+00:00"
+
+
+def test_sqlspec_backend_serializes_arrow_odbc_datetimes_for_sql_server_datetime() -> "None":
+    backend = SQLSpecQueueBackend()
+    backend._store = create_queue_store(
+        _fake_adapter_config(
+            "arrow_odbc",
+            dialect="tsql",
+            config_type_name="ArrowOdbcConfig",
+            driver_features={"dbms_name": "Microsoft SQL Server"},
+        )
+    )
+
+    serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=timezone.utc))
+
+    assert isinstance(backend._store, ArrowOdbcQueueStore)
+    assert serialized == "2026-07-02 12:34:56.789"
+
+
 def test_top_level_litestar_queues_import_does_not_pull_in_sqlspec() -> "None":
     """Importing ``litestar_queues`` must succeed without sqlspec installed."""
     code = """
@@ -254,6 +283,7 @@ blocked_prefixes = (
     "aiosqlite",
     "asyncmy",
     "asyncpg",
+    "arrow_odbc",
     "duckdb",
     "cockroach_asyncpg",
     "cockroach_psycopg",
@@ -266,6 +296,7 @@ blocked_prefixes = (
     "sqlspec.adapters.aiosqlite",
     "sqlspec.adapters.asyncmy",
     "sqlspec.adapters.asyncpg",
+    "sqlspec.adapters.arrow_odbc",
     "sqlspec.adapters.cockroach_asyncpg",
     "sqlspec.adapters.cockroach_psycopg",
     "sqlspec.adapters.duckdb",
@@ -367,7 +398,6 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     ("adapter_name", "dialect", "config_type_name"),
     (
         ("adbc", "sqlite", "AdbcConfig"),
-        ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
         ("bigquery", "bigquery", "BigQueryConfig"),
         ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
         ("spanner", "spanner", "SpannerConfig"),
@@ -381,6 +411,45 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
             _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
             table_name="queue_tasks",
         )
+
+
+def test_sqlspec_backend_rejects_arrow_odbc_unknown_target_dialect() -> "None":
+    with pytest.raises(QueueConfigurationError, match="Supported target dialect"):
+        create_queue_store(
+            _fake_adapter_config("arrow_odbc", dialect=None, config_type_name="ArrowOdbcConfig"),
+            table_name="queue_tasks",
+        )
+
+
+def test_sqlspec_backend_rejects_arrow_odbc_unsupported_target_dialect() -> "None":
+    with pytest.raises(QueueConfigurationError, match="postgres"):
+        create_queue_store(
+            _fake_adapter_config("arrow_odbc", dialect="postgres", config_type_name="ArrowOdbcConfig"),
+            table_name="queue_tasks",
+        )
+
+
+def test_sqlspec_backend_accepts_arrow_odbc_sql_server_target() -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(
+            "arrow_odbc",
+            dialect="tsql",
+            config_type_name="ArrowOdbcConfig",
+            connection_config={
+                "connection_string": (
+                    "encrypt=no;TrustServerCertificate=yes;driver={ODBC Driver 18 for SQL Server};"
+                    "server=localhost,1433;database=pytest_databases;UID=sa;PWD=Super-secret1"
+                )
+            },
+        ),
+        table_name="queue_tasks",
+    )
+
+    ddl = "\n".join(store.create_statements())
+
+    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.arrow_odbc.")
+    assert "DATETIME" in ddl
+    assert "NVARCHAR(MAX)" in ddl
 
 
 @pytest.mark.parametrize(
