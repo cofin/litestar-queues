@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 __all__ = ("SQLSpecQueueBackend",)
 
 _DUE_STATUSES = ("pending", "scheduled")
-_DURABLE_NOTIFICATION_BACKENDS = frozenset({"advanced_queue", "listen_notify_durable", "table_queue"})
+_DURABLE_NOTIFICATION_BACKENDS = frozenset({"aq", "listen_notify_durable", "table_queue", "txeventq"})
 _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
@@ -375,15 +375,22 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.begin()
                 try:
                     now = _utc_now()
-                    rows = await driver.select(
-                        store.select_claimable(
-                            now=self._serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
-                        )
+                    statement = store.select_claimable(
+                        now=self._serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
                     )
-                    if not rows:
+                    stream_chunk_size = cast("int | None", getattr(store, "claim_select_stream_chunk_size", None))
+                    if stream_chunk_size is None:
+                        rows = await driver.select(statement)
+                        row = cast("dict[str, Any] | None", rows[0] if rows else None)
+                    else:
+                        row = None
+                        async for claimable_row in _select_stream(driver, statement, chunk_size=stream_chunk_size):
+                            row = cast("dict[str, Any]", claimable_row)
+                            break
+                    if row is None:
                         await driver.rollback()
                         return None
-                    record = self._record_from_row(cast("dict[str, Any]", rows[0]))
+                    record = self._record_from_row(row)
                     result = await driver.execute(
                         store.claim_task(
                             task_id=str(record.id),

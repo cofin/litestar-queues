@@ -4,6 +4,7 @@ from enum import Enum
 from inspect import isawaitable
 from typing import Any, ClassVar, Literal, cast
 
+from sqlspec import sql
 from sqlspec.utils.serializers import from_json, to_json
 from sqlspec.utils.sync_tools import async_
 
@@ -102,6 +103,23 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             self._native_json_columns |= frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
         return storage_type
 
+    def _select_claimable_unlimited(
+        self, *, now: "Any", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "Any":
+        statement = (
+            self
+            ._select_all()
+            .where_in(self._col("status"), ("pending", "scheduled"))
+            .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :now", now=now)
+        )
+        if queue is not None:
+            statement = statement.where_eq(self._col("queue"), queue)
+        if execution_backend is not None:
+            statement = statement.where_eq(self._col("execution_backend"), execution_backend)
+        return statement.order_by(
+            sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
+        ).for_update(skip_locked=True)
+
 
 class OracledbSyncQueueStore(_OracledbQueueStore):
     """oracledb sync SQLSpec queue statement store."""
@@ -118,12 +136,18 @@ class OracledbSyncQueueStore(_OracledbQueueStore):
         if self._json_storage is not None:
             self._apply_json_storage(self._json_storage)
 
+    @property
+    def supports_skip_locked(self) -> "bool":
+        """Bridge-managed sync Oracle claims stay on the CAS path."""
+        return False
+
 
 class OracledbAsyncQueueStore(_OracledbQueueStore):
     """oracledb async SQLSpec queue statement store."""
 
     __slots__ = ("_in_memory",)
 
+    claim_select_stream_chunk_size: "ClassVar[int | None]" = 1
     _in_memory: "bool"
 
     def __init__(self, config: "Any", *, table_name: "str | None" = None, **kwargs: "Any") -> "None":
@@ -133,6 +157,12 @@ class OracledbAsyncQueueStore(_OracledbQueueStore):
         self._json_storage = _json_storage_from_settings(queue_settings)
         if self._json_storage is not None:
             self._apply_json_storage(self._json_storage)
+
+    def select_claimable(
+        self, *, now: "Any", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "Any":
+        """Return an ordered Oracle row-locking query consumed through a one-row stream."""
+        return self._select_claimable_unlimited(now=now, queue=queue, execution_backend=execution_backend)
 
 
 class _OracleJSONStorageType(str, Enum):
