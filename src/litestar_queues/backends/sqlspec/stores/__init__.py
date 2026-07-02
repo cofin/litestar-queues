@@ -19,6 +19,7 @@ from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
 from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 
 __all__ = (
@@ -37,6 +38,7 @@ __all__ = (
     "PsqlpyQueueStore",
     "PsycopgAsyncQueueStore",
     "PsycopgSyncQueueStore",
+    "PymysqlQueueStore",
     "SQLSpecQueueStore",
     "SqliteQueueStore",
     "create_queue_store",

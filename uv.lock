@@ -1391,7 +1391,7 @@ dev = [
     { name = "sphinx-paramlinks" },
     { name = "sphinx-togglebutton" },
     { name = "sphinxcontrib-mermaid" },
-    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg"] },
+    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg", "pymysql"] },
     { name = "valkey" },
 ]
 docs = [
@@ -1425,7 +1425,7 @@ tests = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "redis" },
-    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg"] },
+    { name = "sqlspec", extra = ["aiomysql", "aiosqlite", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mysql-connector", "oracledb", "psqlpy", "psycopg", "pymysql"] },
     { name = "valkey" },
 ]
 
@@ -1471,7 +1471,7 @@ dev = [
     { name = "sphinx-paramlinks", specifier = ">=0.6.0" },
     { name = "sphinx-togglebutton", specifier = ">=0.3.2" },
     { name = "sphinxcontrib-mermaid", specifier = ">=0.9.2" },
-    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "cockroachdb", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
+    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "cockroachdb", "pymysql", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 docs = [
@@ -1499,7 +1499,7 @@ tests = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "redis", specifier = ">=5.0.0" },
-    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "cockroachdb", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
+    { name = "sqlspec", extras = ["aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "cockroachdb", "pymysql", "litestar", "mysql-connector"], specifier = ">=0.52.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 
@@ -3504,6 +3504,9 @@ psqlpy = [
 ]
 psycopg = [
     { name = "psycopg", extra = ["binary", "pool"] },
+]
+pymysql = [
+    { name = "pymysql" },
 ]
 
 [[package]]

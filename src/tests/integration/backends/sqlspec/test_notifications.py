@@ -372,6 +372,7 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
         ("duckdb", "polling"),
         ("asyncmy", "polling"),
         ("aiomysql", "polling"),
+        ("pymysql", "polling"),
         ("mysqlconnector", "polling"),
         ("oracledb", "polling"),
         (None, "polling"),

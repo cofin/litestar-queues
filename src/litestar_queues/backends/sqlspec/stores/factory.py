@@ -20,6 +20,7 @@ from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
 from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -35,6 +36,7 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "asyncpg": AsyncpgQueueStore,
     "cockroach_asyncpg": CockroachAsyncpgQueueStore,
     "duckdb": DuckDBQueueStore,
+    "pymysql": PymysqlQueueStore,
     "psqlpy": PsqlpyQueueStore,
     "sqlite": SqliteQueueStore,
 }
