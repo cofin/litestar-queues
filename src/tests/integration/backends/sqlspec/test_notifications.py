@@ -365,6 +365,8 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
         ("asyncpg", "listen_notify_durable"),
         ("psycopg", "table_queue"),
         ("psqlpy", "table_queue"),
+        ("cockroach_asyncpg", "polling"),
+        ("cockroach_psycopg", "polling"),
         ("aiosqlite", "polling"),
         ("sqlite", "polling"),
         ("duckdb", "polling"),

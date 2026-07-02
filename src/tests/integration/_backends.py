@@ -49,6 +49,15 @@ class OracleService(Protocol):
     service_name: "str"
 
 
+class CockroachService(Protocol):
+    """pytest-databases Cockroach service attributes used by backend builders."""
+
+    host: "str"
+    port: "int"
+    database: "str"
+    driver_opts: "dict[str, str]"
+
+
 @dataclass(frozen=True, slots=True)
 class FixtureCtx:
     """Per-test fixture context handed to a BackendCase builder."""
@@ -175,6 +184,37 @@ async def _build_postgres_psqlpy(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
+async def _build_cockroach_asyncpg(ctx: "FixtureCtx") -> "BaseQueueBackend":
+    from sqlspec.adapters.cockroach_asyncpg import CockroachAsyncpgConfig
+
+    svc = cast("CockroachService", ctx.service)
+    assert svc is not None
+    return _sqlspec_backend(
+        CockroachAsyncpgConfig(
+            connection_config={
+                "host": svc.host,
+                "port": svc.port,
+                "user": "root",
+                "password": "",
+                "database": svc.database,
+                "ssl": False,
+            }
+        ),
+        table_name=ctx.table_name,
+    )
+
+
+async def _build_cockroach_psycopg(ctx: "FixtureCtx") -> "BaseQueueBackend":
+    from sqlspec.adapters.cockroach_psycopg import CockroachPsycopgAsyncConfig
+
+    svc = cast("CockroachService", ctx.service)
+    assert svc is not None
+    conninfo = f"postgresql://root@{svc.host}:{svc.port}/{svc.database}?sslmode=disable"
+    return _sqlspec_backend(
+        CockroachPsycopgAsyncConfig(connection_config={"conninfo": conninfo}), table_name=ctx.table_name
+    )
+
+
 async def _build_mysql_asyncmy(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.asyncmy import AsyncmyConfig
 
@@ -294,6 +334,20 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         "postgres_service",
         _build_postgres_psqlpy,
         frozenset({"listen-notify", "json-column"}),
+    ),
+    BackendCase(
+        "cockroach-asyncpg",
+        frozenset({"asyncpg", "sqlspec"}),
+        "cockroachdb_service",
+        _build_cockroach_asyncpg,
+        frozenset({"polling-only", "json-column"}),
+    ),
+    BackendCase(
+        "cockroach-psycopg",
+        frozenset({"psycopg", "sqlspec"}),
+        "cockroachdb_service",
+        _build_cockroach_psycopg,
+        frozenset({"polling-only", "json-column"}),
     ),
     BackendCase(
         "mysql-asyncmy",

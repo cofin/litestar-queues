@@ -187,6 +187,9 @@ claim/update statements where the database supports them.
    * - ``asyncpg``
      - ``AsyncpgQueueStore``
      - PostgreSQL behavior.
+   * - ``cockroach_asyncpg``
+     - ``CockroachAsyncpgQueueStore``
+     - CockroachDB behavior on the asyncpg driver.
    * - ``duckdb``
      - ``DuckDBQueueStore``
      - DuckDB-specific DDL and JSON behavior.
@@ -202,6 +205,10 @@ claim/update statements where the database supports them.
    * - ``psycopg``
      - ``PsycopgAsyncQueueStore`` or ``PsycopgSyncQueueStore``
      - Async and sync variants are selected from the SQLSpec config type.
+   * - ``cockroach_psycopg``
+     - ``CockroachPsycopgAsyncQueueStore`` or ``CockroachPsycopgSyncQueueStore``
+     - CockroachDB behavior on psycopg; async and sync variants are selected
+       from the SQLSpec config type.
    * - ``sqlite``
      - ``SqliteQueueStore``
      - Sync SQLite behavior.
@@ -249,6 +256,14 @@ advertises, then fall back to the portable path when a capability is absent.
        use SQLSpec's durable table queue.
      - Stale-recovery statement batches use SQLSpec ``StatementStack``; psycopg
        can collapse the batch through the driver pipeline.
+   * - ``cockroach_asyncpg`` / ``cockroach_psycopg``
+     - Optimistic compare-and-swap.
+     - ``JSONB`` with native decoded JSON columns where the driver returns
+       Python values.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - CockroachDB keeps PostgreSQL-compatible DDL, but the queue backend
+       stays on the portable claim path instead of relying on ``SKIP LOCKED``.
    * - ``psqlpy``
      - ``FOR UPDATE SKIP LOCKED`` when SQLSpec's data dictionary marks the
        dialect support.

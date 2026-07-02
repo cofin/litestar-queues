@@ -5,6 +5,11 @@ from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStor
 from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
+    CockroachPsycopgAsyncQueueStore,
+    CockroachPsycopgSyncQueueStore,
+)
 from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
@@ -21,6 +26,9 @@ __all__ = (
     "AiosqliteQueueStore",
     "AsyncmyQueueStore",
     "AsyncpgQueueStore",
+    "CockroachAsyncpgQueueStore",
+    "CockroachPsycopgAsyncQueueStore",
+    "CockroachPsycopgSyncQueueStore",
     "DuckDBQueueStore",
     "MysqlConnectorAsyncQueueStore",
     "MysqlConnectorSyncQueueStore",
