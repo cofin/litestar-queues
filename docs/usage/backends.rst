@@ -196,6 +196,9 @@ claim/update statements where the database supports them.
    * - ``mysqlconnector``
      - ``MysqlConnectorAsyncQueueStore`` or ``MysqlConnectorSyncQueueStore``
      - Async and sync variants are selected from the SQLSpec config type.
+   * - ``pymysql``
+     - ``PymysqlQueueStore``
+     - Sync MySQL behavior.
    * - ``oracledb``
      - ``OracledbAsyncQueueStore`` or ``OracledbSyncQueueStore``
      - Uses Oracle-specific DDL and JSON column choices.
@@ -279,6 +282,13 @@ advertises, then fall back to the portable path when a capability is absent.
      - Arrow ``load_from_records`` path.
      - Polling.
      - Index prefixes keep InnoDB key length within portable bounds.
+   * - ``pymysql``
+     - ``FOR UPDATE SKIP LOCKED`` when SQLSpec's data dictionary marks the
+       dialect support.
+     - MySQL ``JSON`` columns with native decoded JSON values.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - Sync MySQL behavior uses the same InnoDB prefix guard.
    * - ``oracledb``
      - ``FOR UPDATE SKIP LOCKED`` through SQLSpec's Oracle data-dictionary
        capability.

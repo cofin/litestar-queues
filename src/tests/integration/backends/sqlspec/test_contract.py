@@ -45,6 +45,7 @@ from litestar_queues.backends.sqlspec.stores import (
     PsqlpyQueueStore,
     PsycopgAsyncQueueStore,
     PsycopgSyncQueueStore,
+    PymysqlQueueStore,
     SqliteQueueStore,
     create_queue_store,
 )
@@ -257,6 +258,7 @@ blocked_prefixes = (
     "cockroach_asyncpg",
     "cockroach_psycopg",
     "mysql.connector",
+    "pymysql",
     "oracledb",
     "psqlpy",
     "psycopg",
@@ -268,6 +270,7 @@ blocked_prefixes = (
     "sqlspec.adapters.cockroach_psycopg",
     "sqlspec.adapters.duckdb",
     "sqlspec.adapters.mysqlconnector",
+    "sqlspec.adapters.pymysql",
     "sqlspec.adapters.oracledb",
     "sqlspec.adapters.psqlpy",
     "sqlspec.adapters.psycopg",
@@ -367,7 +370,6 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
         ("arrow_odbc", "sqlite", "ArrowOdbcConfig"),
         ("bigquery", "bigquery", "BigQueryConfig"),
         ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
-        ("pymysql", "mysql", "PyMysqlConfig"),
         ("spanner", "spanner", "SpannerConfig"),
     ),
 )
@@ -448,6 +450,7 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
         ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
         ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
+        ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
         ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgAsyncConfig", {}, PsycopgAsyncQueueStore, 'WHERE "status" IN'),
@@ -479,6 +482,7 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     (
         ("asyncpg", "postgres", True),
         ("asyncmy", "mysql", True),
+        ("pymysql", "mysql", True),
         ("psqlpy", "postgres", True),
         ("aiosqlite", "sqlite", False),
         ("duckdb", "duckdb", False),
@@ -591,6 +595,14 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "`args_json` JSON NOT NULL",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
+        (
+            "pymysql",
+            "mysql",
+            "PyMysqlConfig",
+            {},
+            "`args_json` JSON NOT NULL",
+            frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
+        ),
     ),
 )
 def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
@@ -624,6 +636,7 @@ def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
     (
         ("aiomysql", "AiomysqlConfig"),
         ("asyncmy", "AsyncmyConfig"),
+        ("pymysql", "PyMysqlConfig"),
         ("mysqlconnector", "MysqlConnectorSyncConfig"),
         ("mysqlconnector", "MysqlConnectorAsyncConfig"),
     ),
