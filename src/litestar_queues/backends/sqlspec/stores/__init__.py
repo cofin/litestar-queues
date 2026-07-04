@@ -2,6 +2,7 @@
 
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.arrow_odbc import ArrowOdbcQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
@@ -26,6 +27,7 @@ from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 __all__ = (
     "AiomysqlQueueStore",
     "AiosqliteQueueStore",
+    "ArrowOdbcQueueStore",
     "AsyncmyQueueStore",
     "AsyncpgQueueStore",
     "CockroachAsyncpgQueueStore",
