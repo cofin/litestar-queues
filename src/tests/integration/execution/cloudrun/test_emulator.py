@@ -1,15 +1,26 @@
 import asyncio
+import importlib
+import logging
 import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, TypedDict, cast
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 import pytest
 
 from litestar_queues import QueueConfig, QueueService, Worker, task
 from litestar_queues.backends import InMemoryQueueBackend
-from litestar_queues.task import clear_task_registry
+from litestar_queues.task import clear_task_registry, get_task_registry, load_task_modules
+from tests.integration.execution.cloudrun.helpers import (
+    FakeCloudRunExecution,
+    FakeExecutionsClient,
+    FakeJobsClient,
+    NoopServiceContext,
+    NotFoundError,
+    env_map,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -19,75 +30,49 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-class RunJobEnv(TypedDict):
-    name: "str"
-    value: "str"
-
-
-class RunJobContainerOverride(TypedDict):
-    env: "list[RunJobEnv]"
-
-
-class RunJobOverrides(TypedDict):
-    container_overrides: "list[RunJobContainerOverride]"
-    timeout: "str"
-
-
-class RunJobRequest(TypedDict):
-    name: "str"
-    overrides: "RunJobOverrides"
-
-
 @pytest.fixture(autouse=True)
 def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-@dataclass(slots=True)
-class FakeCloudRunExecution:
-    name: "str" = "projects/test/locations/us-central1/jobs/worker/executions/run-1"
-    succeeded_count: "int" = 0
-    failed_count: "int" = 0
-    cancelled_count: "int" = 0
-    conditions: "list[object] | None" = None
+def test_load_task_modules_force_reload_imports_never_imported_module(tmp_path: "Any", monkeypatch: "Any") -> "None":
+    package_dir = tmp_path / "dynamic_tasks"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "jobs.py").write_text(
+        "from litestar_queues import task\n@task('dynamic.force_reload')\ndef run():\n    return 'ok'\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("dynamic_tasks.jobs", None)
+
+    loaded = load_task_modules(("dynamic_tasks.jobs",), force_reload=True)
+
+    assert loaded == 1
+    assert "dynamic.force_reload" in get_task_registry()
 
 
-class FakeOperation:
-    def __init__(self, execution: "FakeCloudRunExecution") -> "None":
-        self.execution = execution
+def test_load_task_modules_failed_import_does_not_poison_loaded_cache(tmp_path: "Any", monkeypatch: "Any") -> "None":
+    package_dir = tmp_path / "recovering_tasks"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("")
+    module_path = package_dir / "jobs.py"
+    module_path.write_text("raise RuntimeError('temporary import failure')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
 
-    async def result(self) -> "FakeCloudRunExecution":
-        return self.execution
+    with pytest.raises(RuntimeError, match="temporary import failure"):
+        load_task_modules(("recovering_tasks.jobs",))
 
+    module_path.write_text(
+        "from litestar_queues import task\n@task('dynamic.recovered')\ndef run():\n    return 'ok'\n"
+    )
+    sys.modules.pop("recovering_tasks.jobs", None)
+    importlib.invalidate_caches()
 
-class FakeJobsClient:
-    def __init__(self, execution: "FakeCloudRunExecution | None" = None, *, error: "Exception | None" = None) -> "None":
-        self.execution = execution or FakeCloudRunExecution()
-        self.error = error
-        self.requests: "list[RunJobRequest]" = []
+    loaded = load_task_modules(("recovering_tasks.jobs",))
 
-    async def run_job(self, *, request: "RunJobRequest") -> "FakeOperation":
-        self.requests.append(request)
-        if self.error is not None:
-            raise self.error
-        return FakeOperation(self.execution)
-
-
-class FakeExecutionsClient:
-    def __init__(self, execution: "FakeCloudRunExecution | Exception") -> "None":
-        self.execution = execution
-        self.names: "list[str]" = []
-
-    async def get_execution(self, *, name: "str") -> "FakeCloudRunExecution":
-        self.names.append(name)
-        if isinstance(self.execution, Exception):
-            raise self.execution
-        return self.execution
-
-
-def _env_map(request: "RunJobRequest") -> "dict[str, str]":
-    env = request["overrides"]["container_overrides"][0]["env"]
-    return {item["name"]: item["value"] for item in env}
+    assert loaded == 1
+    assert "dynamic.recovered" in get_task_registry()
 
 
 async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execution_ref() -> "None":
@@ -125,7 +110,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         await service.close()
 
     request = jobs_client.requests[0]
-    env = _env_map(request)
+    env = env_map(request)
 
     assert execution_ref == "projects/test/locations/us-central1/jobs/worker/executions/run-1"
     assert request["name"] == "projects/test-project/locations/us-central1/jobs/heavy-worker"
@@ -142,7 +127,75 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
     assert stored.status == "pending"
 
 
+async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.remote_nonblocking")
+    async def remote_task() -> "str":
+        return "ok"
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient(block_result=True)
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
+    await service.open()
+    try:
+        record = await queue_backend.enqueue(remote_task.name, execution_backend="cloudrun")
+
+        execution_ref = await asyncio.wait_for(backend.dispatch(service, record), timeout=0.05)
+        stored = await queue_backend.get_task(record.id)
+    finally:
+        await service.close()
+
+    assert execution_ref == "projects/test/locations/us-central1/jobs/worker/executions/run-1"
+    assert jobs_client.operations[0].result_called is False
+    assert stored is not None
+    assert stored.execution_ref == execution_ref
+
+
+async def test_cloudrun_dispatch_failure_default_surfaces_and_preserves_backend(
+    caplog: "pytest.LogCaptureFixture",
+) -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.remote_default_failure")
+    async def remote_task() -> "str":
+        return "ok"
+
+    queue_backend = InMemoryQueueBackend()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", FakeJobsClient(error=RuntimeError("api unavailable"))),
+    )
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
+    await service.open()
+    try:
+        record = await queue_backend.enqueue(remote_task.name, execution_backend="cloudrun")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="litestar_queues.execution.cloudrun.backend"),
+            pytest.raises(RuntimeError, match="api unavailable"),
+        ):
+            await backend.dispatch(service, record)
+        stored = await queue_backend.get_task(record.id)
+    finally:
+        await service.close()
+
+    assert "Cloud Run dispatch failed" in caplog.text
+    assert stored is not None
+    assert stored.execution_backend == "cloudrun"
+    assert stored.execution_ref is None
+
+
 async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not_taken_ownership() -> "None":
+    from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
     @task("tasks.remote")
@@ -156,8 +209,11 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
         ),
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient(error=RuntimeError("api unavailable"))),
     )
+    event_sink = InMemoryQueueEventSink()
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(execution_backend="cloudrun", event_config=QueueEventConfig(enabled=True, sink=event_sink)),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -172,6 +228,10 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     assert stored is not None
     assert stored.execution_backend == "local"
     assert stored.execution_ref is None
+    assert any(
+        event.type == "task.event" and event.payload.get("phase") == "cloudrun.dispatch_fallback"
+        for event in event_sink.events
+    )
 
 
 @pytest.mark.parametrize(
@@ -244,6 +304,37 @@ async def test_cloudrun_reconcile_treats_transient_status_errors_as_running() ->
     assert updated is None
     assert stored is not None
     assert stored.status == "running"
+
+
+async def test_cloudrun_reconcile_retries_preclaim_not_found_and_clears_execution_ref() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        executions_client=FakeExecutionsClient(NotFoundError("execution not found")),
+    )
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    )
+    await service.open()
+    try:
+        record = await queue_backend.enqueue("tasks.remote", execution_backend="cloudrun", max_retries=1)
+        await queue_backend.set_execution_ref(record.id, "cloudrun", "executions/missing")
+
+        updated = await backend.reconcile(service, record)
+        stored = await queue_backend.get_task(record.id)
+    finally:
+        await service.close()
+
+    assert updated is not None
+    assert updated.status == "pending"
+    assert updated.retry_count == 1
+    assert updated.execution_ref is None
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.retry_count == 1
+    assert stored.execution_ref is None
 
 
 async def test_cloudrun_reconcile_does_not_terminal_write_after_stale_retry_reassigns_row() -> "None":
@@ -346,6 +437,48 @@ async def test_cloudrun_entrypoint_claims_and_executes_persisted_record() -> "No
     assert exit_code == CloudRunExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
+
+
+async def test_cloudrun_entrypoint_loads_config_factory_before_prefixed_task_id() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
+
+    @task("tasks.entrypoint_prefixed")
+    async def entrypoint_prefixed(value: "int") -> "int":
+        return value + 1
+
+    queue_backend = InMemoryQueueBackend()
+    config = QueueConfig(
+        execution_backend=CloudRunExecutionConfig(project_id="test-project", job_name="worker", env_prefix="PREFIX")
+    )
+    factory_module = ModuleType("cloudrun_test_config_factory")
+    sys.modules[factory_module.__name__] = factory_module
+    try:
+        async with QueueService(config, queue_backend=queue_backend) as service:
+            factory_module.create_service = lambda: NoopServiceContext(service)  # type: ignore[attr-defined]
+            result = await service.enqueue(entrypoint_prefixed.using(execution_backend="cloudrun"), 41)
+
+            exit_code = await execute_cloudrun_task(
+                env={
+                    "LITESTAR_QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
+                    "PREFIX_TASK_ID": str(result.id),
+                }
+            )
+            await result.refresh()
+    finally:
+        sys.modules.pop(factory_module.__name__, None)
+
+    assert exit_code == CloudRunExitCode.SUCCESS
+    assert result.status == "completed"
+    assert result.result == 42
+
+
+async def test_cloudrun_entrypoint_requires_config_factory_without_service_or_config() -> "None":
+    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
+
+    exit_code = await execute_cloudrun_task(env={"LITESTAR_QUEUES_TASK_ID": str(uuid4())})
+
+    assert exit_code == CloudRunExitCode.MISSING_CONFIG_FACTORY
 
 
 async def test_cloudrun_entrypoint_returns_claim_lost_when_heartbeat_loses_ownership() -> "None":

@@ -16,6 +16,8 @@ class CloudRunExecutionLike(Protocol):
 class CloudRunOperation(Protocol):
     """Protocol for Cloud Run long-running operations."""
 
+    metadata: "Any"
+
     async def result(self) -> "CloudRunExecutionLike":
         """Return the created Cloud Run execution."""
         ...
