@@ -28,6 +28,7 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores import (
     AiomysqlQueueStore,
@@ -537,6 +538,16 @@ def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect()
     assert 'FROM "queue_tasks"' in built.sql
 
 
+async def test_sqlspec_sync_bridge_rolls_back_read_transactions_before_pool_return() -> "None":
+    """Sync sessions must not return pooled connections with stale read snapshots."""
+    manager = _FakeSyncSQLSpec()
+
+    async with _bridge_session(manager, _FakeSyncConfig()) as driver:
+        assert await driver.select("SELECT 1") == []
+
+    assert manager.driver.rollback_count == 1
+
+
 @pytest.mark.parametrize(
     ("table_name", "expected"),
     (
@@ -905,3 +916,42 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
     completed_status = result.status
     assert completed_status == "completed"
     assert result.result == "queue"
+
+
+class _FakeSyncConfig:
+    is_async = False
+
+
+class _FakeSyncSQLSpec:
+    def __init__(self) -> "None":
+        self.driver = _FakeSyncDriver()
+        self.session = _FakeSyncSession(self.driver)
+
+    def provide_session(self, config: "_FakeSyncConfig") -> "_FakeSyncSession":
+        return self.session
+
+
+class _FakeSyncSession:
+    def __init__(self, driver: "_FakeSyncDriver") -> "None":
+        self.driver = driver
+        self.exit_count = 0
+
+    def __enter__(self) -> "_FakeSyncDriver":
+        return self.driver
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        _ = (exc_type, exc, traceback)
+        self.exit_count += 1
+
+
+class _FakeSyncDriver:
+    def __init__(self) -> "None":
+        self.rollback_count = 0
+        self.selected: "list[object]" = []
+
+    def select(self, statement: "object") -> "list[object]":
+        self.selected.append(statement)
+        return []
+
+    def rollback(self) -> "None":
+        self.rollback_count += 1

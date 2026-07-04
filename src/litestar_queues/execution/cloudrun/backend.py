@@ -1,8 +1,11 @@
 import json
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
+from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import BaseExecutionBackend
 from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, _execution_config_from_queue_config
@@ -21,6 +24,8 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
+_HTTP_NOT_FOUND = 404
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,15 +96,15 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         client = await self._get_jobs_client()
         try:
             operation = await client.run_job(request=request)
-            execution = await operation.result()
-        except Exception:
+            execution_ref = _require_operation_execution_ref(operation)
+        except Exception as exc:
+            await self._publish_dispatch_failure(service, record, exc)
             fallback = self.execution_config.fallback_execution_backend
             if fallback is None:
                 raise
             await service.get_queue_backend().set_execution_backend(record.id, fallback)
             return None
 
-        execution_ref = str(execution.name)
         await service.get_queue_backend().set_execution_ref(
             record.id, "cloudrun", execution_ref, execution_profile=record.execution_profile
         )
@@ -113,32 +118,41 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         """
         if record.execution_ref is None:
             return None
+        queue_backend = service.get_queue_backend()
+        current = await queue_backend.get_task(record.id) or record
+        if current.status in {"completed", "failed", "cancelled"}:
+            return None
 
         status = await self.check_execution_status(record.execution_ref)
         if status.running:
             return None
-        if record.status != "running":
-            return None
 
-        queue_backend = service.get_queue_backend()
+        expected_retry_count = current.retry_count if current.status == "running" else None
         if status.succeeded:
+            if current.status != "running":
+                return None
             return await queue_backend.complete_task(
-                record.id,
-                result=record.result
-                if record.result is not None
-                else {"cloudrun_execution": record.execution_ref, "status": "succeeded"},
-                expected_retry_count=record.retry_count,
+                current.id,
+                result=current.result
+                if current.result is not None
+                else {"cloudrun_execution": current.execution_ref, "status": "succeeded"},
+                expected_retry_count=expected_retry_count,
             )
 
         if status.cancelled:
             return await queue_backend.fail_task(
-                record.id, "Cloud Run execution cancelled", retry=False, expected_retry_count=record.retry_count
+                current.id, "Cloud Run execution cancelled", retry=False, expected_retry_count=expected_retry_count
             )
 
         if status.failed:
-            return await queue_backend.fail_task(
-                record.id, status.error or "Cloud Run execution failed", expected_retry_count=record.retry_count
+            updated = await queue_backend.fail_task(
+                current.id, status.error or "Cloud Run execution failed", expected_retry_count=expected_retry_count
             )
+            if updated is not None and updated.status in {"pending", "scheduled"}:
+                return await queue_backend.set_execution_backend(
+                    updated.id, updated.execution_backend, execution_profile=updated.execution_profile
+                )
+            return updated
 
         return None
 
@@ -159,6 +173,11 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         try:
             execution = await (await self._get_executions_client()).get_execution(name=execution_ref)
         except Exception as exc:
+            if _is_not_found_error(exc):
+                return CloudRunExecutionStatus(running=False, failed=True, error="Cloud Run execution not found")
+            logger.warning(
+                "Cloud Run status probe failed", exc_info=True, extra={"cloudrun_execution_ref": execution_ref}
+            )
             return CloudRunExecutionStatus(running=True, error=str(exc))
 
         succeeded = int(getattr(execution, "succeeded_count", 0) or 0) > 0
@@ -229,6 +248,49 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             self.executions_client = cast("CloudRunExecutionsClient", run_v2.ExecutionsAsyncClient())
         return self.executions_client
 
+    async def _publish_dispatch_failure(
+        self, service: "QueueService", record: "QueuedTaskRecord", exc: "BaseException"
+    ) -> "None":
+        fallback = self.execution_config.fallback_execution_backend
+        logger.warning(
+            "Cloud Run dispatch failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "queue_task_id": str(record.id),
+                "queue_task_name": record.task_name,
+                "queue_task_queue": record.queue,
+                "queue_task_execution_backend": record.execution_backend,
+                "queue_task_execution_profile": record.execution_profile,
+                "cloudrun_fallback_execution_backend": fallback,
+            },
+        )
+        try:
+            await service.get_event_publisher().publish(
+                QueueEvent(
+                    type="task.event",
+                    scope="task",
+                    task_id=str(record.id),
+                    task_name=record.task_name,
+                    queue=record.queue,
+                    execution_backend=record.execution_backend,
+                    execution_profile=record.execution_profile,
+                    attempt=record.retry_count + 1,
+                    level="warning",
+                    message="Cloud Run dispatch failed",
+                    payload={
+                        "phase": "cloudrun.dispatch_fallback",
+                        "error": str(exc),
+                        "fallback_execution_backend": fallback,
+                    },
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Cloud Run dispatch failure event publish failed",
+                exc_info=True,
+                extra={"queue_task_id": str(record.id)},
+            )
+
 
 def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":
     conditions = getattr(execution, "conditions", None) or []
@@ -237,3 +299,43 @@ def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":
         if message:
             return str(message)
     return None
+
+
+def _operation_execution_ref(operation: "object") -> "str | None":
+    return _execution_ref_from_value(getattr(operation, "metadata", None))
+
+
+def _require_operation_execution_ref(operation: "object") -> "str":
+    execution_ref = _operation_execution_ref(operation)
+    if execution_ref is None:
+        msg = "Cloud Run run_job operation did not include execution metadata."
+        raise RuntimeError(msg)
+    return execution_ref
+
+
+def _execution_ref_from_value(value: "object") -> "str | None":
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    name = getattr(value, "name", None)
+    if name:
+        return str(name)
+    if isinstance(value, Mapping):
+        mapped_name = value.get("name")
+        if mapped_name:
+            return str(mapped_name)
+        mapped_execution = value.get("execution")
+        if mapped_execution is not None:
+            return _execution_ref_from_value(mapped_execution)
+    execution = getattr(value, "execution", None)
+    if execution is not None:
+        return _execution_ref_from_value(execution)
+    return None
+
+
+def _is_not_found_error(exc: "BaseException") -> "bool":
+    if exc.__class__.__name__ == "NotFound":
+        return True
+    status_code = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    return status_code == _HTTP_NOT_FOUND
