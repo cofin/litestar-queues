@@ -208,6 +208,9 @@ claim/update statements where the database supports them.
    * - ``oracledb``
      - ``OracledbAsyncQueueStore`` or ``OracledbSyncQueueStore``
      - Uses Oracle-specific DDL and JSON column choices.
+   * - ``spanner``
+     - ``SpannerQueueStore``
+     - Google Cloud Spanner behavior with write-capable transactional sessions.
    * - ``psqlpy``
      - ``PsqlpyQueueStore``
      - PostgreSQL behavior.
@@ -317,6 +320,14 @@ advertises, then fall back to the portable path when a capability is absent.
        are provisioned.
      - Oracle object names are kept within the adapter's identifier limits;
        Oracle 23ai can pipeline stale-recovery statement batches.
+   * - ``spanner``
+     - Optimistic compare-and-swap.
+     - ``JSON`` columns with native decoded JSON values.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - Spanner sessions are write-capable by default; the queue store uses
+       ``STRING``/``INT64`` DDL and a ``UNIQUE NULL_FILTERED`` index for
+       ``task_key``.
 
 Additional SQLSpec adapters can be added by implementing a queue store and
 registering it with the SQLSpec store factory.

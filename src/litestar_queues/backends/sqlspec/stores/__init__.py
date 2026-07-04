@@ -22,6 +22,7 @@ from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
 from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.pymssql import PymssqlQueueStore
 from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 
 __all__ = (
@@ -44,6 +45,7 @@ __all__ = (
     "PymssqlQueueStore",
     "PymysqlQueueStore",
     "SQLSpecQueueStore",
+    "SpannerQueueStore",
     "SqliteQueueStore",
     "create_queue_store",
 )

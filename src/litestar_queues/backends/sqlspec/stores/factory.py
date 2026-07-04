@@ -23,6 +23,7 @@ from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
 from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.pymssql import PymssqlQueueStore
 from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -42,6 +43,7 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "psqlpy": PsqlpyQueueStore,
     "pymssql": PymssqlQueueStore,
     "pymysql": PymysqlQueueStore,
+    "spanner": SpannerQueueStore,
     "sqlite": SqliteQueueStore,
 }
 _ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"cockroach_psycopg", "mysqlconnector", "oracledb", "psycopg"})
