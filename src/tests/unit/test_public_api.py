@@ -128,6 +128,20 @@ def test_optional_backends_resolve_lazily_via_factory() -> "None":
     assert get_queue_backend_class("valkey") is ValkeyQueueBackend
 
 
+def test_queued_task_record_normalizes_naive_scheduled_at() -> "None":
+    """Queued records normalize naive scheduled datetimes before due checks."""
+    from datetime import datetime, timedelta, timezone
+
+    from litestar_queues import QueuedTaskRecord
+
+    naive_scheduled_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+
+    record = QueuedTaskRecord(task_name="example", scheduled_at=naive_scheduled_at)
+
+    assert record.scheduled_at == naive_scheduled_at.replace(tzinfo=timezone.utc)
+    assert record.is_due is True
+
+
 def test_optional_backend_configs_live_on_submodules() -> "None":
     """Backend-specific config dataclasses are not top-level exports."""
     from litestar_queues.backends.redis import RedisBackendConfig
