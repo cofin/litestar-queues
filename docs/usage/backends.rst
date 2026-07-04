@@ -260,6 +260,11 @@ ODBC targets still raise ``QueueConfigurationError``. Applications should
 install the SQLSpec adapter driver they configure; Litestar Queues does not
 install every SQLSpec driver as a package dependency.
 
+BigQuery is intentionally unsupported as a queue backend. Its SQLSpec adapter is
+useful for analytical workloads, but BigQuery does not provide the transactional
+and uniqueness behavior expected from Litestar Queues keyed enqueue and claim
+operations.
+
 SQLSpec Capability Matrix
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -371,9 +376,9 @@ advertises, then fall back to the portable path when a capability is absent.
      - ``JSON`` columns with native decoded JSON values.
      - Arrow ``load_from_records`` path.
      - Polling.
-     - Spanner sessions are write-capable by default; the queue store uses
-       ``STRING``/``INT64`` DDL and a ``UNIQUE NULL_FILTERED`` index for
-       ``task_key``.
+     - Spanner sessions are write-capable by default; schema bootstrap uses
+       Spanner's DDL operation API, ``result_json`` is nullable for pending
+       tasks, and ``task_key`` uses a ``UNIQUE NULL_FILTERED`` index.
 
 Additional SQLSpec adapters can be added by implementing a queue store and
 registering it with the SQLSpec store factory.

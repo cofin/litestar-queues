@@ -685,8 +685,46 @@ def test_sqlspec_spanner_store_uses_spanner_ddl_and_native_json_columns() -> "No
     assert isinstance(store, SpannerQueueStore)
     assert "STRING(64)" in ddl
     assert "INT64" in ddl
+    assert "TIMESTAMP" in ddl
+    assert "IF NOT EXISTS" not in ddl
+    assert "PRIMARY KEY (`id`)" in ddl
+    assert "`result_json` JSON NOT NULL" not in ddl
+    assert "`metadata_json` JSON NOT NULL" in ddl
     assert "CREATE UNIQUE NULL_FILTERED INDEX" in ddl
     assert store._native_json_columns == frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
+    assert type(store.serialize_json("result_json", None)).__name__ == "JsonObject"
+    assert type(store.serialize_json("metadata_json", {"source": "spanner"})).__name__ == "JsonObject"
+
+
+async def test_sqlspec_backend_uses_spanner_update_ddl_for_schema_bootstrap() -> "None":
+    class FakeOperation:
+        def result(self) -> "None":
+            return None
+
+    class FakeDatabase:
+        def __init__(self) -> "None":
+            self.statement_batches: "list[tuple[str, ...]]" = []
+
+        def update_ddl(self, ddl_statements: "list[str]") -> "FakeOperation":
+            self.statement_batches.append(tuple(ddl_statements))
+            return FakeOperation()
+
+    database = FakeDatabase()
+    config = _fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerSyncConfig")
+    config.get_database = lambda: database
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=config, table_name="queue_tasks", notifications=False)
+    )
+
+    await backend.open()
+    await backend.close()
+
+    assert database.statement_batches
+    assert all(len(batch) == 1 for batch in database.statement_batches)
+    statements = [statement for batch in database.statement_batches for statement in batch]
+    assert statements == create_queue_store(config, table_name="queue_tasks").create_statements()
+    assert "PRIMARY KEY (`id`)" in statements[0]
+    assert all("IF NOT EXISTS" not in statement for statement in statements)
 
 
 @pytest.mark.parametrize(
@@ -784,6 +822,17 @@ async def test_sqlspec_sync_bridge_can_skip_explicit_begin_for_driver_managed_tr
     assert manager.driver.begin_count == 0
     assert manager.driver.commit_count == 1
     assert manager.driver.rollback_count == 0
+
+
+async def test_sqlspec_sync_bridge_can_skip_cleanup_rollback_for_driver_owned_sessions() -> "None":
+    """Some sync drivers own cleanup in their session context manager."""
+    manager = _FakeSyncSQLSpec()
+
+    async with _bridge_session(manager, _FakeSyncConfig(), skip_cleanup_rollback=True) as driver:
+        assert await driver.select("SELECT 1") == []
+
+    assert manager.driver.rollback_count == 0
+    assert manager.session.exit_count == 1
 
 
 @pytest.mark.parametrize(

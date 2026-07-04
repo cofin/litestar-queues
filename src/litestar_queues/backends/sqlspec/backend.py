@@ -178,8 +178,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
 
     async def create_schema(self) -> "None":
-        """Create the SQLSpec queue table and indexes."""
+        """Create the SQLSpec queue table and indexes.
+
+        Returns:
+            None.
+        """
         if self._manage_schema:
+            store = self._get_store()
+            create_for_config = getattr(store, "create_schema_for_config", None)
+            if callable(create_for_config):
+                result = create_for_config(self._get_sqlspec_config())
+                if isawaitable(result):
+                    await result
+                return
             async with self._session() as driver:
                 for statement in await _create_schema_statements(self._get_store(), driver):
                     await driver.execute_script(statement)
@@ -1042,8 +1053,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
+        store = self._get_store()
         async with _bridge_session(
-            self._get_or_create_sqlspec(), sqlspec_config, skip_explicit_begin=self._get_store().skip_explicit_begin
+            self._get_or_create_sqlspec(),
+            sqlspec_config,
+            skip_explicit_begin=store.skip_explicit_begin,
+            skip_cleanup_rollback=store.skip_cleanup_rollback,
         ) as driver:
             yield driver
 
@@ -1064,7 +1079,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
         if self._heartbeat_pool_enabled and self._heartbeat_pool_registered and self._heartbeat_pool_config is not None:
-            async with _bridge_session(self._sqlspec, self._heartbeat_pool_config) as driver:
+            async with _bridge_session(
+                self._sqlspec,
+                self._heartbeat_pool_config,
+                skip_cleanup_rollback=self._get_store().skip_cleanup_rollback,
+            ) as driver:
                 yield driver
         else:
             async with self._session() as driver:
@@ -1378,7 +1397,11 @@ class _ManagedAsyncDriver:
 
 @asynccontextmanager
 async def _bridge_session(
-    sqlspec_manager: "Any", sqlspec_config: "Any", *, skip_explicit_begin: "bool" = False
+    sqlspec_manager: "Any",
+    sqlspec_config: "Any",
+    *,
+    skip_explicit_begin: "bool" = False,
+    skip_cleanup_rollback: "bool" = False,
 ) -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
 
@@ -1402,12 +1425,12 @@ async def _bridge_session(
         try:
             yield managed_driver
         except BaseException as exc:
-            if not managed_driver.transaction_finalized:
+            if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
                 await _rollback_sync_session(driver, executor=executor)
             if not await async_(session_cm.__exit__, executor=executor)(type(exc), exc, exc.__traceback__):
                 raise
         else:
-            if not managed_driver.transaction_finalized:
+            if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
                 await _rollback_sync_session(driver, executor=executor)
             await async_(session_cm.__exit__, executor=executor)(None, None, None)
         finally:
