@@ -53,6 +53,29 @@ Configure SQLSpec queue persistence by passing a SQLSpec adapter config through
        execution_backend="local",
    )
 
+SQLite ADBC uses the same queue semantics, but it needs the SQLSpec ``adbc``
+extra and the SQLite driver package:
+
+.. code-block:: bash
+
+   pip install "sqlspec[adbc]" adbc-driver-sqlite
+
+.. code-block:: python
+
+   from sqlspec.adapters.adbc import AdbcConfig
+
+   config = QueueConfig(
+       queue_backend=SQLSpecBackendConfig(
+           config=AdbcConfig(
+               connection_config={
+                   "driver_name": "adbc_driver_sqlite",
+                   "uri": "queue.db",
+               },
+           ),
+       ),
+       execution_backend="local",
+   )
+
 By default, the backend creates the queue table on startup. Set
 ``create_schema=False`` in ``SQLSpecBackendConfig`` when schema management is
 handled elsewhere. Applications that want SQLSpec to apply the packaged queue
@@ -181,6 +204,9 @@ claim/update statements where the database supports them.
    * - ``aiosqlite``
      - ``AiosqliteQueueStore``
      - Async SQLite behavior.
+   * - ``adbc``
+     - ``AdbcSqliteQueueStore``
+     - SQLite ADBC behavior only. Other ADBC dialects remain unsupported.
    * - ``asyncmy``
      - ``AsyncmyQueueStore``
      - Async MySQL behavior.
@@ -256,6 +282,14 @@ advertises, then fall back to the portable path when a capability is absent.
        ``execute_many``.
      - Polling unless an explicit SQLSpec table queue is configured.
      - SQLite serializes writes, so the portable path is the concurrency guard.
+   * - ``adbc``
+     - Optimistic compare-and-swap.
+     - ``TEXT`` columns serialized with SQLSpec JSON.
+     - Native Arrow ``load_from_records`` when SQLSpec exposes it; otherwise
+       ``execute_many``.
+     - Polling.
+     - SQLite ADBC uses the same queue table behavior as ``sqlite`` and
+       requires the ``adbc_driver_sqlite`` driver package.
    * - ``duckdb``
      - Optimistic compare-and-swap.
      - ``JSON`` columns serialized with SQLSpec JSON.

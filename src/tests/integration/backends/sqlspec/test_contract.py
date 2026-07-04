@@ -57,6 +57,7 @@ from tests.integration._backends import QUEUE_BACKENDS
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from uuid import UUID
 
     from litestar_queues.backends import BaseQueueBackend
     from tests.integration._backends import BackendCase
@@ -219,6 +220,42 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
         await backend.close()
 
 
+async def test_adbc_sqlite_completed_query_survives_prior_aiosqlite_query(tmp_path: "Path") -> "None":
+    """ADBC SQLite completed queries must survive prior SQLite-family builder execution."""
+    pytest.importorskip("adbc_driver_manager")
+    pytest.importorskip("adbc_driver_sqlite")
+    from sqlspec.adapters.adbc import AdbcConfig
+
+    aiosqlite_backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AiosqliteConfig(connection_config={"database": str(tmp_path / "aiosqlite.db")})
+        )
+    )
+    await aiosqlite_backend.open()
+    try:
+        await _complete_report_task(aiosqlite_backend)
+        aiosqlite_records = await aiosqlite_backend.list_completed_by_task("tasks.report")
+    finally:
+        await aiosqlite_backend.close()
+
+    adbc_backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AdbcConfig(
+                connection_config={"driver_name": "adbc_driver_sqlite", "uri": str(tmp_path / "adbc-sqlite.db")}
+            )
+        )
+    )
+    await adbc_backend.open()
+    try:
+        completed_id = await _complete_report_task(adbc_backend)
+        adbc_records = await adbc_backend.list_completed_by_task("tasks.report")
+    finally:
+        await adbc_backend.close()
+
+    assert [record.task_name for record in aiosqlite_records] == ["tasks.report"]
+    assert [record.id for record in adbc_records] == [completed_id]
+
+
 async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> "None":
     assert "sqlspec" in list_queue_backends()
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
@@ -282,6 +319,8 @@ import builtins
 from types import SimpleNamespace
 
 blocked_prefixes = (
+    "adbc_driver_manager",
+    "adbc_driver_sqlite",
     "aiomysql",
     "aiosqlite",
     "asyncmy",
@@ -297,6 +336,7 @@ blocked_prefixes = (
     "pymssql",
     "psqlpy",
     "psycopg",
+    "sqlspec.adapters.adbc",
     "sqlspec.adapters.aiomysql",
     "sqlspec.adapters.aiosqlite",
     "sqlspec.adapters.asyncmy",
@@ -326,6 +366,7 @@ def blocked_import(name, *args, **kwargs):
 builtins.__import__ = blocked_import
 
 from litestar_queues.backends.sqlspec.stores import (
+    AdbcSqliteQueueStore,
     AiomysqlQueueStore,
     AiosqliteQueueStore,
     AsyncmyQueueStore,
@@ -355,6 +396,7 @@ def fake_config(adapter_name, dialect, config_type_name):
     return config
 
 expected = (
+    ("adbc", "sqlite", "AdbcConfig", AdbcSqliteQueueStore),
     ("aiomysql", "mysql", "AiomysqlConfig", AiomysqlQueueStore),
     ("aiosqlite", "sqlite", "AiosqliteConfig", AiosqliteQueueStore),
     ("asyncmy", "mysql", "AsyncmyConfig", AsyncmyQueueStore),
@@ -405,6 +447,22 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "queue" in pending_statement.sql
 
 
+def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(
+            "adbc",
+            dialect="sqlite",
+            config_type_name="AdbcConfig",
+            connection_config={"driver_name": "adbc_driver_sqlite", "uri": "/tmp/queue.db"},
+        ),
+        table_name="queue_tasks",
+    )
+
+    assert store.__class__.__name__ == "AdbcSqliteQueueStore"
+    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.adbc.")
+    assert '"queue_tasks"' in "\n".join(store.create_statements())
+
+
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name", "expected_store_name"),
     (
@@ -450,16 +508,27 @@ def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
     assert store.supports_skip_locked is False
 
 
-@pytest.mark.parametrize(
-    ("adapter_name", "dialect", "config_type_name"),
-    (("adbc", "sqlite", "AdbcConfig"), ("bigquery", "bigquery", "BigQueryConfig")),
-)
+@pytest.mark.parametrize(("adapter_name", "dialect", "config_type_name"), (("bigquery", "bigquery", "BigQueryConfig"),))
 def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
     adapter_name: "str", dialect: "str | None", config_type_name: "str"
 ) -> "None":
     with pytest.raises(QueueConfigurationError, match=adapter_name):
         create_queue_store(
             _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
+            table_name="queue_tasks",
+        )
+
+
+@pytest.mark.parametrize(("dialect",), (("bigquery",), ("postgres",)))
+def test_sqlspec_backend_rejects_non_sqlite_adbc_adapter(dialect: "str") -> "None":
+    with pytest.raises(QueueConfigurationError, match="sqlite"):
+        create_queue_store(
+            _fake_adapter_config(
+                "adbc",
+                dialect=dialect,
+                config_type_name="AdbcConfig",
+                connection_config={"driver_name": "adbc_driver_sqlite", "uri": "/tmp/queue.db"},
+            ),
             table_name="queue_tasks",
         )
 
@@ -1093,6 +1162,16 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
     completed_status = result.status
     assert completed_status == "completed"
     assert result.result == "queue"
+
+
+async def _complete_report_task(backend: "BaseQueueBackend") -> "UUID":
+    completed = await backend.enqueue("tasks.report")
+    claimed = await backend.claim_task(completed.id)
+    assert claimed is not None
+
+    await backend.complete_task(claimed.id, result={"ok": True})
+
+    return completed.id
 
 
 class _FakeSyncConfig:

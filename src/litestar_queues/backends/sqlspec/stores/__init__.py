@@ -1,5 +1,6 @@
 """SQLSpec queue store implementations."""
 
+from litestar_queues.backends.sqlspec.stores.adbc import AdbcSqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.arrow_odbc import ArrowOdbcQueueStore
@@ -27,6 +28,7 @@ from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 
 __all__ = (
+    "AdbcSqliteQueueStore",
     "AiomysqlQueueStore",
     "AiosqliteQueueStore",
     "ArrowOdbcQueueStore",

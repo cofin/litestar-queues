@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
+from litestar_queues.backends.sqlspec.stores.adbc import AdbcSqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.arrow_odbc import ArrowOdbcQueueStore
@@ -48,6 +49,7 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "spanner": SpannerQueueStore,
     "sqlite": SqliteQueueStore,
 }
+_ADBC_SQLITE_DIALECT = "sqlite"
 _ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"cockroach_psycopg", "mysqlconnector", "oracledb", "psycopg"})
 _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAPTER_NAMES
 
@@ -77,6 +79,8 @@ def create_queue_store(
 
 def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
     name = _adapter_name(config)
+    if name == "adbc":
+        return _adbc_store_type(config)
     if name == "mysqlconnector":
         return _async_or_sync_store_type(
             config, async_store_type=MysqlConnectorAsyncQueueStore, sync_store_type=MysqlConnectorSyncQueueStore
@@ -100,6 +104,19 @@ def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
         msg = f"SQLSpec adapter {name!r} is not supported by this queue backend. Supported adapters: {supported}."
         raise QueueConfigurationError(msg)
     return SQLSpecQueueStore
+
+
+def _adbc_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
+    statement_config = getattr(config, "statement_config", None)
+    dialect = str(getattr(statement_config, "dialect", "") or "")
+    if dialect == _ADBC_SQLITE_DIALECT:
+        return AdbcSqliteQueueStore
+    resolved_dialect = dialect or "unknown"
+    msg = (
+        "SQLSpec ADBC support in this queue backend is limited to the sqlite dialect; "
+        f"resolved dialect was {resolved_dialect!r}."
+    )
+    raise QueueConfigurationError(msg)
 
 
 def _async_or_sync_store_type(

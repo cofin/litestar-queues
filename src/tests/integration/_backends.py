@@ -132,6 +132,17 @@ async def _build_aiosqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
+async def _build_adbc_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
+    from sqlspec.adapters.adbc import AdbcConfig
+
+    return _sqlspec_backend(
+        AdbcConfig(
+            connection_config={"driver_name": "adbc_driver_sqlite", "uri": str(ctx.tmp_path / "queue-adbc-sqlite.db")}
+        ),
+        table_name=ctx.table_name,
+    )
+
+
 async def _build_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.sqlite import SqliteConfig
 
@@ -405,6 +416,13 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         None,
         _build_aiosqlite,
         frozenset({"in-process", "polling-only", "json-text"}),
+    ),
+    BackendCase(
+        "adbc-sqlite",
+        frozenset({"adbc_driver_manager", "adbc_driver_sqlite", "sqlspec"}),
+        None,
+        _build_adbc_sqlite,
+        frozenset({"in-process", "polling-only", "json-text", "sync-driver"}),
     ),
     BackendCase(
         "sqlite",
