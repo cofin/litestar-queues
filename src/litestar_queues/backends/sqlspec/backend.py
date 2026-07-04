@@ -1301,10 +1301,20 @@ async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "Asy
         try:
             yield _ManagedAsyncDriver(driver)
         except BaseException as exc:
+            await _rollback_sync_session(driver)
             if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
                 raise
         else:
+            await _rollback_sync_session(driver)
             await async_(session_cm.__exit__)(None, None, None)
+
+
+async def _rollback_sync_session(driver: "Any") -> "None":
+    """Best-effort cleanup for sync SQLSpec sessions before pool return."""
+    rollback = getattr(driver, "rollback", None)
+    if callable(rollback):
+        with suppress(Exception):
+            await async_(rollback)()
 
 
 async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[Any]":
