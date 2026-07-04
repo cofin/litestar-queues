@@ -22,7 +22,7 @@ class CloudRunExecutionConfig:
     poll_interval: "float" = 5.0
     env_prefix: "str" = "LITESTAR_QUEUES"
     extra_env: "dict[str, str]" = field(default_factory=dict)
-    fallback_execution_backend: "str | None" = "local"
+    fallback_execution_backend: "str | None" = None
 
     def resolve_job_name(self, profile: "str | None" = None) -> "str":
         """Return the Cloud Run Job name for a profile.
