@@ -1388,6 +1388,7 @@ async def _bridge_session(
 async def _noop_async(*_args: "Any", **_kwargs: "Any") -> "None":
     return None
 
+
 async def _rollback_sync_session(driver: "Any") -> "None":
     """Best-effort cleanup for sync SQLSpec sessions before pool return."""
     rollback = getattr(driver, "rollback", None)
