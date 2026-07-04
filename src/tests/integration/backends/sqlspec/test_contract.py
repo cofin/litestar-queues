@@ -54,6 +54,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from uuid import UUID
 
     from litestar_queues.backends import BaseQueueBackend
     from tests.integration._backends import BackendCase
@@ -212,6 +213,42 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
         assert [record.id for record in streamed] == [stored.id]
     finally:
         await backend.close()
+
+
+async def test_adbc_sqlite_completed_query_survives_prior_aiosqlite_query(tmp_path: "Path") -> "None":
+    """ADBC SQLite completed queries must survive prior SQLite-family builder execution."""
+    pytest.importorskip("adbc_driver_manager")
+    pytest.importorskip("adbc_driver_sqlite")
+    from sqlspec.adapters.adbc import AdbcConfig
+
+    aiosqlite_backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AiosqliteConfig(connection_config={"database": str(tmp_path / "aiosqlite.db")})
+        )
+    )
+    await aiosqlite_backend.open()
+    try:
+        await _complete_report_task(aiosqlite_backend)
+        aiosqlite_records = await aiosqlite_backend.list_completed_by_task("tasks.report")
+    finally:
+        await aiosqlite_backend.close()
+
+    adbc_backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AdbcConfig(
+                connection_config={"driver_name": "adbc_driver_sqlite", "uri": str(tmp_path / "adbc-sqlite.db")}
+            )
+        )
+    )
+    await adbc_backend.open()
+    try:
+        completed_id = await _complete_report_task(adbc_backend)
+        adbc_records = await adbc_backend.list_completed_by_task("tasks.report")
+    finally:
+        await adbc_backend.close()
+
+    assert [record.task_name for record in aiosqlite_records] == ["tasks.report"]
+    assert [record.id for record in adbc_records] == [completed_id]
 
 
 async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> "None":
@@ -950,6 +987,16 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
     completed_status = result.status
     assert completed_status == "completed"
     assert result.result == "queue"
+
+
+async def _complete_report_task(backend: "BaseQueueBackend") -> "UUID":
+    completed = await backend.enqueue("tasks.report")
+    claimed = await backend.claim_task(completed.id)
+    assert claimed is not None
+
+    await backend.complete_task(claimed.id, result={"ok": True})
+
+    return completed.id
 
 
 class _FakeSyncConfig:

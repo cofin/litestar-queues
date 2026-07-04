@@ -764,12 +764,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
     ) -> "list[QueuedTaskRecord]":
+        store = self._get_store()
+        statement = store.list_completed_by_task(
+            task_name=task_name, since=self._serialize_datetime(since), limit=limit
+        )
+        built = statement.build(dialect=store.dialect_name)
         async with self._session() as driver:
-            rows = await driver.select(
-                self._get_store().list_completed_by_task(
-                    task_name=task_name, since=self._serialize_datetime(since), limit=limit
-                )
-            )
+            rows = await driver.select(built.sql, built.parameters)
         return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
 
     async def cleanup_terminal(self, before: "datetime") -> "int":
