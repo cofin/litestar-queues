@@ -46,7 +46,12 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
     ctx = FixtureCtx(tmp_path=tmp_path, service=service, table_name=table_name)
 
     backend = await case.build(ctx)
-    await backend.open()
+    try:
+        await backend.open()
+    except Exception as exc:
+        if _is_missing_arrow_odbc_sql_server_driver(case, exc):
+            pytest.skip("arrow-odbc-mssql requires ODBC Driver 18 for SQL Server")
+        raise
     try:
         yield backend
     finally:
@@ -77,3 +82,9 @@ def pytest_generate_tests(metafunc: "pytest.Metafunc") -> "None":
                 marks.append(pytest.mark.xdist_group(case.service_attr))
             params.append(pytest.param(case, marks=marks, id=case.name))
         metafunc.parametrize("queue_backend", params, indirect=True)
+
+
+def _is_missing_arrow_odbc_sql_server_driver(case: "BackendCase", exc: "Exception") -> "bool":
+    return (
+        case.name == "arrow-odbc-mssql" and "ODBC Driver 18 for SQL Server" in str(exc) and "file not found" in str(exc)
+    )
