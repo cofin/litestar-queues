@@ -10,7 +10,8 @@ from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
 from litestar_queues.exceptions import NonRetryableError
-from litestar_queues.task import ScheduleConfig, Task, TaskResult, get_scheduled_tasks, get_task_registry
+from litestar_queues.execution import get_execution_backend
+from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -149,6 +150,8 @@ class QueueService:
         effective_scheduled_at = scheduled_at
         if effective_scheduled_at is None and effective_run_after is not None:
             effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
+        if effective_scheduled_at is not None:
+            effective_scheduled_at = _ensure_utc(effective_scheduled_at)
         effective_execution_backend = (
             execution_backend or task_obj.execution_backend or execution_backend_name(self._config.execution_backend)
         )
@@ -180,10 +183,17 @@ class QueueService:
         result = TaskResult(record.id, task_obj.name, service=self, record=record)
 
         if record.execution_backend == "immediate" and record.status == "pending":
-            claimed = await self.get_queue_backend().claim_task(record.id)
-            if claimed is not None:
-                await self.get_execution_backend().execute(self, claimed)
+            execution_backend_impl = self._execution_backend_for_name(record.execution_backend)
+            if not execution_backend_impl.is_external:
+                claimed = await self.get_queue_backend().claim_task(record.id)
+                if claimed is not None:
+                    await execution_backend_impl.execute(self, claimed)
         return result
+
+    def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
+        if name == execution_backend_name(self._config.execution_backend):
+            return self.get_execution_backend()
+        return get_execution_backend(name, config=self._config)
 
     def resolve_task(self, task: "str | Task[Any, Any]") -> "Task[Any, Any]":
         """Resolve a task name or wrapper to a registered task.

@@ -6,6 +6,7 @@ import pytest
 from litestar_queues import InMemoryQueueEventSink, QueueConfig, QueueEventConfig, QueueService
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import QueueEventPublisher
+from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
@@ -59,6 +60,43 @@ async def test_enqueue_can_override_requeue_on_stale_metadata() -> "None":
 
     assert result.record is not None
     assert result.record.metadata["requeue_on_stale"] is False
+
+
+async def test_enqueue_immediate_override_executes_inline_when_configured_backend_is_external() -> "None":
+    from litestar_queues import task
+
+    @task("external.inline")
+    async def inline() -> "str":
+        return "ok"
+
+    config = QueueConfig(
+        execution_backend=CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="worker")
+    )
+
+    async with QueueService(config) as service:
+        result = await service.enqueue(inline.using(execution_backend="immediate"))
+
+    assert result.status == "completed"
+    assert result.result == "ok"
+    assert result.record is not None
+    assert result.record.execution_backend == "immediate"
+
+
+async def test_enqueue_normalizes_naive_scheduled_at_to_utc() -> "None":
+    from litestar_queues import task
+
+    @task("scheduled.naive")
+    async def naive_schedule() -> "str":
+        return "ok"
+
+    naive_scheduled_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None)
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        result = await service.enqueue(naive_schedule, scheduled_at=naive_scheduled_at)
+
+    assert result.status == "scheduled"
+    assert result.record is not None
+    assert result.record.scheduled_at == naive_scheduled_at.replace(tzinfo=timezone.utc)
 
 
 async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> "None":
