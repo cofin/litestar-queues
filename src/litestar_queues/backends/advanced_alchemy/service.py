@@ -165,11 +165,15 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             str(model.status) != "running" or int(model.retry_count) != expected_retry_count
         ):
             return None
+        if str(model.status) != "running":
+            return None
         model_type = self.model_type
+        retry_fence = expected_retry_count if expected_retry_count is not None else int(model.retry_count)
+        criteria = [model_type.id == task_id, model_type.status == "running", model_type.retry_count == retry_fence]
         if retry and int(model.retry_count) < int(model.max_retries):
-            await self.repository.session.execute(
+            update_result = await self.repository.session.execute(
                 update(model_type)
-                .where(model_type.id == task_id)
+                .where(*criteria)
                 .values(
                     status="pending",
                     started_at=None,
@@ -180,11 +184,13 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             )
         else:
             now = _utc_now()
-            await self.repository.session.execute(
+            update_result = await self.repository.session.execute(
                 update(model_type)
-                .where(model_type.id == task_id)
+                .where(*criteria)
                 .values(status="failed", completed_at=now, heartbeat_at=now, error=error)
             )
+        if update_result.rowcount != 1:
+            return None
         updated = await self._select_task(task_id)
         return self.record_from_model(updated) if updated is not None else None
 
@@ -219,18 +225,27 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         model_type = self.model_type
-        criteria = [model_type.status == "running"]
-        if stale_after > timedelta(0):
-            criteria.append(or_(model_type.heartbeat_at.is_(None), model_type.heartbeat_at <= cutoff))
-        models = (await self.repository.session.execute(select(model_type).where(*criteria))).scalars().all()
+        stale_heartbeat = or_(model_type.heartbeat_at.is_(None), model_type.heartbeat_at <= cutoff)
+        select_criteria = [model_type.status == "running"]
+        use_heartbeat_cutoff = stale_after.total_seconds() > 0
+        if use_heartbeat_cutoff:
+            select_criteria.append(stale_heartbeat)
+        models = (await self.repository.session.execute(select(model_type).where(*select_criteria))).scalars().all()
         result = StaleTaskRecoveryResult()
         for model in models:
             metadata = _deserialize_json(model.metadata_json)
             requeue_on_stale = metadata.get("requeue_on_stale", True) is not False
+            update_criteria = [
+                model_type.id == model.id,
+                model_type.status == "running",
+                model_type.retry_count == int(model.retry_count),
+            ]
+            if use_heartbeat_cutoff:
+                update_criteria.append(stale_heartbeat)
             if requeue_on_stale and int(model.retry_count) < int(model.max_retries):
-                await self.repository.session.execute(
+                update_result = await self.repository.session.execute(
                     update(model_type)
-                    .where(model_type.id == model.id)
+                    .where(*update_criteria)
                     .values(
                         status="pending",
                         started_at=None,
@@ -238,21 +253,29 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                         retry_count=int(model.retry_count) + 1,
                         error="Task heartbeat stale",
                     )
+                    .execution_options(synchronize_session=False)
                 )
-                result.requeued += 1
+                if update_result.rowcount == 1:
+                    result.requeued += 1
+                else:
+                    result.skipped += 1
             else:
                 now = _utc_now()
-                await self.repository.session.execute(
+                update_result = await self.repository.session.execute(
                     update(model_type)
-                    .where(model_type.id == model.id)
+                    .where(*update_criteria)
                     .values(status="failed", completed_at=now, heartbeat_at=now, error="Task heartbeat stale")
+                    .execution_options(synchronize_session=False)
                 )
-                result.failed += 1
-                task_id = UUID(str(model.id))
-                result.failed_task_ids.append(task_id)
-                if not requeue_on_stale:
-                    result.handler_needed += 1
-                    result.handler_needed_task_ids.append(task_id)
+                if update_result.rowcount == 1:
+                    result.failed += 1
+                    task_id = UUID(str(model.id))
+                    result.failed_task_ids.append(task_id)
+                    if not requeue_on_stale:
+                        result.handler_needed += 1
+                        result.handler_needed_task_ids.append(task_id)
+                else:
+                    result.skipped += 1
         return result
 
     async def set_execution_ref(
