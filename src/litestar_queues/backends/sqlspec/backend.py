@@ -8,7 +8,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlspec import SQLSpec, StatementStack
+from sqlspec import SQLSpec
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
@@ -424,25 +424,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             async with self._session() as driver:
                 await driver.begin()
                 try:
-                    if expected_retry_count is not None:
-                        existing_row = await self._select_task(driver, task_id)
-                        if existing_row is None:
-                            await driver.rollback()
-                            return None
-                        existing = self._record_from_row(existing_row)
-                        if existing.status != "running" or existing.retry_count != expected_retry_count:
-                            await driver.rollback()
-                            self._increment_queue_metric("claim_lost")
-                            return None
                     updated = await driver.execute(
                         store.complete_task(
                             task_id=str(task_id),
                             completed_at=self._serialize_datetime(now),
                             heartbeat_at=self._serialize_datetime(now),
                             result_json=store.serialize_json("result_json", result),
+                            expected_retry_count=expected_retry_count,
                         )
                     )
-                    row = await self._select_task(driver, task_id) if updated.rows_affected else None
+                    rows_affected = _rows_affected(updated)
+                    row = await self._select_task(driver, task_id) if rows_affected == 1 or rows_affected < 0 else None
+                    if row is not None:
+                        completed_record = self._record_from_row(row)
+                        if completed_record.status != "completed" or (
+                            expected_retry_count is not None and completed_record.retry_count != expected_retry_count
+                        ):
+                            row = None
                     await driver.commit()
                 except Exception:
                     with suppress(Exception):
@@ -451,6 +449,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         completed = self._record_from_row(row) if row is not None else None
         if completed is not None:
             self._increment_queue_metric("complete")
+        elif expected_retry_count is not None:
+            self._increment_queue_metric("claim_lost")
         return completed
 
     async def fail_task(
@@ -466,32 +466,53 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         return None
 
                     record = self._record_from_row(row)
-                    if expected_retry_count is not None and (
-                        record.status != "running" or record.retry_count != expected_retry_count
+                    if record.status != "running" or (
+                        expected_retry_count is not None and record.retry_count != expected_retry_count
                     ):
-                        await driver.rollback()
+                        await driver.commit()
                         self._increment_queue_metric("claim_lost")
                         return None
                     metric = "fail"
+                    retry_fence = expected_retry_count if expected_retry_count is not None else record.retry_count
                     if retry and record.retry_count < record.max_retries:
-                        await driver.execute(
+                        updated = await driver.execute(
                             self._get_store().retry_task(
-                                task_id=str(task_id), error=error, retry_count=record.retry_count + 1
+                                task_id=str(task_id),
+                                error=error,
+                                retry_count=record.retry_count + 1,
+                                expected_retry_count=retry_fence,
                             )
                         )
                         metric = "retry"
+                        expected_status = "pending"
+                        expected_retry_after_update = record.retry_count + 1
                     else:
                         now = _utc_now()
-                        await driver.execute(
+                        updated = await driver.execute(
                             self._get_store().fail_task(
                                 task_id=str(task_id),
                                 completed_at=self._serialize_datetime(now),
                                 heartbeat_at=self._serialize_datetime(now),
                                 error=error,
+                                expected_retry_count=retry_fence,
                             )
                         )
+                        expected_status = "failed"
+                        expected_retry_after_update = record.retry_count
 
-                    updated_row = await self._select_task(driver, task_id)
+                    rows_affected = _rows_affected(updated)
+                    if rows_affected == 1 or rows_affected < 0:
+                        updated_row = await self._select_task(driver, task_id)
+                        if updated_row is not None:
+                            candidate = self._record_from_row(updated_row)
+                            if (
+                                candidate.status != expected_status
+                                or candidate.retry_count != expected_retry_after_update
+                                or candidate.error != error
+                            ):
+                                updated_row = None
+                    else:
+                        updated_row = None
                     await driver.commit()
                 except Exception:
                     with suppress(Exception):
@@ -500,6 +521,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         updated_record = self._record_from_row(updated_row) if updated_row is not None else None
         if updated_record is not None:
             self._increment_queue_metric(metric)
+        else:
+            self._increment_queue_metric("claim_lost")
         return updated_record
 
     async def cancel_task(self, task_id: "UUID") -> "bool":
@@ -586,12 +609,70 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         cutoff = _utc_now() - stale_after
         store = self._get_store()
         result = StaleTaskRecoveryResult()
+        serialized_cutoff = self._serialize_datetime(cutoff)
         with self._observe_queue_operation("stale_recovered"):
             async with self._session() as driver:
-                rows = await driver.select(store.list_stale_running(cutoff=self._serialize_datetime(cutoff)))
-            statements = self._build_stale_recovery_statements(store, cast("list[dict[str, Any]]", rows), result)
-            if statements:
-                await self._apply_stale_recovery_statements(store, statements)
+                rows = await driver.select(store.list_stale_running(cutoff=serialized_cutoff))
+                if not rows:
+                    return result
+                # Reset any implicit read transaction the SELECT may have opened so
+                # stale-recovery writes run in a fresh transaction.
+                with suppress(Exception):
+                    await driver.rollback()
+                await driver.begin()
+                try:
+                    failed_handler_needed: "list[UUID]" = []
+                    for row in cast("list[dict[str, Any]]", rows):
+                        record = self._record_from_row(row)
+                        requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
+                        if requeue_on_stale and record.retry_count < record.max_retries:
+                            updated = await driver.execute(
+                                store.retry_task(
+                                    task_id=str(record.id),
+                                    error="Task heartbeat stale",
+                                    retry_count=record.retry_count + 1,
+                                    expected_retry_count=record.retry_count,
+                                    heartbeat_cutoff=serialized_cutoff,
+                                )
+                            )
+                            rows_affected = _rows_affected(updated)
+                            if rows_affected == 1 or (
+                                rows_affected < 0
+                                and await self._stale_retry_updated(driver, record.id, record.retry_count)
+                            ):
+                                result.requeued += 1
+                            else:
+                                result.skipped += 1
+                        else:
+                            now = _utc_now()
+                            updated = await driver.execute(
+                                store.fail_task(
+                                    task_id=str(record.id),
+                                    completed_at=self._serialize_datetime(now),
+                                    heartbeat_at=self._serialize_datetime(now),
+                                    error="Task heartbeat stale",
+                                    expected_retry_count=record.retry_count,
+                                    heartbeat_cutoff=serialized_cutoff,
+                                )
+                            )
+                            rows_affected = _rows_affected(updated)
+                            if rows_affected == 1 or (
+                                rows_affected < 0 and await self._stale_fail_updated(driver, record.id)
+                            ):
+                                result.failed += 1
+                                result.failed_task_ids.append(record.id)
+                                if not requeue_on_stale:
+                                    failed_handler_needed.append(record.id)
+                            else:
+                                result.skipped += 1
+                    for task_id in failed_handler_needed:
+                        result.handler_needed += 1
+                        result.handler_needed_task_ids.append(task_id)
+                    await driver.commit()
+                except Exception:
+                    with suppress(Exception):
+                        await driver.rollback()
+                    raise
         recovered = result.requeued + result.failed
         if recovered:
             self._increment_queue_metric("stale_recovered", float(recovered))
@@ -600,65 +681,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if result.failed:
             self._increment_queue_metric("stale_failed", float(result.failed))
         return result
-
-    def _build_stale_recovery_statements(
-        self, store: "Any", rows: "list[dict[str, Any]]", result: "StaleTaskRecoveryResult"
-    ) -> "list[Any]":
-        statements: "list[Any]" = []
-        for row in rows:
-            record = self._record_from_row(row)
-            requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
-            if requeue_on_stale and record.retry_count < record.max_retries:
-                statements.append(
-                    store.retry_task(
-                        task_id=str(record.id), error="Task heartbeat stale", retry_count=record.retry_count + 1
-                    )
-                )
-                result.requeued += 1
-            else:
-                now = _utc_now()
-                statements.append(
-                    store.fail_task(
-                        task_id=str(record.id),
-                        completed_at=self._serialize_datetime(now),
-                        heartbeat_at=self._serialize_datetime(now),
-                        error="Task heartbeat stale",
-                    )
-                )
-                result.failed += 1
-                result.failed_task_ids.append(record.id)
-                if not requeue_on_stale:
-                    result.handler_needed += 1
-                    result.handler_needed_task_ids.append(record.id)
-        return statements
-
-    async def _apply_stale_recovery_statements(self, store: "Any", statements: "list[Any]") -> "None":
-        if getattr(store, "data_dictionary_dialect", None) == "mssql":
-            await self._apply_sql_server_stale_recovery_statements(statements)
-            return
-        async with self._session() as write_driver:
-            stack = StatementStack()
-            for statement in statements:
-                stack = stack.push_execute(statement)
-            await write_driver.execute_stack(stack)
-
-    async def _apply_sql_server_stale_recovery_statements(self, statements: "list[Any]") -> "None":
-        for statement in statements:
-            async with self._session() as write_driver:
-                await self._apply_sql_server_stale_recovery_statement(write_driver, statement)
-
-    async def _apply_sql_server_stale_recovery_statement(self, write_driver: "Any", statement: "Any") -> "None":
-        if isinstance(write_driver, _ManagedAsyncDriver):
-            await write_driver.run_sync(_execute_mssql_stale_recovery_sync, [statement])
-            return
-        await write_driver.begin()
-        try:
-            await write_driver.execute(statement)
-            await write_driver.commit()
-        except Exception:
-            with suppress(Exception):
-                await write_driver.rollback()
-            raise
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -1104,6 +1126,24 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def _clear_key(self, driver: "Any", task_id: "UUID") -> "None":
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
 
+    async def _stale_retry_updated(self, driver: "Any", task_id: "UUID", previous_retry_count: "int") -> "bool":
+        row = await self._select_task(driver, task_id)
+        if row is None:
+            return False
+        record = self._record_from_row(row)
+        return (
+            record.status == "pending"
+            and record.retry_count == previous_retry_count + 1
+            and record.error == "Task heartbeat stale"
+        )
+
+    async def _stale_fail_updated(self, driver: "Any", task_id: "UUID") -> "bool":
+        row = await self._select_task(driver, task_id)
+        if row is None:
+            return False
+        record = self._record_from_row(row)
+        return record.status == "failed" and record.error == "Task heartbeat stale"
+
     def _get_observability_runtime(self) -> "Any | None":
         if not self._queue_observability:
             return None
@@ -1303,15 +1343,6 @@ class _ManagedAsyncDriver:
             return async_(attr)
         return attr
 
-    async def run_sync(self, function: "Any", /, *args: "Any", **kwargs: "Any") -> "Any":
-        """Run a sync helper against the wrapped driver on SQLSpec's executor.
-
-        Returns:
-            The helper result after it runs on SQLSpec's managed executor.
-        """
-        return await async_(function)(self._driver, *args, **kwargs)
-
-
 @asynccontextmanager
 async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
@@ -1334,10 +1365,20 @@ async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "Asy
         try:
             yield _ManagedAsyncDriver(driver)
         except BaseException as exc:
+            await _rollback_sync_session(driver)
             if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
                 raise
         else:
+            await _rollback_sync_session(driver)
             await async_(session_cm.__exit__)(None, None, None)
+
+
+async def _rollback_sync_session(driver: "Any") -> "None":
+    """Best-effort cleanup for sync SQLSpec sessions before pool return."""
+    rollback = getattr(driver, "rollback", None)
+    if callable(rollback):
+        with suppress(Exception):
+            await async_(rollback)()
 
 
 async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[Any]":
@@ -1361,19 +1402,6 @@ async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | 
             yield row
 
 
-def _execute_mssql_stale_recovery_sync(driver: "Any", statements: "list[Any]") -> None:
-    """Execute SQL Server stale-recovery writes on one sync connection thread."""
-    driver.begin()
-    try:
-        for statement in statements:
-            driver.execute(statement)
-        driver.commit()
-    except Exception:
-        with suppress(Exception):
-            driver.rollback()
-        raise
-
-
 def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
@@ -1392,6 +1420,10 @@ def _extract_count(result: "Any") -> "int":
         if isinstance(row, (list, tuple)):
             return int(row[0])
     return 0
+
+
+def _rows_affected(result: "Any") -> "int":
+    return int(getattr(result, "rows_affected", 0) or 0)
 
 
 def _serialize_datetime(value: "datetime | None") -> "datetime | None":

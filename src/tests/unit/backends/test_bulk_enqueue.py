@@ -50,6 +50,16 @@ async def test_enqueue_many_honors_scheduled_status() -> "None":
     assert record.status == "scheduled"
 
 
+async def test_enqueue_many_normalizes_naive_scheduled_at_to_utc() -> "None":
+    backend = InMemoryQueueBackend()
+    naive_later = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None)
+
+    (record,) = await backend.enqueue_many([EnqueueSpec(task_name="tasks.later", scheduled_at=naive_later)])
+
+    assert record.status == "scheduled"
+    assert record.scheduled_at == naive_later.replace(tzinfo=timezone.utc)
+
+
 async def test_enqueue_many_deduplicates_active_keys() -> "None":
     backend = InMemoryQueueBackend()
     first = await backend.enqueue("tasks.sync", key="sync:1", kwargs={"v": 1})

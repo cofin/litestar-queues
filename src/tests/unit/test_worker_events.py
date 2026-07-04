@@ -22,12 +22,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-class FailingSink:
-    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
-        msg = "event sink unavailable"
-        raise RuntimeError(msg)
-
-
 async def test_worker_emits_started_progress_and_terminal_events_in_order() -> "None":
     sink = InMemoryQueueEventSink()
 
@@ -43,7 +37,7 @@ async def test_worker_emits_started_progress_and_terminal_events_in_order() -> "
         worker = Worker(service)
 
         assert await worker.run_once() == 1
-        await result.refresh()
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert result.status == "completed"
     assert [event.type for event in sink.events] == ["task.started", "task.progress", "task.completed"]
@@ -66,7 +60,7 @@ async def test_worker_emits_failed_terminal_event_for_failed_attempt() -> "None"
         worker = Worker(service)
 
         assert await worker.run_once() == 1
-        await result.refresh()
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert result.status == "failed"
     assert [event.type for event in sink.events] == ["task.started", "task.failed"]
@@ -184,9 +178,9 @@ async def test_quiet_success_suppresses_success_python_log_but_keeps_lifecycle_e
             quiet_result = await service.enqueue(worker_quiet_success)
             worker = Worker(service)
             assert await worker.run_once() == 1
+            await visible_result.wait(timeout=1, poll_interval=0.01)
             assert await worker.run_once() == 1
-            await visible_result.refresh()
-            await quiet_result.refresh()
+            await quiet_result.wait(timeout=1, poll_interval=0.01)
 
     assert visible_result.status == "completed"
     assert quiet_result.status == "completed"
@@ -213,13 +207,19 @@ async def test_event_publish_failure_does_not_fail_successful_task_by_default() 
         return "ok"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=FailingSink()))
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=_FailingSink()))
     ) as service:
         result = await service.enqueue(event_sink_failure)
         worker = Worker(service)
 
         assert await worker.run_once() == 1
-        await result.refresh()
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert result.status == "completed"
     assert result.result == "ok"
+
+
+class _FailingSink:
+    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
+        msg = "event sink unavailable"
+        raise RuntimeError(msg)

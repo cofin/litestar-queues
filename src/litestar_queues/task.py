@@ -584,13 +584,13 @@ def load_task_modules(modules: "tuple[str, ...] | list[str]", *, force_reload: "
     for module_name in modules:
         if module_name in _loaded_modules and not force_reload:
             continue
-        _loaded_modules.add(module_name)
-        if force_reload or module_name in sys.modules:
+        if force_reload and module_name in sys.modules:
             module = reload(sys.modules[module_name])
         else:
             module = import_module(module_name)
-        loaded += 1
-        loaded += _load_child_modules(module, force_reload=force_reload)
+        child_count = _load_child_modules(module, force_reload=force_reload)
+        _loaded_modules.add(module_name)
+        loaded += 1 + child_count
     return loaded
 
 

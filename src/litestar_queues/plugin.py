@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from litestar_queues.events import QueueEventPublisher
 
 __all__ = ("QueuePlugin",)
+
+logger = logging.getLogger(__name__)
 
 
 class QueuePlugin(InitPlugin):
@@ -117,6 +120,7 @@ class QueuePlugin(InitPlugin):
                 queues=self._config.worker_queues,
             )
             self._worker_task = asyncio.create_task(self._worker.start())
+            self._worker_task.add_done_callback(self._log_worker_task_result)
             await asyncio.sleep(0)
             app.state[self._config.queue_worker_state_key] = self._worker
 
@@ -124,10 +128,20 @@ class QueuePlugin(InitPlugin):
         if self._worker is not None:
             await self._worker.stop()
         if self._worker_task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._worker_task
             self._worker_task = None
         if self._service is not None:
             set_default_service(None)
             await self._service.close()
             self._service = None
+
+    def _log_worker_task_result(self, task: "asyncio.Task[None]") -> "None":
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is None:
+            return
+        logger.error(
+            "In-app queue worker stopped unexpectedly", exc_info=(type(exception), exception, exception.__traceback__)
+        )

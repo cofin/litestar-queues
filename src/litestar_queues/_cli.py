@@ -118,26 +118,13 @@ async def _run_worker(
     )
 
     loop = asyncio.get_running_loop()
-    stop_count = {"n": 0}
-    stop_task: "asyncio.Task[None] | None" = None
-    forced_stop = {"value": False}
-
-    def _request_stop() -> "None":
-        nonlocal stop_task
-        stop_count["n"] += 1
-        if stop_count["n"] >= FORCE_STOP_SIGNAL_COUNT:
-            forced_stop["value"] = True
-            if stop_task is None or stop_task.done():
-                stop_task = asyncio.create_task(worker.stop(force=True))
-            return
-        if stop_task is None or stop_task.done():
-            stop_task = asyncio.create_task(worker.stop())
+    stop_coordinator = _WorkerStopCoordinator(worker)
 
     def _register_signal_handler(sig: "signal.Signals") -> "None":
         try:
-            loop.add_signal_handler(sig, _request_stop)
+            loop.add_signal_handler(sig, stop_coordinator.request_stop)
         except NotImplementedError:
-            signal.signal(sig, lambda *_: _request_stop())
+            signal.signal(sig, lambda *_: stop_coordinator.request_stop())
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         _register_signal_handler(sig)
@@ -149,7 +136,8 @@ async def _run_worker(
     try:
         try:
             await asyncio.wait_for(worker_task, timeout=None)
-            if forced_stop["value"]:
+            await stop_coordinator.wait()
+            if stop_coordinator.forced_stop or stop_coordinator.drain_escalated:
                 exit_code = 2
         except asyncio.CancelledError:
             with contextlib.suppress(BaseException):
@@ -159,9 +147,46 @@ async def _run_worker(
             exit_code = 1
     finally:
         with contextlib.suppress(Exception):
+            await stop_coordinator.finish(timeout=drain_timeout + config.worker_final_cancel_timeout)
             await asyncio.wait_for(worker.stop(), timeout=drain_timeout)
         await service.close()
     return exit_code
+
+
+class _WorkerStopCoordinator:
+    __slots__ = ("drain_escalated", "forced_stop", "stop_count", "stop_task", "worker")
+
+    def __init__(self, worker: "Worker") -> "None":
+        self.worker = worker
+        self.stop_count = 0
+        self.stop_task: "asyncio.Task[None] | None" = None
+        self.forced_stop = False
+        self.drain_escalated = False
+
+    def request_stop(self) -> "None":
+        self.stop_count += 1
+        if self.stop_count >= FORCE_STOP_SIGNAL_COUNT:
+            self.forced_stop = True
+            self._schedule_stop(force=True)
+            return
+        self._schedule_stop()
+
+    async def wait(self) -> "None":
+        if self.stop_task is not None:
+            await self.stop_task
+
+    async def finish(self, *, timeout: "float") -> "None":
+        if self.stop_task is not None and not self.stop_task.done():
+            await asyncio.wait_for(self.stop_task, timeout=timeout)
+
+    def _schedule_stop(self, *, force: "bool" = False) -> "None":
+        if self.stop_task is None or self.stop_task.done():
+            self.stop_task = asyncio.create_task(self._stop_worker(force=force))
+
+    async def _stop_worker(self, *, force: "bool" = False) -> "None":
+        escalated = await self.worker.stop(force=force)
+        if escalated:
+            self.drain_escalated = True
 
 
 async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json: "bool") -> "int":
