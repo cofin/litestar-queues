@@ -1041,7 +1041,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             msg = "SQLSpecQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
-        async with _bridge_session(self._get_or_create_sqlspec(), sqlspec_config) as driver:
+        async with _bridge_session(
+            self._get_or_create_sqlspec(), sqlspec_config, skip_explicit_begin=self._get_store().skip_explicit_begin
+        ) as driver:
             yield driver
 
     @asynccontextmanager
@@ -1270,7 +1272,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _serialize_datetime(self, value: "datetime | None") -> "datetime | str | None":
         serialized = _serialize_datetime(value)
-        if serialized is not None and self._get_store().bind_datetime_as_text:
+        store = self._get_store()
+        if serialized is not None and store.bind_datetime_as_text:
+            formatter = getattr(store, "serialize_datetime_text", None)
+            if callable(formatter):
+                return cast("str", formatter(serialized))
             return serialized.isoformat()
         return serialized
 
@@ -1333,12 +1339,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 class _ManagedAsyncDriver:
     """Expose sync SQLSpec driver methods through SQLSpec's managed async bridge."""
 
-    __slots__ = ("_driver",)
+    __slots__ = ("_driver", "_skip_explicit_begin")
 
-    def __init__(self, driver: "Any") -> "None":
+    def __init__(self, driver: "Any", *, skip_explicit_begin: "bool" = False) -> "None":
         self._driver = driver
+        self._skip_explicit_begin = skip_explicit_begin
 
     def __getattr__(self, name: "str") -> "Any":
+        if name == "begin" and self._skip_explicit_begin:
+            return _noop_async
         attr = getattr(self._driver, name)
         if callable(attr):
             return async_(attr)
@@ -1346,7 +1355,9 @@ class _ManagedAsyncDriver:
 
 
 @asynccontextmanager
-async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
+async def _bridge_session(
+    sqlspec_manager: "Any", sqlspec_config: "Any", *, skip_explicit_begin: "bool" = False
+) -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
 
     Sync SQLSpec configs (``SqliteConfig``, ``DuckDBConfig``, ``MysqlConnectorSyncConfig``, etc.)
@@ -1365,7 +1376,7 @@ async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "Asy
     else:
         driver = await async_(session_cm.__enter__)()
         try:
-            yield _ManagedAsyncDriver(driver)
+            yield _ManagedAsyncDriver(driver, skip_explicit_begin=skip_explicit_begin)
         except BaseException as exc:
             await _rollback_sync_session(driver)
             if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
@@ -1373,6 +1384,10 @@ async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "Asy
         else:
             await _rollback_sync_session(driver)
             await async_(session_cm.__exit__)(None, None, None)
+
+
+async def _noop_async(*_args: "Any", **_kwargs: "Any") -> "None":
+    return None
 
 
 async def _rollback_sync_session(driver: "Any") -> "None":

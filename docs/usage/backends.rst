@@ -228,6 +228,9 @@ claim/update statements where the database supports them.
    * - ``oracledb``
      - ``OracledbAsyncQueueStore`` or ``OracledbSyncQueueStore``
      - Uses Oracle-specific DDL and JSON column choices.
+   * - ``arrow_odbc``
+     - ``ArrowOdbcQueueStore``
+     - SQL Server target only. Other ODBC targets raise ``QueueConfigurationError``.
    * - ``spanner``
      - ``SpannerQueueStore``
      - Google Cloud Spanner behavior with write-capable transactional sessions.
@@ -245,9 +248,11 @@ claim/update statements where the database supports them.
      - ``SqliteQueueStore``
      - Sync SQLite behavior.
 
-Unsupported SQLSpec adapters raise ``QueueConfigurationError``. Applications
-should install the SQLSpec adapter driver they configure; Litestar Queues does
-not install every SQLSpec driver as a package dependency.
+Unsupported SQLSpec adapters raise ``QueueConfigurationError``. Arrow ODBC is
+supported only when SQLSpec resolves the target dialect to SQL Server; other
+ODBC targets still raise ``QueueConfigurationError``. Applications should
+install the SQLSpec adapter driver they configure; Litestar Queues does not
+install every SQLSpec driver as a package dependency.
 
 SQLSpec Capability Matrix
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -335,6 +340,13 @@ advertises, then fall back to the portable path when a capability is absent.
        are provisioned.
      - Oracle object names are kept within the adapter's identifier limits;
        Oracle 23ai can pipeline stale-recovery statement batches.
+   * - ``arrow_odbc``
+     - Optimistic compare-and-swap.
+     - ``NVARCHAR(MAX)`` JSON text on the SQL Server target.
+     - Arrow ``load_from_records`` path.
+     - Polling.
+     - SQL Server target only; unsupported ODBC targets fail during store
+       construction.
    * - ``spanner``
      - Optimistic compare-and-swap.
      - ``JSON`` columns with native decoded JSON values.
