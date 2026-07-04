@@ -607,6 +607,32 @@ async def test_sqlspec_sync_bridge_rolls_back_read_transactions_before_pool_retu
     assert manager.driver.rollback_count == 1
 
 
+async def test_sqlspec_sync_bridge_skips_cleanup_rollback_after_commit() -> "None":
+    """Committed sync sessions must not be rolled back during pool cleanup."""
+    manager = _FakeSyncSQLSpec()
+
+    async with _bridge_session(manager, _FakeSyncConfig()) as driver:
+        await driver.begin()
+        await driver.commit()
+
+    assert manager.driver.begin_count == 1
+    assert manager.driver.commit_count == 1
+    assert manager.driver.rollback_count == 0
+
+
+async def test_sqlspec_sync_bridge_can_skip_explicit_begin_for_driver_managed_transactions() -> "None":
+    """Some sync drivers rely on their DB-API transaction lifecycle."""
+    manager = _FakeSyncSQLSpec()
+
+    async with _bridge_session(manager, _FakeSyncConfig(), skip_explicit_begin=True) as driver:
+        await driver.begin()
+        await driver.commit()
+
+    assert manager.driver.begin_count == 0
+    assert manager.driver.commit_count == 1
+    assert manager.driver.rollback_count == 0
+
+
 @pytest.mark.parametrize(
     ("table_name", "expected"),
     (
@@ -1005,8 +1031,16 @@ class _FakeSyncSession:
 
 class _FakeSyncDriver:
     def __init__(self) -> "None":
+        self.begin_count = 0
+        self.commit_count = 0
         self.rollback_count = 0
         self.selected: "list[object]" = []
+
+    def begin(self) -> "None":
+        self.begin_count += 1
+
+    def commit(self) -> "None":
+        self.commit_count += 1
 
     def select(self, statement: "object") -> "list[object]":
         self.selected.append(statement)
