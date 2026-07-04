@@ -241,9 +241,17 @@ class SQLSpecQueueStore:
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
         )
 
-    def complete_task(self, *, task_id: "str", completed_at: "Any", heartbeat_at: "Any", result_json: "Any") -> "Any":
+    def complete_task(
+        self,
+        *,
+        task_id: "str",
+        completed_at: "Any",
+        heartbeat_at: "Any",
+        result_json: "Any",
+        expected_retry_count: "int | None" = None,
+    ) -> "Any":
         """Return an UPDATE statement that completes a task."""
-        return (
+        statement = (
             sql
             .update(self.table_name)
             .set(
@@ -257,10 +265,23 @@ class SQLSpecQueueStore:
             )
             .where_eq(self._col("id"), task_id)
         )
+        if expected_retry_count is not None:
+            statement = statement.where_eq(self._col("status"), "running").where_eq(
+                self._col("retry_count"), expected_retry_count
+            )
+        return statement
 
-    def retry_task(self, *, task_id: "str", error: "str", retry_count: "int") -> "Any":
+    def retry_task(
+        self,
+        *,
+        task_id: "str",
+        error: "str",
+        retry_count: "int",
+        expected_retry_count: "int | None" = None,
+        heartbeat_cutoff: "Any | None" = None,
+    ) -> "Any":
         """Return an UPDATE statement that schedules a retry."""
-        return (
+        statement = (
             sql
             .update(self.table_name)
             .set(
@@ -273,11 +294,29 @@ class SQLSpecQueueStore:
                 })
             )
             .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
         )
+        if expected_retry_count is not None:
+            statement = statement.where_eq(self._col("retry_count"), expected_retry_count)
+        if heartbeat_cutoff is not None:
+            statement = statement.where(
+                f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :heartbeat_cutoff",
+                heartbeat_cutoff=heartbeat_cutoff,
+            )
+        return statement
 
-    def fail_task(self, *, task_id: "str", completed_at: "Any", heartbeat_at: "Any", error: "str") -> "Any":
+    def fail_task(
+        self,
+        *,
+        task_id: "str",
+        completed_at: "Any",
+        heartbeat_at: "Any",
+        error: "str",
+        expected_retry_count: "int | None" = None,
+        heartbeat_cutoff: "Any | None" = None,
+    ) -> "Any":
         """Return an UPDATE statement that permanently fails a task."""
-        return (
+        statement = (
             sql
             .update(self.table_name)
             .set(
@@ -289,7 +328,16 @@ class SQLSpecQueueStore:
                 })
             )
             .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
         )
+        if expected_retry_count is not None:
+            statement = statement.where_eq(self._col("retry_count"), expected_retry_count)
+        if heartbeat_cutoff is not None:
+            statement = statement.where(
+                f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :heartbeat_cutoff",
+                heartbeat_cutoff=heartbeat_cutoff,
+            )
+        return statement
 
     def cancel_task(self, *, task_id: "str", completed_at: "Any") -> "Any":
         """Return an UPDATE statement that cancels a due task."""

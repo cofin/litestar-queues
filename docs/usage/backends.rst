@@ -627,14 +627,22 @@ The dispatch worker stores the Cloud Run execution name on the queue record and
 does not claim the task locally. The Cloud Run container should run
 ``litestar-queues-cloudrun-worker`` or
 ``python -m litestar_queues.execution.cloudrun.entrypoint``. The entry point
-reads ``LITESTAR_QUEUES_TASK_ID``, loads configured task modules, claims the
-persisted record, updates heartbeats, executes the task through the shared queue
-service, and returns deterministic process exit codes.
+loads the queue configuration from ``LITESTAR_QUEUES_CONFIG_FACTORY`` before it
+reads the task id, so custom ``env_prefix`` values are honored for variables
+such as ``<PREFIX>_TASK_ID`` and ``<PREFIX>_TASK_MODULES``. It then loads
+configured task modules, claims the persisted record, updates heartbeats,
+executes the task through the shared queue service, and returns deterministic
+process exit codes. A missing or invalid config factory exits with a distinct
+configuration error instead of looking like a missing task record.
 
 If the Cloud Run API call fails before a remote execution owns the task, the
-backend can move the record to a fallback execution backend such as ``local``.
-Status checks that fail transiently are treated as still running so
-reconciliation does not create false terminal states.
+backend logs and publishes a task event. By default
+``fallback_execution_backend`` is ``None``, so the dispatch error surfaces and
+the record remains routed to ``cloudrun``. To opt in to local recovery, set a
+fallback explicitly, for example ``fallback_execution_backend="local"``. Status
+checks that fail transiently are treated as still running so reconciliation does
+not create false terminal states; a missing Cloud Run execution is treated as a
+failed execution so eligible records can retry.
 
 SQLSpec Event Notifications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

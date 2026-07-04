@@ -7,6 +7,7 @@ within the drain window.
 Skipped on Windows because SIGTERM is not meaningfully delivered there.
 """
 
+import asyncio
 import os
 import select
 import signal
@@ -23,26 +24,55 @@ pytestmark = [
 ]
 
 
-def _wait_for_worker_started(proc: "subprocess.Popen[bytes]", *, timeout: "float" = 8.0) -> "None":
-    """Wait until the worker command has installed signal handlers.
+async def test_run_worker_returns_2_when_single_signal_drain_timeout_cancels(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    from litestar_queues import QueueConfig, QueuePlugin, task
+    from litestar_queues._cli import _run_worker
+    from litestar_queues.backends import InMemoryQueueBackend
 
-    Returns:
-        None.
-    """
-    assert proc.stderr is not None
-    deadline = time.monotonic() + timeout
-    stderr = []
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        ready, _, _ = select.select([proc.stderr], [], [], 0.1)
-        if not ready:
-            continue
-        line = proc.stderr.readline().decode()
-        stderr.append(line)
-        if "litestar queues worker started" in line:
-            return
-    pytest.fail(f"worker did not report startup before SIGTERM; stderr={''.join(stderr)[-500:]!r}")
+    started = asyncio.Event()
+
+    @task("cli.stuck")
+    async def stuck() -> "None":
+        started.set()
+        await asyncio.Event().wait()
+
+    backend = InMemoryQueueBackend()
+    await backend.enqueue("cli.stuck")
+    plugin = QueuePlugin(
+        QueueConfig(
+            execution_backend="local", in_app_worker=False, worker_poll_interval=0.01, worker_final_cancel_timeout=0.1
+        )
+    )
+    plugin._queue_backend = backend
+    handlers: "dict[signal.Signals, object]" = {}
+
+    def add_signal_handler(sig: "signal.Signals", callback: "object") -> "None":
+        handlers[sig] = callback
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
+    run_task = asyncio.create_task(_run_worker(plugin, 1, 0.01, ()))
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    handler = handlers[signal.SIGTERM]
+    assert callable(handler)
+    handler()
+
+    assert await asyncio.wait_for(run_task, timeout=2) == 2
+
+
+async def test_run_worker_returns_1_when_worker_loop_crashes(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues import _cli as cli_module
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
+    monkeypatch.setattr(cli_module, "Worker", _FailingStartWorker)
+    plugin = QueuePlugin(QueueConfig(execution_backend="local", in_app_worker=False))
+
+    assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 1
 
 
 def test_run_subcommand_drains_on_sigterm() -> "None":
@@ -75,3 +105,39 @@ def test_run_subcommand_drains_on_sigterm() -> "None":
         f"expected clean drain (exit 0), got {proc.returncode}; "
         f"stderr={proc.stderr.read().decode()[-500:] if proc.stderr else ''!r}"
     )
+
+
+def _wait_for_worker_started(proc: "subprocess.Popen[bytes]", *, timeout: "float" = 8.0) -> "None":
+    """Wait until the worker command has installed signal handlers.
+
+    Returns:
+        None.
+    """
+    assert proc.stderr is not None
+    deadline = time.monotonic() + timeout
+    stderr = []
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        ready, _, _ = select.select([proc.stderr], [], [], 0.1)
+        if not ready:
+            continue
+        line = proc.stderr.readline().decode()
+        stderr.append(line)
+        if "litestar queues worker started" in line:
+            return
+    pytest.fail(f"worker did not report startup before SIGTERM; stderr={''.join(stderr)[-500:]!r}")
+
+
+class _FailingStartWorker:
+    __slots__ = ()
+
+    def __init__(self, *_args: "object", **_kwargs: "object") -> "None":
+        pass
+
+    async def start(self) -> "None":
+        msg = "worker crashed"
+        raise RuntimeError(msg)
+
+    async def stop(self, *, force: "bool" = False) -> "bool":
+        return False
