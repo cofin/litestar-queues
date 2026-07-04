@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import threading
 from contextlib import suppress
@@ -20,17 +21,14 @@ from litestar_queues import (
 )
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
-from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
+    from litestar_queues.task import TaskResult
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture(autouse=True)
-def clean_task_registry() -> "None":
-    clear_task_registry()
 
 
 async def test_worker_run_once_processes_pending_local_task() -> "None":
@@ -43,7 +41,7 @@ async def test_worker_run_once_processes_pending_local_task() -> "None":
         worker = Worker(service)
 
         assert await worker.run_once() == 1
-        await result.refresh()
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert result.status == "completed"
     assert result.result == 42
@@ -66,12 +64,10 @@ async def test_worker_retries_failed_task_until_success() -> "None":
         worker = Worker(service)
 
         assert await worker.run_once() == 1
-        await result.refresh()
-        pending_status = result.status
-        assert pending_status == "pending"
+        await _wait_for_record_status(result, "pending")
 
         assert await worker.run_once() == 1
-        await result.refresh()
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert attempts == 2
     completed_status = result.status
@@ -93,7 +89,7 @@ async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -
         worker = Worker(service)
 
         assert await worker.run_once() == 1
-        await result.refresh()
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert captured_job_id == str(result.id)
     assert result.status == "failed"
@@ -123,32 +119,21 @@ async def test_worker_processes_batch_with_configured_concurrency() -> "None":
 
         run_once = asyncio.create_task(worker.run_once())
         await asyncio.wait_for(both_started.wait(), timeout=1)
-        release.set()
-
+        if not run_once.done():
+            release.set()
+            await asyncio.wait_for(run_once, timeout=1)
+            pytest.fail("run_once should return after scheduling claimed records")
         assert await run_once == 2
-        await first.refresh()
-        await second.refresh()
+        release.set()
+        await first.wait(timeout=1, poll_interval=0.01)
+        await second.wait(timeout=1, poll_interval=0.01)
 
     assert first.status == "completed"
     assert second.status == "completed"
 
 
-class _LimitRecordingInMemoryQueueBackend(InMemoryQueueBackend):
-    __slots__ = ("list_limits",)
-
-    def __init__(self) -> "None":
-        super().__init__()
-        self.list_limits: "list[int]" = []
-
-    async def list_pending(
-        self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
-    ) -> 'list["QueuedTaskRecord"]':
-        self.list_limits.append(limit)
-        return await super().list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
-
-
-async def test_worker_does_not_over_claim_beyond_available_concurrency() -> "None":
-    backend = _LimitRecordingInMemoryQueueBackend()
+async def test_worker_claims_local_records_through_claim_next() -> "None":
+    backend = _ClaimNextRecordingInMemoryQueueBackend()
 
     @task("tasks.capacity")
     async def capacity(value: "int") -> "int":
@@ -161,7 +146,9 @@ async def test_worker_does_not_over_claim_beyond_available_concurrency() -> "Non
 
         assert await worker.run_once() == 2
 
-    assert backend.list_limits[0] == 2
+    assert backend.claim_next_calls == [(None, "local"), (None, "local")]
+    assert backend.list_pending_calls == []
+    assert backend.claim_task_calls == []
 
 
 async def test_worker_queue_filter_restricts_claimed_records() -> "None":
@@ -175,11 +162,74 @@ async def test_worker_queue_filter_restricts_claimed_records() -> "None":
         worker = Worker(service, queues=("priority",))
 
         assert await worker.run_once() == 1
+        await priority_result.wait(timeout=1, poll_interval=0.01)
         await default_result.refresh()
         await priority_result.refresh()
 
     assert default_result.status == "pending"
     assert priority_result.status == "completed"
+
+
+async def test_worker_start_refills_open_slots_without_waiting_for_slow_batch_member() -> "None":
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+    fast_values: "list[int]" = []
+    fast_tasks_finished = asyncio.Event()
+
+    @task("tasks.refill")
+    async def refill(value: "int") -> "int":
+        if value == 0:
+            slow_started.set()
+            await release_slow.wait()
+            return value
+        fast_values.append(value)
+        if sorted(fast_values) == [1, 2]:
+            fast_tasks_finished.set()
+        return value
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        slow = await service.enqueue(refill, 0)
+        first_fast = await service.enqueue(refill, 1)
+        second_fast = await service.enqueue(refill, 2)
+        worker = Worker(service, batch_size=2, max_concurrency=2, poll_interval=0.01)
+        worker_task = asyncio.create_task(worker.start())
+        refilled = False
+
+        try:
+            await asyncio.wait_for(slow_started.wait(), timeout=1)
+            await asyncio.wait_for(fast_tasks_finished.wait(), timeout=0.5)
+            assert release_slow.is_set() is False
+            refilled = True
+        finally:
+            release_slow.set()
+            if not refilled:
+                await worker.stop(force=True)
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait_for(worker_task, timeout=1)
+
+        await slow.wait(timeout=1, poll_interval=0.01)
+        await first_fast.wait(timeout=1, poll_interval=0.01)
+        await second_fast.wait(timeout=1, poll_interval=0.01)
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert slow.status == "completed"
+    assert first_fast.status == "completed"
+    assert second_fast.status == "completed"
+
+
+async def test_worker_start_logs_and_continues_after_transient_loop_error(caplog: "pytest.LogCaptureFixture") -> "None":
+    recovered = asyncio.Event()
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        worker = _TransientRunOnceWorker(service, recovered=recovered, poll_interval=0.01)
+
+        with caplog.at_level(logging.ERROR, logger="litestar_queues.worker"):
+            await worker.start()
+
+    assert worker.run_once_calls == 2
+    assert recovered.is_set()
+    assert "Queue worker loop iteration failed" in caplog.text
 
 
 async def test_worker_start_wakes_from_backend_notifications() -> "None":
@@ -201,18 +251,6 @@ async def test_worker_start_wakes_from_backend_notifications() -> "None":
 
     assert result.status == "completed"
     assert result.result == 42
-
-
-class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
-    __slots__ = ("requeue_calls",)
-
-    def __init__(self) -> "None":
-        super().__init__()
-        self.requeue_calls: "list[timedelta]" = []
-
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
-        self.requeue_calls.append(stale_after)
-        return await super().requeue_stale_running(stale_after=stale_after)
 
 
 async def test_worker_periodic_requeue_calls_backend_on_cadence() -> "None":
@@ -254,6 +292,33 @@ async def test_worker_periodic_requeue_respects_cadence_window() -> "None":
     assert len(backend.requeue_calls) == 1
 
 
+async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> "None":
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, reconcile_interval=3600.0)
+
+        await worker._maybe_reconcile_external()
+        await worker._maybe_reconcile_external()
+        await worker._maybe_reconcile_external()
+
+    assert backend.list_running_external_calls == 1
+
+
+async def test_worker_reconcile_external_skips_unknown_backend_names(caplog: "pytest.LogCaptureFixture") -> "None":
+    backend = InMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        record = await backend.enqueue("tasks.remote", execution_backend="missing-backend")
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        await backend.set_execution_ref(claimed.id, "missing-backend", "jobs/missing")
+        worker = Worker(service)
+
+        with caplog.at_level(logging.WARNING, logger="litestar_queues.worker"):
+            assert await worker.reconcile_external() == 0
+
+    assert "Skipping external queue record with unknown execution backend" in caplog.text
+
+
 async def test_worker_default_worker_id_uses_pid() -> "None":
     async with QueueService(QueueConfig()) as service:
         worker = Worker(service)
@@ -278,10 +343,11 @@ async def test_worker_id_propagates_into_published_events() -> "None":
     async with QueueService(
         QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
     ) as service:
-        await service.enqueue(worker_id_task)
+        result = await service.enqueue(worker_id_task)
         worker = Worker(service, worker_id="worker-test")
 
         assert await worker.run_once() == 1
+        await result.wait(timeout=1, poll_interval=0.01)
 
     assert sink.events, "Expected lifecycle events to be published"
     lifecycle_types = {"task.started", "task.completed", "task.failed"}
@@ -345,6 +411,30 @@ async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
     assert result.status == "completed"
 
 
+async def test_plugin_logs_when_in_app_worker_task_dies(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues import plugin as plugin_module
+
+    messages: "list[tuple[str, dict[str, object]]]" = []
+
+    def log_error(message: "str", **kwargs: "object") -> "None":
+        messages.append((message, kwargs))
+
+    monkeypatch.setattr(plugin_module, "Worker", _FailingWorker)
+    monkeypatch.setattr(plugin_module.logger, "error", log_error)
+    plugin = QueuePlugin(QueueConfig(in_app_worker=True, execution_backend="local"))
+    app = Litestar(plugins=[plugin])
+
+    await plugin._on_startup(app)
+    await asyncio.sleep(0)
+
+    if plugin._service is not None:
+        await plugin._service.close()
+
+    assert messages
+    assert messages[0][0] == "In-app queue worker stopped unexpectedly"
+    assert "exc_info" in messages[0][1]
+
+
 async def test_sync_task_uses_configured_executor_and_preserves_task_context() -> "None":
     @task("tasks.sync_context")
     def sync_context(*, _job_id: "str") -> "dict[str, str | None]":
@@ -360,3 +450,93 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
     assert isinstance(result.result, dict)
     assert result.result["job_id"] == result.result["context_task_id"]
     assert str(result.result["thread_name"]).startswith("lq")
+
+
+async def _wait_for_record_status(result: "TaskResult", expected_status: "str", *, timeout: "float" = 1.0) -> "None":
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        await result.refresh()
+        if result.status == expected_status:
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail(f"record {result.id} did not reach {expected_status!r}; status={result.status!r}")
+
+
+class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
+    __slots__ = ("claim_next_calls", "claim_task_calls", "list_pending_calls")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.claim_next_calls: "list[tuple[str | None, str | None]]" = []
+        self.claim_task_calls: "list[object]" = []
+        self.list_pending_calls: "list[tuple[int, str | None, str | None]]" = []
+
+    async def claim_next(
+        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
+        self.claim_next_calls.append((queue, execution_backend))
+        records = await InMemoryQueueBackend.list_pending(
+            self, limit=1, queue=queue, execution_backend=execution_backend
+        )
+        if not records:
+            return None
+        return await InMemoryQueueBackend.claim_task(self, records[0].id)
+
+    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        self.claim_task_calls.append(task_id)
+        return await super().claim_task(task_id)
+
+    async def list_pending(
+        self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> 'list["QueuedTaskRecord"]':
+        self.list_pending_calls.append((limit, queue, execution_backend))
+        return await super().list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+
+
+class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
+    __slots__ = ("list_running_external_calls", "requeue_calls")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.requeue_calls: "list[timedelta]" = []
+        self.list_running_external_calls = 0
+
+    async def list_running_external(self, *, limit: "int | None" = None) -> 'list["QueuedTaskRecord"]':
+        self.list_running_external_calls += 1
+        return await super().list_running_external(limit=limit)
+
+    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+        self.requeue_calls.append(stale_after)
+        return await super().requeue_stale_running(stale_after=stale_after)
+
+
+class _FailingWorker:
+    __slots__ = ()
+
+    def __init__(self, *_args: "object", **_kwargs: "object") -> "None":
+        pass
+
+    async def start(self) -> "None":
+        msg = "worker boom"
+        raise RuntimeError(msg)
+
+    async def stop(self, *, force: "bool" = False) -> "bool":
+        return False
+
+
+class _TransientRunOnceWorker(Worker):
+    __slots__ = ("recovered", "run_once_calls")
+
+    def __init__(self, service: "QueueService", *, recovered: "asyncio.Event", poll_interval: "float") -> "None":
+        super().__init__(service, poll_interval=poll_interval)
+        self.recovered = recovered
+        self.run_once_calls = 0
+
+    async def run_once(self) -> "int":
+        self.run_once_calls += 1
+        if self.run_once_calls == 1:
+            msg = "transient backend failure"
+            raise RuntimeError(msg)
+        self.recovered.set()
+        await self.stop()
+        return 0

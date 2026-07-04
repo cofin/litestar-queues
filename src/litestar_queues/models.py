@@ -92,6 +92,10 @@ class EnqueueSpec:
     execution_profile: "str | None" = None
     metadata: "dict[str, Any] | None" = None
 
+    def __post_init__(self) -> "None":
+        if self.scheduled_at is not None:
+            self.scheduled_at = _ensure_utc_datetime(self.scheduled_at)
+
 
 @dataclass(slots=True)
 class QueuedTaskRecord:
@@ -119,6 +123,10 @@ class QueuedTaskRecord:
     key: "str | None" = None
     metadata: "dict[str, Any]" = field(default_factory=dict)
 
+    def __post_init__(self) -> "None":
+        if self.scheduled_at is not None:
+            self.scheduled_at = _ensure_utc_datetime(self.scheduled_at)
+
     @property
     def is_terminal(self) -> "bool":
         """Whether the record is in a terminal state."""
@@ -128,3 +136,9 @@ class QueuedTaskRecord:
     def is_due(self) -> "bool":
         """Whether the record is eligible to be claimed now."""
         return self.scheduled_at is None or self.scheduled_at <= datetime.now(timezone.utc)
+
+
+def _ensure_utc_datetime(value: "datetime") -> "datetime":
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
