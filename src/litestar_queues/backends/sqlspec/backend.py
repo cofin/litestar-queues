@@ -1343,6 +1343,7 @@ class _ManagedAsyncDriver:
             return async_(attr)
         return attr
 
+
 @asynccontextmanager
 async def _bridge_session(sqlspec_manager: "Any", sqlspec_config: "Any") -> "AsyncIterator[Any]":
     """Yield a SQLSpec driver regardless of sync/async config.
