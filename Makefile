@@ -88,6 +88,16 @@ build:                                              ## Build the project
 	@uv build
 	@echo "${OK} Package build complete"
 
+.PHONY: release
+release:                                           ## Bump version and create release artifacts
+	@echo "${INFO} Preparing for release..."
+	@make docs
+	@make clean
+	@make build
+	@uv run bump-my-version bump $(bump)
+	@uv lock --upgrade-package litestar-queues >/dev/null 2>&1
+	@echo "${OK} Release complete"
+
 # =============================================================================
 # Documentation
 # =============================================================================
