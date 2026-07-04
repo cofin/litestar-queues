@@ -170,7 +170,7 @@ tests = [
   "numpy",
   "advanced-alchemy>=1.10.0",
   # SQLSpec adapters covered by the default integration matrix
-  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,cockroachdb,pymysql,litestar,mysql-connector]>=0.52.0",
+  "sqlspec[aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,cockroachdb,pymysql,spanner,litestar,mysql-connector]>=0.52.0",
 ]
 
 #####################
