@@ -15,6 +15,7 @@ from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
     CockroachPsycopgSyncQueueStore,
 )
 from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
+from litestar_queues.backends.sqlspec.stores.mssql_python import MssqlPythonQueueStore
 from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
@@ -22,6 +23,7 @@ from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
 from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.pymssql import PymssqlQueueStore
 from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
@@ -40,8 +42,10 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "arrow_odbc": ArrowOdbcQueueStore,
     "cockroach_asyncpg": CockroachAsyncpgQueueStore,
     "duckdb": DuckDBQueueStore,
-    "pymysql": PymysqlQueueStore,
+    "mssql_python": MssqlPythonQueueStore,
     "psqlpy": PsqlpyQueueStore,
+    "pymssql": PymssqlQueueStore,
+    "pymysql": PymysqlQueueStore,
     "spanner": SpannerQueueStore,
     "sqlite": SqliteQueueStore,
 }

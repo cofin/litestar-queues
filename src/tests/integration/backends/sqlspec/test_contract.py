@@ -53,6 +53,7 @@ from litestar_queues.backends.sqlspec.stores import (
     create_queue_store,
 )
 from litestar_queues.exceptions import QueueConfigurationError
+from tests.integration._backends import QUEUE_BACKENDS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -328,9 +329,11 @@ blocked_prefixes = (
     "duckdb",
     "cockroach_asyncpg",
     "cockroach_psycopg",
+    "mssql_python",
     "mysql.connector",
     "pymysql",
     "oracledb",
+    "pymssql",
     "psqlpy",
     "psycopg",
     "sqlspec.adapters.adbc",
@@ -342,9 +345,11 @@ blocked_prefixes = (
     "sqlspec.adapters.cockroach_asyncpg",
     "sqlspec.adapters.cockroach_psycopg",
     "sqlspec.adapters.duckdb",
+    "sqlspec.adapters.mssql_python",
     "sqlspec.adapters.mysqlconnector",
     "sqlspec.adapters.pymysql",
     "sqlspec.adapters.oracledb",
+    "sqlspec.adapters.pymssql",
     "sqlspec.adapters.psqlpy",
     "sqlspec.adapters.psycopg",
     "sqlspec.adapters.spanner",
@@ -459,9 +464,51 @@ def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
 
 
 @pytest.mark.parametrize(
-    ("adapter_name", "dialect", "config_type_name"),
-    (("bigquery", "bigquery", "BigQueryConfig"), ("mssql_python", "tsql", "MssqlPythonAsyncConfig")),
+    ("adapter_name", "dialect", "config_type_name", "expected_store_name"),
+    (
+        ("mssql_python", "tsql", "MssqlPythonConfig", "MssqlPythonQueueStore"),
+        ("mssql_python", "tsql", "MssqlPythonAsyncConfig", "MssqlPythonQueueStore"),
+        ("pymssql", "tsql", "PymssqlConfig", "PymssqlQueueStore"),
+    ),
 )
+def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
+    adapter_name: "str", dialect: "str | None", config_type_name: "str", expected_store_name: "str"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+    )
+
+    assert store.__class__.__name__ == expected_store_name
+    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect", "config_type_name"),
+    (
+        ("mssql_python", "tsql", "MssqlPythonConfig"),
+        ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
+        ("pymssql", "tsql", "PymssqlConfig"),
+    ),
+)
+def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
+    adapter_name: "str", dialect: "str | None", config_type_name: "str"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+    )
+
+    ddl = "\n".join(store.create_statements())
+
+    assert "NVARCHAR(255)" in ddl
+    assert "NVARCHAR(MAX)" in ddl
+    assert "DATETIME2(6)" in ddl
+    assert " INT " in f" {ddl} "
+    assert "CREATE UNIQUE INDEX" in ddl
+    assert "task_key IS NOT NULL" in ddl
+    assert store.supports_skip_locked is False
+
+
+@pytest.mark.parametrize(("adapter_name", "dialect", "config_type_name"), (("bigquery", "bigquery", "BigQueryConfig"),))
 def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
     adapter_name: "str", dialect: "str | None", config_type_name: "str"
 ) -> "None":
@@ -620,6 +667,16 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert expected_sql_fragment in "\n".join(store.create_statements())
 
 
+def test_sqlspec_backend_registry_includes_sql_server_adapters() -> "None":
+    names = {case.name for case in QUEUE_BACKENDS}
+    service_attrs = {case.name: case.service_attr for case in QUEUE_BACKENDS}
+
+    assert "mssql-python" in names
+    assert "pymssql" in names
+    assert service_attrs["mssql-python"] == "mssql_service"
+    assert service_attrs["pymssql"] == "mssql_service"
+
+
 def test_sqlspec_spanner_store_uses_spanner_ddl_and_native_json_columns() -> "None":
     store = create_queue_store(_fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerConfig"))
 
@@ -701,6 +758,32 @@ async def test_sqlspec_sync_bridge_rolls_back_read_transactions_before_pool_retu
         assert await driver.select("SELECT 1") == []
 
     assert manager.driver.rollback_count == 1
+
+
+async def test_sqlspec_sync_bridge_skips_cleanup_rollback_after_commit() -> "None":
+    """Committed sync sessions must not be rolled back during pool cleanup."""
+    manager = _FakeSyncSQLSpec()
+
+    async with _bridge_session(manager, _FakeSyncConfig()) as driver:
+        await driver.begin()
+        await driver.commit()
+
+    assert manager.driver.begin_count == 1
+    assert manager.driver.commit_count == 1
+    assert manager.driver.rollback_count == 0
+
+
+async def test_sqlspec_sync_bridge_can_skip_explicit_begin_for_driver_managed_transactions() -> "None":
+    """Some sync drivers rely on their DB-API transaction lifecycle."""
+    manager = _FakeSyncSQLSpec()
+
+    async with _bridge_session(manager, _FakeSyncConfig(), skip_explicit_begin=True) as driver:
+        await driver.begin()
+        await driver.commit()
+
+    assert manager.driver.begin_count == 0
+    assert manager.driver.commit_count == 1
+    assert manager.driver.rollback_count == 0
 
 
 @pytest.mark.parametrize(
@@ -1119,8 +1202,16 @@ class _FakeSyncSession:
 
 class _FakeSyncDriver:
     def __init__(self) -> "None":
+        self.begin_count = 0
+        self.commit_count = 0
         self.rollback_count = 0
         self.selected: "list[object]" = []
+
+    def begin(self) -> "None":
+        self.begin_count += 1
+
+    def commit(self) -> "None":
+        self.commit_count += 1
 
     def select(self, statement: "object") -> "list[object]":
         self.selected.append(statement)

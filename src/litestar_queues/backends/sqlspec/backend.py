@@ -1,6 +1,7 @@
 """SQLSpec queue backend."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
@@ -1337,20 +1338,41 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
 
 class _ManagedAsyncDriver:
-    """Expose sync SQLSpec driver methods through SQLSpec's managed async bridge."""
+    """Expose sync SQLSpec driver methods through one session-bound executor."""
 
-    __slots__ = ("_driver", "_skip_explicit_begin")
+    __slots__ = ("_driver", "_executor", "_skip_explicit_begin", "_transaction_finalized")
 
-    def __init__(self, driver: "Any", *, skip_explicit_begin: "bool" = False) -> "None":
+    def __init__(self, driver: "Any", executor: "ThreadPoolExecutor", *, skip_explicit_begin: "bool" = False) -> "None":
         self._driver = driver
+        self._executor = executor
         self._skip_explicit_begin = skip_explicit_begin
+        self._transaction_finalized = False
+
+    @property
+    def transaction_finalized(self) -> "bool":
+        """Whether the session explicitly committed or rolled back."""
+        return self._transaction_finalized
+
+    async def begin(self) -> "Any":
+        self._transaction_finalized = False
+        if self._skip_explicit_begin:
+            return None
+        return await async_(self._driver.begin, executor=self._executor)()
+
+    async def commit(self) -> "Any":
+        result = await async_(self._driver.commit, executor=self._executor)()
+        self._transaction_finalized = True
+        return result
+
+    async def rollback(self) -> "Any":
+        result = await async_(self._driver.rollback, executor=self._executor)()
+        self._transaction_finalized = True
+        return result
 
     def __getattr__(self, name: "str") -> "Any":
-        if name == "begin" and self._skip_explicit_begin:
-            return _noop_async
         attr = getattr(self._driver, name)
         if callable(attr):
-            return async_(attr)
+            return async_(attr, executor=self._executor)
         return attr
 
 
@@ -1374,28 +1396,30 @@ async def _bridge_session(
         async with session_cm as driver:
             yield driver
     else:
-        driver = await async_(session_cm.__enter__)()
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="litestar-queues-sqlspec-sync")
+        driver = await async_(session_cm.__enter__, executor=executor)()
+        managed_driver = _ManagedAsyncDriver(driver, executor, skip_explicit_begin=skip_explicit_begin)
         try:
-            yield _ManagedAsyncDriver(driver, skip_explicit_begin=skip_explicit_begin)
+            yield managed_driver
         except BaseException as exc:
-            await _rollback_sync_session(driver)
-            if not await async_(session_cm.__exit__)(type(exc), exc, exc.__traceback__):
+            if not managed_driver.transaction_finalized:
+                await _rollback_sync_session(driver, executor=executor)
+            if not await async_(session_cm.__exit__, executor=executor)(type(exc), exc, exc.__traceback__):
                 raise
         else:
-            await _rollback_sync_session(driver)
-            await async_(session_cm.__exit__)(None, None, None)
+            if not managed_driver.transaction_finalized:
+                await _rollback_sync_session(driver, executor=executor)
+            await async_(session_cm.__exit__, executor=executor)(None, None, None)
+        finally:
+            executor.shutdown(wait=False)
 
 
-async def _noop_async(*_args: "Any", **_kwargs: "Any") -> "None":
-    return None
-
-
-async def _rollback_sync_session(driver: "Any") -> "None":
+async def _rollback_sync_session(driver: "Any", *, executor: "ThreadPoolExecutor | None" = None) -> "None":
     """Best-effort cleanup for sync SQLSpec sessions before pool return."""
     rollback = getattr(driver, "rollback", None)
     if callable(rollback):
         with suppress(Exception):
-            await async_(rollback)()
+            await async_(rollback, executor=executor)()
 
 
 async def _select_stream(driver: "Any", statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[Any]":
