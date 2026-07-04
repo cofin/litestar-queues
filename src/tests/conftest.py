@@ -17,6 +17,7 @@ pytest_plugins = [
     "pytest_databases.docker.mssql",
     "pytest_databases.docker.oracle",
     "pytest_databases.docker.mssql",
+    "pytest_databases.docker.spanner",
     "pytest_databases.docker.redis",
     "pytest_databases.docker.valkey",
 ]

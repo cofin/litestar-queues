@@ -59,6 +59,7 @@ class SQLSpecQueueStore:
     identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "double"
     claim_select_stream_chunk_size: "ClassVar[int | None]" = None
     skip_explicit_begin: "ClassVar[bool]" = False
+    skip_cleanup_rollback: "ClassVar[bool]" = False
     # Per-store opt-in: canonical JSON columns whose driver round-trips
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,

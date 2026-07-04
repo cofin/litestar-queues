@@ -1621,7 +1621,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "valkey"] },
+    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "spanner", "valkey"] },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -1670,7 +1670,7 @@ tests = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "valkey"] },
+    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "spanner", "valkey"] },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -1709,7 +1709,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb", "spanner"], specifier = ">=0.19.0" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -1748,7 +1748,7 @@ tests = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb", "spanner"], specifier = ">=0.19.0" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -3351,6 +3351,9 @@ postgres = [
 ]
 redis = [
     { name = "redis" },
+]
+spanner = [
+    { name = "google-cloud-spanner" },
 ]
 valkey = [
     { name = "valkey" },
