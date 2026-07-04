@@ -1272,7 +1272,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _serialize_datetime(self, value: "datetime | None") -> "datetime | str | None":
         serialized = _serialize_datetime(value)
-        if serialized is not None and self._get_store().bind_datetime_as_text:
+        store = self._get_store()
+        if serialized is not None and store.bind_datetime_as_text:
+            formatter = getattr(store, "serialize_datetime_text", None)
+            if callable(formatter):
+                return cast("str", formatter(serialized))
             return serialized.isoformat()
         return serialized
 

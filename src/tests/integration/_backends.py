@@ -67,6 +67,9 @@ class MSSQLService(Protocol):
     password: "str"
     database: "str"
 
+    @property
+    def connection_string(self) -> "str": ...
+
 
 @dataclass(frozen=True, slots=True)
 class FixtureCtx:
@@ -380,6 +383,20 @@ async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
+async def _build_arrow_odbc_mssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
+    from sqlspec.adapters.arrow_odbc import ArrowOdbcConfig
+
+    svc = cast("MSSQLService", ctx.service)
+    assert svc is not None
+    return _sqlspec_backend(
+        ArrowOdbcConfig(
+            connection_config={"connection_string": svc.connection_string},
+            driver_features={"dbms_name": "Microsoft SQL Server"},
+        ),
+        table_name=ctx.table_name,
+    )
+
+
 QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
     BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
     BackendCase(
@@ -486,5 +503,12 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         "oracle_service",
         _build_oracle_oracledb,
         frozenset({"polling-only", "json-blob-checked", "blob-storage", "inmemory-capable"}),
+    ),
+    BackendCase(
+        "arrow-odbc-mssql",
+        frozenset({"arrow_odbc", "sqlspec"}),
+        "mssql_service",
+        _build_arrow_odbc_mssql,
+        frozenset({"polling-only", "json-text", "sync-driver"}),
     ),
 )
