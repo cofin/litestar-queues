@@ -1,13 +1,15 @@
 """Advanced Alchemy queue task mixins."""
 
 from datetime import datetime  # noqa: TC003
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeAlias, cast
 
 from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
 __all__ = ("QueueTaskModelMixin",)
+
+JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 @declarative_mixin
@@ -90,7 +92,7 @@ class QueueTaskModelMixin:
         return mapped_column(DateTime(timezone=True), default=None)
 
     @declared_attr
-    def result_json(cls) -> "Mapped[Any | None]":
+    def result_json(cls) -> "Mapped[JSONValue]":
         return mapped_column(JsonB, default=None, nullable=True)
 
     @declared_attr
