@@ -54,6 +54,7 @@ class SQLSpecBackendConfig:
     notifications: "bool | None" = None
     notification_channel: "str | None" = None
     notify_transport: "str | None" = None
+    event_log_table_name: "str | None" = None
     event_backend: "str | None" = None
     event_queue_table: "str | None" = None
     event_poll_interval: "float | None" = None
@@ -67,6 +68,8 @@ class SQLSpecBackendConfig:
         """Validate adopter-owned table and wakeup-transport configuration."""
         if self.table_name is not None:
             self.table_name = validate_table_name(self.table_name)
+        if self.event_log_table_name is not None:
+            self.event_log_table_name = validate_table_name(self.event_log_table_name)
         self.column_map = validate_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
         if self.notify_transport is not None and self.notify_transport not in NOTIFY_TRANSPORTS:
