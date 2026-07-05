@@ -52,6 +52,13 @@ Choose a Topic
       Select queue and execution backends while keeping optional drivers
       optional.
 
+   .. grid-item-card:: Deployment
+      :link: deployment/cloud-run
+      :link-type: doc
+
+      Plan Cloud Run dispatcher services, worker Jobs, IAM, and database
+      connectivity for external execution.
+
    .. grid-item-card:: Dependency Resolver
       :link: dependency-resolver
       :link-type: doc
@@ -75,7 +82,8 @@ Recommended Path
 3. Add task-level behavior with :doc:`tasks` and recurring work with
    :doc:`schedules`.
 4. Choose queue persistence and execution integrations in :doc:`backends`.
-5. Add progress streaming or external subscribers with :doc:`events`.
+5. Read :doc:`deployment/cloud-run` when you are deploying on Cloud Run.
+6. Add progress streaming or external subscribers with :doc:`events`.
 
 .. toctree::
    :hidden:
@@ -87,6 +95,7 @@ Recommended Path
    workers
    events
    backends
+   deployment/cloud-run
    cli
    dependency-resolver
    testing
