@@ -225,6 +225,16 @@ def test_native_json_columns_bypass_text_serialization(
     assert store.serialize_json("args_json", payload) == '{"nested":["value"]}'
 
 
+def test_native_json_args_tuple_binds_as_array(
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
+    store = create_queue_store(
+        sqlite_config_factory(tmp_path / "native-args.db"), native_json_columns=frozenset({"args_json"})
+    )
+
+    assert store.serialize_json("args_json", ("alpha", "beta")) == '["alpha","beta"]'
+
+
 @pytest.mark.parametrize(
     ("config_factory", "match"),
     (

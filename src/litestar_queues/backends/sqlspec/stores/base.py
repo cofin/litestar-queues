@@ -292,7 +292,7 @@ class SQLSpecQueueStore:
                     "retry_count": retry_count,
                     "started_at": None,
                     "heartbeat_at": None,
-                    "error": error,
+                    "error": self.serialize_error(error),
                 })
             )
             .where_eq(self._col("id"), task_id)
@@ -326,7 +326,7 @@ class SQLSpecQueueStore:
                     "status": "failed",
                     "completed_at": completed_at,
                     "heartbeat_at": heartbeat_at,
-                    "error": error,
+                    "error": self.serialize_error(error),
                 })
             )
             .where_eq(self._col("id"), task_id)
@@ -497,19 +497,20 @@ class SQLSpecQueueStore:
 
         Native JSON columns (driver registers a JSON codec — e.g.
         SQLSpec's asyncpg/psycopg JSONB codec, psqlpy's PyJSON type,
-        mysql JSON, oracle JSON) accept structured Python values
-        directly. Primitives (``str``, ``int``, ``float``, ``bool``,
-        ``None``) must be pre-encoded because most codecs treat a raw
-        ``str`` parameter as already-JSON-encoded text — sending
-        ``"ok"`` would be parsed as the bare JSON token ``ok`` (invalid).
-        TEXT columns receive the JSON-encoded string from
-        ``_serialize_json``.
+        mysql JSON, oracle JSON) accept dictionaries directly. Arrays and
+        primitives are pre-encoded so adapters do not confuse Python lists
+        with SQL arrays and so scalar strings remain valid JSON text. TEXT
+        columns receive the JSON-encoded string from ``_serialize_json``.
 
         Returns:
             The value shaped for the configured adapter.
         """
         if canonical in self._native_json_columns:
-            if isinstance(value, (dict, list, tuple)):
+            if isinstance(value, tuple):
+                return self._serialize_json(list(value))
+            if isinstance(value, list):
+                return self._serialize_json(value)
+            if isinstance(value, dict):
                 return value
             return self._serialize_json(value)
         return self._serialize_json(value)
@@ -655,6 +656,10 @@ class SQLSpecQueueStore:
 
     def _error_type(self) -> "str":
         return self._text_type()
+
+    def serialize_error(self, error: "str") -> "str":
+        """Return an error value shaped for the configured backend column."""
+        return error
 
     def _serialize_json(self, value: "Any") -> "str":
         return to_json(value)

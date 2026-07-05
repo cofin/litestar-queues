@@ -599,6 +599,25 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
 
 
 @pytest.mark.parametrize(
+    ("adapter_name", "config_type_name", "expected"),
+    (
+        ("psycopg", "PsycopgAsyncConfig", '["alpha","beta"]'),
+        ("cockroach_psycopg", "CockroachPsycopgAsyncConfig", '["alpha","beta"]'),
+        ("psqlpy", "PsqlpyConfig", ["alpha", "beta"]),
+    ),
+)
+def test_postgres_native_json_array_bind_shape_matches_adapter(
+    adapter_name: "str", config_type_name: "str", expected: "object"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        table_name="queue_tasks",
+    )
+
+    assert store.serialize_json("args_json", ("alpha", "beta")) == expected
+
+
+@pytest.mark.parametrize(
     (
         "adapter_name",
         "dialect",

@@ -14,6 +14,9 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
 
+_ORACLE_IDENTIFIER_MAX_LENGTH = 30
+_ORACLE_ERROR_MAX_LENGTH = 4000
+
 
 class _OracledbQueueStore(SQLSpecQueueStore):
     """Shared Oracle DDL type hooks."""
@@ -66,6 +69,10 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     def _error_type(self) -> "str":
         return "VARCHAR2(4000)"
+
+    def serialize_error(self, error: "str") -> "str":
+        """Return an Oracle-safe error value for the VARCHAR2 error column."""
+        return error[:_ORACLE_ERROR_MAX_LENGTH]
 
     def _index_name(self, suffix: "str") -> "str":
         return _index_name(self, suffix)
@@ -291,7 +298,13 @@ def _deserialize_native_oracle_json(canonical: "str", value: "Any") -> "Any":
 
 
 def _index_name(store: "SQLSpecQueueStore", suffix: "str") -> "str":
-    return SQLSpecQueueStore._index_name(store, suffix)[:30]
+    suffix_text = f"_{suffix}"
+    prefix = "ix_"
+    table_name = store.table_name.replace(".", "_")
+    table_budget = _ORACLE_IDENTIFIER_MAX_LENGTH - len(prefix) - len(suffix_text)
+    if table_budget < 1:
+        return f"{prefix}{suffix_text.lstrip('_')}"[:_ORACLE_IDENTIFIER_MAX_LENGTH]
+    return f"{prefix}{table_name[:table_budget]}{suffix_text}"
 
 
 def _create_table_block(store: "SQLSpecQueueStore", storage_type: "_OracleJSONStorageType", in_memory: "bool") -> "str":

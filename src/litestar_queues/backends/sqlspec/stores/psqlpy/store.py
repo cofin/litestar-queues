@@ -27,3 +27,17 @@ class PsqlpyQueueStore(PostgresQueueStore):
     def _result_json_type(self, column_name: "str") -> "str":
         del column_name
         return self._text_type()
+
+    def serialize_json(self, canonical: "str", value: "Any") -> "Any":
+        """Serialize psqlpy PyJSON values using Python containers.
+
+        Returns:
+            A Python container for native PyJSON columns or JSON text otherwise.
+        """
+        if canonical in self._native_json_columns:
+            if isinstance(value, tuple):
+                return list(value)
+            if isinstance(value, (dict, list)):
+                return value
+            return self._serialize_json(value)
+        return self._serialize_json(value)

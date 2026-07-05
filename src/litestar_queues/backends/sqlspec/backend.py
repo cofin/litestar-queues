@@ -473,6 +473,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             async with self._session() as driver:
                 await driver.begin()
                 try:
+                    store = self._get_store()
+                    stored_error = store.serialize_error(error)
                     row = await self._select_task(driver, task_id)
                     if row is None:
                         await driver.rollback()
@@ -489,9 +491,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     retry_fence = expected_retry_count if expected_retry_count is not None else record.retry_count
                     if retry and record.retry_count < record.max_retries:
                         updated = await driver.execute(
-                            self._get_store().retry_task(
+                            store.retry_task(
                                 task_id=str(task_id),
-                                error=error,
+                                error=stored_error,
                                 retry_count=record.retry_count + 1,
                                 expected_retry_count=retry_fence,
                             )
@@ -502,11 +504,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     else:
                         now = _utc_now()
                         updated = await driver.execute(
-                            self._get_store().fail_task(
+                            store.fail_task(
                                 task_id=str(task_id),
                                 completed_at=self._serialize_datetime(now),
                                 heartbeat_at=self._serialize_datetime(now),
-                                error=error,
+                                error=stored_error,
                                 expected_retry_count=retry_fence,
                             )
                         )
@@ -521,7 +523,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             if (
                                 candidate.status != expected_status
                                 or candidate.retry_count != expected_retry_after_update
-                                or candidate.error != error
+                                or candidate.error != stored_error
                             ):
                                 updated_row = None
                     else:
