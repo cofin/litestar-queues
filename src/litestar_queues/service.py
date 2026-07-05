@@ -110,6 +110,7 @@ class QueueService:
         """
         await self.get_queue_backend().open()
         await self.get_execution_backend().open()
+        await _call_optional_async_method(self.get_event_publisher().sink, "open")
         if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
             self._sync_executor = ThreadPoolExecutor(
                 max_workers=self._config.sync_executor_max_workers,
@@ -123,6 +124,8 @@ class QueueService:
             await self._execution_backend.close()
         if self._queue_backend is not None:
             await self._queue_backend.close()
+        if self._event_publisher is not None:
+            await _call_optional_async_method(self._event_publisher.sink, "close")
         if self._sync_executor is not None:
             self._sync_executor.shutdown(wait=True, cancel_futures=True)
             self._sync_executor = None
@@ -659,6 +662,15 @@ class QueueService:
         result = hook(record)
         if isawaitable(result):
             await result
+
+
+async def _call_optional_async_method(target: "object", name: "str") -> "None":
+    method = getattr(target, name, None)
+    if not callable(method):
+        return
+    result = method()
+    if isawaitable(result):
+        await result
 
 
 def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":

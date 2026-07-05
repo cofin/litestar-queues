@@ -1,9 +1,13 @@
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues.events import QueueEvent, SQLiteQueueEventSink
+from litestar_queues import QueueConfig, QueueService
+from litestar_queues.events import QueueEvent, QueueEventConfig, SQLiteQueueEventSink
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
@@ -57,3 +61,24 @@ async def test_sqlite_event_sink_persists_logs_progress_summaries_and_retention(
         assert await sink.list_events(task_id="job-1") == []
     finally:
         await sink.close()
+
+
+async def test_sqlite_event_sink_flushes_through_service_lifecycle(tmp_path: "Path") -> None:
+    sink = SQLiteQueueEventSink(tmp_path / "queue-events.db", buffer_size=20, flush_interval=60)
+    event = QueueEvent(
+        type="task.log",
+        scope="task",
+        task_id="job-1",
+        task_name="tasks.import",
+        queue="default",
+        level="info",
+        message="loaded page",
+        payload={"stage": "load"},
+    )
+
+    async with QueueService(QueueConfig(event_config=QueueEventConfig(enabled=True, sink=sink))) as service:
+        await service.get_event_publisher().publish(event)
+
+    records = await sink.list_events(task_id="job-1")
+
+    assert [record.event_id for record in records] == [event.id]

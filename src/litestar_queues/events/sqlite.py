@@ -1,6 +1,7 @@
 """SQLite-backed durable queue event sink."""
 
 import asyncio
+import contextlib
 import json
 import re
 import sqlite3
@@ -86,10 +87,8 @@ class SQLiteQueueEventSink:
         self._flush_task = None
         if flush_task is not None:
             flush_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await flush_task
-            except asyncio.CancelledError:
-                pass
         await self.flush()
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
@@ -103,7 +102,11 @@ class SQLiteQueueEventSink:
             await self.flush()
 
     async def flush(self) -> "None":
-        """Write pending buffered events."""
+        """Write pending buffered events.
+
+        Returns:
+            None.
+        """
         async with self._lock:
             events = tuple(self._buffer)
             self._buffer.clear()
@@ -124,7 +127,11 @@ class SQLiteQueueEventSink:
         return await asyncio.to_thread(self._summarize_stages_sync, task_name)
 
     async def cleanup_before(self, before: "datetime") -> "int":
-        """Delete event log rows older than ``before``."""
+        """Delete event log rows older than ``before``.
+
+        Returns:
+            The number of deleted rows.
+        """
         await self.flush()
         return await asyncio.to_thread(self._cleanup_before_sync, _serialize_datetime(before))
 
@@ -159,7 +166,9 @@ class SQLiteQueueEventSink:
                 )
                 """
             )
-            connection.execute(f"CREATE INDEX IF NOT EXISTS {_quote_identifier(f'{self._table_name}_job_idx')} ON {table}(job_id)")
+            connection.execute(
+                f"CREATE INDEX IF NOT EXISTS {_quote_identifier(f'{self._table_name}_job_idx')} ON {table}(job_id)"
+            )
             connection.execute(
                 f"CREATE INDEX IF NOT EXISTS {_quote_identifier(f'{self._table_name}_task_stage_idx')} "
                 f"ON {table}(task_name, stage)"
@@ -168,27 +177,25 @@ class SQLiteQueueEventSink:
     def _insert_events(self, events: "tuple[QueueEvent, ...]") -> "None":
         rows = [_event_row(event) for event in events]
         table = _quote_identifier(self._table_name)
-        with self._connect() as connection:
-            connection.executemany(
-                f"""
-                INSERT OR IGNORE INTO {table} (
-                    event_id,
-                    event_type,
-                    job_id,
-                    task_name,
-                    queue,
-                    stage,
-                    level,
-                    message,
-                    detail_json,
-                    duration_ms,
-                    sequence,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
+        insert_sql = f"""
+            INSERT OR IGNORE INTO {table} (
+                event_id,
+                event_type,
+                job_id,
+                task_name,
+                queue,
+                stage,
+                level,
+                message,
+                detail_json,
+                duration_ms,
+                sequence,
+                created_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """  # noqa: S608 - table name is validated and quoted.
+        with self._connect() as connection:
+            connection.executemany(insert_sql, rows)
 
     def _list_events_sync(
         self, task_id: "str | None", task_name: "str | None", limit: "int | None"
@@ -206,53 +213,49 @@ class SQLiteQueueEventSink:
         limit_sql = "LIMIT ?" if limit is not None else ""
         if limit is not None:
             params.append(limit)
+        select_sql = f"""
+            SELECT
+                id,
+                event_id,
+                event_type,
+                job_id,
+                task_name,
+                queue,
+                stage,
+                level,
+                message,
+                detail_json,
+                duration_ms,
+                sequence,
+                created_at
+            FROM {table}
+            {where_sql}
+            ORDER BY id ASC
+            {limit_sql}
+            """  # noqa: S608 - table name is validated and quoted.
         with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT
-                    id,
-                    event_id,
-                    event_type,
-                    job_id,
-                    task_name,
-                    queue,
-                    stage,
-                    level,
-                    message,
-                    detail_json,
-                    duration_ms,
-                    sequence,
-                    created_at
-                FROM {table}
-                {where_sql}
-                ORDER BY id ASC
-                {limit_sql}
-                """,
-                params,
-            ).fetchall()
+            rows = connection.execute(select_sql, params).fetchall()
         return [_record_from_row(row) for row in rows]
 
     def _summarize_stages_sync(self, task_name: "str | None") -> "list[QueueEventStageSummary]":
         table = _quote_identifier(self._table_name)
         criteria = "WHERE task_name = ?" if task_name is not None else ""
         params = [task_name] if task_name is not None else []
+        summary_sql = f"""
+            SELECT
+                stage,
+                COUNT(*),
+                COALESCE(SUM(duration_ms), 0),
+                MIN(created_at),
+                MAX(created_at),
+                MIN(id)
+            FROM {table}
+            {criteria}
+            GROUP BY stage
+            ORDER BY MIN(id) ASC
+            """  # noqa: S608 - table name is validated and quoted.
         with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT
-                    stage,
-                    COUNT(*),
-                    COALESCE(SUM(duration_ms), 0),
-                    MIN(created_at),
-                    MAX(created_at),
-                    MIN(id)
-                FROM {table}
-                {criteria}
-                GROUP BY stage
-                ORDER BY MIN(id) ASC
-                """,
-                params,
-            ).fetchall()
+            rows = connection.execute(summary_sql, params).fetchall()
         return [
             QueueEventStageSummary(
                 stage=row[0],
@@ -267,7 +270,7 @@ class SQLiteQueueEventSink:
     def _cleanup_before_sync(self, before: "str") -> "int":
         table = _quote_identifier(self._table_name)
         with self._connect() as connection:
-            cursor = connection.execute(f"DELETE FROM {table} WHERE created_at < ?", (before,))
+            cursor = connection.execute(f"DELETE FROM {table} WHERE created_at < ?", (before,))  # noqa: S608
             return int(cursor.rowcount if cursor.rowcount is not None else 0)
 
 
