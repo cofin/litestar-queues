@@ -9,13 +9,20 @@ discoverable, and that running it twice is idempotent (the
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 pytest.importorskip("sqlspec")
 
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import migration_paths
+from tests.integration._names import table_name_for_test
+
+if TYPE_CHECKING:
+    from pytest import FixtureRequest
+
+    from tests.integration._backends import PostgresService
 
 pytestmark = pytest.mark.anyio
 
@@ -69,3 +76,49 @@ async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     assert "create_queue_store" in content
     assert "return SQLSpecQueueStore(" not in content
     assert "CREATE TABLE IF NOT EXISTS litestar_queue_task" not in content
+
+
+async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_table(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    pytest.importorskip("asyncpg")
+
+    from sqlspec import SQLSpec
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+    from litestar_queues.backends.sqlspec.backend import _bridge_session
+
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    table_name = table_name_for_test("lq_migration_down", "asyncpg", request.node.nodeid)
+    config = AsyncpgConfig(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "user": postgres_service.user,
+            "password": postgres_service.password,
+            "database": postgres_service.database,
+        },
+        extension_config={QUEUE_EXTENSION_NAME: {"table_name": table_name}},
+    )
+    context = SimpleNamespace(config=config)
+    sqlspec_manager = SQLSpec()
+
+    try:
+        async with _bridge_session(sqlspec_manager, config) as driver:
+            try:
+                for statement in await migration.up(context):
+                    await driver.execute_script(statement)
+                assert await _postgres_table_exists(driver, table_name)
+
+                for statement in await migration.down(context):
+                    await driver.execute_script(statement)
+                assert not await _postgres_table_exists(driver, table_name)
+            finally:
+                await driver.execute_script(f'DROP TABLE IF EXISTS "{table_name}"')
+    finally:
+        await sqlspec_manager.close_all_pools()
+
+
+async def _postgres_table_exists(driver: "Any", table_name: "str") -> "bool":
+    table_ref = await driver.select_value(f"SELECT to_regclass('public.{table_name}')")
+    return table_ref is not None
