@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from litestar_queues.execution.cloudrun._typing import CloudRunExecutionLike, CloudRunOperation
-    from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -114,15 +113,15 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     runtime = FakeObservabilityRuntime()
     seen_apps: "list[Litestar | None]" = []
 
-    def create_runtime(config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None) -> "FakeObservabilityRuntime":
+    def create_runtime(
+        config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None
+    ) -> "FakeObservabilityRuntime":
         assert config is not None
         seen_apps.append(app)
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
-    plugin = QueuePlugin(
-        QueueConfig(observability=QueueObservabilityConfig(enable_otel=False), in_app_worker=False)
-    )
+    plugin = QueuePlugin(QueueConfig(observability=QueueObservabilityConfig(enable_otel=False), in_app_worker=False))
     app = Litestar(plugins=[plugin])
 
     await plugin._on_startup(app)

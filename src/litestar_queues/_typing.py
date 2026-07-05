@@ -1,4 +1,3 @@
-# ruff: noqa: A002
 # pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 """Private optional dependency typing shims.
 
@@ -6,27 +5,31 @@ Application and public helper code should import these names from
 ``litestar_queues.typing`` instead of this private module.
 """
 
-from collections.abc import Mapping
+from importlib import import_module
 from importlib.util import find_spec
-from typing import Any
+from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = (
     "OPENTELEMETRY_INSTALLED",
     "PROMETHEUS_INSTALLED",
-    "Counter",
-    "Gauge",
-    "Histogram",
-    "Meter",
-    "Span",
-    "SpanKind",
-    "Status",
-    "StatusCode",
-    "Tracer",
-    "metrics",
-    "propagate",
-    "trace",
+    "OtelMeter",
+    "OtelSpan",
+    "OtelSpanKind",
+    "OtelStatus",
+    "OtelStatusCode",
+    "OtelTracer",
+    "PrometheusCounter",
+    "PrometheusGauge",
+    "PrometheusHistogram",
+    "otel_metrics",
+    "otel_propagate",
+    "otel_trace",
 )
 
 OPENTELEMETRY_INSTALLED = find_spec("opentelemetry") is not None
@@ -63,7 +66,9 @@ class _FallbackSpan:
     def __enter__(self) -> "Self":
         return self
 
-    def __exit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> "None":
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
+    ) -> None:
         return None
 
 
@@ -141,11 +146,7 @@ class _TraceModule:
 
 class _MetricsModule:
     def get_meter(
-        self,
-        name: "str",
-        version: "str | None" = None,
-        schema_url: "str | None" = None,
-        meter_provider: "Any" = None,
+        self, name: "str", version: "str | None" = None, schema_url: "str | None" = None, meter_provider: "Any" = None
     ) -> "_FallbackMeter":
         return _FallbackMeter()
 
@@ -158,46 +159,40 @@ class _PropagateModule:
         return None
 
 
-_otel_metrics: "Any"
-_otel_propagate: "Any"
-_otel_trace: "Any"
-_otel_meter: "Any"
-_otel_span: "Any"
-_otel_span_kind: "Any"
-_otel_status: "Any"
-_otel_status_code: "Any"
-_otel_tracer: "Any"
+otel_metrics: Any
+otel_propagate: Any
+otel_trace: Any
+OtelMeter: Any
+OtelSpan: Any
+OtelSpanKind: Any
+OtelStatus: Any
+OtelStatusCode: Any
+OtelTracer: Any
 
 try:
-    from opentelemetry import metrics as _otel_metrics
-    from opentelemetry import propagate as _otel_propagate
-    from opentelemetry import trace as _otel_trace
-    from opentelemetry.metrics import Meter as _otel_meter
-    from opentelemetry.trace import Span as _otel_span
-    from opentelemetry.trace import SpanKind as _otel_span_kind
-    from opentelemetry.trace import Status as _otel_status
-    from opentelemetry.trace import StatusCode as _otel_status_code
-    from opentelemetry.trace import Tracer as _otel_tracer
+    _otel_metrics_module = import_module("opentelemetry.metrics")
+    _otel_propagate_module = import_module("opentelemetry.propagate")
+    _otel_trace_module = import_module("opentelemetry.trace")
 except ImportError:
-    _otel_metrics = _MetricsModule()
-    _otel_propagate = _PropagateModule()
-    _otel_trace = _TraceModule()
-    _otel_meter = _FallbackMeter
-    _otel_span = _FallbackSpan
-    _otel_span_kind = _FallbackSpanKind
-    _otel_status = _FallbackStatus
-    _otel_status_code = _FallbackStatusCode
-    _otel_tracer = _FallbackTracer
-
-metrics: "Any" = _otel_metrics
-propagate: "Any" = _otel_propagate
-trace: "Any" = _otel_trace
-Meter: "Any" = _otel_meter
-Span: "Any" = _otel_span
-SpanKind: "Any" = _otel_span_kind
-Status: "Any" = _otel_status
-StatusCode: "Any" = _otel_status_code
-Tracer: "Any" = _otel_tracer
+    otel_metrics = _MetricsModule()
+    otel_propagate = _PropagateModule()
+    otel_trace = _TraceModule()
+    OtelMeter = _FallbackMeter
+    OtelSpan = _FallbackSpan
+    OtelSpanKind = _FallbackSpanKind
+    OtelStatus = _FallbackStatus
+    OtelStatusCode = _FallbackStatusCode
+    OtelTracer = _FallbackTracer
+else:
+    otel_metrics = _otel_metrics_module
+    otel_propagate = _otel_propagate_module
+    otel_trace = _otel_trace_module
+    OtelMeter = _otel_metrics_module.Meter
+    OtelSpan = _otel_trace_module.Span
+    OtelSpanKind = _otel_trace_module.SpanKind
+    OtelStatus = _otel_trace_module.Status
+    OtelStatusCode = _otel_trace_module.StatusCode
+    OtelTracer = _otel_trace_module.Tracer
 
 
 class _PrometheusMetric:
@@ -242,19 +237,17 @@ class _FallbackHistogram(_PrometheusMetric):
     """Fallback Prometheus histogram shim."""
 
 
-_prometheus_counter: "Any"
-_prometheus_gauge: "Any"
-_prometheus_histogram: "Any"
+PrometheusCounter: Any
+PrometheusGauge: Any
+PrometheusHistogram: Any
 
 try:
-    from prometheus_client import Counter as _prometheus_counter
-    from prometheus_client import Gauge as _prometheus_gauge
-    from prometheus_client import Histogram as _prometheus_histogram
+    _prometheus_client_module = import_module("prometheus_client")
 except ImportError:
-    _prometheus_counter = _FallbackCounter
-    _prometheus_gauge = _FallbackGauge
-    _prometheus_histogram = _FallbackHistogram
-
-Counter: "Any" = _prometheus_counter
-Gauge: "Any" = _prometheus_gauge
-Histogram: "Any" = _prometheus_histogram
+    PrometheusCounter = _FallbackCounter
+    PrometheusGauge = _FallbackGauge
+    PrometheusHistogram = _FallbackHistogram
+else:
+    PrometheusCounter = _prometheus_client_module.Counter
+    PrometheusGauge = _prometheus_client_module.Gauge
+    PrometheusHistogram = _prometheus_client_module.Histogram

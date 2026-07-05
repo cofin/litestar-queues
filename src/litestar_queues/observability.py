@@ -6,12 +6,12 @@ from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.typing import (
     OPENTELEMETRY_INSTALLED,
     PROMETHEUS_INSTALLED,
-    Counter,
-    Histogram,
-    SpanKind,
-    metrics,
-    propagate,
-    trace,
+    OtelSpanKind,
+    PrometheusCounter,
+    PrometheusHistogram,
+    otel_metrics,
+    otel_propagate,
+    otel_trace,
 )
 
 if TYPE_CHECKING:
@@ -47,10 +47,16 @@ class QueueObservabilityConfig:
     disable_sqlspec_queue_observability: "bool" = True
 
     def should_enable_otel(self, app: "Litestar | None" = None) -> "bool":
-        """Return whether OpenTelemetry should be enabled."""
+        """Return whether OpenTelemetry should be enabled.
+
+        Returns:
+            Whether OpenTelemetry tracing and metrics should be enabled.
+        """
         if self.enable_otel is True:
             if not OPENTELEMETRY_INSTALLED:
-                raise MissingDependencyError("opentelemetry", "otel")
+                package_name = "opentelemetry"
+                extra = "otel"
+                raise MissingDependencyError(package_name, extra)
             return True
         if self.enable_otel is False:
             return False
@@ -59,11 +65,17 @@ class QueueObservabilityConfig:
         return app is not None and _has_otel_plugin(app)
 
     def should_enable_prometheus(self) -> "bool":
-        """Return whether Prometheus metrics should be enabled."""
+        """Return whether Prometheus metrics should be enabled.
+
+        Returns:
+            Whether Prometheus metrics should be enabled.
+        """
         if not self.enable_prometheus:
             return False
         if not PROMETHEUS_INSTALLED:
-            raise MissingDependencyError("prometheus_client", "prometheus")
+            package_name = "prometheus_client"
+            extra = "prometheus"
+            raise MissingDependencyError(package_name, extra)
         return True
 
 
@@ -73,14 +85,13 @@ class QueueObservabilityRuntimeProtocol(Protocol):
     enabled: "bool"
 
     def start_span(
-        self,
-        name: "str",
-        *,
-        kind: "str",
-        attributes: "Mapping[str, object]",
-        parent: "object | None" = None,
+        self, name: "str", *, kind: "str", attributes: "Mapping[str, object]", parent: "object | None" = None
     ) -> "Any | None":
-        """Start a queue span."""
+        """Start a queue span.
+
+        Returns:
+            The started span, or ``None`` when tracing is disabled.
+        """
         ...
 
     def end_span(self, span: "Any | None") -> "None":
@@ -100,7 +111,11 @@ class QueueObservabilityRuntimeProtocol(Protocol):
         ...
 
     def extract_trace_context(self, metadata: "Mapping[str, Any]") -> "object | None":
-        """Extract trace context from queue metadata."""
+        """Extract trace context from queue metadata.
+
+        Returns:
+            Extracted trace context, or ``None`` when unavailable.
+        """
         ...
 
     def record_counter(self, name: "str", value: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
@@ -137,36 +152,46 @@ class QueueObservabilityRuntime:
         self._durations: "dict[str, Any]" = {}
 
     def get_tracer(self) -> "Any":
-        """Return the configured tracer."""
+        """Return the configured tracer.
+
+        Returns:
+            The configured OpenTelemetry tracer.
+        """
         if self._tracer is None:
-            assert self._config is not None
-            self._tracer = trace.get_tracer(self._config.tracer_name, tracer_provider=self._config.tracer_provider)
+            config = self._require_config()
+            self._tracer = otel_trace.get_tracer(config.tracer_name, tracer_provider=config.tracer_provider)
         return self._tracer
 
     def get_meter(self) -> "Any":
-        """Return the configured meter."""
+        """Return the configured meter.
+
+        Returns:
+            The configured OpenTelemetry meter.
+        """
         if self._meter is None:
-            assert self._config is not None
-            self._meter = metrics.get_meter(self._config.meter_name, meter_provider=self._config.meter_provider)
+            config = self._require_config()
+            self._meter = otel_metrics.get_meter(config.meter_name, meter_provider=config.meter_provider)
         return self._meter
 
     def start_span(
-        self,
-        name: "str",
-        *,
-        kind: "str",
-        attributes: "Mapping[str, object]",
-        parent: "object | None" = None,
+        self, name: "str", *, kind: "str", attributes: "Mapping[str, object]", parent: "object | None" = None
     ) -> "Any | None":
-        """Start a queue span, or return ``None`` when tracing is disabled."""
+        """Start a queue span.
+
+        Returns:
+            The started span, or ``None`` when tracing is disabled.
+        """
         if not self._otel_enabled:
             return None
-        span_kind = SpanKind.PRODUCER if kind == "producer" else SpanKind.CONSUMER if kind == "consumer" else SpanKind.INTERNAL
+        span_kind = (
+            OtelSpanKind.PRODUCER
+            if kind == "producer"
+            else OtelSpanKind.CONSUMER
+            if kind == "consumer"
+            else OtelSpanKind.INTERNAL
+        )
         return self.get_tracer().start_span(
-            name,
-            context=cast("Any", parent),
-            kind=span_kind,
-            attributes=cast("Any", dict(attributes)),
+            name, context=cast("Any", parent), kind=span_kind, attributes=cast("Any", dict(attributes))
         )
 
     def end_span(self, span: "Any | None") -> "None":
@@ -186,21 +211,24 @@ class QueueObservabilityRuntime:
 
     def inject_trace_context(self, metadata: "dict[str, Any]") -> "None":
         """Inject current W3C trace context into queue metadata."""
-        if not self._otel_enabled:
-            return
-        carrier: "dict[str, str]" = {}
-        propagate.inject(carrier)
-        if carrier:
-            metadata[TRACE_CONTEXT_METADATA_KEY] = carrier
+        if self._otel_enabled:
+            carrier: "dict[str, str]" = {}
+            otel_propagate.inject(carrier)
+            if carrier:
+                metadata[TRACE_CONTEXT_METADATA_KEY] = carrier
 
     def extract_trace_context(self, metadata: "Mapping[str, Any]") -> "object | None":
-        """Extract a parent trace context from queue metadata."""
+        """Extract a parent trace context from queue metadata.
+
+        Returns:
+            Extracted trace context, or ``None`` when unavailable.
+        """
         if not self._otel_enabled:
             return None
         carrier = metadata.get(TRACE_CONTEXT_METADATA_KEY)
         if not isinstance(carrier, dict):
             return None
-        return cast("object | None", propagate.extract(carrier))
+        return cast("object | None", otel_propagate.extract(carrier))
 
     def record_counter(self, name: "str", value: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
         """Record a counter value for enabled metrics sinks."""
@@ -213,7 +241,7 @@ class QueueObservabilityRuntime:
         if self._prometheus_enabled:
             counter = self._counters.get(f"prometheus:{name}")
             if counter is None:
-                counter = Counter(
+                counter = PrometheusCounter(
                     _prometheus_name(name, self._config),
                     name.replace(".", " "),
                     labelnames=tuple(attributes),
@@ -233,7 +261,7 @@ class QueueObservabilityRuntime:
         if self._prometheus_enabled:
             histogram = self._durations.get(f"prometheus:{name}")
             if histogram is None:
-                histogram = Histogram(
+                histogram = PrometheusHistogram(
                     _prometheus_name(name, self._config),
                     name.replace(".", " "),
                     labelnames=tuple(attributes),
@@ -242,11 +270,21 @@ class QueueObservabilityRuntime:
                 self._durations[f"prometheus:{name}"] = histogram
             histogram.labels(**dict(attributes)).observe(seconds)
 
+    def _require_config(self) -> "QueueObservabilityConfig":
+        if self._config is None:
+            msg = "Queue observability runtime is not configured."
+            raise RuntimeError(msg)
+        return self._config
+
 
 def create_observability_runtime(
     config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None
 ) -> "QueueObservabilityRuntime":
-    """Create the queue observability runtime for a service."""
+    """Create the queue observability runtime for a service.
+
+    Returns:
+        Queue observability runtime instance.
+    """
     return QueueObservabilityRuntime(config, app=app)
 
 

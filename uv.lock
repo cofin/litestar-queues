@@ -1652,6 +1652,7 @@ dev = [
     { name = "sphinx-togglebutton" },
     { name = "sphinxcontrib-mermaid" },
     { name = "sqlspec", extra = ["adbc", "aiomysql", "aiosqlite", "arrow-odbc", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "pymssql", "pymysql", "spanner"] },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "valkey" },
 ]
 docs = [
@@ -1690,6 +1691,7 @@ tests = [
     { name = "pytest-xdist" },
     { name = "redis" },
     { name = "sqlspec", extra = ["adbc", "aiomysql", "aiosqlite", "arrow-odbc", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "pymssql", "pymysql", "spanner"] },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "valkey" },
 ]
 
@@ -1745,6 +1747,7 @@ dev = [
     { name = "sphinx-togglebutton", specifier = ">=0.3.2" },
     { name = "sphinxcontrib-mermaid", specifier = ">=0.9.2" },
     { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "mssql-python", "pymssql"], specifier = ">=0.52.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 docs = [
@@ -1777,6 +1780,7 @@ tests = [
     { name = "pytest-xdist" },
     { name = "redis", specifier = ">=5.0.0" },
     { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "mssql-python", "pymssql"], specifier = ">=0.52.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
 

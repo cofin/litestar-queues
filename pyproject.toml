@@ -163,6 +163,7 @@ tests = [
   "pytest-mock",
   "pytest-sugar",
   "pytest-xdist",
+  "tomli; python_version < '3.11'",
   "opentelemetry-api",
   "opentelemetry-sdk",
   "prometheus-client",
