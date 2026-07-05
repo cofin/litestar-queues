@@ -132,6 +132,25 @@ Backend-managed event history is configured separately from
 ``QueueEventConfig.sink``. When durable history is enabled, events can be
 recorded even if live delivery is disabled.
 
+SQLSpec provides backend-managed history through the same database lifecycle as
+the queue table:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig, QueueEventLogConfig
+   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+
+
+   config = QueueConfig(
+       queue_backend=SQLSpecBackendConfig(config=sqlspec_config),
+       event_log_config=QueueEventLogConfig(enabled=True),
+   )
+
+By default SQLSpec stores history in ``<queue_table>_event_log``. For example,
+``litestar_queue_task`` uses ``litestar_queue_task_event_log``. Override the
+table with ``SQLSpecBackendConfig.event_log_table_name`` when an adopter needs a
+specific table name or compatibility view.
+
 Testing Events
 ==============
 

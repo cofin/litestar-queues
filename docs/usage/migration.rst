@@ -217,7 +217,10 @@ workers can safely share the table during the cutover.
 9. Configure backend-managed event history if the application reads durable job
    logs. Live event sinks are delivery transports only; queryable history should
    be written by the durable queue backend so task state and task events share
-   the same database boundary.
+   the same database boundary. SQLSpec writes history to the backend-managed
+   event-log table, or to the table named by
+   ``SQLSpecBackendConfig.event_log_table_name`` when a compatibility view or
+   adopter-owned name is required.
 10. Configure Cloud Run workers with the new environment contract:
     ``CONFIG_FACTORY`` is required by the packaged worker entry point, and
     queue-specific environment variables should use the ``LITESTAR_QUEUES_*``
