@@ -152,6 +152,7 @@ class OracledbAsyncQueueStore(_OracledbQueueStore):
 
     def __init__(self, config: "Any", *, table_name: "str | None" = None, **kwargs: "Any") -> "None":
         super().__init__(config, table_name=table_name, **kwargs)
+        _disable_async_lob_fetching(config)
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
@@ -174,6 +175,12 @@ class _OracleJSONStorageType(str, Enum):
 def _queue_settings(config: "Any") -> "dict[str, Any]":
     extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
     return cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
+
+
+def _disable_async_lob_fetching(config: "Any") -> "None":
+    driver_features = getattr(config, "driver_features", None)
+    if isinstance(driver_features, dict):
+        driver_features["fetch_lobs"] = False
 
 
 def _json_storage_from_settings(settings: "dict[str, Any]") -> "_OracleJSONStorageType | None":

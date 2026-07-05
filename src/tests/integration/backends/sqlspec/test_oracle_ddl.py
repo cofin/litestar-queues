@@ -22,6 +22,7 @@ class FakeOracleConfig(SimpleNamespace):
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
+    driver_features: "dict[str, object]"
 
 
 class FakeOracleVersionInfo:
@@ -80,6 +81,7 @@ def _fake_oracle_config(
     config.extension_config = extension_config or {}
     config.statement_config = SimpleNamespace(dialect="oracle")
     config.connection_config = {}
+    config.driver_features = {}
     return config
 
 
@@ -120,6 +122,16 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
     assert store.deserialize_json("kwargs_json", serialized) == {"ok": True}
     if queue_settings.get("json_storage") != "blob":
         assert store.deserialize_json("result_json", "ok") == "ok"
+
+
+def test_sqlspec_backend_oracledb_async_store_disables_lob_fetching() -> "None":
+    config = _fake_oracle_config(config_type_name="OracleAsyncConfig")
+    config.driver_features["fetch_lobs"] = True
+
+    store = create_queue_store(config, table_name="queue_tasks")
+
+    assert isinstance(store, OracledbAsyncQueueStore)
+    assert config.driver_features["fetch_lobs"] is False
 
 
 @pytest.mark.anyio
