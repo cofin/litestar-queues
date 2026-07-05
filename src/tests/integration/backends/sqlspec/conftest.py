@@ -51,6 +51,24 @@ async def sqlspec_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBacken
         await backend.close()
 
 
+@pytest.fixture
+async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend]":
+    """Yield an opened DuckDB-backed SQLSpec queue backend."""
+    pytest.importorskip("duckdb")
+    from sqlspec.adapters.duckdb import DuckDBConfig
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
+        )
+    )
+    await backend.open()
+    try:
+        yield backend
+    finally:
+        await backend.close()
+
+
 @dataclass(slots=True)
 class StubEvent:
     """Test-double event passed by ``StubAsyncEventChannel``."""

@@ -13,11 +13,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import EnqueueSpec
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
-    from pathlib import Path
+    from collections.abc import Iterator
 
 pytestmark = pytest.mark.anyio
 
@@ -162,30 +161,6 @@ def test_bulk_values_orders_columns_to_match_create_table() -> "None":
     assert mapped["kwargs_json"] == alphabetical["kwargs_json"]
 
 
-@pytest.fixture
-async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend]":
-    """Yield an opened DuckDB-backed SQLSpec queue backend.
-
-    DuckDB ingests Arrow positionally, unlike the name-binding aiosqlite and
-    asyncpg paths, so it is the canonical guard for bulk column ordering on
-    the native ingest tier.
-    """
-    pytest.importorskip("duckdb")
-    pytest.importorskip("pyarrow")
-    from sqlspec.adapters.duckdb import DuckDBConfig
-
-    backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
-        )
-    )
-    await backend.open()
-    try:
-        yield backend
-    finally:
-        await backend.close()
-
-
 async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpecQueueBackend") -> "None":
     """The native Arrow ingest path must place every column in its DDL slot.
 
@@ -194,6 +169,7 @@ async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpec
     ``kwargs_json`` string into the ``priority`` INT column and raised a
     conversion error. Name-binding adapters (aiosqlite, asyncpg) masked it.
     """
+    pytest.importorskip("pyarrow")
     store = duckdb_backend._get_store()
     assert store.supports_native_bulk_ingest is True
 

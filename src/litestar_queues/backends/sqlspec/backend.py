@@ -1299,6 +1299,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if callable(formatter):
                 return cast("str", formatter(serialized))
             return serialized.isoformat()
+        if serialized is not None and store.bind_datetime_as_naive_utc:
+            return serialized.replace(tzinfo=None)
         return serialized
 
     def _params_from_record(self, record: "QueuedTaskRecord") -> "dict[str, Any]":

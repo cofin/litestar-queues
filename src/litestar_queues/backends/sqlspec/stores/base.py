@@ -69,6 +69,7 @@ class SQLSpecQueueStore:
     # ``native_json_columns`` at ``__init__``.
     auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
     bind_datetime_as_text: "ClassVar[bool]" = False
+    bind_datetime_as_naive_utc: "ClassVar[bool]" = False
 
     def __init__(
         self,
