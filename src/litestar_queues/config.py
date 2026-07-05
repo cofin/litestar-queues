@@ -261,14 +261,25 @@ class QueueConfig:
         """Return a QueueService for this configuration."""
         from litestar_queues.service import QueueService
 
-        if state is not None and self.queue_service_state_key in state:
-            cached = state[self.queue_service_state_key]
-            if isinstance(cached, QueueService):
-                return cached
-            if isinstance(cached, QueueConfig):
-                return QueueService(cached)
+        if state is None:
+            return QueueService(self)
 
-        return QueueService(self)
+        if self.queue_service_state_key not in state:
+            msg = (
+                f"QueueService is not available in app state under {self.queue_service_state_key!r}; "
+                "ensure QueuePlugin startup has completed before resolving the queue service."
+            )
+            raise RuntimeError(msg)
+
+        cached = state[self.queue_service_state_key]
+        if isinstance(cached, QueueService):
+            return cached
+
+        msg = (
+            f"QueueService has not been opened in app state under {self.queue_service_state_key!r}; "
+            f"found {type(cached).__name__}."
+        )
+        raise RuntimeError(msg)
 
     def get_queue_backend(self) -> "BaseQueueBackend":
         """Return a configured queue backend instance."""

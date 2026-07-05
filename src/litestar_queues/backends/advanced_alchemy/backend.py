@@ -3,6 +3,9 @@
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
+from advanced_alchemy.exceptions import DuplicateKeyError
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
+
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
@@ -87,20 +90,29 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
     ) -> "QueuedTaskRecord":
-        async with self._operation() as service:
-            record = await service.enqueue(
-                task_name,
-                args=args,
-                kwargs=dict(kwargs or {}),
-                queue=queue,
-                priority=priority,
-                max_retries=max_retries,
-                scheduled_at=scheduled_at,
-                key=key,
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                metadata=dict(metadata or {}),
-            )
+        try:
+            async with self._operation() as service:
+                record = await service.enqueue(
+                    task_name,
+                    args=args,
+                    kwargs=dict(kwargs or {}),
+                    queue=queue,
+                    priority=priority,
+                    max_retries=max_retries,
+                    scheduled_at=scheduled_at,
+                    key=key,
+                    execution_backend=execution_backend,
+                    execution_profile=execution_profile,
+                    metadata=dict(metadata or {}),
+                )
+        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+            if key is None:
+                raise
+            async with self._service() as service:
+                existing = await service.get_task_by_key(key)
+            if existing is None:
+                raise
+            record = existing
         await self.notify_new_task(record)
         return record
 
