@@ -10,7 +10,7 @@ from litestar_queues.events import QueueEventPublisher
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
-    from litestar_queues.events import QueueEvent, QueueEventLogConfig
+    from litestar_queues.events import QueueEvent, QueueEventLogConfig, QueueEventLogRecord, QueueEventStageSummary
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -416,6 +416,20 @@ class _RecordingEventLog:
 
     async def flush_events(self) -> "None":
         self.flushed = True
+
+    async def list_events(
+        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+    ) -> "list[QueueEventLogRecord]":
+        del task_id, task_name, limit
+        return []
+
+    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
+        del task_name
+        return []
+
+    async def cleanup_before(self, before: "datetime") -> "int":
+        del before
+        return 0
 
 
 class _EventLogBackend(InMemoryQueueBackend):
