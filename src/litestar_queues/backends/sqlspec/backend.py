@@ -281,9 +281,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     with suppress(Exception):
                         await driver.rollback()
                     if key is not None and _is_unique_violation(exc):
-                        existing = await self.get_task_by_key(key)
-                        if existing is not None and not existing.is_terminal:
-                            return existing
+                        winner = await self.get_task_by_key(key)
+                        if winner is not None and not winner.is_terminal:
+                            return winner
                     raise
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
