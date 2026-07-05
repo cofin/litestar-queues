@@ -13,9 +13,12 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.exc import UnmappedColumnError
 
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
+from litestar_queues.backends.base import record_matches_filters
 from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskStatus
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 
 __all__ = ("QueueTaskService",)
@@ -244,15 +247,44 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         updated = await self._select_task(task_id)
         return self.record_from_model(updated) if updated is not None else None
 
-    async def cancel_task(self, task_id: "UUID") -> "bool":
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         model_type = self.model_type
         now = _utc_now()
+        cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
         result = await self.repository.session.execute(
             update(model_type)
-            .where(model_type.id == task_id, model_type.status.in_(_DUE_STATUSES))
-            .values(_update_values(model_type, {"status": "cancelled", "completed_at": now}, now=now))
+            .where(model_type.id == task_id, model_type.status.in_(cancellable_statuses))
+            .values(
+                _update_values(model_type, {"status": "cancelled", "completed_at": now, "heartbeat_at": None}, now=now)
+            )
         )
         return int(result.rowcount or 0) == 1
+
+    async def cancel_tasks(
+        self,
+        *,
+        task_name: "str | None" = None,
+        queue: "str | None" = None,
+        kwargs: "Mapping[str, Any] | None" = None,
+        metadata: "Mapping[str, Any] | None" = None,
+        include_running: "bool" = False,
+    ) -> "int":
+        model_type = self.model_type
+        cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
+        criteria = [model_type.status.in_(cancellable_statuses)]
+        if task_name is not None:
+            criteria.append(model_type.task_name == task_name)
+        if queue is not None:
+            criteria.append(model_type.queue == queue)
+        models = (await self.repository.session.execute(select(model_type).where(*criteria))).scalars().all()
+        cancelled = 0
+        for model in models:
+            record = self.record_from_model(model)
+            if not record_matches_filters(record, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata):
+                continue
+            if await self.cancel_task(record.id, include_running=include_running):
+                cancelled += 1
+        return cancelled
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         model_type = self.model_type

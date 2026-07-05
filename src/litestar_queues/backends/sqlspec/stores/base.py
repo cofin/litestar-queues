@@ -346,15 +346,30 @@ class SQLSpecQueueStore:
             )
         return statement
 
-    def cancel_task(self, *, task_id: "str", completed_at: "DatetimeParam") -> "Update":
-        """Return an UPDATE statement that cancels a due task."""
+    def cancel_task(
+        self, *, task_id: "str", completed_at: "DatetimeParam", include_running: "bool" = False
+    ) -> "Update":
+        """Return an UPDATE statement that cancels a due or running task."""
+        statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
         return (
             sql
             .update(self.table_name)
-            .set(**self._mapped_values({"status": "cancelled", "completed_at": completed_at}))
+            .set(**self._mapped_values({"status": "cancelled", "completed_at": completed_at, "heartbeat_at": None}))
             .where_eq(self._col("id"), task_id)
-            .where_in(self._col("status"), _DUE_STATUSES)
+            .where_in(self._col("status"), statuses)
         )
+
+    def list_cancellable(
+        self, *, include_running: "bool" = False, task_name: "str | None" = None, queue: "str | None" = None
+    ) -> "Select":
+        """Return a SELECT statement for task records eligible for cancellation."""
+        statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
+        statement = self._select_all().where_in(self._col("status"), statuses)
+        if task_name is not None:
+            statement = statement.where_eq(self._col("task_name"), task_name)
+        if queue is not None:
+            statement = statement.where_eq(self._col("queue"), queue)
+        return statement
 
     def touch_heartbeat(self, *, task_id: "str", heartbeat_at: "DatetimeParam") -> "Update":
         """Return an UPDATE statement that touches a running task heartbeat."""

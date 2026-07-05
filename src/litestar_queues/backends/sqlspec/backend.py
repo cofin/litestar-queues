@@ -14,7 +14,7 @@ from sqlspec import SQLSpec
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
-from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
 from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import (
@@ -35,7 +35,7 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Sequence
+    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
     from litestar_queues.backends.sqlspec._typing import (
         SQLSpecConfig,
@@ -550,21 +550,52 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._increment_queue_metric("claim_lost")
         return updated_record
 
-    async def cancel_task(self, task_id: "UUID") -> "bool":
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         async with self._session() as driver:
             await driver.begin()
             try:
                 result = await driver.execute(
                     self._get_store().cancel_task(
-                        task_id=str(task_id), completed_at=self._serialize_datetime(_utc_now())
+                        task_id=str(task_id),
+                        completed_at=self._serialize_datetime(_utc_now()),
+                        include_running=include_running,
                     )
                 )
+                rows_affected = _rows_affected(result)
+                if rows_affected < 0:
+                    updated_row = await self._select_task(driver, task_id)
+                    cancelled = updated_row is not None and self._record_from_row(updated_row).status == "cancelled"
+                else:
+                    cancelled = rows_affected == 1
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return int(result.rows_affected) == 1
+        return cancelled
+
+    async def cancel_tasks(
+        self,
+        *,
+        task_name: "str | None" = None,
+        queue: "str | None" = None,
+        kwargs: "Mapping[str, Any] | None" = None,
+        metadata: "Mapping[str, Any] | None" = None,
+        include_running: "bool" = False,
+    ) -> "int":
+        store = self._get_store()
+        async with self._session() as driver:
+            rows = await driver.select(
+                store.list_cancellable(include_running=include_running, task_name=task_name, queue=queue)
+            )
+        cancelled = 0
+        for row in cast("list[dict[str, Any]]", rows):
+            record = self._record_from_row(row)
+            if not record_matches_filters(record, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata):
+                continue
+            if await self.cancel_task(record.id, include_running=include_running):
+                cancelled += 1
+        return cancelled
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         async with self._heartbeat_session() as driver:

@@ -1,4 +1,12 @@
-__all__ = ("MissingDependencyError", "NonRetryableError", "QueueConfigurationError", "QueueError", "non_retryable")
+__all__ = (
+    "JobCancelledError",
+    "MissingDependencyError",
+    "NonRetryableError",
+    "QueueConfigurationError",
+    "QueueError",
+    "job_cancelled",
+    "non_retryable",
+)
 
 
 class QueueError(Exception):
@@ -13,6 +21,10 @@ class NonRetryableError(QueueError):
     """Raised by a task to mark the current failure as permanent."""
 
 
+class JobCancelledError(QueueError):
+    """Raised by a task to cooperatively mark itself cancelled."""
+
+
 def non_retryable(message: "str") -> "None":
     """Raise a non-retryable task failure.
 
@@ -20,6 +32,15 @@ def non_retryable(message: "str") -> "None":
         NonRetryableError: Always raised with the provided message.
     """
     raise NonRetryableError(message)
+
+
+def job_cancelled(message: "str" = "Task cancelled") -> "None":
+    """Raise a cooperative task cancellation.
+
+    Raises:
+        JobCancelledError: Always raised with the provided message.
+    """
+    raise JobCancelledError(message)
 
 
 class MissingDependencyError(QueueError, ImportError):

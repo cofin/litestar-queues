@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
 from litestar_queues.models import (
@@ -26,7 +26,7 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Mapping
 
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
@@ -276,20 +276,58 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
             return record
 
-    async def cancel_task(self, task_id: "UUID") -> "bool":
-        """Cancel a task if it has not started.
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+        """Cancel a task.
 
         Returns:
             True when the task was cancelled.
         """
         async with self._lock(f"task:{task_id}", wait=True):
             record = await self.get_task(task_id)
-            if record is None or record.status not in _DUE_STATUSES:
+            cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
+            if record is None or record.status not in cancellable_statuses:
                 return False
             record.status = "cancelled"
             record.completed_at = _utc_now()
+            record.heartbeat_at = None
             await self._save_record(record)
             return True
+
+    async def cancel_tasks(
+        self,
+        *,
+        task_name: "str | None" = None,
+        queue: "str | None" = None,
+        kwargs: "Mapping[str, Any] | None" = None,
+        metadata: "Mapping[str, Any] | None" = None,
+        include_running: "bool" = False,
+    ) -> "int":
+        """Cancel tasks matching a domain predicate.
+
+        Returns:
+            Number of records cancelled.
+        """
+        statuses = tuple(sorted((*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES))
+        cancelled = 0
+        for record in await self._list_records_by_statuses(statuses):
+            if not record_matches_filters(record, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata):
+                continue
+            async with self._lock(f"task:{record.id}", wait=True):
+                latest = await self.get_task(record.id)
+                if latest is None:
+                    continue
+                if latest.status not in statuses:
+                    continue
+                if not record_matches_filters(
+                    latest, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata
+                ):
+                    continue
+                latest.status = "cancelled"
+                latest.completed_at = _utc_now()
+                latest.heartbeat_at = None
+                await self._save_record(latest)
+                cancelled += 1
+        return cancelled
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         """Update the heartbeat timestamp for a running task.

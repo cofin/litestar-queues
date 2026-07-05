@@ -106,6 +106,18 @@ Unhandled exceptions retry until ``max_retries`` is exhausted. Raise
 ``NonRetryableError`` or use the ``non_retryable`` helper when a failure should
 move directly to the terminal ``failed`` state.
 
+Cancellation
+============
+
+Use ``job_cancelled("message")`` from inside a task when the task detects a
+domain cancellation and should stop without retrying. The worker marks the
+record ``cancelled`` and emits ``task.cancelled``.
+
+Backends also expose ``cancel_tasks(...)`` for exact top-level predicate
+cancellation across pending and scheduled records. Pass ``include_running=True``
+when the caller is intentionally cancelling running records that cooperate with
+``job_cancelled``.
+
 Background Tasks
 ================
 

@@ -171,3 +171,19 @@ def test_task_dependency_resolver_config_surface() -> "None":
     instance = QueueConfig()
     assert instance.task_dependency_resolver is None
     assert instance.signature_namespace["TaskDependencyResolver"] is TaskDependencyResolver
+
+
+def test_job_cancelled_helper_is_public_and_in_signature_namespace() -> "None":
+    """Cooperative cancellation is available from the package root and Litestar signature namespace."""
+    import litestar_queues
+    from litestar_queues import JobCancelledError, job_cancelled
+    from litestar_queues.config import QueueConfig
+    from litestar_queues.exceptions import JobCancelledError as ExceptionsJobCancelledError
+
+    instance = QueueConfig()
+
+    assert JobCancelledError is ExceptionsJobCancelledError
+    assert "JobCancelledError" in litestar_queues.__all__
+    assert "job_cancelled" in litestar_queues.__all__
+    assert instance.signature_namespace["JobCancelledError"] is JobCancelledError
+    assert instance.signature_namespace["job_cancelled"] is job_cancelled
