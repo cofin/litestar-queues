@@ -59,6 +59,31 @@ a peer crash will rescue orphaned records without operator intervention. Set
 ``worker_stale_after`` to ``None`` (the default) to disable stale recovery
 entirely; the periodic check is skipped in that case.
 
+When a stale running task is retried, its priority is demoted to at most ``4``
+and any previous error message is preserved. If no previous error exists, the
+backend stores ``"Task heartbeat stale"``. When stale recovery marks a task
+terminal, it emits ``task.stale_failed`` and invokes the task's
+``on_stale_failure`` callback when one is registered:
+
+.. code-block:: python
+
+   from litestar_queues import QueuedTaskRecord, task
+
+
+   async def notify_operator(record: QueuedTaskRecord) -> None:
+       ...
+
+
+   @task("reports.refresh", requeue_on_stale=False, on_stale_failure=notify_operator)
+   async def refresh_report(report_id: str) -> None:
+       ...
+
+Workers ask the backend for an ``acquire_worker_lock()`` coordination lock
+before running stale-recovery and external-reconciliation sweeps. Backends that
+override that hook can make those sweeps single-owner across a fleet for each
+interval. Backends without lock support return ``True`` and keep the local
+timer behavior.
+
 SQL-backed backends can optionally route heartbeat writes through a dedicated
 connection so they do not contend with task fetch and lifecycle UPDATEs under
 high concurrency. See :ref:`Heartbeat Pool Isolation

@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 __all__ = ("BaseQueueBackend",)
 
+STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
+STALE_REQUEUE_PRIORITY = 4
+
 
 class BaseQueueBackend:
     """Base class for queue persistence backends."""
@@ -206,6 +209,17 @@ class BaseQueueBackend:
         """
         return StaleTaskRecoveryResult()
 
+    async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire a backend-scoped worker coordination lock.
+
+        Backends that can provide fleet-wide locks should override this. The
+        default preserves existing behavior for backends without lock support.
+
+        Returns:
+            True when the caller should run the coordinated worker action.
+        """
+        return True
+
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -305,3 +319,13 @@ def record_matches_filters(
 
 def _contains_items(source: "Mapping[str, Any]", expected: "Mapping[str, Any]") -> "bool":
     return all(source.get(key) == value for key, value in expected.items())
+
+
+def stale_requeue_error(current_error: "str | None") -> "str":
+    """Return the error to retain when a stale running task is requeued."""
+    return current_error or STALE_HEARTBEAT_ERROR
+
+
+def stale_requeue_priority(priority: "int") -> "int":
+    """Return the priority for a stale requeued task."""
+    return min(priority, STALE_REQUEUE_PRIORITY)

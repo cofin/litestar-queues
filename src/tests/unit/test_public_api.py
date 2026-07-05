@@ -164,23 +164,30 @@ def test_optional_backend_configs_live_on_submodules() -> "None":
 def test_task_dependency_resolver_is_re_exported_from_package_root() -> "None":
     """TaskDependencyResolver is part of the package root surface."""
     import litestar_queues
-    from litestar_queues import TaskDependencyResolver
+    from litestar_queues import TaskDependencyResolver, TaskErrorSanitizer
     from litestar_queues.config import TaskDependencyResolver as ConfigTaskDependencyResolver
+    from litestar_queues.config import TaskErrorSanitizer as ConfigTaskErrorSanitizer
 
     assert TaskDependencyResolver is ConfigTaskDependencyResolver
+    assert TaskErrorSanitizer is ConfigTaskErrorSanitizer
     assert "TaskDependencyResolver" in litestar_queues.__all__
+    assert "TaskErrorSanitizer" in litestar_queues.__all__
 
 
 def test_task_dependency_resolver_config_surface() -> "None":
     """The TaskDependencyResolver alias and config field are part of the config module surface."""
     from litestar_queues import config as config_module
-    from litestar_queues.config import QueueConfig, TaskDependencyResolver
+    from litestar_queues.config import QueueConfig, TaskDependencyResolver, TaskErrorSanitizer
 
     assert "TaskDependencyResolver" in config_module.__all__
+    assert "TaskErrorSanitizer" in config_module.__all__
     assert TaskDependencyResolver is not None
+    assert TaskErrorSanitizer is not None
     instance = QueueConfig()
     assert instance.task_dependency_resolver is None
+    assert instance.error_sanitizer is None
     assert instance.signature_namespace["TaskDependencyResolver"] is TaskDependencyResolver
+    assert instance.signature_namespace["TaskErrorSanitizer"] is TaskErrorSanitizer
 
 
 def test_job_cancelled_helper_is_public_and_in_signature_namespace() -> "None":

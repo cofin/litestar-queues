@@ -13,7 +13,12 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.exc import UnmappedColumnError
 
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
-from litestar_queues.backends.base import record_matches_filters
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
 from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskStatus
 
 if TYPE_CHECKING:
@@ -340,7 +345,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                                 "started_at": None,
                                 "heartbeat_at": None,
                                 "retry_count": int(model.retry_count) + 1,
-                                "error": "Task heartbeat stale",
+                                "priority": stale_requeue_priority(int(model.priority)),
+                                "error": stale_requeue_error(model.error),
                             },
                         )
                     )
@@ -362,7 +368,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                                 "status": "failed",
                                 "completed_at": now,
                                 "heartbeat_at": now,
-                                "error": "Task heartbeat stale",
+                                "error": STALE_HEARTBEAT_ERROR,
                             },
                             now=now,
                         )

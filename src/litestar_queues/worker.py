@@ -3,13 +3,13 @@ import contextlib
 import logging
 import os
 import time
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import execution_backend_name
 from litestar_queues.execution import get_execution_backend
 
 if TYPE_CHECKING:
-    from datetime import timedelta
     from uuid import UUID
 
     from litestar_queues.models import QueuedTaskRecord
@@ -284,6 +284,10 @@ class Worker:
         if now - self._last_stale_check_at < self._stale_check_interval:
             return
         self._last_stale_check_at = now
+        if not await self._service.get_queue_backend().acquire_worker_lock(
+            "stale_recovery", ttl=timedelta(seconds=max(self._stale_check_interval, 1.0))
+        ):
+            return
         result = await self._service.recover_stale_tasks(stale_after=self._stale_after, worker_id=self._worker_id)
         total = result.requeued + result.failed + result.skipped + result.handler_needed
         if total:
@@ -299,6 +303,10 @@ class Worker:
             )
 
     async def _maybe_reconcile_external(self) -> "None":
+        if not await self._service.get_queue_backend().acquire_worker_lock(
+            "external_reconcile", ttl=timedelta(seconds=max(self._reconcile_interval, 1.0))
+        ):
+            return
         if self._reconcile_interval <= 0:
             await self.reconcile_external()
             return

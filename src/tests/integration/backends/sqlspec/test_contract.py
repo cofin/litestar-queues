@@ -14,6 +14,7 @@ import asyncio
 import logging
 import sqlite3
 import sys
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
@@ -28,7 +29,7 @@ pytest.importorskip("sqlspec")
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues import QueueConfig, QueueService, task
-from litestar_queues.backends import get_queue_backend_class, list_queue_backends
+from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
@@ -58,10 +59,12 @@ from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration._backends import QUEUE_BACKENDS
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
     from uuid import UUID
 
     from litestar_queues.backends import BaseQueueBackend
+    from litestar_queues.models import QueuedTaskRecord
     from tests.integration._backends import BackendCase
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
@@ -1013,6 +1016,34 @@ async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_ke
     assert keyed.id == replacement.id
 
 
+async def test_sqlspec_backend_reuses_winner_when_key_insert_races(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=AiosqliteConfig(), queue_observability=False)
+    )
+    driver = _UniqueViolationDriver()
+    winner = await InMemoryQueueBackend().enqueue("tasks.race", kwargs={"attempt": 1}, key="sync:race")
+
+    @asynccontextmanager
+    async def fake_session(_self: "SQLSpecQueueBackend") -> "AsyncIterator[_UniqueViolationDriver]":
+        yield driver
+
+    async def select_no_winner(_self: "SQLSpecQueueBackend", _driver: "Any", _key: "str") -> "None":
+        return None
+
+    async def get_winner(_self: "SQLSpecQueueBackend", key: "str") -> "QueuedTaskRecord | None":
+        return winner if key == "sync:race" else None
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", fake_session)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_task_by_key", select_no_winner)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _self: _InsertOnlyStore())
+    monkeypatch.setattr(SQLSpecQueueBackend, "get_task_by_key", get_winner)
+
+    record = await backend.enqueue("tasks.race", kwargs={"attempt": 2}, key="sync:race")
+
+    assert record is winner
+    assert driver.rolled_back is True
+
+
 async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
@@ -1278,6 +1309,38 @@ async def _complete_report_task(backend: "BaseQueueBackend") -> "UUID":
     await backend.complete_task(claimed.id, result={"ok": True})
 
     return completed.id
+
+
+class _InsertOnlyStore:
+    bind_datetime_as_naive_utc = False
+    bind_datetime_as_text = False
+
+    def insert_task(self, params: "dict[str, object]") -> "str":
+        del params
+        return "insert into queue_tasks"
+
+    def serialize_json(self, canonical: "str", value: "object") -> "object":
+        del canonical
+        return value
+
+
+class _UniqueViolationDriver:
+    def __init__(self) -> "None":
+        self.rolled_back = False
+
+    async def begin(self) -> "None":
+        return None
+
+    async def commit(self) -> "None":
+        return None
+
+    async def rollback(self) -> "None":
+        self.rolled_back = True
+
+    async def execute(self, statement: "object") -> "None":
+        del statement
+        msg = "UNIQUE constraint failed: litestar_queue_task.task_key"
+        raise sqlite3.IntegrityError(msg)
 
 
 class _FakeSyncConfig:

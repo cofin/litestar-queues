@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         QueueBackendConfigProtocol,
         QueueConfig,
         TaskDependencyResolver,
+        TaskErrorSanitizer,
     )
     from litestar_queues.events import (
         InMemoryQueueEventSink,
@@ -121,6 +122,7 @@ _EXPORTS = {
     "StaleTaskRecoveryResult": "litestar_queues.models",
     "Task": "litestar_queues.task",
     "TaskDependencyResolver": "litestar_queues.config",
+    "TaskErrorSanitizer": "litestar_queues.config",
     "TaskExecutionContext": "litestar_queues.events",
     "TaskResult": "litestar_queues.task",
     "TaskStatus": "litestar_queues.models",
@@ -186,6 +188,7 @@ __all__ = (
     "StaleTaskRecoveryResult",
     "Task",
     "TaskDependencyResolver",
+    "TaskErrorSanitizer",
     "TaskExecutionContext",
     "TaskResult",
     "TaskStatus",

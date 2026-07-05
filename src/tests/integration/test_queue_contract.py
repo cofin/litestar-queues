@@ -130,12 +130,21 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
 
 
 async def test_backend_contract_recovers_stale_running_records(queue_backend: "BaseQueueBackend") -> "None":
-    requeued = await queue_backend.enqueue("tasks.stale.requeue", max_retries=1, metadata={"requeue_on_stale": True})
+    requeued = await queue_backend.enqueue(
+        "tasks.stale.requeue", priority=10, max_retries=2, metadata={"requeue_on_stale": True}
+    )
     failed = await queue_backend.enqueue("tasks.stale.fail", max_retries=0, metadata={"requeue_on_stale": True})
     handler_needed = await queue_backend.enqueue(
         "tasks.stale.handler", max_retries=3, metadata={"requeue_on_stale": False}
     )
-    for record in (requeued, failed, handler_needed):
+    claimed_requeued = await queue_backend.claim_task(requeued.id)
+    assert claimed_requeued is not None
+    retried_requeued = await queue_backend.fail_task(requeued.id, "first failure")
+    assert retried_requeued is not None
+    assert retried_requeued.status == "pending"
+    claimed_requeued = await queue_backend.claim_task(requeued.id)
+    assert claimed_requeued is not None
+    for record in (failed, handler_needed):
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
 
@@ -152,7 +161,9 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
     assert result.handler_needed == 1
     assert stored_requeued is not None
     assert stored_requeued.status == "pending"
-    assert stored_requeued.retry_count == 1
+    assert stored_requeued.retry_count == 2
+    assert stored_requeued.priority == 4
+    assert stored_requeued.error == "first failure"
     assert stored_failed is not None
     assert stored_failed.status == "failed"
     assert stored_handler_needed is not None

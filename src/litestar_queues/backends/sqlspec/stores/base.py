@@ -286,20 +286,22 @@ class SQLSpecQueueStore:
         retry_count: "int",
         expected_retry_count: "int | None" = None,
         heartbeat_cutoff: "DatetimeParam | None" = None,
+        priority: "int | None" = None,
     ) -> "Update":
         """Return an UPDATE statement that schedules a retry."""
+        values = {
+            "status": "pending",
+            "retry_count": retry_count,
+            "started_at": None,
+            "heartbeat_at": None,
+            "error": self.serialize_error(error),
+        }
+        if priority is not None:
+            values["priority"] = priority
         statement = (
             sql
             .update(self.table_name)
-            .set(
-                **self._mapped_values({
-                    "status": "pending",
-                    "retry_count": retry_count,
-                    "started_at": None,
-                    "heartbeat_at": None,
-                    "error": self.serialize_error(error),
-                })
-            )
+            .set(**self._mapped_values(values))
             .where_eq(self._col("id"), task_id)
             .where_eq(self._col("status"), "running")
         )

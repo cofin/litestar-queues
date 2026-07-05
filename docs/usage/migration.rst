@@ -156,6 +156,81 @@ rerouting to a backend that may not have a worker. If you want local rerouting,
 set ``fallback_execution_backend="local"`` explicitly and run a local worker
 that can consume those records.
 
+Stateless Data Migration Runbook
+--------------------------------
+
+Use this checklist when moving an existing job table to ``litestar_queues``.
+Run it with workers drained unless you have separately verified that old and new
+workers can safely share the table during the cutover.
+
+1. Back up the job table and any job-log table before changing schema.
+2. Point SQLSpec at the existing table with canonical-to-existing column names:
+
+   .. code-block:: python
+
+      SQLSpecBackendConfig(
+          table_name="job",
+          column_map={
+              "task_name": "function",
+              "kwargs_json": "data",
+              "task_key": "key",
+              "result_json": "result",
+              "metadata_json": "metadata",
+              "execution_backend": "execution_target",
+          },
+      )
+
+3. Add the columns required by ``litestar_queues`` when they are missing:
+   ``args_json`` (backfill ``[]``), ``queue`` (backfill ``"default"``),
+   ``execution_profile``, and ``execution_ref``. Backfill
+   ``execution_profile`` and ``execution_ref`` from existing metadata keys such
+   as ``profile``, ``execution_ref``, or ``cloudrun_execution`` before adding
+   ``NOT NULL`` constraints where your schema requires them.
+4. Keep the six lifecycle states unchanged: ``pending``, ``scheduled``,
+   ``running``, ``completed``, ``failed``, and ``cancelled``. Drain or
+   explicitly account for ``running`` rows before switching workers.
+5. If existing result values are wrapped as ``{"result": value}``, unwrap them
+   into the raw ``result_json`` value expected by ``litestar_queues``.
+6. Rewrite schedule rows:
+
+   * keys from ``scheduled-<name>`` to ``scheduled:<name>``;
+   * schedule config from task data into ``metadata_json["schedule"]``;
+   * ``max_retries`` to ``0`` unless a task explicitly opts into another value;
+   * remove legacy schedule-only columns after validation.
+
+7. Audit task declarations and callers:
+
+   * ``execution_target`` becomes ``execution_backend``;
+   * ``profile`` becomes ``execution_profile``;
+   * ``requeue`` becomes ``requeue_on_stale``;
+   * ``quiet_when_healthy`` becomes ``quiet_success``;
+   * retry defaults are ``0`` unless ``retries=`` is explicit;
+   * task priority defaults to ``0``; scheduled rows preserve explicit task
+     priority;
+   * ``TaskResult.wait(max_wait=...)`` becomes ``wait(timeout=...)``; and
+   * private progress/log calls become ``publish_task_progress()`` and
+     ``publish_task_log()``.
+
+8. Audit cron schedules. Unsupported seconds fields, year fields, ``@reboot``,
+   ``L``, ``W``, and ``#`` are rejected at decoration time. Replace those with
+   multiple supported schedules or application code.
+9. Configure an event sink if the application reads durable job logs. The
+   built-in ``SQLiteQueueEventSink`` writes ``job_id``, ``stage``, ``level``,
+   ``message``, ``detail_json``, ``duration_ms``, ``sequence``, and
+   ``created_at`` columns. Map or copy those rows into the application-owned
+   job-log table if that table is not SQLite-backed.
+10. Configure Cloud Run workers with the new environment contract:
+    ``CONFIG_FACTORY`` is required by the packaged worker entry point, and
+    queue-specific environment variables should use the ``LITESTAR_QUEUES_*``
+    prefix. The Cloud Run worker exits with deterministic status codes, so use
+    Cloud Run Job execution status plus queue record status during validation.
+11. Configure ``QueueConfig.error_sanitizer`` if persisted errors must not carry
+    secrets, tenant data, or provider payloads. The sanitizer controls both the
+    stored error and the ``task.failed`` message.
+12. Validate by enqueuing representative immediate, scheduled, retrying,
+    stale-recovered, cancelled, Cloud Run, and event-publishing tasks against
+    the migrated table before opening user traffic.
+
 Migration Checklist
 -------------------
 

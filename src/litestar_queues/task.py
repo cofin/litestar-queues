@@ -41,6 +41,7 @@ P = ParamSpec("P")
 T = TypeVar("T")
 TaskCallable = Callable[P, T | Awaitable[T]]
 AnyTaskCallable = Callable[..., Any]
+StaleFailureHandler = Callable[["QueuedTaskRecord"], object | Awaitable[object]]
 
 CRON_FIELD_COUNT = 5
 CRON_SEARCH_YEARS = 8
@@ -163,6 +164,7 @@ class ScheduleConfig:
             "@yearly": "0 0 1 1 *",
         }
         expression = aliases.get(self.cron, self.cron)
+        _raise_for_unsupported_cron_syntax(self.cron, expression)
         parts = expression.split()
         if len(parts) != CRON_FIELD_COUNT:
             msg = f"Invalid cron expression: {self.cron}"
@@ -353,6 +355,7 @@ class Task(Generic[P, T]):
         "_key",
         "_log_level",
         "_name",
+        "_on_stale_failure",
         "_priority",
         "_queue",
         "_quiet_success",
@@ -379,6 +382,7 @@ class Task(Generic[P, T]):
         log_level: "str | None" = None,
         quiet_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
+        on_stale_failure: "StaleFailureHandler | None" = None,
     ) -> "None":
         self._func = func
         self._name = name
@@ -394,6 +398,7 @@ class Task(Generic[P, T]):
         self._log_level = log_level
         self._quiet_success = quiet_success
         self._requeue_on_stale = requeue_on_stale
+        self._on_stale_failure = on_stale_failure
 
     @property
     def name(self) -> "str":
@@ -459,6 +464,11 @@ class Task(Generic[P, T]):
     def requeue_on_stale(self) -> "bool":
         """Whether stale running records should be requeued when retries remain."""
         return self._requeue_on_stale is not False
+
+    @property
+    def on_stale_failure(self) -> "StaleFailureHandler | None":
+        """Callback invoked after this task reaches terminal stale failure."""
+        return self._on_stale_failure
 
     @property
     def function(self) -> "TaskCallable[P, T]":
@@ -530,6 +540,7 @@ class Task(Generic[P, T]):
         log_level: "str | None" = None,
         quiet_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
+        on_stale_failure: "StaleFailureHandler | None" = None,
     ) -> "Task[P, T]":
         """Return a configured copy with enqueue overrides."""
         return Task(
@@ -547,6 +558,7 @@ class Task(Generic[P, T]):
             log_level=log_level if log_level is not None else self._log_level,
             quiet_success=quiet_success if quiet_success is not None else self._quiet_success,
             requeue_on_stale=requeue_on_stale if requeue_on_stale is not None else self._requeue_on_stale,
+            on_stale_failure=on_stale_failure if on_stale_failure is not None else self._on_stale_failure,
         )
 
     async def enqueue(self, *args: "P.args", **kwargs: "P.kwargs") -> "TaskResult":
@@ -703,6 +715,7 @@ def task(
     log_level: "str | None" = None,
     quiet_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
+    on_stale_failure: "StaleFailureHandler | None" = None,
     cron: "str | None" = None,
     interval: "float | timedelta | None" = None,
     timezone: "str" = "UTC",
@@ -728,6 +741,7 @@ def task(
     log_level: "str | None" = None,
     quiet_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
+    on_stale_failure: "StaleFailureHandler | None" = None,
     cron: "str | None" = None,
     interval: "float | timedelta | None" = None,
     timezone: "str" = "UTC",
@@ -780,6 +794,7 @@ def task(
             log_level=log_level,
             quiet_success=quiet_success,
             requeue_on_stale=requeue_on_stale,
+            on_stale_failure=on_stale_failure,
         )
         _task_registry[task_name] = task_obj
         if schedule is not None:
@@ -909,6 +924,29 @@ def _expand_cron_field(
         values.remove(SUNDAY_CRON_VALUE)
         values.add(0)
     return values
+
+
+def _raise_for_unsupported_cron_syntax(original: "str", expression: "str") -> "None":
+    parts = expression.split()
+    unsupported: "list[str]" = []
+    if original == "@reboot":
+        unsupported.append("@reboot")
+    if len(parts) > CRON_FIELD_COUNT:
+        unsupported.append("year fields")
+    if any("L" in part.upper() for part in parts):
+        unsupported.append("L")
+    if any("W" in part.upper() for part in parts):
+        unsupported.append("W")
+    if any("#" in part for part in parts):
+        unsupported.append("#")
+    if not unsupported:
+        return
+    unsupported_text = ", ".join(dict.fromkeys(unsupported))
+    msg = (
+        f"Unsupported cron syntax in {original!r}: {unsupported_text}. "
+        "Use five-field POSIX cron, aliases other than @reboot, ranges, lists, steps, month/day names, or '?'."
+    )
+    raise ValueError(msg)
 
 
 def _load_child_modules(module: "ModuleType", *, force_reload: "bool") -> "int":

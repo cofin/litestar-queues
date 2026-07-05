@@ -14,7 +14,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    BaseQueueBackend,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
 from litestar_queues.models import (
@@ -385,15 +391,17 @@ class RedisQueueBackend(BaseQueueBackend):
                 requeue_on_stale = latest.metadata.get("requeue_on_stale", True) is not False
                 if requeue_on_stale and latest.retry_count < latest.max_retries:
                     latest.status = "pending"
+                    latest.priority = stale_requeue_priority(latest.priority)
                     latest.started_at = None
                     latest.heartbeat_at = None
+                    latest.error = stale_requeue_error(latest.error)
                     latest.retry_count += 1
                     result.requeued += 1
                 else:
                     latest.status = "failed"
                     latest.completed_at = _utc_now()
                     latest.heartbeat_at = None
-                    latest.error = "Task heartbeat stale"
+                    latest.error = STALE_HEARTBEAT_ERROR
                     result.failed += 1
                     result.failed_task_ids.append(latest.id)
                     if not requeue_on_stale:

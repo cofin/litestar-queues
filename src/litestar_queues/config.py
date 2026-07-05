@@ -32,6 +32,7 @@ __all__ = (
     "QueueConfig",
     "QueueEventConfig",
     "TaskDependencyResolver",
+    "TaskErrorSanitizer",
     "execution_backend_name",
     "queue_backend_name",
 )
@@ -70,6 +71,9 @@ TaskDependencyResolver = Callable[
     ["Task[..., object]", "QueuedTaskRecord", "TaskExecutionContext"], Awaitable[Mapping[str, object]]
 ]
 """User-supplied callable that resolves extra kwargs for a task before execution."""
+
+TaskErrorSanitizer = Callable[["BaseException", "QueuedTaskRecord"], str]
+"""User-supplied callable that converts task exceptions into persisted error messages."""
 
 
 class AsyncServiceProvider:
@@ -132,6 +136,7 @@ class QueueConfig:
     queue_backend: "QueueBackendConfig" = "memory"
     execution_backend: "ExecutionBackendConfig" = "local"
     task_dependency_resolver: "TaskDependencyResolver | None" = None
+    error_sanitizer: "TaskErrorSanitizer | None" = None
     in_app_worker: "bool" = True
     queue_service_dependency_key: "str" = "queue_service"
     queue_service_state_key: "str" = "queue_service"
@@ -175,7 +180,10 @@ class QueueConfig:
             QueueEventActor,
             QueueEventConfig,
             QueueEventEntityRef,
+            QueueEventLogRecord,
             QueueEventPublisher,
+            QueueEventStageSummary,
+            SQLiteQueueEventSink,
             TaskExecutionContext,
         )
         from litestar_queues.exceptions import JobCancelledError, NonRetryableError, job_cancelled, non_retryable
@@ -221,14 +229,18 @@ class QueueConfig:
             "QueueEventActor": QueueEventActor,
             "QueueEventConfig": QueueEventConfig,
             "QueueEventEntityRef": QueueEventEntityRef,
+            "QueueEventLogRecord": QueueEventLogRecord,
             "QueueEventPublisher": QueueEventPublisher,
+            "QueueEventStageSummary": QueueEventStageSummary,
             "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
             "QueueStatistics": QueueStatistics,
             "ScheduleConfig": ScheduleConfig,
+            "SQLiteQueueEventSink": SQLiteQueueEventSink,
             "StaleTaskRecoveryResult": StaleTaskRecoveryResult,
             "Task": Task,
             "TaskDependencyResolver": TaskDependencyResolver,
+            "TaskErrorSanitizer": TaskErrorSanitizer,
             "ExecutionBackendConfigProtocol": ExecutionBackendConfigProtocol,
             "TaskExecutionContext": TaskExecutionContext,
             "TaskResult": TaskResult,

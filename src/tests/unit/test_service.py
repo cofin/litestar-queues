@@ -252,3 +252,87 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     assert event.scope == "worker"
     assert event.worker_id == "worker-stale"
     assert event.payload == {"requeued": 0, "failed": 1, "skipped": 0, "handler_needed": 0}
+
+
+async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("tasks.priority_schedule", interval=60, priority=5)
+    async def priority_schedule() -> "None":
+        return None
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        records = await service.initialize_schedules()
+
+    assert len(records) == 1
+    assert records[0].task_name == priority_schedule.name
+    assert records[0].priority == 5
+
+
+async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+    called: "list[str]" = []
+
+    async def on_stale_failure(record: "QueuedTaskRecord") -> "None":
+        called.append(str(record.id))
+
+    @task("tasks.stale_hook", requeue_on_stale=False, on_stale_failure=on_stale_failure)
+    async def stale_hook() -> "None":
+        return None
+
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue(stale_hook.name, max_retries=3, metadata=stale_hook.metadata())
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    async with QueueService(
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True)),
+        queue_backend=backend,
+        event_publisher=QueueEventPublisher(sink),
+    ) as service:
+        result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-stale")
+
+    assert result.failed == 1
+    assert called == [str(record.id)]
+    assert [event.type for event in sink.events] == ["task.stale_failed", "worker.stale_recovery"]
+
+
+async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+
+    def sanitize_error(exc: "BaseException", record: "QueuedTaskRecord") -> "str":
+        return f"{record.task_name}:{type(exc).__name__}:redacted"
+
+    @task("tasks.sanitize_error")
+    async def sanitize_error_task() -> "None":
+        msg = "secret-token"
+        raise RuntimeError(msg)
+
+    config = QueueConfig(
+        execution_backend="local", event_config=QueueEventConfig(enabled=True), error_sanitizer=sanitize_error
+    )
+
+    async with QueueService(config, event_publisher=QueueEventPublisher(sink)) as service:
+        result = await service.enqueue(sanitize_error_task)
+        claimed = await service.claim_next()
+        assert claimed is not None
+        updated = await service.execute_record(claimed)
+
+    failed_event = next(event for event in sink.events if event.type == "task.failed")
+    assert updated.status == "failed"
+    assert updated.error == "tasks.sanitize_error:RuntimeError:redacted"
+    assert failed_event.message == "tasks.sanitize_error:RuntimeError:redacted"
+    assert result.record is not None
+    assert result.record.error == "tasks.sanitize_error:RuntimeError:redacted"

@@ -135,6 +135,30 @@ async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -
     assert stored.heartbeat_at is None
 
 
+async def test_memory_backend_demotes_stale_requeue_priority_and_preserves_prior_error() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue(
+        "tasks.stale_demote", priority=10, max_retries=2, metadata={"requeue_on_stale": True}
+    )
+    first_claim = await backend.claim_task(record.id)
+    assert first_claim is not None
+    retried = await backend.fail_task(record.id, "first failure")
+    assert retried is record
+    second_claim = await backend.claim_task(record.id)
+    assert second_claim is not None
+    second_claim.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stored = await backend.get_task(record.id)
+
+    assert result.requeued == 1
+    assert stored is record
+    assert stored.status == "pending"
+    assert stored.retry_count == 2
+    assert stored.priority == 4
+    assert stored.error == "first failure"
+
+
 async def test_memory_backend_fails_stale_running_task_when_retries_are_exhausted() -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.stale_exhausted", max_retries=0, metadata={"requeue_on_stale": True})

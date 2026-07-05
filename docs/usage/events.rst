@@ -119,6 +119,43 @@ delivery per ``eventKey`` (or per ``id`` when no key is set) within a
 single connection. Set ``QueueEvent(..., event_key=...)`` at publish
 time when worker-level retries should not double-emit downstream.
 
+Durable Event Log
+=================
+
+Use ``SQLiteQueueEventSink`` when task logs or progress updates need a durable
+table instead of only live delivery:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig
+   from litestar_queues.events import QueueEventConfig, SQLiteQueueEventSink
+
+
+   event_log = SQLiteQueueEventSink("/var/lib/my-app/queue-events.db")
+   await event_log.open()
+
+   config = QueueConfig(
+       event_config=QueueEventConfig(enabled=True, sink=event_log),
+   )
+
+The sink writes a ``queue_event_log`` table with columns that line up with a
+typical job-log UI:
+
+* ``id``: local row id;
+* ``event_id``: stable queue event id;
+* ``job_id``: queue task id;
+* ``task_name`` and ``queue``;
+* ``stage``: copied from ``payload["stage"]`` when present;
+* ``level`` and ``message``;
+* ``detail_json``: the event payload;
+* ``duration_ms``: copied from ``payload["duration_ms"]`` when present;
+* ``sequence``; and
+* ``created_at``.
+
+``list_events()`` returns rows for a task or task name, ``summarize_stages()``
+returns per-stage counts and duration totals, and ``cleanup_before()`` removes
+old rows for retention jobs. ``close()`` flushes any buffered events.
+
 Testing Events
 ==============
 

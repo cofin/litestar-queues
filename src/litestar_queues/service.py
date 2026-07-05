@@ -3,6 +3,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
@@ -372,15 +373,16 @@ class QueueService:
         started_at: "float",
         metric_base_attributes: "dict[str, str]",
     ) -> "QueuedTaskRecord":
+        error_message = self._error_message(exc, record)
         updated = await self.get_queue_backend().fail_task(
-            record.id, str(exc), retry=False, expected_retry_count=record.retry_count
+            record.id, error_message, retry=False, expected_retry_count=record.retry_count
         )
         if updated is None:
             return await self._finish_claim_lost_observability(
                 record, task_context, runtime, span, started_at, metric_base_attributes
             )
         payload = {"status": updated.status, "retry_count": updated.retry_count, "will_retry": False}
-        await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
+        await task_context.lifecycle("task.failed", message=error_message, payload=payload)
         self._log_task_event("Queue task failed", updated, level=logging.ERROR, payload=payload)
         _finish_execution_observability(runtime, span, started_at, metric_base_attributes, updated.status)
         return updated
@@ -395,7 +397,10 @@ class QueueService:
         started_at: "float",
         metric_base_attributes: "dict[str, str]",
     ) -> "QueuedTaskRecord":
-        updated = await self.get_queue_backend().fail_task(record.id, str(exc), expected_retry_count=record.retry_count)
+        error_message = self._error_message(exc, record)
+        updated = await self.get_queue_backend().fail_task(
+            record.id, error_message, expected_retry_count=record.retry_count
+        )
         if updated is None:
             return await self._finish_claim_lost_observability(
                 record, task_context, runtime, span, started_at, metric_base_attributes
@@ -405,7 +410,7 @@ class QueueService:
             "retry_count": updated.retry_count,
             "will_retry": updated.status == "pending",
         }
-        await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
+        await task_context.lifecycle("task.failed", message=error_message, payload=payload)
         self._log_task_event(
             "Queue task failed",
             updated,
@@ -476,6 +481,7 @@ class QueueService:
                     task_name,
                     key=schedule_key,
                     max_retries=0,
+                    priority=task_obj.priority,
                     scheduled_at=scheduled_at,
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
@@ -517,6 +523,7 @@ class QueueService:
             key=record.key,
             queue=record.queue,
             max_retries=record.max_retries,
+            priority=record.priority,
             scheduled_at=schedule.get_next_run(record.completed_at),
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
@@ -604,6 +611,7 @@ class QueueService:
             self._log_task_event(
                 "Queue task failed after stale heartbeat", record, level=logging.ERROR, payload=payload
             )
+            await self._invoke_stale_failure_hook(record)
 
     def _log_task_completed(self, record: "QueuedTaskRecord") -> "None":
         if record.metadata.get("quiet_success") is True:
@@ -629,6 +637,28 @@ class QueueService:
                 "queue_task_event_payload": dict(payload or {}),
             },
         )
+
+    def _error_message(self, exc: "BaseException", record: "QueuedTaskRecord") -> "str":
+        sanitizer = self._config.error_sanitizer
+        if sanitizer is None:
+            return str(exc)
+        return sanitizer(exc, record)
+
+    async def _invoke_stale_failure_hook(self, record: "QueuedTaskRecord") -> "None":
+        try:
+            task_obj = self.resolve_task(record.task_name)
+        except KeyError:
+            logger.warning(
+                "Queue task stale failure hook skipped for unknown task",
+                extra={"queue_task_id": str(record.id), "queue_task_name": record.task_name},
+            )
+            return
+        hook = task_obj.on_stale_failure
+        if hook is None:
+            return
+        result = hook(record)
+        if isawaitable(result):
+            await result
 
 
 def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":

@@ -2,7 +2,13 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    BaseQueueBackend,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
@@ -222,15 +228,17 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                 if requeue_on_stale and record.retry_count < record.max_retries:
                     record.status = "pending"
+                    record.priority = stale_requeue_priority(record.priority)
                     record.started_at = None
                     record.heartbeat_at = None
+                    record.error = stale_requeue_error(record.error)
                     record.retry_count += 1
                     result.requeued += 1
                     continue
                 record.status = "failed"
                 record.completed_at = _utc_now()
                 record.heartbeat_at = None
-                record.error = "Task heartbeat stale"
+                record.error = STALE_HEARTBEAT_ERROR
                 result.failed += 1
                 result.failed_task_ids.append(record.id)
                 if not requeue_on_stale:

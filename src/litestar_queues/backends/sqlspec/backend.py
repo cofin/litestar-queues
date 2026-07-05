@@ -14,7 +14,13 @@ from sqlspec import SQLSpec
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
-from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    BaseQueueBackend,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
 from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import (
@@ -271,9 +277,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     )
                     await driver.execute(self._get_store().insert_task(self._params_from_record(record)))
                     await driver.commit()
-                except Exception:
+                except Exception as exc:
                     with suppress(Exception):
                         await driver.rollback()
+                    if key is not None and _is_unique_violation(exc):
+                        existing = await self.get_task_by_key(key)
+                        if existing is not None and not existing.is_terminal:
+                            return existing
                     raise
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
@@ -696,19 +706,28 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         record = self._record_from_row(row)
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                         if requeue_on_stale and record.retry_count < record.max_retries:
+                            retry_error = stale_requeue_error(record.error)
+                            retry_priority = stale_requeue_priority(record.priority)
                             updated = await driver.execute(
                                 store.retry_task(
                                     task_id=str(record.id),
-                                    error="Task heartbeat stale",
+                                    error=retry_error,
                                     retry_count=record.retry_count + 1,
                                     expected_retry_count=record.retry_count,
                                     heartbeat_cutoff=serialized_cutoff,
+                                    priority=retry_priority,
                                 )
                             )
                             rows_affected = _rows_affected(updated)
                             if rows_affected == 1 or (
                                 rows_affected < 0
-                                and await self._stale_retry_updated(driver, record.id, record.retry_count)
+                                and await self._stale_retry_updated(
+                                    driver,
+                                    record.id,
+                                    record.retry_count,
+                                    expected_error=retry_error,
+                                    expected_priority=retry_priority,
+                                )
                             ):
                                 result.requeued += 1
                             else:
@@ -720,7 +739,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     task_id=str(record.id),
                                     completed_at=self._serialize_datetime(now),
                                     heartbeat_at=self._serialize_datetime(now),
-                                    error="Task heartbeat stale",
+                                    error=STALE_HEARTBEAT_ERROR,
                                     expected_retry_count=record.retry_count,
                                     heartbeat_cutoff=serialized_cutoff,
                                 )
@@ -1206,7 +1225,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
 
     async def _stale_retry_updated(
-        self, driver: "SQLSpecDriver", task_id: "UUID", previous_retry_count: "int"
+        self,
+        driver: "SQLSpecDriver",
+        task_id: "UUID",
+        previous_retry_count: "int",
+        *,
+        expected_error: "str",
+        expected_priority: "int",
     ) -> "bool":
         row = await self._select_task(driver, task_id)
         if row is None:
@@ -1215,7 +1240,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return (
             record.status == "pending"
             and record.retry_count == previous_retry_count + 1
-            and record.error == "Task heartbeat stale"
+            and record.error == expected_error
+            and record.priority == expected_priority
         )
 
     async def _stale_fail_updated(self, driver: "SQLSpecDriver", task_id: "UUID") -> "bool":
@@ -1223,7 +1249,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if row is None:
             return False
         record = self._record_from_row(row)
-        return record.status == "failed" and record.error == "Task heartbeat stale"
+        return record.status == "failed" and record.error == STALE_HEARTBEAT_ERROR
 
     def _get_observability_runtime(self) -> "Any | None":
         if not self._queue_observability:
@@ -1571,6 +1597,22 @@ def _utc_now() -> "datetime":
 
 def _rows_affected(result: "Any") -> "int":
     return int(getattr(result, "rows_affected", 0) or 0)
+
+
+def _is_unique_violation(exc: "BaseException") -> "bool":
+    current: "BaseException | None" = exc
+    while current is not None:
+        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if sqlstate in {"23000", "23505"}:
+            return True
+        message = str(current).lower()
+        if any(
+            token in message
+            for token in ("duplicate entry", "duplicate key", "unique constraint", "unique violation", "ora-00001")
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _coerce_record_args(value: "Any") -> "tuple[Any, ...]":

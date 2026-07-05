@@ -292,6 +292,19 @@ async def test_worker_periodic_requeue_respects_cadence_window() -> "None":
     assert len(backend.requeue_calls) == 1
 
 
+async def test_worker_periodic_requeue_uses_backend_fleet_lock() -> "None":
+    backend = _LockingCountingInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        first = Worker(service, stale_after=timedelta(seconds=30), stale_check_interval=0.0, worker_id="worker-1")
+        second = Worker(service, stale_after=timedelta(seconds=30), stale_check_interval=0.0, worker_id="worker-2")
+
+        await first._maybe_requeue_stale()
+        await second._maybe_requeue_stale()
+
+    assert backend.lock_calls == ["stale_recovery", "stale_recovery"]
+    assert len(backend.requeue_calls) == 1
+
+
 async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> "None":
     backend = _CountingInMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
@@ -301,6 +314,19 @@ async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> 
         await worker._maybe_reconcile_external()
         await worker._maybe_reconcile_external()
 
+    assert backend.list_running_external_calls == 1
+
+
+async def test_worker_periodic_reconcile_uses_backend_fleet_lock() -> "None":
+    backend = _LockingCountingInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        first = Worker(service, reconcile_interval=0.0, worker_id="worker-1")
+        second = Worker(service, reconcile_interval=0.0, worker_id="worker-2")
+
+        await first._maybe_reconcile_external()
+        await second._maybe_reconcile_external()
+
+    assert backend.lock_calls == ["external_reconcile", "external_reconcile"]
     assert backend.list_running_external_calls == 1
 
 
@@ -508,6 +534,23 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
     async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
         self.requeue_calls.append(stale_after)
         return await super().requeue_stale_running(stale_after=stale_after)
+
+
+class _LockingCountingInMemoryQueueBackend(_CountingInMemoryQueueBackend):
+    __slots__ = ("_held_locks", "lock_calls")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self._held_locks: "set[str]" = set()
+        self.lock_calls: "list[str]" = []
+
+    async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
+        del ttl
+        self.lock_calls.append(name)
+        if name in self._held_locks:
+            return False
+        self._held_locks.add(name)
+        return True
 
 
 class _FailingWorker:

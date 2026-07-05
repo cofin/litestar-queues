@@ -121,6 +121,13 @@ Worker settings are used when ``in_app_worker=True`` or when constructing a
    * - ``worker_stale_after``
      - ``None``
      - Seconds after which stale running records can be requeued on startup.
+   * - ``worker_stale_check_interval``
+     - ``60``
+     - Seconds between stale-running recovery sweeps.
+   * - ``error_sanitizer``
+     - ``None``
+     - Optional callable that converts task exceptions into persisted error
+       messages and failed-event messages.
 
 Event Settings
 ==============
