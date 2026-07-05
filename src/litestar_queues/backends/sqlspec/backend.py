@@ -1331,13 +1331,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _record_from_row(self, row: "dict[str, Any]") -> "QueuedTaskRecord":
         store = self._get_store()
-        args = store.deserialize_json("args_json", row["args_json"])
-        kwargs = store.deserialize_json("kwargs_json", row["kwargs_json"])
-        metadata = store.deserialize_json("metadata_json", row["metadata_json"])
+        args = _coerce_record_args(store.deserialize_json("args_json", row["args_json"]))
+        kwargs = _coerce_record_mapping("kwargs_json", store.deserialize_json("kwargs_json", row["kwargs_json"]))
+        metadata = _coerce_record_mapping(
+            "metadata_json", store.deserialize_json("metadata_json", row["metadata_json"])
+        )
         return QueuedTaskRecord(
             id=UUID(str(row["id"])),
             task_name=str(row["task_name"]),
-            args=tuple(args),
+            args=args,
             kwargs=kwargs,
             queue=str(row["queue"]),
             execution_backend=str(row["execution_backend"]),
@@ -1491,6 +1493,20 @@ def _extract_count(result: "Any") -> "int":
 
 def _rows_affected(result: "Any") -> "int":
     return int(getattr(result, "rows_affected", 0) or 0)
+
+
+def _coerce_record_args(value: "Any") -> "tuple[Any, ...]":
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    msg = f"SQLSpec queue backend expected args_json to decode to a JSON array, got {type(value).__name__}"
+    raise ValueError(msg)
+
+
+def _coerce_record_mapping(canonical: "str", value: "Any") -> "dict[str, Any]":
+    if isinstance(value, dict):
+        return value
+    msg = f"SQLSpec queue backend expected {canonical} to decode to a JSON object, got {type(value).__name__}"
+    raise ValueError(msg)
 
 
 def _serialize_datetime(value: "datetime | None") -> "datetime | None":

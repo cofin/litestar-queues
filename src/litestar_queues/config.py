@@ -1,11 +1,14 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
+from logging import getLogger
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from litestar.di import Provide
 
 from litestar_queues.events import QueueEventConfig
+
+logger = getLogger(__name__)
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -291,6 +294,11 @@ class QueueConfig:
         event_config = self.event_config
         sink: "QueueEventSink"
         if not event_config.enabled:
+            if event_config.sink is not None or event_config.channels_backend is not None:
+                logger.warning(
+                    "Queue event sink configured while event publishing is disabled; "
+                    "set QueueEventConfig(enabled=True) to publish queue events."
+                )
             sink = NoopQueueEventSink()
         elif event_config.sink is not None:
             sink = event_config.sink

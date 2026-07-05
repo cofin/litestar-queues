@@ -10,6 +10,7 @@ from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.exceptions import QueueConfigurationError
 
 __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
 
@@ -54,7 +55,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             The decoded Python JSON value.
         """
         if canonical in self._native_json_columns:
-            return _deserialize_native_oracle_json(value)
+            return _deserialize_native_oracle_json(canonical, value)
         return _deserialize_oracle_json(value)
 
     def _string_type(self, length: "int | None" = None) -> "str":
@@ -172,6 +173,9 @@ class _OracleJSONStorageType(str, Enum):
     BLOB_PLAIN = "blob"
 
 
+_ORACLE_CONTAINER_JSON_COLUMNS = frozenset({"args_json", "kwargs_json", "metadata_json"})
+
+
 def _queue_settings(config: "Any") -> "dict[str, Any]":
     extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
     return cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
@@ -193,7 +197,9 @@ def _json_storage_from_settings(settings: "dict[str, Any]") -> "_OracleJSONStora
         return _OracleJSONStorageType.BLOB_JSON
     if configured == _OracleJSONStorageType.BLOB_PLAIN.value:
         return _OracleJSONStorageType.BLOB_PLAIN
-    return _OracleJSONStorageType.BLOB_JSON
+    valid = ", ".join(storage_type.value for storage_type in _OracleJSONStorageType)
+    msg = f"Invalid Oracle json_storage {configured!r}; expected one of: {valid}."
+    raise QueueConfigurationError(msg)
 
 
 def _json_storage_from_version_info(version_info: "Any") -> "_OracleJSONStorageType":
@@ -268,17 +274,19 @@ def _deserialize_oracle_json(value: "Any") -> "Any":
     return from_json(value)
 
 
-def _deserialize_native_oracle_json(value: "Any") -> "Any":
+def _deserialize_native_oracle_json(canonical: "str", value: "Any") -> "Any":
     if value is None:
         return None
     read = getattr(value, "read", None)
     if callable(read):
         value = read()
-    if isinstance(value, (str, bytes)):
-        try:
+    if isinstance(value, bytes):
+        return from_json(value)
+    if isinstance(value, str):
+        stripped = value.lstrip()
+        if canonical in _ORACLE_CONTAINER_JSON_COLUMNS or stripped.startswith(("{", "[", '"')):
             return from_json(value)
-        except ValueError:
-            return value
+        return value
     return value
 
 

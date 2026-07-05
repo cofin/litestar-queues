@@ -14,13 +14,6 @@ _FIXTURE_PACKAGE = "tests.support.discover_tasks_pkg"
 _EXPECTED_TASKS = ("discover.bar.notify", "discover.baz.inner.run", "discover.foo.send")
 
 
-def _drop_fixture_modules() -> "None":
-    """Evict the fixture tree from ``sys.modules`` so reload semantics are testable."""
-    for module_name in list(sys.modules):
-        if module_name == _FIXTURE_PACKAGE or module_name.startswith(f"{_FIXTURE_PACKAGE}."):
-            del sys.modules[module_name]
-
-
 @pytest.fixture(autouse=True)
 def _clean_discover_state() -> "None":
     """Force a clean slate between tests; ``clean_task_registry`` already clears _task_registry."""
@@ -106,3 +99,45 @@ def test_discover_tasks_skips_non_jobs_siblings(tmp_path: "Path", monkeypatch: "
 
     assert "filter.real" in discovered
     assert "filter_pkg.things.helpers.side" not in sys.modules
+
+
+def test_discover_tasks_raises_when_child_package_import_fails(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Broken packages discovered by ``walk_packages`` must surface instead of being skipped."""
+    from litestar_queues import discover_tasks
+
+    package_name = _write_broken_child_package(tmp_path, "broken_discover_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ModuleNotFoundError, match=f"{package_name}.domain"):
+        discover_tasks(package_name)
+
+
+def test_load_task_modules_raises_when_child_package_import_fails(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Explicit package loading must not silently skip broken child packages."""
+    from litestar_queues import load_task_modules
+
+    package_name = _write_broken_child_package(tmp_path, "broken_load_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ModuleNotFoundError, match=f"{package_name}.domain"):
+        load_task_modules((package_name,))
+
+
+def _drop_fixture_modules() -> "None":
+    """Evict the fixture tree from ``sys.modules`` so reload semantics are testable."""
+    for module_name in list(sys.modules):
+        if module_name == _FIXTURE_PACKAGE or module_name.startswith(f"{_FIXTURE_PACKAGE}."):
+            del sys.modules[module_name]
+
+
+def _write_broken_child_package(tmp_path: "Path", package_name: "str") -> "str":
+    package_root = tmp_path / package_name
+    domain_root = package_root / "domain"
+    domain_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("")
+    (domain_root / "__init__.py").write_text("raise ImportError('broken domain package')\n")
+    return package_name

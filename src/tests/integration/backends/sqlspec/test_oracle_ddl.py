@@ -14,6 +14,7 @@ pytest.importorskip("sqlspec")
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores import OracledbAsyncQueueStore, OracledbSyncQueueStore, create_queue_store
+from litestar_queues.exceptions import QueueConfigurationError
 
 
 class FakeOracleConfig(SimpleNamespace):
@@ -132,6 +133,29 @@ def test_sqlspec_backend_oracledb_async_store_disables_lob_fetching() -> "None":
 
     assert isinstance(store, OracledbAsyncQueueStore)
     assert config.driver_features["fetch_lobs"] is False
+
+
+def test_sqlspec_backend_oracledb_rejects_invalid_json_storage() -> "None":
+    with pytest.raises(QueueConfigurationError, match="Invalid Oracle json_storage"):
+        create_queue_store(
+            _fake_oracle_config(
+                config_type_name="OracleAsyncConfig", extension_config={QUEUE_EXTENSION_NAME: {"json_storage": "clob"}}
+            ),
+            table_name="queue_tasks",
+        )
+
+
+def test_sqlspec_backend_oracledb_native_json_preserves_scalar_string_results() -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(
+            config_type_name="OracleAsyncConfig", extension_config={QUEUE_EXTENSION_NAME: {"json_storage": "json"}}
+        ),
+        table_name="queue_tasks",
+    )
+
+    assert store.deserialize_json("result_json", "123") == "123"
+    assert store.deserialize_json("result_json", '"123"') == "123"
+    assert store.deserialize_json("kwargs_json", '{"ok":true}') == {"ok": True}
 
 
 @pytest.mark.anyio

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from importlib import import_module, reload
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast, overload
 
 from typing_extensions import ParamSpec, Self
 
@@ -621,7 +621,9 @@ def discover_tasks(package: "str", subpackage: "str" = "jobs", *, force_reload: 
         raise ModuleNotFoundError(msg)
 
     matched: "list[str]" = []
-    for _, module_name, _is_package in pkgutil.walk_packages(cast("Any", root).__path__, prefix=f"{root.__name__}."):
+    for _, module_name, _is_package in pkgutil.walk_packages(
+        cast("Any", root).__path__, prefix=f"{root.__name__}.", onerror=_raise_walk_packages_error
+    ):
         if subpackage not in module_name.split(".")[1:]:
             continue
         matched.append(module_name)
@@ -870,7 +872,9 @@ def _load_child_modules(module: "ModuleType", *, force_reload: "bool") -> "int":
         return 0
     loaded = 0
     module_paths = cast("Any", module).__path__
-    for _, module_name, is_package in pkgutil.walk_packages(module_paths, prefix=f"{module.__name__}."):
+    for _, module_name, is_package in pkgutil.walk_packages(
+        module_paths, prefix=f"{module.__name__}.", onerror=_raise_walk_packages_error
+    ):
         if is_package or (module_name in _loaded_modules and not force_reload):
             continue
         if force_reload and module_name in sys.modules:
@@ -880,3 +884,11 @@ def _load_child_modules(module: "ModuleType", *, force_reload: "bool") -> "int":
         _loaded_modules.add(module_name)
         loaded += 1
     return loaded
+
+
+def _raise_walk_packages_error(module_name: "str") -> "NoReturn":
+    msg = f"Failed to import package {module_name!r} while discovering queue tasks"
+    exc = sys.exc_info()[1]
+    if exc is not None:
+        raise ModuleNotFoundError(msg) from exc
+    raise ModuleNotFoundError(msg)

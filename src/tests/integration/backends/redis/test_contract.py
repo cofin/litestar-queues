@@ -173,3 +173,17 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
     assert [record.id for record in completed_records] == [completed.id]
     assert cleanup_count >= 3
     assert await redis_backend.get_task(completed.id) is None
+
+
+async def test_redis_backend_rejects_unserializable_results(redis_backend: "RedisQueueBackend") -> "None":
+    record = await redis_backend.enqueue("tasks.unserializable")
+    claimed = await redis_backend.claim_task(record.id)
+
+    assert claimed is not None
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        await redis_backend.complete_task(record.id, result=object())
+
+    stored = await redis_backend.get_task(record.id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.result is None

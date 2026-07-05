@@ -715,7 +715,8 @@ def _decode_mapping(mapping: "dict[Any, Any]") -> "dict[str, Any]":
 def _json_default(value: "Any") -> "Any":
     if isinstance(value, datetime):
         return _serialize_datetime(value)
-    return str(value)
+    msg = f"Object of type {type(value).__name__} is not JSON serializable"
+    raise TypeError(msg)
 
 
 def _json_dumps(value: "Any") -> "str":
