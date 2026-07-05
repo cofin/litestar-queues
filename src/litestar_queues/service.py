@@ -11,7 +11,7 @@ from typing_extensions import Self
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
-from litestar_queues.exceptions import JobCancelledError, NonRetryableError
+from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
 
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import QueueEventPublisher
+    from litestar_queues.events import QueueEventLog, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
@@ -46,6 +46,7 @@ class QueueService:
 
     __slots__ = (
         "_config",
+        "_event_log",
         "_event_publisher",
         "_execution_backend",
         "_observability_runtime",
@@ -66,6 +67,7 @@ class QueueService:
         self._config = config
         self._queue_backend = queue_backend
         self._execution_backend = execution_backend
+        self._event_log: "QueueEventLog | None" = None
         self._event_publisher = event_publisher
         self._observability_runtime = observability_runtime
         self._sync_executor: "ThreadPoolExecutor | None" = None
@@ -108,7 +110,13 @@ class QueueService:
         Returns:
             The opened service.
         """
-        await self.get_queue_backend().open()
+        queue_backend = self.get_queue_backend()
+        await queue_backend.open()
+        try:
+            self._configure_event_log(queue_backend)
+        except Exception:
+            await queue_backend.close()
+            raise
         await self.get_execution_backend().open()
         await _call_optional_async_method(self.get_event_publisher().sink, "open")
         if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
@@ -122,6 +130,8 @@ class QueueService:
         """Close queue and execution backends."""
         if self._execution_backend is not None:
             await self._execution_backend.close()
+        if self._event_log is not None:
+            await self._event_log.flush_events()
         if self._queue_backend is not None:
             await self._queue_backend.close()
         if self._event_publisher is not None:
@@ -129,6 +139,20 @@ class QueueService:
         if self._sync_executor is not None:
             self._sync_executor.shutdown(wait=True, cancel_futures=True)
             self._sync_executor = None
+
+    def _configure_event_log(self, queue_backend: "BaseQueueBackend") -> "None":
+        event_log_config = self._config.event_log_config
+        if not event_log_config.enabled:
+            return
+        event_log = queue_backend.get_event_log(event_log_config)
+        if event_log is None:
+            msg = (
+                f"{type(queue_backend).__name__} does not support backend-managed queue event history; "
+                "disable QueueEventLogConfig or use a backend that supports durable event history."
+            )
+            raise QueueConfigurationError(msg)
+        self._event_log = event_log
+        self.get_event_publisher().set_event_log(event_log, strict=event_log_config.strict)
 
     async def __aenter__(self) -> "Self":
         await self.open()

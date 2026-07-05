@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from litestar_queues.events._typing import ChannelsLike
+    from litestar_queues.events.log import QueueEventLog
     from litestar_queues.events.models import QueueEvent
 
 __all__ = ("QueueEventConfig", "QueueEventPublisher")
@@ -43,18 +44,30 @@ class QueueEventConfig:
 class QueueEventPublisher:
     """Publish queue events through a configured sink."""
 
-    __slots__ = ("_sink", "publish_global_lifecycle", "publish_queue_channel", "publish_task_channel", "strict")
+    __slots__ = (
+        "_event_log",
+        "_event_log_strict",
+        "_sink",
+        "publish_global_lifecycle",
+        "publish_queue_channel",
+        "publish_task_channel",
+        "strict",
+    )
 
     def __init__(
         self,
         sink: "QueueEventSink | None" = None,
         *,
+        event_log: "QueueEventLog | None" = None,
+        event_log_strict: "bool" = False,
         strict: "bool" = False,
         publish_task_channel: "bool" = True,
         publish_queue_channel: "bool" = True,
         publish_global_lifecycle: "bool" = False,
     ) -> "None":
         self._sink = sink or NoopQueueEventSink()
+        self._event_log = event_log
+        self._event_log_strict = event_log_strict
         self.strict = strict
         self.publish_task_channel = publish_task_channel
         self.publish_queue_channel = publish_queue_channel
@@ -65,9 +78,15 @@ class QueueEventPublisher:
         """Configured event sink."""
         return self._sink
 
+    def set_event_log(self, event_log: "QueueEventLog", *, strict: "bool" = False) -> "None":
+        """Attach backend-owned durable event history to this publisher."""
+        self._event_log = event_log
+        self._event_log_strict = strict
+
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None) -> "None":
         """Publish an event to canonical and explicitly supplied channels."""
         resolved_channels = self.resolve_channels(event, channels=channels)
+        await self._record_event(event)
         try:
             await self._sink.publish(event, channels=resolved_channels)
         except Exception:
@@ -75,6 +94,20 @@ class QueueEventPublisher:
                 raise
             logger.warning(
                 "Queue event publish failed",
+                exc_info=True,
+                extra={"queue_event_type": event.type, "queue_event_id": event.id},
+            )
+
+    async def _record_event(self, event: "QueueEvent") -> "None":
+        if self._event_log is None:
+            return
+        try:
+            await self._event_log.publish_event(event)
+        except Exception:
+            if self._event_log_strict:
+                raise
+            logger.warning(
+                "Queue event history publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},
             )

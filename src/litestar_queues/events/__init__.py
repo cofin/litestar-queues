@@ -11,6 +11,7 @@ from litestar_queues.events.context import (
     publish_task_progress,
     require_current_task_context,
 )
+from litestar_queues.events.log import QueueEventLog, QueueEventLogConfig, QueueEventLogRecord, QueueEventStageSummary
 from litestar_queues.events.models import (
     QueueEvent,
     QueueEventActor,
@@ -33,9 +34,13 @@ __all__ = (
     "QueueEventActor",
     "QueueEventConfig",
     "QueueEventEntityRef",
+    "QueueEventLog",
+    "QueueEventLogConfig",
+    "QueueEventLogRecord",
     "QueueEventPublisher",
     "QueueEventScope",
     "QueueEventSink",
+    "QueueEventStageSummary",
     "QueueEventType",
     "TaskExecutionContext",
     "get_current_task_context",

@@ -10,6 +10,7 @@ from litestar_queues.events import QueueEventPublisher
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
+    from litestar_queues.events import QueueEvent, QueueEventLogConfig
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -254,6 +255,73 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     assert event.payload == {"requeued": 0, "failed": 1, "skipped": 0, "handler_needed": 0}
 
 
+async def test_event_log_config_is_public_and_memory_backend_is_unsupported() -> "None":
+    from litestar_queues import events
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    event_log_config_type = getattr(events, "QueueEventLogConfig", None)
+    assert event_log_config_type is not None
+
+    config = QueueConfig(event_log_config=event_log_config_type(enabled=True))
+
+    with pytest.raises(QueueConfigurationError, match="event history"):
+        async with QueueService(config):
+            pass
+
+
+async def test_backend_event_log_records_events_when_live_events_are_disabled() -> "None":
+    from litestar_queues import events, task
+    from litestar_queues.events import publish_task_log
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    event_log_config_type = getattr(events, "QueueEventLogConfig", None)
+    assert event_log_config_type is not None
+    event_log = _RecordingEventLog()
+
+    @task("tasks.event_history")
+    async def event_history_task() -> "None":
+        await publish_task_log("history only", payload={"stage": "load"})
+
+    config = QueueConfig(execution_backend="immediate", event_log_config=event_log_config_type(enabled=True))
+
+    async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
+        result = await service.enqueue(event_history_task)
+
+    assert result.status == "completed"
+    assert [event.type for event in event_log.events] == ["task.started", "task.log", "task.completed"]
+    assert event_log.flushed is True
+
+
+async def test_backend_event_log_and_live_sink_are_independent() -> "None":
+    from litestar_queues import events, task
+    from litestar_queues.events import publish_task_log
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    event_log_config_type = getattr(events, "QueueEventLogConfig", None)
+    assert event_log_config_type is not None
+    event_log = _RecordingEventLog()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.event_history_with_live_sink")
+    async def event_history_with_live_sink_task() -> "None":
+        await publish_task_log("history and live", payload={"stage": "load"})
+
+    config = QueueConfig(
+        execution_backend="immediate",
+        event_config=QueueEventConfig(enabled=True, sink=sink),
+        event_log_config=event_log_config_type(enabled=True),
+    )
+
+    async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
+        result = await service.enqueue(event_history_with_live_sink_task)
+
+    assert result.status == "completed"
+    assert [event.type for event in event_log.events] == ["task.started", "task.log", "task.completed"]
+    assert [event.type for event in sink.events] == ["task.started", "task.log", "task.completed"]
+
+
 async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> "None":
     from litestar_queues import task
     from litestar_queues.task import clear_task_registry
@@ -336,3 +404,25 @@ async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "N
     assert failed_event.message == "tasks.sanitize_error:RuntimeError:redacted"
     assert result.record is not None
     assert result.record.error == "tasks.sanitize_error:RuntimeError:redacted"
+
+
+class _RecordingEventLog:
+    def __init__(self) -> "None":
+        self.events: "list[QueueEvent]" = []
+        self.flushed = False
+
+    async def publish_event(self, event: "QueueEvent") -> "None":
+        self.events.append(event)
+
+    async def flush_events(self) -> "None":
+        self.flushed = True
+
+
+class _EventLogBackend(InMemoryQueueBackend):
+    def __init__(self, event_log: "_RecordingEventLog") -> "None":
+        super().__init__()
+        self._event_log = event_log
+
+    def get_event_log(self, config: "QueueEventLogConfig") -> "_RecordingEventLog":
+        del config
+        return self._event_log

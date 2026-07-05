@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
+    from litestar_queues.events import QueueEventLog, QueueEventLogConfig
     from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
 
 __all__ = ("BaseQueueBackend",)
@@ -44,6 +45,10 @@ class BaseQueueBackend:
 
     async def close(self) -> "None":
         """Close queue resources."""
+
+    def get_event_log(self, config: "QueueEventLogConfig") -> "QueueEventLog | None":
+        """Return a backend-owned queue event history implementation, if supported."""
+        return None
 
     async def enqueue(
         self,

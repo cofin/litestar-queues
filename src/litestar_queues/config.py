@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from litestar.di import Provide
 
-from litestar_queues.events import QueueEventConfig
+from litestar_queues.events import QueueEventConfig, QueueEventLogConfig
 
 logger = getLogger(__name__)
 
@@ -31,6 +31,7 @@ __all__ = (
     "QueueBackendConfigProtocol",
     "QueueConfig",
     "QueueEventConfig",
+    "QueueEventLogConfig",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "execution_backend_name",
@@ -160,6 +161,7 @@ class QueueConfig:
     sync_executor_max_workers: "int | None" = None
     sync_executor_thread_name_prefix: "str" = "litestar-queues"
     scheduler_canary_task: "str" = "scheduler.heartbeat"
+    event_log_config: "QueueEventLogConfig" = field(default_factory=QueueEventLogConfig)
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":
@@ -180,7 +182,11 @@ class QueueConfig:
             QueueEventActor,
             QueueEventConfig,
             QueueEventEntityRef,
+            QueueEventLog,
+            QueueEventLogConfig,
+            QueueEventLogRecord,
             QueueEventPublisher,
+            QueueEventStageSummary,
             TaskExecutionContext,
         )
         from litestar_queues.exceptions import JobCancelledError, NonRetryableError, job_cancelled, non_retryable
@@ -226,7 +232,11 @@ class QueueConfig:
             "QueueEventActor": QueueEventActor,
             "QueueEventConfig": QueueEventConfig,
             "QueueEventEntityRef": QueueEventEntityRef,
+            "QueueEventLog": QueueEventLog,
+            "QueueEventLogConfig": QueueEventLogConfig,
+            "QueueEventLogRecord": QueueEventLogRecord,
             "QueueEventPublisher": QueueEventPublisher,
+            "QueueEventStageSummary": QueueEventStageSummary,
             "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
             "QueueStatistics": QueueStatistics,
