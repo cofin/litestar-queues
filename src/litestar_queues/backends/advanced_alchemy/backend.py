@@ -8,7 +8,6 @@ from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -16,6 +15,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
+    from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
 
@@ -43,11 +43,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._create_schema = backend_config.create_schema
         self._opened = False
 
-    @property
-    def capabilities(self) -> "QueueBackendCapabilities":
-        """Backend behavior capabilities."""
-        return QueueBackendCapabilities()
-
     async def open(self) -> "bool":
         """Open Advanced Alchemy resources.
 
@@ -68,14 +63,14 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     async def create_schema(self) -> "None":
         """Create the queue task table and indexes."""
-        if self._sqlalchemy_config is not None:
-            engine = self._sqlalchemy_config.get_engine()
-            async with engine.begin() as connection:
-                await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
-        else:
-            async with self._session() as session, session.begin():
-                connection = await session.connection()
-                await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
+        self._ensure_configured()
+        sqlalchemy_config = self._sqlalchemy_config
+        if sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
+            raise QueueConfigurationError(msg)
+        engine = sqlalchemy_config.get_engine()
+        async with engine.begin() as connection:
+            await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
 
     async def enqueue(
         self,

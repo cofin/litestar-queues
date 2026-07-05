@@ -370,23 +370,6 @@ class SQLSpecQueueStore:
             .where_in(self._col("id"), task_ids)
         )
 
-    def requeue_stale(self, *, cutoff: "Any") -> "Any":
-        """Return an UPDATE statement that requeues stale running tasks."""
-        return (
-            sql
-            .update(self.table_name)
-            .set(
-                **self._mapped_values({
-                    "status": "pending",
-                    "started_at": None,
-                    "heartbeat_at": None,
-                    "retry_count": sql.raw(f"{self._col('retry_count')} + 1"),
-                })
-            )
-            .where_eq(self._col("status"), "running")
-            .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
-        )
-
     def list_stale_running(self, *, cutoff: "Any") -> "Any":
         """Return a SELECT statement for stale running tasks."""
         return (

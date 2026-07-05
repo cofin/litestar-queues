@@ -1477,22 +1477,6 @@ def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
 
-def _extract_count(result: "Any") -> "int":
-    """Pull a non-negative ``COUNT(*)`` value off a SQLSpec result.
-
-    Returns:
-        The count value from the first result row, or ``0`` when unavailable.
-    """
-    rows = getattr(result, "data", None) or []
-    if rows:
-        row = rows[0]
-        if isinstance(row, dict):
-            return int(next(iter(row.values())))
-        if isinstance(row, (list, tuple)):
-            return int(row[0])
-    return 0
-
-
 def _rows_affected(result: "Any") -> "int":
     return int(getattr(result, "rows_affected", 0) or 0)
 

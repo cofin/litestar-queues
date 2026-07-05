@@ -87,7 +87,7 @@ def test_column_map_resolves_generated_statement_columns(
         .build(dialect="sqlite")
         .sql
     )
-    stale_sql = store.requeue_stale(cutoff=datetime.now(timezone.utc).isoformat()).build(dialect="sqlite").sql
+    stale_sql = store.list_stale_running(cutoff=datetime.now(timezone.utc).isoformat()).build(dialect="sqlite").sql
     external_sql = store.list_running_external(limit=10).build(dialect="sqlite").sql
     completed_sql = (
         store
@@ -110,7 +110,7 @@ def test_column_map_resolves_generated_statement_columns(
     assert '"state" = ' in claim_sql
     assert '"run_after" <= :due_at' in claim_sql
     assert '"outcome" = ' in complete_sql
-    assert '"attempt_count" = "attempt_count" + 1' in stale_sql
+    assert '"state" = ' in stale_sql
     assert '"heartbeat" < :cutoff' in stale_sql
     assert "\"adopter_jobs\".\"state\" IN ('pending', 'scheduled', 'running')" in external_sql
     assert 'NOT "adopter_jobs"."external_ref" IS NULL' in external_sql
