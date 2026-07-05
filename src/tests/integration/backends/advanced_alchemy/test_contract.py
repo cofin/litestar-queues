@@ -118,6 +118,7 @@ def test_advanced_alchemy_mixin_uses_native_json_column_types() -> "None":
 
 def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects() -> "None":
     from litestar_queues.backends.advanced_alchemy.service import (
+        _build_claim_lock_statement,
         _build_claim_candidate_statement,
         _supports_skip_locked_claim,
     )
@@ -144,15 +145,18 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
         queue=None,
         execution_backend=None,
         now=claim_time,
-        limit=None,
-        skip_locked=_supports_skip_locked_claim("oracle"),
+        limit=10,
+        skip_locked=False,
     )
+    oracle_lock_statement = _build_claim_lock_statement(ContractQueueTask, uuid4())
 
     assert "FOR UPDATE SKIP LOCKED" in str(postgres_statement.compile(dialect=_postgresql_dialect()))
     assert "FOR UPDATE" not in str(sqlite_statement.compile(dialect=_sqlite_dialect()))
     oracle_sql = str(oracle_statement.compile(dialect=_oracle_dialect()))
-    assert "FOR UPDATE SKIP LOCKED" in oracle_sql
-    assert "FETCH FIRST" not in oracle_sql
+    oracle_lock_sql = str(oracle_lock_statement.compile(dialect=_oracle_dialect()))
+    assert "FOR UPDATE" not in oracle_sql
+    assert "FETCH FIRST" in oracle_sql
+    assert "FOR UPDATE SKIP LOCKED" in oracle_lock_sql
 
 
 def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialects() -> "None":

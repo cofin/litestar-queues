@@ -19,6 +19,7 @@ _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 _SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
 _NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
+_ORACLE_CLAIM_CANDIDATE_LIMIT = 10
 
 
 class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
@@ -122,12 +123,30 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     ) -> "QueuedTaskRecord | None":
         now = _utc_now()
         dialect_name = self._dialect_name()
+        if dialect_name == "oracle":
+            statement = _build_claim_candidate_statement(
+                self.model_type,
+                queue=queue,
+                execution_backend=execution_backend,
+                now=now,
+                limit=_ORACLE_CLAIM_CANDIDATE_LIMIT,
+                skip_locked=False,
+            )
+            candidates = (await self.repository.session.execute(statement)).scalars().all()
+            for candidate in candidates:
+                lock_statement = _build_claim_lock_statement(self.model_type, UUID(str(candidate.id)))
+                locked = (await self.repository.session.execute(lock_statement)).scalars().first()
+                if locked is None:
+                    continue
+                return await self.claim_task(UUID(str(locked.id)))
+            return None
+
         statement = _build_claim_candidate_statement(
             self.model_type,
             queue=queue,
             execution_backend=execution_backend,
             now=now,
-            limit=None if dialect_name == "oracle" else 1,
+            limit=1,
             skip_locked=True,
         )
         row = (await self.repository.session.execute(statement)).scalars().first()
@@ -491,6 +510,12 @@ def _build_claim_candidate_statement(
     if skip_locked:
         statement = statement.with_for_update(skip_locked=True)
     return statement
+
+
+def _build_claim_lock_statement(model_type: "type[Any]", task_id: "UUID") -> "Any":
+    return select(model_type).where(model_type.id == task_id, model_type.status.in_(_DUE_STATUSES)).with_for_update(
+        skip_locked=True
+    )
 
 
 def _build_keyed_enqueue_upsert(
