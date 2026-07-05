@@ -669,49 +669,29 @@ Install the Cloud Run extra when tasks should execute in Cloud Run Jobs:
 
    pip install litestar-queues[cloudrun]
 
-Configure execution with generic package settings. Queue persistence remains
-app-owned and can use any queue backend that supports execution references:
+Configure Cloud Run execution with generic package settings. Queue persistence
+remains app-owned and can use any queue backend that supports execution
+references:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, task
+   from litestar_queues import QueueConfig
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
-
-   @task("reports.render", execution_backend="cloudrun", execution_profile="heavy")
-   async def render_report(report_id: str) -> None:
-       ...
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(config=...),
        execution_backend=CloudRunExecutionConfig(
-           project_id="example-project",
+           project_id="my-project",
            region="us-central1",
-           job_name="queue-worker",
-           profiles={"heavy": "queue-worker-heavy"},
+           job_name="my-worker-job",
+           profiles={"heavy": "my-worker-job-heavy"},
        ),
    )
 
-The dispatch worker stores the Cloud Run execution name on the queue record and
-does not claim the task locally. The Cloud Run container should run
-``litestar-queues-cloudrun-worker`` or
-``python -m litestar_queues.execution.cloudrun.entrypoint``. The entry point
-loads the queue configuration from ``LITESTAR_QUEUES_CONFIG_FACTORY`` before it
-reads the task id, so custom ``env_prefix`` values are honored for variables
-such as ``<PREFIX>_TASK_ID`` and ``<PREFIX>_TASK_MODULES``. It then loads
-configured task modules, claims the persisted record, updates heartbeats,
-executes the task through the shared queue service, and returns deterministic
-process exit codes. A missing or invalid config factory exits with a distinct
-configuration error instead of looking like a missing task record.
-
-If the Cloud Run API call fails before a remote execution owns the task, the
-backend logs and publishes a task event. By default
-``fallback_execution_backend`` is ``None``, so the dispatch error surfaces and
-the record remains routed to ``cloudrun``. To opt in to local recovery, set a
-fallback explicitly, for example ``fallback_execution_backend="local"``. Status
-checks that fail transiently are treated as still running so reconciliation does
-not create false terminal states; a missing Cloud Run execution is treated as a
-failed execution so eligible records can retry.
+The full Cloud Run deployment guide lives in :doc:`deployment/cloud-run`. It
+covers the enqueue / dispatch / execute split, the worker env contract, IAM,
+database connectivity, timeout alignment, scheduling, and troubleshooting.
 
 SQLSpec Event Notifications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
