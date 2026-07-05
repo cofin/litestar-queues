@@ -14,12 +14,12 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 from litestar_queues.events.log import QueueEventLogConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable
+    from contextlib import AbstractAsyncContextManager
 
     from sqlspec.builder import CreateIndex, CreateTable, Delete, DropIndex, DropTable, Select
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecDriver, SQLSpecStoreConfig
-    from litestar_queues.backends.sqlspec.backend import SQLSpecQueueBackend
     from litestar_queues.events.models import QueueEvent
 
 __all__ = (
@@ -130,11 +130,19 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return sql.delete(self.table_name).where("occurred_at < :event_log_before", event_log_before=before)
 
     def serialize_detail(self, detail: "dict[str, Any]") -> "Any":
-        """Serialize event detail payloads with the SQLSpec JSON serializer."""
+        """Serialize event detail payloads with the SQLSpec JSON serializer.
+
+        Returns:
+            The adapter-shaped serialized detail payload.
+        """
         return self._serialize_json(detail)
 
     def deserialize_detail(self, value: "Any") -> "dict[str, Any]":
-        """Deserialize event detail payloads returned by a SQLSpec driver."""
+        """Deserialize event detail payloads returned by a SQLSpec driver.
+
+        Returns:
+            The decoded detail mapping, or an empty mapping for non-object JSON.
+        """
         detail = self.deserialize_json("detail_json", value)
         return detail if isinstance(detail, dict) else {}
 
@@ -208,16 +216,26 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
 class SQLSpecQueueEventLog:
     """Buffered SQLSpec event-history writer and query interface."""
 
-    __slots__ = ("_backend", "_config", "_flush_lock", "_last_flush", "_pending", "_store")
+    __slots__ = (
+        "_config",
+        "_datetime_serializer",
+        "_flush_lock",
+        "_last_flush",
+        "_pending",
+        "_session_factory",
+        "_store",
+    )
 
     def __init__(
         self,
-        backend: "SQLSpecQueueBackend",
         *,
+        session_factory: "Callable[[], AbstractAsyncContextManager[SQLSpecDriver]]",
+        datetime_serializer: "Callable[[datetime], datetime | str]",
         config: "QueueEventLogConfig",
         store: "SQLSpecQueueEventLogStore",
     ) -> "None":
-        self._backend = backend
+        self._session_factory = session_factory
+        self._datetime_serializer = datetime_serializer
         self._config = config
         self._store = store
         self._pending: "list[dict[str, Any]]" = []
@@ -234,13 +252,17 @@ class SQLSpecQueueEventLog:
             await self.flush_events()
 
     async def flush_events(self) -> "None":
-        """Flush buffered queue events through a SQLSpec session."""
+        """Flush buffered queue events through a SQLSpec session.
+
+        Returns:
+            None.
+        """
         async with self._flush_lock:
             if not self._pending:
                 return
             batch = list(self._pending)
             try:
-                async with self._backend._session() as driver:
+                async with self._session_factory() as driver:
                     await driver.begin()
                     try:
                         await driver.execute_many(self._store.insert_events_template(), batch)
@@ -262,7 +284,7 @@ class SQLSpecQueueEventLog:
     ) -> "list[QueueEventLogRecord]":
         """Return durable event history records."""
         await self.flush_events()
-        async with self._backend._session() as driver:
+        async with self._session_factory() as driver:
             rows = await driver.select(self._store.select_events(task_id=task_id, task_name=task_name, limit=limit))
         return [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
 
@@ -270,15 +292,19 @@ class SQLSpecQueueEventLog:
         """Return per-stage event history aggregates."""
         await self.flush_events()
         statement, params = self._store.summarize_stages(task_name=task_name)
-        async with self._backend._session() as driver:
+        async with self._session_factory() as driver:
             rows = await driver.select(statement, params)
         return [self._summary_from_row(cast("dict[str, Any]", row)) for row in rows]
 
     async def cleanup_before(self, before: "datetime") -> "int":
-        """Delete event history older than ``before``."""
+        """Delete event history older than ``before``.
+
+        Returns:
+            Number of deleted event-history rows.
+        """
         await self.flush_events()
-        before_value = self._backend._serialize_datetime(before)
-        async with self._backend._session() as driver:
+        before_value = self._datetime_serializer(before)
+        async with self._session_factory() as driver:
             await driver.begin()
             try:
                 count_row = await driver.select_one_or_none(self._store.count_events_before(before=before_value))
@@ -315,8 +341,8 @@ class SQLSpecQueueEventLog:
             "progress_percent": _optional_float(event.progress_percent),
             "duration_ms": _optional_float(detail.get("duration_ms")),
             "sequence": event.sequence,
-            "occurred_at": self._backend._serialize_datetime(event.occurred_at),
-            "created_at": self._backend._serialize_datetime(datetime.now(timezone.utc)),
+            "occurred_at": self._datetime_serializer(event.occurred_at),
+            "created_at": self._datetime_serializer(datetime.now(timezone.utc)),
         }
 
     def _record_from_row(self, row: "dict[str, Any]") -> "QueueEventLogRecord":
@@ -359,7 +385,11 @@ def create_event_log_store(
     event_log_table_name: "str | None" = None,
     manage_schema: "bool" = True,
 ) -> "SQLSpecQueueEventLogStore":
-    """Create an event-log store for a SQLSpec adapter configuration."""
+    """Create an event-log store for a SQLSpec adapter configuration.
+
+    Returns:
+        SQLSpec event-log store configured for the resolved event-log table.
+    """
     return SQLSpecQueueEventLogStore(
         config,
         table_name=resolve_event_log_table_name(queue_table_name, event_log_table_name=event_log_table_name),
@@ -368,7 +398,11 @@ def create_event_log_store(
 
 
 def resolve_event_log_table_name(queue_table_name: "str", *, event_log_table_name: "str | None" = None) -> "str":
-    """Resolve the SQLSpec event-log table name for a queue table."""
+    """Resolve the SQLSpec event-log table name for a queue table.
+
+    Returns:
+        The explicit event-log table name, or the derived queue-table event log name.
+    """
     if event_log_table_name is not None:
         return validate_table_name(event_log_table_name)
     return event_log_table_name_for(queue_table_name)

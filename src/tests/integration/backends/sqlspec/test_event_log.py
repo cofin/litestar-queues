@@ -11,7 +11,14 @@ import pytest
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
-from litestar_queues import InMemoryQueueEventSink, QueueConfig, QueueEventConfig, QueueEventLogConfig, QueueService, task
+from litestar_queues import (
+    InMemoryQueueEventSink,
+    QueueConfig,
+    QueueEventConfig,
+    QueueEventLogConfig,
+    QueueService,
+    task,
+)
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.events import publish_task_log, publish_task_progress
@@ -52,8 +59,7 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
         result = await service.enqueue(event_history_task)
 
     reader_config = QueueConfig(
-        queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)),
-        event_log_config=event_log_config,
+        queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)), event_log_config=event_log_config
     )
     async with QueueService(reader_config) as reader:
         event_log = reader.get_queue_backend().get_event_log(event_log_config)
@@ -163,7 +169,9 @@ async def test_sqlspec_event_log_migration_down_drops_event_table() -> "None":
 
     down_statements = await migration.down(context)
 
-    assert any("DROP TABLE" in statement and "litestar_queue_task_event_log" in statement for statement in down_statements)
+    assert any(
+        "DROP TABLE" in statement and "litestar_queue_task_event_log" in statement for statement in down_statements
+    )
 
 
 def _sqlite_table_names(db_path: "Path") -> "set[str]":

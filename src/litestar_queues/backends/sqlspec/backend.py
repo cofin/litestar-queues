@@ -219,7 +219,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if not config.enabled:
             return None
         if self._event_log is None:
-            self._event_log = SQLSpecQueueEventLog(self, config=config, store=self._get_event_log_store())
+            self._event_log = SQLSpecQueueEventLog(
+                session_factory=self._session,
+                datetime_serializer=self._serialize_datetime,
+                config=config,
+                store=self._get_event_log_store(),
+            )
         return self._event_log
 
     @property
