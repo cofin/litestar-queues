@@ -260,6 +260,22 @@ async def test_advanced_alchemy_backend_fail_task_retries_then_fails_permanently
     assert failed.completed_at is not None
 
 
+async def test_advanced_alchemy_backend_preserves_json_string_results(
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
+    record = await advanced_alchemy_backend.enqueue("tasks.string-result")
+    claimed = await advanced_alchemy_backend.claim_task(record.id)
+
+    assert claimed is not None
+    completed = await advanced_alchemy_backend.complete_task(claimed.id, result="123")
+    stored = await advanced_alchemy_backend.get_task(record.id)
+
+    assert completed is not None
+    assert completed.result == "123"
+    assert stored is not None
+    assert stored.result == "123"
+
+
 async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_running(
     advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
 ) -> "None":

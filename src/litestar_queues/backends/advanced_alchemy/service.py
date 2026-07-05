@@ -571,11 +571,6 @@ def _deserialize_json(value: "Any") -> "Any":
         return None
     if isinstance(value, bytes | bytearray | memoryview):
         return _decode_json(bytes(value))
-    if isinstance(value, str):
-        try:
-            return _decode_json(value)
-        except ValueError:
-            return value
     return value
 
 
