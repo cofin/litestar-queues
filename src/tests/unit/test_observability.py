@@ -10,19 +10,25 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from litestar_queues.execution.cloudrun._typing import CloudRunExecutionLike, CloudRunOperation
+    from litestar_queues.observability import QueueObservabilityConfig
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_queue_config_accepts_observability_runtime_config() -> "None":
-    """QueueConfig should carry optional package-level observability settings."""
+async def test_queue_config_accepts_observability_enable_flags() -> "None":
+    """QueueConfig should expose the common package-level observability switches directly."""
     from litestar_queues.observability import QueueObservabilityConfig
 
-    observability = QueueObservabilityConfig(enable_otel=False, enable_prometheus=False)
+    config = QueueConfig(enable_otel=True, enable_prometheus=True)
 
-    config = QueueConfig(observability=observability)
+    observability_config = config.observability_config
 
-    assert config.observability is observability
+    assert observability_config is not None
+    assert observability_config.enable_otel is True
+    assert observability_config.enable_prometheus is True
+
+    advanced_config = QueueObservabilityConfig(metric_prefix="custom")
+    assert QueueConfig(enable_otel=True, observability=advanced_config).observability_config is advanced_config
 
 
 async def test_enqueue_uses_observability_runtime_for_producer_span_and_context() -> "None":
@@ -108,7 +114,6 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     from litestar import Litestar
 
     from litestar_queues import QueuePlugin
-    from litestar_queues.observability import QueueObservabilityConfig
 
     runtime = FakeObservabilityRuntime()
     seen_apps: "list[Litestar | None]" = []
@@ -121,7 +126,7 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
-    plugin = QueuePlugin(QueueConfig(observability=QueueObservabilityConfig(enable_otel=False), in_app_worker=False))
+    plugin = QueuePlugin(QueueConfig(enable_otel=None, in_app_worker=False))
     app = Litestar(plugins=[plugin])
 
     await plugin._on_startup(app)

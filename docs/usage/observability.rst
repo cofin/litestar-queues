@@ -20,22 +20,23 @@ OpenTelemetry and Prometheus are optional:
 Configure a Litestar App
 ========================
 
-Use ``QueueObservabilityConfig(enable_otel=None)`` when a Litestar app already
-uses ``OpenTelemetryPlugin``. The queue plugin checks the app during startup and
-only enables OpenTelemetry when that plugin is present.
+Set ``enable_otel=True`` and/or ``enable_prometheus=True`` on
+``QueueConfig``. The queue plugin creates the observability runtime during
+Litestar startup, so in-app workers and request handlers share the same queue
+telemetry settings.
 
 .. code-block:: python
 
    from litestar import Litestar
    from litestar_queues import QueueConfig, QueuePlugin
-   from litestar_queues.observability import QueueObservabilityConfig
 
    app = Litestar(
        route_handlers=[...],
        plugins=[
            QueuePlugin(
                QueueConfig(
-                   observability=QueueObservabilityConfig(enable_otel=None),
+                   enable_otel=True,
+                   enable_prometheus=True,
                )
            ),
        ],
@@ -44,31 +45,37 @@ only enables OpenTelemetry when that plugin is present.
 Standalone Services and CLI Workers
 ===================================
 
-Standalone ``QueueService`` instances and ``litestar queues run`` workers do
-not have a Litestar app object for auto-detection. Enable OpenTelemetry
-explicitly for those paths:
+Use the same settings when constructing a standalone service:
 
 .. code-block:: python
 
    from litestar_queues import QueueConfig, QueueService
-   from litestar_queues.observability import QueueObservabilityConfig
 
    queue_config = QueueConfig(
-       observability=QueueObservabilityConfig(enable_otel=True),
+       enable_otel=True,
+       enable_prometheus=True,
    )
 
    async with QueueService(queue_config) as queue_service:
        ...
 
-Prometheus metrics require explicit opt-in:
+CLI workers should load a config factory that returns the same settings:
 
 .. code-block:: python
 
-   QueueConfig(
-       observability=QueueObservabilityConfig(
+   from litestar_queues import QueueConfig
+
+
+   def create_queue_config() -> QueueConfig:
+       return QueueConfig(
+           enable_otel=True,
            enable_prometheus=True,
+           in_app_worker=False,
        )
-   )
+
+.. code-block:: bash
+
+   LITESTAR_QUEUES_CONFIG_FACTORY=app.queue:create_queue_config litestar queues run
 
 Trace Context
 =============
@@ -111,11 +118,10 @@ SQLSpec Coexistence
 
 SQLSpec statement spans, query spans, statement observers, and lifecycle hooks
 remain controlled by SQLSpec. Package-level queue observability owns
-queue-domain telemetry when ``QueueConfig.observability`` is supplied.
+queue-domain telemetry when ``QueueConfig(enable_otel=True)`` or
+``QueueConfig(enable_prometheus=True)`` is supplied.
 
-By default, ``QueueObservabilityConfig`` disables SQLSpec's custom queue-domain
-counters and spans for the SQLSpec queue backend. This avoids double counting
-``enqueue``, ``claim``, ``complete``, ``fail``, and stale-recovery events.
-
-Set ``disable_sqlspec_queue_observability=False`` only when you intentionally
-want both package-level queue metrics and SQLSpec queue-domain metrics.
+By default, package-level queue observability disables SQLSpec's custom
+queue-domain counters and spans for the SQLSpec queue backend. This avoids
+double counting ``enqueue``, ``claim``, ``complete``, ``fail``, and
+stale-recovery events.

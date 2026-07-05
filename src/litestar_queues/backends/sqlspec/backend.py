@@ -64,11 +64,14 @@ _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
 
 def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool":
     """Return whether package-level queue observability should own queue-domain metrics."""
-    if config is None or config.observability is None:
+    if config is None:
         return False
-    if not config.observability.disable_sqlspec_queue_observability:
+    observability_config = config.observability_config
+    if observability_config is None:
         return False
-    return config.observability.enable_prometheus or config.observability.enable_otel is not False
+    if not observability_config.disable_sqlspec_queue_observability:
+        return False
+    return observability_config.enable_prometheus or observability_config.enable_otel is not False
 
 
 def _adapter_notify_transport(adapter_name: "str | None") -> "str":

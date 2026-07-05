@@ -98,7 +98,7 @@ class QueueService:
         if self._observability_runtime is None:
             from litestar_queues.observability import create_observability_runtime
 
-            self._observability_runtime = create_observability_runtime(self._config.observability)
+            self._observability_runtime = create_observability_runtime(self._config.observability_config)
         return self._observability_runtime
 
     async def open(self) -> "Self":

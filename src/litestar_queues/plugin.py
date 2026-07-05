@@ -86,10 +86,11 @@ class QueuePlugin(InitPlugin):
             load_task_modules(self._config.task_modules)
 
         observability_runtime = None
-        if self._config.observability is not None:
+        observability_config = self._config.observability_config
+        if observability_config is not None:
             from litestar_queues.observability import create_observability_runtime
 
-            observability_runtime = create_observability_runtime(self._config.observability, app=app)
+            observability_runtime = create_observability_runtime(observability_config, app=app)
 
         self._service = QueueService(
             self._config,
