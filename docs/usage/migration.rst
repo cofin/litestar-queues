@@ -150,6 +150,12 @@ claims the persisted record, executes the task, publishes lifecycle and task
 events through the configured event sink, and exits with a deterministic status
 code.
 
+``CloudRunExecutionConfig.fallback_execution_backend`` defaults to ``None``.
+This is intentional: dispatch failures should surface instead of silently
+rerouting to a backend that may not have a worker. If you want local rerouting,
+set ``fallback_execution_backend="local"`` explicitly and run a local worker
+that can consume those records.
+
 Migration Checklist
 -------------------
 
