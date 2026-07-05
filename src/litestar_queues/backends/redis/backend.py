@@ -14,8 +14,6 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from redis import asyncio as redis_asyncio
-
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
@@ -485,6 +483,8 @@ class RedisQueueBackend(BaseQueueBackend):
             await _close_pubsub(pubsub, self._notification_channel)
 
     def _create_client(self, url: "str") -> "Any":
+        from redis import asyncio as redis_asyncio
+
         return redis_asyncio.from_url(url, decode_responses=True)
 
     async def _get_client(self) -> "Any":

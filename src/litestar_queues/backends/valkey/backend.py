@@ -9,8 +9,6 @@ and the ``valkey-pubsub`` notification capability label.
 
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from valkey import asyncio as valkey_asyncio
-
 from litestar_queues.backends.redis.backend import RedisQueueBackend
 from litestar_queues.backends.valkey.config import ValkeyBackendConfig
 
@@ -32,5 +30,7 @@ class ValkeyQueueBackend(RedisQueueBackend):
         super().__init__(config=config, backend_config=cast("Any", backend_config))
 
     def _create_client(self, url: "str") -> "Any":
+        from valkey import asyncio as valkey_asyncio
+
         from_url = cast("Any", valkey_asyncio.from_url)
         return from_url(url, decode_responses=True)
