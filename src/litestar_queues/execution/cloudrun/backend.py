@@ -92,21 +92,41 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         Returns:
             The Cloud Run execution reference, if dispatch succeeds.
         """
-        request = self.build_run_job_request(service, record)
-        client = await self._get_jobs_client()
+        runtime = service.observability_runtime
+        attributes = _queue_observability_attributes("dispatch", record)
+        attributes["messaging.message.id"] = str(record.id)
+        metric_attributes = _queue_metric_attributes(attributes)
+        span = runtime.start_span("litestar_queues.dispatch", kind="producer", attributes=attributes)
         try:
+            request = self.build_run_job_request(service, record)
+            client = await self._get_jobs_client()
             operation = await client.run_job(request=request)
             execution_ref = _require_operation_execution_ref(operation)
         except Exception as exc:
+            runtime.record_exception(span, exc)
             await self._publish_dispatch_failure(service, record, exc)
             fallback = self.execution_config.fallback_execution_backend
             if fallback is None:
+                runtime.record_counter(
+                    "litestar_queues.execution.dispatch.count",
+                    attributes={**metric_attributes, "queue.execution.status": "error"},
+                )
                 raise
             await service.get_queue_backend().set_execution_backend(record.id, fallback)
+            runtime.record_counter(
+                "litestar_queues.execution.dispatch.count",
+                attributes={**metric_attributes, "queue.execution.status": "fallback"},
+            )
             return None
+        finally:
+            runtime.end_span(span)
 
         await service.get_queue_backend().set_execution_ref(
             record.id, "cloudrun", execution_ref, execution_profile=record.execution_profile
+        )
+        runtime.record_counter(
+            "litestar_queues.execution.dispatch.count",
+            attributes={**metric_attributes, "queue.execution.status": "dispatched"},
         )
         return execution_ref
 
@@ -123,7 +143,22 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         if current.status in {"completed", "failed", "cancelled"}:
             return None
 
-        status = await self.check_execution_status(record.execution_ref)
+        runtime = service.observability_runtime
+        attributes = _queue_observability_attributes("reconcile", record)
+        attributes["messaging.message.id"] = str(record.id)
+        metric_attributes = _queue_metric_attributes(attributes)
+        span = runtime.start_span("litestar_queues.reconcile", kind="consumer", attributes=attributes)
+        try:
+            status = await self.check_execution_status(record.execution_ref)
+        except Exception as exc:
+            runtime.record_exception(span, exc)
+            runtime.record_counter(
+                "litestar_queues.execution.reconcile.count",
+                attributes={**metric_attributes, "queue.execution.status": "error"},
+            )
+            raise
+        finally:
+            runtime.end_span(span)
         if status.running:
             return None
 
@@ -131,23 +166,28 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         if status.succeeded:
             if current.status != "running":
                 return None
-            return await queue_backend.complete_task(
+            updated = await queue_backend.complete_task(
                 current.id,
                 result=current.result
                 if current.result is not None
                 else {"cloudrun_execution": current.execution_ref, "status": "succeeded"},
                 expected_retry_count=expected_retry_count,
             )
+            _record_reconcile_result(runtime, metric_attributes, updated)
+            return updated
 
         if status.cancelled:
-            return await queue_backend.fail_task(
+            updated = await queue_backend.fail_task(
                 current.id, "Cloud Run execution cancelled", retry=False, expected_retry_count=expected_retry_count
             )
+            _record_reconcile_result(runtime, metric_attributes, updated)
+            return updated
 
         if status.failed:
             updated = await queue_backend.fail_task(
                 current.id, status.error or "Cloud Run execution failed", expected_retry_count=expected_retry_count
             )
+            _record_reconcile_result(runtime, metric_attributes, updated)
             if updated is not None and updated.status in {"pending", "scheduled"}:
                 return await queue_backend.set_execution_backend(
                     updated.id, updated.execution_backend, execution_profile=updated.execution_profile
@@ -299,6 +339,36 @@ def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":
         if message:
             return str(message)
     return None
+
+
+def _queue_observability_attributes(operation: "str", record: "QueuedTaskRecord") -> "dict[str, object]":
+    return {
+        "messaging.system": "litestar_queues",
+        "messaging.operation.name": operation,
+        "messaging.destination.name": record.queue,
+        "queue.task.name": record.task_name,
+        "queue.execution.backend": record.execution_backend,
+        "queue.execution.profile": record.execution_profile or "",
+    }
+
+
+def _queue_metric_attributes(attributes: "Mapping[str, object]") -> "dict[str, str]":
+    return {
+        "messaging.destination.name": str(attributes["messaging.destination.name"]),
+        "queue.task.name": str(attributes["queue.task.name"]),
+        "queue.execution.backend": str(attributes["queue.execution.backend"]),
+        "queue.execution.profile": str(attributes["queue.execution.profile"]),
+    }
+
+
+def _record_reconcile_result(
+    runtime: "Any", metric_attributes: "dict[str, str]", record: "QueuedTaskRecord | None"
+) -> "None":
+    if record is not None:
+        runtime.record_counter(
+            "litestar_queues.execution.reconcile.count",
+            attributes={**metric_attributes, "queue.execution.status": record.status},
+        )
 
 
 def _operation_execution_ref(operation: "object") -> "str | None":

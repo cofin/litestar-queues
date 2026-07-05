@@ -10,7 +10,9 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from sqlspec.observability import ObservabilityConfig, StatementEvent
 from sqlspec.utils.correlation import CorrelationContext
 
+from litestar_queues import QueueConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.observability import QueueObservabilityConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -155,6 +157,26 @@ async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: 
         metrics = sqlspec_config.get_observability_runtime().metrics_snapshot()
         assert not any(".queue." in name for name in metrics)
         assert any(event.correlation_id == "queue-observability-disabled" for event in statement_events)
+    finally:
+        await backend.close()
+
+
+async def test_package_observability_disables_sqlspec_queue_domain_observability(tmp_path: "Path") -> "None":
+    statement_events: "list[StatementEvent]" = []
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": str(tmp_path / "queue-package-observability.db")},
+        observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
+    )
+    queue_config = QueueConfig(observability=QueueObservabilityConfig(enable_otel=True))
+    backend = SQLSpecQueueBackend(config=queue_config, backend_config=SQLSpecBackendConfig(config=sqlspec_config))
+    await backend.open()
+    try:
+        with CorrelationContext.context("package-queue-observability"):
+            await backend.enqueue("tasks.observed.package")
+
+        metrics = sqlspec_config.get_observability_runtime().metrics_snapshot()
+        assert not any(".queue." in name for name in metrics)
+        assert any(event.correlation_id == "package-queue-observability" for event in statement_events)
     finally:
         await backend.close()
 

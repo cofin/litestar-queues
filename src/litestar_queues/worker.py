@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import execution_backend_name
@@ -99,7 +100,10 @@ class Worker:
                     processed = await self.run_once()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
+                    self._record_counter(
+                        "litestar_queues.worker.loop.error.count", {"worker.error.type": type(exc).__name__}
+                    )
                     logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
                     await self._backoff_after_loop_error()
                     continue
@@ -138,6 +142,7 @@ class Worker:
         if not claimed_records:
             return 0
 
+        self._record_claimed(claimed_records)
         for record in claimed_records:
             self._track_execution(record)
         return len(claimed_records)
@@ -225,6 +230,10 @@ class Worker:
             updated = await execution_backend.reconcile(self._service, record)
             if updated is not None and updated.is_terminal:
                 reconciled += 1
+                self._record_counter(
+                    "litestar_queues.execution.reconcile.count",
+                    {"queue.task.status": updated.status, "queue.execution.backend": record.execution_backend},
+                )
         return reconciled
 
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> "None":
@@ -245,7 +254,26 @@ class Worker:
         for record in records:
             if record.execution_ref is not None:
                 continue
-            await execution_backend.dispatch(self._service, record)
+            try:
+                await execution_backend.dispatch(self._service, record)
+            except Exception:
+                self._record_counter(
+                    "litestar_queues.execution.dispatch.count",
+                    {
+                        "messaging.destination.name": record.queue,
+                        "queue.execution.backend": record.execution_backend,
+                        "queue.execution.status": "error",
+                    },
+                )
+                raise
+            self._record_counter(
+                "litestar_queues.execution.dispatch.count",
+                {
+                    "messaging.destination.name": record.queue,
+                    "queue.execution.backend": record.execution_backend,
+                    "queue.execution.status": "dispatched",
+                },
+            )
             dispatched += 1
         return dispatched
 
@@ -256,7 +284,19 @@ class Worker:
         if now - self._last_stale_check_at < self._stale_check_interval:
             return
         self._last_stale_check_at = now
-        await self._service.recover_stale_tasks(stale_after=self._stale_after, worker_id=self._worker_id)
+        result = await self._service.recover_stale_tasks(stale_after=self._stale_after, worker_id=self._worker_id)
+        total = result.requeued + result.failed + result.skipped + result.handler_needed
+        if total:
+            self._record_counter(
+                "litestar_queues.stale_recovery.count",
+                {
+                    "queue.stale.requeued": str(result.requeued),
+                    "queue.stale.failed": str(result.failed),
+                    "queue.stale.skipped": str(result.skipped),
+                    "queue.stale.handler_needed": str(result.handler_needed),
+                },
+                value=total,
+            )
 
     async def _maybe_reconcile_external(self) -> "None":
         if self._reconcile_interval <= 0:
@@ -271,7 +311,15 @@ class Worker:
     async def _heartbeat(self, task_id: "UUID", expected_retry_count: "int | None" = None) -> "None":
         while True:
             await asyncio.sleep(self._heartbeat_interval)
-            await self._service.get_queue_backend().touch_heartbeat(task_id, expected_retry_count=expected_retry_count)
+            try:
+                await self._service.get_queue_backend().touch_heartbeat(
+                    task_id, expected_retry_count=expected_retry_count
+                )
+            except Exception as exc:
+                self._record_counter(
+                    "litestar_queues.heartbeat.failure.count", {"worker.error.type": type(exc).__name__}
+                )
+                logger.warning("Queue task heartbeat failed", exc_info=True, extra={"worker_id": self._worker_id})
 
     async def _drain_running(self) -> "bool":
         if not self._running_tasks:
@@ -297,6 +345,7 @@ class Worker:
 
     async def _wait_for_work(self) -> "None":
         queue_backend = self._service.get_queue_backend()
+        started_at = time.perf_counter()
         notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=self._poll_interval))
         stop_task = asyncio.create_task(self._stop_event.wait())
         done, pending = await asyncio.wait({notification_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -307,8 +356,30 @@ class Worker:
         for task in done:
             with contextlib.suppress(asyncio.TimeoutError):
                 task.result()
+        self._service.observability_runtime.record_duration(
+            "litestar_queues.worker.idle.duration",
+            time.perf_counter() - started_at,
+            attributes={**self._worker_metric_base_attributes(), "worker.wakeup": str(notification_task in done)},
+        )
 
     async def _backoff_after_loop_error(self) -> "None":
         timeout = min(max(self._poll_interval, 0.01), 1.0)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self._stop_event.wait(), timeout=timeout)
+
+    def _record_claimed(self, records: "list[QueuedTaskRecord]") -> "None":
+        counts: "dict[str, int]" = {}
+        for record in records:
+            counts[record.queue] = counts.get(record.queue, 0) + 1
+        for queue, count in counts.items():
+            self._record_counter(
+                "litestar_queues.worker.claim.count", {"messaging.destination.name": queue}, value=count
+            )
+
+    def _record_counter(self, name: "str", attributes: "dict[str, str]", *, value: "int" = 1) -> "None":
+        self._service.observability_runtime.record_counter(
+            name, value, attributes={**self._worker_metric_base_attributes(), **attributes}
+        )
+
+    def _worker_metric_base_attributes(self) -> "dict[str, str]":
+        return {"queue.execution.backend": execution_backend_name(self._service.config.execution_backend)}

@@ -85,8 +85,17 @@ class QueuePlugin(InitPlugin):
         if self._config.task_modules:
             load_task_modules(self._config.task_modules)
 
+        observability_runtime = None
+        if self._config.observability is not None:
+            from litestar_queues.observability import create_observability_runtime
+
+            observability_runtime = create_observability_runtime(self._config.observability, app=app)
+
         self._service = QueueService(
-            self._config, queue_backend=self._queue_backend, event_publisher=self._event_publisher
+            self._config,
+            queue_backend=self._queue_backend,
+            event_publisher=self._event_publisher,
+            observability_runtime=observability_runtime,
         )
         await self._service.open()
         set_default_service(self._service)

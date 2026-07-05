@@ -56,6 +56,8 @@ litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
+otel = ["opentelemetry-api", "opentelemetry-sdk"]
+prometheus = ["prometheus-client"]
 redis = ["redis>=5.0.0"]
 sqlspec = ["sqlspec>=0.52.0"]
 valkey = ["valkey>=6.0.0"]
@@ -161,6 +163,9 @@ tests = [
   "pytest-mock",
   "pytest-sugar",
   "pytest-xdist",
+  "opentelemetry-api",
+  "opentelemetry-sdk",
+  "prometheus-client",
   # Real-service fixtures for the integration tier
   "pytest-databases[postgres,mysql,mssql,oracle,redis,valkey,cockroachdb,spanner]>=0.19.0",
   # Redis + Valkey clients used directly by integration tests

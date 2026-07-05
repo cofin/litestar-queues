@@ -1590,6 +1590,13 @@ advanced-alchemy = [
 cloudrun = [
     { name = "google-cloud-run" },
 ]
+otel = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+]
+prometheus = [
+    { name = "prometheus-client" },
+]
 redis = [
     { name = "redis" },
 ]
@@ -1616,6 +1623,9 @@ dev = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyright" },
@@ -1666,6 +1676,9 @@ tests = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pytest" },
@@ -1685,12 +1698,15 @@ requires-dist = [
     { name = "advanced-alchemy", marker = "extra == 'advanced-alchemy'", specifier = ">=1.10.0" },
     { name = "google-cloud-run", marker = "extra == 'cloudrun'", specifier = ">=0.10.0" },
     { name = "litestar", specifier = ">=2.24.0" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel'" },
+    { name = "prometheus-client", marker = "extra == 'prometheus'" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
     { name = "sqlspec", marker = "extra == 'sqlspec'", specifier = ">=0.52.0" },
     { name = "typing-extensions", specifier = ">=4.0.0" },
     { name = "valkey", marker = "extra == 'valkey'", specifier = ">=6.0.0" },
 ]
-provides-extras = ["advanced-alchemy", "cloudrun", "redis", "sqlspec", "valkey"]
+provides-extras = ["advanced-alchemy", "cloudrun", "otel", "prometheus", "redis", "sqlspec", "valkey"]
 
 [package.metadata.requires-dev]
 build = [{ name = "bump-my-version" }]
@@ -1704,6 +1720,9 @@ dev = [
     { name = "litestar", extras = ["standard", "attrs", "pydantic"] },
     { name = "mypy" },
     { name = "numpy" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
     { name = "pyarrow" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pyright" },
@@ -1744,6 +1763,9 @@ tests = [
     { name = "advanced-alchemy", specifier = ">=1.10.0" },
     { name = "coverage", extras = ["toml"] },
     { name = "numpy" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
     { name = "pyarrow" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest" },
@@ -2721,6 +2743,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/85/68/7717bd9e63ed254617a7d3dc9260904fb736d6ea203e58ffddcb186c64e4/polyfactory-3.3.0.tar.gz", hash = "sha256:237258b6ff43edf362ffd1f68086bb796466f786adfa002b0ac256dbf2246e9a", size = 348668, upload-time = "2026-02-22T09:46:28.01Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dd/34/b6f19941adcdaf415b5e8a8d577499f5b6a76b59cbae37f9b125a9ffe9f2/polyfactory-3.3.0-py3-none-any.whl", hash = "sha256:686abcaa761930d3df87b91e95b26b8d8cb9fdbbbe0b03d5f918acff5c72606e", size = 62707, upload-time = "2026-02-22T09:46:25.985Z" },
+]
+
+[[package]]
+name = "prometheus-client"
+version = "0.25.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/fb/d9aa83ffe43ce1f19e557c0971d04b90561b0cfd50762aafb01968285553/prometheus_client-0.25.0.tar.gz", hash = "sha256:5e373b75c31afb3c86f1a52fa1ad470c9aace18082d39ec0d2f918d11cc9ba28", size = 86035, upload-time = "2026-04-09T19:53:42.359Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/9b/d4b1e644385499c8346fa9b622a3f030dce14cd6ef8a1871c221a17a67e7/prometheus_client-0.25.0-py3-none-any.whl", hash = "sha256:d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1", size = 64154, upload-time = "2026-04-09T19:53:41.324Z" },
 ]
 
 [[package]]
