@@ -176,7 +176,7 @@ class QueueConfig:
             QueueEventPublisher,
             TaskExecutionContext,
         )
-        from litestar_queues.exceptions import NonRetryableError, non_retryable
+        from litestar_queues.exceptions import JobCancelledError, NonRetryableError, job_cancelled, non_retryable
         from litestar_queues.execution import (
             BaseExecutionBackend,
             CloudRunExecutionBackend,
@@ -205,6 +205,7 @@ class QueueConfig:
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
             "NamedDependency": NamedDependency,
+            "JobCancelledError": JobCancelledError,
             "NonRetryableError": NonRetryableError,
             "NoopQueueEventSink": NoopQueueEventSink,
             "InMemoryQueueEventSink": InMemoryQueueEventSink,
@@ -230,6 +231,7 @@ class QueueConfig:
             "TaskExecutionContext": TaskExecutionContext,
             "TaskResult": TaskResult,
             "Worker": Worker,
+            "job_cancelled": job_cancelled,
             "non_retryable": non_retryable,
         }
         with suppress(ImportError):

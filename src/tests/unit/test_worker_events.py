@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, Worker, task
+from litestar_queues import QueueConfig, QueueService, Worker, job_cancelled, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import (
     InMemoryQueueEventSink,
@@ -92,6 +92,31 @@ async def test_worker_emits_cancelled_event_for_cancelled_attempt() -> "None":
             await runner
 
     assert [event.type for event in sink.events] == ["task.started", "task.cancelled"]
+
+
+async def test_worker_marks_job_cancelled_error_terminal_without_retry() -> "None":
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.worker_job_cancelled", retries=3)
+    async def worker_job_cancelled() -> "None":
+        job_cancelled("domain cancellation")
+
+    async with QueueService(
+        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
+    ) as service:
+        result = await service.enqueue(worker_job_cancelled)
+        worker = Worker(service)
+
+        assert await worker.run_once() == 1
+        await result.wait(timeout=1, poll_interval=0.01)
+
+    assert result.status == "cancelled"
+    assert result.record is not None
+    assert result.record.retry_count == 0
+    assert result.record.error is None
+    assert [event.type for event in sink.events] == ["task.started", "task.cancelled"]
+    assert sink.events[-1].message == "domain cancellation"
+    assert sink.events[-1].payload == {"status": "cancelled", "retry_count": 0}
 
 
 async def test_worker_emits_claim_lost_event_when_terminal_fence_rejects_stale_attempt() -> "None":

@@ -6,7 +6,7 @@ from typing_extensions import Self
 from litestar_queues.models import QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import datetime, timedelta
     from types import TracebackType
     from uuid import UUID
@@ -146,8 +146,39 @@ class BaseQueueBackend:
         """
         raise NotImplementedError
 
-    async def cancel_task(self, task_id: "UUID") -> "bool":
-        """Cancel a task if it has not started."""
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+        """Cancel a task.
+
+        Args:
+            task_id: Queue record identifier.
+            include_running: When true, cancel a running task as part of a
+                cooperative cancellation path. Default behavior only cancels
+                pending or scheduled records.
+        """
+        raise NotImplementedError
+
+    async def cancel_tasks(
+        self,
+        *,
+        task_name: "str | None" = None,
+        queue: "str | None" = None,
+        kwargs: "Mapping[str, Any] | None" = None,
+        metadata: "Mapping[str, Any] | None" = None,
+        include_running: "bool" = False,
+    ) -> "int":
+        """Cancel tasks matching a domain predicate.
+
+        Args:
+            task_name: Optional task name exact match.
+            queue: Optional queue exact match.
+            kwargs: Optional top-level kwargs exact-match subset.
+            metadata: Optional top-level metadata exact-match subset.
+            include_running: When true, running records are included for
+                cooperative cancellation.
+
+        Returns:
+            Number of records cancelled.
+        """
         raise NotImplementedError
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
@@ -253,3 +284,24 @@ class BaseQueueBackend:
         exc_tb: "TracebackType | None",  # noqa: PYI036
     ) -> "None":
         await self.close()
+
+
+def record_matches_filters(
+    record: "QueuedTaskRecord",
+    *,
+    task_name: "str | None" = None,
+    queue: "str | None" = None,
+    kwargs: "Mapping[str, Any] | None" = None,
+    metadata: "Mapping[str, Any] | None" = None,
+) -> "bool":
+    if task_name is not None and record.task_name != task_name:
+        return False
+    if queue is not None and record.queue != queue:
+        return False
+    if kwargs is not None and not _contains_items(record.kwargs, kwargs):
+        return False
+    return metadata is None or _contains_items(record.metadata, metadata)
+
+
+def _contains_items(source: "Mapping[str, Any]", expected: "Mapping[str, Any]") -> "bool":
+    return all(source.get(key) == value for key, value in expected.items())

@@ -13,7 +13,7 @@ from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
     from datetime import datetime, timedelta
     from uuid import UUID
 
@@ -158,9 +158,23 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         async with self._operation() as service:
             return await service.fail_task(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
 
-    async def cancel_task(self, task_id: "UUID") -> "bool":
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         async with self._operation() as service:
-            return await service.cancel_task(task_id)
+            return await service.cancel_task(task_id, include_running=include_running)
+
+    async def cancel_tasks(
+        self,
+        *,
+        task_name: "str | None" = None,
+        queue: "str | None" = None,
+        kwargs: "Mapping[str, Any] | None" = None,
+        metadata: "Mapping[str, Any] | None" = None,
+        include_running: "bool" = False,
+    ) -> "int":
+        async with self._operation() as service:
+            return await service.cancel_tasks(
+                task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata, include_running=include_running
+            )
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         async with self._heartbeat_operation() as service:

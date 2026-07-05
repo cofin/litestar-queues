@@ -52,6 +52,56 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert stored_local.status == "pending"
 
 
+async def test_backend_contract_bulk_cancels_matching_domain_predicate(queue_backend: "BaseQueueBackend") -> "None":
+    first = await queue_backend.enqueue(
+        "tasks.bulk.cancel",
+        kwargs={"workspace_id": "workspace-1", "collection_id": "collection-1"},
+        metadata={"kind": "refresh"},
+    )
+    running = await queue_backend.enqueue(
+        "tasks.bulk.cancel", kwargs={"workspace_id": "workspace-1"}, metadata={"kind": "refresh"}
+    )
+    wrong_workspace = await queue_backend.enqueue(
+        "tasks.bulk.cancel", kwargs={"workspace_id": "workspace-2"}, metadata={"kind": "refresh"}
+    )
+    wrong_metadata = await queue_backend.enqueue(
+        "tasks.bulk.cancel", kwargs={"workspace_id": "workspace-1"}, metadata={"kind": "other"}
+    )
+    wrong_task = await queue_backend.enqueue(
+        "tasks.bulk.keep", kwargs={"workspace_id": "workspace-1"}, metadata={"kind": "refresh"}
+    )
+    claimed = await queue_backend.claim_task(running.id)
+    assert claimed is not None
+
+    without_running = await queue_backend.cancel_tasks(
+        task_name="tasks.bulk.cancel", kwargs={"workspace_id": "workspace-1"}, metadata={"kind": "refresh"}
+    )
+    with_running = await queue_backend.cancel_tasks(
+        task_name="tasks.bulk.cancel",
+        kwargs={"workspace_id": "workspace-1"},
+        metadata={"kind": "refresh"},
+        include_running=True,
+    )
+    stored_first = await queue_backend.get_task(first.id)
+    stored_running = await queue_backend.get_task(running.id)
+    stored_wrong_workspace = await queue_backend.get_task(wrong_workspace.id)
+    stored_wrong_metadata = await queue_backend.get_task(wrong_metadata.id)
+    stored_wrong_task = await queue_backend.get_task(wrong_task.id)
+
+    assert without_running == 1
+    assert with_running == 1
+    assert stored_first is not None
+    assert stored_running is not None
+    assert stored_wrong_workspace is not None
+    assert stored_wrong_metadata is not None
+    assert stored_wrong_task is not None
+    assert stored_first.status == "cancelled"
+    assert stored_running.status == "cancelled"
+    assert stored_wrong_workspace.status == "pending"
+    assert stored_wrong_metadata.status == "pending"
+    assert stored_wrong_task.status == "pending"
+
+
 async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_backend: "BaseQueueBackend") -> "None":
     completed = await queue_backend.enqueue("tasks.report")
     claimed_completed = await queue_backend.claim_task(completed.id)

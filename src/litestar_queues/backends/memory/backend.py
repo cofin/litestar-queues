@@ -2,10 +2,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
 from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
@@ -154,14 +155,41 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.heartbeat_at = now
             return record
 
-    async def cancel_task(self, task_id: "UUID") -> "bool":
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         async with self._lock:
             record = self._records.get(task_id)
-            if record is None or record.status not in {"pending", "scheduled"}:
+            cancellable_statuses = {"pending", "scheduled", "running"} if include_running else {"pending", "scheduled"}
+            if record is None or record.status not in cancellable_statuses:
                 return False
             record.status = "cancelled"
             record.completed_at = _utc_now()
+            record.heartbeat_at = None
             return True
+
+    async def cancel_tasks(
+        self,
+        *,
+        task_name: "str | None" = None,
+        queue: "str | None" = None,
+        kwargs: "Mapping[str, Any] | None" = None,
+        metadata: "Mapping[str, Any] | None" = None,
+        include_running: "bool" = False,
+    ) -> "int":
+        cancellable_statuses = {"pending", "scheduled", "running"} if include_running else {"pending", "scheduled"}
+        cancelled = 0
+        async with self._lock:
+            for record in self._records.values():
+                if record.status not in cancellable_statuses:
+                    continue
+                if not record_matches_filters(
+                    record, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata
+                ):
+                    continue
+                record.status = "cancelled"
+                record.completed_at = _utc_now()
+                record.heartbeat_at = None
+                cancelled += 1
+        return cancelled
 
     async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
         record = self._records.get(task_id)

@@ -68,6 +68,53 @@ async def test_memory_backend_fail_task_retries_then_fails_permanently() -> "Non
     assert failed.completed_at is not None
 
 
+async def test_memory_backend_only_cancels_running_tasks_when_explicitly_allowed() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("tasks.running_cancel")
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+
+    assert await backend.cancel_task(record.id) is False
+    assert await backend.cancel_task(record.id, include_running=True) is True
+
+    stored = await backend.get_task(record.id)
+    assert stored is record
+    assert stored.status == "cancelled"
+    assert stored.completed_at is not None
+    assert stored.heartbeat_at is None
+
+
+async def test_memory_backend_bulk_cancels_matching_domain_predicate() -> "None":
+    backend = InMemoryQueueBackend()
+    first = await backend.enqueue(
+        "tasks.bulk_cancel", kwargs={"workspace_id": "workspace-1", "other": "kept"}, metadata={"kind": "refresh"}
+    )
+    running = await backend.enqueue("tasks.bulk_cancel", kwargs={"workspace_id": "workspace-1"})
+    wrong_workspace = await backend.enqueue("tasks.bulk_cancel", kwargs={"workspace_id": "workspace-2"})
+    wrong_task = await backend.enqueue("tasks.other", kwargs={"workspace_id": "workspace-1"})
+    claimed = await backend.claim_task(running.id)
+    assert claimed is not None
+
+    cancelled = await backend.cancel_tasks(
+        task_name="tasks.bulk_cancel", kwargs={"workspace_id": "workspace-1"}, include_running=True
+    )
+
+    assert cancelled == 2
+    stored_first = await backend.get_task(first.id)
+    stored_running = await backend.get_task(running.id)
+    stored_wrong_workspace = await backend.get_task(wrong_workspace.id)
+    stored_wrong_task = await backend.get_task(wrong_task.id)
+
+    assert stored_first is not None
+    assert stored_running is not None
+    assert stored_wrong_workspace is not None
+    assert stored_wrong_task is not None
+    assert stored_first.status == "cancelled"
+    assert stored_running.status == "cancelled"
+    assert stored_wrong_workspace.status == "pending"
+    assert stored_wrong_task.status == "pending"
+
+
 async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.stale", max_retries=1, metadata={"requeue_on_stale": True})

@@ -41,10 +41,12 @@ if TYPE_CHECKING:
         require_current_task_context,
     )
     from litestar_queues.exceptions import (
+        JobCancelledError,
         MissingDependencyError,
         NonRetryableError,
         QueueConfigurationError,
         QueueError,
+        job_cancelled,
         non_retryable,
     )
     from litestar_queues.execution import (
@@ -95,6 +97,7 @@ _EXPORTS = {
     "InMemoryQueueEventSink": "litestar_queues.events",
     "LocalExecutionBackend": "litestar_queues.execution",
     "MissingDependencyError": "litestar_queues.exceptions",
+    "JobCancelledError": "litestar_queues.exceptions",
     "NonRetryableError": "litestar_queues.exceptions",
     "NoopQueueEventSink": "litestar_queues.events",
     "QueueBackendCapabilities": "litestar_queues.models",
@@ -134,6 +137,7 @@ _EXPORTS = {
     "list_execution_backends": "litestar_queues.execution",
     "list_queue_backends": "litestar_queues.backends",
     "load_task_modules": "litestar_queues.task",
+    "job_cancelled": "litestar_queues.exceptions",
     "non_retryable": "litestar_queues.exceptions",
     "publish_task_event": "litestar_queues.events",
     "publish_task_log": "litestar_queues.events",
@@ -156,6 +160,7 @@ __all__ = (
     "ImmediateExecutionBackend",
     "InMemoryQueueBackend",
     "InMemoryQueueEventSink",
+    "JobCancelledError",
     "LocalExecutionBackend",
     "MissingDependencyError",
     "NonRetryableError",
@@ -194,6 +199,7 @@ __all__ = (
     "get_queue_backend_class",
     "get_scheduled_tasks",
     "get_task_registry",
+    "job_cancelled",
     "list_execution_backends",
     "list_queue_backends",
     "load_task_modules",

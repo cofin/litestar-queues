@@ -9,7 +9,7 @@ from typing_extensions import Self
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
-from litestar_queues.exceptions import NonRetryableError
+from litestar_queues.exceptions import JobCancelledError, NonRetryableError
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
 
@@ -267,24 +267,33 @@ class QueueService:
             await task_context.lifecycle("task.cancelled")
             self._log_task_event("Queue task cancelled", record, level=logging.WARNING)
             raise
+        except JobCancelledError as exc:
+            cancelled = await self.get_queue_backend().cancel_task(record.id, include_running=True)
+            if not cancelled:
+                return await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
+            cancelled_record = await self._current_or_claimed(record)
+            payload = {"status": cancelled_record.status, "retry_count": cancelled_record.retry_count}
+            await task_context.lifecycle("task.cancelled", message=str(exc), payload=payload)
+            self._log_task_event("Queue task cancelled", cancelled_record, level=logging.INFO, payload=payload)
+            return cancelled_record
         except NonRetryableError as exc:
-            updated = await self.get_queue_backend().fail_task(
+            failed_record = await self.get_queue_backend().fail_task(
                 record.id, str(exc), retry=False, expected_retry_count=record.retry_count
             )
-            if updated is None:
+            if failed_record is None:
                 return await self.publish_claim_lost(record, phase="fail", task_context=task_context)
-            failed = updated
+            failed = failed_record
             payload = {"status": failed.status, "retry_count": failed.retry_count, "will_retry": False}
             await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
             self._log_task_event("Queue task failed", failed, level=logging.ERROR, payload=payload)
-            return updated
+            return failed_record
         except Exception as exc:
-            updated = await self.get_queue_backend().fail_task(
+            failed_record = await self.get_queue_backend().fail_task(
                 record.id, str(exc), expected_retry_count=record.retry_count
             )
-            if updated is None:
+            if failed_record is None:
                 return await self.publish_claim_lost(record, phase="fail", task_context=task_context)
-            failed = updated
+            failed = failed_record
             payload = {
                 "status": failed.status,
                 "retry_count": failed.retry_count,
@@ -303,12 +312,12 @@ class QueueService:
         finally:
             _reset_task_context(context_token)
 
-        updated = await self.get_queue_backend().complete_task(
+        completed_record = await self.get_queue_backend().complete_task(
             record.id, result=result, expected_retry_count=record.retry_count
         )
-        if updated is None:
+        if completed_record is None:
             return await self.publish_claim_lost(record, phase="complete", task_context=task_context)
-        completed = updated
+        completed = completed_record
         await task_context.lifecycle(
             "task.completed", payload={"status": completed.status, "retry_count": completed.retry_count}
         )
