@@ -133,7 +133,7 @@ class SQLSpecQueueStore:
         """Return statements that create the queue table and indexes."""
         if not self._manage_schema:
             return []
-        return [self._to_sql(self._create_table_statement()), *self._create_index_statements()]
+        return [self._create_table_sql(), *self._create_index_statements()]
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop queue artifacts."""
@@ -572,6 +572,14 @@ class SQLSpecQueueStore:
             .column(self._col("metadata_json"), self._metadata_json_type("metadata_json"), not_null=True)
         )
 
+    def _create_table_sql(self) -> "str":
+        rendered = self._to_sql(self._create_table_statement())
+        unsplit_target = self._quote_unsplit_identifier(self.table_name)
+        split_target = self._quoted_table_name()
+        if unsplit_target != split_target:
+            rendered = rendered.replace(unsplit_target, split_target, 1)
+        return rendered
+
     def _create_index_statements(self) -> "list[str]":
         return [
             self._to_sql(
@@ -680,6 +688,12 @@ class SQLSpecQueueStore:
 
     def _quoted_col(self, canonical: "str") -> "str":
         return self._quote_identifier(self._col(canonical))
+
+    def _quote_unsplit_identifier(self, identifier: "str") -> "str":
+        if type(self).identifier_quote_style == "none":
+            return identifier
+        quote = quote_backtick_identifier if type(self).identifier_quote_style == "backtick" else quote_identifier
+        return quote(identifier)
 
     def _quote_identifier(self, identifier: "str") -> "str":
         if type(self).identifier_quote_style == "none":
