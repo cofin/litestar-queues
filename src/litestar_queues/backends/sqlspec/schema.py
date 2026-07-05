@@ -89,6 +89,15 @@ def validate_column_map(column_map: "Mapping[str, str]") -> "dict[str, str]":
             msg = f"Invalid SQL identifier in column_map: {mapped!r}"
             raise QueueConfigurationError(msg)
         resolved[canonical] = mapped
+
+    physical_to_canonical: "dict[str, str]" = {}
+    for canonical in sorted(_CANONICAL_COLUMNS):
+        mapped = resolved.get(canonical, canonical)
+        previous = physical_to_canonical.get(mapped)
+        if previous is not None:
+            msg = f"Duplicate physical column in column_map: {mapped!r} is used for {previous!r} and {canonical!r}."
+            raise QueueConfigurationError(msg)
+        physical_to_canonical[mapped] = canonical
     return resolved
 
 

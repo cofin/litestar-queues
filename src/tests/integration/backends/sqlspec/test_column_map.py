@@ -241,6 +241,10 @@ def test_native_json_args_tuple_binds_as_array(
         (lambda: SQLSpecBackendConfig(column_map={"does_not_exist": "task"}), "Unknown canonical column"),
         (lambda: SQLSpecBackendConfig(column_map={"task_name": "drop table"}), "Invalid SQL identifier"),
         (
+            lambda: SQLSpecBackendConfig(column_map={"task_name": "duplicate_name", "queue": "duplicate_name"}),
+            "Duplicate physical column",
+        ),
+        (
             lambda: SQLSpecBackendConfig(native_json_columns=frozenset({"task_name"})),
             "native_json_columns contains non-JSON",
         ),

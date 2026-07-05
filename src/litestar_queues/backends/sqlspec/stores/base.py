@@ -703,9 +703,10 @@ def _configured_table_name(config: "Any", table_name: "str | None") -> "str":
 
 
 def _adapter_name(config: "Any") -> "str":
-    module_name = type(config).__module__
-    if module_name.startswith("sqlspec.adapters."):
-        return module_name.split(".")[2]
+    for config_type in type(config).__mro__:
+        module_name = config_type.__module__
+        if module_name.startswith("sqlspec.adapters."):
+            return module_name.split(".")[2]
     return ""
 
 

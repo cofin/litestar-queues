@@ -101,6 +101,21 @@ def test_discover_tasks_skips_non_jobs_siblings(tmp_path: "Path", monkeypatch: "
     assert "filter_pkg.things.helpers.side" not in sys.modules
 
 
+def test_discover_tasks_filters_relative_to_multi_part_root(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """A root package name containing ``jobs`` must not make every child match."""
+    from litestar_queues import discover_tasks
+
+    package_name = _write_multi_part_jobs_root_package(tmp_path, "multi_root_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    discovered = discover_tasks(package_name)
+
+    assert "multi.root.real" in discovered
+    assert f"{package_name}.helpers.side" not in sys.modules
+
+
 def test_discover_tasks_raises_when_child_package_import_fails(
     tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
@@ -141,3 +156,24 @@ def _write_broken_child_package(tmp_path: "Path", package_name: "str") -> "str":
     (package_root / "__init__.py").write_text("")
     (domain_root / "__init__.py").write_text("raise ImportError('broken domain package')\n")
     return package_name
+
+
+def _write_multi_part_jobs_root_package(tmp_path: "Path", package_name: "str") -> "str":
+    package_root = tmp_path / package_name
+    jobs_root = package_root / "domain" / "jobs"
+    real_jobs = jobs_root / "feature" / "jobs"
+    helpers = jobs_root / "helpers"
+    real_jobs.mkdir(parents=True)
+    helpers.mkdir(parents=True)
+
+    (package_root / "__init__.py").write_text("")
+    (package_root / "domain" / "__init__.py").write_text("")
+    (jobs_root / "__init__.py").write_text("")
+    (jobs_root / "feature" / "__init__.py").write_text("")
+    (real_jobs / "__init__.py").write_text("")
+    (real_jobs / "real.py").write_text(
+        "from litestar_queues import task\n\n@task('multi.root.real')\nasync def real(): return 'real'\n"
+    )
+    (helpers / "__init__.py").write_text("")
+    (helpers / "side.py").write_text("raise RuntimeError('root jobs segment should not match helpers')\n")
+    return f"{package_name}.domain.jobs"

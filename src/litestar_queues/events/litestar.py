@@ -1,6 +1,7 @@
 """Litestar Channels helpers for queue events."""
 
 import inspect
+from collections import OrderedDict
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, cast
 
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
 __all__ = ("ChannelsQueueEventSink", "stream_queue_events")
+
+_STREAM_DEDUP_MAX_KEYS = 1024
 
 
 class ChannelsQueueEventSink:
@@ -53,7 +56,7 @@ async def stream_queue_events(
         raise RuntimeError(msg)
 
     await socket.accept()
-    seen_dedup_keys: "set[str]" = set()
+    seen_dedup_keys: "OrderedDict[str, None]" = OrderedDict()
     async with _event_stream(backend, channels, history=history) as events:
         async for raw_event in events:
             event = _decode_event(raw_event)
@@ -61,8 +64,11 @@ async def stream_queue_events(
                 continue
             dedup_key = event.event_key if event.event_key is not None else event.id
             if dedup_key in seen_dedup_keys:
+                seen_dedup_keys.move_to_end(dedup_key)
                 continue
-            seen_dedup_keys.add(dedup_key)
+            seen_dedup_keys[dedup_key] = None
+            if len(seen_dedup_keys) > _STREAM_DEDUP_MAX_KEYS:
+                seen_dedup_keys.popitem(last=False)
             try:
                 await socket.send_json(event.to_dict())
             except (OSError, RuntimeError):

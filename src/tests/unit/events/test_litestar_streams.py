@@ -102,3 +102,20 @@ async def test_stream_queue_events_falls_back_to_event_id_when_no_event_key() ->
 
     sent_ids = [payload["id"] for payload in socket.sent_json]
     assert sent_ids == ["evt-a", "evt-b"]
+
+
+async def test_stream_queue_events_dedup_cache_is_bounded(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Old dedup keys should age out instead of growing for the socket lifetime."""
+    from litestar_queues.events import litestar as litestar_events
+
+    monkeypatch.setattr(litestar_events, "_STREAM_DEDUP_MAX_KEYS", 2)
+    first = QueueEvent(type="task.progress", scope="task", id="evt-a", task_id="task-1")
+    second = QueueEvent(type="task.progress", scope="task", id="evt-b", task_id="task-1")
+    third = QueueEvent(type="task.progress", scope="task", id="evt-c", task_id="task-1")
+    plugin = FakeChannelsPlugin([first.to_json(), second.to_json(), third.to_json(), first.to_json()])
+    socket = FakeSocket(plugin)
+
+    await stream_queue_events(socket, ["litestar_queues:task:task_1:events"], channels_backend=plugin)
+
+    sent_ids = [payload["id"] for payload in socket.sent_json]
+    assert sent_ids == ["evt-a", "evt-b", "evt-c", "evt-a"]

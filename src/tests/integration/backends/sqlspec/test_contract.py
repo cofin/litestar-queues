@@ -465,6 +465,17 @@ def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
     assert '"queue_tasks"' in "\n".join(store.create_statements())
 
 
+def test_sqlspec_backend_store_factory_resolves_adapter_config_subclasses(tmp_path: "Path") -> "None":
+    class CustomAiosqliteConfig(AiosqliteConfig):
+        pass
+
+    config = CustomAiosqliteConfig(connection_config={"database": str(tmp_path / "queue.db")})
+
+    store = create_queue_store(config, table_name="queue_tasks")
+
+    assert isinstance(store, AiosqliteQueueStore)
+
+
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name", "expected_store_name"),
     (

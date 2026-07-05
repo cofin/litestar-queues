@@ -8,7 +8,7 @@ results.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -97,6 +97,26 @@ async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQue
     fetched = await sqlspec_backend.get_task(records[1].id)
     assert fetched is not None
     assert fetched.status == "scheduled"
+
+
+async def test_enqueue_many_notifies_only_immediately_due_records(
+    sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    notified_ids = []
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    async def notify(self: "SQLSpecQueueBackend", record: "Any") -> "None":
+        del self
+        notified_ids.append(record.id)
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "notify_new_task", notify)
+
+    records = await sqlspec_backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.now"),
+        EnqueueSpec(task_name="tasks.later", scheduled_at=later),
+    ])
+
+    assert notified_ids == [records[0].id]
 
 
 async def test_enqueue_many_deduplicates_active_keys(

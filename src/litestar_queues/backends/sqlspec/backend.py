@@ -295,6 +295,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         self._increment_queue_metric("enqueue", float(len(to_insert)))
         for record in to_insert:
+            if record.status not in _DUE_STATUSES or not record.is_due:
+                continue
             await self.notify_new_task(record)
         return results
 

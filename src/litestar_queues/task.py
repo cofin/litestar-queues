@@ -198,18 +198,19 @@ class ScheduleConfig:
         parsed = self._parse_cron()
         tz = _get_timezone(self.timezone)
         candidate = after.astimezone(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
-        max_attempts = CRON_SEARCH_YEARS * 366 * 24 * 60
+        search_end = candidate + timedelta(days=CRON_SEARCH_YEARS * 366)
+        day = candidate.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_slots = tuple((hour, minute) for hour in sorted(parsed.hours) for minute in sorted(parsed.minutes))
 
-        for _ in range(max_attempts):
-            cron_weekday = (candidate.weekday() + 1) % 7
-            if (
-                candidate.minute in parsed.minutes
-                and candidate.hour in parsed.hours
-                and candidate.month in parsed.months
-                and _cron_day_matches(parsed, day=candidate.day, weekday=cron_weekday)
-            ):
-                return candidate.astimezone(timezone.utc)
-            candidate += timedelta(minutes=1)
+        while day <= search_end:
+            cron_weekday = (day.weekday() + 1) % 7
+            if day.month in parsed.months and _cron_day_matches(parsed, day=day.day, weekday=cron_weekday):
+                for hour, minute in time_slots:
+                    proposed = day.replace(hour=hour, minute=minute)
+                    if proposed < candidate or not _is_valid_local_time(proposed, tz):
+                        continue
+                    return proposed.astimezone(timezone.utc)
+            day = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
         msg = f"No matching run found for cron expression: {self.cron}"
         raise ValueError(msg)
@@ -297,6 +298,9 @@ class TaskResult:
         start = asyncio.get_running_loop().time()
         while self.status not in {"cancelled", "completed", "failed"}:
             await self.refresh()
+            if self.record is None:
+                msg = f"Task {self._task_id} no longer exists in the queue backend."
+                raise RuntimeError(msg)
             if self.status in {"cancelled", "completed", "failed"}:
                 break
             if timeout is not None and asyncio.get_running_loop().time() - start >= timeout:
@@ -621,10 +625,13 @@ def discover_tasks(package: "str", subpackage: "str" = "jobs", *, force_reload: 
         raise ModuleNotFoundError(msg)
 
     matched: "list[str]" = []
+    root_path = cast("Any", root).__path__
+    root_prefix = f"{root.__name__}."
     for _, module_name, _is_package in pkgutil.walk_packages(
-        cast("Any", root).__path__, prefix=f"{root.__name__}.", onerror=_raise_walk_packages_error
+        root_path, prefix=root_prefix, onerror=_raise_walk_packages_error
     ):
-        if subpackage not in module_name.split(".")[1:]:
+        relative_name = module_name.removeprefix(root_prefix)
+        if subpackage not in relative_name.split("."):
             continue
         matched.append(module_name)
 
@@ -790,6 +797,21 @@ def _cron_day_matches(parsed: "_ParsedCron", *, day: "int", weekday: "int") -> "
     if parsed.day_of_month_restricted and parsed.day_of_week_restricted:
         return day_matches or weekday_matches
     return day_matches and weekday_matches
+
+
+def _is_valid_local_time(value: "datetime", tz: "zoneinfo.ZoneInfo") -> "bool":
+    round_tripped = value.astimezone(timezone.utc).astimezone(tz)
+    return (
+        round_tripped.year == value.year
+        and round_tripped.month == value.month
+        and round_tripped.day == value.day
+        and round_tripped.hour == value.hour
+        and round_tripped.minute == value.minute
+        and round_tripped.second == value.second
+        and round_tripped.microsecond == value.microsecond
+        and round_tripped.fold == value.fold
+        and round_tripped.utcoffset() == value.utcoffset()
+    )
 
 
 async def _run_sync_callable(
