@@ -139,9 +139,7 @@ class QueueConfig:
     queue_event_publisher_state_key: "str" = "queue_event_publisher"
     queue_event_channels_backend_state_key: "str" = "queue_event_channels_backend"
     event_config: "QueueEventConfig" = field(default_factory=QueueEventConfig)
-    enable_otel: "bool | None" = False
-    enable_prometheus: "bool" = False
-    observability: "QueueObservabilityConfig | None" = None
+    observability_config: "QueueObservabilityConfig | None" = None
     task_modules: "tuple[str, ...]" = ()
     initialize_schedules: "bool" = True
     worker_batch_size: "int" = 10
@@ -157,18 +155,6 @@ class QueueConfig:
     sync_executor_max_workers: "int | None" = None
     sync_executor_thread_name_prefix: "str" = "litestar-queues"
     scheduler_canary_task: "str" = "scheduler.heartbeat"
-
-    @property
-    def observability_config(self) -> "QueueObservabilityConfig | None":
-        """Return the effective queue observability runtime configuration."""
-        if self.observability is not None:
-            return self.observability
-        if self.enable_otel is False and not self.enable_prometheus:
-            return None
-
-        from litestar_queues.observability import QueueObservabilityConfig
-
-        return QueueObservabilityConfig(enable_otel=self.enable_otel, enable_prometheus=self.enable_prometheus)
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":

@@ -12,6 +12,7 @@ from sqlspec.utils.correlation import CorrelationContext
 
 from litestar_queues import QueueConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.observability import QueueObservabilityConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -166,7 +167,7 @@ async def test_package_observability_disables_sqlspec_queue_domain_observability
         connection_config={"database": str(tmp_path / "queue-package-observability.db")},
         observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
     )
-    queue_config = QueueConfig(enable_otel=True)
+    queue_config = QueueConfig(observability_config=QueueObservabilityConfig(enable_otel=True))
     backend = SQLSpecQueueBackend(config=queue_config, backend_config=SQLSpecBackendConfig(config=sqlspec_config))
     await backend.open()
     try:

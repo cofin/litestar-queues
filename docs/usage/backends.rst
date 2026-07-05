@@ -893,9 +893,9 @@ queue-domain counters and custom queue spans. SQLSpec driver query spans and
 statement observers remain controlled by the SQLSpec config.
 
 When package-level queue observability is enabled through
-``QueueConfig(enable_otel=True)`` or ``QueueConfig(enable_prometheus=True)``,
-SQLSpec queue-domain counters and custom queue spans are disabled by default to
-avoid double counting the same queue operations. SQLSpec driver query spans and
+``QueueConfig(observability_config=QueueObservabilityConfig(...))``, SQLSpec
+queue-domain counters and custom queue spans are disabled by default to avoid
+double counting the same queue operations. SQLSpec driver query spans and
 statement observers still run from the SQLSpec config.
 
 OpenTelemetry tracing and Prometheus statement metrics are enabled through
