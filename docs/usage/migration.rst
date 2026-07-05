@@ -214,11 +214,10 @@ workers can safely share the table during the cutover.
 8. Audit cron schedules. Unsupported seconds fields, year fields, ``@reboot``,
    ``L``, ``W``, and ``#`` are rejected at decoration time. Replace those with
    multiple supported schedules or application code.
-9. Configure an event sink if the application reads durable job logs. The
-   built-in ``SQLiteQueueEventSink`` writes ``job_id``, ``stage``, ``level``,
-   ``message``, ``detail_json``, ``duration_ms``, ``sequence``, and
-   ``created_at`` columns. Map or copy those rows into the application-owned
-   job-log table if that table is not SQLite-backed.
+9. Configure backend-managed event history if the application reads durable job
+   logs. Live event sinks are delivery transports only; queryable history should
+   be written by the durable queue backend so task state and task events share
+   the same database boundary.
 10. Configure Cloud Run workers with the new environment contract:
     ``CONFIG_FACTORY`` is required by the packaged worker entry point, and
     queue-specific environment variables should use the ``LITESTAR_QUEUES_*``

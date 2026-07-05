@@ -20,7 +20,6 @@ from litestar_queues.events.models import (
 )
 from litestar_queues.events.publisher import QueueEventConfig, QueueEventPublisher
 from litestar_queues.events.sinks import InMemoryQueueEventSink, NoopQueueEventSink, QueueEventSink
-from litestar_queues.events.sqlite import QueueEventLogRecord, QueueEventStageSummary, SQLiteQueueEventSink
 
 if TYPE_CHECKING:
     from litestar_queues.events.litestar import ChannelsQueueEventSink, stream_queue_events
@@ -34,13 +33,10 @@ __all__ = (
     "QueueEventActor",
     "QueueEventConfig",
     "QueueEventEntityRef",
-    "QueueEventLogRecord",
     "QueueEventPublisher",
     "QueueEventScope",
     "QueueEventSink",
-    "QueueEventStageSummary",
     "QueueEventType",
-    "SQLiteQueueEventSink",
     "TaskExecutionContext",
     "get_current_task_context",
     "publish_task_event",

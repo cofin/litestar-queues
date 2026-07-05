@@ -262,3 +262,24 @@ if loaded:
     result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_event_package_does_not_expose_standalone_sqlite_sink() -> "None":
+    """Durable queue event history must not be exposed as a standalone SQLite sink."""
+    script = """
+import sys
+from litestar_queues import events
+
+sink_name = "SQLite" + "QueueEvent" + "Sink"
+sqlite_module = "sqlite" + "3"
+if hasattr(events, sink_name):
+    raise SystemExit("standalone SQLite event sink is still public")
+if sink_name in events.__all__:
+    raise SystemExit("standalone SQLite event sink is still exported")
+if sqlite_module in sys.modules:
+    raise SystemExit("importing litestar_queues.events imported SQLite runtime module")
+"""
+
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr or result.stdout
