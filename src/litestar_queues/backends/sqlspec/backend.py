@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
 from logging import getLogger
@@ -200,8 +201,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Apply packaged SQLSpec migrations."""
         if self._manage_schema:
             sqlspec_config = self._get_sqlspec_config()
-            configure_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name())
-            await sqlspec_config.migrate_up(echo=False)
+            with _temporary_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name()):
+                await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
         self,
@@ -1524,6 +1525,26 @@ def _queue_extension_settings(sqlspec_config: "Any | None") -> "dict[str, Any]":
         return {}
     extension_config = cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {})
     return dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
+
+
+@contextmanager
+def _temporary_queue_migration_extension(sqlspec_config: "Any", *, table_name: "str") -> "Iterator[None]":
+    original_extension_config = deepcopy(cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}))
+    original_migration_config = deepcopy(cast("dict[str, Any]", getattr(sqlspec_config, "migration_config", {}) or {}))
+
+    extension_config = deepcopy(original_extension_config)
+    queue_settings = dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
+    queue_settings["table_name"] = validate_table_name(table_name)
+    extension_config[QUEUE_EXTENSION_NAME] = queue_settings
+
+    sqlspec_config.extension_config = extension_config
+    sqlspec_config.set_migration_config(deepcopy(original_migration_config))
+    configure_queue_migration_extension(sqlspec_config, table_name=table_name)
+    try:
+        yield
+    finally:
+        sqlspec_config.extension_config = original_extension_config
+        sqlspec_config.set_migration_config(original_migration_config)
 
 
 async def _create_schema_statements(store: "Any", driver: "Any") -> "list[str]":

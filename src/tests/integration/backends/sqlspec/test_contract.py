@@ -11,8 +11,10 @@ Two flavours of tests live here:
 """
 
 import asyncio
+import logging
 import sqlite3
 import sys
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
@@ -1113,6 +1115,31 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
         versions = [row[0] for row in connection.execute("SELECT version_num FROM ddl_migrations")]
 
     assert versions == ["ext_litestar_queues_0001"]
+
+
+async def test_sqlspec_backend_packaged_migrations_do_not_mutate_adopter_config(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory", caplog: "pytest.LogCaptureFixture"
+) -> "None":
+    db_path = tmp_path / "migrated-config.db"
+    sqlspec_config = sqlite_config_factory(db_path)
+    original_extension_config = deepcopy(sqlspec_config.extension_config)
+    original_migration_config = deepcopy(sqlspec_config.migration_config)
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, create_schema=False, run_migrations=True)
+    )
+
+    caplog.set_level(logging.WARNING, logger="sqlspec.migrations.base")
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.migrated_config")
+    finally:
+        await backend.close()
+
+    assert record.task_name == "tasks.migrated_config"
+    assert not any("Extension litestar_queues not found" in entry.message for entry in caplog.records)
+    assert deepcopy(sqlspec_config.extension_config) == original_extension_config
+    assert deepcopy(sqlspec_config.migration_config) == original_migration_config
 
 
 async def test_sqlspec_backend_uses_configured_table_name(
