@@ -35,20 +35,4 @@ def _configure_extension_settings(sqlspec_config: "Any", *, table_name: "str") -
     extension_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "extension_config", {}) or {}))
     queue_settings = dict(cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}))
     queue_settings["table_name"] = validate_table_name(table_name)
-    extension_config[QUEUE_EXTENSION_NAME] = queue_settings
-    sqlspec_config.extension_config = extension_config
-
-    migration_config = dict(cast("dict[str, Any]", getattr(sqlspec_config, "migration_config", {}) or {}))
-    include_extensions = migration_config.get("include_extensions")
-    if include_extensions is None:
-        include_list: "list[str]" = []
-    elif isinstance(include_extensions, tuple):
-        include_list = list(include_extensions)
-    else:
-        include_list = list(cast("list[str]", include_extensions))
-
-    if QUEUE_EXTENSION_NAME not in include_list:
-        include_list.append(QUEUE_EXTENSION_NAME)
-    migration_config["include_extensions"] = include_list
-    sqlspec_config.set_migration_config(migration_config)
     return queue_settings
