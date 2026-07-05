@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from litestar_queues.events import QueueEventPublisher, TaskExecutionContext
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.observability import QueueObservabilityConfig
     from litestar_queues.service import QueueService
     from litestar_queues.task import Task
 
@@ -138,6 +139,7 @@ class QueueConfig:
     queue_event_publisher_state_key: "str" = "queue_event_publisher"
     queue_event_channels_backend_state_key: "str" = "queue_event_channels_backend"
     event_config: "QueueEventConfig" = field(default_factory=QueueEventConfig)
+    observability_config: "QueueObservabilityConfig | None" = None
     task_modules: "tuple[str, ...]" = ()
     initialize_schedules: "bool" = True
     worker_batch_size: "int" = 10

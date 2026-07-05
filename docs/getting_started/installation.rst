@@ -39,6 +39,12 @@ Install backend extras only for the integrations an application uses:
    * - ``cloudrun``
      - Cloud Run execution
      - Dispatches persisted queue records to Cloud Run Jobs.
+   * - ``otel``
+     - OpenTelemetry queue traces and metrics
+     - Adds producer, consumer, worker, dispatch, and reconcile telemetry.
+   * - ``prometheus``
+     - Prometheus queue metrics
+     - Exposes bounded queue-domain counters and histograms.
 
 .. code-block:: bash
 
@@ -47,12 +53,15 @@ Install backend extras only for the integrations an application uses:
    pip install litestar-queues[redis]
    pip install litestar-queues[valkey]
    pip install litestar-queues[cloudrun]
+   pip install litestar-queues[otel]
+   pip install litestar-queues[prometheus]
 
 Extras can be combined when a deployment needs multiple integrations:
 
 .. code-block:: bash
 
    pip install "litestar-queues[sqlspec,cloudrun]"
+   pip install "litestar-queues[otel,prometheus]"
 
 Optional Import Boundaries
 ==========================

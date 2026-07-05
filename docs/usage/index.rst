@@ -45,6 +45,13 @@ Choose a Topic
       Publish lifecycle, progress, log, and custom task events to application
       realtime infrastructure.
 
+   .. grid-item-card:: Observability
+      :link: observability
+      :link-type: doc
+
+      Add OpenTelemetry traces, OpenTelemetry metrics, and Prometheus metrics
+      for queue operations, workers, and external execution.
+
    .. grid-item-card:: Backends
       :link: backends
       :link-type: doc
@@ -84,6 +91,7 @@ Recommended Path
 4. Choose queue persistence and execution integrations in :doc:`backends`.
 5. Read :doc:`deployment/cloud-run` when you are deploying on Cloud Run.
 6. Add progress streaming or external subscribers with :doc:`events`.
+7. Add telemetry with :doc:`observability`.
 
 .. toctree::
    :hidden:
@@ -94,6 +102,7 @@ Recommended Path
    schedules
    workers
    events
+   observability
    backends
    deployment/cloud-run
    cli

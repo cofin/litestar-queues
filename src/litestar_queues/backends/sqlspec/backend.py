@@ -62,6 +62,18 @@ _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
 _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
 
 
+def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool":
+    """Return whether package-level queue observability should own queue-domain metrics."""
+    if config is None:
+        return False
+    observability_config = config.observability_config
+    if observability_config is None:
+        return False
+    if not observability_config.disable_sqlspec_queue_observability:
+        return False
+    return observability_config.enable_prometheus or observability_config.enable_otel is not False
+
+
 def _adapter_notify_transport(adapter_name: "str | None") -> "str":
     """Return the default wakeup transport for a SQLSpec adapter.
 
@@ -139,7 +151,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_queue_table = backend_config.event_queue_table
         self._event_poll_interval = backend_config.event_poll_interval
         self._event_settings = dict(backend_config.event_settings)
-        self._queue_observability = backend_config.queue_observability
+        self._queue_observability = backend_config.queue_observability and not _package_queue_observability_enabled(
+            config
+        )
         self._notification_backend: "str | None" = getattr(self._event_channel, "_backend_name", None)
         self._notifications_enabled = self._event_channel is not None
         self._store: "SQLSpecQueueStore | None" = None

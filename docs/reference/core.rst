@@ -50,6 +50,22 @@ Plugin
    :undoc-members:
    :show-inheritance:
 
+Observability
+=============
+
+.. automodule:: litestar_queues.observability
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Typing
+======
+
+.. automodule:: litestar_queues.typing
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Exceptions
 ==========
 

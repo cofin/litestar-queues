@@ -1,3 +1,13 @@
+import subprocess
+import sys
+from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
+
 def test_public_exports() -> "None":
     """Test that the package exposes the public queue API.
 
@@ -187,3 +197,61 @@ def test_job_cancelled_helper_is_public_and_in_signature_namespace() -> "None":
     assert "job_cancelled" in litestar_queues.__all__
     assert instance.signature_namespace["JobCancelledError"] is JobCancelledError
     assert instance.signature_namespace["job_cancelled"] is job_cancelled
+
+
+def test_public_typing_facade_exports_optional_observability_types() -> "None":
+    """The supported typing facade should expose optional observability shims."""
+    from litestar_queues import typing as queue_typing
+
+    assert isinstance(queue_typing.OPENTELEMETRY_INSTALLED, bool)
+    assert isinstance(queue_typing.PROMETHEUS_INSTALLED, bool)
+    assert queue_typing.OtelSpan is not None
+    assert queue_typing.OtelTracer is not None
+    assert queue_typing.OtelSpanKind is not None
+    assert queue_typing.OtelStatus is not None
+    assert queue_typing.OtelStatusCode is not None
+    assert queue_typing.otel_trace is not None
+    assert queue_typing.otel_propagate is not None
+    assert queue_typing.OtelMeter is not None
+    assert queue_typing.otel_metrics is not None
+    assert queue_typing.PrometheusCounter is not None
+    assert queue_typing.PrometheusGauge is not None
+    assert queue_typing.PrometheusHistogram is not None
+    assert not hasattr(queue_typing, "Counter")
+    assert not hasattr(queue_typing, "Span")
+
+
+def test_observability_optional_extras_are_declared() -> "None":
+    """OpenTelemetry and Prometheus stay optional package extras."""
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+
+    optional_dependencies = pyproject["project"]["optional-dependencies"]
+    assert optional_dependencies["otel"] == ["opentelemetry-api", "opentelemetry-sdk"]
+    assert optional_dependencies["prometheus"] == ["prometheus-client"]
+    assert "observability" not in optional_dependencies
+
+    tests_dependencies = pyproject["dependency-groups"]["tests"]
+    assert "opentelemetry-api" in tests_dependencies
+    assert "opentelemetry-sdk" in tests_dependencies
+    assert "prometheus-client" in tests_dependencies
+
+
+def test_package_import_does_not_import_observability_dependencies() -> "None":
+    """Base package import must not import optional telemetry modules."""
+    script = """
+import sys
+import litestar_queues
+forbidden = (
+    "opentelemetry",
+    "opentelemetry.trace",
+    "opentelemetry.metrics",
+    "prometheus_client",
+)
+loaded = [name for name in forbidden if name in sys.modules]
+if loaded:
+    raise SystemExit(",".join(loaded))
+"""
+
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr or result.stdout

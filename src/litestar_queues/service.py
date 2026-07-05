@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
+    from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("QueueService",)
 
@@ -41,7 +43,14 @@ _LOG_LEVELS = {
 class QueueService:
     """High-level facade for queue and execution backends."""
 
-    __slots__ = ("_config", "_event_publisher", "_execution_backend", "_queue_backend", "_sync_executor")
+    __slots__ = (
+        "_config",
+        "_event_publisher",
+        "_execution_backend",
+        "_observability_runtime",
+        "_queue_backend",
+        "_sync_executor",
+    )
 
     def __init__(
         self,
@@ -50,12 +59,14 @@ class QueueService:
         queue_backend: "BaseQueueBackend | None" = None,
         execution_backend: "BaseExecutionBackend | None" = None,
         event_publisher: "QueueEventPublisher | None" = None,
+        observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None,
     ) -> "None":
         """Initialize the queue service."""
         self._config = config
         self._queue_backend = queue_backend
         self._execution_backend = execution_backend
         self._event_publisher = event_publisher
+        self._observability_runtime = observability_runtime
         self._sync_executor: "ThreadPoolExecutor | None" = None
 
     @property
@@ -80,6 +91,15 @@ class QueueService:
         if self._event_publisher is None:
             self._event_publisher = self._config.get_event_publisher()
         return self._event_publisher
+
+    @property
+    def observability_runtime(self) -> "QueueObservabilityRuntimeProtocol":
+        """Return the configured observability runtime."""
+        if self._observability_runtime is None:
+            from litestar_queues.observability import create_observability_runtime
+
+            self._observability_runtime = create_observability_runtime(self._config.observability_config)
+        return self._observability_runtime
 
     async def open(self) -> "Self":
         """Open queue and execution backends.
@@ -156,30 +176,54 @@ class QueueService:
             execution_backend or task_obj.execution_backend or execution_backend_name(self._config.execution_backend)
         )
         effective_execution_profile = execution_profile if execution_profile is not None else task_obj.execution_profile
-        effective_metadata = task_obj.metadata(metadata)
-        if description is not None:
-            effective_metadata["description"] = description
-        if log_level is not None:
-            effective_metadata["log_level"] = log_level
-        if quiet_success is not None:
-            effective_metadata["quiet_success"] = quiet_success
-        if requeue_on_stale is not None:
-            effective_metadata["requeue_on_stale"] = requeue_on_stale
-        if timeout is not None:
-            effective_metadata["timeout"] = timeout
-        record = await self.get_queue_backend().enqueue(
-            task_obj.name,
-            args=args,
-            kwargs=kwargs,
-            queue=queue if queue is not None else task_obj.queue,
-            priority=priority if priority is not None else task_obj.priority,
-            max_retries=retries if retries is not None else task_obj.retries,
-            scheduled_at=effective_scheduled_at,
-            key=effective_key,
+        effective_metadata = _task_metadata(
+            task_obj,
+            metadata=metadata,
+            description=description,
+            log_level=log_level,
+            quiet_success=quiet_success,
+            requeue_on_stale=requeue_on_stale,
+            timeout=timeout,
+        )
+        effective_queue = queue if queue is not None else task_obj.queue
+        runtime = self.observability_runtime
+        span_attributes = _base_observability_attributes(
+            operation="publish",
+            queue=effective_queue,
+            task_name=task_obj.name,
             execution_backend=effective_execution_backend,
             execution_profile=effective_execution_profile,
-            metadata=effective_metadata,
         )
+        metric_attributes = _metric_attributes(span_attributes)
+        started_at = time.perf_counter()
+        span = runtime.start_span("litestar_queues.publish", kind="producer", attributes=span_attributes)
+        try:
+            runtime.inject_trace_context(effective_metadata)
+            record = await self.get_queue_backend().enqueue(
+                task_obj.name,
+                args=args,
+                kwargs=kwargs,
+                queue=effective_queue,
+                priority=priority if priority is not None else task_obj.priority,
+                max_retries=retries if retries is not None else task_obj.retries,
+                scheduled_at=effective_scheduled_at,
+                key=effective_key,
+                execution_backend=effective_execution_backend,
+                execution_profile=effective_execution_profile,
+                metadata=effective_metadata,
+            )
+        except BaseException as exc:
+            runtime.record_exception(span, exc)
+            raise
+        else:
+            runtime.set_attribute(span, "messaging.message.id", str(record.id))
+            runtime.record_counter("litestar_queues.enqueue.count", attributes=metric_attributes)
+            runtime.record_duration(
+                "litestar_queues.enqueue.duration", time.perf_counter() - started_at, attributes=metric_attributes
+            )
+        finally:
+            runtime.end_span(span)
+
         result = TaskResult(record.id, task_obj.name, service=self, record=record)
 
         if record.execution_backend == "immediate" and record.status == "pending":
@@ -245,70 +289,45 @@ class QueueService:
         """
         task_obj = self.resolve_task(record.task_name)
         timeout = record.metadata.get("timeout", task_obj.timeout)
-        task_context = TaskExecutionContext(
-            task_id=str(record.id),
-            task_name=record.task_name,
-            queue=record.queue,
-            worker_id=worker_id,
-            execution_backend=record.execution_backend,
-            execution_profile=record.execution_profile,
-            attempt=record.retry_count + 1,
-            event_publisher=self.get_event_publisher(),
-        )
+        runtime = self.observability_runtime
+        span, started_at, metric_base_attributes = _start_execution_observability(runtime, record)
+        task_context = _task_execution_context(record, worker_id=worker_id, event_publisher=self.get_event_publisher())
         context_token = _bind_task_context(task_context)
+        final_status = "failed"
         try:
             await task_context.lifecycle("task.started")
-            extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
-            coroutine = task_obj.execute_record(
-                record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
-            )
-            result = await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
-        except asyncio.CancelledError:
+            result = await self._execute_task(record, task_obj, task_context, timeout)
+        except asyncio.CancelledError as exc:
+            final_status = "cancelled"
+            runtime.record_exception(span, exc)
             await task_context.lifecycle("task.cancelled")
             self._log_task_event("Queue task cancelled", record, level=logging.WARNING)
+            _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
             raise
         except JobCancelledError as exc:
             cancelled = await self.get_queue_backend().cancel_task(record.id, include_running=True)
             if not cancelled:
-                return await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
+                final_status = "claim_lost"
+                current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
+                _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+                return current
             cancelled_record = await self._current_or_claimed(record)
+            final_status = cancelled_record.status
             payload = {"status": cancelled_record.status, "retry_count": cancelled_record.retry_count}
             await task_context.lifecycle("task.cancelled", message=str(exc), payload=payload)
             self._log_task_event("Queue task cancelled", cancelled_record, level=logging.INFO, payload=payload)
+            _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
             return cancelled_record
         except NonRetryableError as exc:
-            failed_record = await self.get_queue_backend().fail_task(
-                record.id, str(exc), retry=False, expected_retry_count=record.retry_count
+            runtime.record_exception(span, exc)
+            return await self._fail_record_without_retry(
+                record, exc, task_context, runtime, span, started_at, metric_base_attributes
             )
-            if failed_record is None:
-                return await self.publish_claim_lost(record, phase="fail", task_context=task_context)
-            failed = failed_record
-            payload = {"status": failed.status, "retry_count": failed.retry_count, "will_retry": False}
-            await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
-            self._log_task_event("Queue task failed", failed, level=logging.ERROR, payload=payload)
-            return failed_record
         except Exception as exc:
-            failed_record = await self.get_queue_backend().fail_task(
-                record.id, str(exc), expected_retry_count=record.retry_count
+            runtime.record_exception(span, exc)
+            return await self._fail_record_with_retry(
+                record, exc, task_context, runtime, span, started_at, metric_base_attributes
             )
-            if failed_record is None:
-                return await self.publish_claim_lost(record, phase="fail", task_context=task_context)
-            failed = failed_record
-            payload = {
-                "status": failed.status,
-                "retry_count": failed.retry_count,
-                "will_retry": failed.status == "pending",
-            }
-            await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
-            self._log_task_event(
-                "Queue task failed",
-                failed,
-                level=logging.WARNING if failed.status == "pending" else logging.ERROR,
-                payload=payload,
-            )
-            if failed.status == "failed":
-                await self._reschedule_if_needed(failed)
-            return failed
         finally:
             _reset_task_context(context_token)
 
@@ -316,14 +335,100 @@ class QueueService:
             record.id, result=result, expected_retry_count=record.retry_count
         )
         if completed_record is None:
-            return await self.publish_claim_lost(record, phase="complete", task_context=task_context)
+            final_status = "claim_lost"
+            current = await self.publish_claim_lost(record, phase="complete", task_context=task_context)
+            _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+            return current
         completed = completed_record
+        final_status = completed.status
         await task_context.lifecycle(
             "task.completed", payload={"status": completed.status, "retry_count": completed.retry_count}
         )
         self._log_task_completed(completed)
         await self._reschedule_if_needed(completed)
+        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
         return completed
+
+    async def _execute_task(
+        self,
+        record: "QueuedTaskRecord",
+        task_obj: "Task[Any, Any]",
+        task_context: "TaskExecutionContext",
+        timeout: "object",
+    ) -> "object":
+        extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
+        coroutine = task_obj.execute_record(
+            record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+        )
+        return await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
+
+    async def _fail_record_without_retry(
+        self,
+        record: "QueuedTaskRecord",
+        exc: "BaseException",
+        task_context: "TaskExecutionContext",
+        runtime: "QueueObservabilityRuntimeProtocol",
+        span: "Any | None",
+        started_at: "float",
+        metric_base_attributes: "dict[str, str]",
+    ) -> "QueuedTaskRecord":
+        updated = await self.get_queue_backend().fail_task(
+            record.id, str(exc), retry=False, expected_retry_count=record.retry_count
+        )
+        if updated is None:
+            return await self._finish_claim_lost_observability(
+                record, task_context, runtime, span, started_at, metric_base_attributes
+            )
+        payload = {"status": updated.status, "retry_count": updated.retry_count, "will_retry": False}
+        await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
+        self._log_task_event("Queue task failed", updated, level=logging.ERROR, payload=payload)
+        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, updated.status)
+        return updated
+
+    async def _fail_record_with_retry(
+        self,
+        record: "QueuedTaskRecord",
+        exc: "BaseException",
+        task_context: "TaskExecutionContext",
+        runtime: "QueueObservabilityRuntimeProtocol",
+        span: "Any | None",
+        started_at: "float",
+        metric_base_attributes: "dict[str, str]",
+    ) -> "QueuedTaskRecord":
+        updated = await self.get_queue_backend().fail_task(record.id, str(exc), expected_retry_count=record.retry_count)
+        if updated is None:
+            return await self._finish_claim_lost_observability(
+                record, task_context, runtime, span, started_at, metric_base_attributes
+            )
+        payload = {
+            "status": updated.status,
+            "retry_count": updated.retry_count,
+            "will_retry": updated.status == "pending",
+        }
+        await task_context.lifecycle("task.failed", message=str(exc), payload=payload)
+        self._log_task_event(
+            "Queue task failed",
+            updated,
+            level=logging.WARNING if updated.status == "pending" else logging.ERROR,
+            payload=payload,
+        )
+        if updated.status == "failed":
+            await self._reschedule_if_needed(updated)
+        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, updated.status)
+        return updated
+
+    async def _finish_claim_lost_observability(
+        self,
+        record: "QueuedTaskRecord",
+        task_context: "TaskExecutionContext",
+        runtime: "QueueObservabilityRuntimeProtocol",
+        span: "Any | None",
+        started_at: "float",
+        metric_base_attributes: "dict[str, str]",
+    ) -> "QueuedTaskRecord":
+        current = await self.publish_claim_lost(record, phase="fail", task_context=task_context)
+        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, "claim_lost")
+        return current
 
     async def recover_stale_tasks(
         self, *, stale_after: "timedelta", worker_id: "str | None" = None
@@ -532,6 +637,110 @@ def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":
     if isinstance(value, timedelta):
         return value
     return timedelta(seconds=value)
+
+
+def _task_metadata(
+    task_obj: "Task[Any, Any]",
+    *,
+    metadata: "dict[str, Any] | None",
+    description: "str | None",
+    log_level: "str | None",
+    quiet_success: "bool | None",
+    requeue_on_stale: "bool | None",
+    timeout: "float | None",
+) -> "dict[str, Any]":
+    effective_metadata = task_obj.metadata(metadata)
+    for key, value in (
+        ("description", description),
+        ("log_level", log_level),
+        ("quiet_success", quiet_success),
+        ("requeue_on_stale", requeue_on_stale),
+        ("timeout", timeout),
+    ):
+        if value is not None:
+            effective_metadata[key] = value
+    return effective_metadata
+
+
+def _task_execution_context(
+    record: "QueuedTaskRecord", *, worker_id: "str | None", event_publisher: "QueueEventPublisher"
+) -> "TaskExecutionContext":
+    return TaskExecutionContext(
+        task_id=str(record.id),
+        task_name=record.task_name,
+        queue=record.queue,
+        worker_id=worker_id,
+        execution_backend=record.execution_backend,
+        execution_profile=record.execution_profile,
+        attempt=record.retry_count + 1,
+        event_publisher=event_publisher,
+    )
+
+
+def _base_observability_attributes(
+    *,
+    operation: "str",
+    queue: "str",
+    task_name: "str",
+    execution_backend: "str",
+    execution_profile: "str | None",
+    attempt: "int | None" = None,
+) -> "dict[str, object]":
+    attributes: "dict[str, object]" = {
+        "messaging.system": "litestar_queues",
+        "messaging.operation.name": operation,
+        "messaging.destination.name": queue,
+        "queue.task.name": task_name,
+        "queue.execution.backend": execution_backend,
+        "queue.execution.profile": execution_profile or "",
+    }
+    if attempt is not None:
+        attributes["queue.task.attempt"] = attempt
+    return attributes
+
+
+def _metric_attributes(attributes: "dict[str, object]") -> "dict[str, str]":
+    return {
+        "messaging.destination.name": str(attributes["messaging.destination.name"]),
+        "queue.task.name": str(attributes["queue.task.name"]),
+        "queue.execution.backend": str(attributes["queue.execution.backend"]),
+        "queue.execution.profile": str(attributes["queue.execution.profile"]),
+    }
+
+
+def _finish_execution_observability(
+    runtime: "QueueObservabilityRuntimeProtocol",
+    span: "Any | None",
+    started_at: "float",
+    metric_base_attributes: "dict[str, str]",
+    status: "str",
+) -> "None":
+    runtime.set_attribute(span, "queue.task.status", status)
+    attributes = {**metric_base_attributes, "queue.task.status": status}
+    runtime.record_duration(
+        "litestar_queues.task.execution.duration", time.perf_counter() - started_at, attributes=attributes
+    )
+    runtime.record_counter("litestar_queues.task.execution.count", attributes=attributes)
+    runtime.end_span(span)
+
+
+def _start_execution_observability(
+    runtime: "QueueObservabilityRuntimeProtocol", record: "QueuedTaskRecord"
+) -> "tuple[Any | None, float, dict[str, str]]":
+    parent_context = runtime.extract_trace_context(record.metadata)
+    span_attributes = _base_observability_attributes(
+        operation="process",
+        queue=record.queue,
+        task_name=record.task_name,
+        execution_backend=record.execution_backend,
+        execution_profile=record.execution_profile,
+        attempt=record.retry_count + 1,
+    )
+    span_attributes["messaging.message.id"] = str(record.id)
+    span = runtime.start_span(
+        "litestar_queues.process", kind="consumer", attributes=span_attributes, parent=parent_context
+    )
+    return span, time.perf_counter(), _metric_attributes(span_attributes)
 
 
 def _coerce_log_level(value: "object", default: "int" = logging.INFO) -> "int":
