@@ -147,7 +147,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
         """Return statements that create Postgres-family queue artifacts."""
         if not self._manage_schema:
             return []
-        create_table = self._to_sql(self._create_table_statement())
+        create_table = self._create_table_sql()
         if type(self).table_storage_parameters:
             create_table = f"{create_table} WITH (fillfactor = 80)"
         statements = [create_table, *self._create_index_statements()]
