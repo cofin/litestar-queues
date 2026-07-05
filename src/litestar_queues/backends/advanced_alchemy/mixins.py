@@ -1,12 +1,15 @@
 """Advanced Alchemy queue task mixins."""
 
-from typing import Any, Protocol, cast
+from datetime import datetime  # noqa: TC003
+from typing import Any, Protocol, TypeAlias, cast
 
 from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
 __all__ = ("QueueTaskModelMixin",)
+
+JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 @declarative_mixin
@@ -33,11 +36,11 @@ class QueueTaskModelMixin:
         return mapped_column(String(length=500), nullable=False)
 
     @declared_attr
-    def args_json(cls) -> "Mapped[Any]":
+    def args_json(cls) -> "Mapped[list[Any]]":
         return mapped_column(JsonB, default=list, nullable=False)
 
     @declared_attr
-    def kwargs_json(cls) -> "Mapped[Any]":
+    def kwargs_json(cls) -> "Mapped[dict[str, Any]]":
         return mapped_column(JsonB, default=dict, nullable=False)
 
     @declared_attr
@@ -73,23 +76,23 @@ class QueueTaskModelMixin:
         return mapped_column(Integer(), default=0, nullable=False)
 
     @declared_attr
-    def scheduled_at(cls) -> "Mapped[Any | None]":
+    def scheduled_at(cls) -> "Mapped[datetime | None]":
         return mapped_column(DateTime(timezone=True), default=None)
 
     @declared_attr
-    def started_at(cls) -> "Mapped[Any | None]":
+    def started_at(cls) -> "Mapped[datetime | None]":
         return mapped_column(DateTime(timezone=True), default=None)
 
     @declared_attr
-    def completed_at(cls) -> "Mapped[Any | None]":
+    def completed_at(cls) -> "Mapped[datetime | None]":
         return mapped_column(DateTime(timezone=True), default=None)
 
     @declared_attr
-    def heartbeat_at(cls) -> "Mapped[Any | None]":
+    def heartbeat_at(cls) -> "Mapped[datetime | None]":
         return mapped_column(DateTime(timezone=True), default=None)
 
     @declared_attr
-    def result_json(cls) -> "Mapped[Any]":
+    def result_json(cls) -> "Mapped[JSONValue]":
         return mapped_column(JsonB, default=None, nullable=True)
 
     @declared_attr
@@ -101,7 +104,7 @@ class QueueTaskModelMixin:
         return mapped_column(String(length=500), unique=True, default=None)
 
     @declared_attr
-    def metadata_json(cls) -> "Mapped[Any]":
+    def metadata_json(cls) -> "Mapped[dict[str, Any]]":
         return mapped_column(JsonB, default=dict, nullable=False)
 
 

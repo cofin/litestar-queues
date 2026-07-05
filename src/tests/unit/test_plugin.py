@@ -80,7 +80,7 @@ def test_plugin_registers_dependencies_and_state() -> "None":
     """Test that the plugin registers dependencies, state, and signature namespace."""
     from litestar.config.app import AppConfig
 
-    from litestar_queues import QueueConfig, QueuePlugin, QueueService
+    from litestar_queues import QueueConfig, QueuePlugin
 
     config = QueueConfig()
     plugin = QueuePlugin(config=config)
@@ -92,4 +92,27 @@ def test_plugin_registers_dependencies_and_state() -> "None":
     assert config.queue_service_state_key in app_config.state
     assert app_config.state[config.queue_service_state_key] is config
     assert "QueueService" in app_config.signature_namespace
-    assert isinstance(plugin.get_service(app_config.state), QueueService)
+    assert plugin.get_service(app_config.state).config is config
+
+
+def test_queue_config_get_service_requires_opened_app_state_service() -> "None":
+    """QueueConfig state lookup should not create an unopened app service."""
+    from litestar.config.app import AppConfig
+
+    from litestar_queues import QueueConfig, QueueService
+
+    config = QueueConfig()
+    app_config = AppConfig()
+    service = QueueService(config)
+
+    assert isinstance(config.get_service(), QueueService)
+
+    with pytest.raises(RuntimeError, match="QueueService is not available"):
+        config.get_service(app_config.state)
+
+    app_config.state[config.queue_service_state_key] = config
+    with pytest.raises(RuntimeError, match="QueueService has not been opened"):
+        config.get_service(app_config.state)
+
+    app_config.state[config.queue_service_state_key] = service
+    assert config.get_service(app_config.state) is service

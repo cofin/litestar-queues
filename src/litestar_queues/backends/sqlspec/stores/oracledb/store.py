@@ -10,8 +10,12 @@ from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.exceptions import QueueConfigurationError
 
 __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
+
+_ORACLE_IDENTIFIER_MAX_LENGTH = 30
+_ORACLE_ERROR_MAX_LENGTH = 4000
 
 
 class _OracledbQueueStore(SQLSpecQueueStore):
@@ -54,7 +58,7 @@ class _OracledbQueueStore(SQLSpecQueueStore):
             The decoded Python JSON value.
         """
         if canonical in self._native_json_columns:
-            return _deserialize_native_oracle_json(value)
+            return _deserialize_native_oracle_json(canonical, value)
         return _deserialize_oracle_json(value)
 
     def _string_type(self, length: "int | None" = None) -> "str":
@@ -65,6 +69,10 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     def _error_type(self) -> "str":
         return "VARCHAR2(4000)"
+
+    def serialize_error(self, error: "str") -> "str":
+        """Return an Oracle-safe error value for the VARCHAR2 error column."""
+        return error[:_ORACLE_ERROR_MAX_LENGTH]
 
     def _index_name(self, suffix: "str") -> "str":
         return _index_name(self, suffix)
@@ -117,7 +125,8 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         if execution_backend is not None:
             statement = statement.where_eq(self._col("execution_backend"), execution_backend)
         return statement.order_by(
-            sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
+            cast("Any", sql.raw(f"{self._col('priority')} DESC")),
+            cast("Any", sql.raw(f"{self._col('created_at')} ASC")),
         ).for_update(skip_locked=True)
 
 
@@ -152,6 +161,7 @@ class OracledbAsyncQueueStore(_OracledbQueueStore):
 
     def __init__(self, config: "Any", *, table_name: "str | None" = None, **kwargs: "Any") -> "None":
         super().__init__(config, table_name=table_name, **kwargs)
+        _disable_async_lob_fetching(config)
         queue_settings = _queue_settings(config)
         self._in_memory = bool(queue_settings.get("in_memory", False))
         self._json_storage = _json_storage_from_settings(queue_settings)
@@ -171,9 +181,18 @@ class _OracleJSONStorageType(str, Enum):
     BLOB_PLAIN = "blob"
 
 
+_ORACLE_CONTAINER_JSON_COLUMNS = frozenset({"args_json", "kwargs_json", "metadata_json"})
+
+
 def _queue_settings(config: "Any") -> "dict[str, Any]":
     extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
     return cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
+
+
+def _disable_async_lob_fetching(config: "Any") -> "None":
+    driver_features = getattr(config, "driver_features", None)
+    if isinstance(driver_features, dict):
+        driver_features["fetch_lobs"] = False
 
 
 def _json_storage_from_settings(settings: "dict[str, Any]") -> "_OracleJSONStorageType | None":
@@ -186,7 +205,9 @@ def _json_storage_from_settings(settings: "dict[str, Any]") -> "_OracleJSONStora
         return _OracleJSONStorageType.BLOB_JSON
     if configured == _OracleJSONStorageType.BLOB_PLAIN.value:
         return _OracleJSONStorageType.BLOB_PLAIN
-    return _OracleJSONStorageType.BLOB_JSON
+    valid = ", ".join(storage_type.value for storage_type in _OracleJSONStorageType)
+    msg = f"Invalid Oracle json_storage {configured!r}; expected one of: {valid}."
+    raise QueueConfigurationError(msg)
 
 
 def _json_storage_from_version_info(version_info: "Any") -> "_OracleJSONStorageType":
@@ -261,22 +282,30 @@ def _deserialize_oracle_json(value: "Any") -> "Any":
     return from_json(value)
 
 
-def _deserialize_native_oracle_json(value: "Any") -> "Any":
+def _deserialize_native_oracle_json(canonical: "str", value: "Any") -> "Any":
     if value is None:
         return None
     read = getattr(value, "read", None)
     if callable(read):
         value = read()
-    if isinstance(value, (str, bytes)):
-        try:
+    if isinstance(value, bytes):
+        return from_json(value)
+    if isinstance(value, str):
+        stripped = value.lstrip()
+        if canonical in _ORACLE_CONTAINER_JSON_COLUMNS or stripped.startswith(("{", "[", '"')):
             return from_json(value)
-        except ValueError:
-            return value
+        return value
     return value
 
 
 def _index_name(store: "SQLSpecQueueStore", suffix: "str") -> "str":
-    return SQLSpecQueueStore._index_name(store, suffix)[:30]
+    suffix_text = f"_{suffix}"
+    prefix = "ix_"
+    table_name = store.table_name.replace(".", "_")
+    table_budget = _ORACLE_IDENTIFIER_MAX_LENGTH - len(prefix) - len(suffix_text)
+    if table_budget < 1:
+        return f"{prefix}{suffix_text.lstrip('_')}"[:_ORACLE_IDENTIFIER_MAX_LENGTH]
+    return f"{prefix}{table_name[:table_budget]}{suffix_text}"
 
 
 def _create_table_block(store: "SQLSpecQueueStore", storage_type: "_OracleJSONStorageType", in_memory: "bool") -> "str":

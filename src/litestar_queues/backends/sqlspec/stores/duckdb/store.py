@@ -13,3 +13,4 @@ class DuckDBQueueStore(SQLSpecQueueStore):
     __slots__ = ()
 
     data_dictionary_dialect: "ClassVar[str | None]" = "duckdb"
+    bind_datetime_as_naive_utc: "ClassVar[bool]" = True

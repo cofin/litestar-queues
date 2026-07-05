@@ -14,6 +14,7 @@ pytest.importorskip("sqlspec")
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores import OracledbAsyncQueueStore, OracledbSyncQueueStore, create_queue_store
+from litestar_queues.exceptions import QueueConfigurationError
 
 
 class FakeOracleConfig(SimpleNamespace):
@@ -22,6 +23,7 @@ class FakeOracleConfig(SimpleNamespace):
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
+    driver_features: "dict[str, object]"
 
 
 class FakeOracleVersionInfo:
@@ -80,6 +82,7 @@ def _fake_oracle_config(
     config.extension_config = extension_config or {}
     config.statement_config = SimpleNamespace(dialect="oracle")
     config.connection_config = {}
+    config.driver_features = {}
     return config
 
 
@@ -120,6 +123,69 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
     assert store.deserialize_json("kwargs_json", serialized) == {"ok": True}
     if queue_settings.get("json_storage") != "blob":
         assert store.deserialize_json("result_json", "ok") == "ok"
+
+
+def test_sqlspec_backend_oracledb_async_store_disables_lob_fetching() -> "None":
+    config = _fake_oracle_config(config_type_name="OracleAsyncConfig")
+    config.driver_features["fetch_lobs"] = True
+
+    store = create_queue_store(config, table_name="queue_tasks")
+
+    assert isinstance(store, OracledbAsyncQueueStore)
+    assert config.driver_features["fetch_lobs"] is False
+
+
+def test_sqlspec_backend_oracledb_rejects_invalid_json_storage() -> "None":
+    with pytest.raises(QueueConfigurationError, match="Invalid Oracle json_storage"):
+        create_queue_store(
+            _fake_oracle_config(
+                config_type_name="OracleAsyncConfig", extension_config={QUEUE_EXTENSION_NAME: {"json_storage": "clob"}}
+            ),
+            table_name="queue_tasks",
+        )
+
+
+def test_sqlspec_backend_oracledb_native_json_preserves_scalar_string_results() -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(
+            config_type_name="OracleAsyncConfig", extension_config={QUEUE_EXTENSION_NAME: {"json_storage": "json"}}
+        ),
+        table_name="queue_tasks",
+    )
+
+    assert store.deserialize_json("result_json", "123") == "123"
+    assert store.deserialize_json("result_json", '"123"') == "123"
+    assert store.deserialize_json("kwargs_json", '{"ok":true}') == {"ok": True}
+
+
+def test_sqlspec_backend_oracledb_index_names_stay_unique_after_truncation() -> "None":
+    store = create_queue_store(
+        _fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks_with_a_very_long_name"
+    )
+
+    pending_index = store._index_name("pending")
+    heartbeat_index = store._index_name("heartbeat")
+
+    assert len(pending_index) <= 30
+    assert len(heartbeat_index) <= 30
+    assert pending_index.endswith("_pending")
+    assert heartbeat_index.endswith("_heartbeat")
+    assert pending_index != heartbeat_index
+
+
+def test_sqlspec_backend_oracledb_truncates_error_text_for_failure_statements() -> "None":
+    store = create_queue_store(_fake_oracle_config(config_type_name="OracleAsyncConfig"), table_name="queue_tasks")
+    long_error = "x" * 4005
+
+    failed = store.fail_task(task_id="task-1", completed_at="now", heartbeat_at="now", error=long_error).build(
+        dialect="oracle"
+    )
+    retry = store.retry_task(task_id="task-1", error=long_error, retry_count=1).build(dialect="oracle")
+
+    assert len(failed.parameters["error"]) == 4000
+    assert failed.parameters["error"] == long_error[:4000]
+    assert len(retry.parameters["error"]) == 4000
+    assert retry.parameters["error"] == long_error[:4000]
 
 
 @pytest.mark.anyio

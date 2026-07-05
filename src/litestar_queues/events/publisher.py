@@ -10,6 +10,7 @@ from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from litestar_queues.events._typing import ChannelsLike
     from litestar_queues.events.models import QueueEvent
 
 __all__ = ("QueueEventConfig", "QueueEventPublisher")
@@ -32,7 +33,7 @@ class QueueEventConfig:
 
     enabled: "bool" = False
     sink: "QueueEventSink | None" = None
-    channels_backend: "object | None" = None
+    channels_backend: "ChannelsLike | None" = None
     strict: "bool" = False
     publish_task_channel: "bool" = True
     publish_queue_channel: "bool" = True

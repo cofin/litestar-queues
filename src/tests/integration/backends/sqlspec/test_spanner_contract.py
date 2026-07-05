@@ -2,6 +2,7 @@
 
 import os
 from contextlib import suppress
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -12,9 +13,10 @@ pytest.importorskip("google.cloud.spanner_v1")
 from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import spanner
-from sqlspec.adapters.spanner import SpannerSyncConfig
+from sqlspec.adapters.spanner import SpannerSyncConfig, spanner_json
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
@@ -23,6 +25,20 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 _SPANNER_ENV_VARS = ("SPANNER_PROJECT", "SPANNER_INSTANCE", "SPANNER_DATABASE")
+
+
+def test_sqlspec_spanner_store_deserializes_native_json_wrappers() -> "None":
+    store = SpannerQueueStore(config=cast("Any", SimpleNamespace(extension_config={})))
+
+    args = store.deserialize_json("args_json", spanner_json([1, {"ok": True}]))
+    kwargs = store.deserialize_json("kwargs_json", spanner_json({"ok": True}))
+
+    assert isinstance(args, list)
+    assert args == [1, {"ok": True}]
+    assert type(kwargs) is dict
+    assert kwargs == {"ok": True}
+    assert store.deserialize_json("result_json", spanner_json("done")) == "done"
+    assert store.deserialize_json("result_json", spanner_json(None)) is None
 
 
 async def test_sqlspec_spanner_backend_live_contract_round_trip() -> "None":

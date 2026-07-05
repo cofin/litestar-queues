@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from litestar_queues.backends import BaseQueueBackend
+    from litestar_queues.backends.sqlspec._typing import SQLSpecStoreConfig
 
 
 class PostgresService(Protocol):
@@ -111,7 +112,7 @@ async def _build_memory(ctx: "FixtureCtx") -> "BaseQueueBackend":
     return InMemoryQueueBackend()
 
 
-def _sqlspec_backend(sqlspec_config: "object", *, table_name: "str | None" = None) -> "BaseQueueBackend":
+def _sqlspec_backend(sqlspec_config: "SQLSpecStoreConfig", *, table_name: "str | None" = None) -> "BaseQueueBackend":
     """Return a SQLSpec backend configured through the typed config object.
 
     ``table_name`` is set per-case by the fixture so adapters sharing the

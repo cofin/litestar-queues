@@ -1,11 +1,14 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
+from logging import getLogger
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from litestar.di import Provide
 
 from litestar_queues.events import QueueEventConfig
+
+logger = getLogger(__name__)
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -258,14 +261,25 @@ class QueueConfig:
         """Return a QueueService for this configuration."""
         from litestar_queues.service import QueueService
 
-        if state is not None and self.queue_service_state_key in state:
-            cached = state[self.queue_service_state_key]
-            if isinstance(cached, QueueService):
-                return cached
-            if isinstance(cached, QueueConfig):
-                return QueueService(cached)
+        if state is None:
+            return QueueService(self)
 
-        return QueueService(self)
+        if self.queue_service_state_key not in state:
+            msg = (
+                f"QueueService is not available in app state under {self.queue_service_state_key!r}; "
+                "ensure QueuePlugin startup has completed before resolving the queue service."
+            )
+            raise RuntimeError(msg)
+
+        cached = state[self.queue_service_state_key]
+        if isinstance(cached, QueueService):
+            return cached
+
+        msg = (
+            f"QueueService has not been opened in app state under {self.queue_service_state_key!r}; "
+            f"found {type(cached).__name__}."
+        )
+        raise RuntimeError(msg)
 
     def get_queue_backend(self) -> "BaseQueueBackend":
         """Return a configured queue backend instance."""
@@ -291,6 +305,11 @@ class QueueConfig:
         event_config = self.event_config
         sink: "QueueEventSink"
         if not event_config.enabled:
+            if event_config.sink is not None or event_config.channels_backend is not None:
+                logger.warning(
+                    "Queue event sink configured while event publishing is disabled; "
+                    "set QueueEventConfig(enabled=True) to publish queue events."
+                )
             sink = NoopQueueEventSink()
         elif event_config.sink is not None:
             sink = event_config.sink

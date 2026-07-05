@@ -9,7 +9,7 @@ Oracle async configs) by the subdir conftest.
 import sys
 from datetime import datetime, timedelta, timezone
 from subprocess import run
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import pytest
@@ -30,6 +30,7 @@ from litestar_queues.backends.advanced_alchemy import (
     AdvancedAlchemyQueueBackend,
     QueueTaskModelMixin,
 )
+from litestar_queues.models import QueuedTaskRecord
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
@@ -43,28 +44,8 @@ def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
-    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
-
-
 class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "aa_contract_queue_tasks"
-
-
-def _postgresql_dialect() -> "Any":
-    return postgresql.dialect()  # type: ignore[no-untyped-call]
-
-
-def _sqlite_dialect() -> "Any":
-    return sqlite.dialect()
-
-
-def _mysql_dialect() -> "Any":
-    return mysql.dialect()
-
-
-def _oracle_dialect() -> "Any":
-    return oracle.dialect()  # type: ignore[no-untyped-call]
 
 
 async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> "None":
@@ -119,6 +100,7 @@ def test_advanced_alchemy_mixin_uses_native_json_column_types() -> "None":
 def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects() -> "None":
     from litestar_queues.backends.advanced_alchemy.service import (
         _build_claim_candidate_statement,
+        _build_claim_lock_statement,
         _supports_skip_locked_claim,
     )
 
@@ -140,19 +122,32 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
         skip_locked=_supports_skip_locked_claim("sqlite"),
     )
     oracle_statement = _build_claim_candidate_statement(
-        ContractQueueTask,
-        queue=None,
-        execution_backend=None,
-        now=claim_time,
-        limit=None,
-        skip_locked=_supports_skip_locked_claim("oracle"),
+        ContractQueueTask, queue=None, execution_backend=None, now=claim_time, limit=10, skip_locked=False
     )
+    oracle_lock_statement = _build_claim_lock_statement(ContractQueueTask, uuid4())
 
     assert "FOR UPDATE SKIP LOCKED" in str(postgres_statement.compile(dialect=_postgresql_dialect()))
     assert "FOR UPDATE" not in str(sqlite_statement.compile(dialect=_sqlite_dialect()))
     oracle_sql = str(oracle_statement.compile(dialect=_oracle_dialect()))
-    assert "FOR UPDATE SKIP LOCKED" in oracle_sql
-    assert "FETCH FIRST" not in oracle_sql
+    oracle_lock_sql = str(oracle_lock_statement.compile(dialect=_oracle_dialect()))
+    assert "FOR UPDATE" not in oracle_sql
+    assert "FETCH FIRST" in oracle_sql
+    assert "FOR UPDATE SKIP LOCKED" in oracle_lock_sql
+    assert not _supports_skip_locked_claim("mysql")
+    assert not _supports_skip_locked_claim("mariadb")
+
+
+async def test_advanced_alchemy_cas_claim_scans_past_first_failed_batch() -> "None":
+    from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+
+    records = [QueuedTaskRecord(task_name=f"tasks.cas.{index}") for index in range(11)]
+    target = records[-1]
+    service = _CasClaimService(records, target)
+
+    claimed = await QueueTaskService.claim_next(cast("QueueTaskService", service), queue=None, execution_backend=None)
+
+    assert claimed is target
+    assert service.list_limits == [10, 20]
 
 
 def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialects() -> "None":
@@ -254,6 +249,22 @@ async def test_advanced_alchemy_backend_fail_task_retries_then_fails_permanently
     assert failed.status == "failed"
     assert failed.error == "second failure"
     assert failed.completed_at is not None
+
+
+async def test_advanced_alchemy_backend_preserves_json_string_results(
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
+    record = await advanced_alchemy_backend.enqueue("tasks.string-result")
+    claimed = await advanced_alchemy_backend.claim_task(record.id)
+
+    assert claimed is not None
+    completed = await advanced_alchemy_backend.complete_task(claimed.id, result="123")
+    stored = await advanced_alchemy_backend.get_task(record.id)
+
+    assert completed is not None
+    assert completed.result == "123"
+    assert stored is not None
+    assert stored.result == "123"
 
 
 async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_running(
@@ -362,3 +373,45 @@ async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: "Path") -> 
     assert result.status == "pending"
     assert stored is not None
     assert stored.task_name == "tasks.aa"
+
+
+def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
+    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
+
+
+def _postgresql_dialect() -> "Any":
+    return postgresql.dialect()  # type: ignore[no-untyped-call]
+
+
+def _sqlite_dialect() -> "Any":
+    return sqlite.dialect()
+
+
+def _mysql_dialect() -> "Any":
+    return mysql.dialect()
+
+
+def _oracle_dialect() -> "Any":
+    return oracle.dialect()  # type: ignore[no-untyped-call]
+
+
+class _CasClaimService:
+    def __init__(self, records: "list[QueuedTaskRecord]", target: "QueuedTaskRecord") -> "None":
+        self.records = records
+        self.target = target
+        self.list_limits: "list[int]" = []
+
+    def _dialect_name(self) -> "str":
+        return "sqlite"
+
+    async def list_pending(
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "list[QueuedTaskRecord]":
+        del queue, execution_backend
+        self.list_limits.append(limit)
+        return self.records[:limit]
+
+    async def claim_task(self, task_id: "object") -> "QueuedTaskRecord | None":
+        if task_id == self.target.id:
+            return self.target
+        return None

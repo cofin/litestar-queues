@@ -1,7 +1,7 @@
 """Advanced Alchemy queue persistence service."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from advanced_alchemy.operations import OnConflictUpsert
@@ -9,23 +9,30 @@ from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from advanced_alchemy.utils.serialization import decode_json as _decode_json
 from advanced_alchemy.utils.serialization import encode_json as _encode_json
 from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import inspect as sqlalchemy_inspect
+from sqlalchemy.orm.exc import UnmappedColumnError
 
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
 from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskStatus
+
+if TYPE_CHECKING:
+    from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 
 __all__ = ("QueueTaskService",)
 
 _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
-_SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
+_SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"oracle", "postgresql"})
 _NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
+_ORACLE_CLAIM_CANDIDATE_LIMIT = 10
+_CAS_CLAIM_BATCH_SIZE = 10
 
 
 class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     """Persistence operations for Advanced Alchemy queue records."""
 
     @classmethod
-    def for_model(cls, model_class: "type[Any]") -> 'type["QueueTaskService"]':
+    def for_model(cls, model_class: "type[QueueTaskModelMixin]") -> 'type["QueueTaskService"]':
         """Return a service subclass bound to ``model_class``."""
         repository_type = QueueTaskRepository.for_model(model_class)
         return cast(
@@ -99,7 +106,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 model_type.status.in_(_DUE_STATUSES),
                 or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
             )
-            .values(status="running", started_at=now, heartbeat_at=now)
+            .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
         )
         if result.rowcount != 1:
             return None
@@ -110,25 +117,47 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if _supports_skip_locked_claim(self._dialect_name()):
             return await self._claim_next_skip_locked(queue=queue, execution_backend=execution_backend)
 
-        pending = await self.list_pending(limit=10, queue=queue, execution_backend=execution_backend)
-        for record in pending:
-            claimed = await self.claim_task(record.id)
-            if claimed is not None:
-                return claimed
-        return None
+        skipped_ids: "set[UUID]" = set()
+        pending_limit = _CAS_CLAIM_BATCH_SIZE
+        while True:
+            pending = await self.list_pending(limit=pending_limit, queue=queue, execution_backend=execution_backend)
+            candidates = [record for record in pending if record.id not in skipped_ids]
+            if not candidates:
+                return None
+            for record in candidates:
+                claimed = await self.claim_task(record.id)
+                if claimed is not None:
+                    return claimed
+                skipped_ids.add(record.id)
+            if len(pending) < pending_limit:
+                return None
+            pending_limit += _CAS_CLAIM_BATCH_SIZE
 
     async def _claim_next_skip_locked(
         self, *, queue: "str | None", execution_backend: "str | None"
     ) -> "QueuedTaskRecord | None":
         now = _utc_now()
         dialect_name = self._dialect_name()
+        if dialect_name == "oracle":
+            statement = _build_claim_candidate_statement(
+                self.model_type,
+                queue=queue,
+                execution_backend=execution_backend,
+                now=now,
+                limit=_ORACLE_CLAIM_CANDIDATE_LIMIT,
+                skip_locked=False,
+            )
+            candidates = (await self.repository.session.execute(statement)).scalars().all()
+            for candidate in candidates:
+                lock_statement = _build_claim_lock_statement(self.model_type, UUID(str(candidate.id)))
+                locked = (await self.repository.session.execute(lock_statement)).scalars().first()
+                if locked is None:
+                    continue
+                return await self.claim_task(UUID(str(locked.id)))
+            return None
+
         statement = _build_claim_candidate_statement(
-            self.model_type,
-            queue=queue,
-            execution_backend=execution_backend,
-            now=now,
-            limit=None if dialect_name == "oracle" else 1,
-            skip_locked=True,
+            self.model_type, queue=queue, execution_backend=execution_backend, now=now, limit=1, skip_locked=True
         )
         row = (await self.repository.session.execute(statement)).scalars().first()
         if row is None:
@@ -147,7 +176,17 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             update(model_type)
             .where(*criteria)
             .values(
-                status="completed", completed_at=now, heartbeat_at=now, result_json=_serialize_json(result), error=None
+                _update_values(
+                    model_type,
+                    {
+                        "status": "completed",
+                        "completed_at": now,
+                        "heartbeat_at": now,
+                        "result_json": _serialize_json(result),
+                        "error": None,
+                    },
+                    now=now,
+                )
             )
         )
         if update_result.rowcount != 1:
@@ -175,11 +214,16 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 update(model_type)
                 .where(*criteria)
                 .values(
-                    status="pending",
-                    started_at=None,
-                    heartbeat_at=None,
-                    retry_count=int(model.retry_count) + 1,
-                    error=error,
+                    _update_values(
+                        model_type,
+                        {
+                            "status": "pending",
+                            "started_at": None,
+                            "heartbeat_at": None,
+                            "retry_count": int(model.retry_count) + 1,
+                            "error": error,
+                        },
+                    )
                 )
             )
         else:
@@ -187,7 +231,13 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             update_result = await self.repository.session.execute(
                 update(model_type)
                 .where(*criteria)
-                .values(status="failed", completed_at=now, heartbeat_at=now, error=error)
+                .values(
+                    _update_values(
+                        model_type,
+                        {"status": "failed", "completed_at": now, "heartbeat_at": now, "error": error},
+                        now=now,
+                    )
+                )
             )
         if update_result.rowcount != 1:
             return None
@@ -196,10 +246,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
 
     async def cancel_task(self, task_id: "UUID") -> "bool":
         model_type = self.model_type
+        now = _utc_now()
         result = await self.repository.session.execute(
             update(model_type)
             .where(model_type.id == task_id, model_type.status.in_(_DUE_STATUSES))
-            .values(status="cancelled", completed_at=_utc_now())
+            .values(_update_values(model_type, {"status": "cancelled", "completed_at": now}, now=now))
         )
         return int(result.rowcount or 0) == 1
 
@@ -208,8 +259,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         criteria = [model_type.id == task_id, model_type.status == "running"]
         if expected_retry_count is not None:
             criteria.append(model_type.retry_count == expected_retry_count)
+        now = _utc_now()
         result = await self.repository.session.execute(
-            update(model_type).where(*criteria).values(heartbeat_at=_utc_now())
+            update(model_type).where(*criteria).values(_update_values(model_type, {"heartbeat_at": now}, now=now))
         )
         return int(result.rowcount or 0) == 1
 
@@ -220,7 +272,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         criteria = [model_type.id.in_(task_ids)]
         if expected_retry_count is not None:
             criteria.append(model_type.retry_count == expected_retry_count)
-        await self.repository.session.execute(update(model_type).where(*criteria).values(heartbeat_at=None))
+        await self.repository.session.execute(
+            update(model_type).where(*criteria).values(_update_values(model_type, {"heartbeat_at": None}))
+        )
 
     async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
@@ -247,11 +301,16 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                     update(model_type)
                     .where(*update_criteria)
                     .values(
-                        status="pending",
-                        started_at=None,
-                        heartbeat_at=None,
-                        retry_count=int(model.retry_count) + 1,
-                        error="Task heartbeat stale",
+                        _update_values(
+                            model_type,
+                            {
+                                "status": "pending",
+                                "started_at": None,
+                                "heartbeat_at": None,
+                                "retry_count": int(model.retry_count) + 1,
+                                "error": "Task heartbeat stale",
+                            },
+                        )
                     )
                     .execution_options(synchronize_session=False)
                 )
@@ -264,7 +323,18 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 update_result = await self.repository.session.execute(
                     update(model_type)
                     .where(*update_criteria)
-                    .values(status="failed", completed_at=now, heartbeat_at=now, error="Task heartbeat stale")
+                    .values(
+                        _update_values(
+                            model_type,
+                            {
+                                "status": "failed",
+                                "completed_at": now,
+                                "heartbeat_at": now,
+                                "error": "Task heartbeat stale",
+                            },
+                            now=now,
+                        )
+                    )
                     .execution_options(synchronize_session=False)
                 )
                 if update_result.rowcount == 1:
@@ -286,7 +356,14 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             update(model_type)
             .where(model_type.id == task_id)
             .values(
-                execution_backend=execution_backend, execution_profile=execution_profile, execution_ref=execution_ref
+                _update_values(
+                    model_type,
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": execution_ref,
+                    },
+                )
             )
         )
         if result.rowcount != 1:
@@ -301,7 +378,16 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         result = await self.repository.session.execute(
             update(model_type)
             .where(model_type.id == task_id)
-            .values(execution_backend=execution_backend, execution_profile=execution_profile, execution_ref=None)
+            .values(
+                _update_values(
+                    model_type,
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": None,
+                    },
+                )
+            )
         )
         if result.rowcount != 1:
             return None
@@ -426,13 +512,15 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def _insert_task_record(self, record: "QueuedTaskRecord", *, key: "str | None") -> "QueuedTaskRecord":
         model = self.model_from_record(record)
         dialect_name = self._dialect_name()
-        if key is not None and _supports_native_keyed_enqueue(dialect_name):
+        if key is not None and dialect_name is not None and _supports_native_keyed_enqueue(dialect_name):
             values = _model_insert_values(model, self.model_type)
             statement, params = _build_keyed_enqueue_upsert(
-                cast("Any", self.model_type.__table__), values, dialect_name=cast("str", dialect_name)
+                self.model_type.__table__, values, dialect_name=dialect_name
             )
-            await self.repository.session.execute(statement, {**values, **params})
-            await self.repository.session.flush()
+            if params:
+                await self.repository.session.execute(statement, params)
+            else:
+                await self.repository.session.execute(statement)
             inserted = await self._select_task(record.id)
             if inserted is not None:
                 return self.record_from_model(inserted)
@@ -446,8 +534,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
 
     def _dialect_name(self) -> "str | None":
         bind = self.repository.session.get_bind()
-        dialect = getattr(bind, "dialect", None)
-        return cast("str | None", getattr(dialect, "name", None))
+        return bind.dialect.name if bind is not None else None
 
     def _pending_statement(self, *, queue: "str | None", execution_backend: "str | None") -> "Any":
         return _build_claim_candidate_statement(
@@ -493,6 +580,14 @@ def _build_claim_candidate_statement(
     return statement
 
 
+def _build_claim_lock_statement(model_type: "type[Any]", task_id: "UUID") -> "Any":
+    return (
+        select(model_type)
+        .where(model_type.id == task_id, model_type.status.in_(_DUE_STATUSES))
+        .with_for_update(skip_locked=True)
+    )
+
+
 def _build_keyed_enqueue_upsert(
     table: "Any", values: "dict[str, Any]", *, dialect_name: "str"
 ) -> "tuple[Any, dict[str, Any]]":
@@ -519,13 +614,27 @@ def _build_keyed_enqueue_upsert(
     )
 
 
+def _update_values(
+    model_type: "type[Any]", values: "dict[str, Any]", *, now: "datetime | None" = None
+) -> "dict[str, Any]":
+    if hasattr(model_type, "updated_at") and "updated_at" not in values:
+        values = {**values, "updated_at": now or _utc_now()}
+    return values
+
+
 def _model_insert_values(model: "Any", model_type: "type[Any]") -> "dict[str, Any]":
     values: "dict[str, Any]" = {}
-    for column in model_type.__table__.columns:
-        if not hasattr(model, column.name):
+    mapper = sqlalchemy_inspect(model_type)
+    table = model_type.__table__
+    for column in table.columns:
+        try:
+            attribute_name = mapper.get_property_by_column(column).key
+        except UnmappedColumnError:
+            attribute_name = column.key or column.name
+        if not hasattr(model, attribute_name):
             continue
-        value = getattr(model, column.name)
-        if value is None and column.name == "updated_at":
+        value = getattr(model, attribute_name)
+        if value is None and attribute_name == "updated_at":
             value = _utc_now()
         if value is None and (column.default is not None or column.server_default is not None):
             continue
@@ -546,11 +655,6 @@ def _deserialize_json(value: "Any") -> "Any":
         return None
     if isinstance(value, bytes | bytearray | memoryview):
         return _decode_json(bytes(value))
-    if isinstance(value, str):
-        try:
-            return _decode_json(value)
-        except ValueError:
-            return value
     return value
 
 

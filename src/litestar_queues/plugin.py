@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from litestar.plugins import InitPlugin
 
@@ -12,6 +12,7 @@ from litestar_queues.task import load_task_modules, set_default_service
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
+    from click import Group as ClickGroup
     from litestar import Litestar
     from litestar.config.app import AppConfig
     from litestar.datastructures import State
@@ -70,19 +71,15 @@ class QueuePlugin(InitPlugin):
         app_config.on_shutdown.append(self._on_shutdown)
         return app_config
 
-    def on_cli_init(self, cli: "object") -> "None":
+    def on_cli_init(self, cli: "ClickGroup") -> "None":
         """Attach the ``queues`` subcommand group to the Litestar CLI.
 
         Args:
-            cli: The root ``click.Group`` of the Litestar CLI. Typed as
-                :class:`object` so importing this module does not pull
-                ``click`` into ``sys.modules`` — Litestar's
-                :class:`~litestar.plugins.CLIPluginProtocol` enforces the
-                runtime type.
+            cli: The root ``click.Group`` of the Litestar CLI.
         """
         from litestar_queues._cli import register
 
-        register(cast("Any", cli))
+        register(cli)
 
     async def _on_startup(self, app: "Litestar") -> "None":
         if self._config.task_modules:

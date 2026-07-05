@@ -689,6 +689,84 @@ references:
        ),
    )
 
+By default, Cloud Run dispatch failures surface through logs and queue events
+and the record remains routed to ``cloudrun`` for operator intervention or a
+later retry. ``CloudRunExecutionConfig.fallback_execution_backend`` defaults to
+``None`` so a failed dispatch is not silently rerouted to a backend that may not
+have a worker. To opt back into rerouting, set an explicit backend such as
+``fallback_execution_backend="local"`` and run a worker that can consume it.
+
+Worker environment contract
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The packaged Cloud Run Job entry point is ``litestar-queues-cloudrun-worker``.
+It rebuilds the shared queue service, imports task modules, claims the persisted
+record, executes the task, and exits with a deterministic status code.
+
+The names below use the default ``CloudRunExecutionConfig.env_prefix`` value,
+``LITESTAR_QUEUES``. If you set a different prefix, every variable name uses
+that prefix; for example ``MY_QUEUE_TASK_ID``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Env var
+     - Required
+     - Meaning
+   * - ``LITESTAR_QUEUES_CONFIG_FACTORY``
+     - Yes
+     - ``module:attr`` or dotted path returning the shared-DB
+       ``QueueConfig``, ``QueueService``, or async context manager for a
+       ``QueueService``.
+   * - ``LITESTAR_QUEUES_TASK_MODULES``
+     - Recommended
+     - Comma-separated modules to import before task lookup. The entry point
+       merges these with ``QueueConfig.task_modules``.
+   * - ``LITESTAR_QUEUES_TASK_ID``
+     - Injected by dispatcher
+     - Queue record UUID to claim and execute.
+   * - ``LITESTAR_QUEUES_TASK_NAME``
+     - Injected by dispatcher
+     - Task name stored on the queue record.
+   * - ``LITESTAR_QUEUES_TASK_ARGS``
+     - Injected by dispatcher
+     - JSON-encoded positional arguments for diagnostics.
+   * - ``LITESTAR_QUEUES_TASK_KWARGS``
+     - Injected by dispatcher
+     - JSON-encoded keyword arguments for diagnostics.
+   * - ``LITESTAR_QUEUES_EXECUTION_BACKEND``
+     - Injected by dispatcher
+     - Set to ``cloudrun``.
+   * - ``LITESTAR_QUEUES_EXECUTION_PROFILE``
+     - When configured
+     - Profile selector used to pick a profile-specific Cloud Run Job.
+
+Entrypoint exit codes:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Code
+     - Meaning
+   * - ``0``
+     - Task completed successfully.
+   * - ``1``
+     - Task ran and failed.
+   * - ``2``
+     - ``TASK_ID`` was missing.
+   * - ``3``
+     - ``TASK_ID`` was not a UUID.
+   * - ``4``
+     - The queue record was not found.
+   * - ``5``
+     - The task name was not registered after imports.
+   * - ``6``
+     - Claim or heartbeat ownership was lost.
+   * - ``7``
+     - Execution was cancelled.
+   * - ``8``
+     - ``CONFIG_FACTORY`` was missing or could not be loaded.
+
 The full Cloud Run deployment guide lives in :doc:`deployment/cloud-run`. It
 covers the enqueue / dispatch / execute split, the worker env contract, IAM,
 database connectivity, timeout alignment, scheduling, and troubleshooting.

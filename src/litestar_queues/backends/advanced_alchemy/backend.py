@@ -3,25 +3,33 @@
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
+from advanced_alchemy.exceptions import DuplicateKeyError
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
+
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from datetime import datetime, timedelta
     from uuid import UUID
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from litestar_queues.config import QueueConfig
+    from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
 
 
 class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     """Advanced Alchemy-backed queue backend."""
+
+    _model_class: "type[QueueTaskModelMixin]"
+    _service_class: 'type["QueueTaskService"]'
 
     __slots__ = (
         "_create_schema",
@@ -43,11 +51,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._create_schema = backend_config.create_schema
         self._opened = False
 
-    @property
-    def capabilities(self) -> "QueueBackendCapabilities":
-        """Backend behavior capabilities."""
-        return QueueBackendCapabilities()
-
     async def open(self) -> "bool":
         """Open Advanced Alchemy resources.
 
@@ -68,14 +71,15 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     async def create_schema(self) -> "None":
         """Create the queue task table and indexes."""
-        if self._sqlalchemy_config is not None:
-            engine = self._sqlalchemy_config.get_engine()
-            async with engine.begin() as connection:
-                await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
-        else:
-            async with self._session() as session, session.begin():
-                connection = await session.connection()
-                await connection.run_sync(cast("Any", self._model_class.__table__).create, checkfirst=True)
+        self._ensure_configured()
+        sqlalchemy_config = self._sqlalchemy_config
+        if sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
+            raise QueueConfigurationError(msg)
+        engine = sqlalchemy_config.get_engine()
+        table = self._model_class.__dict__["__table__"]
+        async with engine.begin() as connection:
+            await connection.run_sync(table.create, checkfirst=True)
 
     async def enqueue(
         self,
@@ -92,20 +96,29 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
     ) -> "QueuedTaskRecord":
-        async with self._operation() as service:
-            record = await service.enqueue(
-                task_name,
-                args=args,
-                kwargs=dict(kwargs or {}),
-                queue=queue,
-                priority=priority,
-                max_retries=max_retries,
-                scheduled_at=scheduled_at,
-                key=key,
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                metadata=dict(metadata or {}),
-            )
+        try:
+            async with self._operation() as service:
+                record = await service.enqueue(
+                    task_name,
+                    args=args,
+                    kwargs=dict(kwargs or {}),
+                    queue=queue,
+                    priority=priority,
+                    max_retries=max_retries,
+                    scheduled_at=scheduled_at,
+                    key=key,
+                    execution_backend=execution_backend,
+                    execution_profile=execution_profile,
+                    metadata=dict(metadata or {}),
+                )
+        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+            if key is None:
+                raise
+            async with self._service() as service:
+                existing = await service.get_task_by_key(key)
+            if existing is None:
+                raise
+            record = existing
         await self.notify_new_task(record)
         return record
 
@@ -208,7 +221,9 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             msg = "AdvancedAlchemyQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
 
-    def _resolve_model_classes(self, model_class: "type[Any] | None") -> 'tuple[type[Any], type["QueueTaskService"]]':
+    def _resolve_model_classes(
+        self, model_class: "type[object] | None"
+    ) -> 'tuple[type[QueueTaskModelMixin], type["QueueTaskService"]]':
         if model_class is None:
             msg = "AdvancedAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
             raise QueueConfigurationError(msg)
@@ -222,6 +237,8 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         if "__tablename__" not in model_class.__dict__:
             msg = "AdvancedAlchemyBackendConfig.model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
+        typed_model = cast("type[QueueTaskModelMixin]", model_class)
+        table = typed_model.__dict__["__table__"]
         missing_columns = {
             "id",
             "created_at",
@@ -244,15 +261,15 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             "error",
             "task_key",
             "metadata_json",
-        } - {column.name for column in model_class.__table__.columns}
+        } - {column.name for column in table.columns}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
             msg = f"AdvancedAlchemyBackendConfig.model_class is missing queue columns: {columns}."
             raise QueueConfigurationError(msg)
-        return model_class, QueueTaskService.for_model(model_class)
+        return typed_model, QueueTaskService.for_model(typed_model)
 
     @asynccontextmanager
-    async def _session(self) -> "AsyncIterator[Any]":
+    async def _session(self) -> "AsyncIterator[AsyncSession]":
         self._ensure_configured()
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None:

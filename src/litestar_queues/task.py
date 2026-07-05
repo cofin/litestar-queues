@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from importlib import import_module, reload
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast, overload
 
 from typing_extensions import ParamSpec, Self
 
@@ -110,8 +110,8 @@ class ScheduleConfig:
             ValueError: If no interval or cron expression is configured.
         """
         base = _ensure_utc(after or datetime.now(timezone.utc))
-        initial_delay = cast("timedelta", self.initial_delay)
-        interval = cast("timedelta | None", self.interval)
+        initial_delay = self._initial_delay_value
+        interval = self._interval_value
 
         if use_initial_delay and initial_delay:
             return self._apply_jitter(base + initial_delay)
@@ -124,19 +124,29 @@ class ScheduleConfig:
 
     def as_metadata(self) -> "dict[str, Any]":
         """Return a JSON-compatible metadata representation."""
-        interval = cast("timedelta | None", self.interval)
-        initial_delay = cast("timedelta", self.initial_delay)
-        jitter = cast("timedelta", self.jitter)
         return {
             "cron": self.cron,
-            "initial_delay": initial_delay.total_seconds(),
-            "interval": interval.total_seconds() if interval is not None else None,
-            "jitter": jitter.total_seconds(),
+            "initial_delay": self._initial_delay_value.total_seconds(),
+            "interval": self._interval_value.total_seconds() if self._interval_value is not None else None,
+            "jitter": self._jitter_value.total_seconds(),
             "max_instances": self.max_instances,
             "task_name": self.task_name,
             "timeout": self.timeout,
             "timezone": self.timezone,
         }
+
+    def copy_for_task(self, task_name: "str") -> "ScheduleConfig":
+        """Return this normalized schedule for another task name."""
+        return ScheduleConfig(
+            task_name=task_name,
+            cron=self.cron,
+            initial_delay=self._initial_delay_value,
+            interval=self._interval_value,
+            jitter=self._jitter_value,
+            max_instances=self.max_instances,
+            timeout=self.timeout,
+            timezone=self.timezone,
+        )
 
     def _parse_cron(self) -> "_ParsedCron":
         if self.cron is None:
@@ -198,28 +208,50 @@ class ScheduleConfig:
         parsed = self._parse_cron()
         tz = _get_timezone(self.timezone)
         candidate = after.astimezone(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
-        max_attempts = CRON_SEARCH_YEARS * 366 * 24 * 60
+        search_end = candidate + timedelta(days=CRON_SEARCH_YEARS * 366)
+        day = candidate.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_slots = tuple((hour, minute) for hour in sorted(parsed.hours) for minute in sorted(parsed.minutes))
 
-        for _ in range(max_attempts):
-            cron_weekday = (candidate.weekday() + 1) % 7
-            if (
-                candidate.minute in parsed.minutes
-                and candidate.hour in parsed.hours
-                and candidate.month in parsed.months
-                and _cron_day_matches(parsed, day=candidate.day, weekday=cron_weekday)
-            ):
-                return candidate.astimezone(timezone.utc)
-            candidate += timedelta(minutes=1)
+        while day <= search_end:
+            cron_weekday = (day.weekday() + 1) % 7
+            if day.month in parsed.months and _cron_day_matches(parsed, day=day.day, weekday=cron_weekday):
+                for hour, minute in time_slots:
+                    proposed = day.replace(hour=hour, minute=minute)
+                    if proposed < candidate or not _is_valid_local_time(proposed, tz):
+                        continue
+                    return proposed.astimezone(timezone.utc)
+            day = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
         msg = f"No matching run found for cron expression: {self.cron}"
         raise ValueError(msg)
 
     def _apply_jitter(self, value: "datetime") -> "datetime":
-        jitter = cast("timedelta", self.jitter)
+        jitter = self._jitter_value
         jitter_seconds = jitter.total_seconds()
         if jitter_seconds <= 0:
             return value
         return value + timedelta(seconds=_RANDOM.uniform(0, jitter_seconds))
+
+    @property
+    def _initial_delay_value(self) -> "timedelta":
+        value = self.initial_delay
+        if isinstance(value, timedelta):
+            return value
+        return _coerce_interval(value) or timedelta()
+
+    @property
+    def _interval_value(self) -> "timedelta | None":
+        value = self.interval
+        if value is None or isinstance(value, timedelta):
+            return value
+        return _coerce_interval(value)
+
+    @property
+    def _jitter_value(self) -> "timedelta":
+        value = self.jitter
+        if isinstance(value, timedelta):
+            return value
+        return _coerce_interval(value) or timedelta()
 
 
 class TaskResult:
@@ -297,6 +329,9 @@ class TaskResult:
         start = asyncio.get_running_loop().time()
         while self.status not in {"cancelled", "completed", "failed"}:
             await self.refresh()
+            if self.record is None:
+                msg = f"Task {self._task_id} no longer exists in the queue backend."
+                raise RuntimeError(msg)
             if self.status in {"cancelled", "completed", "failed"}:
                 break
             if timeout is not None and asyncio.get_running_loop().time() - start >= timeout:
@@ -621,8 +656,13 @@ def discover_tasks(package: "str", subpackage: "str" = "jobs", *, force_reload: 
         raise ModuleNotFoundError(msg)
 
     matched: "list[str]" = []
-    for _, module_name, _is_package in pkgutil.walk_packages(cast("Any", root).__path__, prefix=f"{root.__name__}."):
-        if subpackage not in module_name.split(".")[1:]:
+    root_path = root.__dict__["__path__"]
+    root_prefix = f"{root.__name__}."
+    for _, module_name, _is_package in pkgutil.walk_packages(
+        root_path, prefix=root_prefix, onerror=_raise_walk_packages_error
+    ):
+        relative_name = module_name.removeprefix(root_prefix)
+        if subpackage not in relative_name.split("."):
             continue
         matched.append(module_name)
 
@@ -743,16 +783,7 @@ def task(
         )
         _task_registry[task_name] = task_obj
         if schedule is not None:
-            _schedule_registry[task_name] = ScheduleConfig(
-                task_name=task_name,
-                cron=schedule.cron,
-                initial_delay=cast("timedelta", schedule.initial_delay),
-                interval=cast("timedelta | None", schedule.interval),
-                jitter=cast("timedelta", schedule.jitter),
-                max_instances=schedule.max_instances,
-                timeout=schedule.timeout,
-                timezone=schedule.timezone,
-            )
+            _schedule_registry[task_name] = schedule.copy_for_task(task_name)
         return task_obj
 
     if callable(func_or_name) and not isinstance(func_or_name, str):
@@ -788,6 +819,21 @@ def _cron_day_matches(parsed: "_ParsedCron", *, day: "int", weekday: "int") -> "
     if parsed.day_of_month_restricted and parsed.day_of_week_restricted:
         return day_matches or weekday_matches
     return day_matches and weekday_matches
+
+
+def _is_valid_local_time(value: "datetime", tz: "zoneinfo.ZoneInfo") -> "bool":
+    round_tripped = value.astimezone(timezone.utc).astimezone(tz)
+    return (
+        round_tripped.year == value.year
+        and round_tripped.month == value.month
+        and round_tripped.day == value.day
+        and round_tripped.hour == value.hour
+        and round_tripped.minute == value.minute
+        and round_tripped.second == value.second
+        and round_tripped.microsecond == value.microsecond
+        and round_tripped.fold == value.fold
+        and round_tripped.utcoffset() == value.utcoffset()
+    )
 
 
 async def _run_sync_callable(
@@ -869,8 +915,10 @@ def _load_child_modules(module: "ModuleType", *, force_reload: "bool") -> "int":
     if not hasattr(module, "__path__"):
         return 0
     loaded = 0
-    module_paths = cast("Any", module).__path__
-    for _, module_name, is_package in pkgutil.walk_packages(module_paths, prefix=f"{module.__name__}."):
+    module_paths = module.__dict__["__path__"]
+    for _, module_name, is_package in pkgutil.walk_packages(
+        module_paths, prefix=f"{module.__name__}.", onerror=_raise_walk_packages_error
+    ):
         if is_package or (module_name in _loaded_modules and not force_reload):
             continue
         if force_reload and module_name in sys.modules:
@@ -880,3 +928,11 @@ def _load_child_modules(module: "ModuleType", *, force_reload: "bool") -> "int":
         _loaded_modules.add(module_name)
         loaded += 1
     return loaded
+
+
+def _raise_walk_packages_error(module_name: "str") -> "NoReturn":
+    msg = f"Failed to import package {module_name!r} while discovering queue tasks"
+    exc = sys.exc_info()[1]
+    if exc is not None:
+        raise ModuleNotFoundError(msg) from exc
+    raise ModuleNotFoundError(msg)

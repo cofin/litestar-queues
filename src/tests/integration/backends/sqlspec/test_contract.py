@@ -18,7 +18,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -265,7 +265,7 @@ async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> "None
 
 def test_sqlspec_backend_serializes_text_bound_datetimes_as_iso_by_default() -> "None":
     backend = SQLSpecQueueBackend()
-    backend._store = SimpleNamespace(bind_datetime_as_text=True)
+    backend._store = cast("Any", SimpleNamespace(bind_datetime_as_text=True))
 
     serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=timezone.utc))
 
@@ -465,6 +465,17 @@ def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
     assert '"queue_tasks"' in "\n".join(store.create_statements())
 
 
+def test_sqlspec_backend_store_factory_resolves_adapter_config_subclasses(tmp_path: "Path") -> "None":
+    class CustomAiosqliteConfig(AiosqliteConfig):
+        pass
+
+    config = CustomAiosqliteConfig(connection_config={"database": str(tmp_path / "queue.db")})
+
+    store = create_queue_store(config, table_name="queue_tasks")
+
+    assert isinstance(store, AiosqliteQueueStore)
+
+
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name", "expected_store_name"),
     (
@@ -596,6 +607,25 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
     assert "WITH (fillfactor = 80)" not in created_statements
     assert "autovacuum_vacuum_scale_factor" not in created_statements
     assert store.supports_skip_locked is False
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "config_type_name", "expected"),
+    (
+        ("psycopg", "PsycopgAsyncConfig", '["alpha","beta"]'),
+        ("cockroach_psycopg", "CockroachPsycopgAsyncConfig", '["alpha","beta"]'),
+        ("psqlpy", "PsqlpyConfig", ["alpha", "beta"]),
+    ),
+)
+def test_postgres_native_json_array_bind_shape_matches_adapter(
+    adapter_name: "str", config_type_name: "str", expected: "object"
+) -> "None":
+    store = create_queue_store(
+        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        table_name="queue_tasks",
+    )
+
+    assert store.serialize_json("args_json", ("alpha", "beta")) == expected
 
 
 @pytest.mark.parametrize(

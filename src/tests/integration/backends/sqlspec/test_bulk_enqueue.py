@@ -8,22 +8,23 @@ results.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from litestar_queues import EnqueueSpec
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
-    from pathlib import Path
+    from collections.abc import Iterator
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(params=["native", "fallback"])
-def bulk_tier(request: "pytest.FixtureRequest", sqlspec_backend: "SQLSpecQueueBackend") -> "Iterator[str]":
+def bulk_tier(
+    request: "pytest.FixtureRequest", sqlspec_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "Iterator[str]":
     """Select the bulk tier by toggling the store's native-ingest capability.
 
     Yields:
@@ -31,12 +32,8 @@ def bulk_tier(request: "pytest.FixtureRequest", sqlspec_backend: "SQLSpecQueueBa
     """
     store = sqlspec_backend._get_store()
     if request.param == "fallback":
-        original = type(store).supports_native_bulk_ingest
-        type(store).supports_native_bulk_ingest = False
-        try:
-            yield request.param
-        finally:
-            type(store).supports_native_bulk_ingest = original
+        monkeypatch.setattr(type(store), "supports_native_bulk_ingest", property(lambda _store: False))
+        yield request.param
     else:
         assert store.supports_native_bulk_ingest is True
         yield request.param
@@ -98,6 +95,26 @@ async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQue
     fetched = await sqlspec_backend.get_task(records[1].id)
     assert fetched is not None
     assert fetched.status == "scheduled"
+
+
+async def test_enqueue_many_notifies_only_immediately_due_records(
+    sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    notified_ids = []
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    async def notify(self: "SQLSpecQueueBackend", record: "Any") -> "None":
+        del self
+        notified_ids.append(record.id)
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "notify_new_task", notify)
+
+    records = await sqlspec_backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.now"),
+        EnqueueSpec(task_name="tasks.later", scheduled_at=later),
+    ])
+
+    assert notified_ids == [records[0].id]
 
 
 async def test_enqueue_many_deduplicates_active_keys(
@@ -162,30 +179,6 @@ def test_bulk_values_orders_columns_to_match_create_table() -> "None":
     assert mapped["kwargs_json"] == alphabetical["kwargs_json"]
 
 
-@pytest.fixture
-async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend]":
-    """Yield an opened DuckDB-backed SQLSpec queue backend.
-
-    DuckDB ingests Arrow positionally, unlike the name-binding aiosqlite and
-    asyncpg paths, so it is the canonical guard for bulk column ordering on
-    the native ingest tier.
-    """
-    pytest.importorskip("duckdb")
-    pytest.importorskip("pyarrow")
-    from sqlspec.adapters.duckdb import DuckDBConfig
-
-    backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
-        )
-    )
-    await backend.open()
-    try:
-        yield backend
-    finally:
-        await backend.close()
-
-
 async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpecQueueBackend") -> "None":
     """The native Arrow ingest path must place every column in its DDL slot.
 
@@ -194,6 +187,7 @@ async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpec
     ``kwargs_json`` string into the ``priority`` INT column and raised a
     conversion error. Name-binding adapters (aiosqlite, asyncpg) masked it.
     """
+    pytest.importorskip("pyarrow")
     store = duckdb_backend._get_store()
     assert store.supports_native_bulk_ingest is True
 

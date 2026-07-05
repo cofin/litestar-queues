@@ -1,7 +1,9 @@
 """Advanced Alchemy custom queue model integration tests."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
+from uuid import uuid4
 
 import pytest
 
@@ -11,6 +13,8 @@ pytest.importorskip("sqlalchemy")
 
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column
 
 from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
 from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
@@ -24,26 +28,10 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
-    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
-
-
 class MappedQueueModel(Protocol):
     """Structural type for app-owned SQLAlchemy queue models."""
 
     __table__: "Table"
-
-
-def _table(model: "type[object]") -> "Table":
-    return cast("MappedQueueModel", model).__table__
-
-
-def _column_names(model: "type[object]") -> "set[str]":
-    return {column.name for column in _table(model).columns}
-
-
-def _index_names(model: "type[object]") -> "set[str]":
-    return {str(index.name) for index in _table(model).indexes if index.name is not None}
 
 
 class BareQueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
@@ -60,6 +48,12 @@ class CustomQueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
 
 class AbstractQueueTaskModel(QueueTaskModelMixin):
     __abstract__ = True
+
+
+class RenamedColumnQueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
+    __tablename__ = "renamed_column_queue_tasks"
+
+    task_name: "Mapped[str]" = mapped_column("queue_task_name", String(length=500), nullable=False)
 
 
 def test_queue_task_model_mixin_adds_queue_schema_to_app_owned_model() -> "None":
@@ -116,6 +110,102 @@ async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: "Pat
     assert _table(CustomQueueTaskModel).name == "custom_queue_tasks"
 
 
+async def test_advanced_alchemy_keyed_enqueue_recovers_from_racing_insert(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+
+    backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "key-race.db"),
+            model_class=CustomQueueTaskModel,
+            create_schema=True,
+        )
+    )
+    select_count = 0
+    select_gate = asyncio.Event()
+    original_select_task_by_key = QueueTaskService._select_task_by_key
+
+    async def select_task_by_key_with_race(self: "QueueTaskService", key: "str") -> "Any | None":
+        nonlocal select_count
+        model = await original_select_task_by_key(self, key)
+        if key == "race:key" and model is None:
+            select_count += 1
+            if select_count == 2:
+                select_gate.set()
+            await asyncio.wait_for(select_gate.wait(), timeout=5)
+        return model
+
+    monkeypatch.setattr(QueueTaskService, "_select_task_by_key", select_task_by_key_with_race)
+
+    await backend.open()
+    try:
+        first, second = await asyncio.gather(
+            backend.enqueue("tasks.race", key="race:key"), backend.enqueue("tasks.race", key="race:key")
+        )
+        stored = await backend.get_task_by_key("race:key")
+    finally:
+        await backend.close()
+
+    assert first.id == second.id
+    assert stored is not None
+    assert stored.id == first.id
+
+
+def test_advanced_alchemy_insert_values_use_mapped_attributes_for_renamed_columns() -> "None":
+    from litestar_queues.backends.advanced_alchemy.service import _model_insert_values, _serialize_json
+
+    model = RenamedColumnQueueTaskModel(
+        id=uuid4(),
+        task_name="tasks.renamed",
+        args_json=_serialize_json([]),
+        kwargs_json=_serialize_json({}),
+        queue="default",
+        execution_backend="local",
+        status="pending",
+        priority=0,
+        max_retries=0,
+        retry_count=0,
+        result_json=_serialize_json(None),
+        task_key="renamed:key",
+        metadata_json=_serialize_json({}),
+    )
+
+    values = _model_insert_values(model, RenamedColumnQueueTaskModel)
+
+    assert values["queue_task_name"] == "tasks.renamed"
+    assert "task_name" not in values
+
+
+async def test_advanced_alchemy_core_updates_touch_updated_at(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    from litestar_queues.backends.advanced_alchemy import service as service_module
+
+    claim_time = datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+    backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "updated-at.db"),
+            model_class=CustomQueueTaskModel,
+            create_schema=True,
+        )
+    )
+
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.audit")
+        monkeypatch.setattr(service_module, "_utc_now", lambda: claim_time)
+        claimed = await backend.claim_task(record.id)
+        async with backend._service() as service:
+            model = await service._select_task(record.id)
+    finally:
+        await backend.close()
+
+    assert claimed is not None
+    assert model is not None
+    assert _as_utc(model.updated_at) == claim_time
+
+
 async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
     tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
@@ -158,3 +248,25 @@ def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: "Path") 
         AdvancedAlchemyQueueBackend(
             backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config, model_class=AbstractQueueTaskModel)
         )
+
+
+def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
+    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
+
+
+def _table(model: "type[object]") -> "Table":
+    return cast("MappedQueueModel", model).__table__
+
+
+def _column_names(model: "type[object]") -> "set[str]":
+    return {column.name for column in _table(model).columns}
+
+
+def _index_names(model: "type[object]") -> "set[str]":
+    return {str(index.name) for index in _table(model).indexes if index.name is not None}
+
+
+def _as_utc(value: "datetime") -> "datetime":
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

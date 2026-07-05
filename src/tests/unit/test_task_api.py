@@ -1,6 +1,8 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
-from typing import Any
+from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 
@@ -11,26 +13,13 @@ from litestar_queues import (
     ScheduleConfig,
     Task,
     TaskExecutionContext,
+    TaskResult,
     get_scheduled_tasks,
     get_task_registry,
     task,
 )
 from litestar_queues.events import NoopQueueEventSink, QueueEventPublisher
 from litestar_queues.task import clear_task_registry
-
-
-def _build_test_context(record: "QueuedTaskRecord") -> "TaskExecutionContext":
-    return TaskExecutionContext(
-        task_id=str(record.id),
-        task_name=record.task_name,
-        queue=record.queue,
-        worker_id=None,
-        execution_backend=record.execution_backend,
-        execution_profile=record.execution_profile,
-        attempt=record.retry_count + 1,
-        event_publisher=QueueEventPublisher(NoopQueueEventSink()),
-    )
-
 
 pytestmark = pytest.mark.anyio
 
@@ -143,6 +132,13 @@ async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_
     assert result.result == {"message": "hello Ada"}
 
 
+async def test_task_result_wait_raises_when_record_disappears() -> "None":
+    result = TaskResult(uuid4(), "tasks.missing", service=cast("QueueService", _MissingTaskService()))
+
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        await asyncio.wait_for(result.wait(poll_interval=0), timeout=0.05)
+
+
 async def test_schedule_config_supports_interval_and_basic_cron_next_run() -> "None":
     interval = ScheduleConfig(task_name="tasks.interval", interval=timedelta(minutes=5))
     base = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
@@ -204,6 +200,14 @@ async def test_schedule_config_searches_far_enough_for_leap_day_cron() -> "None"
 
     assert schedule.get_next_run(datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)) == datetime(
         2028, 2, 29, 0, 0, tzinfo=timezone.utc
+    )
+
+
+async def test_schedule_config_skips_nonexistent_local_cron_times() -> "None":
+    schedule = ScheduleConfig(task_name="tasks.dst_gap", cron="30 2 * * *", timezone="America/New_York")
+
+    assert schedule.get_next_run(datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc)) == datetime(
+        2026, 3, 9, 6, 30, tzinfo=timezone.utc
     )
 
 
@@ -273,3 +277,22 @@ async def test_task_decorator_registers_interval_schedule() -> "None":
 
     assert "tasks.scheduled" in schedules
     assert schedules["tasks.scheduled"].interval == timedelta(seconds=60)
+
+
+class _MissingTaskService:
+    async def get_task(self, task_id: "object") -> "None":
+        del task_id
+        return None
+
+
+def _build_test_context(record: "QueuedTaskRecord") -> "TaskExecutionContext":
+    return TaskExecutionContext(
+        task_id=str(record.id),
+        task_name=record.task_name,
+        queue=record.queue,
+        worker_id=None,
+        execution_backend=record.execution_backend,
+        execution_profile=record.execution_profile,
+        attempt=record.retry_count + 1,
+        event_publisher=QueueEventPublisher(NoopQueueEventSink()),
+    )

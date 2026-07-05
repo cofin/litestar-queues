@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,19 @@ async def test_service_context_manager_returns_service() -> "None":
     async with config.provide_service() as service:
         assert isinstance(service, QueueService)
         assert service.config is config
+
+
+def test_get_event_publisher_warns_when_sink_is_configured_but_events_are_disabled(
+    caplog: "pytest.LogCaptureFixture",
+) -> "None":
+    sink = InMemoryQueueEventSink()
+    config = QueueConfig(event_config=QueueEventConfig(sink=sink))
+
+    with caplog.at_level(logging.WARNING, logger="litestar_queues.config"):
+        publisher = config.get_event_publisher()
+
+    assert publisher.sink is not sink
+    assert "Queue event sink configured while event publishing is disabled" in caplog.text
 
 
 async def test_service_placeholder_enqueue_reports_unimplemented() -> "None":

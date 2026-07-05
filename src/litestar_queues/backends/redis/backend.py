@@ -26,8 +26,9 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable
 
+    from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
 
 __all__ = ("RedisQueueBackend",)
@@ -56,6 +57,7 @@ class RedisQueueBackend(BaseQueueBackend):
         "_notifications",
         "_owns_client",
         "_poll_interval",
+        "_pubsub",
         "_url",
     )
 
@@ -64,12 +66,13 @@ class RedisQueueBackend(BaseQueueBackend):
     ) -> "None":
         super().__init__(config=config)
         backend_config = backend_config or _RedisBackendConfig()
-        self._client = backend_config.client
+        self._client: "RedisClientLike | None" = cast("RedisClientLike | None", backend_config.client)
         self._owns_client = self._client is None
         self._url = backend_config.url
         self._key_prefix = backend_config.key_prefix.rstrip(":")
         self._notifications = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
+        self._pubsub: "RedisPubSubLike | None" = None
         self._lock_timeout = backend_config.lock_timeout
         self._poll_interval = backend_config.poll_interval
 
@@ -95,6 +98,9 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close owned Redis-protocol client resources."""
+        if self._pubsub is not None:
+            await _close_pubsub(self._pubsub, self._notification_channel)
+            self._pubsub = None
         if self._owns_client and self._client is not None:
             close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
             if close is not None:
@@ -321,7 +327,7 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         cutoff = _utc_now() - stale_after
         result = StaleTaskRecoveryResult()
-        for record in await self._list_records():
+        for record in await self._list_records_by_statuses(("running",)):
             if record.status != "running":
                 continue
             if record.heartbeat_at is not None and record.heartbeat_at >= cutoff:
@@ -401,7 +407,7 @@ class RedisQueueBackend(BaseQueueBackend):
         """Return externally dispatched tasks with references to reconcile."""
         records = [
             record
-            for record in await self._list_records()
+            for record in await self._list_records_by_statuses(("pending", "scheduled", "running"))
             if record.status in {"pending", "scheduled", "running"} and record.execution_ref is not None
         ]
         records.sort(key=lambda record: (record.started_at or record.created_at, record.created_at))
@@ -409,9 +415,12 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def get_statistics(self) -> "QueueStatistics":
         """Return queue status counts."""
+        client = await self._get_client()
         statistics = QueueStatistics()
-        for record in await self._list_records():
-            setattr(statistics, record.status, getattr(statistics, record.status) + 1)
+        statuses = sorted(_STATUS_VALUES)
+        counts = await _pipeline_scard(client, [self._status_key(status) for status in statuses])
+        for status, count in zip(statuses, counts, strict=True):
+            setattr(statistics, status, int(count))
         return statistics
 
     async def list_completed_by_task(
@@ -420,7 +429,7 @@ class RedisQueueBackend(BaseQueueBackend):
         """Return recent completed records for a task name."""
         records = [
             record
-            for record in await self._list_records()
+            for record in await self._list_records_by_statuses(("completed",))
             if record.task_name == task_name
             and record.status == "completed"
             and record.completed_at is not None
@@ -436,7 +445,7 @@ class RedisQueueBackend(BaseQueueBackend):
             Number of deleted records.
         """
         count = 0
-        for record in await self._list_records():
+        for record in await self._list_records_by_statuses(tuple(sorted(_TERMINAL_STATUSES))):
             if record.status not in _TERMINAL_STATUSES or record.completed_at is None or record.completed_at >= before:
                 continue
             async with self._lock(f"task:{record.id}", wait=False) as acquired:
@@ -474,23 +483,27 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         if not self._notifications:
             return await super().wait_for_notifications(timeout=timeout)
-        client = await self._get_client()
-        pubsub = client.pubsub()
-        await pubsub.subscribe(self._notification_channel)
-        try:
-            return await _wait_for_pubsub_message(pubsub, timeout=timeout)
-        finally:
-            await _close_pubsub(pubsub, self._notification_channel)
+        pubsub = await self._get_pubsub()
+        return await _wait_for_pubsub_message(pubsub, timeout=timeout)
 
-    def _create_client(self, url: "str") -> "Any":
+    def _create_client(self, url: "str") -> "RedisClientLike":
         from redis import asyncio as redis_asyncio
 
-        return redis_asyncio.from_url(url, decode_responses=True)
+        return cast("RedisClientLike", redis_asyncio.from_url(url, decode_responses=True))
 
-    async def _get_client(self) -> "Any":
+    async def _get_client(self) -> "RedisClientLike":
         if self._client is None:
             await self.open()
-        return self._client
+        return cast("RedisClientLike", self._client)
+
+    async def _get_pubsub(self) -> "RedisPubSubLike":
+        if self._pubsub is None:
+            client = await self._get_client()
+            self._pubsub = client.pubsub()
+            subscribe = self._pubsub.subscribe(self._notification_channel)
+            if inspect.isawaitable(subscribe):
+                await subscribe
+        return self._pubsub
 
     @asynccontextmanager
     async def _lock(self, lock_name: "str", *, wait: "bool") -> "AsyncIterator[bool]":
@@ -513,7 +526,7 @@ class RedisQueueBackend(BaseQueueBackend):
             if acquired:
                 await self._release_lock(client, lock_key, token)
 
-    async def _release_lock(self, client: "Any", lock_key: "str", token: "str") -> "None":
+    async def _release_lock(self, client: "RedisClientLike", lock_key: "str", token: "str") -> "None":
         eval_method = getattr(client, "eval", None)
         if eval_method is not None:
             result = eval_method(_RELEASE_LOCK_SCRIPT, 1, lock_key, token)
@@ -555,18 +568,48 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def _save_record(self, record: "QueuedTaskRecord") -> "None":
         client = await self._get_client()
+        record_id = str(record.id)
+        pipeline = _create_pipeline(client)
+        if pipeline is not None:
+            pipeline.hset(self._task_key(record.id), mapping=self._record_to_mapping(record))
+            pipeline.sadd(self._tasks_key, record_id)
+            for status in _STATUS_VALUES:
+                pipeline.srem(self._status_key(status), record_id)
+            pipeline.sadd(self._status_key(record.status), record_id)
+            if record.status in _DUE_STATUSES:
+                pipeline.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
+            else:
+                pipeline.zrem(self._pending_key, record_id)
+            await _execute_pipeline(pipeline)
+            return
+
         await client.hset(self._task_key(record.id), mapping=self._record_to_mapping(record))
-        await client.sadd(self._tasks_key, str(record.id))
+        await client.sadd(self._tasks_key, record_id)
+        for status in _STATUS_VALUES:
+            await client.srem(self._status_key(status), record_id)
+        await client.sadd(self._status_key(record.status), record_id)
         if record.status in _DUE_STATUSES:
-            await client.zadd(self._pending_key, {str(record.id): _score_datetime(record.scheduled_at)})
+            await client.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
         else:
-            await client.zrem(self._pending_key, str(record.id))
+            await client.zrem(self._pending_key, record_id)
 
     async def _delete_record(self, record: "QueuedTaskRecord") -> "None":
         client = await self._get_client()
-        await client.delete(self._task_key(record.id))
-        await client.srem(self._tasks_key, str(record.id))
-        await client.zrem(self._pending_key, str(record.id))
+        record_id = str(record.id)
+        pipeline = _create_pipeline(client)
+        if pipeline is not None:
+            pipeline.delete(self._task_key(record.id))
+            pipeline.srem(self._tasks_key, record_id)
+            pipeline.zrem(self._pending_key, record_id)
+            for status in _STATUS_VALUES:
+                pipeline.srem(self._status_key(status), record_id)
+            await _execute_pipeline(pipeline)
+        else:
+            await client.delete(self._task_key(record.id))
+            await client.srem(self._tasks_key, record_id)
+            await client.zrem(self._pending_key, record_id)
+            for status in _STATUS_VALUES:
+                await client.srem(self._status_key(status), record_id)
         if record.key is not None and str(_decode(await client.hget(self._keys_key, record.key))) == str(record.id):
             await client.hdel(self._keys_key, record.key)
 
@@ -579,12 +622,20 @@ class RedisQueueBackend(BaseQueueBackend):
         task_ids = await client.smembers(self._tasks_key)
         return await self._records_from_ids(task_ids)
 
-    async def _records_from_ids(self, task_ids: "set[Any] | list[Any] | tuple[Any, ...]") -> "list[QueuedTaskRecord]":
+    async def _list_records_by_statuses(self, statuses: "tuple[str, ...]") -> "list[QueuedTaskRecord]":
+        client = await self._get_client()
+        member_sets = await _pipeline_smembers(client, [self._status_key(status) for status in statuses])
+        task_ids = {value for member_set in member_sets for value in member_set}
+        return await self._records_from_ids(tuple(task_ids))
+
+    async def _records_from_ids(self, task_ids: "Iterable[Any]") -> "list[QueuedTaskRecord]":
+        task_keys = [self._task_key(UUID(str(_decode(value)))) for value in task_ids]
+        mappings = await _pipeline_hgetall(await self._get_client(), task_keys)
         records: "list[QueuedTaskRecord]" = []
-        for value in task_ids:
-            record = await self.get_task(UUID(str(_decode(value))))
-            if record is not None:
-                records.append(record)
+        for mapping in mappings:
+            decoded = _decode_mapping(mapping)
+            if decoded:
+                records.append(self._record_from_mapping(decoded))
         return records
 
     async def _client_hget(self, name: "str", key: "str") -> "Any":
@@ -614,6 +665,9 @@ class RedisQueueBackend(BaseQueueBackend):
     @property
     def _pending_key(self) -> "str":
         return f"{self._key_prefix}:pending"
+
+    def _status_key(self, status: "str") -> "str":
+        return f"{self._key_prefix}:status:{status}"
 
     def _task_key(self, task_id: "UUID") -> "str":
         return f"{self._key_prefix}:task:{task_id}"
@@ -672,6 +726,56 @@ class RedisQueueBackend(BaseQueueBackend):
         )
 
 
+def _create_pipeline(client: "RedisClientLike") -> "RedisPipelineLike | None":
+    pipeline_factory = getattr(client, "pipeline", None)
+    if pipeline_factory is None:
+        return None
+    try:
+        return cast("RedisPipelineLike", pipeline_factory(transaction=False))
+    except TypeError:
+        return cast("RedisPipelineLike", pipeline_factory())
+
+
+async def _execute_pipeline(pipeline: "RedisPipelineLike") -> "list[Any]":
+    result = pipeline.execute()
+    if inspect.isawaitable(result):
+        return list(await result)
+    return list(cast("list[Any]", result))
+
+
+async def _pipeline_hgetall(client: "RedisClientLike", keys: "list[str]") -> "list[dict[Any, Any]]":
+    if not keys:
+        return []
+    pipeline = _create_pipeline(client)
+    if pipeline is None:
+        return [await client.hgetall(key) for key in keys]
+    for key in keys:
+        pipeline.hgetall(key)
+    return cast("list[dict[Any, Any]]", await _execute_pipeline(pipeline))
+
+
+async def _pipeline_smembers(client: "RedisClientLike", keys: "list[str]") -> "list[set[Any]]":
+    if not keys:
+        return []
+    pipeline = _create_pipeline(client)
+    if pipeline is None:
+        return [set(await client.smembers(key)) for key in keys]
+    for key in keys:
+        pipeline.smembers(key)
+    return [set(result) for result in await _execute_pipeline(pipeline)]
+
+
+async def _pipeline_scard(client: "RedisClientLike", keys: "list[str]") -> "list[int]":
+    if not keys:
+        return []
+    pipeline = _create_pipeline(client)
+    if pipeline is None:
+        return [int(await client.scard(key)) for key in keys]
+    for key in keys:
+        pipeline.scard(key)
+    return [int(result) for result in await _execute_pipeline(pipeline)]
+
+
 def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
@@ -715,7 +819,8 @@ def _decode_mapping(mapping: "dict[Any, Any]") -> "dict[str, Any]":
 def _json_default(value: "Any") -> "Any":
     if isinstance(value, datetime):
         return _serialize_datetime(value)
-    return str(value)
+    msg = f"Object of type {type(value).__name__} is not JSON serializable"
+    raise TypeError(msg)
 
 
 def _json_dumps(value: "Any") -> "str":
@@ -737,7 +842,7 @@ def _coerce_status(value: "Any") -> "TaskStatus":
     return cast("TaskStatus", status)
 
 
-async def _wait_for_pubsub_message(pubsub: "Any", *, timeout: "float | None") -> "bool":
+async def _wait_for_pubsub_message(pubsub: "RedisPubSubLike", *, timeout: "float | None") -> "bool":
     """Drain pubsub responses until a real ``message`` arrives or timeout.
 
     ``pubsub.get_message(ignore_subscribe_messages=True)`` returns ``None``
@@ -760,7 +865,7 @@ async def _wait_for_pubsub_message(pubsub: "Any", *, timeout: "float | None") ->
             return False
 
 
-async def _close_pubsub(pubsub: "Any", channel: "str") -> "None":
+async def _close_pubsub(pubsub: "RedisPubSubLike", channel: "str") -> "None":
     """Best-effort unsubscribe + close on a pubsub connection."""
     unsubscribe = getattr(pubsub, "unsubscribe", None)
     if unsubscribe is not None:

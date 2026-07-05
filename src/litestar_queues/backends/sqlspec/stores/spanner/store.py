@@ -2,6 +2,8 @@
 
 from typing import Any, ClassVar, Literal
 
+from sqlspec.utils.serializers import from_json
+
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
 __all__ = ("SpannerQueueStore",)
@@ -68,6 +70,16 @@ class SpannerQueueStore(SQLSpecQueueStore):
             return spanner_json(value)
         return super().serialize_json(canonical, value)
 
+    def deserialize_json(self, canonical: "str", value: "Any") -> "Any":
+        """Deserialize native Spanner JSON wrappers into Python values.
+
+        Returns:
+            The decoded Python JSON value.
+        """
+        if canonical in self._native_json_columns:
+            return _deserialize_spanner_json(value)
+        return super().deserialize_json(canonical, value)
+
     def _build_create_table_sql(self) -> "str":
         columns = (
             f"{self._quoted_col('id')} {self._id_type()} NOT NULL",
@@ -129,6 +141,24 @@ def _is_spanner_already_exists_error(exc: "Exception") -> "bool":
     except ImportError:
         return "already exists" in str(exc).lower()
     return isinstance(exc, AlreadyExists) or "already exists" in str(exc).lower()
+
+
+def _deserialize_spanner_json(value: "Any") -> "Any":
+    if value is None:
+        return None
+    if not _is_spanner_json_object(value):
+        return value
+    serialized = value.serialize()
+    if serialized is None:
+        return None
+    return from_json(serialized)
+
+
+def _is_spanner_json_object(value: "Any") -> "bool":
+    serialize = getattr(value, "serialize", None)
+    if not callable(serialize):
+        return False
+    return type(value).__module__.startswith("google.cloud.spanner")
 
 
 def _execute_spanner_ddl(database: "Any", statement: "str") -> "None":
