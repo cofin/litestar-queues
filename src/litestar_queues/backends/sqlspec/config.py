@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from sqlspec import SQLSpec
     from sqlspec.extensions.events import AsyncEventChannel
 
+    from litestar_queues.backends.sqlspec._typing import SQLSpecStoreConfig
+
 __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "NOTIFY_TRANSPORTS", "SQLSpecBackendConfig")
 
 DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
@@ -43,8 +45,8 @@ class SQLSpecBackendConfig:
 
     backend_name: "ClassVar[str]" = "sqlspec"
     sqlspec: "SQLSpec | None" = None
-    config: "Any | None" = None
-    heartbeat_pool_config: "Any | None" = None
+    config: "SQLSpecStoreConfig | None" = None
+    heartbeat_pool_config: "SQLSpecStoreConfig | None" = None
     table_name: "str | None" = None
     create_schema: "bool | None" = None
     run_migrations: "bool | None" = None

@@ -2,7 +2,7 @@
 
 from functools import cache
 from importlib.util import find_spec
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from sqlspec import sql
 from sqlspec.data_dictionary import get_dialect_config
@@ -20,7 +20,10 @@ from litestar_queues.backends.sqlspec.schema import (
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from sqlspec.builder import CreateIndex, CreateTable, Delete, DropIndex, DropTable, Insert, Select, Update
     from sqlspec.data_dictionary import DialectConfig
+
+    from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
 __all__ = ("SQLSpecQueueStore",)
 
@@ -73,7 +76,7 @@ class SQLSpecQueueStore:
 
     def __init__(
         self,
-        config: "Any",
+        config: "SQLSpecStoreConfig",
         *,
         table_name: "str | None" = None,
         column_map: "Mapping[str, str] | None" = None,
@@ -146,7 +149,7 @@ class SQLSpecQueueStore:
             self._to_sql(sql.drop_table(self.table_name).if_exists()),
         ]
 
-    def insert_task(self, values: "dict[str, Any]") -> "Any":
+    def insert_task(self, values: "dict[str, Any]") -> "Insert":
         """Return an INSERT statement for a queued task."""
         mapped_values = self._mapped_values(values)
         return sql.insert(self.table_name).columns(*mapped_values.keys()).values(**mapped_values)
@@ -183,15 +186,15 @@ class SQLSpecQueueStore:
         """
         return [{self._col(column): row[column] for column in _TASK_COLUMNS} for row in rows]
 
-    def select_task(self, task_id: "str") -> "Any":
+    def select_task(self, task_id: "str") -> "Select":
         """Return a SELECT statement for one task id."""
         return self._select_all().where_eq(self._col("id"), task_id)
 
-    def select_task_by_key(self, key: "str") -> "Any":
+    def select_task_by_key(self, key: "str") -> "Select":
         """Return a SELECT statement for one task key."""
         return self._select_all().where_eq(self._col("task_key"), key)
 
-    def select_tasks_by_keys(self, keys: "Sequence[str]") -> "Any":
+    def select_tasks_by_keys(self, keys: "Sequence[str]") -> "Select":
         """Return a SELECT statement for all tasks matching any of ``keys``.
 
         Used by bulk enqueue to resolve existing deduplication keys in a single
@@ -200,8 +203,8 @@ class SQLSpecQueueStore:
         return self._select_all().where_in(self._col("task_key"), list(keys))
 
     def list_pending(
-        self, *, now: "Any", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
-    ) -> "Any":
+        self, *, now: "DatetimeParam", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "Select":
         """Return a SELECT statement for due pending tasks."""
         statement = (
             self
@@ -214,12 +217,12 @@ class SQLSpecQueueStore:
         if execution_backend is not None:
             statement = statement.where_eq(self._col("execution_backend"), execution_backend)
         return statement.order_by(
-            sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
+            _raw_order(f"{self._col('priority')} DESC"), _raw_order(f"{self._col('created_at')} ASC")
         ).limit(limit)
 
     def select_claimable(
-        self, *, now: "Any", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
-    ) -> "Any":
+        self, *, now: "DatetimeParam", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "Select":
         """Return a due-task SELECT that locks rows with ``FOR UPDATE SKIP LOCKED``.
 
         Mirrors :meth:`list_pending` but adds row-level locking so competing
@@ -232,7 +235,9 @@ class SQLSpecQueueStore:
             skip_locked=True
         )
 
-    def claim_task(self, *, task_id: "str", due_at: "Any", started_at: "Any", heartbeat_at: "Any") -> "Any":
+    def claim_task(
+        self, *, task_id: "str", due_at: "DatetimeParam", started_at: "DatetimeParam", heartbeat_at: "DatetimeParam"
+    ) -> "Update":
         """Return an UPDATE statement that claims a due task."""
         return (
             sql
@@ -247,11 +252,11 @@ class SQLSpecQueueStore:
         self,
         *,
         task_id: "str",
-        completed_at: "Any",
-        heartbeat_at: "Any",
+        completed_at: "DatetimeParam",
+        heartbeat_at: "DatetimeParam",
         result_json: "Any",
         expected_retry_count: "int | None" = None,
-    ) -> "Any":
+    ) -> "Update":
         """Return an UPDATE statement that completes a task."""
         statement = (
             sql
@@ -280,8 +285,8 @@ class SQLSpecQueueStore:
         error: "str",
         retry_count: "int",
         expected_retry_count: "int | None" = None,
-        heartbeat_cutoff: "Any | None" = None,
-    ) -> "Any":
+        heartbeat_cutoff: "DatetimeParam | None" = None,
+    ) -> "Update":
         """Return an UPDATE statement that schedules a retry."""
         statement = (
             sql
@@ -311,12 +316,12 @@ class SQLSpecQueueStore:
         self,
         *,
         task_id: "str",
-        completed_at: "Any",
-        heartbeat_at: "Any",
+        completed_at: "DatetimeParam",
+        heartbeat_at: "DatetimeParam",
         error: "str",
         expected_retry_count: "int | None" = None,
-        heartbeat_cutoff: "Any | None" = None,
-    ) -> "Any":
+        heartbeat_cutoff: "DatetimeParam | None" = None,
+    ) -> "Update":
         """Return an UPDATE statement that permanently fails a task."""
         statement = (
             sql
@@ -341,7 +346,7 @@ class SQLSpecQueueStore:
             )
         return statement
 
-    def cancel_task(self, *, task_id: "str", completed_at: "Any") -> "Any":
+    def cancel_task(self, *, task_id: "str", completed_at: "DatetimeParam") -> "Update":
         """Return an UPDATE statement that cancels a due task."""
         return (
             sql
@@ -351,7 +356,7 @@ class SQLSpecQueueStore:
             .where_in(self._col("status"), _DUE_STATUSES)
         )
 
-    def touch_heartbeat(self, *, task_id: "str", heartbeat_at: "Any") -> "Any":
+    def touch_heartbeat(self, *, task_id: "str", heartbeat_at: "DatetimeParam") -> "Update":
         """Return an UPDATE statement that touches a running task heartbeat."""
         return (
             sql
@@ -361,7 +366,7 @@ class SQLSpecQueueStore:
             .where_eq(self._col("status"), "running")
         )
 
-    def null_heartbeats(self, *, task_ids: "list[str]") -> "Any":
+    def null_heartbeats(self, *, task_ids: "list[str]") -> "Update":
         """Return an UPDATE statement that clears task heartbeats."""
         return (
             sql
@@ -370,7 +375,7 @@ class SQLSpecQueueStore:
             .where_in(self._col("id"), task_ids)
         )
 
-    def list_stale_running(self, *, cutoff: "Any") -> "Any":
+    def list_stale_running(self, *, cutoff: "DatetimeParam") -> "Select":
         """Return a SELECT statement for stale running tasks."""
         return (
             self
@@ -379,7 +384,7 @@ class SQLSpecQueueStore:
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
 
-    def clear_key(self, *, task_id: "str") -> "Any":
+    def clear_key(self, *, task_id: "str") -> "Update":
         """Return an UPDATE statement that releases a terminal task key."""
         return (
             sql
@@ -390,7 +395,7 @@ class SQLSpecQueueStore:
 
     def set_execution_ref(
         self, *, task_id: "str", execution_backend: "str", execution_ref: "str", execution_profile: "str | None"
-    ) -> "Any":
+    ) -> "Update":
         """Return an UPDATE statement that stores an external execution reference."""
         return (
             sql
@@ -407,7 +412,7 @@ class SQLSpecQueueStore:
 
     def set_execution_backend(
         self, *, task_id: "str", execution_backend: "str", execution_profile: "str | None"
-    ) -> "Any":
+    ) -> "Update":
         """Return an UPDATE statement that changes execution routing."""
         return (
             sql
@@ -422,31 +427,33 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
         )
 
-    def list_running_external(self, *, limit: "int | None" = None) -> "Any":
+    def list_running_external(self, *, limit: "int | None" = None) -> "Select":
         """Return a SELECT statement for externally dispatched records."""
         statement = (
             self
             ._select_all()
             .where(f"{self._col('status')} IN ('pending', 'scheduled', 'running')")
             .where(f"{self._col('execution_ref')} IS NOT NULL")
-            .order_by(sql.raw(f"{self._col('started_at')} ASC"), sql.raw(f"{self._col('created_at')} ASC"))
+            .order_by(_raw_order(f"{self._col('started_at')} ASC"), _raw_order(f"{self._col('created_at')} ASC"))
         )
         return statement.limit(limit) if limit is not None else statement
 
-    def list_all(self) -> "Any":
+    def list_all(self) -> "Select":
         """Return a SELECT statement for all queue records."""
         return self._select_all()
 
-    def list_completed_by_task(self, *, task_name: "str", since: "Any | None" = None, limit: "int" = 10) -> "Any":
+    def list_completed_by_task(
+        self, *, task_name: "str", since: "DatetimeParam | None" = None, limit: "int" = 10
+    ) -> "Select":
         """Return a SELECT statement for completed records by task name."""
         statement = (
             self._select_all().where_eq(self._col("task_name"), task_name).where_eq(self._col("status"), "completed")
         )
         if since is not None:
             statement = statement.where(f"{self._col('completed_at')} >= :completed_since", completed_since=since)
-        return statement.order_by(sql.raw(f"{self._col('completed_at')} DESC")).limit(limit)
+        return statement.order_by(_raw_order(f"{self._col('completed_at')} DESC")).limit(limit)
 
-    def count_terminal(self, *, before: "Any") -> "Any":
+    def count_terminal(self, *, before: "DatetimeParam") -> "Select":
         """Return a COUNT statement matching the same predicate as cleanup_terminal.
 
         Used by the backend to return a deterministic row count even when the
@@ -463,7 +470,7 @@ class SQLSpecQueueStore:
             )
         )
 
-    def cleanup_terminal(self, *, before: "Any") -> "Any":
+    def cleanup_terminal(self, *, before: "DatetimeParam") -> "Delete":
         """Return a DELETE statement for terminal records before a cutoff."""
         return (
             sql
@@ -525,11 +532,11 @@ class SQLSpecQueueStore:
         """Return the configured database column name for ``canonical``."""
         return self._column_map.get(canonical, canonical)
 
-    def _select_all(self) -> "Any":
+    def _select_all(self) -> "Select":
         columns = tuple(self._select_column(canonical) for canonical in _TASK_COLUMNS)
         return sql.select(*columns).from_(self.table_name)
 
-    def _create_table_statement(self) -> "Any":
+    def _create_table_statement(self) -> "CreateTable":
         return (
             sql
             .create_table(self.table_name)
@@ -647,9 +654,9 @@ class SQLSpecQueueStore:
     def _serialize_json(self, value: "Any") -> "str":
         return to_json(value)
 
-    def _to_sql(self, statement: "Any") -> "str":
+    def _to_sql(self, statement: "CreateIndex | CreateTable | DropIndex | DropTable") -> "str":
         built = statement.build(dialect=self.dialect_name)
-        return cast("str", built.sql)
+        return built.sql
 
     def _data_dictionary_dialect_name(self) -> "str | None":
         return type(self).data_dictionary_dialect or self.dialect_name
@@ -694,20 +701,24 @@ class SQLSpecQueueStore:
         return ".".join(quote(part) for part in parts)
 
 
-def _configured_table_name(config: "Any", table_name: "str | None") -> "str":
+def _configured_table_name(config: "SQLSpecStoreConfig", table_name: "str | None") -> "str":
     if table_name is not None:
         return validate_table_name(table_name)
-    extension_config = cast("dict[str, Any]", getattr(config, "extension_config", {}) or {})
-    queue_settings = cast("dict[str, Any]", extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
+    extension_config = config.extension_config or {}
+    queue_settings = extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}
     return validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
 
 
-def _adapter_name(config: "Any") -> "str":
+def _adapter_name(config: "object") -> "str":
     for config_type in type(config).__mro__:
         module_name = config_type.__module__
         if module_name.startswith("sqlspec.adapters."):
             return module_name.split(".")[2]
     return ""
+
+
+def _raw_order(expression: "str") -> "Any":
+    return sql.raw(expression)
 
 
 @cache

@@ -18,7 +18,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -265,7 +265,7 @@ async def test_sqlspec_backend_is_registered_without_advanced_alchemy() -> "None
 
 def test_sqlspec_backend_serializes_text_bound_datetimes_as_iso_by_default() -> "None":
     backend = SQLSpecQueueBackend()
-    backend._store = SimpleNamespace(bind_datetime_as_text=True)
+    backend._store = cast("Any", SimpleNamespace(bind_datetime_as_text=True))
 
     serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=timezone.utc))
 

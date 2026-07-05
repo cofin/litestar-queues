@@ -125,7 +125,8 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         if execution_backend is not None:
             statement = statement.where_eq(self._col("execution_backend"), execution_backend)
         return statement.order_by(
-            sql.raw(f"{self._col('priority')} DESC"), sql.raw(f"{self._col('created_at')} ASC")
+            cast("Any", sql.raw(f"{self._col('priority')} DESC")),
+            cast("Any", sql.raw(f"{self._col('created_at')} ASC")),
         ).for_update(skip_locked=True)
 
 

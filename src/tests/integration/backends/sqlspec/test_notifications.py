@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pytest_databases.docker.oracle import OracleService
     from sqlspec.extensions.events import AsyncEventChannel
 
+    from litestar_queues.backends.sqlspec._typing import SQLSpecManager, SQLSpecSessionConfig
     from tests.integration._backends import PostgresService
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
@@ -465,7 +466,11 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
             from litestar_queues.backends.sqlspec.backend import _bridge_session
 
             with suppress(Exception):
-                async with _bridge_session(backend._sqlspec, backend._sqlspec_config) as driver:
+                assert backend._sqlspec is not None
+                assert backend._sqlspec_config is not None
+                async with _bridge_session(
+                    cast("SQLSpecManager", backend._sqlspec), cast("SQLSpecSessionConfig", backend._sqlspec_config)
+                ) as driver:
                     await driver.execute_script(f'DROP TABLE IF EXISTS "{table_name}"')
             await backend.close()
 
@@ -592,7 +597,11 @@ async def test_sqlspec_backend_postgres_listen_notify_durable_wakes(
         from litestar_queues.backends.sqlspec.backend import _bridge_session
 
         with suppress(Exception):
-            async with _bridge_session(backend._sqlspec, backend._sqlspec_config) as driver:
+            assert backend._sqlspec is not None
+            assert backend._sqlspec_config is not None
+            async with _bridge_session(
+                cast("SQLSpecManager", backend._sqlspec), cast("SQLSpecSessionConfig", backend._sqlspec_config)
+            ) as driver:
                 for ddl in (
                     'DROP TABLE IF EXISTS "lq_notify_asyncpg"',
                     'DROP TABLE IF EXISTS "sqlspec_async_events"',

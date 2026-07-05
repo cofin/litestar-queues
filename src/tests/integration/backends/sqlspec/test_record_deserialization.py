@@ -1,7 +1,7 @@
 """SQLSpec queue record deserialization validation tests."""
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -13,7 +13,7 @@ from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
 def test_sqlspec_backend_rejects_scalar_args_json_from_row() -> "None":
     backend = SQLSpecQueueBackend()
-    backend._store = _PassthroughJSONStore()
+    backend._store = cast("Any", _PassthroughJSONStore())
 
     with pytest.raises(ValueError, match="args_json"):
         backend._record_from_row(_sqlspec_row(args_json="abc"))

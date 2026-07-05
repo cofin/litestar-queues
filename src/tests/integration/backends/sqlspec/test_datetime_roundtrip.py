@@ -25,14 +25,15 @@ def test_duckdb_serializes_aware_datetimes_as_naive_utc_for_timestamp_columns() 
     value = datetime(2026, 7, 2, 7, 0, tzinfo=timezone(timedelta(hours=-5)))
 
     serialized = backend._serialize_datetime(value)
+    expected = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc).replace(tzinfo=None)
 
-    assert serialized == datetime(2026, 7, 2, 12, 0)
+    assert serialized == expected
+    assert isinstance(serialized, datetime)
     assert serialized.tzinfo is None
 
 
 async def test_duckdb_roundtrips_aware_utc_datetimes_on_non_utc_host(
-    monkeypatch: "pytest.MonkeyPatch",
-    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch", tmp_path: "Path"
 ) -> "None":
     if not hasattr(time, "tzset"):
         pytest.skip("process timezone changes require time.tzset()")

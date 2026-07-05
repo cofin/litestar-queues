@@ -1,6 +1,6 @@
 """SQLSpec queue store factory."""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from litestar_queues.backends.sqlspec.stores.adbc import AdbcSqliteQueueStore
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
@@ -32,6 +32,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from litestar_queues.backends.sqlspec._typing import SQLSpecStoreConfig
+
 __all__ = ("create_queue_store",)
 
 _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
@@ -55,7 +57,7 @@ _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAP
 
 
 def create_queue_store(
-    config: "Any",
+    config: "SQLSpecStoreConfig",
     *,
     table_name: "str | None" = None,
     column_map: "Mapping[str, str] | None" = None,
@@ -77,7 +79,7 @@ def create_queue_store(
     )
 
 
-def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
+def _adapter_store_type(config: "SQLSpecStoreConfig") -> "type[SQLSpecQueueStore]":
     name = _adapter_name(config)
     if name == "adbc":
         return _adbc_store_type(config)
@@ -106,7 +108,7 @@ def _adapter_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
     return SQLSpecQueueStore
 
 
-def _adbc_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
+def _adbc_store_type(config: "SQLSpecStoreConfig") -> "type[SQLSpecQueueStore]":
     statement_config = getattr(config, "statement_config", None)
     dialect = str(getattr(statement_config, "dialect", "") or "")
     if dialect == _ADBC_SQLITE_DIALECT:
@@ -120,7 +122,10 @@ def _adbc_store_type(config: "Any") -> "type[SQLSpecQueueStore]":
 
 
 def _async_or_sync_store_type(
-    config: "Any", *, async_store_type: "type[SQLSpecQueueStore]", sync_store_type: "type[SQLSpecQueueStore]"
+    config: "SQLSpecStoreConfig",
+    *,
+    async_store_type: "type[SQLSpecQueueStore]",
+    sync_store_type: "type[SQLSpecQueueStore]",
 ) -> "type[SQLSpecQueueStore]":
     config_type_name = type(config).__name__.lower()
     if "async" in config_type_name:
