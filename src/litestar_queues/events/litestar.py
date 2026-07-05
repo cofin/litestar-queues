@@ -10,6 +10,14 @@ from litestar_queues.events.models import QueueEvent
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
+    from litestar_queues.events._typing import (
+        ChannelsLike,
+        ChannelsPublishBackend,
+        ChannelsStreamBackend,
+        ChannelsSubscriptionBackend,
+        ChannelsWaitPublishedBackend,
+    )
+
 __all__ = ("ChannelsQueueEventSink", "stream_queue_events")
 
 _STREAM_DEDUP_MAX_KEYS = 1024
@@ -20,28 +28,29 @@ class ChannelsQueueEventSink:
 
     __slots__ = ("_channels_backend",)
 
-    def __init__(self, channels_backend: "object") -> "None":
+    def __init__(self, channels_backend: "ChannelsLike") -> "None":
         self._channels_backend = channels_backend
 
     @property
-    def channels_backend(self) -> "object":
+    def channels_backend(self) -> "ChannelsLike":
         """Wrapped Channels backend or plugin."""
         return self._channels_backend
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish an event to Litestar Channels."""
         data = event.to_json()
-        channels_backend = cast("Any", self._channels_backend)
         if hasattr(self._channels_backend, "wait_published"):
-            result = channels_backend.wait_published(data, list(channels))
+            wait_backend = cast("ChannelsWaitPublishedBackend", self._channels_backend)
+            result = wait_backend.wait_published(data, list(channels))
         else:
-            result = channels_backend.publish(data, list(channels))
+            publish_backend = cast("ChannelsPublishBackend", self._channels_backend)
+            result = publish_backend.publish(data, list(channels))
         if inspect.isawaitable(result):
             await result
 
 
 async def stream_queue_events(
-    socket: "Any", channels: "Sequence[str]", *, history: "int" = 0, channels_backend: "object | None" = None
+    socket: "Any", channels: "Sequence[str]", *, history: "int" = 0, channels_backend: "ChannelsLike | None" = None
 ) -> "None":
     """Stream queue events from an app-owned Channels subscription to a WebSocket.
 
@@ -79,14 +88,14 @@ async def stream_queue_events(
                 raise
 
 
-def _resolve_channels_backend(socket: "Any") -> "object | None":
+def _resolve_channels_backend(socket: "Any") -> "ChannelsLike | None":
     if hasattr(socket, "channels_plugin"):
-        return cast("object", socket.channels_plugin)
+        return cast("ChannelsLike", socket.channels_plugin)
     scope = getattr(socket, "scope", None)
     if isinstance(scope, dict):
         scoped = scope.get("channels") or scope.get("queue_event_channels")
         if scoped is not None:
-            return cast("object", scoped)
+            return cast("ChannelsLike", scoped)
     app = getattr(socket, "app", None)
     state = getattr(app, "state", None)
     if state is not None:
@@ -94,20 +103,20 @@ def _resolve_channels_backend(socket: "Any") -> "object | None":
             with suppress(KeyError, TypeError):
                 value = state[key]
                 if value is not None:
-                    return cast("object", value)
+                    return cast("ChannelsLike", value)
             value = getattr(state, key, None)
             if value is not None:
-                return cast("object", value)
+                return cast("ChannelsLike", value)
     return None
 
 
 @asynccontextmanager
 async def _event_stream(
-    backend: "object", channels: "Sequence[str]", *, history: "int"
+    backend: "ChannelsLike", channels: "Sequence[str]", *, history: "int"
 ) -> "AsyncIterator[AsyncIterator[bytes]]":
     if hasattr(backend, "start_subscription"):
-        typed_backend = cast("Any", backend)
-        async with typed_backend.start_subscription(list(channels), history=history) as subscriber:
+        subscription_backend = cast("ChannelsSubscriptionBackend", backend)
+        async with subscription_backend.start_subscription(list(channels), history=history) as subscriber:
             yield subscriber.iter_events()
         return
 
@@ -115,12 +124,12 @@ async def _event_stream(
         msg = "Queue event streaming requires a ChannelsPlugin or ChannelsBackend-like object."
         raise RuntimeError(msg)
 
-    typed_backend = cast("Any", backend)
-    await typed_backend.subscribe(list(channels))
+    stream_backend = cast("ChannelsStreamBackend", backend)
+    await stream_backend.subscribe(list(channels))
     try:
-        yield _backend_events(cast("Any", backend).stream_events(), set(channels))
+        yield _backend_events(stream_backend.stream_events(), set(channels))
     finally:
-        await typed_backend.unsubscribe(list(channels))
+        await stream_backend.unsubscribe(list(channels))
 
 
 async def _backend_events(events: "AsyncIterator[tuple[str, bytes]]", channels: "set[str]") -> "AsyncIterator[bytes]":

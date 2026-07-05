@@ -1,7 +1,7 @@
 """Advanced Alchemy queue persistence service."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from advanced_alchemy.operations import OnConflictUpsert
@@ -14,6 +14,9 @@ from sqlalchemy.orm.exc import UnmappedColumnError
 
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
 from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskStatus
+
+if TYPE_CHECKING:
+    from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 
 __all__ = ("QueueTaskService",)
 
@@ -29,7 +32,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     """Persistence operations for Advanced Alchemy queue records."""
 
     @classmethod
-    def for_model(cls, model_class: "type[Any]") -> 'type["QueueTaskService"]':
+    def for_model(cls, model_class: "type[QueueTaskModelMixin]") -> 'type["QueueTaskService"]':
         """Return a service subclass bound to ``model_class``."""
         repository_type = QueueTaskRepository.for_model(model_class)
         return cast(
@@ -129,7 +132,6 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             if len(pending) < pending_limit:
                 return None
             pending_limit += _CAS_CLAIM_BATCH_SIZE
-        return None
 
     async def _claim_next_skip_locked(
         self, *, queue: "str | None", execution_backend: "str | None"
@@ -510,10 +512,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def _insert_task_record(self, record: "QueuedTaskRecord", *, key: "str | None") -> "QueuedTaskRecord":
         model = self.model_from_record(record)
         dialect_name = self._dialect_name()
-        if key is not None and _supports_native_keyed_enqueue(dialect_name):
+        if key is not None and dialect_name is not None and _supports_native_keyed_enqueue(dialect_name):
             values = _model_insert_values(model, self.model_type)
             statement, params = _build_keyed_enqueue_upsert(
-                cast("Any", self.model_type.__table__), values, dialect_name=cast("str", dialect_name)
+                self.model_type.__table__, values, dialect_name=dialect_name
             )
             if params:
                 await self.repository.session.execute(statement, params)
@@ -532,8 +534,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
 
     def _dialect_name(self) -> "str | None":
         bind = self.repository.session.get_bind()
-        dialect = getattr(bind, "dialect", None)
-        return cast("str | None", getattr(dialect, "name", None))
+        return bind.dialect.name if bind is not None else None
 
     def _pending_statement(self, *, queue: "str | None", execution_backend: "str | None") -> "Any":
         return _build_claim_candidate_statement(
@@ -624,7 +625,8 @@ def _update_values(
 def _model_insert_values(model: "Any", model_type: "type[Any]") -> "dict[str, Any]":
     values: "dict[str, Any]" = {}
     mapper = sqlalchemy_inspect(model_type)
-    for column in model_type.__table__.columns:
+    table = model_type.__table__
+    for column in table.columns:
         try:
             attribute_name = mapper.get_property_by_column(column).key
         except UnmappedColumnError:

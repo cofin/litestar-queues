@@ -13,6 +13,7 @@ from litestar_queues.backends.redis.backend import RedisQueueBackend
 from litestar_queues.backends.valkey.config import ValkeyBackendConfig
 
 if TYPE_CHECKING:
+    from litestar_queues.backends.redis._typing import RedisClientLike
     from litestar_queues.config import QueueConfig
 
 __all__ = ("ValkeyQueueBackend",)
@@ -29,8 +30,8 @@ class ValkeyQueueBackend(RedisQueueBackend):
         backend_config = backend_config or ValkeyBackendConfig()
         super().__init__(config=config, backend_config=cast("Any", backend_config))
 
-    def _create_client(self, url: "str") -> "Any":
+    def _create_client(self, url: "str") -> "RedisClientLike":
         from valkey import asyncio as valkey_asyncio
 
         from_url = cast("Any", valkey_asyncio.from_url)
-        return from_url(url, decode_responses=True)
+        return cast("RedisClientLike", from_url(url, decode_responses=True))

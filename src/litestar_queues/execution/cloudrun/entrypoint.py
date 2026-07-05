@@ -4,7 +4,7 @@ import logging
 import os
 from enum import IntEnum
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 from litestar_queues.config import QueueConfig
@@ -14,8 +14,11 @@ from litestar_queues.task import load_task_modules
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
+    from contextlib import AbstractAsyncContextManager
 
     from litestar_queues.models import QueuedTaskRecord
+
+    ServiceFactory = Callable[[], QueueConfig | QueueService | AbstractAsyncContextManager[QueueService]]
 
 __all__ = ("CloudRunExitCode", "execute_cloudrun_task", "main")
 logger = logging.getLogger(__name__)
@@ -39,7 +42,7 @@ async def execute_cloudrun_task(
     *,
     config: "QueueConfig | None" = None,
     service: "QueueService | None" = None,
-    service_factory: "Callable[[], Any] | None" = None,
+    service_factory: "ServiceFactory | None" = None,
     env: "Mapping[str, str] | None" = None,
 ) -> "CloudRunExitCode":
     """Execute one persisted queue record in a Cloud Run task process.
@@ -151,7 +154,7 @@ async def _provide_service(
     *,
     config: "QueueConfig | None",
     service: "QueueService | None",
-    service_factory: "Callable[[], Any] | None",
+    service_factory: "ServiceFactory | None",
     env: "Mapping[str, str]",
 ) -> "AsyncIterator[QueueService]":
     if service is not None:
@@ -182,7 +185,7 @@ async def _provide_service(
 
 
 def _requires_config_factory(
-    *, config: "QueueConfig | None", service: "QueueService | None", service_factory: "Callable[[], Any] | None"
+    *, config: "QueueConfig | None", service: "QueueService | None", service_factory: "ServiceFactory | None"
 ) -> "bool":
     return config is None and service is None and service_factory is None
 
@@ -191,7 +194,7 @@ def _has_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") 
     return bool(env.get(_env_name(config, "CONFIG_FACTORY")))
 
 
-def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "Callable[[], Any] | None":
+def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "ServiceFactory | None":
     env_var = _env_name(config, "CONFIG_FACTORY")
     import_path = env.get(env_var)
     if not import_path:
@@ -204,7 +207,7 @@ def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]")
     if not callable(factory):
         msg = f"Cloud Run config factory {import_path!r} is not callable."
         raise TypeError(msg)
-    return cast("Callable[[], Any]", factory)
+    return cast("ServiceFactory", factory)
 
 
 def _load_configured_task_modules(config: "QueueConfig", env: "Mapping[str, str]") -> "None":

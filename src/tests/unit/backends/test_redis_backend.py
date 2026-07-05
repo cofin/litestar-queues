@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -10,7 +10,7 @@ pytestmark = pytest.mark.anyio
 
 async def test_redis_records_from_ids_batches_hgetall_with_pipeline() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=client))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
     records = [QueuedTaskRecord(task_name=f"tasks.batch.{index}") for index in range(3)]
     for record in records:
         client.hashes[backend._task_key(record.id)] = backend._record_to_mapping(record)
@@ -24,7 +24,7 @@ async def test_redis_records_from_ids_batches_hgetall_with_pipeline() -> "None":
 
 async def test_redis_statistics_use_status_indexes_without_task_scan() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=client))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
     client.sets[backend._status_key("pending")] = {"pending-1", "pending-2"}
     client.sets[backend._status_key("failed")] = {"failed-1"}
 
@@ -38,7 +38,7 @@ async def test_redis_statistics_use_status_indexes_without_task_scan() -> "None"
 
 async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=client, notifications=True))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
 
     assert await backend.wait_for_notifications(timeout=0.001) is False
     assert await backend.wait_for_notifications(timeout=0.001) is False

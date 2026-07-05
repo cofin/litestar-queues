@@ -1,7 +1,10 @@
 """Valkey queue backend configuration."""
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from valkey.asyncio.client import Valkey
 
 __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "ValkeyBackendConfig")
 
@@ -19,4 +22,4 @@ class ValkeyBackendConfig:
     notification_channel: "str" = DEFAULT_NOTIFICATION_CHANNEL
     lock_timeout: "float" = 5.0
     poll_interval: "float" = 0.1
-    client: "Any | None" = None
+    client: "Valkey | None" = None
