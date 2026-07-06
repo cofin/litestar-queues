@@ -66,10 +66,45 @@ class QueuePlugin(InitPlugin):
         }
         if self._config.event is not None and self._config.event.channels_backend is not None:
             state[self._config.queue_event_channels_backend_state_key] = self._config.event.channels_backend
+        stream_config = self._config.event_stream
+        if stream_config is not None and stream_config.enabled:
+            from litestar_queues.events.streaming import build_stream_router
+
+            self._verify_stream_channels_source(app_config)
+            if not stream_config.guards and stream_config.channel_authorizer is None:
+                logger.warning(
+                    "Queue event streaming is enabled without guards or a channel_authorizer; "
+                    "task, queue, and worker metadata will be served to unauthenticated clients. "
+                    "Set EventStreamConfig(guards=..., channel_authorizer=..., scopes=...) "
+                    "to restrict access. See docs/usage/events.rst."
+                )
+            app_config.route_handlers.append(build_stream_router(self._config, stream_config))
+            state[self._config.queue_event_stream_state_key] = stream_config
         app_config.state.update(state)
         app_config.on_startup.append(self._on_startup)
         app_config.on_shutdown.append(self._on_shutdown)
         return app_config
+
+    def _verify_stream_channels_source(self, app_config: "AppConfig") -> "None":
+        source = None
+        if self._config.event is not None:
+            source = self._config.event.channels_backend
+        if source is None:
+            source = next((plugin for plugin in app_config.plugins if type(plugin).__name__ == "ChannelsPlugin"), None)
+        if source is None or type(source).__name__ != "ChannelsPlugin":
+            return
+        if getattr(source, "_arbitrary_channels_allowed", False):
+            return
+
+        from litestar_queues.exceptions import QueueConfigurationError
+
+        msg = (
+            "Queue event streaming requires a ChannelsPlugin created with "
+            "arbitrary_channels_allowed=True because queue channel names are dynamic "
+            "(litestar_queues:task:<id>:events, ...). Reconstruct the plugin as "
+            "ChannelsPlugin(backend=..., arbitrary_channels_allowed=True)."
+        )
+        raise QueueConfigurationError(msg)
 
     def on_cli_init(self, cli: "ClickGroup") -> "None":
         """Attach the ``queues`` subcommand group to the Litestar CLI.
