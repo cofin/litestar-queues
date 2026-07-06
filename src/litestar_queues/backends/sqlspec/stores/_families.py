@@ -142,6 +142,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
         "metadata_json",
         "result_json",
     })
+    supports_bulk_touch_heartbeats: "ClassVar[bool]" = True
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Postgres-family queue artifacts."""
@@ -196,6 +197,9 @@ class PostgresQueueStore(SQLSpecQueueStore):
 
     def _timestamp_type(self) -> "str":
         return "TIMESTAMPTZ"
+
+    def _bulk_metadata_merge_expression(self, *, target_metadata: "str", source_metadata: "str") -> "str":
+        return f"CASE WHEN {source_metadata} IS NULL THEN {target_metadata} ELSE {target_metadata} || {source_metadata} END"
 
 
 class CockroachQueueStore(PostgresQueueStore):

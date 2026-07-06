@@ -1,5 +1,6 @@
 """Shared SQLSpec queue store primitives."""
 
+from dataclasses import dataclass
 from functools import cache
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
-__all__ = ("SQLSpecQueueStore",)
+__all__ = ("BulkHeartbeatStatement", "SQLSpecQueueStore")
 
 _TASK_COLUMNS = (
     "id",
@@ -53,6 +54,14 @@ _TASK_COLUMNS = (
 _DUE_STATUSES = ("pending", "scheduled")
 
 
+@dataclass(frozen=True, slots=True)
+class BulkHeartbeatStatement:
+    """Raw SQL and parameters for a store-specific bulk heartbeat update."""
+
+    sql: str
+    parameters: dict[str, Any] | list[Any]
+
+
 class SQLSpecQueueStore:
     """Base SQLSpec queue statement store."""
 
@@ -63,6 +72,7 @@ class SQLSpecQueueStore:
     claim_select_stream_chunk_size: "ClassVar[int | None]" = None
     skip_explicit_begin: "ClassVar[bool]" = False
     skip_cleanup_rollback: "ClassVar[bool]" = False
+    supports_bulk_touch_heartbeats: "ClassVar[bool]" = False
     # Per-store opt-in: canonical JSON columns whose driver round-trips
     # native Python values rather than JSON-encoded strings. Subclasses
     # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
@@ -395,6 +405,61 @@ class SQLSpecQueueStore:
         if expected_retry_count is not None:
             statement = statement.where_eq(self._col("retry_count"), expected_retry_count)
         return statement
+
+    def bulk_touch_heartbeats(
+        self, *, touches: "Sequence[Mapping[str, Any]]", heartbeat_at: "DatetimeParam"
+    ) -> "BulkHeartbeatStatement | None":
+        """Return one fenced bulk heartbeat UPDATE for stores that opt in."""
+        if not type(self).supports_bulk_touch_heartbeats or not touches:
+            return None
+
+        parameters: "dict[str, Any]" = {"heartbeat_at": heartbeat_at}
+        metadata_type = self._metadata_json_type("metadata_json")
+        value_rows: "list[str]" = []
+        for index, touch in enumerate(touches):
+            task_id_param = f"task_id_{index}"
+            retry_count_param = f"expected_retry_count_{index}"
+            metadata_param = f"metadata_json_{index}"
+            parameters[task_id_param] = touch["task_id"]
+            parameters[retry_count_param] = touch["expected_retry_count"]
+            parameters[metadata_param] = touch["metadata_json"]
+            value_rows.append(
+                f"(CAST(:{task_id_param} AS {self._id_type()}), "
+                f"CAST(:{retry_count_param} AS {self._integer_type()}), "
+                f"CAST(:{metadata_param} AS {metadata_type}))"
+            )
+
+        target = "target"
+        source = "heartbeat_updates"
+        id_col = self._quoted_col("id")
+        status_col = self._quoted_col("status")
+        retry_count_col = self._quoted_col("retry_count")
+        heartbeat_col = self._quoted_col("heartbeat_at")
+        metadata_col = self._quoted_col("metadata_json")
+        target_metadata = f"{target}.{metadata_col}"
+        source_metadata = f"{source}.metadata_json"
+        values_sql = ", ".join(value_rows)
+        # The VALUES entries are all bound placeholders; identifiers come from
+        # validated table/column names and are quoted by the store.
+        statement = f"""
+WITH {source}(task_id, expected_retry_count, metadata_json) AS (
+    VALUES {values_sql}
+)
+UPDATE {self._quoted_table_name()} AS {target}
+SET {heartbeat_col} = CAST(:heartbeat_at AS {self._timestamp_type()}),
+    {metadata_col} = {
+            self._bulk_metadata_merge_expression(target_metadata=target_metadata, source_metadata=source_metadata)
+        }
+FROM {source}
+WHERE {target}.{id_col} = {source}.task_id
+  AND {target}.{status_col} = 'running'
+  AND ({source}.expected_retry_count IS NULL OR {target}.{retry_count_col} = {source}.expected_retry_count)
+RETURNING {target}.{id_col} AS id
+""".strip()  # noqa: S608
+        return BulkHeartbeatStatement(sql=statement, parameters=parameters)
+
+    def _bulk_metadata_merge_expression(self, *, target_metadata: "str", source_metadata: "str") -> "str":
+        return f"COALESCE({source_metadata}, {target_metadata})"
 
     def null_heartbeats(self, *, task_ids: "list[str]") -> "Update":
         """Return an UPDATE statement that clears task heartbeats."""

@@ -57,15 +57,18 @@ from litestar_queues.backends.sqlspec.stores import (
 )
 from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration._backends import QUEUE_BACKENDS
+from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
     from uuid import UUID
 
+    from pytest import FixtureRequest
+
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.models import QueuedTaskRecord
-    from tests.integration._backends import BackendCase
+    from tests.integration._backends import BackendCase, PostgresService
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
 pytestmark = pytest.mark.anyio
@@ -450,6 +453,43 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "task-1" in insert_statement.parameters.values()
     assert 'FROM "queue_tasks"' in pending_statement.sql
     assert "queue" in pending_statement.sql
+
+
+def test_postgres_and_duckdb_stores_build_bulk_heartbeat_updates() -> "None":
+    """Postgres-family and DuckDB stores expose one VALUES-driven heartbeat update."""
+    postgres_store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+    duckdb_store = DuckDBQueueStore(_fake_adapter_config("duckdb", dialect="duckdb"), table_name="queue_tasks")
+    touches = [
+        {"task_id": "task-1", "expected_retry_count": 0, "metadata_json": {"progress_detail": "row 1"}},
+        {"task_id": "task-2", "expected_retry_count": None, "metadata_json": None},
+    ]
+
+    postgres_statement = postgres_store.bulk_touch_heartbeats(touches=touches, heartbeat_at="2026-07-06T22:00:00Z")
+    duckdb_statement = duckdb_store.bulk_touch_heartbeats(touches=touches, heartbeat_at="2026-07-06T22:00:00Z")
+
+    assert postgres_statement is not None
+    assert duckdb_statement is not None
+    assert postgres_statement.sql.count("VALUES") == 1
+    assert duckdb_statement.sql.count("VALUES") == 1
+    assert 'UPDATE "queue_tasks" AS target' in postgres_statement.sql
+    assert 'UPDATE "queue_tasks" AS target' in duckdb_statement.sql
+    assert 'RETURNING target."id" AS id' in postgres_statement.sql
+    assert 'RETURNING target."id" AS id' in duckdb_statement.sql
+    assert "CAST(:expected_retry_count_0 AS INTEGER)" in postgres_statement.sql
+    assert 'target."metadata_json" || heartbeat_updates.metadata_json' in postgres_statement.sql
+    assert "CAST(? AS INTEGER)" in duckdb_statement.sql
+    assert "json_group_object(merged.key, merged.value)" in duckdb_statement.sql
+    assert postgres_statement.parameters["task_id_0"] == "task-1"
+    assert postgres_statement.parameters["expected_retry_count_1"] is None
+    assert duckdb_statement.parameters == [
+        "task-1",
+        0,
+        {"progress_detail": "row 1"},
+        "task-2",
+        None,
+        None,
+        "2026-07-06T22:00:00Z",
+    ]
 
 
 def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
@@ -1152,6 +1192,124 @@ async def test_sqlspec_backend_touch_heartbeats_merges_metadata_patch(sqlspec_ba
     assert result.missed_task_ids == set()
     assert touched is not None
     assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
+
+
+async def test_sqlspec_duckdb_touch_heartbeats_uses_bulk_path(
+    duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    first = await duckdb_backend.enqueue(
+        "tasks.heartbeat.duckdb.first",
+        metadata={"existing": "kept", "nested": {"a": 1, "b": 2}, "nullable": "original"},
+    )
+    second = await duckdb_backend.enqueue("tasks.heartbeat.duckdb.second")
+    mismatch = await duckdb_backend.enqueue("tasks.heartbeat.duckdb.mismatch")
+    first_claim = await duckdb_backend.claim_task(first.id)
+    second_claim = await duckdb_backend.claim_task(second.id)
+    mismatch_claim = await duckdb_backend.claim_task(mismatch.id)
+
+    assert first_claim is not None
+    assert second_claim is not None
+    assert mismatch_claim is not None
+
+    async def fail_per_task_select(*_args: "object", **_kwargs: "object") -> "None":
+        msg = "bulk heartbeat path must not use per-task _select_task"
+        raise AssertionError(msg)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(SQLSpecQueueBackend, "_select_task", fail_per_task_select)
+        result = await duckdb_backend.touch_heartbeats([
+            HeartbeatTouch(
+                task_id=first_claim.id,
+                expected_retry_count=first_claim.retry_count,
+                metadata_patch={"progress_detail": "row 10", "nested": {"a": 3}, "nullable": None},
+            ),
+            HeartbeatTouch(task_id=second_claim.id, expected_retry_count=second_claim.retry_count),
+            HeartbeatTouch(task_id=mismatch_claim.id, expected_retry_count=mismatch_claim.retry_count + 1),
+        ])
+
+    first_stored = await duckdb_backend.get_task(first.id)
+    second_stored = await duckdb_backend.get_task(second.id)
+    mismatch_stored = await duckdb_backend.get_task(mismatch.id)
+
+    assert result.touched_task_ids == {first_claim.id, second_claim.id}
+    assert result.missed_task_ids == {mismatch_claim.id}
+    assert first_stored is not None
+    assert first_stored.metadata == {
+        "existing": "kept",
+        "nested": {"a": 3},
+        "nullable": None,
+        "progress_detail": "row 10",
+    }
+    assert second_stored is not None
+    assert second_stored.heartbeat_at is not None
+    assert mismatch_stored is not None
+    assert mismatch_stored.heartbeat_at == mismatch_claim.heartbeat_at
+
+
+async def test_sqlspec_postgres_touch_heartbeats_uses_bulk_path(
+    postgres_service: "PostgresService", request: "FixtureRequest", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    pytest.importorskip("asyncpg")
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+    table_name = table_name_for_test("lq_heartbeat_asyncpg", "asyncpg", request.node.nodeid)
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AsyncpgConfig(
+                connection_config={
+                    "host": postgres_service.host,
+                    "port": postgres_service.port,
+                    "user": postgres_service.user,
+                    "password": postgres_service.password,
+                    "database": postgres_service.database,
+                }
+            ),
+            table_name=table_name,
+        )
+    )
+    await backend.open()
+    try:
+        first = await backend.enqueue("tasks.heartbeat.postgres.first", metadata={"existing": "kept"})
+        second = await backend.enqueue("tasks.heartbeat.postgres.second")
+        mismatch = await backend.enqueue("tasks.heartbeat.postgres.mismatch")
+        first_claim = await backend.claim_task(first.id)
+        second_claim = await backend.claim_task(second.id)
+        mismatch_claim = await backend.claim_task(mismatch.id)
+
+        assert first_claim is not None
+        assert second_claim is not None
+        assert mismatch_claim is not None
+
+        async def fail_per_task_select(*_args: "object", **_kwargs: "object") -> "None":
+            msg = "bulk heartbeat path must not use per-task _select_task"
+            raise AssertionError(msg)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(SQLSpecQueueBackend, "_select_task", fail_per_task_select)
+            result = await backend.touch_heartbeats([
+                HeartbeatTouch(
+                    task_id=first_claim.id,
+                    expected_retry_count=first_claim.retry_count,
+                    metadata_patch={"progress_detail": "row 20"},
+                ),
+                HeartbeatTouch(task_id=second_claim.id, expected_retry_count=second_claim.retry_count),
+                HeartbeatTouch(task_id=mismatch_claim.id, expected_retry_count=mismatch_claim.retry_count + 1),
+            ])
+
+        first_stored = await backend.get_task(first.id)
+        second_stored = await backend.get_task(second.id)
+        mismatch_stored = await backend.get_task(mismatch.id)
+
+        assert result.touched_task_ids == {first_claim.id, second_claim.id}
+        assert result.missed_task_ids == {mismatch_claim.id}
+        assert first_stored is not None
+        assert first_stored.metadata == {"existing": "kept", "progress_detail": "row 20"}
+        assert second_stored is not None
+        assert second_stored.heartbeat_at is not None
+        assert mismatch_stored is not None
+        assert mismatch_stored.heartbeat_at == mismatch_claim.heartbeat_at
+    finally:
+        await backend.close()
 
 
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
