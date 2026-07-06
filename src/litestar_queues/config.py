@@ -1,12 +1,12 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from litestar.di import Provide
 
-from litestar_queues.events import QueueEventConfig, QueueEventLogConfig
+from litestar_queues.events import EventConfig, EventLogConfig, EventStreamConfig
 
 logger = getLogger(__name__)
 
@@ -19,19 +19,20 @@ if TYPE_CHECKING:
     from litestar_queues.events import QueueEventPublisher, TaskExecutionContext
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.models import QueuedTaskRecord
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
     from litestar_queues.service import QueueService
     from litestar_queues.task import Task
 
 __all__ = (
     "AsyncServiceProvider",
+    "EventConfig",
+    "EventLogConfig",
+    "EventStreamConfig",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
     "QueueBackendConfig",
     "QueueBackendConfigProtocol",
     "QueueConfig",
-    "QueueEventConfig",
-    "QueueEventLogConfig",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "execution_backend_name",
@@ -144,8 +145,10 @@ class QueueConfig:
     queue_worker_state_key: "str" = "queue_worker"
     queue_event_publisher_state_key: "str" = "queue_event_publisher"
     queue_event_channels_backend_state_key: "str" = "queue_event_channels_backend"
-    event_config: "QueueEventConfig" = field(default_factory=QueueEventConfig)
-    observability_config: "QueueObservabilityConfig | None" = None
+    queue_event_stream_state_key: "str" = "queue_event_stream"
+    event: "EventConfig | None" = None
+    event_stream: "EventStreamConfig | None" = None
+    observability: "ObservabilityConfig | None" = None
     task_modules: "tuple[str, ...]" = ()
     initialize_schedules: "bool" = True
     worker_batch_size: "int" = 10
@@ -161,7 +164,7 @@ class QueueConfig:
     sync_executor_max_workers: "int | None" = None
     sync_executor_thread_name_prefix: "str" = "litestar-queues"
     scheduler_canary_task: "str" = "scheduler.heartbeat"
-    event_log_config: "QueueEventLogConfig" = field(default_factory=QueueEventLogConfig)
+    event_log: "EventLogConfig | None" = None
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":
@@ -175,15 +178,16 @@ class QueueConfig:
 
         from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
         from litestar_queues.events import (
+            EventConfig,
+            EventLogConfig,
+            EventStreamConfig,
             InMemoryQueueEventSink,
             NoopQueueEventSink,
             QueueChannels,
             QueueEvent,
             QueueEventActor,
-            QueueEventConfig,
             QueueEventEntityRef,
             QueueEventLog,
-            QueueEventLogConfig,
             QueueEventLogRecord,
             QueueEventPublisher,
             QueueEventStageSummary,
@@ -204,6 +208,7 @@ class QueueConfig:
             QueueStatistics,
             StaleTaskRecoveryResult,
         )
+        from litestar_queues.observability import ObservabilityConfig
         from litestar_queues.service import QueueService
         from litestar_queues.task import ScheduleConfig, Task, TaskResult
         from litestar_queues.worker import Worker
@@ -214,10 +219,14 @@ class QueueConfig:
             "CloudRunExecutionBackend": CloudRunExecutionBackend,
             "CloudRunExecutionConfig": CloudRunExecutionConfig,
             "CloudRunExecutionStatus": CloudRunExecutionStatus,
+            "EventConfig": EventConfig,
+            "EventLogConfig": EventLogConfig,
+            "EventStreamConfig": EventStreamConfig,
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
             "NamedDependency": NamedDependency,
+            "ObservabilityConfig": ObservabilityConfig,
             "JobCancelledError": JobCancelledError,
             "NonRetryableError": NonRetryableError,
             "NoopQueueEventSink": NoopQueueEventSink,
@@ -230,10 +239,8 @@ class QueueConfig:
             "QueueBackendConfigProtocol": QueueBackendConfigProtocol,
             "QueueEvent": QueueEvent,
             "QueueEventActor": QueueEventActor,
-            "QueueEventConfig": QueueEventConfig,
             "QueueEventEntityRef": QueueEventEntityRef,
             "QueueEventLog": QueueEventLog,
-            "QueueEventLogConfig": QueueEventLogConfig,
             "QueueEventLogRecord": QueueEventLogRecord,
             "QueueEventPublisher": QueueEventPublisher,
             "QueueEventStageSummary": QueueEventStageSummary,
@@ -322,13 +329,16 @@ class QueueConfig:
             QueueEventSink,
         )
 
-        event_config = self.event_config
+        event_config = self.event
         sink: "QueueEventSink"
+        if event_config is None:
+            sink = NoopQueueEventSink()
+            return QueueEventPublisher(sink)
         if not event_config.enabled:
             if event_config.sink is not None or event_config.channels_backend is not None:
                 logger.warning(
                     "Queue event sink configured while event publishing is disabled; "
-                    "set QueueEventConfig(enabled=True) to publish queue events."
+                    "set EventConfig(enabled=True) to publish queue events."
                 )
             sink = NoopQueueEventSink()
         elif event_config.sink is not None:

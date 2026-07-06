@@ -195,7 +195,7 @@ async def test_cloudrun_dispatch_failure_default_surfaces_and_preserves_backend(
 
 
 async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not_taken_ownership() -> "None":
-    from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
+    from litestar_queues.events import EventConfig, InMemoryQueueEventSink
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
     @task("tasks.remote")
@@ -211,7 +211,7 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     )
     event_sink = InMemoryQueueEventSink()
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun", event_config=QueueEventConfig(enabled=True, sink=event_sink)),
+        QueueConfig(execution_backend="cloudrun", event=EventConfig(enabled=True, sink=event_sink)),
         queue_backend=queue_backend,
         execution_backend=backend,
     )

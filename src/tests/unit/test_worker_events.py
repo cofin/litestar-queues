@@ -9,9 +9,9 @@ import pytest
 from litestar_queues import QueueConfig, QueueService, Worker, job_cancelled, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import (
+    EventConfig,
     InMemoryQueueEventSink,
     QueueEvent,
-    QueueEventConfig,
     publish_task_log,
     publish_task_progress,
 )
@@ -31,7 +31,7 @@ async def test_worker_emits_started_progress_and_terminal_events_in_order() -> "
         return "ok"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(worker_events)
         worker = Worker(service)
@@ -54,7 +54,7 @@ async def test_worker_emits_failed_terminal_event_for_failed_attempt() -> "None"
         raise RuntimeError(msg)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(worker_failure)
         worker = Worker(service)
@@ -79,8 +79,7 @@ async def test_worker_emits_cancelled_event_for_cancelled_attempt() -> "None":
 
     queue_backend = InMemoryQueueBackend()
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink)),
-        queue_backend=queue_backend,
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink)), queue_backend=queue_backend
     ) as service:
         result = await service.enqueue(worker_cancelled)
         claimed = await queue_backend.claim_task(result.id)
@@ -102,7 +101,7 @@ async def test_worker_marks_job_cancelled_error_terminal_without_retry() -> "Non
         job_cancelled("domain cancellation")
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(worker_job_cancelled)
         worker = Worker(service)
@@ -128,8 +127,7 @@ async def test_worker_emits_claim_lost_event_when_terminal_fence_rejects_stale_a
         return "too late"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink)),
-        queue_backend=queue_backend,
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink)), queue_backend=queue_backend
     ) as service:
         result = await service.enqueue(worker_claim_lost)
         claimed = await queue_backend.claim_task(result.id)
@@ -159,8 +157,7 @@ async def test_worker_emits_stale_failed_event_for_terminal_stale_recovery() -> 
         return None
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink)),
-        queue_backend=queue_backend,
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink)), queue_backend=queue_backend
     ) as service:
         result = await service.enqueue(worker_stale_failed, requeue_on_stale=False)
         claimed = await queue_backend.claim_task(result.id)
@@ -196,7 +193,7 @@ async def test_quiet_success_suppresses_success_python_log_but_keeps_lifecycle_e
         return "quiet"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         with caplog.at_level(logging.INFO, logger="litestar_queues.service"):
             visible_result = await service.enqueue(worker_visible_success)
@@ -232,7 +229,7 @@ async def test_event_publish_failure_does_not_fail_successful_task_by_default() 
         return "ok"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=_FailingSink()))
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=_FailingSink()))
     ) as service:
         result = await service.enqueue(event_sink_failure)
         worker = Worker(service)

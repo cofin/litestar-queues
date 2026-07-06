@@ -21,6 +21,9 @@ def test_public_exports() -> "None":
         CloudRunExecutionBackend,
         CloudRunExecutionConfig,
         CloudRunExecutionStatus,
+        EventConfig,
+        EventLogConfig,
+        EventStreamConfig,
         ExecutionBackendConfig,
         ExecutionBackendConfigProtocol,
         ImmediateExecutionBackend,
@@ -55,6 +58,9 @@ def test_public_exports() -> "None":
         "CloudRunExecutionConfig",
         "CloudRunExecutionStatus",
         "EnqueueSpec",
+        "EventConfig",
+        "EventLogConfig",
+        "EventStreamConfig",
         "ExecutionBackendConfig",
         "ExecutionBackendConfigProtocol",
         "ImmediateExecutionBackend",
@@ -93,6 +99,9 @@ def test_public_exports() -> "None":
     assert expected_exports.issubset(set(litestar_queues.__all__))
     assert forbidden_exports.isdisjoint(set(litestar_queues.__all__))
     assert QueueConfig().queue_backend == "memory"
+    assert EventConfig().enabled is True
+    assert EventLogConfig().enabled is True
+    assert EventStreamConfig().enabled is True
     assert QueueBackendConfig is not None
     assert ExecutionBackendConfig is not None
     assert QueueBackendConfigProtocol is not None
@@ -278,6 +287,35 @@ if sink_name in events.__all__:
     raise SystemExit("standalone SQLite event sink is still exported")
 if sqlite_module in sys.modules:
     raise SystemExit("importing litestar_queues.events imported SQLite runtime module")
+"""
+
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_importing_queue_config_does_not_import_streaming_stack() -> "None":
+    """The config surface must not import plugin-owned stream routing code."""
+    script = """
+import sys
+import litestar_queues
+import litestar_queues.events
+from litestar_queues import QueueConfig
+from litestar_queues.events import EventStreamConfig
+
+if QueueConfig().signature_namespace["EventStreamConfig"] is not EventStreamConfig:
+    raise SystemExit("EventStreamConfig missing from signature namespace")
+
+forbidden = (
+    "litestar_queues.events.streaming",
+    "litestar_queues.events.litestar",
+    "litestar.channels",
+    "litestar.channels.plugin",
+    "litestar.channels.backends.memory",
+)
+loaded = [name for name in forbidden if name in sys.modules]
+if loaded:
+    raise SystemExit(",".join(loaded))
 """
 
     result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)

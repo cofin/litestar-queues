@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from litestar_queues.events.log import QueueEventLog
     from litestar_queues.events.models import QueueEvent
 
-__all__ = ("QueueEventConfig", "QueueEventPublisher")
+__all__ = ("EventConfig", "QueueEventPublisher")
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,10 @@ _LIFECYCLE_EVENT_TYPES = frozenset({
 
 
 @dataclass(slots=True)
-class QueueEventConfig:
+class EventConfig:
     """Configuration for queue event publishing."""
 
-    enabled: "bool" = False
+    enabled: "bool" = True
     sink: "QueueEventSink | None" = None
     channels_backend: "ChannelsLike | None" = None
     strict: "bool" = False

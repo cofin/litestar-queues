@@ -8,14 +8,14 @@ if TYPE_CHECKING:
 
     from litestar_queues.events.models import QueueEvent
 
-__all__ = ("QueueEventLog", "QueueEventLogConfig", "QueueEventLogRecord", "QueueEventStageSummary")
+__all__ = ("EventLogConfig", "QueueEventLog", "QueueEventLogRecord", "QueueEventStageSummary")
 
 
 @dataclass(slots=True)
-class QueueEventLogConfig:
+class EventLogConfig:
     """Configuration for backend-managed queue event history."""
 
-    enabled: "bool" = False
+    enabled: "bool" = True
     buffer_size: "int" = 20
     flush_interval: "float" = 1.0
     strict: "bool" = False

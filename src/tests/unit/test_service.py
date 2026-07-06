@@ -4,13 +4,19 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import InMemoryQueueEventSink, QueueConfig, QueueEventConfig, QueueService
+from litestar_queues import EventConfig, InMemoryQueueEventSink, QueueConfig, QueueService
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import QueueEventPublisher
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
-    from litestar_queues.events import QueueEvent, QueueEventLogConfig, QueueEventLogRecord, QueueEventStageSummary
+    from litestar_queues.events import (
+        EventLogConfig,
+        QueueEvent,
+        QueueEventLog,
+        QueueEventLogRecord,
+        QueueEventStageSummary,
+    )
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -29,7 +35,7 @@ def test_get_event_publisher_warns_when_sink_is_configured_but_events_are_disabl
     caplog: "pytest.LogCaptureFixture",
 ) -> "None":
     sink = InMemoryQueueEventSink()
-    config = QueueConfig(event_config=QueueEventConfig(sink=sink))
+    config = QueueConfig(event=EventConfig(enabled=False, sink=sink))
 
     with caplog.at_level(logging.WARNING, logger="litestar_queues.config"):
         publisher = config.get_event_publisher()
@@ -149,7 +155,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
     """Resolver fires after the task.started event and before task.completed."""
     import time
 
-    from litestar_queues import InMemoryQueueEventSink, QueueEventConfig, Task, TaskExecutionContext, task
+    from litestar_queues import EventConfig, InMemoryQueueEventSink, Task, TaskExecutionContext, task
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.task import clear_task_registry
 
@@ -172,7 +178,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
         return "ok"
 
     config = QueueConfig(
-        execution_backend="immediate", task_dependency_resolver=resolver, event_config=QueueEventConfig(enabled=True)
+        execution_backend="immediate", task_dependency_resolver=resolver, event=EventConfig(enabled=True)
     )
     service = QueueService(config, event_publisher=publisher)
 
@@ -242,7 +248,7 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True)),
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True)),
         queue_backend=backend,
         event_publisher=publisher,
     ) as service:
@@ -259,10 +265,10 @@ async def test_event_log_config_is_public_and_memory_backend_is_unsupported() ->
     from litestar_queues import events
     from litestar_queues.exceptions import QueueConfigurationError
 
-    event_log_config_type = getattr(events, "QueueEventLogConfig", None)
+    event_log_config_type = getattr(events, "EventLogConfig", None)
     assert event_log_config_type is not None
 
-    config = QueueConfig(event_log_config=event_log_config_type(enabled=True))
+    config = QueueConfig(event_log=event_log_config_type(enabled=True))
 
     with pytest.raises(QueueConfigurationError, match="event history"):
         async with QueueService(config):
@@ -275,7 +281,7 @@ async def test_backend_event_log_records_events_when_live_events_are_disabled() 
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
-    event_log_config_type = getattr(events, "QueueEventLogConfig", None)
+    event_log_config_type = getattr(events, "EventLogConfig", None)
     assert event_log_config_type is not None
     event_log = _RecordingEventLog()
 
@@ -283,7 +289,7 @@ async def test_backend_event_log_records_events_when_live_events_are_disabled() 
     async def event_history_task() -> "None":
         await publish_task_log("history only", payload={"stage": "load"})
 
-    config = QueueConfig(execution_backend="immediate", event_log_config=event_log_config_type(enabled=True))
+    config = QueueConfig(execution_backend="immediate", event_log=event_log_config_type(enabled=True))
 
     async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
         result = await service.enqueue(event_history_task)
@@ -299,7 +305,7 @@ async def test_backend_event_log_and_live_sink_are_independent() -> "None":
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
-    event_log_config_type = getattr(events, "QueueEventLogConfig", None)
+    event_log_config_type = getattr(events, "EventLogConfig", None)
     assert event_log_config_type is not None
     event_log = _RecordingEventLog()
     sink = InMemoryQueueEventSink()
@@ -310,8 +316,8 @@ async def test_backend_event_log_and_live_sink_are_independent() -> "None":
 
     config = QueueConfig(
         execution_backend="immediate",
-        event_config=QueueEventConfig(enabled=True, sink=sink),
-        event_log_config=event_log_config_type(enabled=True),
+        event=EventConfig(enabled=True, sink=sink),
+        event_log=event_log_config_type(enabled=True),
     )
 
     async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
@@ -362,7 +368,7 @@ async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "N
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True)),
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True)),
         queue_backend=backend,
         event_publisher=QueueEventPublisher(sink),
     ) as service:
@@ -388,9 +394,7 @@ async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "N
         msg = "secret-token"
         raise RuntimeError(msg)
 
-    config = QueueConfig(
-        execution_backend="local", event_config=QueueEventConfig(enabled=True), error_sanitizer=sanitize_error
-    )
+    config = QueueConfig(execution_backend="local", event=EventConfig(enabled=True), error_sanitizer=sanitize_error)
 
     async with QueueService(config, event_publisher=QueueEventPublisher(sink)) as service:
         result = await service.enqueue(sanitize_error_task)
@@ -437,6 +441,6 @@ class _EventLogBackend(InMemoryQueueBackend):
         super().__init__()
         self._event_log = event_log
 
-    def get_event_log(self, config: "QueueEventLogConfig") -> "_RecordingEventLog":
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
         del config
         return self._event_log

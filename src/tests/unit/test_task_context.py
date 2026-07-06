@@ -2,8 +2,8 @@ import pytest
 
 from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.events import (
+    EventConfig,
     InMemoryQueueEventSink,
-    QueueEventConfig,
     TaskExecutionContext,
     get_current_task_context,
     publish_task_event,
@@ -36,7 +36,7 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None"
         return "ok"
 
     async with QueueService(
-        QueueConfig(execution_backend="immediate", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="immediate", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(with_context)
         await result.refresh()
@@ -70,7 +70,7 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
         return received_kwargs
 
     async with QueueService(
-        QueueConfig(execution_backend="immediate", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="immediate", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(plain)
         await result.refresh()

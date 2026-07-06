@@ -64,8 +64,8 @@ class QueuePlugin(InitPlugin):
             self._config.queue_service_state_key: self._config,
             self._config.queue_event_publisher_state_key: self._event_publisher,
         }
-        if self._config.event_config.channels_backend is not None:
-            state[self._config.queue_event_channels_backend_state_key] = self._config.event_config.channels_backend
+        if self._config.event is not None and self._config.event.channels_backend is not None:
+            state[self._config.queue_event_channels_backend_state_key] = self._config.event.channels_backend
         app_config.state.update(state)
         app_config.on_startup.append(self._on_startup)
         app_config.on_shutdown.append(self._on_shutdown)
@@ -86,7 +86,7 @@ class QueuePlugin(InitPlugin):
             load_task_modules(self._config.task_modules)
 
         observability_runtime = None
-        observability_config = self._config.observability_config
+        observability_config = self._config.observability
         if observability_config is not None:
             from litestar_queues.observability import create_observability_runtime
 
@@ -102,8 +102,8 @@ class QueuePlugin(InitPlugin):
         set_default_service(self._service)
         app.state[self._config.queue_service_state_key] = self._service
         app.state[self._config.queue_event_publisher_state_key] = self._service.get_event_publisher()
-        if self._config.event_config.channels_backend is not None:
-            app.state[self._config.queue_event_channels_backend_state_key] = self._config.event_config.channels_backend
+        if self._config.event is not None and self._config.event.channels_backend is not None:
+            app.state[self._config.queue_event_channels_backend_state_key] = self._config.event.channels_backend
 
         if self._config.initialize_schedules:
             await self._service.initialize_schedules()

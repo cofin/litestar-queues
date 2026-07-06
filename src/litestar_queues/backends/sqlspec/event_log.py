@@ -11,7 +11,7 @@ from sqlspec import sql
 
 from litestar_queues.backends.sqlspec.schema import event_log_table_name_for, validate_table_name
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
-from litestar_queues.events.log import QueueEventLogConfig, QueueEventLogRecord, QueueEventStageSummary
+from litestar_queues.events.log import EventLogConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -231,7 +231,7 @@ class SQLSpecQueueEventLog:
         *,
         session_factory: "Callable[[], AbstractAsyncContextManager[SQLSpecDriver]]",
         datetime_serializer: "Callable[[datetime], datetime | str]",
-        config: "QueueEventLogConfig",
+        config: "EventLogConfig",
         store: "SQLSpecQueueEventLogStore",
     ) -> "None":
         self._session_factory = session_factory

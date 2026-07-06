@@ -101,7 +101,7 @@ class QueueService:
         if self._observability_runtime is None:
             from litestar_queues.observability import create_observability_runtime
 
-            self._observability_runtime = create_observability_runtime(self._config.observability_config)
+            self._observability_runtime = create_observability_runtime(self._config.observability)
         return self._observability_runtime
 
     async def open(self) -> "Self":
@@ -141,14 +141,14 @@ class QueueService:
             self._sync_executor = None
 
     def _configure_event_log(self, queue_backend: "BaseQueueBackend") -> "None":
-        event_log_config = self._config.event_log_config
-        if not event_log_config.enabled:
+        event_log_config = self._config.event_log
+        if event_log_config is None or not event_log_config.enabled:
             return
         event_log = queue_backend.get_event_log(event_log_config)
         if event_log is None:
             msg = (
                 f"{type(queue_backend).__name__} does not support backend-managed queue event history; "
-                "disable QueueEventLogConfig or use a backend that supports durable event history."
+                "disable EventLogConfig or use a backend that supports durable event history."
             )
             raise QueueConfigurationError(msg)
         self._event_log = event_log

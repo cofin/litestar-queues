@@ -11,14 +11,7 @@ import pytest
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
-from litestar_queues import (
-    InMemoryQueueEventSink,
-    QueueConfig,
-    QueueEventConfig,
-    QueueEventLogConfig,
-    QueueService,
-    task,
-)
+from litestar_queues import EventConfig, EventLogConfig, InMemoryQueueEventSink, QueueConfig, QueueService, task
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.events import publish_task_log, publish_task_progress
@@ -47,19 +40,19 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
 
     db_path = tmp_path / "event-history.db"
     live_sink = InMemoryQueueEventSink()
-    event_log_config = QueueEventLogConfig(enabled=True, buffer_size=100, flush_interval=60)
+    event_log_config = EventLogConfig(enabled=True, buffer_size=100, flush_interval=60)
     config = QueueConfig(
         queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)),
         execution_backend="immediate",
-        event_config=QueueEventConfig(enabled=True, sink=live_sink),
-        event_log_config=event_log_config,
+        event=EventConfig(enabled=True, sink=live_sink),
+        event_log=event_log_config,
     )
 
     async with QueueService(config) as service:
         result = await service.enqueue(event_history_task)
 
     reader_config = QueueConfig(
-        queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)), event_log_config=event_log_config
+        queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)), event_log=event_log_config
     )
     async with QueueService(reader_config) as reader:
         event_log = reader.get_queue_backend().get_event_log(event_log_config)
@@ -113,7 +106,7 @@ async def test_sqlspec_event_log_table_follows_event_log_enabled_lifecycle(
     async with QueueService(
         QueueConfig(
             queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(enabled_db_path)),
-            event_log_config=QueueEventLogConfig(enabled=True),
+            event_log=EventLogConfig(enabled=True),
         )
     ):
         pass
@@ -131,7 +124,7 @@ async def test_sqlspec_event_log_table_name_follows_queue_table_name(
             queue_backend=SQLSpecBackendConfig(
                 config=sqlite_config_factory(derived_db_path), table_name="custom_queue_task"
             ),
-            event_log_config=QueueEventLogConfig(enabled=True),
+            event_log=EventLogConfig(enabled=True),
         )
     ):
         pass
@@ -148,7 +141,7 @@ async def test_sqlspec_event_log_table_name_follows_queue_table_name(
                 table_name="explicit_queue_task",
                 event_log_table_name="queue_events",
             ),
-            event_log_config=QueueEventLogConfig(enabled=True),
+            event_log=EventLogConfig(enabled=True),
         )
     ):
         pass

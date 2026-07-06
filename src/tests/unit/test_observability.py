@@ -10,22 +10,23 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from litestar_queues.execution.cloudrun._typing import CloudRunExecutionLike, CloudRunOperation
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_queue_config_uses_single_observability_config_field() -> "None":
+async def test_queue_config_uses_single_observability_field() -> "None":
     """QueueConfig should keep package-level observability enablement in one field."""
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
 
-    observability_config = QueueObservabilityConfig(enable_otel=True, enable_prometheus=True)
-    config = QueueConfig(observability_config=observability_config)
+    observability = ObservabilityConfig(enable_otel=True, enable_prometheus=True)
+    config = QueueConfig(observability=observability)
     field_names = {config_field.name for config_field in fields(QueueConfig)}
 
-    assert config.observability_config is observability_config
-    assert observability_config.enable_otel is True
-    assert observability_config.enable_prometheus is True
+    assert config.observability is observability
+    assert observability.enable_otel is True
+    assert observability.enable_prometheus is True
+    assert "observability_config" not in field_names
     assert "enable_otel" not in field_names
     assert "enable_prometheus" not in field_names
 
@@ -113,22 +114,20 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     from litestar import Litestar
 
     from litestar_queues import QueuePlugin
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
 
     runtime = FakeObservabilityRuntime()
     seen_apps: "list[Litestar | None]" = []
 
     def create_runtime(
-        config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None
+        config: "ObservabilityConfig | None", *, app: "Litestar | None" = None
     ) -> "FakeObservabilityRuntime":
         assert config is not None
         seen_apps.append(app)
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
-    plugin = QueuePlugin(
-        QueueConfig(observability_config=QueueObservabilityConfig(enable_otel=None), in_app_worker=False)
-    )
+    plugin = QueuePlugin(QueueConfig(observability=ObservabilityConfig(enable_otel=None), in_app_worker=False))
     app = Litestar(plugins=[plugin])
 
     await plugin._on_startup(app)

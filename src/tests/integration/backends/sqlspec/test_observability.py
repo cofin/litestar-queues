@@ -7,12 +7,13 @@ pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
-from sqlspec.observability import ObservabilityConfig, StatementEvent
+from sqlspec.observability import ObservabilityConfig as SQLSpecObservabilityConfig
+from sqlspec.observability import StatementEvent
 from sqlspec.utils.correlation import CorrelationContext
 
 from litestar_queues import QueueConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
-from litestar_queues.observability import QueueObservabilityConfig
+from litestar_queues.observability import ObservabilityConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,7 +67,7 @@ async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_pat
     lifecycle_events: "list[dict[str, Any]]" = []
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "queue.db")},
-        observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
+        observability_config=SQLSpecObservabilityConfig(statement_observers=(statement_events.append,)),
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
@@ -146,7 +147,7 @@ async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: 
     statement_events: "list[StatementEvent]" = []
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "queue-disabled.db")},
-        observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
+        observability_config=SQLSpecObservabilityConfig(statement_observers=(statement_events.append,)),
     )
     backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_observability=False))
     await backend.open()
@@ -165,9 +166,9 @@ async def test_package_observability_disables_sqlspec_queue_domain_observability
     statement_events: "list[StatementEvent]" = []
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "queue-package-observability.db")},
-        observability_config=ObservabilityConfig(statement_observers=(statement_events.append,)),
+        observability_config=SQLSpecObservabilityConfig(statement_observers=(statement_events.append,)),
     )
-    queue_config = QueueConfig(observability_config=QueueObservabilityConfig(enable_otel=True))
+    queue_config = QueueConfig(observability=ObservabilityConfig(enable_otel=True))
     backend = SQLSpecQueueBackend(config=queue_config, backend_config=SQLSpecBackendConfig(config=sqlspec_config))
     await backend.open()
     try:

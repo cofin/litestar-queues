@@ -20,7 +20,7 @@ from litestar_queues import (
     task,
 )
 from litestar_queues.backends import InMemoryQueueBackend
-from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
+from litestar_queues.events import EventConfig, InMemoryQueueEventSink
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -367,7 +367,7 @@ async def test_worker_id_propagates_into_published_events() -> "None":
         return "ok"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
     ) as service:
         result = await service.enqueue(worker_id_task)
         worker = Worker(service, worker_id="worker-test")

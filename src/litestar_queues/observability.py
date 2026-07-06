@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     "TRACE_CONTEXT_METADATA_KEY",
-    "QueueObservabilityConfig",
+    "ObservabilityConfig",
     "QueueObservabilityRuntime",
     "QueueObservabilityRuntimeProtocol",
     "create_observability_runtime",
@@ -31,7 +31,7 @@ TRACE_CONTEXT_METADATA_KEY = "_otel_context"
 
 
 @dataclass(slots=True)
-class QueueObservabilityConfig:
+class ObservabilityConfig:
     """Configuration for optional queue-domain observability."""
 
     enable_otel: "bool | None" = None
@@ -141,7 +141,7 @@ class QueueObservabilityRuntime:
         "enabled",
     )
 
-    def __init__(self, config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None) -> "None":
+    def __init__(self, config: "ObservabilityConfig | None", *, app: "Litestar | None" = None) -> "None":
         self._config = config
         self._otel_enabled = config.should_enable_otel(app) if config is not None else False
         self._prometheus_enabled = config.should_enable_prometheus() if config is not None else False
@@ -270,7 +270,7 @@ class QueueObservabilityRuntime:
                 self._durations[f"prometheus:{name}"] = histogram
             histogram.labels(**dict(attributes)).observe(seconds)
 
-    def _require_config(self) -> "QueueObservabilityConfig":
+    def _require_config(self) -> "ObservabilityConfig":
         if self._config is None:
             msg = "Queue observability runtime is not configured."
             raise RuntimeError(msg)
@@ -278,7 +278,7 @@ class QueueObservabilityRuntime:
 
 
 def create_observability_runtime(
-    config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None
+    config: "ObservabilityConfig | None", *, app: "Litestar | None" = None
 ) -> "QueueObservabilityRuntime":
     """Create the queue observability runtime for a service.
 
@@ -293,7 +293,7 @@ def _has_otel_plugin(app: "Litestar") -> "bool":
     return any(plugin.__class__.__name__ == "OpenTelemetryPlugin" for plugin in plugins)
 
 
-def _prometheus_name(name: "str", config: "QueueObservabilityConfig | None") -> "str":
+def _prometheus_name(name: "str", config: "ObservabilityConfig | None") -> "str":
     prefix = config.metric_prefix if config is not None else "litestar_queues"
     base = name.removeprefix("litestar_queues.").replace(".", "_")
     return f"{prefix}_{base}"

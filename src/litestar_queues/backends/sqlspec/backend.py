@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     )
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import QueueEventLog, QueueEventLogConfig
+    from litestar_queues.events import EventLogConfig, QueueEventLog
 
 __all__ = ("SQLSpecQueueBackend",)
 
@@ -78,7 +78,7 @@ def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool"
     """Return whether package-level queue observability should own queue-domain metrics."""
     if config is None:
         return False
-    observability_config = config.observability_config
+    observability_config = config.observability
     if observability_config is None:
         return False
     if not observability_config.disable_sqlspec_queue_observability:
@@ -214,7 +214,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._sqlspec = None
         self._opened = False
 
-    def get_event_log(self, config: "QueueEventLogConfig") -> "QueueEventLog | None":
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
         """Return SQLSpec-managed durable queue event history when enabled."""
         if not config.enabled:
             return None
@@ -1182,7 +1182,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._get_event_log_store() if self._event_log_enabled() else None
 
     def _event_log_enabled(self) -> "bool":
-        return bool(self.config is not None and self.config.event_log_config.enabled)
+        return bool(self.config is not None and self.config.event_log is not None and self.config.event_log.enabled)
 
     def _resolve_event_log_table_name(self) -> "str":
         if self._event_log_table_name is None:
