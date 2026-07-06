@@ -23,9 +23,11 @@ from tests.integration.execution.cloudrun.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from uuid import UUID
 
     from litestar_queues.execution.cloudrun._typing import CloudRunJobsClient
+    from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult
 
 pytestmark = pytest.mark.anyio
 
@@ -501,7 +503,7 @@ async def test_cloudrun_entrypoint_returns_claim_lost_when_heartbeat_loses_owner
         await release_task.wait()
         return "too late"
 
-    queue_backend = InMemoryQueueBackend()
+    queue_backend = _RecordingHeartbeatBackend()
     async with QueueService(
         QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
     ) as service:
@@ -521,6 +523,9 @@ async def test_cloudrun_entrypoint_returns_claim_lost_when_heartbeat_loses_owner
     assert stored is not None
     assert stored.status == "pending"
     assert stored.retry_count == 1
+    assert len(queue_backend.touch_calls) == 1
+    assert queue_backend.touch_calls[0][0].task_id == result.id
+    assert queue_backend.touch_calls[0][0].expected_retry_count == 0
 
 
 async def test_cloudrun_entrypoint_returns_deterministic_error_codes() -> "None":
@@ -554,3 +559,15 @@ def test_cloudrun_factory_registration_and_import_boundary() -> "None":
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.strip() == "[]"
+
+
+class _RecordingHeartbeatBackend(InMemoryQueueBackend):
+    __slots__ = ("touch_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.touch_calls: "list[tuple[HeartbeatTouch, ...]]" = []
+
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        self.touch_calls.append(tuple(touches))
+        return await super().touch_heartbeats(touches)
