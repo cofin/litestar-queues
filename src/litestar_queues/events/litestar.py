@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         ChannelsSubscriptionBackend,
         ChannelsWaitPublishedBackend,
     )
+    from litestar_queues.events.chunking import QueueEventSizeEstimator
 
 __all__ = ("ChannelsQueueEventSink", "stream_queue_events")
 
@@ -26,10 +27,18 @@ _STREAM_DEDUP_MAX_KEYS = 1024
 class ChannelsQueueEventSink:
     """Event sink that publishes to an app-owned Litestar Channels object."""
 
-    __slots__ = ("_channels_backend",)
+    __slots__ = ("_channels_backend", "_max_payload_bytes", "_payload_size_estimator")
 
-    def __init__(self, channels_backend: "ChannelsLike") -> "None":
+    def __init__(
+        self,
+        channels_backend: "ChannelsLike",
+        *,
+        max_payload_bytes: "int | None" = None,
+        payload_size_estimator: "QueueEventSizeEstimator | None" = None,
+    ) -> "None":
         self._channels_backend = channels_backend
+        self._max_payload_bytes = max_payload_bytes
+        self._payload_size_estimator = payload_size_estimator
 
     @property
     def channels_backend(self) -> "ChannelsLike":
@@ -38,6 +47,16 @@ class ChannelsQueueEventSink:
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish an event to Litestar Channels."""
+        events = (event,)
+        if self._max_payload_bytes is not None:
+            from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
+
+            estimator = self._payload_size_estimator or estimate_event_payload_bytes
+            events = split_event_batch_by_size(event, max_bytes=self._max_payload_bytes, size_estimator=estimator)
+        for event_chunk in events:
+            await self._publish_one(event_chunk, channels=channels)
+
+    async def _publish_one(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         data = event.to_json()
         if hasattr(self._channels_backend, "wait_published"):
             wait_backend = cast("ChannelsWaitPublishedBackend", self._channels_backend)
