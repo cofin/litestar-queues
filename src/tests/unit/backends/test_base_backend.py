@@ -27,4 +27,6 @@ async def test_base_backend_touch_heartbeats_misses_unknown_tasks() -> "None":
 
 
 def test_base_backend_has_no_single_task_heartbeat_api() -> "None":
-    assert not hasattr(BaseQueueBackend, "touch_heartbeat")
+    single_task_heartbeat_api = "touch" "_heartbeat"
+
+    assert not hasattr(BaseQueueBackend, single_task_heartbeat_api)

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from litestar_queues.config import execution_backend_name
 from litestar_queues.execution import get_execution_backend
+from litestar_queues.models import HeartbeatTouch
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -320,8 +321,8 @@ class Worker:
         while True:
             await asyncio.sleep(self._heartbeat_interval)
             try:
-                await self._service.get_queue_backend().touch_heartbeat(
-                    task_id, expected_retry_count=expected_retry_count
+                await self._service.get_queue_backend().touch_heartbeats(
+                    [HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)]
                 )
             except Exception as exc:
                 self._record_counter(
