@@ -23,7 +23,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from advanced_alchemy.operations import MergeStatement
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.advanced_alchemy import (
     AdvancedAlchemyBackendConfig,
@@ -285,9 +285,13 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert claimed is not None
     assert claimed.heartbeat_at is not None
 
-    await advanced_alchemy_backend.touch_heartbeat(claimed.id)
+    result = await advanced_alchemy_backend.touch_heartbeats(
+        [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
+    )
     touched = await advanced_alchemy_backend.get_task(claimed.id)
 
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == set()
     assert touched is not None
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at

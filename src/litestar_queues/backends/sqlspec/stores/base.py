@@ -373,15 +373,28 @@ class SQLSpecQueueStore:
             statement = statement.where_eq(self._col("queue"), queue)
         return statement
 
-    def touch_heartbeat(self, *, task_id: "str", heartbeat_at: "DatetimeParam") -> "Update":
+    def touch_heartbeats(
+        self,
+        *,
+        task_id: "str",
+        heartbeat_at: "DatetimeParam",
+        expected_retry_count: "int | None" = None,
+        metadata_json: "Any" = None,
+    ) -> "Update":
         """Return an UPDATE statement that touches a running task heartbeat."""
-        return (
+        values = {"heartbeat_at": heartbeat_at}
+        if metadata_json is not None:
+            values["metadata_json"] = metadata_json
+        statement = (
             sql
             .update(self.table_name)
-            .set(**self._mapped_values({"heartbeat_at": heartbeat_at}))
+            .set(**self._mapped_values(values))
             .where_eq(self._col("id"), task_id)
             .where_eq(self._col("status"), "running")
         )
+        if expected_retry_count is not None:
+            statement = statement.where_eq(self._col("retry_count"), expected_retry_count)
+        return statement
 
     def null_heartbeats(self, *, task_ids: "list[str]") -> "Update":
         """Return an UPDATE statement that clears task heartbeats."""

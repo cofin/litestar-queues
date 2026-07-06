@@ -38,6 +38,7 @@ from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     EnqueueSpec,
+    HeartbeatTouchResult,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("SQLSpecQueueBackend",)
 
@@ -665,43 +667,64 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        result = HeartbeatTouchResult()
+        if not touches:
+            return result
+
+        store = self._get_store()
         async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
-                if expected_retry_count is not None:
-                    row = await self._select_task(driver, task_id)
+                for touch in touches:
+                    row = await self._select_task(driver, touch.task_id)
                     if row is None:
-                        await driver.rollback()
-                        return False
+                        result.missed_task_ids.add(touch.task_id)
+                        continue
                     record = self._record_from_row(row)
-                    if record.status != "running" or record.retry_count != expected_retry_count:
-                        await driver.rollback()
-                        return False
-                result = await driver.execute(
-                    self._get_store().touch_heartbeat(
-                        task_id=str(task_id), heartbeat_at=self._serialize_datetime(_utc_now())
+                    if record.status != "running" or (
+                        touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count
+                    ):
+                        result.missed_task_ids.add(touch.task_id)
+                        continue
+                    metadata_json = None
+                    if touch.metadata_patch:
+                        metadata = dict(record.metadata)
+                        metadata.update(touch.metadata_patch)
+                        metadata_json = store.serialize_json("metadata_json", metadata)
+                    execution_result = await driver.execute(
+                        store.touch_heartbeats(
+                            task_id=str(touch.task_id),
+                            heartbeat_at=self._serialize_datetime(_utc_now()),
+                            expected_retry_count=touch.expected_retry_count,
+                            metadata_json=metadata_json,
+                        )
                     )
-                )
-                rows_affected = int(result.rows_affected)
-                if rows_affected == 1:
-                    touched = True
-                elif rows_affected == 0:
-                    touched = False
-                else:
-                    touched_row = await self._select_task(driver, task_id)
-                    touched_record = self._record_from_row(touched_row) if touched_row is not None else None
-                    touched = (
-                        touched_record is not None
-                        and touched_record.status == "running"
-                        and (expected_retry_count is None or touched_record.retry_count == expected_retry_count)
-                    )
+                    rows_affected = int(execution_result.rows_affected)
+                    if rows_affected == 1:
+                        result.touched_task_ids.add(touch.task_id)
+                    elif rows_affected == 0:
+                        result.missed_task_ids.add(touch.task_id)
+                    else:
+                        touched_row = await self._select_task(driver, touch.task_id)
+                        touched_record = self._record_from_row(touched_row) if touched_row is not None else None
+                        if (
+                            touched_record is not None
+                            and touched_record.status == "running"
+                            and (
+                                touch.expected_retry_count is None
+                                or touched_record.retry_count == touch.expected_retry_count
+                            )
+                        ):
+                            result.touched_task_ids.add(touch.task_id)
+                        else:
+                            result.missed_task_ids.add(touch.task_id)
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return touched
+        return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:

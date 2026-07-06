@@ -19,12 +19,19 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
-from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskStatus
+from litestar_queues.models import (
+    HeartbeatTouchResult,
+    QueuedTaskRecord,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+    TaskStatus,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("QueueTaskService",)
 
@@ -291,16 +298,35 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        result = HeartbeatTouchResult()
+        if not touches:
+            return result
+
         model_type = self.model_type
-        criteria = [model_type.id == task_id, model_type.status == "running"]
-        if expected_retry_count is not None:
-            criteria.append(model_type.retry_count == expected_retry_count)
-        now = _utc_now()
-        result = await self.repository.session.execute(
-            update(model_type).where(*criteria).values(_update_values(model_type, {"heartbeat_at": now}, now=now))
-        )
-        return int(result.rowcount or 0) == 1
+        for touch in touches:
+            now = _utc_now()
+            criteria = [model_type.id == touch.task_id, model_type.status == "running"]
+            if touch.expected_retry_count is not None:
+                criteria.append(model_type.retry_count == touch.expected_retry_count)
+            values: "dict[str, Any]" = {"heartbeat_at": now}
+            if touch.metadata_patch:
+                model_result = await self.repository.session.execute(select(model_type).where(model_type.id == touch.task_id))
+                model = model_result.scalar_one_or_none()
+                if model is None:
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                metadata = dict(_deserialize_json(model.metadata_json))
+                metadata.update(touch.metadata_patch)
+                values["metadata_json"] = _serialize_json(metadata)
+            execution_result = await self.repository.session.execute(
+                update(model_type).where(*criteria).values(_update_values(model_type, values, now=now))
+            )
+            if int(execution_result.rowcount or 0) == 1:
+                result.touched_task_ids.add(touch.task_id)
+            else:
+                result.missed_task_ids.add(touch.task_id)
+        return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:

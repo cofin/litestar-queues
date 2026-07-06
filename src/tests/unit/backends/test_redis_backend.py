@@ -1,9 +1,15 @@
-from typing import Any, cast
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 
+from litestar_queues import HeartbeatTouch
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.models import QueuedTaskRecord
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.anyio
 
@@ -50,6 +56,38 @@ async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "Non
     assert client.pubsubs[0].close_calls == 1
 
 
+async def test_redis_backend_touch_heartbeats_fences_and_merges_metadata() -> "None":
+    backend = _RedisHeartbeatBackend()
+    running = QueuedTaskRecord(
+        task_name="tasks.redis.heartbeat",
+        status="running",
+        retry_count=2,
+        metadata={"existing": "kept"},
+    )
+    backend.records[running.id] = running
+    missing_id = uuid4()
+
+    result = await backend.touch_heartbeats(
+        [
+            HeartbeatTouch(task_id=running.id, expected_retry_count=3),
+            HeartbeatTouch(
+                task_id=running.id,
+                expected_retry_count=2,
+                metadata_patch={"progress_detail": "row 500"},
+            ),
+            HeartbeatTouch(task_id=missing_id, expected_retry_count=None),
+        ]
+    )
+
+    assert result.touched_task_ids == {running.id}
+    assert result.missed_task_ids == {running.id, missing_id}
+    assert result.failed_task_ids == set()
+    assert running.heartbeat_at is not None
+    assert running.metadata == {"existing": "kept", "progress_detail": "row 500"}
+    assert backend.lock_names == [f"task:{running.id}", f"task:{running.id}", f"task:{missing_id}"]
+    assert backend.saved_records == [running.id]
+
+
 class _CountingRedisClient:
     def __init__(self) -> "None":
         self.hashes: "dict[str, dict[str, str]]" = {}
@@ -86,6 +124,28 @@ class _CountingRedisClient:
 
     async def aclose(self) -> "None":
         return None
+
+
+class _RedisHeartbeatBackend(RedisQueueBackend):
+    __slots__ = ("lock_names", "records", "saved_records")
+
+    def __init__(self) -> "None":
+        super().__init__(backend_config=RedisBackendConfig(client=cast("Any", _CountingRedisClient())))
+        self.records: "dict[UUID, QueuedTaskRecord]" = {}
+        self.lock_names: "list[str]" = []
+        self.saved_records: "list[UUID]" = []
+
+    async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        return self.records.get(task_id)
+
+    async def _save_record(self, record: "QueuedTaskRecord") -> "None":
+        self.saved_records.append(record.id)
+
+    @asynccontextmanager
+    async def _lock(self, lock_name: "str", *, wait: "bool") -> "AsyncIterator[bool]":
+        del wait
+        self.lock_names.append(lock_name)
+        yield True
 
 
 class _CountingPipeline:

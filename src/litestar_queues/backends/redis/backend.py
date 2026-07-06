@@ -24,6 +24,7 @@ from litestar_queues.backends.base import (
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
 from litestar_queues.models import (
+    HeartbeatTouchResult,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
@@ -32,10 +33,11 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Mapping
+    from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("RedisQueueBackend",)
 
@@ -335,21 +337,28 @@ class RedisQueueBackend(BaseQueueBackend):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
-        """Update the heartbeat timestamp for a running task.
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Update heartbeat timestamps for running tasks.
 
         Returns:
-            True when the heartbeat was updated.
+            The task IDs confirmed touched or missed by the backend.
         """
-        async with self._lock(f"task:{task_id}", wait=True):
-            record = await self.get_task(task_id)
-            if record is None or record.status != "running":
-                return False
-            if expected_retry_count is not None and record.retry_count != expected_retry_count:
-                return False
-            record.heartbeat_at = _utc_now()
-            await self._save_record(record)
-            return True
+        result = HeartbeatTouchResult()
+        for touch in touches:
+            async with self._lock(f"task:{touch.task_id}", wait=True):
+                record = await self.get_task(touch.task_id)
+                if record is None or record.status != "running":
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                if touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count:
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                record.heartbeat_at = _utc_now()
+                if touch.metadata_patch:
+                    record.metadata.update(touch.metadata_patch)
+                await self._save_record(record)
+                result.touched_task_ids.add(touch.task_id)
+        return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         """Clear heartbeat timestamps for task IDs."""

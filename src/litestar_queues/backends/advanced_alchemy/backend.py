@@ -11,16 +11,17 @@ from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import HeartbeatTouchResult
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from datetime import datetime, timedelta
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
+    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
 
@@ -176,9 +177,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
                 task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata, include_running=include_running
             )
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        if not touches:
+            return HeartbeatTouchResult()
         async with self._heartbeat_operation() as service:
-            return await service.touch_heartbeat(task_id, expected_retry_count=expected_retry_count)
+            return await service.touch_heartbeats(touches)
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         async with self._heartbeat_operation() as service:

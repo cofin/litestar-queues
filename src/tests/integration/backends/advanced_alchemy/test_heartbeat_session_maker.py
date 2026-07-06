@@ -20,6 +20,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from litestar_queues import HeartbeatTouch
 from litestar_queues.backends.advanced_alchemy import (
     AdvancedAlchemyBackendConfig,
     AdvancedAlchemyQueueBackend,
@@ -59,8 +60,12 @@ async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(tmp_
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
 
-        await backend.touch_heartbeat(claimed.id)
+        result = await backend.touch_heartbeats(
+            [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
+        )
         touched = await backend.get_task(claimed.id)
+        assert result.touched_task_ids == {claimed.id}
+        assert result.missed_task_ids == set()
         assert touched is not None
         assert touched.heartbeat_at is not None
     finally:
@@ -70,7 +75,7 @@ async def test_advanced_alchemy_backend_default_heartbeat_uses_main_session(tmp_
 async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_writes(
     tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
-    """touch_heartbeat / null_heartbeats use the dedicated heartbeat sessionmaker."""
+    """touch_heartbeats / null_heartbeats use the dedicated heartbeat sessionmaker."""
     queue_path = tmp_path / "queue.db"
     main_config = _sqlite_config(queue_path)
     heartbeat_config = _sqlite_config(queue_path)
@@ -114,9 +119,12 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_isolates_write
         monkeypatch.setattr(AdvancedAlchemyQueueBackend, "_operation", counting_operation)
         monkeypatch.setattr(AdvancedAlchemyQueueBackend, "_heartbeat_operation", counting_heartbeat)
 
-        await backend.touch_heartbeat(claimed.id)
+        result = await backend.touch_heartbeats(
+            [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
+        )
         await backend.null_heartbeats([claimed.id])
 
+        assert result.touched_task_ids == {claimed.id}
         assert heartbeat_calls == 2
         assert operation_calls == 0
     finally:
@@ -151,7 +159,16 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_handles_concur
             claimed.append(c)
 
         await asyncio.wait_for(
-            asyncio.gather(*(backend.touch_heartbeat(record.id) for _ in range(4) for record in claimed)), timeout=10.0
+            asyncio.gather(
+                *(
+                    backend.touch_heartbeats(
+                        [HeartbeatTouch(task_id=record.id, expected_retry_count=record.retry_count)]
+                    )
+                    for _ in range(4)
+                    for record in claimed
+                )
+            ),
+            timeout=10.0,
         )
         for record in claimed:
             stored = await backend.get_task(record.id)

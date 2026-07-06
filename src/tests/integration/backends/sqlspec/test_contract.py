@@ -28,7 +28,7 @@ pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
@@ -1104,9 +1104,13 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert claimed is not None
     assert claimed.heartbeat_at is not None
 
-    await sqlspec_backend.touch_heartbeat(claimed.id)
+    result = await sqlspec_backend.touch_heartbeats(
+        [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
+    )
     touched = await sqlspec_backend.get_task(claimed.id)
 
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == set()
     assert touched is not None
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at
