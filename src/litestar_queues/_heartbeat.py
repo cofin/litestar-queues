@@ -120,10 +120,16 @@ class WorkerHeartbeatManager:
         if not registrations:
             return
 
-        touches = [
-            HeartbeatTouch(task_id=task_id, expected_retry_count=registration.expected_retry_count)
-            for task_id, registration in registrations.items()
-        ]
+        touches = []
+        for task_id, registration in registrations.items():
+            detail = self._beats.get(task_id)
+            touches.append(
+                HeartbeatTouch(
+                    task_id=task_id,
+                    expected_retry_count=registration.expected_retry_count,
+                    metadata_patch={"progress_detail": detail} if detail else None,
+                )
+            )
         started_at = time.perf_counter()
         try:
             result = await self._service.get_queue_backend().touch_heartbeats(touches)
@@ -140,20 +146,21 @@ class WorkerHeartbeatManager:
         )
 
         for task_id in result.touched_task_ids:
-            registration = self._registrations.get(task_id)
-            if registration is not None:
-                registration.consecutive_misses = 0
+            touched_registration = self._registrations.get(task_id)
+            if touched_registration is not None:
+                touched_registration.consecutive_misses = 0
+                self._beats.pop(task_id, None)
 
         for task_id in result.missed_task_ids:
-            registration = self._registrations.get(task_id)
-            if registration is None:
+            missed_registration = self._registrations.get(task_id)
+            if missed_registration is None:
                 continue
-            registration.consecutive_misses += 1
+            missed_registration.consecutive_misses += 1
             self._service.observability_runtime.record_counter(
                 "litestar_queues.heartbeat.missed.count", 1, attributes=attributes
             )
-            if registration.consecutive_misses >= self._miss_threshold:
-                await self._publish_claim_lost(task_id, registration)
+            if missed_registration.consecutive_misses >= self._miss_threshold:
+                await self._publish_claim_lost(task_id, missed_registration)
 
     async def _run(self) -> "None":
         while not self._stop_event.is_set():

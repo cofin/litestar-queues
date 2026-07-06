@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from litestar_queues._heartbeat import WorkerHeartbeatManager
 from litestar_queues.config import execution_backend_name
+from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
 from litestar_queues.execution import get_execution_backend
 
 if TYPE_CHECKING:
@@ -249,9 +250,11 @@ class Worker:
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> "None":
         await self._heartbeat_manager.start()
         self._heartbeat_manager.register(record.id, expected_retry_count=record.retry_count)
+        beat_token = _bind_beat_sink(self._heartbeat_manager)
         try:
             await self._service.get_execution_backend().execute(self._service, record, worker_id=self._worker_id)
         finally:
+            _reset_beat_sink(beat_token)
             try:
                 try:
                     self._heartbeat_manager.unregister(record.id)

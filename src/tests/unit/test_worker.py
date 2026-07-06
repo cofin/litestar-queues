@@ -15,6 +15,7 @@ from litestar_queues import (
     QueuePlugin,
     QueueService,
     Worker,
+    beat,
     get_current_task_context,
     non_retryable,
     task,
@@ -516,6 +517,37 @@ async def test_execute_claimed_nulls_heartbeat_when_unregister_fails() -> "None"
     assert events == [("register", result.id, 0), ("unregister", result.id), ("null_heartbeats", (result.id,), 0)]
 
 
+async def test_worker_beat_delivers_metadata_on_next_heartbeat_tick() -> "None":
+    beat_delivered = asyncio.Event()
+    release = asyncio.Event()
+    started = asyncio.Event()
+    backend = _BeatMetadataRecordingBackend(beat_delivered)
+
+    @task("tasks.beat_metadata")
+    async def beat_metadata() -> "str":
+        beat("row 30000")
+        started.set()
+        await release.wait()
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        result = await service.enqueue(beat_metadata)
+        worker = Worker(service, heartbeat_interval=0.01)
+
+        try:
+            assert await worker.run_once() == 1
+            await asyncio.wait_for(started.wait(), timeout=1)
+            await asyncio.wait_for(beat_delivered.wait(), timeout=1)
+        finally:
+            release.set()
+            await result.wait(timeout=1, poll_interval=0.01)
+            await _wait_for_worker_tasks_done(worker)
+        stored = await backend.get_task(result.id)
+
+    assert stored is not None
+    assert stored.metadata["progress_detail"] == "row 30000"
+
+
 async def test_worker_id_propagates_into_published_events() -> "None":
     sink = InMemoryQueueEventSink()
 
@@ -718,6 +750,22 @@ class _HeartbeatTouchRecordingBackend(InMemoryQueueBackend):
         self.touch_calls.append(tuple(touches))
         self.touch_recorded.set()
         return await super().touch_heartbeats(touches)
+
+
+class _BeatMetadataRecordingBackend(InMemoryQueueBackend):
+    __slots__ = ("beat_delivered",)
+
+    def __init__(self, beat_delivered: "asyncio.Event") -> "None":
+        super().__init__()
+        self.beat_delivered = beat_delivered
+
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        result = await super().touch_heartbeats(touches)
+        for touch in touches:
+            stored = await self.get_task(touch.task_id)
+            if stored is not None and stored.metadata.get("progress_detail") == "row 30000":
+                self.beat_delivered.set()
+        return result
 
 
 class _CountingInMemoryQueueBackend(InMemoryQueueBackend):

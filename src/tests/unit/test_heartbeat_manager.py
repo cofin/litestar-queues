@@ -170,6 +170,72 @@ async def test_record_beat_is_noop_safe_and_caps_detail() -> "None":
     assert manager._beats == {task_id: "x" * 256}
 
 
+async def test_last_value_wins_before_tick() -> "None":
+    """Only the latest beat before a tick should be delivered."""
+    task_id = uuid4()
+    backend = FakeBackend()
+    service = FakeService(backend)
+    manager = WorkerHeartbeatManager(service, interval=30, worker_id="worker-a", jitter_fraction=0)
+
+    manager.register(task_id, expected_retry_count=1)
+    manager.record_beat(str(task_id), "row 1")
+    manager.record_beat(str(task_id), "row 2")
+    await manager._tick()
+
+    assert backend.touch_calls[0][0].metadata_patch == {"progress_detail": "row 2"}
+
+
+async def test_beat_cap_256_delivered_in_metadata_patch() -> "None":
+    """Beat details should be capped before delivery."""
+    task_id = uuid4()
+    backend = FakeBackend()
+    service = FakeService(backend)
+    manager = WorkerHeartbeatManager(service, interval=30, worker_id="worker-a", jitter_fraction=0)
+
+    manager.register(task_id, expected_retry_count=1)
+    manager.record_beat(str(task_id), "x" * 500)
+    await manager._tick()
+
+    assert backend.touch_calls[0][0].metadata_patch == {"progress_detail": "x" * 256}
+
+
+async def test_beat_cleared_after_successful_touch() -> "None":
+    """Delivered beats should be cleared after a successful touch."""
+    task_id = uuid4()
+    backend = FakeBackend()
+    service = FakeService(backend)
+    manager = WorkerHeartbeatManager(service, interval=30, worker_id="worker-a", jitter_fraction=0)
+
+    manager.register(task_id, expected_retry_count=1)
+    manager.record_beat(str(task_id), "row 1")
+    await manager._tick()
+    await manager._tick()
+
+    assert backend.touch_calls[0][0].metadata_patch == {"progress_detail": "row 1"}
+    assert backend.touch_calls[1][0].metadata_patch is None
+
+
+async def test_beat_retained_when_missed() -> "None":
+    """Missed touches should keep the latest beat for the next tick."""
+    task_id = uuid4()
+    backend = FakeBackend()
+    backend.touch_results.extend([
+        HeartbeatTouchResult(missed_task_ids={task_id}),
+        HeartbeatTouchResult(touched_task_ids={task_id}),
+    ])
+    service = FakeService(backend)
+    manager = WorkerHeartbeatManager(service, interval=30, worker_id="worker-a", jitter_fraction=0)
+
+    manager.register(task_id, expected_retry_count=1)
+    manager.record_beat(str(task_id), "row 1")
+    await manager._tick()
+    await manager._tick()
+
+    assert backend.touch_calls[0][0].metadata_patch == {"progress_detail": "row 1"}
+    assert backend.touch_calls[1][0].metadata_patch == {"progress_detail": "row 1"}
+    assert manager._beats == {}
+
+
 def test_no_taskgroup_in_manager() -> "None":
     """The manager must stay Python 3.10-compatible."""
     manager_text = Path("src/litestar_queues/_heartbeat.py").read_text()
