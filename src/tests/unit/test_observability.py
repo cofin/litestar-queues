@@ -190,6 +190,7 @@ async def test_runtime_records_gauge_delta_with_otel_up_down_counter(monkeypatch
     """OTel gauge deltas should use an up/down counter and cache it."""
     from litestar_queues import observability as observability_module
     from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+    from litestar_queues.typing import otel_metrics
 
     meter = _FakeOtelMeter()
 
@@ -197,7 +198,7 @@ async def test_runtime_records_gauge_delta_with_otel_up_down_counter(monkeypatch
         return meter
 
     monkeypatch.setattr(observability_module, "OPENTELEMETRY_INSTALLED", True)
-    monkeypatch.setattr(observability_module.otel_metrics, "get_meter", get_meter)
+    monkeypatch.setattr(otel_metrics, "get_meter", get_meter)
 
     runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_otel=True))
     runtime.record_gauge_delta(

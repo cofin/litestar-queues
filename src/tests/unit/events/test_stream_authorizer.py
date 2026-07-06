@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from litestar import Litestar
 from litestar.connection import ASGIConnection
 from litestar.exceptions import WebSocketDisconnect, WebSocketException
 from litestar.handlers.base import BaseRouteHandler
+from litestar.routes import WebSocketRoute
 from litestar.testing import create_test_client
 
 from litestar_queues.config import QueueConfig
@@ -22,8 +23,9 @@ pytestmark = pytest.mark.anyio
 
 class _EmptySubscriber:
     async def iter_events(self) -> "AsyncIterator[bytes]":
-        if False:
-            yield b""
+        events: "tuple[bytes, ...]" = ()
+        for event in events:
+            yield event
 
 
 class _FakeChannelsPlugin:
@@ -132,8 +134,8 @@ async def test_guard_auth_failure_closes_4001_before_authorizer() -> None:
 def _stream_handler(router: Any, path: str) -> "WebsocketRouteHandler":
     app = Litestar(route_handlers=[router], openapi_config=None)
     for route in app.routes:
-        if route.path.endswith(path):
-            return cast("WebsocketRouteHandler", route.route_handler)
+        if isinstance(route, WebSocketRoute) and route.path.endswith(path):
+            return route.route_handler
     msg = f"No stream handler registered for {path!r}."
     raise AssertionError(msg)
 

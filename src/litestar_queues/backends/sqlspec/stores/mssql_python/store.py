@@ -9,3 +9,5 @@ class MssqlPythonQueueStore(MssqlQueueStore):
     """mssql-python SQLSpec queue statement store."""
 
     __slots__ = ()
+
+    select_stream_chunk_size = 100

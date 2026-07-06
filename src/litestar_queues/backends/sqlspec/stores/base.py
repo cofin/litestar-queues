@@ -70,6 +70,7 @@ class SQLSpecQueueStore:
     data_dictionary_dialect: "ClassVar[str | None]" = None
     identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "double"
     claim_select_stream_chunk_size: "ClassVar[int | None]" = None
+    select_stream_chunk_size: "ClassVar[int | None]" = None
     skip_explicit_begin: "ClassVar[bool]" = False
     skip_cleanup_rollback: "ClassVar[bool]" = False
     supports_bulk_touch_heartbeats: "ClassVar[bool]" = False

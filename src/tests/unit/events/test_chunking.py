@@ -16,9 +16,9 @@ pytestmark = pytest.mark.anyio
 
 class _RecordingChannelsBackend:
     def __init__(self) -> None:
-        self.published: list[tuple[bytes, tuple[str, ...]]] = []
+        self.published: list[tuple[bytes | str, tuple[str, ...]]] = []
 
-    async def publish(self, data: bytes, channels: "Sequence[str]") -> None:
+    def publish(self, data: bytes | str, channels: "Sequence[str]") -> None:
         self.published.append((data, tuple(channels)))
 
 

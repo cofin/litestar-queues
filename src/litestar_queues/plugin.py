@@ -86,7 +86,7 @@ class QueuePlugin(InitPlugin):
         return app_config
 
     def _verify_stream_channels_source(self, app_config: "AppConfig") -> "None":
-        source = None
+        source: "object | None" = None
         if self._config.event is not None:
             source = self._config.event.channels_backend
         if source is None:

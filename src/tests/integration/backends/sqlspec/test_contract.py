@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 import pytest
 
@@ -43,6 +44,7 @@ from litestar_queues.backends.sqlspec.stores import (
     CockroachPsycopgAsyncQueueStore,
     CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
+    MssqlPythonQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
     OracledbAsyncQueueStore,
@@ -56,18 +58,18 @@ from litestar_queues.backends.sqlspec.stores import (
     create_queue_store,
 )
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import QueuedTaskRecord
 from tests.integration._backends import QUEUE_BACKENDS
 from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
     from pathlib import Path
     from uuid import UUID
 
     from pytest import FixtureRequest
 
     from litestar_queues.backends import BaseQueueBackend
-    from litestar_queues.models import QueuedTaskRecord
     from tests.integration._backends import BackendCase, PostgresService
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
@@ -80,6 +82,27 @@ class FakeSQLSpecConfig(SimpleNamespace):
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
+
+
+class _StreamOnlySelectDriver:
+    """Fake SQLSpec driver that only supports select_stream for read rows."""
+
+    def __init__(self, row: "dict[str, Any]") -> None:
+        self.row = row
+        self.select_one_calls = 0
+        self.stream_chunks: "list[int | None]" = []
+
+    async def select_one_or_none(self, *_args: "Any", **_kwargs: "Any") -> "None":
+        self.select_one_calls += 1
+        msg = "regular select_one_or_none should not be used"
+        raise AssertionError(msg)
+
+    def select_stream(self, _statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[dict[str, Any]]":
+        self.stream_chunks.append(chunk_size)
+        return self._iter_rows()
+
+    async def _iter_rows(self) -> "AsyncIterator[dict[str, Any]]":
+        yield self.row
 
 
 def _fake_adapter_config(
@@ -459,7 +482,7 @@ def test_postgres_and_duckdb_stores_build_bulk_heartbeat_updates() -> "None":
     """Postgres-family and DuckDB stores expose one VALUES-driven heartbeat update."""
     postgres_store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
     duckdb_store = DuckDBQueueStore(_fake_adapter_config("duckdb", dialect="duckdb"), table_name="queue_tasks")
-    touches = [
+    touches: "list[Mapping[str, Any]]" = [
         {"task_id": "task-1", "expected_retry_count": 0, "metadata_json": {"progress_detail": "row 1"}},
         {"task_id": "task-2", "expected_retry_count": None, "metadata_json": None},
     ]
@@ -479,6 +502,8 @@ def test_postgres_and_duckdb_stores_build_bulk_heartbeat_updates() -> "None":
     assert 'target."metadata_json" || heartbeat_updates.metadata_json' in postgres_statement.sql
     assert "CAST(? AS INTEGER)" in duckdb_statement.sql
     assert "json_group_object(merged.key, merged.value)" in duckdb_statement.sql
+    assert isinstance(postgres_statement.parameters, dict)
+    assert isinstance(duckdb_statement.parameters, list)
     assert postgres_statement.parameters["task_id_0"] == "task-1"
     assert postgres_statement.parameters["expected_retry_count_1"] is None
     assert duckdb_statement.parameters == [
@@ -844,6 +869,61 @@ def test_sqlspec_oracledb_sync_store_uses_cas_until_safe_streaming_claims() -> "
 
     assert isinstance(store, OracledbSyncQueueStore)
     assert store.supports_skip_locked is False
+
+
+async def test_sqlspec_mssql_python_select_task_uses_native_stream() -> "None":
+    """mssql-python queue reads should avoid the regular tuple-row result path."""
+    task_id = uuid4()
+    config = _fake_adapter_config("mssql_python", dialect="tsql", config_type_name="MssqlPythonAsyncConfig")
+    store = create_queue_store(config, table_name="queue_tasks")
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=config, table_name="queue_tasks", notifications=False)
+    )
+    backend._store = store
+    driver = _StreamOnlySelectDriver({"id": str(task_id)})
+
+    row = await backend._select_task(cast("Any", driver), task_id)
+
+    assert isinstance(store, MssqlPythonQueueStore)
+    assert store.select_stream_chunk_size == 100
+    assert row == {"id": str(task_id)}
+    assert driver.stream_chunks == [100]
+    assert driver.select_one_calls == 0
+
+
+async def test_sqlspec_claim_next_skips_serialization_conflict_candidate(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Optimistic CAS claims should treat serialization conflicts as claim contention."""
+    from sqlspec.exceptions import SerializationConflictError
+
+    first_id = uuid4()
+    second_id = uuid4()
+    claimed_record = QueuedTaskRecord(task_name="tasks.claimed", id=second_id, status="running")
+    backend = SQLSpecQueueBackend()
+    claim_attempts: "list[UUID]" = []
+
+    class NoSkipLockedStore:
+        supports_skip_locked = False
+
+    async def select_pending_rows(
+        self: "SQLSpecQueueBackend", *, limit: int, queue: str | None, execution_backend: str | None
+    ) -> "list[dict[str, Any]]":
+        del self, limit, queue, execution_backend
+        return [{"id": str(first_id)}, {"id": str(second_id)}]
+
+    async def claim_task(self: "SQLSpecQueueBackend", task_id: "UUID") -> "QueuedTaskRecord | None":
+        del self
+        claim_attempts.append(task_id)
+        if task_id == first_id:
+            msg = "restart transaction: WriteTooOldError"
+            raise SerializationConflictError(msg)
+        return claimed_record
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _self: NoSkipLockedStore())
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_pending_rows", select_pending_rows)
+    monkeypatch.setattr(SQLSpecQueueBackend, "claim_task", claim_task)
+
+    assert await backend.claim_next() is claimed_record
+    assert claim_attempts == [first_id, second_id]
 
 
 def test_sqlspec_store_supports_skip_locked_defaults_false_without_dialect() -> "None":

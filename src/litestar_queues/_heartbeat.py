@@ -10,7 +10,33 @@ from uuid import UUID
 from litestar_queues.models import HeartbeatTouch
 
 if TYPE_CHECKING:
-    from litestar_queues.service import QueueService
+    from collections.abc import Mapping, Sequence
+    from typing import Protocol
+
+    from litestar_queues.models import HeartbeatTouchResult, QueuedTaskRecord
+
+    class _HeartbeatBackend(Protocol):
+        async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult": ...
+
+        async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None": ...
+
+    class _ObservabilityRuntime(Protocol):
+        def record_counter(self, name: "str", value: "int" = 1, *, attributes: "Mapping[str, str]") -> "None": ...
+
+        def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None": ...
+
+        def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None": ...
+
+    class _HeartbeatService(Protocol):
+        @property
+        def observability_runtime(self) -> "_ObservabilityRuntime": ...
+
+        def get_queue_backend(self) -> "_HeartbeatBackend": ...
+
+        async def publish_claim_lost(
+            self, record: "QueuedTaskRecord", *, phase: "str", worker_id: "str", expected_retry_count: "int | None"
+        ) -> "object": ...
+
 
 __all__ = ("WorkerHeartbeatManager",)
 
@@ -40,7 +66,7 @@ class WorkerHeartbeatManager:
 
     def __init__(
         self,
-        service: "QueueService",
+        service: "_HeartbeatService",
         *,
         interval: "float",
         miss_threshold: "int" = 2,

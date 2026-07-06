@@ -47,7 +47,7 @@ class ChannelsQueueEventSink:
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish an event to Litestar Channels."""
-        events = (event,)
+        events: "Sequence[QueueEvent]" = (event,)
         if self._max_payload_bytes is not None:
             from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
 

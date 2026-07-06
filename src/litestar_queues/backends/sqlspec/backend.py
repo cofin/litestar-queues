@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID
 
 from sqlspec import SQLSpec
+from sqlspec.exceptions import SerializationConflictError
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
@@ -445,7 +446,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
             task_id = UUID(str(row["id"]))
-            claimed = await self.claim_task(task_id)
+            try:
+                claimed = await self.claim_task(task_id)
+            except Exception as exc:
+                if _is_serialization_conflict(exc):
+                    continue
+                raise
             if claimed is not None:
                 return claimed
         return None
@@ -472,14 +478,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         now=self._serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
                     )
                     stream_chunk_size = cast("int | None", getattr(store, "claim_select_stream_chunk_size", None))
-                    if stream_chunk_size is None:
-                        rows = await driver.select(statement)
-                        row = cast("dict[str, Any] | None", rows[0] if rows else None)
-                    else:
-                        row = None
-                        async for claimable_row in _select_stream(driver, statement, chunk_size=stream_chunk_size):
-                            row = cast("dict[str, Any]", claimable_row)
-                            break
+                    row = await self._select_one_row(driver, statement, chunk_size=stream_chunk_size)
                     if row is None:
                         await driver.rollback()
                         return None
@@ -655,11 +654,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "int":
         store = self._get_store()
         async with self._session() as driver:
-            rows = await driver.select(
-                store.list_cancellable(include_running=include_running, task_name=task_name, queue=queue)
+            rows = await self._select_rows(
+                driver, store.list_cancellable(include_running=include_running, task_name=task_name, queue=queue)
             )
         cancelled = 0
-        for row in cast("list[dict[str, Any]]", rows):
+        for row in rows:
             record = self._record_from_row(row)
             if not record_matches_filters(record, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata):
                 continue
@@ -796,7 +795,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         serialized_cutoff = self._serialize_datetime(cutoff)
         with self._observe_queue_operation("stale_recovered"):
             async with self._session() as driver:
-                rows = await driver.select(store.list_stale_running(cutoff=serialized_cutoff))
+                rows = await self._select_rows(driver, store.list_stale_running(cutoff=serialized_cutoff))
                 if not rows:
                     return result
                 # Reset any implicit read transaction the SELECT may have opened so
@@ -806,7 +805,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.begin()
                 try:
                     failed_handler_needed: "list[UUID]" = []
-                    for row in cast("list[dict[str, Any]]", rows):
+                    for row in rows:
                         record = self._record_from_row(row)
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                         if requeue_on_stale and record.retry_count < record.max_retries:
@@ -921,8 +920,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._session() as driver:
-            rows = await driver.select(self._get_store().list_running_external(limit=limit))
-        return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
+            rows = await self._select_rows(driver, self._get_store().list_running_external(limit=limit))
+        return [self._record_from_row(row) for row in rows]
 
     async def get_statistics(self) -> "QueueStatistics":
         statistics = QueueStatistics()
@@ -963,8 +962,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
         built = statement.build(dialect=store.dialect_name)
         async with self._session() as driver:
-            rows = await driver.select(built.sql, built.parameters)
-        return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
+            rows = await self._select_rows(driver, built.sql, built.parameters)
+        return [self._record_from_row(row) for row in rows]
 
     async def cleanup_terminal(self, before: "datetime") -> "int":
         store = self._get_store()
@@ -976,7 +975,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 # ``rows_affected`` for DELETE: they return ``-1`` as a
                 # sentinel for "unknown". Count first inside the same
                 # transaction so the cleanup count is always exact.
-                count_row = await driver.select_one_or_none(store.count_terminal(before=before_str))
+                count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
                 deleted = int(count_row["terminal_count"]) if count_row is not None else 0
                 if deleted > 0:
                     await driver.execute(store.cleanup_terminal(before=before_str))
@@ -1330,23 +1329,40 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
     ) -> "list[dict[str, Any]]":
         async with self._session() as driver:
-            rows = await driver.select(
+            return await self._select_rows(
+                driver,
                 self._get_store().list_pending(
                     now=self._serialize_datetime(_utc_now()),
                     limit=limit,
                     queue=queue,
                     execution_backend=execution_backend,
-                )
+                ),
             )
-        return cast("list[dict[str, Any]]", rows)
 
     async def _select_task(self, driver: "SQLSpecDriver", task_id: "UUID") -> "dict[str, Any] | None":
-        row = await driver.select_one_or_none(self._get_store().select_task(str(task_id)))
-        return cast("dict[str, Any] | None", row)
+        return await self._select_one_row(driver, self._get_store().select_task(str(task_id)))
 
     async def _select_task_by_key(self, driver: "SQLSpecDriver", key: "str") -> "dict[str, Any] | None":
-        row = await driver.select_one_or_none(self._get_store().select_task_by_key(key))
-        return cast("dict[str, Any] | None", row)
+        return await self._select_one_row(driver, self._get_store().select_task_by_key(key))
+
+    async def _select_rows(
+        self, driver: "SQLSpecDriver", statement: "Any", *parameters: "Any", chunk_size: "int | None" = None
+    ) -> "list[dict[str, Any]]":
+        stream_chunk_size = chunk_size
+        if stream_chunk_size is None:
+            stream_chunk_size = cast("int | None", getattr(self._get_store(), "select_stream_chunk_size", None))
+        if stream_chunk_size is not None and not isinstance(driver, _ManagedAsyncDriver):
+            rows: "list[dict[str, Any]]" = []
+            async for row in _select_stream(driver, statement, *parameters, chunk_size=stream_chunk_size):
+                rows.append(cast("dict[str, Any]", row))
+            return rows
+        return cast("list[dict[str, Any]]", await driver.select(statement, *parameters))
+
+    async def _select_one_row(
+        self, driver: "SQLSpecDriver", statement: "Any", *parameters: "Any", chunk_size: "int | None" = None
+    ) -> "dict[str, Any] | None":
+        rows = await self._select_rows(driver, statement, *parameters, chunk_size=chunk_size)
+        return rows[0] if rows else None
 
     async def _clear_key(self, driver: "SQLSpecDriver", task_id: "UUID") -> "None":
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
@@ -1416,8 +1432,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         existing: "dict[str, QueuedTaskRecord]" = {}
         if not keys:
             return existing
-        rows = await driver.select(store.select_tasks_by_keys(keys))
-        for row in cast("list[dict[str, Any]]", rows):
+        rows = await self._select_rows(driver, store.select_tasks_by_keys(keys))
+        for row in rows:
             record = self._record_from_row(row)
             if record.key is not None:
                 existing[record.key] = record
@@ -1696,7 +1712,7 @@ async def _rollback_sync_session(driver: "object", *, executor: "ThreadPoolExecu
 
 
 async def _select_stream(
-    driver: "SQLSpecDriver", statement: "Any", *, chunk_size: "int | None" = None
+    driver: "SQLSpecDriver", statement: "Any", *parameters: "Any", chunk_size: "int | None" = None
 ) -> "AsyncIterator[Any]":
     """Yield rows from SQLSpec async and sync stream implementations.
 
@@ -1704,14 +1720,14 @@ async def _select_stream(
         Rows returned by the SQLSpec statement.
     """
     if isinstance(driver, _ManagedAsyncDriver):
-        rows = await driver.select(statement)
+        rows = await driver.select(statement, *parameters)
         for row in rows:
             yield row
     else:
         if chunk_size is None:
-            stream = driver.select_stream(statement)
+            stream = driver.select_stream(statement, *parameters)
         else:
-            stream = driver.select_stream(statement, chunk_size=chunk_size)
+            stream = driver.select_stream(statement, *parameters, chunk_size=chunk_size)
         if isawaitable(stream):
             stream = await stream
         async for row in stream:
@@ -1737,6 +1753,21 @@ def _is_unique_violation(exc: "BaseException") -> "bool":
             token in message
             for token in ("duplicate entry", "duplicate key", "unique constraint", "unique violation", "ora-00001")
         ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_serialization_conflict(exc: "BaseException") -> "bool":
+    current: "BaseException | None" = exc
+    while current is not None:
+        if isinstance(current, SerializationConflictError):
+            return True
+        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if sqlstate == "40001":
+            return True
+        message = str(current).lower()
+        if "restart transaction" in message or "writetooold" in message or "serialization" in message:
             return True
         current = current.__cause__ or current.__context__
     return False

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import pytest
 
@@ -225,7 +226,7 @@ async def test_memory_backend_touch_heartbeats_acquires_lock_once() -> "None":
     first_claimed = await backend.claim_task(first.id)
     second_claimed = await backend.claim_task(second.id)
     lock = _CountingAsyncLock()
-    backend._lock = lock
+    backend._lock = cast("Any", lock)
 
     assert first_claimed is not None
     assert second_claimed is not None

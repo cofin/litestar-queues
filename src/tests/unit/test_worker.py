@@ -4,7 +4,7 @@ import os
 import threading
 from contextlib import suppress
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from litestar import Litestar
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from uuid import UUID
 
+    from litestar_queues._heartbeat import WorkerHeartbeatManager
     from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord, StaleTaskRecoveryResult
     from litestar_queues.task import TaskResult
 
@@ -399,7 +400,7 @@ async def test_execute_claimed_registers_and_unregisters() -> "None":
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
         result = await service.enqueue(heartbeat_cleanup)
         worker = Worker(service)
-        worker._heartbeat_manager = _SpyHeartbeatManager(events)
+        worker._heartbeat_manager = cast("WorkerHeartbeatManager", _SpyHeartbeatManager(events))
 
         assert await worker.run_once() == 1
         await result.wait(timeout=1, poll_interval=0.01)
@@ -507,7 +508,7 @@ async def test_execute_claimed_nulls_heartbeat_when_unregister_fails() -> "None"
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
         result = await service.enqueue(unregister_failure_cleanup)
         worker = Worker(service)
-        worker._heartbeat_manager = _FailingUnregisterHeartbeatManager(events)
+        worker._heartbeat_manager = cast("WorkerHeartbeatManager", _FailingUnregisterHeartbeatManager(events))
 
         assert await worker.run_once() == 1
         await result.wait(timeout=1, poll_interval=0.01)

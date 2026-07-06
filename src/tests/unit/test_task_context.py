@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, cast
+
 import pytest
 
 from litestar_queues import QueueConfig, QueueService, task
@@ -13,6 +15,9 @@ from litestar_queues.events import (
     require_current_task_context,
 )
 from litestar_queues.events.context import _bind_beat_sink, _bind_task_context, _reset_beat_sink, _reset_task_context
+
+if TYPE_CHECKING:
+    from litestar_queues.events import QueueEventPublisher
 
 pytestmark = pytest.mark.anyio
 
@@ -83,7 +88,7 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
 
 
 def test_beat_outside_context_is_noop() -> "None":
-    assert beat("row 30000") is None
+    beat("row 30000")
 
 
 def test_ctx_beat_forwards_to_bound_sink() -> "None":
@@ -120,11 +125,10 @@ def test_beat_performs_no_await_and_no_backend_call() -> "None":
 
     token = _bind_beat_sink(sink)
     try:
-        result = context.beat("sync progress")
+        context.beat("sync progress")
     finally:
         _reset_beat_sink(token)
 
-    assert result is None
     assert sink.records == [("task-1", "sync progress")]
 
 
@@ -137,7 +141,7 @@ def _build_context(*, event_publisher: "object | None" = None) -> "TaskExecution
         execution_backend="local",
         execution_profile=None,
         attempt=1,
-        event_publisher=event_publisher or _FailingPublisher(),
+        event_publisher=cast("QueueEventPublisher", event_publisher or _FailingPublisher()),
     )
 
 
