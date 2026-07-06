@@ -1135,6 +1135,25 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert exhausted_stored.error == "Task heartbeat stale"
 
 
+async def test_sqlspec_backend_touch_heartbeats_merges_metadata_patch(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
+    record = await sqlspec_backend.enqueue("tasks.heartbeat.metadata", metadata={"existing": "kept"})
+    claimed = await sqlspec_backend.claim_task(record.id)
+
+    assert claimed is not None
+
+    result = await sqlspec_backend.touch_heartbeats([
+        HeartbeatTouch(
+            task_id=claimed.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 5"}
+        )
+    ])
+    touched = await sqlspec_backend.get_task(claimed.id)
+
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == set()
+    assert touched is not None
+    assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
+
+
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     encoded_at = datetime.now(timezone.utc)
 
