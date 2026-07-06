@@ -155,6 +155,7 @@ class QueueConfig:
     worker_poll_interval: "float" = 0.1
     worker_max_concurrency: "int" = 1
     worker_heartbeat_interval: "float" = 30
+    worker_heartbeat_miss_threshold: "int" = 2
     worker_reconcile_interval: "float" = 30
     worker_stale_after: "float | None" = None
     worker_stale_check_interval: "float" = 60.0

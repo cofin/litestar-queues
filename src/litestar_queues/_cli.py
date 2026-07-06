@@ -109,6 +109,7 @@ async def _run_worker(
         poll_interval=config.worker_poll_interval,
         max_concurrency=max_concurrency,
         heartbeat_interval=config.worker_heartbeat_interval,
+        heartbeat_miss_threshold=config.worker_heartbeat_miss_threshold,
         reconcile_interval=config.worker_reconcile_interval,
         stale_after=(timedelta(seconds=config.worker_stale_after) if config.worker_stale_after is not None else None),
         stale_check_interval=config.worker_stale_check_interval,

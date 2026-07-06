@@ -359,6 +359,33 @@ async def test_worker_explicit_worker_id_overrides_default() -> "None":
     assert worker.worker_id == "worker-alpha-7"
 
 
+async def test_worker_heartbeat_miss_threshold_comes_from_config() -> "None":
+    config = QueueConfig()
+    assert config.worker_heartbeat_miss_threshold == 2
+
+    custom_config = QueueConfig(worker_heartbeat_miss_threshold=3)
+    assert custom_config.worker_heartbeat_miss_threshold == 3
+
+    async with QueueService(custom_config) as service:
+        worker = Worker(service, heartbeat_miss_threshold=custom_config.worker_heartbeat_miss_threshold)
+
+    assert worker._heartbeat_miss_threshold == 3
+
+
+async def test_plugin_worker_uses_configured_heartbeat_miss_threshold() -> "None":
+    plugin = QueuePlugin(
+        QueueConfig(
+            execution_backend="local", in_app_worker=True, worker_heartbeat_miss_threshold=5, worker_poll_interval=0.01
+        )
+    )
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        worker = app.state[plugin.config.queue_worker_state_key]
+
+    assert worker._heartbeat_miss_threshold == 5
+
+
 async def test_worker_id_propagates_into_published_events() -> "None":
     sink = InMemoryQueueEventSink()
 

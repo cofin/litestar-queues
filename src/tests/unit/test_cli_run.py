@@ -75,6 +75,20 @@ async def test_run_worker_returns_1_when_worker_loop_crashes(monkeypatch: "pytes
     assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 1
 
 
+async def test_run_worker_uses_configured_heartbeat_miss_threshold(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues import _cli as cli_module
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
+    monkeypatch.setattr(cli_module, "Worker", _CapturingStartWorker)
+    _CapturingStartWorker.instances.clear()
+    plugin = QueuePlugin(QueueConfig(execution_backend="local", in_app_worker=False, worker_heartbeat_miss_threshold=7))
+
+    assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 0
+    assert _CapturingStartWorker.instances[0].kwargs["heartbeat_miss_threshold"] == 7
+
+
 def test_run_subcommand_drains_on_sigterm() -> "None":
     env = os.environ.copy()
     env["LITESTAR_APP"] = "tests.support.cli_app:app"
@@ -138,6 +152,22 @@ class _FailingStartWorker:
     async def start(self) -> "None":
         msg = "worker crashed"
         raise RuntimeError(msg)
+
+    async def stop(self, *, force: "bool" = False) -> "bool":
+        return False
+
+
+class _CapturingStartWorker:
+    __slots__ = ("kwargs",)
+
+    instances: "list[_CapturingStartWorker]" = []
+
+    def __init__(self, *_args: "object", **kwargs: "object") -> "None":
+        self.kwargs = kwargs
+        self.instances.append(self)
+
+    async def start(self) -> "None":
+        return None
 
     async def stop(self, *, force: "bool" = False) -> "bool":
         return False

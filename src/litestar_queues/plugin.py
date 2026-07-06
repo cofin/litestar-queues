@@ -150,6 +150,7 @@ class QueuePlugin(InitPlugin):
                 poll_interval=self._config.worker_poll_interval,
                 max_concurrency=self._config.worker_max_concurrency,
                 heartbeat_interval=self._config.worker_heartbeat_interval,
+                heartbeat_miss_threshold=self._config.worker_heartbeat_miss_threshold,
                 reconcile_interval=self._config.worker_reconcile_interval,
                 stale_after=(
                     timedelta(seconds=self._config.worker_stale_after)

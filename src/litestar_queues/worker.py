@@ -29,6 +29,7 @@ class Worker:
         "_final_cancel_timeout",
         "_graceful_shutdown_timeout",
         "_heartbeat_interval",
+        "_heartbeat_miss_threshold",
         "_is_running",
         "_last_reconcile_at",
         "_last_stale_check_at",
@@ -52,6 +53,7 @@ class Worker:
         poll_interval: "float" = 0.1,
         max_concurrency: "int" = 1,
         heartbeat_interval: "float" = 30,
+        heartbeat_miss_threshold: "int" = 2,
         reconcile_interval: "float" = 30,
         stale_after: "timedelta | None" = None,
         stale_check_interval: "float" = 60.0,
@@ -66,6 +68,7 @@ class Worker:
         self._poll_interval = poll_interval
         self._max_concurrency = max(1, max_concurrency)
         self._heartbeat_interval = heartbeat_interval
+        self._heartbeat_miss_threshold = heartbeat_miss_threshold
         self._reconcile_interval = reconcile_interval
         self._stale_after = stale_after
         self._stale_check_interval = stale_check_interval
