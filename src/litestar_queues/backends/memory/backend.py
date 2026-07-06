@@ -9,13 +9,20 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
-from litestar_queues.models import QueueBackendCapabilities, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
+from litestar_queues.models import (
+    HeartbeatTouchResult,
+    QueueBackendCapabilities,
+    QueuedTaskRecord,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("InMemoryQueueBackend",)
 
@@ -197,14 +204,26 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
-        record = self._records.get(task_id)
-        if record is None or record.status != "running":
-            return False
-        if expected_retry_count is not None and record.retry_count != expected_retry_count:
-            return False
-        record.heartbeat_at = _utc_now()
-        return True
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        result = HeartbeatTouchResult()
+        if not touches:
+            return result
+
+        now = _utc_now()
+        async with self._lock:
+            for touch in touches:
+                record = self._records.get(touch.task_id)
+                if record is None or record.status != "running":
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                if touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count:
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                record.heartbeat_at = now
+                if touch.metadata_patch:
+                    record.metadata.update(touch.metadata_patch)
+                result.touched_task_ids.add(touch.task_id)
+        return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         task_id_set = set(task_ids)

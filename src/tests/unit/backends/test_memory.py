@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
 
@@ -202,12 +202,48 @@ async def test_memory_backend_heartbeat_is_fenced_by_status_and_retry_count() ->
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.heartbeat", max_retries=1)
 
-    assert await backend.touch_heartbeat(record.id) is False
-
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    assert await backend.touch_heartbeat(record.id, expected_retry_count=claimed.retry_count + 1) is False
-    assert await backend.touch_heartbeat(record.id, expected_retry_count=claimed.retry_count) is True
+    result = await backend.touch_heartbeats(
+        [
+            HeartbeatTouch(task_id=record.id, expected_retry_count=claimed.retry_count + 1),
+            HeartbeatTouch(
+                task_id=record.id,
+                expected_retry_count=claimed.retry_count,
+                metadata_patch={"progress_detail": "row 200"},
+            ),
+        ]
+    )
+    stored = await backend.get_task(record.id)
+
+    assert result.touched_task_ids == {record.id}
+    assert result.missed_task_ids == {record.id}
+    assert stored is record
+    assert stored.metadata["progress_detail"] == "row 200"
+
+
+async def test_memory_backend_touch_heartbeats_acquires_lock_once() -> "None":
+    backend = InMemoryQueueBackend()
+    first = await backend.enqueue("tasks.heartbeat.first")
+    second = await backend.enqueue("tasks.heartbeat.second")
+    first_claimed = await backend.claim_task(first.id)
+    second_claimed = await backend.claim_task(second.id)
+    lock = _CountingAsyncLock()
+    backend._lock = lock
+
+    assert first_claimed is not None
+    assert second_claimed is not None
+
+    result = await backend.touch_heartbeats(
+        [
+            HeartbeatTouch(task_id=first.id, expected_retry_count=first_claimed.retry_count),
+            HeartbeatTouch(task_id=second.id, expected_retry_count=second_claimed.retry_count),
+        ]
+    )
+
+    assert lock.entries == 1
+    assert result.touched_task_ids == {first.id, second.id}
+    assert result.missed_task_ids == set()
 
 
 async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() -> "None":
@@ -289,3 +325,16 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
     completed_status = result.status
     assert completed_status == "completed"
     assert result.result == "QUEUE"
+
+
+class _CountingAsyncLock:
+    def __init__(self) -> "None":
+        self.entries = 0
+
+    async def __aenter__(self) -> "None":
+        self.entries += 1
+
+    async def __aexit__(
+        self, exc_type: "type[BaseException] | None", exc: "BaseException | None", traceback: "object"
+    ) -> "None":
+        return None
