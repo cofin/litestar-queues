@@ -59,7 +59,8 @@ class _RecordingSocket:
     async def send_json(self, data: dict[str, object]) -> None:
         if self._sending:
             self.reentered_send = True
-            raise AssertionError("send_json was re-entered")
+            msg = "send_json was re-entered"
+            raise AssertionError(msg)
         self._sending = True
         try:
             await asyncio.sleep(0)
@@ -75,11 +76,7 @@ async def test_hardened_relay_emits_heartbeat_between_events() -> None:
     socket = _RecordingSocket()
 
     await stream_queue_events_hardened(
-        socket,
-        ["litestar_queues:task:task_1:events"],
-        history=4,
-        channels_backend=plugin,
-        heartbeat_interval=0.005,
+        socket, ["litestar_queues:task:task_1:events"], history=4, channels_backend=plugin, heartbeat_interval=0.005
     )
 
     assert socket.accepted
@@ -98,10 +95,7 @@ async def test_hardened_relay_cancels_heartbeat_when_event_stream_ends() -> None
     socket = _RecordingSocket()
 
     await stream_queue_events_hardened(
-        socket,
-        ["litestar_queues:task:task_1:events"],
-        channels_backend=plugin,
-        heartbeat_interval=0.005,
+        socket, ["litestar_queues:task:task_1:events"], channels_backend=plugin, heartbeat_interval=0.005
     )
     sent_count = len(socket.sent_json)
     await asyncio.sleep(0.02)

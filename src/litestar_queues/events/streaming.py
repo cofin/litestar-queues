@@ -6,6 +6,7 @@ imports stay free of routing and Channels-driver imports.
 
 import asyncio
 import contextlib
+import inspect
 import time
 from collections import OrderedDict
 from collections.abc import Container, Sequence
@@ -59,6 +60,7 @@ async def stream_queue_events_hardened(
     """Stream queue events to a WebSocket with a heartbeat and serialized sends.
 
     The caller owns route paths, guards, tenant filtering, and authorization.
+    Subscriber backpressure is intentionally left to the configured Channels backend.
     """
     from litestar_queues.events.litestar import _event_stream, _resolve_channels_backend
 
@@ -176,12 +178,24 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
         A router containing one WebSocket handler per recognized configured scope.
     """
     from litestar import Router
+    from litestar.exceptions import WebSocketException
 
     from litestar_queues.events.litestar import _resolve_channels_backend
 
+    authorizer = stream_config.channel_authorizer
     history = stream_config.history
 
-    async def _relay(socket: "WebSocket", scope: "QueueEventScope", channel: str) -> None:
+    async def _authorize(socket: "WebSocket", scope: "QueueEventScope", key: str | None) -> None:
+        if authorizer is None:
+            return
+        result = authorizer(socket, scope, key)
+        if inspect.isawaitable(result):
+            result = await result
+        if not result:
+            raise WebSocketException(detail="Channel authorization denied", code=4003)
+
+    async def _relay(socket: "WebSocket", scope: "QueueEventScope", key: str | None, channel: str) -> None:
+        await _authorize(socket, scope, key)
         backend = _resolve_channels_backend(socket)
         if backend is None and config.event is not None:
             backend = config.event.channels_backend
@@ -219,7 +233,7 @@ def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any
 
     @websocket("/tasks/{task_id:str}", name="queue_event_stream_task")
     async def task_stream(socket: "WebSocket", task_id: FromPath[str]) -> None:
-        await relay(socket, "task", QueueChannels.task(task_id))
+        await relay(socket, "task", task_id, QueueChannels.task(task_id))
 
     handlers.append(task_stream)
 
@@ -233,7 +247,7 @@ def _append_queue_handler(handlers: list[Any], scopes: Container[str], relay: An
 
     @websocket("/queues/{queue:str}", name="queue_event_stream_queue")
     async def queue_stream(socket: "WebSocket", queue: FromPath[str]) -> None:
-        await relay(socket, "queue", QueueChannels.queue(queue))
+        await relay(socket, "queue", queue, QueueChannels.queue(queue))
 
     handlers.append(queue_stream)
 
@@ -247,7 +261,7 @@ def _append_worker_handler(handlers: list[Any], scopes: Container[str], relay: A
 
     @websocket("/workers/{worker_id:str}", name="queue_event_stream_worker")
     async def worker_stream(socket: "WebSocket", worker_id: FromPath[str]) -> None:
-        await relay(socket, "worker", QueueChannels.worker(worker_id))
+        await relay(socket, "worker", worker_id, QueueChannels.worker(worker_id))
 
     handlers.append(worker_stream)
 
@@ -260,7 +274,7 @@ def _append_global_handler(handlers: list[Any], scopes: Container[str], relay: A
 
     @websocket("/global", name="queue_event_stream_global")
     async def global_stream(socket: "WebSocket") -> None:
-        await relay(socket, "global", QueueChannels.global_channel())
+        await relay(socket, "global", None, QueueChannels.global_channel())
 
     handlers.append(global_stream)
 
@@ -274,6 +288,6 @@ def _append_custom_handler(handlers: list[Any], scopes: Container[str], relay: A
 
     @websocket("/custom/{scope_key:str}", name="queue_event_stream_custom")
     async def custom_stream(socket: "WebSocket", scope_key: FromPath[str]) -> None:
-        await relay(socket, "custom", QueueChannels.custom(scope_key))
+        await relay(socket, "custom", scope_key, QueueChannels.custom(scope_key))
 
     handlers.append(custom_stream)
