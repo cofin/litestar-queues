@@ -204,16 +204,12 @@ async def test_memory_backend_heartbeat_is_fenced_by_status_and_retry_count() ->
 
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    result = await backend.touch_heartbeats(
-        [
-            HeartbeatTouch(task_id=record.id, expected_retry_count=claimed.retry_count + 1),
-            HeartbeatTouch(
-                task_id=record.id,
-                expected_retry_count=claimed.retry_count,
-                metadata_patch={"progress_detail": "row 200"},
-            ),
-        ]
-    )
+    result = await backend.touch_heartbeats([
+        HeartbeatTouch(task_id=record.id, expected_retry_count=claimed.retry_count + 1),
+        HeartbeatTouch(
+            task_id=record.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 200"}
+        ),
+    ])
     stored = await backend.get_task(record.id)
 
     assert result.touched_task_ids == {record.id}
@@ -234,12 +230,10 @@ async def test_memory_backend_touch_heartbeats_acquires_lock_once() -> "None":
     assert first_claimed is not None
     assert second_claimed is not None
 
-    result = await backend.touch_heartbeats(
-        [
-            HeartbeatTouch(task_id=first.id, expected_retry_count=first_claimed.retry_count),
-            HeartbeatTouch(task_id=second.id, expected_retry_count=second_claimed.retry_count),
-        ]
-    )
+    result = await backend.touch_heartbeats([
+        HeartbeatTouch(task_id=first.id, expected_retry_count=first_claimed.retry_count),
+        HeartbeatTouch(task_id=second.id, expected_retry_count=second_claimed.retry_count),
+    ])
 
     assert lock.entries == 1
     assert result.touched_task_ids == {first.id, second.id}
@@ -334,7 +328,5 @@ class _CountingAsyncLock:
     async def __aenter__(self) -> "None":
         self.entries += 1
 
-    async def __aexit__(
-        self, exc_type: "type[BaseException] | None", exc: "BaseException | None", traceback: "object"
-    ) -> "None":
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> "None":
         return None

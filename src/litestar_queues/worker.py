@@ -321,9 +321,9 @@ class Worker:
         while True:
             await asyncio.sleep(self._heartbeat_interval)
             try:
-                await self._service.get_queue_backend().touch_heartbeats(
-                    [HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)]
-                )
+                await self._service.get_queue_backend().touch_heartbeats([
+                    HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)
+                ])
             except Exception as exc:
                 self._record_counter(
                     "litestar_queues.heartbeat.failure.count", {"worker.error.type": type(exc).__name__}

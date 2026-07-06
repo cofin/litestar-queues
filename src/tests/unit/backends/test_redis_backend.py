@@ -59,25 +59,16 @@ async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "Non
 async def test_redis_backend_touch_heartbeats_fences_and_merges_metadata() -> "None":
     backend = _RedisHeartbeatBackend()
     running = QueuedTaskRecord(
-        task_name="tasks.redis.heartbeat",
-        status="running",
-        retry_count=2,
-        metadata={"existing": "kept"},
+        task_name="tasks.redis.heartbeat", status="running", retry_count=2, metadata={"existing": "kept"}
     )
     backend.records[running.id] = running
     missing_id = uuid4()
 
-    result = await backend.touch_heartbeats(
-        [
-            HeartbeatTouch(task_id=running.id, expected_retry_count=3),
-            HeartbeatTouch(
-                task_id=running.id,
-                expected_retry_count=2,
-                metadata_patch={"progress_detail": "row 500"},
-            ),
-            HeartbeatTouch(task_id=missing_id, expected_retry_count=None),
-        ]
-    )
+    result = await backend.touch_heartbeats([
+        HeartbeatTouch(task_id=running.id, expected_retry_count=3),
+        HeartbeatTouch(task_id=running.id, expected_retry_count=2, metadata_patch={"progress_detail": "row 500"}),
+        HeartbeatTouch(task_id=missing_id, expected_retry_count=None),
+    ])
 
     assert result.touched_task_ids == {running.id}
     assert result.missed_task_ids == {running.id, missing_id}

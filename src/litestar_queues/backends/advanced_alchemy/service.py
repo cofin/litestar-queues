@@ -311,7 +311,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 criteria.append(model_type.retry_count == touch.expected_retry_count)
             values: "dict[str, Any]" = {"heartbeat_at": now}
             if touch.metadata_patch:
-                model_result = await self.repository.session.execute(select(model_type).where(model_type.id == touch.task_id))
+                model_result = await self.repository.session.execute(
+                    select(model_type).where(model_type.id == touch.task_id)
+                )
                 model = model_result.scalar_one_or_none()
                 if model is None:
                     result.missed_task_ids.add(touch.task_id)

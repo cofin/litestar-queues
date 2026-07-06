@@ -285,9 +285,9 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert claimed is not None
     assert claimed.heartbeat_at is not None
 
-    result = await advanced_alchemy_backend.touch_heartbeats(
-        [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
-    )
+    result = await advanced_alchemy_backend.touch_heartbeats([
+        HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)
+    ])
     touched = await advanced_alchemy_backend.get_task(claimed.id)
 
     assert result.touched_task_ids == {claimed.id}

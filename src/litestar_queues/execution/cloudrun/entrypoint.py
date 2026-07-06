@@ -146,9 +146,9 @@ async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_re
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
-        result = await queue.get_queue_backend().touch_heartbeats(
-            [HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)]
-        )
+        result = await queue.get_queue_backend().touch_heartbeats([
+            HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)
+        ])
         if task_id not in result.touched_task_ids:
             return False
 

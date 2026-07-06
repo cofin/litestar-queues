@@ -40,9 +40,9 @@ async def test_sqlspec_backend_default_heartbeat_uses_main_pool(sqlspec_backend:
     assert sqlspec_backend._heartbeat_pool_enabled is False
     assert sqlspec_backend._heartbeat_pool_registered is False
 
-    result = await sqlspec_backend.touch_heartbeats(
-        [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
-    )
+    result = await sqlspec_backend.touch_heartbeats([
+        HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)
+    ])
     touched = await sqlspec_backend.get_task(claimed.id)
     assert result.touched_task_ids == {claimed.id}
     assert result.missed_task_ids == set()
@@ -118,9 +118,9 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
         monkeypatch.setattr(SQLSpecQueueBackend, "_session", counting_session)
         monkeypatch.setattr(SQLSpecQueueBackend, "_heartbeat_session", counting_heartbeat)
 
-        result = await backend.touch_heartbeats(
-            [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
-        )
+        result = await backend.touch_heartbeats([
+            HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)
+        ])
         await backend.null_heartbeats([claimed.id])
 
         assert result.touched_task_ids == {claimed.id}
@@ -162,9 +162,9 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
         record = await backend.enqueue("tasks.fallback_heartbeat")
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
-        result = await backend.touch_heartbeats(
-            [HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)]
-        )
+        result = await backend.touch_heartbeats([
+            HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)
+        ])
         touched = await backend.get_task(claimed.id)
         assert result.touched_task_ids == {claimed.id}
         assert touched is not None
@@ -195,9 +195,9 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heart
         await asyncio.wait_for(
             asyncio.gather(
                 *(
-                    backend.touch_heartbeats(
-                        [HeartbeatTouch(task_id=record.id, expected_retry_count=record.retry_count)]
-                    )
+                    backend.touch_heartbeats([
+                        HeartbeatTouch(task_id=record.id, expected_retry_count=record.retry_count)
+                    ])
                     for _ in range(4)
                     for record in claimed
                 )

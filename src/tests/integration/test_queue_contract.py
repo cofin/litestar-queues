@@ -181,12 +181,10 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_back
     assert claimed is not None
     expected_retry_count = claimed.retry_count
 
-    touch_result = await queue_backend.touch_heartbeats(
-        [
-            HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count + 1),
-            HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count),
-        ]
-    )
+    touch_result = await queue_backend.touch_heartbeats([
+        HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count + 1),
+        HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count),
+    ])
     assert touch_result.touched_task_ids == {record.id}
     assert touch_result.missed_task_ids == {record.id}
     assert touch_result.failed_task_ids == set()

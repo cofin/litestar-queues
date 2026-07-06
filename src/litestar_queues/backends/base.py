@@ -3,7 +3,12 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
-from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
+from litestar_queues.models import (
+    HeartbeatTouchResult,
+    QueueBackendCapabilities,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
