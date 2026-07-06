@@ -44,8 +44,7 @@ def test_disabled_stream_config_registers_no_routes() -> None:
     sys.modules.pop("litestar_queues.events.streaming", None)
     default_app = Litestar(plugins=[QueuePlugin(QueueConfig())], openapi_config=None)
     disabled_app = Litestar(
-        plugins=[QueuePlugin(QueueConfig(event_stream=EventStreamConfig(enabled=False)))],
-        openapi_config=None,
+        plugins=[QueuePlugin(QueueConfig(event_stream=EventStreamConfig(enabled=False)))], openapi_config=None
     )
 
     assert _stream_paths(default_app) == set()
@@ -73,8 +72,7 @@ def test_enabled_with_channel_authorizer_suppresses_auth_warning(caplog: pytest.
 
     plugin = QueuePlugin(
         QueueConfig(
-            event=EventConfig(channels_backend=channels),
-            event_stream=EventStreamConfig(channel_authorizer=allow_all),
+            event=EventConfig(channels_backend=channels), event_stream=EventStreamConfig(channel_authorizer=allow_all)
         )
     )
 
