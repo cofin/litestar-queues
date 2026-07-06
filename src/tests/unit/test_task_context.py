@@ -5,12 +5,14 @@ from litestar_queues.events import (
     EventConfig,
     InMemoryQueueEventSink,
     TaskExecutionContext,
+    beat,
     get_current_task_context,
     publish_task_event,
     publish_task_log,
     publish_task_progress,
     require_current_task_context,
 )
+from litestar_queues.events.context import _bind_beat_sink, _bind_task_context, _reset_beat_sink, _reset_task_context
 
 pytestmark = pytest.mark.anyio
 
@@ -78,3 +80,78 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
     assert result.status == "completed"
     assert received_kwargs == {}
     assert "task.progress" in [event.type for event in sink.events]
+
+
+def test_beat_outside_context_is_noop() -> "None":
+    assert beat("row 30000") is None
+
+
+def test_ctx_beat_forwards_to_bound_sink() -> "None":
+    sink = _RecordingBeatSink()
+    context = _build_context()
+
+    token = _bind_beat_sink(sink)
+    try:
+        context.beat("row 30000")
+    finally:
+        _reset_beat_sink(token)
+
+    assert sink.records == [("task-1", "row 30000")]
+
+
+def test_module_beat_forwards_current_context_to_bound_sink() -> "None":
+    sink = _RecordingBeatSink()
+    context = _build_context()
+
+    context_token = _bind_task_context(context)
+    sink_token = _bind_beat_sink(sink)
+    try:
+        beat("row 30000")
+    finally:
+        _reset_beat_sink(sink_token)
+        _reset_task_context(context_token)
+
+    assert sink.records == [("task-1", "row 30000")]
+
+
+def test_beat_performs_no_await_and_no_backend_call() -> "None":
+    sink = _RecordingBeatSink()
+    context = _build_context(event_publisher=_FailingPublisher())
+
+    token = _bind_beat_sink(sink)
+    try:
+        result = context.beat("sync progress")
+    finally:
+        _reset_beat_sink(token)
+
+    assert result is None
+    assert sink.records == [("task-1", "sync progress")]
+
+
+def _build_context(*, event_publisher: "object | None" = None) -> "TaskExecutionContext":
+    return TaskExecutionContext(
+        task_id="task-1",
+        task_name="tasks.context",
+        queue="default",
+        worker_id="worker-1",
+        execution_backend="local",
+        execution_profile=None,
+        attempt=1,
+        event_publisher=event_publisher or _FailingPublisher(),
+    )
+
+
+class _RecordingBeatSink:
+    __slots__ = ("records",)
+
+    def __init__(self) -> "None":
+        self.records: "list[tuple[str, str | None]]" = []
+
+    def record_beat(self, task_id: "str", detail: "str | None") -> "None":
+        self.records.append((task_id, detail))
+
+
+class _FailingPublisher:
+    async def publish(self, *_args: "object", **_kwargs: "object") -> "None":
+        msg = "beat must not publish events"
+        raise AssertionError(msg)

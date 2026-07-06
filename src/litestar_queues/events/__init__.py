@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.context import (
     TaskExecutionContext,
+    beat,
     get_current_task_context,
     publish_task_event,
     publish_task_log,
@@ -45,6 +46,7 @@ __all__ = (
     "QueueEventStageSummary",
     "QueueEventType",
     "TaskExecutionContext",
+    "beat",
     "get_current_task_context",
     "publish_task_event",
     "publish_task_log",

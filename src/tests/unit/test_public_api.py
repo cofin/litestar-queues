@@ -43,6 +43,7 @@ def test_public_exports() -> "None":
         Task,
         TaskResult,
         Worker,
+        beat,
         get_execution_backend_class,
         get_queue_backend_class,
         get_scheduled_tasks,
@@ -82,6 +83,7 @@ def test_public_exports() -> "None":
         "Task",
         "TaskResult",
         "Worker",
+        "beat",
         "discover_tasks",
         "get_execution_backend_class",
         "get_queue_backend_class",
@@ -137,6 +139,7 @@ def test_public_exports() -> "None":
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None
+    assert callable(beat)
     assert get_task_registry() == {}
     assert get_scheduled_tasks() == {}
     assert callable(task)
