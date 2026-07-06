@@ -8,6 +8,7 @@ from litestar_queues.typing import (
     PROMETHEUS_INSTALLED,
     OtelSpanKind,
     PrometheusCounter,
+    PrometheusGauge,
     PrometheusHistogram,
     otel_metrics,
     otel_propagate,
@@ -122,6 +123,10 @@ class QueueObservabilityRuntimeProtocol(Protocol):
         """Record a counter sample."""
         ...
 
+    def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
+        """Record a gauge delta sample."""
+        ...
+
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         """Record a duration sample."""
         ...
@@ -134,6 +139,7 @@ class QueueObservabilityRuntime:
         "_config",
         "_counters",
         "_durations",
+        "_gauges",
         "_meter",
         "_otel_enabled",
         "_prometheus_enabled",
@@ -150,6 +156,7 @@ class QueueObservabilityRuntime:
         self._meter: "Any | None" = None
         self._counters: "dict[str, Any]" = {}
         self._durations: "dict[str, Any]" = {}
+        self._gauges: "dict[str, Any]" = {}
 
     def get_tracer(self) -> "Any":
         """Return the configured tracer.
@@ -249,6 +256,28 @@ class QueueObservabilityRuntime:
                 )
                 self._counters[f"prometheus:{name}"] = counter
             counter.labels(**dict(attributes)).inc(value)
+
+    def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
+        """Record a gauge delta for enabled metrics sinks."""
+        if self._otel_enabled:
+            key = f"updown:{name}"
+            gauge = self._gauges.get(key)
+            if gauge is None:
+                gauge = self.get_meter().create_up_down_counter(name)
+                self._gauges[key] = gauge
+            gauge.add(delta, attributes=dict(attributes))
+        if self._prometheus_enabled:
+            key = f"prometheus_gauge:{name}"
+            gauge = self._gauges.get(key)
+            if gauge is None:
+                gauge = PrometheusGauge(
+                    _prometheus_name(name, self._config),
+                    name.replace(".", " "),
+                    labelnames=tuple(attributes),
+                    registry=self._config.prometheus_registry if self._config is not None else None,
+                )
+                self._gauges[key] = gauge
+            gauge.labels(**dict(attributes)).inc(delta)
 
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         """Record a duration for enabled metrics sinks."""
