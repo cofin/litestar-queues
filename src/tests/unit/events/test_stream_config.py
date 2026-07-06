@@ -1,4 +1,5 @@
 from dataclasses import fields
+from typing import get_type_hints
 
 
 def test_event_stream_config_defaults() -> "None":
@@ -15,6 +16,14 @@ def test_event_stream_config_defaults() -> "None":
     assert config.history == 0
     assert config.include_in_schema is False
     assert config.opt is None
+
+
+def test_event_stream_config_type_hints_resolve() -> "None":
+    from litestar_queues.events.stream_config import ChannelAuthorizer, EventStreamConfig
+
+    hints = get_type_hints(EventStreamConfig)
+
+    assert hints["channel_authorizer"] == ChannelAuthorizer | None
 
 
 def test_queue_config_carries_stream_config() -> "None":
