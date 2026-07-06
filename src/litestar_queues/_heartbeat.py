@@ -57,6 +57,11 @@ class WorkerHeartbeatManager:
         self._stop_event = asyncio.Event()
         self._task: "asyncio.Task[None] | None" = None
 
+    @property
+    def has_registrations(self) -> "bool":
+        """Whether any tasks are currently registered for heartbeat ticks."""
+        return bool(self._registrations)
+
     def register(self, task_id: "UUID", *, expected_retry_count: "int | None") -> "None":
         """Register a running task for bulk heartbeat ticks."""
         is_new = task_id not in self._registrations

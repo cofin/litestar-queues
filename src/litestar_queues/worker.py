@@ -6,13 +6,11 @@ import time
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from litestar_queues._heartbeat import WorkerHeartbeatManager
 from litestar_queues.config import execution_backend_name
 from litestar_queues.execution import get_execution_backend
-from litestar_queues.models import HeartbeatTouch
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
@@ -28,8 +26,7 @@ class Worker:
         "_batch_size",
         "_final_cancel_timeout",
         "_graceful_shutdown_timeout",
-        "_heartbeat_interval",
-        "_heartbeat_miss_threshold",
+        "_heartbeat_manager",
         "_is_running",
         "_last_reconcile_at",
         "_last_stale_check_at",
@@ -67,14 +64,15 @@ class Worker:
         self._batch_size = batch_size
         self._poll_interval = poll_interval
         self._max_concurrency = max(1, max_concurrency)
-        self._heartbeat_interval = heartbeat_interval
-        self._heartbeat_miss_threshold = heartbeat_miss_threshold
         self._reconcile_interval = reconcile_interval
         self._stale_after = stale_after
         self._stale_check_interval = stale_check_interval
         self._graceful_shutdown_timeout = graceful_shutdown_timeout
         self._final_cancel_timeout = final_cancel_timeout
         self._worker_id = worker_id if worker_id is not None else f"worker-{os.getpid()}"
+        self._heartbeat_manager = WorkerHeartbeatManager(
+            service, interval=heartbeat_interval, miss_threshold=heartbeat_miss_threshold, worker_id=self._worker_id
+        )
         self._queues = queues
         self._running_tasks: "set[asyncio.Task[None]]" = set()
         self._stop_event = asyncio.Event()
@@ -97,6 +95,7 @@ class Worker:
         self._is_running = True
         self._stop_event.clear()
         try:
+            await self._heartbeat_manager.start()
             while not self._stop_event.is_set():
                 try:
                     await self._maybe_requeue_stale()
@@ -114,7 +113,14 @@ class Worker:
                 if processed == 0:
                     await self._wait_for_work()
         finally:
-            self._is_running = False
+            self._stop_event.set()
+            try:
+                await self._drain_running()
+            finally:
+                try:
+                    await self._heartbeat_manager.aclose()
+                finally:
+                    self._is_running = False
 
     async def stop(self, *, force: "bool" = False) -> "bool":
         """Stop the worker loop and drain or cancel in-flight work.
@@ -241,16 +247,23 @@ class Worker:
         return reconciled
 
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> "None":
-        heartbeat_task = asyncio.create_task(self._heartbeat(record.id, expected_retry_count=record.retry_count))
+        await self._heartbeat_manager.start()
+        self._heartbeat_manager.register(record.id, expected_retry_count=record.retry_count)
         try:
             await self._service.get_execution_backend().execute(self._service, record, worker_id=self._worker_id)
         finally:
-            heartbeat_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat_task
-            await self._service.get_queue_backend().null_heartbeats(
-                [record.id], expected_retry_count=record.retry_count
-            )
+            try:
+                try:
+                    self._heartbeat_manager.unregister(record.id)
+                except Exception as exc:  # noqa: BLE001 - heartbeat cleanup must not skip backend clearing.
+                    self._record_heartbeat_failure(exc, "Queue task heartbeat cleanup failed")
+            finally:
+                try:
+                    await self._service.get_queue_backend().null_heartbeats(
+                        [record.id], expected_retry_count=record.retry_count
+                    )
+                finally:
+                    await self._close_heartbeat_manager_if_idle()
 
     async def _dispatch_external(self, records: "list[QueuedTaskRecord]") -> "int":
         execution_backend = self._service.get_execution_backend()
@@ -320,19 +333,6 @@ class Worker:
         self._last_reconcile_at = now
         await self.reconcile_external()
 
-    async def _heartbeat(self, task_id: "UUID", expected_retry_count: "int | None" = None) -> "None":
-        while True:
-            await asyncio.sleep(self._heartbeat_interval)
-            try:
-                await self._service.get_queue_backend().touch_heartbeats([
-                    HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)
-                ])
-            except Exception as exc:
-                self._record_counter(
-                    "litestar_queues.heartbeat.failure.count", {"worker.error.type": type(exc).__name__}
-                )
-                logger.warning("Queue task heartbeat failed", exc_info=True, extra={"worker_id": self._worker_id})
-
     async def _drain_running(self) -> "bool":
         if not self._running_tasks:
             return False
@@ -378,6 +378,19 @@ class Worker:
         timeout = min(max(self._poll_interval, 0.01), 1.0)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self._stop_event.wait(), timeout=timeout)
+
+    async def _close_heartbeat_manager_if_idle(self) -> "None":
+        if self._is_running or self._heartbeat_manager.has_registrations:
+            return
+        try:
+            await self._heartbeat_manager.aclose()
+        except Exception as exc:  # noqa: BLE001 - heartbeat cleanup must not fail completed task execution.
+            self._record_heartbeat_failure(exc, "Queue worker heartbeat manager close failed")
+
+    def _record_heartbeat_failure(self, exc: "Exception", message: "str") -> "None":
+        with contextlib.suppress(Exception):
+            self._record_counter("litestar_queues.heartbeat.failure.count", {"worker.error.type": type(exc).__name__})
+        logger.warning(message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id})
 
     def _record_claimed(self, records: "list[QueuedTaskRecord]") -> "None":
         counts: "dict[str, int]" = {}
