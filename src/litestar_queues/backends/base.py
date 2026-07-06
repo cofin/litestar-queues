@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
-from litestar_queues.models import QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
+from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch, QueuedTaskRecord
 
 __all__ = ("BaseQueueBackend",)
 
@@ -189,13 +189,13 @@ class BaseQueueBackend:
         """
         raise NotImplementedError
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
-        """Update the heartbeat timestamp for a running task.
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Update heartbeat timestamps for running tasks.
 
         Returns:
-            True when a running record matched the optional retry-count fence.
+            The task IDs confirmed touched or missed by the backend.
         """
-        return False
+        return HeartbeatTouchResult(missed_task_ids={touch.task_id for touch in touches})
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         """Clear heartbeat timestamps for task IDs.
