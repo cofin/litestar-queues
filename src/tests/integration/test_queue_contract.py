@@ -6,6 +6,8 @@ import pytest
 
 from litestar_queues import (
     EventConfig,
+    HeartbeatTouch,
+    HeartbeatTouchResult,
     InMemoryQueueEventSink,
     QueueConfig,
     QueueService,
@@ -171,13 +173,24 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
 
 
 async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_backend: "BaseQueueBackend") -> "None":
+    empty_result = await queue_backend.touch_heartbeats([])
+    assert empty_result == HeartbeatTouchResult()
+
     record = await queue_backend.enqueue("tasks.stale.fenced", max_retries=1)
     claimed = await queue_backend.claim_task(record.id)
     assert claimed is not None
     expected_retry_count = claimed.retry_count
 
-    assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count + 1) is False
-    assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count) is True
+    touch_result = await queue_backend.touch_heartbeats(
+        [
+            HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count + 1),
+            HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count),
+        ]
+    )
+    assert touch_result.touched_task_ids == {record.id}
+    assert touch_result.missed_task_ids == {record.id}
+    assert touch_result.failed_task_ids == set()
+
     stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
     assert stale_result.requeued == 1
 
