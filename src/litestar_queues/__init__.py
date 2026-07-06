@@ -69,6 +69,8 @@ if TYPE_CHECKING:
     )
     from litestar_queues.models import (
         EnqueueSpec,
+        HeartbeatTouch,
+        HeartbeatTouchResult,
         QueueBackendCapabilities,
         QueuedTaskRecord,
         QueueStatistics,
@@ -101,6 +103,8 @@ _EXPORTS = {
     "EventStreamConfig": "litestar_queues.events",
     "ExecutionBackendConfig": "litestar_queues.config",
     "ExecutionBackendConfigProtocol": "litestar_queues.config",
+    "HeartbeatTouch": "litestar_queues.models",
+    "HeartbeatTouchResult": "litestar_queues.models",
     "ImmediateExecutionBackend": "litestar_queues.execution",
     "InMemoryQueueBackend": "litestar_queues.backends",
     "InMemoryQueueEventSink": "litestar_queues.events",
@@ -172,6 +176,8 @@ __all__ = (
     "EventStreamConfig",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
+    "HeartbeatTouch",
+    "HeartbeatTouchResult",
     "ImmediateExecutionBackend",
     "InMemoryQueueBackend",
     "InMemoryQueueEventSink",

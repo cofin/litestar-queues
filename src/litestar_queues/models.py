@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 __all__ = (
     "TERMINAL_STATUSES",
     "EnqueueSpec",
+    "HeartbeatTouch",
+    "HeartbeatTouchResult",
     "QueueBackendCapabilities",
     "QueueStatistics",
     "QueuedTaskRecord",
@@ -18,6 +20,24 @@ TaskStatus = Literal["pending", "scheduled", "running", "completed", "failed", "
 
 TERMINAL_STATUSES: "frozenset[TaskStatus]" = frozenset({"completed", "failed", "cancelled"})
 """Statuses that represent finished queue records."""
+
+
+@dataclass(frozen=True, slots=True)
+class HeartbeatTouch:
+    """A fenced heartbeat update request for one running task."""
+
+    task_id: "UUID"
+    expected_retry_count: "int | None"
+    metadata_patch: "dict[str, Any] | None" = None
+
+
+@dataclass(slots=True)
+class HeartbeatTouchResult:
+    """Backend-neutral result for a bulk heartbeat update."""
+
+    touched_task_ids: "set[UUID]" = field(default_factory=set)
+    missed_task_ids: "set[UUID]" = field(default_factory=set)
+    failed_task_ids: "set[UUID]" = field(default_factory=set)
 
 
 @dataclass(slots=True)

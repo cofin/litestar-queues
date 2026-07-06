@@ -26,6 +26,8 @@ def test_public_exports() -> "None":
         EventStreamConfig,
         ExecutionBackendConfig,
         ExecutionBackendConfigProtocol,
+        HeartbeatTouch,
+        HeartbeatTouchResult,
         ImmediateExecutionBackend,
         InMemoryQueueBackend,
         LocalExecutionBackend,
@@ -63,6 +65,8 @@ def test_public_exports() -> "None":
         "EventStreamConfig",
         "ExecutionBackendConfig",
         "ExecutionBackendConfigProtocol",
+        "HeartbeatTouch",
+        "HeartbeatTouchResult",
         "ImmediateExecutionBackend",
         "InMemoryQueueBackend",
         "LocalExecutionBackend",
@@ -106,6 +110,11 @@ def test_public_exports() -> "None":
     assert ExecutionBackendConfig is not None
     assert QueueBackendConfigProtocol is not None
     assert ExecutionBackendConfigProtocol is not None
+    heartbeat_touch = HeartbeatTouch(task_id=QueuedTaskRecord(task_name="example").id, expected_retry_count=0)
+    assert heartbeat_touch.metadata_patch is None
+    assert HeartbeatTouchResult().touched_task_ids == set()
+    assert HeartbeatTouchResult().missed_task_ids == set()
+    assert HeartbeatTouchResult().failed_task_ids == set()
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
     assert {"advanced-alchemy", "memory", "redis", "sqlspec", "valkey"}.issubset(set(list_queue_backends()))
     assert get_execution_backend_class("cloudrun") is CloudRunExecutionBackend
