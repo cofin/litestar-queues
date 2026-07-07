@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink
 
@@ -20,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 _LIFECYCLE_EVENT_TYPES = frozenset({
     "task.started",
+    "task.completed",
+    "task.failed",
+    "task.cancelled",
+    "task.claim_lost",
+    "task.stale_failed",
+})
+_TERMINAL_EVENT_TYPES = frozenset({
     "task.completed",
     "task.failed",
     "task.cancelled",
@@ -57,6 +65,7 @@ class QueueEventPublisher:
     """Publish queue events through a configured sink."""
 
     __slots__ = (
+        "_buffer",
         "_event_log",
         "_event_log_strict",
         "_sink",
@@ -72,6 +81,7 @@ class QueueEventPublisher:
         *,
         event_log: "QueueEventLog | None" = None,
         event_log_strict: "bool" = False,
+        buffer_config: "EventBufferConfig | None" = None,
         strict: "bool" = False,
         publish_task_channel: "bool" = True,
         publish_queue_channel: "bool" = True,
@@ -80,6 +90,11 @@ class QueueEventPublisher:
         self._sink = sink or NoopQueueEventSink()
         self._event_log = event_log
         self._event_log_strict = event_log_strict
+        self._buffer = (
+            LiveEventBuffer(buffer_config, sink_publish=self._deliver_live, record_drop=_ignore_buffer_drop)
+            if buffer_config is not None and buffer_config.enabled
+            else None
+        )
         self.strict = strict
         self.publish_task_channel = publish_task_channel
         self.publish_queue_channel = publish_queue_channel
@@ -95,12 +110,53 @@ class QueueEventPublisher:
         self._event_log = event_log
         self._event_log_strict = strict
 
-    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None) -> "None":
-        """Publish an event to canonical and explicitly supplied channels."""
+    async def publish(
+        self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None, immediate: "bool" = False
+    ) -> "None":
+        """Publish an event to canonical and explicitly supplied channels.
+
+        Returns:
+            None.
+        """
         resolved_channels = self.resolve_channels(event, channels=channels)
         await self._record_event(event)
+        if self._buffer is not None and not immediate and event.type not in _TERMINAL_EVENT_TYPES:
+            try:
+                await self._buffer.add(event, resolved_channels)
+            except Exception:
+                if self.strict:
+                    raise
+                logger.warning(
+                    "Queue event buffer publish failed",
+                    exc_info=True,
+                    extra={"queue_event_type": event.type, "queue_event_id": event.id},
+                )
+            return
+        if self._buffer is not None:
+            try:
+                await self._buffer.flush(key=event_buffer_key(event))
+            except Exception:
+                if self.strict:
+                    raise
+                logger.warning(
+                    "Queue event buffer flush failed",
+                    exc_info=True,
+                    extra={"queue_event_type": event.type, "queue_event_id": event.id},
+                )
+        await self._deliver_live(event, resolved_channels)
+
+    async def flush_buffer(self) -> "None":
+        """Flush all buffered live events.
+
+        Returns:
+            None.
+        """
+        if self._buffer is not None:
+            await self._buffer.flush()
+
+    async def _deliver_live(self, event: "QueueEvent", channels: "Sequence[str]") -> "None":
         try:
-            await self._sink.publish(event, channels=resolved_channels)
+            await self._sink.publish(event, channels=channels)
         except Exception:
             if self.strict:
                 raise
@@ -155,3 +211,7 @@ def _dedupe(channels: "Sequence[str]") -> "tuple[str, ...]":
         seen.add(channel)
         resolved.append(channel)
     return tuple(resolved)
+
+
+def _ignore_buffer_drop(_scope: "str") -> "None":
+    return None
