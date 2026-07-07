@@ -344,6 +344,55 @@ class RedisQueueBackend(BaseQueueBackend):
             The task IDs confirmed touched or missed by the backend.
         """
         result = HeartbeatTouchResult()
+        if not touches:
+            return result
+        client = await self._get_client()
+        pipeline = _create_pipeline(client)
+        if pipeline is None:
+            return await self._touch_heartbeats_loop(touches)
+
+        for touch in touches:
+            pipeline.hgetall(self._task_key(touch.task_id))
+        mappings = await _execute_pipeline(pipeline)
+        now = _utc_now()
+        touched_records: "dict[UUID, QueuedTaskRecord]" = {}
+        for touch, mapping in zip(touches, mappings, strict=True):
+            record = touched_records.get(touch.task_id)
+            if record is None:
+                decoded = _decode_mapping(cast("dict[Any, Any]", mapping))
+                if not decoded:
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                record = self._record_from_mapping(decoded)
+            if record.status != "running":
+                result.missed_task_ids.add(touch.task_id)
+                continue
+            if touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count:
+                result.missed_task_ids.add(touch.task_id)
+                continue
+            record.heartbeat_at = now
+            if touch.metadata_patch:
+                record.metadata.update(touch.metadata_patch)
+            touched_records[record.id] = record
+            result.touched_task_ids.add(touch.task_id)
+
+        for record in touched_records.values():
+            mapping = {
+                "heartbeat_at": _serialize_datetime(record.heartbeat_at),
+                "metadata": _json_dumps(record.metadata),
+            }
+            pipeline.hset(self._task_key(record.id), mapping=mapping)
+        if touched_records:
+            await _execute_pipeline(pipeline)
+        return result
+
+    async def _touch_heartbeats_loop(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Fallback heartbeat touch path for clients without pipeline support.
+
+        Returns:
+            The task IDs confirmed touched or missed by the backend.
+        """
+        result = HeartbeatTouchResult()
         for touch in touches:
             async with self._lock(f"task:{touch.task_id}", wait=True):
                 record = await self.get_task(touch.task_id)
