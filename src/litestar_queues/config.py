@@ -150,6 +150,7 @@ class QueueConfig:
     observability: "ObservabilityConfig | None" = None
     task_modules: "tuple[str, ...]" = ()
     initialize_schedules: "bool" = True
+    quiet_success: "bool" = True
     worker_batch_size: "int" = 10
     worker_poll_interval: "float" = 0.1
     worker_max_concurrency: "int" = 1
@@ -346,8 +347,8 @@ class QueueConfig:
         if not event_config.enabled:
             if event_config.sink is not None or event_config.channels_backend is not None:
                 logger.warning(
-                    "Queue event sink configured while event publishing is disabled; "
-                    "set EventConfig(enabled=True) to publish queue events."
+                    "Queue event sink configured while event publishing is explicitly disabled; "
+                    "omit enabled=False to publish queue events."
                 )
             sink = NoopQueueEventSink()
         elif event_config.sink is not None:

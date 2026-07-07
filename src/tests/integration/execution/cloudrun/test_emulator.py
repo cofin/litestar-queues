@@ -213,7 +213,7 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     )
     event_sink = InMemoryQueueEventSink()
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun", event=EventConfig(enabled=True, sink=event_sink)),
+        QueueConfig(execution_backend="cloudrun", event=EventConfig(sink=event_sink)),
         queue_backend=queue_backend,
         execution_backend=backend,
     )

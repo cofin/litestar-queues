@@ -86,12 +86,7 @@ class _RecordingRuntime:
         self.commands: list[list[str]] = []
 
     def run(
-        self,
-        args: list[str],
-        *,
-        check: bool = True,
-        capture_output: bool = True,
-        timeout: int | None = 30,
+        self, args: list[str], *, check: bool = True, capture_output: bool = True, timeout: int | None = 30
     ) -> subprocess.CompletedProcess[str]:
         self.commands.append(args)
         return subprocess.CompletedProcess(["docker", *args], 0, stdout="", stderr="")

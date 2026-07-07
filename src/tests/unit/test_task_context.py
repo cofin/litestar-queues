@@ -41,9 +41,7 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None"
         await publish_task_event("task.custom", message="custom", payload={"value": "ok"})
         return "ok"
 
-    async with QueueService(
-        QueueConfig(execution_backend="immediate", event=EventConfig(enabled=True, sink=sink))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="immediate", event=EventConfig(sink=sink))) as service:
         result = await service.enqueue(with_context)
         await result.refresh()
 
@@ -75,9 +73,7 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
         await publish_task_progress(percent=50)
         return received_kwargs
 
-    async with QueueService(
-        QueueConfig(execution_backend="immediate", event=EventConfig(enabled=True, sink=sink))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="immediate", event=EventConfig(sink=sink))) as service:
         result = await service.enqueue(plain)
         await result.refresh()
 

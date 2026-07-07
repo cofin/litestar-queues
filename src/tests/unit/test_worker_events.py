@@ -30,9 +30,7 @@ async def test_worker_emits_started_progress_and_terminal_events_in_order() -> "
         await publish_task_progress(current=1, total=2, message="halfway")
         return "ok"
 
-    async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="local", event=EventConfig(sink=sink))) as service:
         result = await service.enqueue(worker_events)
         worker = Worker(service)
 
@@ -53,9 +51,7 @@ async def test_worker_emits_failed_terminal_event_for_failed_attempt() -> "None"
         msg = "boom"
         raise RuntimeError(msg)
 
-    async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="local", event=EventConfig(sink=sink))) as service:
         result = await service.enqueue(worker_failure)
         worker = Worker(service)
 
@@ -79,7 +75,7 @@ async def test_worker_emits_cancelled_event_for_cancelled_attempt() -> "None":
 
     queue_backend = InMemoryQueueBackend()
     async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink)), queue_backend=queue_backend
+        QueueConfig(execution_backend="local", event=EventConfig(sink=sink)), queue_backend=queue_backend
     ) as service:
         result = await service.enqueue(worker_cancelled)
         claimed = await queue_backend.claim_task(result.id)
@@ -100,9 +96,7 @@ async def test_worker_marks_job_cancelled_error_terminal_without_retry() -> "Non
     async def worker_job_cancelled() -> "None":
         job_cancelled("domain cancellation")
 
-    async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="local", event=EventConfig(sink=sink))) as service:
         result = await service.enqueue(worker_job_cancelled)
         worker = Worker(service)
 
@@ -127,7 +121,7 @@ async def test_worker_emits_claim_lost_event_when_terminal_fence_rejects_stale_a
         return "too late"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink)), queue_backend=queue_backend
+        QueueConfig(execution_backend="local", event=EventConfig(sink=sink)), queue_backend=queue_backend
     ) as service:
         result = await service.enqueue(worker_claim_lost)
         claimed = await queue_backend.claim_task(result.id)
@@ -157,7 +151,7 @@ async def test_worker_emits_stale_failed_event_for_terminal_stale_recovery() -> 
         return None
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink)), queue_backend=queue_backend
+        QueueConfig(execution_backend="local", event=EventConfig(sink=sink)), queue_backend=queue_backend
     ) as service:
         result = await service.enqueue(worker_stale_failed, requeue_on_stale=False)
         claimed = await queue_backend.claim_task(result.id)
@@ -193,7 +187,7 @@ async def test_quiet_success_suppresses_success_python_log_but_keeps_lifecycle_e
         return "quiet"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
+        QueueConfig(execution_backend="local", quiet_success=False, event=EventConfig(sink=sink))
     ) as service:
         with caplog.at_level(logging.INFO, logger="litestar_queues.service"):
             visible_result = await service.enqueue(worker_visible_success)
@@ -222,15 +216,40 @@ async def test_quiet_success_suppresses_success_python_log_but_keeps_lifecycle_e
     assert completed_logs[0].levelno == logging.INFO
 
 
+async def test_config_quiet_success_suppresses_success_log_but_keeps_lifecycle_events(
+    caplog: "pytest.LogCaptureFixture",
+) -> "None":
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.worker_config_quiet_success", log_level="info")
+    async def worker_config_quiet_success() -> "str":
+        return "quiet"
+
+    async with QueueService(QueueConfig(execution_backend="local", event=EventConfig(sink=sink))) as service:
+        with caplog.at_level(logging.INFO, logger="litestar_queues.service"):
+            result = await service.enqueue(worker_config_quiet_success)
+            worker = Worker(service)
+            assert await worker.run_once() == 1
+            await result.wait(timeout=1, poll_interval=0.01)
+
+    assert result.status == "completed"
+    assert "task.completed" in [event.type for event in sink.events]
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "litestar_queues.service"
+        and record.getMessage() == "Queue task completed"
+        and getattr(record, "queue_task_name", None) == "tasks.worker_config_quiet_success"
+    ]
+
+
 async def test_event_publish_failure_does_not_fail_successful_task_by_default() -> "None":
     @task("tasks.event_sink_failure")
     async def event_sink_failure() -> "str":
         await publish_task_progress(percent=100)
         return "ok"
 
-    async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=_FailingSink()))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="local", event=EventConfig(sink=_FailingSink()))) as service:
         result = await service.enqueue(event_sink_failure)
         worker = Worker(service)
 

@@ -556,9 +556,7 @@ async def test_worker_id_propagates_into_published_events() -> "None":
     async def worker_id_task() -> "str":
         return "ok"
 
-    async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True, sink=sink))
-    ) as service:
+    async with QueueService(QueueConfig(execution_backend="local", event=EventConfig(sink=sink))) as service:
         result = await service.enqueue(worker_id_task)
         worker = Worker(service, worker_id="worker-test")
 

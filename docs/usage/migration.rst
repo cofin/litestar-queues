@@ -98,6 +98,9 @@ When ``QueueConfig.initialize_schedules`` is enabled, startup creates one
 deduplicated scheduled record per registered schedule key. If a pending
 scheduled record exists but the schedule metadata has changed, startup cancels
 the old record and creates a new one with the updated definition.
+Scheduled records use ``QueueConfig.quiet_success`` when the task does not set
+``quiet_success`` itself, and task-level values continue to win over the config
+default.
 
 Cron schedules use five fields: minute, hour, day-of-month, month, and
 day-of-week. Litestar Queues supports wildcards, lists, ranges, named months and
@@ -124,7 +127,6 @@ contract:
        queue_backend=RedisBackendConfig(url="redis://localhost:6379/0"),
        execution_backend="local",
        event=EventConfig(
-           enabled=True,
            channels_backend=app_channels_backend,
            publish_global_lifecycle=True,
        ),

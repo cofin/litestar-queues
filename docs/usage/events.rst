@@ -9,8 +9,8 @@ wakeup notifications.
 Enable Events
 =============
 
-Events are disabled by default. Enable them with a sink or an app-owned Litestar
-Channels backend:
+Events are disabled when ``QueueConfig.event`` is ``None``. Providing
+``EventConfig`` enables them by default unless ``enabled=False`` is explicit:
 
 .. code-block:: python
 
@@ -20,7 +20,6 @@ Channels backend:
 
    config = QueueConfig(
        event=EventConfig(
-           enabled=True,
            channels_backend=channels,
            publish_global_lifecycle=True,
        ),
@@ -489,7 +488,6 @@ Use ``InMemoryQueueEventSink`` for tests:
    sink = InMemoryQueueEventSink()
    config = QueueConfig(
        event=EventConfig(
-           enabled=True,
            sink=sink,
            buffer=EventBufferConfig(enabled=False),
        ),

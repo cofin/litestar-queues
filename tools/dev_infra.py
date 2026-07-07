@@ -61,12 +61,7 @@ class ContainerRuntime:
         self.command = command or _detect_runtime()
 
     def run(
-        self,
-        args: "Sequence[str]",
-        *,
-        check: bool = True,
-        capture_output: bool = True,
-        timeout: int | None = 30,
+        self, args: "Sequence[str]", *, check: bool = True, capture_output: bool = True, timeout: int | None = 30
     ) -> "subprocess.CompletedProcess[str]":
         command = [self.command, *args]
         result = subprocess.run(command, capture_output=capture_output, check=False, text=True, timeout=timeout)
@@ -75,9 +70,7 @@ class ContainerRuntime:
         return result
 
     def container_exists(self, container_name: str) -> bool:
-        result = self.run(
-            ["ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"], check=False
-        )
+        result = self.run(["ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"], check=False)
         return container_name in result.stdout.splitlines()
 
     def container_running(self, container_name: str) -> bool:

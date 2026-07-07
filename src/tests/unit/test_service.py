@@ -41,7 +41,7 @@ def test_get_event_publisher_warns_when_sink_is_configured_but_events_are_disabl
         publisher = config.get_event_publisher()
 
     assert publisher.sink is not sink
-    assert "Queue event sink configured while event publishing is disabled" in caplog.text
+    assert "Queue event sink configured while event publishing is explicitly disabled" in caplog.text
 
 
 async def test_service_placeholder_enqueue_reports_unimplemented() -> "None":
@@ -81,6 +81,67 @@ async def test_enqueue_can_override_requeue_on_stale_metadata() -> "None":
 
     assert result.record is not None
     assert result.record.metadata["requeue_on_stale"] is False
+
+
+async def test_enqueue_uses_config_quiet_success_default() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("quiet.config_default")
+    async def config_default() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        result = await service.enqueue(config_default)
+
+    assert result.record is not None
+    assert result.record.metadata["quiet_success"] is True
+
+
+async def test_enqueue_respects_config_quiet_success_false_default() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("quiet.config_false")
+    async def config_false() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local", quiet_success=False)) as service:
+        result = await service.enqueue(config_false)
+
+    assert result.record is not None
+    assert result.record.metadata["quiet_success"] is False
+
+
+async def test_enqueue_quiet_success_precedence() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("quiet.metadata_only")
+    async def metadata_only() -> "str":
+        return "ok"
+
+    @task("quiet.task_override", quiet_success=True)
+    async def task_override() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local", quiet_success=True)) as service:
+        metadata_result = await service.enqueue(metadata_only, metadata={"quiet_success": False})
+        task_result = await service.enqueue(task_override, metadata={"quiet_success": False})
+        enqueue_result = await service.enqueue(task_override, quiet_success=False, metadata={"quiet_success": True})
+
+    assert metadata_result.record is not None
+    assert task_result.record is not None
+    assert enqueue_result.record is not None
+    assert metadata_result.record.metadata["quiet_success"] is False
+    assert task_result.record.metadata["quiet_success"] is True
+    assert enqueue_result.record.metadata["quiet_success"] is False
 
 
 async def test_enqueue_immediate_override_executes_inline_when_configured_backend_is_external() -> "None":
@@ -177,9 +238,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
         timeline["body"] = time.monotonic()
         return "ok"
 
-    config = QueueConfig(
-        execution_backend="immediate", task_dependency_resolver=resolver, event=EventConfig(enabled=True)
-    )
+    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver, event=EventConfig())
     service = QueueService(config, event_publisher=publisher)
 
     async with service:
@@ -248,9 +307,7 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True)),
-        queue_backend=backend,
-        event_publisher=publisher,
+        QueueConfig(execution_backend="local", event=EventConfig()), queue_backend=backend, event_publisher=publisher
     ) as service:
         result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-stale")
 
@@ -315,9 +372,7 @@ async def test_backend_event_log_and_live_sink_are_independent() -> "None":
         await publish_task_log("history and live", payload={"stage": "load"})
 
     config = QueueConfig(
-        execution_backend="immediate",
-        event=EventConfig(enabled=True, sink=sink),
-        event_log=event_log_config_type(enabled=True),
+        execution_backend="immediate", event=EventConfig(sink=sink), event_log=event_log_config_type(enabled=True)
     )
 
     async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
@@ -346,6 +401,28 @@ async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> 
     assert records[0].priority == 5
 
 
+async def test_initialize_schedules_applies_config_quiet_success_default_and_task_override() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("tasks.quiet_schedule_default", interval=60)
+    async def quiet_schedule_default() -> "None":
+        return None
+
+    @task("tasks.quiet_schedule_override", interval=60, quiet_success=False)
+    async def quiet_schedule_override() -> "None":
+        return None
+
+    async with QueueService(QueueConfig(execution_backend="local", quiet_success=True)) as service:
+        records = await service.initialize_schedules()
+
+    by_task_name = {record.task_name: record for record in records}
+    assert by_task_name["tasks.quiet_schedule_default"].metadata["quiet_success"] is True
+    assert by_task_name["tasks.quiet_schedule_override"].metadata["quiet_success"] is False
+
+
 async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "None":
     from litestar_queues import task
     from litestar_queues.task import clear_task_registry
@@ -368,7 +445,7 @@ async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "N
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event=EventConfig(enabled=True)),
+        QueueConfig(execution_backend="local", event=EventConfig()),
         queue_backend=backend,
         event_publisher=QueueEventPublisher(sink),
     ) as service:
@@ -394,7 +471,7 @@ async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "N
         msg = "secret-token"
         raise RuntimeError(msg)
 
-    config = QueueConfig(execution_backend="local", event=EventConfig(enabled=True), error_sanitizer=sanitize_error)
+    config = QueueConfig(execution_backend="local", event=EventConfig(), error_sanitizer=sanitize_error)
 
     async with QueueService(config, event_publisher=QueueEventPublisher(sink)) as service:
         result = await service.enqueue(sanitize_error_task)

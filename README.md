@@ -17,7 +17,7 @@ slow APIs, or running operational maintenance jobs.
 ## What You Get
 
 - **Simple task API**: `@task(...)` registers async or sync callables with
-  defaults for queues, retries, priority, timeout, delay, and metadata.
+  defaults for queues, retries, priority, timeout, delay, logging, and metadata.
 - **Litestar plugin**: `QueuePlugin` wires a managed `QueueService` into
   Litestar dependency injection, app state, startup, shutdown, and CLI commands.
 - **Workers included**: run an in-app worker for local/lightweight apps or a
@@ -261,6 +261,12 @@ result = await queue_service.enqueue(
 )
 await result.wait(timeout=30)
 ```
+
+Successful completion logs are quiet by default. This only suppresses the
+operator log line for a successful task; lifecycle events, progress/log events,
+streams, and event history still publish. Set `QueueConfig(quiet_success=False)`
+or pass `quiet_success=False` on a task or enqueue call when successful
+completion logs should be emitted.
 
 Run recurring tasks with intervals or cron expressions:
 

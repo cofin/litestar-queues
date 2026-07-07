@@ -302,7 +302,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     async def succeed() -> "str":
         return "ok"
 
-    config = QueueConfig(task_dependency_resolver=resolver, execution_backend="local", event=EventConfig(enabled=True))
+    config = QueueConfig(task_dependency_resolver=resolver, execution_backend="local", event=EventConfig())
     service = QueueService(config, queue_backend=queue_backend, event_publisher=publisher)
 
     async with service:

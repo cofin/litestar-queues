@@ -222,6 +222,7 @@ class QueueService:
             requeue_on_stale=requeue_on_stale,
             timeout=timeout,
         )
+        self._apply_quiet_success_default(effective_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
         runtime = self.observability_runtime
         span_attributes = _base_observability_attributes(
@@ -522,10 +523,21 @@ class QueueService:
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
-                    metadata=task_obj.metadata({"schedule": schedule_metadata}),
+                    metadata=self._metadata_with_schedule_default(task_obj, schedule_metadata),
                 )
             )
         return records
+
+    def _metadata_with_schedule_default(
+        self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]"
+    ) -> "dict[str, Any]":
+        metadata = task_obj.metadata({"schedule": schedule_metadata})
+        self._apply_quiet_success_default(metadata)
+        return metadata
+
+    def _apply_quiet_success_default(self, metadata: "dict[str, Any]") -> "None":
+        if "quiet_success" not in metadata:
+            metadata["quiet_success"] = self._config.quiet_success
 
     async def _resolve_task_dependencies(
         self, task: "Task[..., object]", record: "QueuedTaskRecord", task_context: "TaskExecutionContext"

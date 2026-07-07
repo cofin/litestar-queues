@@ -40,6 +40,7 @@ def test_config_defaults() -> "None":
     assert config.queue_service_state_key == "queue_service"
     assert config.queue_worker_state_key == "queue_worker"
     assert config.in_app_worker is True
+    assert config.quiet_success is True
     assert config.scheduler_canary_task == "scheduler.heartbeat"
 
 

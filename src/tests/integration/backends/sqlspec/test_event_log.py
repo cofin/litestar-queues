@@ -44,7 +44,7 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
     config = QueueConfig(
         queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)),
         execution_backend="immediate",
-        event=EventConfig(enabled=True, sink=live_sink),
+        event=EventConfig(sink=live_sink),
         event_log=event_log_config,
     )
 
