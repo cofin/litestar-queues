@@ -31,6 +31,7 @@ class EventStreamConfig:
     """Configuration for plugin-registered WebSocket queue-event streaming."""
 
     enabled: "bool" = True
+    sse: "bool" = True
     path: "str" = "/queues/events"
     guards: list[Guard] | None = None
     channel_authorizer: ChannelAuthorizer | None = None

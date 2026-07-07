@@ -8,6 +8,7 @@ def test_event_stream_config_defaults() -> "None":
     config = EventStreamConfig()
 
     assert config.enabled is True
+    assert config.sse is True
     assert config.path == "/queues/events"
     assert config.guards is None
     assert config.channel_authorizer is None
