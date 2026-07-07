@@ -10,6 +10,7 @@ SHELL := /bin/bash
 .EXPORT_ALL_VARIABLES:
 MAKEFLAGS += --no-print-directory
 UV_SYNC_ARGS ?= --all-extras --dev
+INFRA_ARGS ?=
 
 # -----------------------------------------------------------------------------
 # Display Formatting and Colors
@@ -169,6 +170,42 @@ coverage:                                           ## Run tests with coverage r
 	@uv run coverage html >/dev/null 2>&1
 	@uv run coverage xml >/dev/null 2>&1
 	@echo "${OK} Coverage report generated"
+
+# -----------------------------------------------------------------------------
+# Local Infrastructure
+# -----------------------------------------------------------------------------
+
+.PHONY: start-infra
+start-infra:                                        ## Start local Redis and Valkey containers
+	@echo "${INFO} Starting local infrastructure..."
+	@uv run python tools/dev_infra.py start $(INFRA_ARGS)
+	@echo "${OK} Local infrastructure started"
+
+.PHONY: stop-infra
+stop-infra:                                         ## Stop local Redis and Valkey containers
+	@echo "${INFO} Stopping local infrastructure..."
+	@uv run python tools/dev_infra.py stop $(INFRA_ARGS)
+	@echo "${OK} Local infrastructure stopped"
+
+.PHONY: restart-infra
+restart-infra:                                      ## Restart local Redis and Valkey containers
+	@echo "${INFO} Restarting local infrastructure..."
+	@uv run python tools/dev_infra.py restart $(INFRA_ARGS)
+	@echo "${OK} Local infrastructure restarted"
+
+.PHONY: infra-status
+infra-status:                                       ## Show local infrastructure status
+	@uv run python tools/dev_infra.py status $(INFRA_ARGS)
+
+.PHONY: infra-logs
+infra-logs:                                         ## Show local infrastructure logs
+	@uv run python tools/dev_infra.py logs $(INFRA_ARGS)
+
+.PHONY: wipe-infra
+wipe-infra:                                         ## Remove local infrastructure containers and volumes
+	@echo "${WARN} Removing local infrastructure containers and volumes..."
+	@uv run python tools/dev_infra.py wipe --yes $(INFRA_ARGS)
+	@echo "${OK} Local infrastructure removed"
 
 # -----------------------------------------------------------------------------
 # Type Checking

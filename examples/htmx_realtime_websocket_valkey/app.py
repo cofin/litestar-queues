@@ -174,7 +174,9 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
-    queue_backend=ValkeyBackendConfig(url=VALKEY_URL, key_prefix="litestar_queues:examples:htmx_realtime_websocket_valkey"),
+    queue_backend=ValkeyBackendConfig(
+        url=VALKEY_URL, key_prefix="litestar_queues:examples:htmx_realtime_websocket_valkey"
+    ),
     event=EventConfig(
         enabled=True,
         channels_backend=channels,

@@ -174,7 +174,9 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
-    queue_backend=RedisBackendConfig(url=REDIS_URL, key_prefix="litestar_queues:examples:htmx_realtime_websocket_redis"),
+    queue_backend=RedisBackendConfig(
+        url=REDIS_URL, key_prefix="litestar_queues:examples:htmx_realtime_websocket_redis"
+    ),
     event=EventConfig(
         enabled=True,
         channels_backend=channels,
