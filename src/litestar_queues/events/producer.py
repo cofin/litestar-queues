@@ -94,7 +94,11 @@ class _ExternalProducer:
         elif event_config.channels_backend is not None:
             from litestar_queues.events.litestar import ChannelsQueueEventSink
 
-            sink = ChannelsQueueEventSink(event_config.channels_backend)
+            sink = ChannelsQueueEventSink(
+                event_config.channels_backend,
+                max_payload_bytes=event_config.max_payload_bytes,
+                payload_size_estimator=event_config.payload_size_estimator,
+            )
             resource = event_config.channels_backend
         else:
             sink = NoopQueueEventSink()

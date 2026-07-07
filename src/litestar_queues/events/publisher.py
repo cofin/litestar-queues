@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from litestar_queues.events._typing import ChannelsLike
+    from litestar_queues.events.chunking import QueueEventSizeEstimator
     from litestar_queues.events.log import QueueEventLog
     from litestar_queues.events.models import QueueEvent
 
@@ -55,6 +56,8 @@ class EventConfig:
     buffer: "EventBufferConfig" = field(default_factory=EventBufferConfig)
     sink: "QueueEventSink | None" = None
     channels_backend: "ChannelsLike | None" = None
+    max_payload_bytes: "int | None" = None
+    payload_size_estimator: "QueueEventSizeEstimator | None" = None
     strict: "bool" = False
     publish_task_channel: "bool" = True
     publish_queue_channel: "bool" = True
