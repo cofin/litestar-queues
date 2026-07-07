@@ -16,7 +16,11 @@ from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.models import QueueEventScope
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from litestar import Router, WebSocket
+    from litestar.response import ServerSentEvent
+    from litestar.types import SSEData
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events._typing import ChannelsLike
@@ -256,7 +260,7 @@ def stream_queue_events_sse(
     heartbeat_interval: float = 25.0,
     stream_metrics: StreamMetrics | None = None,
     scope: QueueEventScope = "task",
-) -> Any:
+) -> "ServerSentEvent":
     """Return a server-sent event stream for queue events."""
     from litestar.response import ServerSentEvent
 
@@ -282,7 +286,7 @@ async def _sse_events(
     heartbeat_interval: float,
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
-) -> "Any":
+) -> "AsyncIterator[SSEData]":
     from litestar_queues.events.litestar import _event_stream, _resolve_channels_backend
 
     backend = channels_backend or _resolve_channels_backend(connection)
@@ -306,7 +310,7 @@ async def _sse_events(
 
 async def _sse_event_frames(
     events: "Any", *, heartbeat_interval: float, stream_metrics: StreamMetrics | None, scope: QueueEventScope
-) -> "Any":
+) -> "AsyncIterator[SSEData]":
     seen_dedup_keys: "OrderedDict[str, None]" = OrderedDict()
     iterator = events.__aiter__()
     next_event = asyncio.create_task(anext(iterator))
