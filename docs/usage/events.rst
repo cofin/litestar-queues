@@ -253,6 +253,67 @@ Subscribers receive at-most-once delivery per ``eventKey`` (or per ``id`` when
 no key is set) within a single connection. Set ``QueueEvent(..., event_key=...)``
 at publish time when worker-level retries should not double-emit downstream.
 
+Consuming Stream Events
+=======================
+
+SSE is the recommended stream transport for server-rendered interfaces because
+it uses a normal HTTP ``GET`` and works well with the HTMX SSE extension. The
+package emits named SSE frames whose event name is the queue event type and whose
+data is the JSON form of ``QueueEvent.to_dict()``:
+
+.. code-block:: text
+
+   event: task.progress
+   data: {"id":"...","type":"task.progress","scope":"task",...}
+
+With HTMX, connect once on a parent element and either swap the JSON payload
+directly or use the named event to refresh a server-rendered fragment:
+
+.. code-block:: html
+
+   <section hx-ext="sse" sse-connect="/queues/events/sse/tasks/{{ task_id }}">
+     <pre sse-swap="task.progress"></pre>
+     <div
+       hx-get="/tasks/{{ task_id }}/status"
+       hx-trigger="sse:task.completed"
+     ></div>
+   </section>
+
+The same task stream is available to WebSocket clients at
+``/queues/events/tasks/{task_id}``. WebSocket streams send ``{"type": "ping"}``
+heartbeats; clients should ignore those frames or use them only to update a
+connection liveness timestamp. SSE streams send keepalive comments instead.
+
+Use custom scopes for application-level messages that are not tied to a single
+queued task:
+
+.. code-block:: python
+
+   await queue_events.channel(f"imports:{workspace_id}").publish(
+       "import.note",
+       payload={"workspace_id": workspace_id, "status": "queued"},
+   )
+
+Custom WebSocket clients subscribe at ``/queues/events/custom/{scope_key}``.
+Custom SSE clients subscribe at ``/queues/events/sse/custom/{scope_key}``.
+
+Subscriber backpressure is owned by the configured Litestar Channels plugin or
+backend. The default Channels subscriber backlog is unbounded. For browser
+streams, configure a bounded backlog and drop older messages in favor of newer
+state updates:
+
+.. code-block:: python
+
+   from litestar.channels import ChannelsPlugin
+
+
+   channels = ChannelsPlugin(
+       backend=channels_backend,
+       arbitrary_channels_allowed=True,
+       subscriber_max_backlog=1000,
+       subscriber_backlog_strategy="dropleft",
+   )
+
 Transport Recommendations
 =========================
 
