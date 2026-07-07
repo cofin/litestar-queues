@@ -159,6 +159,34 @@ def test_optional_backends_resolve_lazily_via_factory() -> "None":
     assert get_queue_backend_class("valkey") is ValkeyQueueBackend
 
 
+def test_core_imports_do_not_load_optional_backend_packages() -> "None":
+    """Core package imports must not load optional backend dependencies."""
+    code = """
+import sys
+
+import litestar_queues
+import litestar_queues.backends
+import litestar_queues.models
+from litestar_queues import QueueConfig
+
+for module_name in (
+    "advanced_alchemy",
+    "opentelemetry",
+    "prometheus_client",
+    "redis",
+    "sqlalchemy",
+    "sqlspec",
+    "valkey",
+):
+    assert module_name not in sys.modules, module_name
+
+assert QueueConfig().queue_backend == "memory"
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_queued_task_record_normalizes_naive_scheduled_at() -> "None":
     """Queued records normalize naive scheduled datetimes before due checks."""
     from datetime import datetime, timedelta, timezone

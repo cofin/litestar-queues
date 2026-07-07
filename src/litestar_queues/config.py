@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
-from litestar.di import Provide
-
 from litestar_queues.events import EventConfig, EventLogConfig, EventStreamConfig
 
 logger = getLogger(__name__)
@@ -283,6 +281,8 @@ class QueueConfig:
     @property
     def dependencies(self) -> "dict[str, Any]":
         """Dependency providers for Litestar's DI system."""
+        from litestar.di import Provide
+
         return {self.queue_service_dependency_key: Provide(self.provide_service_dependency)}
 
     def get_service(self, state: "State | None" = None) -> "QueueService":
