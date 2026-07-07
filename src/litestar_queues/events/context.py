@@ -55,6 +55,7 @@ class TaskExecutionContext:
         message: "str | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "None":
         """Publish a task progress event."""
         progress_percent = percent
@@ -68,6 +69,7 @@ class TaskExecutionContext:
             progress_percent=progress_percent,
             payload=payload,
             channels=channels,
+            immediate=immediate,
         )
 
     async def log(
@@ -77,9 +79,10 @@ class TaskExecutionContext:
         level: "str" = "info",
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "None":
         """Publish a task log event."""
-        await self.publish("task.log", level=level, message=message, payload=payload, channels=channels)
+        await self.publish("task.log", level=level, message=message, payload=payload, channels=channels, immediate=immediate)
 
     async def event(
         self,
@@ -88,9 +91,10 @@ class TaskExecutionContext:
         message: "str | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "None":
         """Publish a custom task event."""
-        await self.publish(event_type, message=message, payload=payload, channels=channels)
+        await self.publish(event_type, message=message, payload=payload, channels=channels, immediate=immediate)
 
     async def lifecycle(
         self, event_type: "str", *, message: "str | None" = None, payload: "dict[str, Any] | None" = None
@@ -120,6 +124,7 @@ class TaskExecutionContext:
         progress_percent: "float | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "QueueEvent":
         """Build and publish an event for this task context.
 
@@ -144,7 +149,7 @@ class TaskExecutionContext:
             progress_percent=progress_percent,
             payload=dict(payload or {}),
         )
-        await self.event_publisher.publish(event, channels=channels)
+        await self.event_publisher.publish(event, channels=channels, immediate=immediate)
         return event
 
     def _next_sequence(self) -> "int":
@@ -178,10 +183,17 @@ async def publish_task_progress(
     message: "str | None" = None,
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    immediate: "bool" = False,
 ) -> "None":
     """Publish progress through the currently bound task context."""
     await require_current_task_context().progress(
-        current=current, total=total, percent=percent, message=message, payload=payload, channels=channels
+        current=current,
+        total=total,
+        percent=percent,
+        message=message,
+        payload=payload,
+        channels=channels,
+        immediate=immediate,
     )
 
 
@@ -191,9 +203,12 @@ async def publish_task_log(
     level: "str" = "info",
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    immediate: "bool" = False,
 ) -> "None":
     """Publish a log event through the currently bound task context."""
-    await require_current_task_context().log(message, level=level, payload=payload, channels=channels)
+    await require_current_task_context().log(
+        message, level=level, payload=payload, channels=channels, immediate=immediate
+    )
 
 
 async def publish_task_event(
@@ -202,9 +217,12 @@ async def publish_task_event(
     message: "str | None" = None,
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    immediate: "bool" = False,
 ) -> "None":
     """Publish a custom event through the currently bound task context."""
-    await require_current_task_context().event(event_type, message=message, payload=payload, channels=channels)
+    await require_current_task_context().event(
+        event_type, message=message, payload=payload, channels=channels, immediate=immediate
+    )
 
 
 def beat(detail: "str | None" = None) -> "None":

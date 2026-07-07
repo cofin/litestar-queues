@@ -1,11 +1,13 @@
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pytest
 
 from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.events import (
+    EventBufferConfig,
     EventConfig,
     InMemoryQueueEventSink,
+    QueueEventPublisher,
     TaskExecutionContext,
     beat,
     get_current_task_context,
@@ -15,9 +17,6 @@ from litestar_queues.events import (
     require_current_task_context,
 )
 from litestar_queues.events.context import _bind_beat_sink, _bind_task_context, _reset_beat_sink, _reset_task_context
-
-if TYPE_CHECKING:
-    from litestar_queues.events import QueueEventPublisher
 
 pytestmark = pytest.mark.anyio
 
@@ -85,6 +84,37 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
     assert result.status == "completed"
     assert received_kwargs == {}
     assert "task.progress" in [event.type for event in sink.events]
+
+
+async def test_context_progress_immediate_flushes_prior() -> "None":
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    context = _build_context(event_publisher=publisher)
+
+    await context.log("buffered")
+
+    assert sink.events == []
+
+    await context.progress(current=1, total=2, immediate=True)
+
+    assert [event.type for event in sink.events] == ["task.log", "task.progress"]
+    assert [event.message for event in sink.events] == ["buffered", None]
+
+
+async def test_module_helper_immediate_flushes_prior() -> "None":
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    context = _build_context(event_publisher=publisher)
+
+    await context.log("buffered")
+
+    token = _bind_task_context(context)
+    try:
+        await publish_task_progress(current=1, total=2, immediate=True)
+    finally:
+        _reset_task_context(token)
+
+    assert [event.type for event in sink.events] == ["task.log", "task.progress"]
 
 
 def test_beat_outside_context_is_noop() -> "None":

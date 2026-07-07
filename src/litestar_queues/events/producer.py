@@ -128,15 +128,11 @@ class _ScopeEventHandle:
     ) -> "QueueEvent":
         """Publish an event to this handle's scope.
 
-        The ``immediate`` flag is accepted for API stability and becomes active
-        when buffered publishing lands.
-
         Returns:
             The published queue event.
         """
-        del immediate
         event = self._event(event_type, message=message, payload=payload)
-        await self._publisher.publish(event)
+        await self._publisher.publish(event, immediate=immediate)
         return event
 
     def _event(self, event_type: "str", *, message: "str | None", payload: "dict[str, Any] | None") -> "QueueEvent":
@@ -181,9 +177,8 @@ class _TaskEventHandle(_ScopeEventHandle):
         Returns:
             The published queue event.
         """
-        del immediate
         event = self._task_event("task.log", level=level, message=message, payload=payload)
-        await self._publisher.publish(event)
+        await self._publisher.publish(event, immediate=immediate)
         return event
 
     async def progress(
@@ -201,7 +196,6 @@ class _TaskEventHandle(_ScopeEventHandle):
         Returns:
             The published queue event.
         """
-        del immediate
         progress_percent = percent
         if progress_percent is None and current is not None and total:
             progress_percent = float(current) / float(total) * 100
@@ -213,7 +207,7 @@ class _TaskEventHandle(_ScopeEventHandle):
             progress_percent=progress_percent,
             payload=payload,
         )
-        await self._publisher.publish(event)
+        await self._publisher.publish(event, immediate=immediate)
         return event
 
     async def event(
@@ -229,9 +223,8 @@ class _TaskEventHandle(_ScopeEventHandle):
         Returns:
             The published queue event.
         """
-        del immediate
         event = self._task_event(event_type, message=message, payload=payload)
-        await self._publisher.publish(event)
+        await self._publisher.publish(event, immediate=immediate)
         return event
 
     def _task_event(

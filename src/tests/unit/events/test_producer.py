@@ -3,7 +3,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import EventConfig, QueueConfig, QueueService
-from litestar_queues.events import InMemoryQueueEventSink, QueueChannels, QueueEvent, QueueEventPublisher
+from litestar_queues.events import (
+    EventBufferConfig,
+    InMemoryQueueEventSink,
+    QueueChannels,
+    QueueEvent,
+    QueueEventPublisher,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -86,6 +92,21 @@ async def test_task_handle_publish_targets_task_channel() -> None:
     assert event.scope == "task"
     assert event.task_id == "t1"
     assert event.message == "operator note"
+
+
+async def test_producer_handle_immediate_flushes_prior() -> None:
+    from litestar_queues.events import QueueEventProducer
+
+    sink = InMemoryQueueEventSink()
+    producer = QueueEventProducer(QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10)))
+
+    await producer.task("t1").log("buffered")
+
+    assert sink.events == []
+
+    await producer.task("t1").log("urgent", immediate=True)
+
+    assert [event.message for event in sink.events] == ["buffered", "urgent"]
 
 
 def test_scope_handles_expose_only_publish() -> None:
