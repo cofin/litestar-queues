@@ -358,6 +358,7 @@ class QueueConfig:
             sink = NoopQueueEventSink()
         return QueueEventPublisher(
             sink,
+            buffer_config=event_config.buffer,
             strict=event_config.strict,
             publish_task_channel=event_config.publish_task_channel,
             publish_queue_channel=event_config.publish_queue_channel,

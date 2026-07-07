@@ -140,7 +140,7 @@ async def test_producer_does_not_open_or_close_sink() -> None:
 
 async def test_service_get_event_producer_wraps_same_publisher() -> None:
     sink = InMemoryQueueEventSink()
-    service = QueueService(QueueConfig(event=EventConfig(sink=sink)))
+    service = QueueService(QueueConfig(event=EventConfig(sink=sink, buffer=EventBufferConfig(enabled=False))))
 
     await service.get_event_producer().task("t1").log("from service")
 

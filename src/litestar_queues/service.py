@@ -125,6 +125,7 @@ class QueueService:
             raise
         await self.get_execution_backend().open()
         await _call_optional_async_method(self.get_event_publisher().sink, "open")
+        self.get_event_publisher().start_buffer()
         if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
             self._sync_executor = ThreadPoolExecutor(
                 max_workers=self._config.sync_executor_max_workers,
@@ -138,6 +139,8 @@ class QueueService:
             await self._execution_backend.close()
         if self._event_log is not None:
             await self._event_log.flush_events()
+        if self._event_publisher is not None:
+            await self._event_publisher.stop_buffer()
         if self._queue_backend is not None:
             await self._queue_backend.close()
         if self._event_publisher is not None:

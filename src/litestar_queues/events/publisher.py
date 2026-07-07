@@ -154,6 +154,24 @@ class QueueEventPublisher:
         if self._buffer is not None:
             await self._buffer.flush()
 
+    def start_buffer(self) -> "None":
+        """Start the live event buffer flush loop.
+
+        Returns:
+            None.
+        """
+        if self._buffer is not None:
+            self._buffer.start()
+
+    async def stop_buffer(self) -> "None":
+        """Stop and drain the live event buffer.
+
+        Returns:
+            None.
+        """
+        if self._buffer is not None:
+            await self._buffer.stop()
+
     async def _deliver_live(self, event: "QueueEvent", channels: "Sequence[str]") -> "None":
         try:
             await self._sink.publish(event, channels=channels)
