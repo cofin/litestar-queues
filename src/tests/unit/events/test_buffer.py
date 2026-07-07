@@ -1,10 +1,10 @@
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues.events import EventBufferConfig, QueueEvent, QueueEventPublisher
+from litestar_queues.events import EventBufferConfig, QueueEvent, QueueEventPublisher, QueueEventScope
 from litestar_queues.exceptions import QueueEventBufferFull
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ class _RecordingSink:
         return [event.type for event, _ in self.published]
 
 
-def _event(event_type: "str", *, task_id: "str | None" = "task-a", scope: "str" = "task") -> "QueueEvent":
+def _event(event_type: "str", *, task_id: "str | None" = "task-a", scope: "QueueEventScope" = "task") -> "QueueEvent":
     return QueueEvent(type=event_type, scope=scope, task_id=task_id, scope_key=None if scope == "task" else task_id)
 
 
@@ -220,9 +220,7 @@ async def test_flush_uses_publish_many_when_available() -> "None":
 async def test_flush_falls_back_to_publish_loop() -> "None":
     sink = _PublishOnlySink()
     publisher = QueueEventPublisher(
-        cast("Any", sink),
-        buffer_config=EventBufferConfig(buffer_size=10, flush_interval=60),
-        publish_global_lifecycle=False,
+        sink, buffer_config=EventBufferConfig(buffer_size=10, flush_interval=60), publish_global_lifecycle=False
     )
 
     await publisher.publish(_event("task.progress"))

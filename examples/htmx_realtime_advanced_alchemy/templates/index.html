@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- docs: template-start -->
+<main class="demo-shell" data-demo-root>
+  <section class="crawl-viewport" aria-label="Task event crawl">
+    <div class="brand-bar">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Litestar Queues</span>
+    </div>
+
+    <div class="json-status" hx-get="/demo/status" hx-trigger="load" hx-swap="json">
+      <template ls-if="backend">
+        <span>${backend}</span>
+        <span>${scope}</span>
+      </template>
+      <template ls-else>
+        <span>{{ backend_name }}</span>
+        <span>{{ mission_scope }}</span>
+      </template>
+    </div>
+
+    <div class="transport-toggle" role="radiogroup" aria-label="Stream transport">
+      <label>
+        <input type="radio" name="transport" value="websocket" data-transport-toggle checked>
+        WebSocket
+      </label>
+      <label>
+        <input type="radio" name="transport" value="sse" data-transport-toggle>
+        SSE
+      </label>
+    </div>
+
+    <div class="crawl-stage" aria-live="polite">
+      <div id="crawl-lines" class="crawl-lines">
+        <p>Press restart to launch a one-minute queue task.</p>
+      </div>
+    </div>
+
+    <form
+      class="launch-console"
+      hx-post="/demo/restart"
+      hx-target="#job-status"
+      hx-swap="outerHTML transition:true"
+      hx-indicator="#launch-indicator"
+      hx-disabled-elt="find button"
+      hx-sync="this:replace"
+    >
+      <button class="planet-button" type="submit">
+        <span class="planet-core" aria-hidden="true"></span>
+        <span>Restart</span>
+        <span id="launch-indicator" class="htmx-indicator">Launching</span>
+      </button>
+    </form>
+
+    <div
+      id="job-status"
+      class="status-strip"
+      data-mission-scope="{{ mission_scope }}"
+      data-mission-ws-url="{{ mission_ws_url }}"
+      data-mission-sse-url="{{ mission_sse_url }}"
+    >
+      <span>Awaiting launch</span>
+    </div>
+  </section>
+
+  <section class="mission-control" aria-label="Mission control channel">
+    <div class="panel-heading">
+      <h1>Mission Control</h1>
+      <span id="connection-state">offline</span>
+    </div>
+    <form
+      class="mission-form"
+      hx-post="/demo/mission-control"
+      hx-target="#mission-ack"
+      hx-swap="outerHTML transition:true"
+      hx-indicator="#mission-indicator"
+      hx-disabled-elt="find button"
+      hx-sync="this:replace"
+      hx-on:htmx:after-request="if(event.detail.successful) this.reset()"
+    >
+      <label for="message">Custom channel message</label>
+      <div>
+        <input id="message" name="message" value="Manual check-in from mission control" required>
+        <button type="submit">
+          Publish
+          <span id="mission-indicator" class="htmx-indicator">Sending</span>
+        </button>
+      </div>
+    </form>
+    <div id="mission-ack" class="mission-ack">No custom message published yet.</div>
+    <ol id="mission-feed" class="mission-feed"></ol>
+  </section>
+</main>
+<!-- docs: template-end -->
+{% endblock %}

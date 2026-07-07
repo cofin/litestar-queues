@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from litestar import Litestar
@@ -143,7 +143,7 @@ def _sse_handler(router: Any, path: str) -> "HTTPRouteHandler":
         if isinstance(route, HTTPRoute) and route.path.endswith(path):
             for handler in route.route_handlers:
                 if "GET" in handler.http_methods:
-                    return cast("HTTPRouteHandler", handler)
+                    return handler
     msg = f"No SSE handler registered for {path!r}."
     raise AssertionError(msg)
 

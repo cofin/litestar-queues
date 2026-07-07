@@ -1,0 +1,19 @@
+{
+  "name": "litestar-queues-htmx-realtime-redis",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "htmx-ext-sse": "^2.2.4",
+    "htmx-ext-ws": "^2.0.4",
+    "htmx.org": "^2.0.10"
+  },
+  "devDependencies": {
+    "litestar-vite-plugin": "^0.26.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.3"
+  }
+}

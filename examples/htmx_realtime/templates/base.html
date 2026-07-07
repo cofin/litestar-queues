@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Litestar Queues Realtime Demo</title>
+    {{ vite_hmr() }}
+    {{ vite("resources/main.ts") }}
+  </head>
+  <body hx-ext="litestar">
+    {% block content %}{% endblock %}
+  </body>
+</html>

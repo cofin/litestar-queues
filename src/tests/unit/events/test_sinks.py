@@ -29,7 +29,7 @@ async def test_noop_publish_many_drops() -> None:
     sink = NoopQueueEventSink()
     event = QueueEvent(type="task.progress", scope="task", task_id="task-a")
 
-    assert await sink.publish_many(((event, ("tasks",)),)) is None
+    await sink.publish_many(((event, ("tasks",)),))
 
 
 async def test_default_publish_many_loops_publish() -> None:

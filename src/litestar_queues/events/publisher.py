@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
@@ -13,12 +13,23 @@ if TYPE_CHECKING:
 
     from litestar_queues.events._typing import ChannelsLike
     from litestar_queues.events.chunking import QueueEventSizeEstimator
-    from litestar_queues.events.log import QueueEventLog
     from litestar_queues.events.models import QueueEvent
 
 __all__ = ("EventBufferConfig", "EventConfig", "QueueEventPublisher")
 
 logger = logging.getLogger(__name__)
+
+
+class _QueueEventHistoryWriter(Protocol):
+    async def publish_event(self, event: "QueueEvent") -> "None":
+        """Record a queue event for durable history."""
+
+
+@runtime_checkable
+class _QueueEventBatchSink(QueueEventSink, Protocol):
+    async def publish_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
+        """Publish a batch of events to their requested channels."""
+
 
 _LIFECYCLE_EVENT_TYPES = frozenset({
     "task.started",
@@ -82,7 +93,7 @@ class QueueEventPublisher:
         self,
         sink: "QueueEventSink | None" = None,
         *,
-        event_log: "QueueEventLog | None" = None,
+        event_log: "_QueueEventHistoryWriter | None" = None,
         event_log_strict: "bool" = False,
         buffer_config: "EventBufferConfig | None" = None,
         strict: "bool" = False,
@@ -108,7 +119,7 @@ class QueueEventPublisher:
         """Configured event sink."""
         return self._sink
 
-    def set_event_log(self, event_log: "QueueEventLog", *, strict: "bool" = False) -> "None":
+    def set_event_log(self, event_log: "_QueueEventHistoryWriter", *, strict: "bool" = False) -> "None":
         """Attach backend-owned durable event history to this publisher."""
         self._event_log = event_log
         self._event_log_strict = strict
@@ -189,7 +200,7 @@ class QueueEventPublisher:
 
     async def _deliver_live_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
         try:
-            if hasattr(self._sink, "publish_many"):
+            if isinstance(self._sink, _QueueEventBatchSink):
                 await self._sink.publish_many(batch)
             else:
                 await default_publish_many(self._sink, batch)

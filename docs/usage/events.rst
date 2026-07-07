@@ -256,43 +256,70 @@ at publish time when worker-level retries should not double-emit downstream.
 Consuming Stream Events
 =======================
 
-SSE is the recommended stream transport for server-rendered interfaces because
-it uses a normal HTTP ``GET`` and works well with the HTMX SSE extension. The
-package emits named SSE frames whose event name is the queue event type and whose
-data is the JSON form of ``QueueEvent.to_dict()``:
+Queue event streams expose the same event envelope through WebSocket and SSE.
+The package emits named SSE frames whose event name is the queue event type and
+whose data is the JSON form of ``QueueEvent.to_dict()``:
 
 .. code-block:: text
 
    event: task.progress
    data: {"id":"...","type":"task.progress","scope":"task",...}
 
-With HTMX, connect once on a parent element and either swap the JSON payload
-directly or use the named event to refresh a server-rendered fragment:
-
-.. code-block:: html
-
-   <section hx-ext="sse" sse-connect="/queues/events/sse/tasks/{{ task_id }}">
-     <pre sse-swap="task.progress"></pre>
-     <div
-       hx-get="/tasks/{{ task_id }}/status"
-       hx-trigger="sse:task.completed"
-     ></div>
-   </section>
-
 The same task stream is available to WebSocket clients at
 ``/queues/events/tasks/{task_id}``. WebSocket streams send ``{"type": "ping"}``
 heartbeats; clients should ignore those frames or use them only to update a
 connection liveness timestamp. SSE streams send keepalive comments instead.
 
-Use custom scopes for application-level messages that are not tied to a single
-queued task:
+The standalone example in ``examples/htmx_realtime`` is a runnable
+server-rendered app. Its browser stream handling is plain queue-event JSON, and
+the app registers task and custom-channel streams:
 
-.. code-block:: python
+.. literalinclude:: ../../examples/htmx_realtime/app.py
+   :language: python
+   :start-after: # -- docs-app-config-start --
+   :end-before: # -- docs-app-config-end --
 
-   await queue_events.channel(f"imports:{workspace_id}").publish(
-       "import.note",
-       payload={"workspace_id": workspace_id, "status": "queued"},
-   )
+Its task publishes heartbeat details, progress, logs, and a terminal completion
+event:
+
+.. literalinclude:: ../../examples/htmx_realtime/app.py
+   :language: python
+   :start-after: # -- docs-task-start --
+   :end-before: # -- docs-task-end --
+
+The restart endpoint enqueues the task and publishes an application-level custom
+channel message:
+
+.. literalinclude:: ../../examples/htmx_realtime/app.py
+   :language: python
+   :start-after: # -- docs-routes-start --
+   :end-before: # -- docs-routes-end --
+
+The page shell registers the Litestar Vite HTMX helper, uses
+``hx-ext="litestar"`` for ``ls-*`` JSON templates, and uses HTMX request
+attributes for the restart and custom-channel forms. The task-event stream
+adapter switches between the plugin-owned WebSocket and SSE URLs:
+
+.. literalinclude:: ../../examples/htmx_realtime/resources/main.ts
+   :language: typescript
+   :start-after: // docs: htmx-extension-start
+   :end-before: // docs: htmx-extension-end
+
+.. literalinclude:: ../../examples/htmx_realtime/templates/index.html
+   :language: html
+   :start-after: <!-- docs: template-start -->
+   :end-before: <!-- docs: template-end -->
+
+.. literalinclude:: ../../examples/htmx_realtime/resources/main.ts
+   :language: typescript
+   :start-after: // docs: stream-adapter-start
+   :end-before: // docs: stream-adapter-end
+
+Backend-specific copies are available under ``examples/htmx_realtime_sqlspec``,
+``examples/htmx_realtime_advanced_alchemy``, ``examples/htmx_realtime_redis``,
+and ``examples/htmx_realtime_valkey``. The SQLSpec and Advanced Alchemy copies
+use local ``aiosqlite`` files; Redis and Valkey read their connection URL from
+environment variables.
 
 Custom WebSocket clients subscribe at ``/queues/events/custom/{scope_key}``.
 Custom SSE clients subscribe at ``/queues/events/sse/custom/{scope_key}``.

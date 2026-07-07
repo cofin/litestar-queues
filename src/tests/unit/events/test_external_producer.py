@@ -8,6 +8,8 @@ from litestar_queues.events import QueueChannels, QueueEvent
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from litestar_queues.backends import BaseQueueBackend
+
 pytestmark = pytest.mark.anyio
 
 
@@ -114,6 +116,6 @@ class _FailingChannelsBackend:
 
 
 class _ExplodingBackendConfig(QueueConfig):
-    def get_queue_backend(self) -> object:
+    def get_queue_backend(self) -> "BaseQueueBackend":
         msg = "queue backend must not open"
         raise AssertionError(msg)

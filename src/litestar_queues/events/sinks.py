@@ -12,23 +12,14 @@ if TYPE_CHECKING:
 __all__ = ("InMemoryQueueEventSink", "NoopQueueEventSink", "QueueEventSink", "default_publish_many")
 
 
-class _QueueEventPublishOnly(Protocol):
+class QueueEventSink(Protocol):
     """Transport boundary for queue event delivery."""
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish an event to the requested channels."""
 
 
-class QueueEventSink(_QueueEventPublishOnly, Protocol):
-    """Transport boundary for queue event delivery."""
-
-    async def publish_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
-        """Publish a batch of events to their requested channels."""
-
-
-async def default_publish_many(
-    sink: "_QueueEventPublishOnly", batch: "Sequence[tuple[QueueEvent, Sequence[str]]]"
-) -> "None":
+async def default_publish_many(sink: "QueueEventSink", batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
     """Publish a batch by looping over a sink's single-event publish method.
 
     Returns:
