@@ -71,9 +71,7 @@ async def test_external_producer_uses_configured_payload_limit() -> None:
     )
 
     async with create_event_producer(config) as producer:
-        await producer.task("task-1").event(
-            "task.event", payload={"batch": True, "count": len(items), "items": items}
-        )
+        await producer.task("task-1").event("task.event", payload={"batch": True, "count": len(items), "items": items})
 
     assert len(backend.published) > 1
     decoded = [QueueEvent.from_json(payload) for payload, _ in backend.published]

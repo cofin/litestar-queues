@@ -196,11 +196,7 @@ class QueueEventPublisher:
         except Exception:
             if self.strict:
                 raise
-            logger.warning(
-                "Queue event batch publish failed",
-                exc_info=True,
-                extra={"queue_event_count": len(batch)},
-            )
+            logger.warning("Queue event batch publish failed", exc_info=True, extra={"queue_event_count": len(batch)})
 
     async def _record_event(self, event: "QueueEvent") -> "None":
         if self._event_log is None:

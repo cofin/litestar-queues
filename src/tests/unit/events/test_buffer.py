@@ -71,7 +71,9 @@ async def test_task_scoped_flush_drains_only_that_task() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop)
+    buffer = LiveEventBuffer(
+        EventBufferConfig(buffer_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop
+    )
 
     await buffer.add(_event("task.progress.1", task_id="task-a"), ("task-a",))
     await buffer.add(_event("task.progress.2", task_id="task-b"), ("task-b",))
@@ -189,7 +191,9 @@ async def test_stop_drains_remainder_before_return() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop)
+    buffer = LiveEventBuffer(
+        EventBufferConfig(buffer_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop
+    )
 
     await buffer.add(_event("one"), ("tasks",))
     await buffer.stop()

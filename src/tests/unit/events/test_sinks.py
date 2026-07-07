@@ -15,12 +15,10 @@ async def test_inmemory_publish_many_records_all_in_order() -> None:
     first = QueueEvent(type="task.progress", scope="task", task_id="task-a")
     second = QueueEvent(type="task.log", scope="task", task_id="task-a")
 
-    await sink.publish_many(
-        (
-            (first, (QueueChannels.task("task-a"),)),
-            (second, (QueueChannels.task("task-a"), QueueChannels.global_channel())),
-        )
-    )
+    await sink.publish_many((
+        (first, (QueueChannels.task("task-a"),)),
+        (second, (QueueChannels.task("task-a"), QueueChannels.global_channel())),
+    ))
 
     assert sink.events == [first, second]
     assert sink.events_for(QueueChannels.task("task-a")) == [first, second]
