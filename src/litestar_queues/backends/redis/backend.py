@@ -50,6 +50,45 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 """
+_TOUCH_HEARTBEAT_SCRIPT = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'running' then
+    return 0
+end
+
+local expected_retry_count = ARGV[1]
+if expected_retry_count ~= '' then
+    local retry_count = redis.call('HGET', KEYS[1], 'retry_count')
+    if retry_count ~= expected_retry_count then
+        return 0
+    end
+end
+
+local heartbeat_at = ARGV[2]
+local metadata_patch_json = ARGV[3]
+if metadata_patch_json ~= '' then
+    local metadata_json = redis.call('HGET', KEYS[1], 'metadata')
+    local metadata = {}
+    if metadata_json and metadata_json ~= '' then
+        local ok, decoded = pcall(cjson.decode, metadata_json)
+        if ok and type(decoded) == 'table' then
+            metadata = decoded
+        end
+    end
+
+    local ok_patch, metadata_patch = pcall(cjson.decode, metadata_patch_json)
+    if ok_patch and type(metadata_patch) == 'table' then
+        for key, value in pairs(metadata_patch) do
+            metadata[key] = value
+        end
+    end
+    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at, 'metadata', cjson.encode(metadata))
+else
+    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at)
+end
+
+return 1
+"""
 
 
 class RedisQueueBackend(BaseQueueBackend):
@@ -351,39 +390,24 @@ class RedisQueueBackend(BaseQueueBackend):
         if pipeline is None:
             return await self._touch_heartbeats_loop(touches)
 
+        heartbeat_at = _serialize_datetime(_utc_now())
         for touch in touches:
-            pipeline.hgetall(self._task_key(touch.task_id))
-        mappings = await _execute_pipeline(pipeline)
-        now = _utc_now()
-        touched_records: "dict[UUID, QueuedTaskRecord]" = {}
-        for touch, mapping in zip(touches, mappings, strict=True):
-            record = touched_records.get(touch.task_id)
-            if record is None:
-                decoded = _decode_mapping(cast("dict[Any, Any]", mapping))
-                if not decoded:
-                    result.missed_task_ids.add(touch.task_id)
-                    continue
-                record = self._record_from_mapping(decoded)
-            if record.status != "running":
+            expected_retry_count = "" if touch.expected_retry_count is None else str(touch.expected_retry_count)
+            metadata_patch = _json_dumps(touch.metadata_patch) if touch.metadata_patch else ""
+            pipeline.eval(
+                _TOUCH_HEARTBEAT_SCRIPT,
+                1,
+                self._task_key(touch.task_id),
+                expected_retry_count,
+                heartbeat_at,
+                metadata_patch,
+            )
+        outcomes = await _execute_pipeline(pipeline)
+        for touch, outcome in zip(touches, outcomes, strict=True):
+            if int(outcome) == 1:
+                result.touched_task_ids.add(touch.task_id)
+            else:
                 result.missed_task_ids.add(touch.task_id)
-                continue
-            if touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count:
-                result.missed_task_ids.add(touch.task_id)
-                continue
-            record.heartbeat_at = now
-            if touch.metadata_patch:
-                record.metadata.update(touch.metadata_patch)
-            touched_records[record.id] = record
-            result.touched_task_ids.add(touch.task_id)
-
-        for record in touched_records.values():
-            mapping = {
-                "heartbeat_at": _serialize_datetime(record.heartbeat_at),
-                "metadata": _json_dumps(record.metadata),
-            }
-            pipeline.hset(self._task_key(record.id), mapping=mapping)
-        if touched_records:
-            await _execute_pipeline(pipeline)
         return result
 
     async def _touch_heartbeats_loop(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":

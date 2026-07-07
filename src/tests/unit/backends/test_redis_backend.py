@@ -1,4 +1,5 @@
 import builtins
+import json
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -10,7 +11,7 @@ from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.models import QueuedTaskRecord
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
 pytestmark = pytest.mark.anyio
 
@@ -26,6 +27,7 @@ async def test_redis_records_from_ids_batches_hgetall_with_pipeline() -> "None":
 
     assert [record.id for record in fetched] == [record.id for record in records]
     assert client.pipeline_calls == 1
+    assert client.pipeline_execute_calls == 1
     assert client.hgetall_calls == 0
 
 
@@ -101,6 +103,7 @@ async def test_redis_backend_touch_heartbeats_batches_records_with_one_pipeline(
     assert result.touched_task_ids == {first.id, second.id}
     assert result.missed_task_ids == {first.id, missing_id}
     assert client.pipeline_calls == 1
+    assert client.pipeline_execute_calls == 1
     assert client.hgetall_calls == 0
     stored_first = backend._record_from_mapping(client.hashes[backend._task_key(first.id)])
     stored_second = backend._record_from_mapping(client.hashes[backend._task_key(second.id)])
@@ -110,13 +113,47 @@ async def test_redis_backend_touch_heartbeats_batches_records_with_one_pipeline(
     assert stored_second.metadata == {"progress_detail": "row 501"}
 
 
+async def test_redis_backend_touch_heartbeats_rechecks_status_inside_pipeline_write() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+    record = QueuedTaskRecord(
+        task_name="tasks.redis.bulk_heartbeat", status="running", retry_count=0, metadata={"existing": "kept"}
+    )
+    task_key = backend._task_key(record.id)
+    client.hashes[task_key] = backend._record_to_mapping(record)
+
+    def complete_before_write() -> "None":
+        terminal = backend._record_from_mapping(client.hashes[task_key])
+        terminal.status = "completed"
+        terminal.heartbeat_at = None
+        terminal.metadata = {"existing": "kept"}
+        client.hashes[task_key] = backend._record_to_mapping(terminal)
+
+    client.after_hgetall_execute = complete_before_write
+    client.before_touch_eval = complete_before_write
+
+    result = await backend.touch_heartbeats([
+        HeartbeatTouch(task_id=record.id, expected_retry_count=0, metadata_patch={"progress_detail": "stale"})
+    ])
+    stored = backend._record_from_mapping(client.hashes[task_key])
+
+    assert result.touched_task_ids == set()
+    assert result.missed_task_ids == {record.id}
+    assert stored.status == "completed"
+    assert stored.heartbeat_at is None
+    assert stored.metadata == {"existing": "kept"}
+
+
 class _CountingRedisClient:
     def __init__(self) -> "None":
         self.hashes: "dict[str, dict[str, str]]" = {}
         self.sets: "dict[str, builtins.set[str]]" = {}
         self.strings: "dict[str, str]" = {}
+        self.after_hgetall_execute: "Callable[[], None] | None" = None
+        self.before_touch_eval: "Callable[[], None] | None" = None
         self.hgetall_calls = 0
         self.pipeline_calls = 0
+        self.pipeline_execute_calls = 0
         self.pubsub_calls = 0
         self.scard_calls = 0
         self.smembers_calls = 0
@@ -224,6 +261,10 @@ class _CountingPipeline:
         self.operations.append(("hgetall", (key,), {}))
         return self
 
+    def eval(self, script: "str", numkeys: "int", *keys_and_args: "str") -> "_CountingPipeline":
+        self.operations.append(("eval", (script, numkeys, *keys_and_args), {}))
+        return self
+
     def hset(
         self,
         name: "str",
@@ -260,16 +301,24 @@ class _CountingPipeline:
         return self
 
     async def execute(self) -> "list[Any]":
+        self.client.pipeline_execute_calls += 1
         results: "list[Any]" = []
         operations = list(self.operations)
         self.operations.clear()
         for operation, args, kwargs in operations:
             results.append(self._execute_operation(operation, args, kwargs))
+        if operations and all(operation == "hgetall" for operation, _, _ in operations):
+            hook = self.client.after_hgetall_execute
+            self.client.after_hgetall_execute = None
+            if hook is not None:
+                hook()
         return results
 
     def _execute_operation(self, operation: "str", args: "tuple[Any, ...]", kwargs: "dict[str, Any]") -> "Any":
         if operation == "hgetall":
             return self.client.hashes.get(cast("str", args[0]), {})
+        if operation == "eval":
+            return self._execute_eval(args)
         if operation == "hset":
             return self._execute_hset(args, kwargs)
         if operation == "sadd":
@@ -286,6 +335,27 @@ class _CountingPipeline:
             self.client.scard_calls += 1
             return len(self.client.sets.get(cast("str", args[0]), set()))
         return None
+
+    def _execute_eval(self, args: "tuple[Any, ...]") -> "int":
+        hook = self.client.before_touch_eval
+        self.client.before_touch_eval = None
+        if hook is not None:
+            hook()
+        key = cast("str", args[2])
+        expected_retry_count = cast("str", args[3])
+        heartbeat_at = cast("str", args[4])
+        metadata_patch = cast("str", args[5])
+        mapping = self.client.hashes.get(key)
+        if not mapping or mapping.get("status") != "running":
+            return 0
+        if expected_retry_count and mapping.get("retry_count") != expected_retry_count:
+            return 0
+        mapping["heartbeat_at"] = heartbeat_at
+        if metadata_patch:
+            metadata = json.loads(mapping.get("metadata") or "{}")
+            metadata.update(json.loads(metadata_patch))
+            mapping["metadata"] = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
+        return 1
 
     def _execute_hset(self, args: "tuple[Any, ...]", kwargs: "dict[str, Any]") -> "int":
         name = cast("str", args[0])
