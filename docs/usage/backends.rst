@@ -893,7 +893,7 @@ queue-domain counters and custom queue spans. SQLSpec driver query spans and
 statement observers remain controlled by the SQLSpec config.
 
 When package-level queue observability is enabled through
-``QueueConfig(observability_config=QueueObservabilityConfig(...))``, SQLSpec
+``QueueConfig(observability=ObservabilityConfig(...))``, SQLSpec
 queue-domain counters and custom queue spans are disabled by default to avoid
 double counting the same queue operations. SQLSpec driver query spans and
 statement observers still run from the SQLSpec config.

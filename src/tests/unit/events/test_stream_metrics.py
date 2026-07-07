@@ -24,7 +24,9 @@ pytestmark = pytest.mark.anyio
 async def test_plugin_startup_publishes_observability_runtime_on_state(monkeypatch: "pytest.MonkeyPatch") -> None:
     runtime = _FakeObservabilityRuntime()
 
-    def create_runtime(config: "ObservabilityConfig | None", *, app: Litestar | None = None) -> "_FakeObservabilityRuntime":
+    def create_runtime(
+        config: "ObservabilityConfig | None", *, app: Litestar | None = None
+    ) -> "_FakeObservabilityRuntime":
         assert config is not None
         assert app is not None
         return runtime
@@ -52,9 +54,7 @@ async def test_websocket_stream_metrics_recorded_with_bounded_labels() -> None:
     channels = _FakeChannelsPlugin([event.to_json(), event.to_json()])
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
-        QueueConfig(
-            event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)
-        ),
+        QueueConfig(event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
     )
 
@@ -76,9 +76,7 @@ async def test_websocket_stream_metrics_record_heartbeats() -> None:
     channels = _FakeChannelsPlugin([], delay_before_close=0.01)
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
-        QueueConfig(
-            event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)
-        ),
+        QueueConfig(event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0.001),
     )
 
@@ -108,9 +106,7 @@ async def test_authorizer_denial_records_authz_reason() -> None:
     channels = _FakeChannelsPlugin([])
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
-        QueueConfig(
-            event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)
-        ),
+        QueueConfig(event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)),
         EventStreamConfig(scopes={"task"}, channel_authorizer=lambda *_: False, heartbeat_interval=0),
     )
 
@@ -120,9 +116,7 @@ async def test_authorizer_denial_records_authz_reason() -> None:
     assert exc_info.value.code == 4003
     assert not socket.accepted
     assert channels.subscribed_channels is None
-    assert runtime.counters == [
-        ("litestar_queues.stream.auth_denials", 1, {"scope": "task", "reason": "authz"})
-    ]
+    assert runtime.counters == [("litestar_queues.stream.auth_denials", 1, {"scope": "task", "reason": "authz"})]
     _assert_bounded_labels(runtime)
 
 
