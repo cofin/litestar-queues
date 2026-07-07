@@ -178,6 +178,7 @@ class QueueConfig:
 
         from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
         from litestar_queues.events import (
+            EventBufferConfig,
             EventConfig,
             EventLogConfig,
             EventStreamConfig,
@@ -221,6 +222,7 @@ class QueueConfig:
             "CloudRunExecutionConfig": CloudRunExecutionConfig,
             "CloudRunExecutionStatus": CloudRunExecutionStatus,
             "EventConfig": EventConfig,
+            "EventBufferConfig": EventBufferConfig,
             "EventLogConfig": EventLogConfig,
             "EventStreamConfig": EventStreamConfig,
             "ImmediateExecutionBackend": ImmediateExecutionBackend,

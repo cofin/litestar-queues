@@ -21,7 +21,7 @@ from litestar_queues.events.models import (
     QueueEventType,
 )
 from litestar_queues.events.producer import QueueEventProducer, create_event_producer
-from litestar_queues.events.publisher import EventConfig, QueueEventPublisher
+from litestar_queues.events.publisher import EventBufferConfig, EventConfig, QueueEventPublisher
 from litestar_queues.events.sinks import InMemoryQueueEventSink, NoopQueueEventSink, QueueEventSink
 from litestar_queues.events.stream_config import EventStreamConfig
 
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     "ChannelsQueueEventSink",
+    "EventBufferConfig",
     "EventConfig",
     "EventLogConfig",
     "EventStreamConfig",

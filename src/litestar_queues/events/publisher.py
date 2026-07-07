@@ -1,8 +1,8 @@
 """Queue event publisher."""
 
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from litestar_queues.events.log import QueueEventLog
     from litestar_queues.events.models import QueueEvent
 
-__all__ = ("EventConfig", "QueueEventPublisher")
+__all__ = ("EventBufferConfig", "EventConfig", "QueueEventPublisher")
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,22 @@ _LIFECYCLE_EVENT_TYPES = frozenset({
 
 
 @dataclass(slots=True)
+class EventBufferConfig:
+    """Producer-side micro-batch buffer for live event delivery."""
+
+    enabled: "bool" = True
+    buffer_size: "int" = 20
+    flush_interval: "float" = 0.5
+    max_pending: "int" = 2000
+    overflow: 'Literal["drop_oldest", "drop_newest", "block", "error"]' = "drop_oldest"
+
+
+@dataclass(slots=True)
 class EventConfig:
     """Configuration for queue event publishing."""
 
     enabled: "bool" = True
+    buffer: "EventBufferConfig" = field(default_factory=EventBufferConfig)
     sink: "QueueEventSink | None" = None
     channels_backend: "ChannelsLike | None" = None
     strict: "bool" = False
