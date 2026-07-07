@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
-from litestar_queues.events import EventConfig, EventLogConfig, EventStreamConfig
+from litestar_queues.events import EventConfig, EventLogConfig, EventStreamConfig, QueueEventProducer
 
 logger = getLogger(__name__)
 
@@ -139,6 +139,7 @@ class QueueConfig:
     error_sanitizer: "TaskErrorSanitizer | None" = None
     in_app_worker: "bool" = True
     queue_service_dependency_key: "str" = "queue_service"
+    queue_events_dependency_key: "str" = "queue_events"
     queue_service_state_key: "str" = "queue_service"
     queue_worker_state_key: "str" = "queue_worker"
     queue_event_publisher_state_key: "str" = "queue_event_publisher"
@@ -188,6 +189,7 @@ class QueueConfig:
             QueueEventEntityRef,
             QueueEventLog,
             QueueEventLogRecord,
+            QueueEventProducer,
             QueueEventPublisher,
             QueueEventStageSummary,
             TaskExecutionContext,
@@ -241,6 +243,7 @@ class QueueConfig:
             "QueueEventEntityRef": QueueEventEntityRef,
             "QueueEventLog": QueueEventLog,
             "QueueEventLogRecord": QueueEventLogRecord,
+            "QueueEventProducer": QueueEventProducer,
             "QueueEventPublisher": QueueEventPublisher,
             "QueueEventStageSummary": QueueEventStageSummary,
             "QueuedTaskRecord": QueuedTaskRecord,
@@ -283,7 +286,10 @@ class QueueConfig:
         """Dependency providers for Litestar's DI system."""
         from litestar.di import Provide
 
-        return {self.queue_service_dependency_key: Provide(self.provide_service_dependency)}
+        return {
+            self.queue_service_dependency_key: Provide(self.provide_service_dependency),
+            self.queue_events_dependency_key: Provide(self.provide_event_producer_dependency),
+        }
 
     def get_service(self, state: "State | None" = None) -> "QueueService":
         """Return a QueueService for this configuration."""
@@ -367,3 +373,16 @@ class QueueConfig:
     async def provide_service_dependency(self, state: "State") -> 'AsyncIterator["QueueService"]':
         """Yield the application-scoped QueueService for Litestar dependency injection."""
         yield self.get_service(state)
+
+    async def provide_event_producer_dependency(self, state: "State") -> "AsyncIterator[QueueEventProducer]":
+        """Yield the application-scoped QueueEventProducer for Litestar dependency injection."""
+        from litestar_queues.events import QueueEventProducer
+
+        if self.queue_event_publisher_state_key not in state:
+            msg = (
+                "Queue event publisher is not available in app state under "
+                f"{self.queue_event_publisher_state_key!r}; ensure QueuePlugin startup has completed before "
+                "resolving queue events."
+            )
+            raise RuntimeError(msg)
+        yield QueueEventProducer(state[self.queue_event_publisher_state_key])

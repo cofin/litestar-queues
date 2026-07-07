@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import QueueEventLog, QueueEventPublisher
+    from litestar_queues.events import QueueEventLog, QueueEventProducer, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
@@ -94,6 +94,12 @@ class QueueService:
         if self._event_publisher is None:
             self._event_publisher = self._config.get_event_publisher()
         return self._event_publisher
+
+    def get_event_producer(self) -> "QueueEventProducer":
+        """Return a producer over this service's event publisher."""
+        from litestar_queues.events import QueueEventProducer
+
+        return QueueEventProducer(self.get_event_publisher())
 
     @property
     def observability_runtime(self) -> "QueueObservabilityRuntimeProtocol":
