@@ -257,72 +257,119 @@ Consuming Stream Events
 =======================
 
 Queue event streams expose the same event envelope through WebSocket and SSE.
-The package emits named SSE frames whose event name is the queue event type and
-whose data is the JSON form of ``QueueEvent.to_dict()``:
+WebSocket streams send one JSON object per message. Heartbeats are JSON frames
+with ``{"type": "ping"}``; clients should ignore those frames or use them only
+to update a connection liveness timestamp.
+
+The task stream is available to WebSocket clients at
+``/queues/events/tasks/{task_id}``. Custom WebSocket clients subscribe at
+``/queues/events/custom/{scope_key}``.
+
+The standalone WebSocket example in ``examples/htmx_realtime_websocket`` is a
+runnable server-rendered app. It registers task and custom-channel streams:
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/app.py
+   :language: python
+   :start-after: # -- docs-app-config-start --
+   :end-before: # -- docs-app-config-end --
+
+Its restart endpoint returns only WebSocket stream URLs to the browser:
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/app.py
+   :language: python
+   :start-after: # -- docs-routes-start --
+   :end-before: # -- docs-routes-end --
+
+The browser opens the plugin-owned WebSocket URLs and ignores ping frames:
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/resources/main.ts
+   :language: typescript
+   :start-after: // docs: websocket-client-start
+   :end-before: // docs: websocket-client-end
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/resources/main.ts
+   :language: typescript
+   :start-after: // docs: stream-adapter-start
+   :end-before: // docs: stream-adapter-end
+
+SSE streams emit named frames whose event name is the queue event type and whose
+data is the JSON form of ``QueueEvent.to_dict()``:
 
 .. code-block:: text
 
    event: task.progress
    data: {"id":"...","type":"task.progress","scope":"task",...}
 
-The same task stream is available to WebSocket clients at
-``/queues/events/tasks/{task_id}``. WebSocket streams send ``{"type": "ping"}``
-heartbeats; clients should ignore those frames or use them only to update a
-connection liveness timestamp. SSE streams send keepalive comments instead.
+SSE streams send keepalive comments instead of JSON ping frames. The task stream
+is available to SSE clients at ``/queues/events/sse/tasks/{task_id}``. Custom
+SSE clients subscribe at ``/queues/events/sse/custom/{scope_key}``.
 
-The standalone example in ``examples/htmx_realtime`` is a runnable
-server-rendered app. Its browser stream handling is plain queue-event JSON, and
-the app registers task and custom-channel streams:
+The standalone SSE example in ``examples/htmx_realtime_sse`` uses the same queue
+event configuration, but returns only SSE stream URLs to the browser:
 
-.. literalinclude:: ../../examples/htmx_realtime/app.py
+.. literalinclude:: ../../examples/htmx_realtime_sse/app.py
    :language: python
    :start-after: # -- docs-app-config-start --
    :end-before: # -- docs-app-config-end --
 
-Its task publishes heartbeat details, progress, logs, and a terminal completion
-event:
-
-.. literalinclude:: ../../examples/htmx_realtime/app.py
-   :language: python
-   :start-after: # -- docs-task-start --
-   :end-before: # -- docs-task-end --
-
-The restart endpoint enqueues the task and publishes an application-level custom
-channel message:
-
-.. literalinclude:: ../../examples/htmx_realtime/app.py
+.. literalinclude:: ../../examples/htmx_realtime_sse/app.py
    :language: python
    :start-after: # -- docs-routes-start --
    :end-before: # -- docs-routes-end --
 
-The page shell registers the Litestar Vite HTMX helper, uses
-``hx-ext="litestar"`` for ``ls-*`` JSON templates, and uses HTMX request
-attributes for the restart and custom-channel forms. The task-event stream
-adapter switches between the plugin-owned WebSocket and SSE URLs:
+Its browser client listens for the named queue event frames with
+``EventSource``:
 
-.. literalinclude:: ../../examples/htmx_realtime/resources/main.ts
+.. literalinclude:: ../../examples/htmx_realtime_sse/resources/main.ts
    :language: typescript
-   :start-after: // docs: htmx-extension-start
-   :end-before: // docs: htmx-extension-end
+   :start-after: // docs: sse-client-start
+   :end-before: // docs: sse-client-end
 
-.. literalinclude:: ../../examples/htmx_realtime/templates/index.html
-   :language: html
-   :start-after: <!-- docs: template-start -->
-   :end-before: <!-- docs: template-end -->
-
-.. literalinclude:: ../../examples/htmx_realtime/resources/main.ts
+.. literalinclude:: ../../examples/htmx_realtime_sse/resources/main.ts
    :language: typescript
    :start-after: // docs: stream-adapter-start
    :end-before: // docs: stream-adapter-end
 
-Backend-specific copies are available under ``examples/htmx_realtime_sqlspec``,
-``examples/htmx_realtime_advanced_alchemy``, ``examples/htmx_realtime_redis``,
-and ``examples/htmx_realtime_valkey``. The SQLSpec and Advanced Alchemy copies
+Both examples use the same task body, which publishes heartbeat details,
+progress, logs, and a terminal completion event:
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/app.py
+   :language: python
+   :start-after: # -- docs-task-start --
+   :end-before: # -- docs-task-end --
+
+The page shell registers the Litestar Vite HTMX helper, uses
+``hx-ext="litestar"`` for ``ls-*`` JSON templates, and uses HTMX request
+attributes for the restart and custom-channel forms:
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/resources/main.ts
+   :language: typescript
+   :start-after: // docs: htmx-extension-start
+   :end-before: // docs: htmx-extension-end
+
+.. literalinclude:: ../../examples/htmx_realtime_websocket/templates/index.html
+   :language: html
+   :start-after: <!-- docs: template-start -->
+   :end-before: <!-- docs: template-end -->
+
+.. literalinclude:: ../../examples/htmx_realtime_sse/templates/index.html
+   :language: html
+   :start-after: <!-- docs: template-start -->
+   :end-before: <!-- docs: template-end -->
+
+Backend-specific WebSocket copies are available under
+``examples/htmx_realtime_websocket_sqlspec``,
+``examples/htmx_realtime_websocket_advanced_alchemy``,
+``examples/htmx_realtime_websocket_redis``, and
+``examples/htmx_realtime_websocket_valkey``.
+
+Backend-specific SSE copies are available under
+``examples/htmx_realtime_sse_sqlspec``,
+``examples/htmx_realtime_sse_advanced_alchemy``,
+``examples/htmx_realtime_sse_redis``, and
+``examples/htmx_realtime_sse_valkey``. The SQLSpec and Advanced Alchemy copies
 use local ``aiosqlite`` files; Redis and Valkey read their connection URL from
 environment variables.
-
-Custom WebSocket clients subscribe at ``/queues/events/custom/{scope_key}``.
-Custom SSE clients subscribe at ``/queues/events/sse/custom/{scope_key}``.
 
 Subscriber backpressure is owned by the configured Litestar Channels plugin or
 backend. The default Channels subscriber backlog is unbounded. For browser

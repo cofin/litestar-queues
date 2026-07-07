@@ -6,26 +6,37 @@ test suite.
 
 ## Available Apps
 
-### `htmx_realtime/`
+### `htmx_realtime_websocket/`
 
-Litestar + HTMX + `litestar-vite` app for queue event streams. It runs with the
-default memory queue backend and a memory Channels backend in one process. The
-UI has two views:
+Litestar + HTMX + `litestar-vite` app for queue event streams over the
+plugin-owned WebSocket endpoints. It runs with the default memory queue backend
+and a memory Channels backend in one process.
 
-- An animated task-event crawl that can consume either WebSocket or SSE.
+### `htmx_realtime_sse/`
+
+Litestar + HTMX + `litestar-vite` app for queue event streams over the
+plugin-owned SSE endpoints. It runs with the default memory queue backend and a
+memory Channels backend in one process.
+
+Both apps have the same UI:
+
+- An animated task-event crawl fed by a task-scoped event stream.
 - A mission-control panel that publishes and receives custom channel events on
   `demo:mission-control`.
 
-### Backend Copies
+## Backend Copies
 
-Each copy has the same UI and event-stream behavior, but uses a different queue
-backend:
+Each transport has the same backend variants:
 
-- `htmx_realtime_sqlspec/`: `SQLSpecBackendConfig` with `AiosqliteConfig`.
-- `htmx_realtime_advanced_alchemy/`: `AdvancedAlchemyBackendConfig` with
+- `htmx_realtime_websocket_sqlspec/` and `htmx_realtime_sse_sqlspec/`:
+  `SQLSpecBackendConfig` with `AiosqliteConfig`.
+- `htmx_realtime_websocket_advanced_alchemy/` and
+  `htmx_realtime_sse_advanced_alchemy/`: `AdvancedAlchemyBackendConfig` with
   `sqlite+aiosqlite`.
-- `htmx_realtime_redis/`: `RedisBackendConfig`.
-- `htmx_realtime_valkey/`: `ValkeyBackendConfig`.
+- `htmx_realtime_websocket_redis/` and `htmx_realtime_sse_redis/`:
+  `RedisBackendConfig`.
+- `htmx_realtime_websocket_valkey/` and `htmx_realtime_sse_valkey/`:
+  `ValkeyBackendConfig`.
 
 Start with the README in the directory you want to run. Every example uses the
 optional `litestar-queues[examples]` Python extra and local frontend
