@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         ChannelsStreamBackend,
         ChannelsSubscriptionBackend,
         ChannelsWaitPublishedBackend,
+        ChannelsWaitPublishedManyBackend,
     )
     from litestar_queues.events.chunking import QueueEventSizeEstimator
 
@@ -47,14 +48,38 @@ class ChannelsQueueEventSink:
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish an event to Litestar Channels."""
-        events: "Sequence[QueueEvent]" = (event,)
-        if self._max_payload_bytes is not None:
-            from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
-
-            estimator = self._payload_size_estimator or estimate_event_payload_bytes
-            events = split_event_batch_by_size(event, max_bytes=self._max_payload_bytes, size_estimator=estimator)
-        for event_chunk in events:
+        for event_chunk in self._event_chunks(event):
             await self._publish_one(event_chunk, channels=channels)
+
+    async def publish_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
+        """Publish grouped events to Litestar Channels.
+
+        Returns:
+            None.
+        """
+        grouped: "dict[tuple[str, ...], list[QueueEvent]]" = {}
+        for event, channels in batch:
+            grouped.setdefault(tuple(channels), []).extend(self._event_chunks(event))
+        for channels, events in grouped.items():
+            await self._publish_group(events, channels=channels)
+
+    def _event_chunks(self, event: "QueueEvent") -> "Sequence[QueueEvent]":
+        if self._max_payload_bytes is None:
+            return (event,)
+        from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
+
+        estimator = self._payload_size_estimator or estimate_event_payload_bytes
+        return split_event_batch_by_size(event, max_bytes=self._max_payload_bytes, size_estimator=estimator)
+
+    async def _publish_group(self, events: "Sequence[QueueEvent]", *, channels: "Sequence[str]") -> "None":
+        if hasattr(self._channels_backend, "wait_published_many"):
+            wait_backend = cast("ChannelsWaitPublishedManyBackend", self._channels_backend)
+            result = wait_backend.wait_published_many([event.to_json() for event in events], list(channels))
+            if inspect.isawaitable(result):
+                await result
+            return
+        for event in events:
+            await self._publish_one(event, channels=channels)
 
     async def _publish_one(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         data = event.to_json()
