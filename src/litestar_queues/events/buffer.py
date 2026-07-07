@@ -46,11 +46,7 @@ class LiveEventBuffer:
     )
 
     def __init__(
-        self,
-        config: "EventBufferConfig",
-        *,
-        sink_publish: "SinkPublish",
-        record_drop: "RecordDrop",
+        self, config: "EventBufferConfig", *, sink_publish: "SinkPublish", record_drop: "RecordDrop"
     ) -> "None":
         self._config = config
         self._sink_publish = sink_publish

@@ -133,10 +133,7 @@ async def test_terminal_direct_publish_also_flushes() -> "None":
 async def test_strict_event_log_failure_prevents_buffering() -> "None":
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(
-        sink,
-        event_log=FailingEventLog(),
-        event_log_strict=True,
-        buffer_config=EventBufferConfig(buffer_size=10),
+        sink, event_log=FailingEventLog(), event_log_strict=True, buffer_config=EventBufferConfig(buffer_size=10)
     )
 
     with pytest.raises(RuntimeError, match="history failed"):

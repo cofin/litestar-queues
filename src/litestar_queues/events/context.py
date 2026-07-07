@@ -82,7 +82,9 @@ class TaskExecutionContext:
         immediate: "bool" = False,
     ) -> "None":
         """Publish a task log event."""
-        await self.publish("task.log", level=level, message=message, payload=payload, channels=channels, immediate=immediate)
+        await self.publish(
+            "task.log", level=level, message=message, payload=payload, channels=channels, immediate=immediate
+        )
 
     async def event(
         self,

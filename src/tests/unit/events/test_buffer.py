@@ -39,11 +39,7 @@ async def test_add_below_size_does_not_flush() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=3),
-        sink_publish=sink.publish,
-        record_drop=_ignore_drop,
-    )
+    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=3), sink_publish=sink.publish, record_drop=_ignore_drop)
 
     await buffer.add(_event("task.progress"), ("tasks",))
     await buffer.add(_event("task.log"), ("tasks",))
@@ -59,11 +55,7 @@ async def test_size_threshold_triggers_eager_flush() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=2),
-        sink_publish=sink.publish,
-        record_drop=_ignore_drop,
-    )
+    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=2), sink_publish=sink.publish, record_drop=_ignore_drop)
 
     await buffer.add(_event("task.progress"), ("tasks",))
     await buffer.add(_event("task.log"), ("tasks",))
@@ -75,11 +67,7 @@ async def test_task_scoped_flush_drains_only_that_task() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10),
-        sink_publish=sink.publish,
-        record_drop=_ignore_drop,
-    )
+    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=10), sink_publish=sink.publish, record_drop=_ignore_drop)
 
     await buffer.add(_event("task.progress.1", task_id="task-a"), ("task-a",))
     await buffer.add(_event("task.progress.2", task_id="task-b"), ("task-b",))
@@ -180,9 +168,7 @@ async def test_interval_flush() -> "None":
 
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10, flush_interval=0.01),
-        sink_publish=sink.publish,
-        record_drop=_ignore_drop,
+        EventBufferConfig(buffer_size=10, flush_interval=0.01), sink_publish=sink.publish, record_drop=_ignore_drop
     )
 
     buffer.start()
@@ -199,11 +185,7 @@ async def test_stop_drains_remainder_before_return() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10),
-        sink_publish=sink.publish,
-        record_drop=_ignore_drop,
-    )
+    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=10), sink_publish=sink.publish, record_drop=_ignore_drop)
 
     await buffer.add(_event("one"), ("tasks",))
     await buffer.stop()
