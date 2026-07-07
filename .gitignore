@@ -170,6 +170,7 @@ cython_debug/
 
 node_modules
 examples/**/node_modules/
+examples/**/.litestar.json
 examples/**/package-lock.json
 examples/**/public/
 examples/**/hot
