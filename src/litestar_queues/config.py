@@ -145,6 +145,7 @@ class QueueConfig:
     queue_event_publisher_state_key: "str" = "queue_event_publisher"
     queue_event_channels_backend_state_key: "str" = "queue_event_channels_backend"
     queue_event_stream_state_key: "str" = "queue_event_stream"
+    queue_observability_runtime_state_key: "str" = "queue_observability_runtime"
     event: "EventConfig | None" = None
     event_stream: "EventStreamConfig | None" = None
     observability: "ObservabilityConfig | None" = None

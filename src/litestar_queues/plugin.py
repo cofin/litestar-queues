@@ -126,6 +126,8 @@ class QueuePlugin(InitPlugin):
             from litestar_queues.observability import create_observability_runtime
 
             observability_runtime = create_observability_runtime(observability_config, app=app)
+        if observability_runtime is not None:
+            app.state[self._config.queue_observability_runtime_state_key] = observability_runtime
 
         self._service = QueueService(
             self._config,

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events._typing import ChannelsLike
     from litestar_queues.events.stream_config import EventStreamConfig
+    from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("StreamMetrics", "build_stream_router", "stream_queue_events_hardened", "stream_queue_events_sse")
 
@@ -49,6 +50,41 @@ class StreamMetrics(Protocol):
 
     def on_disconnect(self, scope: "QueueEventScope", duration_seconds: float) -> None:
         """Record stream connection lifetime."""
+
+
+class _RuntimeStreamMetrics:
+    """Record stream metrics through the queue observability runtime."""
+
+    __slots__ = ("_runtime",)
+
+    def __init__(self, runtime: "QueueObservabilityRuntimeProtocol") -> "None":
+        self._runtime = runtime
+
+    def on_connect(self, scope: "QueueEventScope") -> None:
+        attributes = _scope_attributes(scope)
+        self._runtime.record_counter("litestar_queues.stream.connections", attributes=attributes)
+        self._runtime.record_gauge_delta("litestar_queues.stream.active", 1, attributes=attributes)
+
+    def on_event(self, scope: "QueueEventScope") -> None:
+        self._runtime.record_counter("litestar_queues.stream.events_sent", attributes=_scope_attributes(scope))
+
+    def on_heartbeat(self, scope: "QueueEventScope") -> None:
+        self._runtime.record_counter("litestar_queues.stream.heartbeats", attributes=_scope_attributes(scope))
+
+    def on_dedup_drop(self, scope: "QueueEventScope") -> None:
+        self._runtime.record_counter("litestar_queues.stream.dedup_drops", attributes=_scope_attributes(scope))
+
+    def on_denial(self, scope: "QueueEventScope", reason: str) -> None:
+        attributes = _scope_attributes(scope)
+        attributes["reason"] = reason
+        self._runtime.record_counter("litestar_queues.stream.auth_denials", attributes=attributes)
+
+    def on_disconnect(self, scope: "QueueEventScope", duration_seconds: float) -> None:
+        attributes = _scope_attributes(scope)
+        self._runtime.record_gauge_delta("litestar_queues.stream.active", -1, attributes=attributes)
+        self._runtime.record_duration(
+            "litestar_queues.stream.connection.duration", duration_seconds, attributes=attributes
+        )
 
 
 async def stream_queue_events_hardened(
@@ -175,6 +211,37 @@ def _record_metric(stream_metrics: StreamMetrics | None, method_name: str, *args
         getattr(stream_metrics, method_name)(*args)
 
 
+def _scope_attributes(scope: "QueueEventScope") -> "dict[str, str]":
+    return {"scope": scope}
+
+
+def _resolve_observability_runtime(
+    connection: Any, config: "QueueConfig"
+) -> "QueueObservabilityRuntimeProtocol | None":
+    if config.observability is None:
+        return None
+    app = getattr(connection, "app", None)
+    state = getattr(app, "state", None)
+    if state is None:
+        return None
+    key = config.queue_observability_runtime_state_key
+    with contextlib.suppress(KeyError, TypeError):
+        runtime = state[key]
+        if runtime is not None:
+            return runtime
+    runtime = getattr(state, key, None)
+    if runtime is not None:
+        return runtime
+    return None
+
+
+def _resolve_stream_metrics(connection: Any, config: "QueueConfig") -> "StreamMetrics | None":
+    runtime = _resolve_observability_runtime(connection, config)
+    if runtime is not None and runtime.enabled:
+        return _RuntimeStreamMetrics(runtime)
+    return None
+
+
 def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig") -> "Router":
     """Build plugin-owned queue-event WebSocket handlers for configured scopes.
 
@@ -189,20 +256,29 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
     authorizer = stream_config.channel_authorizer
     history = stream_config.history
 
-    async def _authorize(connection: Any, scope: "QueueEventScope", key: str | None, *, websocket: bool) -> None:
+    async def _authorize(
+        connection: Any,
+        scope: "QueueEventScope",
+        key: str | None,
+        *,
+        websocket: bool,
+        stream_metrics: StreamMetrics | None,
+    ) -> None:
         if authorizer is None:
             return
         result = authorizer(connection, scope, key)
         if inspect.isawaitable(result):
             result = await result
         if not result:
+            _record_metric(stream_metrics, "on_denial", scope, "authz")
             msg = "Channel authorization denied"
             if websocket:
                 raise WebSocketException(detail=msg, code=4003)
             raise PermissionDeniedException(detail=msg)
 
     async def _relay(socket: "WebSocket", scope: "QueueEventScope", key: str | None, channel: str) -> None:
-        await _authorize(socket, scope, key, websocket=True)
+        stream_metrics = _resolve_stream_metrics(socket, config)
+        await _authorize(socket, scope, key, websocket=True, stream_metrics=stream_metrics)
         backend = _resolve_channels_backend(socket)
         if backend is None and config.event is not None:
             backend = config.event.channels_backend
@@ -212,11 +288,13 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
             history=history,
             channels_backend=backend,
             heartbeat_interval=stream_config.heartbeat_interval,
+            stream_metrics=stream_metrics,
             scope=scope,
         )
 
     async def _sse(connection: Any, scope: "QueueEventScope", key: str | None, channel: str) -> Any:
-        await _authorize(connection, scope, key, websocket=False)
+        stream_metrics = _resolve_stream_metrics(connection, config)
+        await _authorize(connection, scope, key, websocket=False, stream_metrics=stream_metrics)
         backend = _resolve_channels_backend(connection)
         if backend is None and config.event is not None:
             backend = config.event.channels_backend
@@ -226,6 +304,7 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
             history=history,
             channels_backend=backend,
             heartbeat_interval=stream_config.heartbeat_interval,
+            stream_metrics=stream_metrics,
             scope=scope,
         )
 
