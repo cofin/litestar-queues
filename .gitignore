@@ -206,3 +206,5 @@ GEMINI.md
 test-build
 .antigravitycli/
 opencode.json
+.playwright-mcp
+.python-version
