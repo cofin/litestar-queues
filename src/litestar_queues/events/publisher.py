@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
-from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink
+from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, default_publish_many
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -94,7 +94,7 @@ class QueueEventPublisher:
         self._event_log = event_log
         self._event_log_strict = event_log_strict
         self._buffer = (
-            LiveEventBuffer(buffer_config, sink_publish=self._deliver_live, record_drop=_ignore_buffer_drop)
+            LiveEventBuffer(buffer_config, sink_publish=self._deliver_live_many, record_drop=_ignore_buffer_drop)
             if buffer_config is not None and buffer_config.enabled
             else None
         )
@@ -185,6 +185,21 @@ class QueueEventPublisher:
                 "Queue event publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},
+            )
+
+    async def _deliver_live_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
+        try:
+            if hasattr(self._sink, "publish_many"):
+                await self._sink.publish_many(batch)
+            else:
+                await default_publish_many(self._sink, batch)
+        except Exception:
+            if self.strict:
+                raise
+            logger.warning(
+                "Queue event batch publish failed",
+                exc_info=True,
+                extra={"queue_event_count": len(batch)},
             )
 
     async def _record_event(self, event: "QueueEvent") -> "None":

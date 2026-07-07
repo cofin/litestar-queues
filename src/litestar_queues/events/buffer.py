@@ -19,7 +19,7 @@ __all__ = ("LiveEventBuffer", "event_buffer_key")
 logger = logging.getLogger(__name__)
 
 EventBufferKey: TypeAlias = str | tuple[str, str, str | None]
-SinkPublish = Callable[["QueueEvent", Sequence[str]], Awaitable[None]]
+SinkPublish = Callable[[Sequence[tuple["QueueEvent", Sequence[str]]]], Awaitable[None]]
 RecordDrop = Callable[[str], None]
 
 
@@ -89,8 +89,8 @@ class LiveEventBuffer:
         async with self._condition:
             items = self._drain(key=key)
             self._condition.notify_all()
-        for item in items:
-            await self._sink_publish(item.event, item.channels)
+        if items:
+            await self._sink_publish(tuple((item.event, item.channels) for item in items))
 
     def start(self) -> "None":
         """Start the interval flush loop if it is not already running.
