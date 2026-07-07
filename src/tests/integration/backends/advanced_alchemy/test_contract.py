@@ -279,14 +279,16 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert cancelled is not None
     assert cancelled.status == "cancelled"
 
-    running = await advanced_alchemy_backend.enqueue("tasks.heartbeat", max_retries=1)
+    running = await advanced_alchemy_backend.enqueue("tasks.heartbeat", max_retries=1, metadata={"existing": "kept"})
     claimed = await advanced_alchemy_backend.claim_task(running.id)
 
     assert claimed is not None
     assert claimed.heartbeat_at is not None
 
     result = await advanced_alchemy_backend.touch_heartbeats([
-        HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)
+        HeartbeatTouch(
+            task_id=claimed.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 5"}
+        )
     ])
     touched = await advanced_alchemy_backend.get_task(claimed.id)
 
@@ -295,6 +297,7 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert touched is not None
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at
+    assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
 
     stale_result = await advanced_alchemy_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
     assert stale_result.requeued == 1
