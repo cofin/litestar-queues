@@ -50,9 +50,5 @@ class ChannelsStreamBackend(Protocol):
 
 
 ChannelsLike: TypeAlias = (
-    ChannelsPublishBackend
-    | ChannelsWaitPublishedBackend
-    | ChannelsWaitPublishedManyBackend
-    | ChannelsSubscriptionBackend
-    | ChannelsStreamBackend
+    ChannelsPublishBackend | ChannelsWaitPublishedBackend | ChannelsSubscriptionBackend | ChannelsStreamBackend
 )
