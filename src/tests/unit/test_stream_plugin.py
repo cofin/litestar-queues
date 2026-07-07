@@ -23,6 +23,11 @@ def test_enabled_stream_config_registers_scope_routes() -> None:
         "/queues/events/workers/{worker_id:str}",
         "/queues/events/global",
         "/queues/events/custom/{scope_key:str}",
+        "/queues/events/sse/tasks/{task_id:str}",
+        "/queues/events/sse/queues/{queue:str}",
+        "/queues/events/sse/workers/{worker_id:str}",
+        "/queues/events/sse/global",
+        "/queues/events/sse/custom/{scope_key:str}",
     }
 
 
@@ -37,7 +42,7 @@ def test_enabled_stream_config_respects_configured_scopes() -> None:
 
     app = Litestar(plugins=[channels, plugin], openapi_config=None)
 
-    assert _stream_paths(app) == {"/events/tasks/{task_id:str}"}
+    assert _stream_paths(app) == {"/events/tasks/{task_id:str}", "/events/sse/tasks/{task_id:str}"}
 
 
 def test_disabled_stream_config_registers_no_routes() -> None:

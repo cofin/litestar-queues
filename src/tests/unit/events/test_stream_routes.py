@@ -26,13 +26,18 @@ def test_build_stream_router_registers_all_scopes_by_default() -> None:
         "/queues/events/workers/{worker_id:str}",
         "/queues/events/global",
         "/queues/events/custom/{scope_key:str}",
+        "/queues/events/sse/tasks/{task_id:str}",
+        "/queues/events/sse/queues/{queue:str}",
+        "/queues/events/sse/workers/{worker_id:str}",
+        "/queues/events/sse/global",
+        "/queues/events/sse/custom/{scope_key:str}",
     }
 
 
 def test_build_stream_router_narrows_to_configured_scopes() -> None:
     router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}))
 
-    assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}"}
+    assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}", "/queues/events/sse/tasks/{task_id:str}"}
 
 
 def test_build_stream_router_ignores_unrecognized_scopes() -> None:
@@ -40,7 +45,7 @@ def test_build_stream_router_ignores_unrecognized_scopes() -> None:
 
     router = build_stream_router(QueueConfig(), stream_config)
 
-    assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}"}
+    assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}", "/queues/events/sse/tasks/{task_id:str}"}
 
 
 def test_stream_router_applies_guards_and_denies_before_accept() -> None:
