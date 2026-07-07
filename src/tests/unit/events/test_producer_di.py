@@ -19,9 +19,7 @@ def test_queue_events_injects_producer() -> None:
         return {"status": "ok"}
 
     with create_test_client(
-        route_handlers=[publish],
-        plugins=[QueuePlugin(QueueConfig(event=EventConfig(sink=sink)))],
-        openapi_config=None,
+        route_handlers=[publish], plugins=[QueuePlugin(QueueConfig(event=EventConfig(sink=sink)))], openapi_config=None
     ) as client:
         response = client.post("/events")
 

@@ -341,12 +341,14 @@ import sys
 import litestar_queues
 import litestar_queues.events
 from litestar_queues import QueueConfig
-from litestar_queues.events import EventStreamConfig, QueueEventProducer
+from litestar_queues.events import EventStreamConfig, QueueEventProducer, create_event_producer
 
 if QueueConfig().signature_namespace["EventStreamConfig"] is not EventStreamConfig:
     raise SystemExit("EventStreamConfig missing from signature namespace")
 if QueueConfig().signature_namespace["QueueEventProducer"] is not QueueEventProducer:
     raise SystemExit("QueueEventProducer missing from signature namespace")
+if create_event_producer is None:
+    raise SystemExit("create_event_producer missing from events")
 
 forbidden = (
     "litestar_queues.events.streaming",

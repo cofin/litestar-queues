@@ -20,7 +20,7 @@ from litestar_queues.events.models import (
     QueueEventScope,
     QueueEventType,
 )
-from litestar_queues.events.producer import QueueEventProducer
+from litestar_queues.events.producer import QueueEventProducer, create_event_producer
 from litestar_queues.events.publisher import EventConfig, QueueEventPublisher
 from litestar_queues.events.sinks import InMemoryQueueEventSink, NoopQueueEventSink, QueueEventSink
 from litestar_queues.events.stream_config import EventStreamConfig
@@ -49,6 +49,7 @@ __all__ = (
     "QueueEventType",
     "TaskExecutionContext",
     "beat",
+    "create_event_producer",
     "get_current_task_context",
     "publish_task_event",
     "publish_task_log",
