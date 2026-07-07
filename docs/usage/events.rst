@@ -58,8 +58,8 @@ Core fields (Python name → wire name):
   verbatim and are NOT renamed)
 * ``occurred_at`` → ``occurredAt`` (RFC 3339 UTC with a trailing ``Z``)
 * ``event_key`` → ``eventKey``: optional dedup key for
-  subscribers; ``stream_queue_events`` deduplicates on this when set and falls
-  back to ``id`` otherwise.
+  subscribers; plugin-owned streams deduplicate on this when set and fall back
+  to ``id`` otherwise.
 
 Publishing From Tasks
 =====================
@@ -97,27 +97,36 @@ Streaming With Litestar Channels
 ================================
 
 ``ChannelsQueueEventSink`` publishes event JSON to an app-owned Channels backend
-or plugin. Use ``stream_queue_events()`` from a WebSocket route when clients need
-live updates:
+or plugin. Configure ``EventStreamConfig`` on ``QueueConfig`` when clients need
+live updates. The plugin registers WebSocket and SSE endpoints for the configured
+scopes and applies the same guards and ``channel_authorizer`` to both transports:
 
 .. code-block:: python
 
-   from litestar import websocket
-   from litestar.connection import WebSocket
-   from litestar_queues.events import QueueChannels, stream_queue_events
+   from litestar_queues import QueueConfig, QueuePlugin
+   from litestar_queues.events import EventConfig, EventStreamConfig
 
 
-   @websocket("/jobs/{task_id:str}/events")
-   async def task_events(socket: WebSocket, task_id: str) -> None:
-       await stream_queue_events(socket, [QueueChannels.task(task_id)])
+   config = QueueConfig(
+       event=EventConfig(channels_backend=channels),
+       event_stream=EventStreamConfig(
+           path="/queues/events",
+           scopes={"task", "queue", "worker", "global", "custom"},
+           guards=[...],
+           channel_authorizer=authorize_channel,
+       ),
+   )
 
-The application owns route paths, authorization, tenant filtering, and the
-Channels backend configuration.
+   plugin = QueuePlugin(config)
 
-Subscribers connected through ``stream_queue_events`` receive at-most-once
-delivery per ``eventKey`` (or per ``id`` when no key is set) within a
-single connection. Set ``QueueEvent(..., event_key=...)`` at publish
-time when worker-level retries should not double-emit downstream.
+The default path is ``/queues/events``. Task-scoped streams are available at
+``/queues/events/tasks/{task_id}`` for WebSocket clients and
+``/queues/events/sse/tasks/{task_id}`` for SSE clients. Queue, worker, global,
+and custom scopes follow the same path pattern.
+
+Subscribers receive at-most-once delivery per ``eventKey`` (or per ``id`` when
+no key is set) within a single connection. Set ``QueueEvent(..., event_key=...)``
+at publish time when worker-level retries should not double-emit downstream.
 
 Durable Event History
 =====================

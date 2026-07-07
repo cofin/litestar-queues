@@ -26,7 +26,7 @@ from litestar_queues.events.sinks import InMemoryQueueEventSink, NoopQueueEventS
 from litestar_queues.events.stream_config import EventStreamConfig
 
 if TYPE_CHECKING:
-    from litestar_queues.events.litestar import ChannelsQueueEventSink, stream_queue_events
+    from litestar_queues.events.litestar import ChannelsQueueEventSink
 
 __all__ = (
     "ChannelsQueueEventSink",
@@ -56,7 +56,6 @@ __all__ = (
     "publish_task_log",
     "publish_task_progress",
     "require_current_task_context",
-    "stream_queue_events",
 )
 
 
@@ -70,9 +69,5 @@ def __getattr__(name: "str") -> "Any":
         from litestar_queues.events.litestar import ChannelsQueueEventSink
 
         return ChannelsQueueEventSink
-    if name == "stream_queue_events":
-        from litestar_queues.events.litestar import stream_queue_events
-
-        return stream_queue_events
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

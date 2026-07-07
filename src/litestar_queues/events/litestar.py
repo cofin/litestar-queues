@@ -1,7 +1,6 @@
 """Litestar Channels helpers for queue events."""
 
 import inspect
-from collections import OrderedDict
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, cast
 
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
     )
     from litestar_queues.events.chunking import QueueEventSizeEstimator
 
-__all__ = ("ChannelsQueueEventSink", "stream_queue_events")
+__all__ = ("ChannelsQueueEventSink",)
 
 _STREAM_DEDUP_MAX_KEYS = 1024
 
@@ -91,45 +90,6 @@ class ChannelsQueueEventSink:
             result = publish_backend.publish(data, list(channels))
         if inspect.isawaitable(result):
             await result
-
-
-async def stream_queue_events(
-    socket: "Any", channels: "Sequence[str]", *, history: "int" = 0, channels_backend: "ChannelsLike | None" = None
-) -> "None":
-    """Stream queue events from an app-owned Channels subscription to a WebSocket.
-
-    The caller owns route paths, guards, tenant filtering, and authorization.
-
-    Raises:
-        RuntimeError: If no Channels backend or plugin can be resolved.
-    """
-    backend = channels_backend or _resolve_channels_backend(socket)
-    if backend is None:
-        msg = "A Litestar Channels backend or plugin is required to stream queue events."
-        raise RuntimeError(msg)
-
-    await socket.accept()
-    seen_dedup_keys: "OrderedDict[str, None]" = OrderedDict()
-    async with _event_stream(backend, channels, history=history) as events:
-        async for raw_event in events:
-            event = _decode_event(raw_event)
-            if event is None:
-                continue
-            dedup_key = event.event_key if event.event_key is not None else event.id
-            if dedup_key in seen_dedup_keys:
-                seen_dedup_keys.move_to_end(dedup_key)
-                continue
-            seen_dedup_keys[dedup_key] = None
-            if len(seen_dedup_keys) > _STREAM_DEDUP_MAX_KEYS:
-                seen_dedup_keys.popitem(last=False)
-            try:
-                await socket.send_json(event.to_dict())
-            except (OSError, RuntimeError):
-                break
-            except Exception as exc:
-                if exc.__class__.__name__ == "WebSocketDisconnect":
-                    break
-                raise
 
 
 def _resolve_channels_backend(socket: "Any") -> "ChannelsLike | None":
