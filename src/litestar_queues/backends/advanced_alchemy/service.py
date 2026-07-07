@@ -8,7 +8,7 @@ from advanced_alchemy.operations import OnConflictUpsert
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from advanced_alchemy.utils.serialization import decode_json as _decode_json
 from advanced_alchemy.utils.serialization import encode_json as _encode_json
-from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import and_, case, delete, desc, func, literal, or_, select, update
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.exc import UnmappedColumnError
 
@@ -304,30 +304,53 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             return result
 
         model_type = self.model_type
+        now = _utc_now()
+        groups: "dict[int | None, dict[UUID, HeartbeatTouch]]" = {}
         for touch in touches:
-            now = _utc_now()
-            criteria = [model_type.id == touch.task_id, model_type.status == "running"]
-            if touch.expected_retry_count is not None:
-                criteria.append(model_type.retry_count == touch.expected_retry_count)
+            groups.setdefault(touch.expected_retry_count, {})[touch.task_id] = touch
+
+        for expected_retry_count, grouped_touches in groups.items():
+            task_ids = set(grouped_touches)
+            criteria = [model_type.id.in_(task_ids), model_type.status == "running"]
+            if expected_retry_count is not None:
+                criteria.append(model_type.retry_count == expected_retry_count)
+            models = (await self.repository.session.execute(select(model_type).where(*criteria))).scalars().all()
+            models_by_id = {UUID(str(model.id)): model for model in models}
+            touched_task_ids = set(models_by_id)
+            result.missed_task_ids.update(task_ids - touched_task_ids)
+            if not touched_task_ids:
+                continue
+
             values: "dict[str, Any]" = {"heartbeat_at": now}
-            if touch.metadata_patch:
-                model_result = await self.repository.session.execute(
-                    select(model_type).where(model_type.id == touch.task_id)
-                )
-                model = model_result.scalar_one_or_none()
-                if model is None:
-                    result.missed_task_ids.add(touch.task_id)
+            metadata_column = model_type.__table__.c.metadata_json
+            metadata_cases: "list[tuple[Any, Any]]" = []
+            for task_id, model in models_by_id.items():
+                metadata_patch = grouped_touches[task_id].metadata_patch
+                if not metadata_patch:
                     continue
-                metadata = dict(_deserialize_json(model.metadata_json))
-                metadata.update(touch.metadata_patch)
-                values["metadata_json"] = _serialize_json(metadata)
+                metadata = dict(_deserialize_json(model.metadata_json) or {})
+                metadata.update(metadata_patch)
+                metadata_cases.append((
+                    model_type.id == task_id,
+                    literal(_serialize_json(metadata), type_=metadata_column.type),
+                ))
+            if metadata_cases:
+                values["metadata_json"] = case(*metadata_cases, else_=metadata_column)
+
+            update_criteria = [model_type.id.in_(touched_task_ids), model_type.status == "running"]
+            if expected_retry_count is not None:
+                update_criteria.append(model_type.retry_count == expected_retry_count)
             execution_result = await self.repository.session.execute(
-                update(model_type).where(*criteria).values(_update_values(model_type, values, now=now))
+                update(model_type)
+                .where(*update_criteria)
+                .values(_update_values(model_type, values, now=now))
+                .execution_options(synchronize_session=False)
             )
-            if int(execution_result.rowcount or 0) == 1:
-                result.touched_task_ids.add(touch.task_id)
+            rowcount = int(execution_result.rowcount or 0)
+            if rowcount == len(touched_task_ids) or rowcount < 0:
+                result.touched_task_ids.update(touched_task_ids)
             else:
-                result.missed_task_ids.add(touch.task_id)
+                result.missed_task_ids.update(touched_task_ids)
         return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":

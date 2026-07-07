@@ -8,7 +8,7 @@ aiosqlite so they run without Docker.
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -18,7 +18,7 @@ pytest.importorskip("sqlalchemy")
 
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from litestar_queues import HeartbeatTouch
 from litestar_queues.backends.advanced_alchemy import (
@@ -174,6 +174,86 @@ async def test_advanced_alchemy_backend_dedicated_heartbeat_maker_handles_concur
             stored = await backend.get_task(record.id)
             assert stored is not None
             assert stored.heartbeat_at is not None
+    finally:
+        await backend.close()
+        await heartbeat_config.get_engine().dispose()
+
+
+async def test_advanced_alchemy_backend_touch_heartbeats_groups_updates_in_one_session(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """A multi-record heartbeat tick uses one heartbeat session and one grouped update."""
+    queue_path = tmp_path / "queue.db"
+    main_config = _sqlite_config(queue_path)
+    heartbeat_config = _sqlite_config(queue_path)
+    heartbeat_maker = async_sessionmaker(heartbeat_config.get_engine(), expire_on_commit=False)
+
+    backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=main_config,
+            model_class=HeartbeatQueueTask,
+            heartbeat_session_maker=heartbeat_maker,
+            create_schema=True,
+        )
+    )
+    await backend.open()
+    try:
+        records = [
+            await backend.enqueue(f"tasks.grouped.{index}", metadata={"index": index, "keep": True})
+            for index in range(3)
+        ]
+        claimed = []
+        for record in records:
+            c = await backend.claim_task(record.id)
+            assert c is not None
+            claimed.append(c)
+
+        original_heartbeat = AdvancedAlchemyQueueBackend._heartbeat_operation
+        heartbeat_calls = 0
+
+        @contextlib.asynccontextmanager
+        async def counting_heartbeat(self: "AdvancedAlchemyQueueBackend") -> 'AsyncIterator["QueueTaskService"]':
+            nonlocal heartbeat_calls
+            heartbeat_calls += 1
+            async with original_heartbeat(self) as service:
+                yield service
+
+        original_execute = AsyncSession.execute
+        select_calls = 0
+        update_calls = 0
+
+        async def counting_execute(self: "AsyncSession", statement: "Any", *args: "Any", **kwargs: "Any") -> "Any":
+            nonlocal select_calls, update_calls
+            statement_type = type(statement).__name__
+            if statement_type == "Select":
+                select_calls += 1
+            elif statement_type == "Update":
+                update_calls += 1
+            return await original_execute(self, statement, *args, **kwargs)
+
+        monkeypatch.setattr(AdvancedAlchemyQueueBackend, "_heartbeat_operation", counting_heartbeat)
+        monkeypatch.setattr(AsyncSession, "execute", counting_execute)
+
+        result = await backend.touch_heartbeats([
+            HeartbeatTouch(
+                task_id=record.id,
+                expected_retry_count=record.retry_count,
+                metadata_patch={"progress_detail": f"step-{index}"},
+            )
+            for index, record in enumerate(claimed)
+        ])
+
+        assert result.touched_task_ids == {record.id for record in claimed}
+        assert result.missed_task_ids == set()
+        assert heartbeat_calls == 1
+        assert select_calls == 1
+        assert update_calls == 1
+        for index, record in enumerate(claimed):
+            stored = await backend.get_task(record.id)
+            assert stored is not None
+            assert stored.heartbeat_at is not None
+            assert stored.metadata["keep"] is True
+            assert stored.metadata["progress_detail"] == f"step-{index}"
     finally:
         await backend.close()
         await heartbeat_config.get_engine().dispose()
