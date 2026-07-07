@@ -253,6 +253,56 @@ Subscribers receive at-most-once delivery per ``eventKey`` (or per ``id`` when
 no key is set) within a single connection. Set ``QueueEvent(..., event_key=...)``
 at publish time when worker-level retries should not double-emit downstream.
 
+Transport Recommendations
+=========================
+
+Choose the Channels backend based on whether browser clients need broadcast
+fan-out, replay, or durable claim semantics:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Transport
+     - Semantics
+     - Recommended Use
+   * - Redis Channels pub/sub backend
+     - Broadcast fan-out across processes, ephemeral delivery, no history.
+     - Live-only browser fan-out across multiple web processes.
+   * - Redis Streams Channels backend
+     - Broadcast fan-out with stream history through ``XADD``/``XRANGE`` and
+       ``MAXLEN``.
+     - Browser fan-out when replay or subscriber backlog is required.
+   * - ``SQLSpecChannelsBackend`` over sqlspec events ``listen_notify``
+       (``AsyncpgEventsBackend``, ``backend_name="listen_notify"``)
+     - Broadcast fan-out across processes through ``pg_notify``. Delivery is
+       ephemeral: ``ack``/``nack`` are no-ops and no history is stored. The
+       payload is sent inline through PostgreSQL notify, so it is subject to the
+       roughly 8 KB ``pg_notify`` cap.
+     - SQLSpec applications that need live multi-replica browser fan-out and can
+       keep payloads small. Use ``EventConfig.max_payload_bytes`` to chunk larger
+       events.
+   * - ``SQLSpecChannelsBackend`` over sqlspec events
+       ``listen_notify_durable`` (``AsyncpgHybridEventsBackend``) or
+       ``table_queue`` (``AsyncTableEventQueue``)
+     - Durable table-backed events with claim, lease, and ack. Rows move from
+       ``pending`` to ``leased`` to ``acked`` under ``FOR UPDATE SKIP LOCKED``.
+       This is competing-consumer delivery: each event is claimed and acked by
+       exactly one consumer.
+     - Durable worker-style consumers. A single web process can still fan out to
+       its local browser subscribers through ``ChannelsPlugin``, but multiple
+       web processes subscribed to the same channel will compete and split
+       events. Use a distinct consumer/channel per process, or use
+       ``listen_notify`` or Redis for multi-replica browser fan-out. The hybrid
+       stores payloads in the table and notifies only ``event_id``, avoiding the
+       PostgreSQL notify payload cap.
+
+Litestar's own asyncpg and psycopg Channels backends are useful for simple
+deployments, but they open a fresh connection per publish, loop
+``SELECT pg_notify`` once per channel, and raise ``NotImplementedError`` for
+history reads. Buffering amortizes the connect storm, but it does not add
+history. For production fan-out, prefer Redis Channels or
+``SQLSpecChannelsBackend`` with the semantics above.
+
 Durable Event History
 =====================
 
