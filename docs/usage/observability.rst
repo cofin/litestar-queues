@@ -122,6 +122,37 @@ The package does not use task args, kwargs, result payloads, arbitrary metadata,
 tenant ids, user ids, job ids, exception messages, or Cloud Run execution refs
 as metric labels.
 
+Event Buffer Signals
+====================
+
+Live event buffering keeps observability low-cardinality. Buffer overflow
+handling does not add task IDs or payload data to metric labels.
+
+When ``EventBufferConfig.overflow`` drops events, the buffer emits one bounded
+warning per buffer instance:
+
+.. code-block:: text
+
+   Queue event buffer full; dropping event
+
+The log record includes the queue event scope and event type. It does not
+include task IDs, payloads, or arbitrary metadata. ``drop_oldest`` drops a
+pending event before accepting the new event; ``drop_newest`` drops the incoming
+event. ``block`` waits for a flush, and ``error`` raises
+``QueueEventBufferFull``.
+
+Flush and publish failures are also logged without payload data:
+
+.. code-block:: text
+
+   Queue event buffer flush failed
+   Queue event batch publish failed
+   Queue event publish failed
+
+By default these failures are best effort and do not fail the task execution
+path. Set ``EventConfig(strict=True)`` when the caller should receive the
+exception.
+
 SQLSpec Coexistence
 ===================
 

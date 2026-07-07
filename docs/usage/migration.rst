@@ -118,22 +118,29 @@ contract:
 
    from litestar_queues import QueueConfig
    from litestar_queues.backends.redis import RedisBackendConfig
-   from litestar_queues.events import QueueEventConfig
+   from litestar_queues.events import EventConfig
 
    config = QueueConfig(
        queue_backend=RedisBackendConfig(url="redis://localhost:6379/0"),
        execution_backend="local",
-       event_config=QueueEventConfig(
+       event=EventConfig(
            enabled=True,
            channels_backend=app_channels_backend,
            publish_global_lifecycle=True,
        ),
    )
 
-``QueueEventConfig.sink`` can point at an in-process test sink, a Litestar
+``EventConfig.sink`` can point at an in-process test sink, a Litestar
 Channels sink, or a custom sink that forwards events outside the application.
 Event publishing is best effort by default; set ``strict=True`` when event
 delivery failures should fail task execution.
+
+If existing WebSocket routes call ``stream_queue_events(socket, ...)``, replace
+them with plugin-owned stream routes configured through ``EventStreamConfig``.
+Task-scoped streams are available at ``/queues/events/tasks/{task_id}`` for
+WebSocket clients and ``/queues/events/sse/tasks/{task_id}`` for SSE clients by
+default. Queue, worker, global, and custom scopes follow the same route pattern.
+The old helper is no longer part of the public ``litestar_queues.events`` API.
 
 Cloud Run Workers
 -----------------

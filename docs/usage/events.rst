@@ -15,11 +15,11 @@ Channels backend:
 .. code-block:: python
 
    from litestar_queues import QueueConfig
-   from litestar_queues.events import QueueEventConfig
+   from litestar_queues.events import EventConfig
 
 
    config = QueueConfig(
-       event_config=QueueEventConfig(
+       event=EventConfig(
            enabled=True,
            channels_backend=channels,
            publish_global_lifecycle=True,
@@ -78,6 +78,131 @@ through the current task context:
        await publish_task_log("Transcode started", payload={"video_id": video_id})
        await publish_task_progress(current=1, total=4, message="Fetched source")
        await publish_task_event("task.event", message="Preview ready", payload={"video_id": video_id})
+
+Producer Facade
+===============
+
+Use ``queue_events`` when application handlers or services need to publish queue
+events outside a running task context. The dependency injects a
+``QueueEventProducer`` backed by the app-scoped publisher:
+
+.. code-block:: python
+
+   from litestar import post
+   from litestar.di import NamedDependency
+   from litestar_queues.events import QueueEventProducer
+
+
+   @post("/imports/{import_id:str}/status")
+   async def update_import_status(
+       import_id: str,
+       queue_events: NamedDependency[QueueEventProducer],
+   ) -> dict[str, str]:
+       await queue_events.channel(f"imports:{import_id}").publish(
+           "import.status",
+           message="Import queued",
+           payload={"import_id": import_id},
+       )
+       return {"status": "accepted"}
+
+``QueueEventProducer`` exposes scoped handles:
+
+* ``task(task_id)`` for task logs, progress, and custom task events;
+* ``queue(name)`` for queue-scoped events;
+* ``worker(worker_id)`` for worker-scoped events; and
+* ``channel(scope_key)`` for application-defined custom channels.
+
+``QueueService.get_event_producer()`` returns the same facade when code already
+has a service instance:
+
+.. code-block:: python
+
+   queue_events = queue_service.get_event_producer()
+   await queue_events.task(task_id).progress(current=2, total=5)
+
+External processes can publish without opening a queue backend or worker by
+using ``create_event_producer(config)``. Prefer the async context manager so the
+configured sink or Channels backend is opened and closed around the publish
+window:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig
+   from litestar_queues.events import EventConfig, create_event_producer
+
+
+   config = QueueConfig(event=EventConfig(channels_backend=channels))
+
+   async with create_event_producer(config) as queue_events:
+       await queue_events.channel("imports:batch-42").publish(
+           "import.note",
+           payload={"batch_id": "batch-42"},
+       )
+
+Buffered Live Delivery
+======================
+
+Live delivery is buffered by default for publishers owned by ``QueueService`` or
+``QueuePlugin`` when ``EventConfig`` is enabled. A publish call means "accepted
+into the queue event publisher"; it does not always mean the live sink has sent
+bytes to subscribers yet. Durable event history, when configured, is recorded
+before the live event is accepted into the buffer.
+
+The buffer flushes when one of these happens:
+
+* ``EventBufferConfig.buffer_size`` pending live events is reached;
+* ``EventBufferConfig.flush_interval`` elapses while the service is open;
+* ``QueueEventPublisher.flush_buffer()`` or service shutdown drains the buffer;
+* a task helper, task context, or producer handle publishes with
+  ``immediate=True``; or
+* a terminal task event is published.
+
+Terminal events are always immediate. ``task.completed``, ``task.failed``,
+``task.cancelled``, ``task.claim_lost``, and ``task.stale_failed`` flush the
+current task's buffered live events first, then publish the terminal event.
+This preserves task-scoped ordering without requiring every call site to pass
+``immediate=True``.
+
+Configure buffering on ``EventConfig``:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig
+   from litestar_queues.events import EventBufferConfig, EventConfig
+
+
+   config = QueueConfig(
+       event=EventConfig(
+           channels_backend=channels,
+           buffer=EventBufferConfig(
+               buffer_size=50,
+               flush_interval=0.25,
+               max_pending=5000,
+               overflow="drop_oldest",
+           ),
+       ),
+   )
+
+Set ``EventBufferConfig(enabled=False)`` to restore immediate live publishing:
+
+.. code-block:: python
+
+   config = QueueConfig(
+       event=EventConfig(
+           channels_backend=channels,
+           buffer=EventBufferConfig(enabled=False),
+       ),
+   )
+
+Overflow behavior is controlled by ``overflow``:
+
+* ``"drop_oldest"`` drops the oldest pending event and accepts the new event;
+* ``"drop_newest"`` drops the incoming event;
+* ``"block"`` waits for a flush before accepting more events; and
+* ``"error"`` raises ``QueueEventBufferFull``.
+
+The default live publish path remains best effort. Set ``strict=True`` when
+buffer add, buffer flush, or live sink failures should raise into the caller.
 
 Channels
 ========
@@ -138,7 +263,7 @@ and task event history share the same database, schema lifecycle, and deployment
 boundary.
 
 Backend-managed event history is configured separately from
-``QueueEventConfig.sink``. When durable history is enabled, events can be
+``EventConfig.sink``. When durable history is enabled, events can be
 recorded even if live delivery is disabled.
 
 SQLSpec provides backend-managed history through the same database lifecycle as
@@ -146,13 +271,14 @@ the queue table:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, QueueEventLogConfig
+   from litestar_queues import QueueConfig
+   from litestar_queues.events import EventLogConfig
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(config=sqlspec_config),
-       event_log_config=QueueEventLogConfig(enabled=True),
+       event_log=EventLogConfig(enabled=True),
    )
 
 By default SQLSpec stores history in ``<queue_table>_event_log``. For example,
@@ -168,11 +294,21 @@ Use ``InMemoryQueueEventSink`` for tests:
 .. code-block:: python
 
    from litestar_queues import QueueConfig
-   from litestar_queues.events import InMemoryQueueEventSink, QueueEventConfig
+   from litestar_queues.events import (
+       EventBufferConfig,
+       EventConfig,
+       InMemoryQueueEventSink,
+   )
 
 
    sink = InMemoryQueueEventSink()
-   config = QueueConfig(event_config=QueueEventConfig(enabled=True, sink=sink))
+   config = QueueConfig(
+       event=EventConfig(
+           enabled=True,
+           sink=sink,
+           buffer=EventBufferConfig(enabled=False),
+       ),
+   )
 
    # After task execution:
    assert [event.type for event in sink.events] == ["task.started", "task.completed"]
