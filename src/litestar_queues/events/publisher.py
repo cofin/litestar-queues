@@ -223,7 +223,7 @@ class QueueEventPublisher:
             logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
             return
         self._live_failure_signature = signature
-        logger.warning("Queue event batch publish failed", exc_info=True, extra={"queue_event_count": count})
+        logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
 
     async def _record_event(self, event: "QueueEvent") -> "None":
         if self._event_log is None:

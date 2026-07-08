@@ -638,15 +638,11 @@ async def test_plugin_logs_when_in_app_worker_task_dies(monkeypatch: "pytest.Mon
     plugin = QueuePlugin(QueueConfig(in_app_worker=True, execution_backend="local"))
     app = Litestar(plugins=[plugin])
 
-    await plugin._on_startup(app)
-    await asyncio.sleep(0)
-
-    if plugin._service is not None:
-        await plugin._service.close()
-
-    assert messages
-    assert messages[0][0] == "In-app queue worker stopped unexpectedly"
-    assert "exc_info" in messages[0][1]
+    async with plugin._lifespan(app):
+        await asyncio.sleep(0)
+        assert messages
+        assert messages[0][0] == "In-app queue worker stopped unexpectedly"
+        assert "exc_info" in messages[0][1]
 
 
 async def test_sync_task_uses_configured_executor_and_preserves_task_context() -> "None":

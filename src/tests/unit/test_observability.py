@@ -130,14 +130,11 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     plugin = QueuePlugin(QueueConfig(observability=ObservabilityConfig(enable_otel=None), in_app_worker=False))
     app = Litestar(plugins=[plugin])
 
-    await plugin._on_startup(app)
-    try:
+    async with plugin._lifespan(app):
         service = app.state[plugin.config.queue_service_state_key]
         assert isinstance(service, QueueService)
         assert service.observability_runtime is runtime
         assert seen_apps == [app]
-    finally:
-        await plugin._on_shutdown(app)
 
 
 async def test_worker_records_claim_and_loop_error_metrics() -> "None":

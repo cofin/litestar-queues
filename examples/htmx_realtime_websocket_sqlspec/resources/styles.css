@@ -159,6 +159,12 @@ button {
   to { transform: rotateX(26deg) translateY(-190vh); }
 }
 
+/* Idle: no mission running - hold the hint mid-screen instead of crawling. */
+.crawl-plane.idle {
+  animation: none;
+  transform: rotateX(26deg) translateY(-52vh);
+}
+
 @keyframes line-in {
   from { opacity: 0; }
   to { opacity: 1; }

@@ -15,6 +15,11 @@ void import("htmx-ext-sse").then(() => htmx.process(document.body))
 // docs: htmx-extension-end
 
 const MAX_LINES = 40
+// After the final event, wait for the last lines to drift out of view, then
+// return to the idle hint unless another mission starts first.
+const IDLE_DELAY_MS = 45_000
+const IDLE_TEXT = document.querySelector<HTMLElement>("#crawl-lines p")?.textContent ?? "Press restart to queue a background job."
+let idleTimer: ReturnType<typeof setTimeout> | null = null
 
 type QueueEvent = {
   type: string
@@ -65,14 +70,29 @@ function handleQueueEvent(raw: string): void {
   if (!event || event.type === "ping") return
   if (event.type === "task.completed") {
     setReadout("Mission complete", true)
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(goIdle, IDLE_DELAY_MS)
     return
   }
   appendCrawlLine(event)
 }
 
+function goIdle(): void {
+  const plane = document.querySelector<HTMLElement>("#crawl-lines")
+  if (!plane) return
+  const hint = document.createElement("p")
+  hint.textContent = IDLE_TEXT
+  plane.replaceChildren(hint)
+  plane.classList.add("idle")
+  setReadout("Awaiting launch")
+}
+
 function resetCrawl(jobId?: string): void {
+  if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = null
   const plane = document.querySelector<HTMLElement>("#crawl-lines")
   if (plane) {
+    plane.classList.remove("idle")
     plane.replaceChildren()
     // The crawl keyframe is one-shot and time-based; restart it so every
     // mission's lines enter from the bottom instead of mid-flight.

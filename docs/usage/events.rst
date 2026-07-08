@@ -393,6 +393,20 @@ state updates:
        subscriber_backlog_strategy="dropleft",
    )
 
+.. important::
+
+   Register ``ChannelsPlugin`` **before** ``QueuePlugin`` in the application
+   ``plugins`` list::
+
+       app = Litestar(plugins=[channels, QueuePlugin(config)])
+
+   Both plugins install lifespan context managers, which Litestar exits in
+   reverse (LIFO) order. Registering channels first means the queue worker
+   drains on shutdown *before* the Channels backend closes, so in-flight tasks
+   can still publish their final progress and lifecycle events. Reversing the
+   order tears the Channels backend down first and a mid-run task's events flush
+   into a closed sink (``Backend not yet initialized``).
+
 Transport Recommendations
 =========================
 

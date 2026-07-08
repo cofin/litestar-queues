@@ -1,3 +1,4 @@
+import logging
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -30,6 +31,18 @@ class FailingEventLog:
     async def publish_event(self, event: "QueueEvent") -> "None":
         msg = f"history failed for {event.type}"
         raise RuntimeError(msg)
+
+
+class TogglingBatchSink:
+    """Batch sink that fails while ``fail`` is set so tests can drive the warn-once dampener."""
+
+    def __init__(self) -> "None":
+        self.fail = True
+
+    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
+        if self.fail:
+            msg = "sink offline"
+            raise RuntimeError(msg)
 
 
 def test_queue_channels_normalize_parts_deterministically() -> "None":
@@ -142,6 +155,37 @@ async def test_strict_event_log_failure_prevents_buffering() -> "None":
     await publisher.flush_buffer()
 
     assert sink.events == []
+
+
+async def test_batch_delivery_failure_warn_once_dampener(caplog: "pytest.LogCaptureFixture") -> "None":
+    sink = TogglingBatchSink()
+    publisher = QueueEventPublisher(sink)
+    event = QueueEvent(type="task.progress", scope="task", task_id="task-a")
+    batch = [(event, ("litestar_queues:task:task_a:progress",))]
+
+    with caplog.at_level(logging.DEBUG, logger="litestar_queues.events.publisher"):
+        await publisher._deliver_live_many(batch)
+        await publisher._deliver_live_many(batch)
+        await publisher._deliver_live_many(batch)
+
+    records = [record for record in caplog.records if record.message == "Queue event batch publish failed"]
+    assert [record.levelno for record in records] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    assert records[0].exc_info is not None
+    assert records[1].exc_info is None
+    assert records[2].exc_info is None
+
+    caplog.clear()
+    sink.fail = False
+    with caplog.at_level(logging.DEBUG, logger="litestar_queues.events.publisher"):
+        await publisher._deliver_live_many(batch)  # success resets the dampener
+    assert publisher._live_failure_signature is None
+
+    sink.fail = True
+    with caplog.at_level(logging.DEBUG, logger="litestar_queues.events.publisher"):
+        await publisher._deliver_live_many(batch)  # first failure after reset warns again
+    reopened = [record for record in caplog.records if record.message == "Queue event batch publish failed"]
+    assert reopened[-1].levelno == logging.WARNING
+    assert reopened[-1].exc_info is not None
 
 
 async def test_event_sink_fixture_is_parametrized_over_both_sinks(event_sink: "QueueEventSink") -> "None":

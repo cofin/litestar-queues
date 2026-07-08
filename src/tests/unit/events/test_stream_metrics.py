@@ -35,11 +35,8 @@ async def test_plugin_startup_publishes_observability_runtime_on_state(monkeypat
     plugin = QueuePlugin(QueueConfig(observability=ObservabilityConfig(enable_otel=False), in_app_worker=False))
     app = Litestar(plugins=[plugin])
 
-    await plugin._on_startup(app)
-    try:
+    async with plugin._lifespan(app):
         assert app.state[plugin.config.queue_observability_runtime_state_key] is runtime
-    finally:
-        await plugin._on_shutdown(app)
 
 
 async def test_websocket_stream_metrics_recorded_with_bounded_labels() -> None:

@@ -1,16 +1,25 @@
+import asyncio
+import logging
 import subprocess
 import sys
 import textwrap
+from typing import TYPE_CHECKING
 
 import pytest
 from litestar import Litestar
+from litestar.channels import ChannelsPlugin
+from litestar.channels.backends.memory import MemoryChannelsBackend
 from litestar.config.app import AppConfig
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, Worker, get_scheduled_tasks, get_task_registry
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, Worker, get_scheduled_tasks, get_task_registry, task
 from litestar_queues.backends import BaseQueueBackend, queue_backend
 from litestar_queues.backends.factory import _queue_backend_registry
+from litestar_queues.events import EventBufferConfig, EventConfig, publish_task_progress
 from litestar_queues.task import clear_task_registry
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 pytestmark = pytest.mark.anyio
 
@@ -63,6 +72,81 @@ def test_importing_litestar_queues_does_not_load_click() -> "None":
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr.decode()
+
+
+class _RecordingMemoryChannelsBackend(MemoryChannelsBackend):
+    """Records teardown order so tests can assert the worker drains before channels close."""
+
+    def __init__(self, order: "list[str]", **kwargs: "object") -> "None":
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._order = order
+
+    async def on_shutdown(self) -> "None":
+        self._order.append("channels_shutdown")
+        await super().on_shutdown()
+
+    async def publish(self, data: "bytes", channels: "Iterable[str]") -> "None":
+        # A publish after on_shutdown raises "Backend not yet initialized"; record it so a
+        # misordered teardown is visible even if the RuntimeError is swallowed as best-effort.
+        if self._queue is None:
+            self._order.append("publish_after_shutdown")
+        await super().publish(data, channels)
+
+
+async def test_channels_before_queues_drains_worker_before_channels_close(caplog: "pytest.LogCaptureFixture") -> "None":
+    """Regression: ChannelsPlugin registered before QueuePlugin must drain the worker first.
+
+    Litestar runs on_startup/on_shutdown hooks around lifespan context managers, so a
+    hook-based QueuePlugin drained its worker after the Channels backend had already torn
+    down, flushing events into a dead sink ("Backend not yet initialized"). With both
+    plugins as lifespan managers, LIFO exit drains the worker before channels close.
+    """
+    order: "list[str]" = []
+
+    @task("tests.slow_publisher")
+    async def slow_publisher() -> "str":
+        try:
+            for _ in range(10_000):
+                await publish_task_progress(percent=1)
+                await asyncio.sleep(0.02)
+        except asyncio.CancelledError:
+            order.append("worker_task_cancelled")
+            raise
+        return "done"
+
+    channels = ChannelsPlugin(
+        backend=_RecordingMemoryChannelsBackend(order, history=50), arbitrary_channels_allowed=True
+    )
+    plugin = QueuePlugin(
+        QueueConfig(
+            in_app_worker=True,
+            worker_poll_interval=0.01,
+            worker_graceful_shutdown_timeout=1,
+            event=EventConfig(
+                enabled=True, channels_backend=channels, buffer=EventBufferConfig(buffer_size=4, flush_interval=0.05)
+            ),
+        )
+    )
+    app = Litestar(plugins=[channels, plugin])
+
+    with caplog.at_level(logging.DEBUG, logger="litestar_queues.events.publisher"):
+        async with AsyncTestClient(app=app) as client:
+            service = client.app.state[plugin.config.queue_service_state_key]
+            publisher = client.app.state[plugin.config.queue_event_publisher_state_key]
+            result = await service.enqueue(slow_publisher)
+            for _ in range(200):
+                await result.refresh()
+                if result.status == "running":
+                    break
+                await asyncio.sleep(0.01)
+            assert result.status == "running"
+            # Let the running task publish for a moment before shutting down mid-run.
+            await asyncio.sleep(0.1)
+
+    assert "Backend not yet initialized" not in caplog.text
+    assert "publish_after_shutdown" not in order
+    assert publisher._live_failure_signature is None
+    assert order.index("worker_task_cancelled") < order.index("channels_shutdown")
 
 
 async def test_plugin_uses_registered_queue_backend_instance() -> "None":

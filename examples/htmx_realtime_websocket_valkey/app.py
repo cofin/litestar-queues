@@ -28,22 +28,18 @@ __all__ = ("allow_demo_channel", "index", "restart_demo", "run_crawl", "status_j
 
 EXAMPLE_ROOT = Path(__file__).parent
 BACKEND_NAME = "valkey"
-DEMO_STEPS = int(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEPS", "12"))
+DEMO_STEPS = int(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEPS", "6"))
 DEMO_STEP_DELAY = float(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEP_DELAY", "5"))
 VITE_DEV_MODE = os.getenv("LITESTAR_QUEUES_EXAMPLE_VITE_DEV", "0") == "1"
 VALKEY_URL = os.getenv("LITESTAR_QUEUES_EXAMPLE_VALKEY_URL", "redis://localhost:6379/0")
 
 CRAWL_LINES = (
-    "This line was published from inside the running job.",
-    "A worker claimed the job your restart click enqueued.",
-    "ctx.progress() reports each step over the task stream.",
-    "ctx.event() carries custom payloads like this line.",
-    "ctx.beat() folds detail into the worker heartbeat.",
-    "The event buffer flushes batches to the Channels backend.",
-    "A plugin-owned stream endpoint relays events to this page.",
-    "htmx swapped in the stream element when you pressed restart.",
-    "The page marks the job complete only on task.completed.",
-    "The job publishes every line - the page only listens.",
+    "You clicked restart, so the app queued a background job.",
+    "A worker picked up the job and started running it.",
+    'ctx.event("here") - the job sent this line from inside itself.',
+    "Every update streams live to this page.",
+    "The browser just listens - no polling, no refresh.",
+    "When the job finishes, a final event marks it complete.",
 )
 
 
@@ -60,11 +56,13 @@ def allow_demo_channel(*_: object) -> bool:
 @task("examples.htmx_realtime_websocket_valkey.crawl", queue="demo", retries=0, timeout=90)
 async def run_crawl(job_id: str, *, _task_context: TaskExecutionContext) -> dict[str, str]:
     ctx = _task_context
-    await publish_task_log("Job started: the task itself publishes everything below", payload={"job_id": job_id}, immediate=True)
+    await publish_task_log(
+        "Job started - everything below comes from the job", payload={"job_id": job_id}, immediate=True
+    )
 
     for step in range(1, DEMO_STEPS + 1):
         line = CRAWL_LINES[(step - 1) % len(CRAWL_LINES)]
-        message = f"Transmission {step}/{DEMO_STEPS}: {line}"
+        message = f"{step}/{DEMO_STEPS} - {line}"
         ctx.beat(message)
         await ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={"line": message})
         await ctx.event(
@@ -75,7 +73,7 @@ async def run_crawl(job_id: str, *, _task_context: TaskExecutionContext) -> dict
         )
         await asyncio.sleep(DEMO_STEP_DELAY)
 
-    await publish_task_log("Job finished: task.completed ends this stream", payload={"job_id": job_id}, immediate=True)
+    await publish_task_log("Job finished", payload={"job_id": job_id}, immediate=True)
     return {"job_id": job_id, "status": "complete"}
 
 
