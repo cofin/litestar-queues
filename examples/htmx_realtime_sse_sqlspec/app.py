@@ -124,6 +124,8 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
+    # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
+    worker_graceful_shutdown_timeout=5,
     queue_backend=SQLSpecBackendConfig(config=sqlspec_config, create_schema=False, run_migrations=True),
     event=EventConfig(
         enabled=True,

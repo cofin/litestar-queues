@@ -122,6 +122,8 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
+    # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
+    worker_graceful_shutdown_timeout=5,
     queue_backend=ValkeyBackendConfig(
         url=VALKEY_URL, key_prefix="litestar_queues:examples:htmx_realtime_websocket_valkey"
     ),

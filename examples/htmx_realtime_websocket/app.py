@@ -120,6 +120,8 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
+    # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
+    worker_graceful_shutdown_timeout=5,
     event=EventConfig(
         enabled=True,
         channels_backend=channels,

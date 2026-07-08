@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,8 @@ from litestar_queues.task import load_task_modules, set_default_service
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from click import Group as ClickGroup
     from litestar import Litestar
     from litestar.config.app import AppConfig
@@ -51,7 +54,7 @@ class QueuePlugin(InitPlugin):
         return QueueService(self._config, queue_backend=self._queue_backend, event_publisher=self._event_publisher)
 
     def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
-        """Register queue dependencies, signature namespace, state, and lifecycle hooks.
+        """Register queue dependencies, signature namespace, state, and the lifespan manager.
 
         Returns:
             The updated application configuration.
@@ -81,8 +84,12 @@ class QueuePlugin(InitPlugin):
             app_config.route_handlers.append(build_stream_router(self._config, stream_config))
             state[self._config.queue_event_stream_state_key] = stream_config
         app_config.state.update(state)
-        app_config.on_startup.append(self._on_startup)
-        app_config.on_shutdown.append(self._on_shutdown)
+        # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
+        # hooks): Litestar runs on_shutdown hooks AFTER exiting every lifespan manager,
+        # so a hook-based worker drain would flush events into an already-closed
+        # ChannelsPlugin backend. As a lifespan manager appended after channels, exit is
+        # LIFO, so the worker drains before channels tears down.
+        app_config.lifespan.append(self._lifespan)
         return app_config
 
     def _verify_stream_channels_source(self, app_config: "AppConfig") -> "None":
@@ -116,7 +123,8 @@ class QueuePlugin(InitPlugin):
 
         register(cli)
 
-    async def _on_startup(self, app: "Litestar") -> "None":
+    @asynccontextmanager
+    async def _lifespan(self, app: "Litestar") -> "AsyncIterator[None]":
         if self._config.task_modules:
             load_task_modules(self._config.task_modules)
 
@@ -169,17 +177,19 @@ class QueuePlugin(InitPlugin):
             await asyncio.sleep(0)
             app.state[self._config.queue_worker_state_key] = self._worker
 
-    async def _on_shutdown(self, app: "Litestar") -> "None":
-        if self._worker is not None:
-            await self._worker.stop()
-        if self._worker_task is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._worker_task
-            self._worker_task = None
-        if self._service is not None:
-            set_default_service(None)
-            await self._service.close()
-            self._service = None
+        try:
+            yield
+        finally:
+            if self._worker is not None:
+                await self._worker.stop()
+            if self._worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._worker_task
+                self._worker_task = None
+            if self._service is not None:
+                set_default_service(None)
+                await self._service.close()
+                self._service = None
 
     def _log_worker_task_result(self, task: "asyncio.Task[None]") -> "None":
         if task.cancelled():

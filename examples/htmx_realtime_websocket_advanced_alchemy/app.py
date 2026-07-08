@@ -125,6 +125,8 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
+    # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
+    worker_graceful_shutdown_timeout=5,
     queue_backend=AdvancedAlchemyBackendConfig(
         sqlalchemy_config=SQLAlchemyAsyncConfig(
             connection_string=f"sqlite+aiosqlite:///{QUEUE_DB_PATH}", create_all=True

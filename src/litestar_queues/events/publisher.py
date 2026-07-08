@@ -82,6 +82,7 @@ class QueueEventPublisher:
         "_buffer",
         "_event_log",
         "_event_log_strict",
+        "_live_failure_signature",
         "_sink",
         "publish_global_lifecycle",
         "publish_queue_channel",
@@ -113,6 +114,7 @@ class QueueEventPublisher:
         self.publish_task_channel = publish_task_channel
         self.publish_queue_channel = publish_queue_channel
         self.publish_global_lifecycle = publish_global_lifecycle
+        self._live_failure_signature: "tuple[str, str] | None" = None
 
     @property
     def sink(self) -> "QueueEventSink":
@@ -204,10 +206,24 @@ class QueueEventPublisher:
                 await self._sink.publish_many(batch)
             else:
                 await default_publish_many(self._sink, batch)
-        except Exception:
+        except Exception as exc:
             if self.strict:
                 raise
-            logger.warning("Queue event batch publish failed", exc_info=True, extra={"queue_event_count": len(batch)})
+            self._log_batch_delivery_failure(exc, len(batch))
+            return
+        self._live_failure_signature = None
+
+    def _log_batch_delivery_failure(self, exc: "BaseException", count: "int") -> "None":
+        # Warn-once dampener: the first failure logs at WARNING with a traceback; consecutive
+        # identical failures drop to DEBUG without a traceback so a misordered shutdown sink
+        # (e.g. a torn-down Channels backend during graceful drain) degrades quietly instead of
+        # spamming a WARNING per batch. Reset happens on the next successful delivery.
+        signature = (type(exc).__name__, str(exc))
+        if signature == self._live_failure_signature:
+            logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
+            return
+        self._live_failure_signature = signature
+        logger.warning("Queue event batch publish failed", exc_info=True, extra={"queue_event_count": count})
 
     async def _record_event(self, event: "QueueEvent") -> "None":
         if self._event_log is None:
