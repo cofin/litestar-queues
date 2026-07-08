@@ -319,6 +319,42 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert exhausted_stored.error == "Task heartbeat stale"
 
 
+async def test_advanced_alchemy_backend_touch_heartbeats_handles_mixed_metadata_patches(
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
+    patched = await advanced_alchemy_backend.enqueue(
+        "tasks.heartbeat.patched", metadata={"existing": "kept", "patch": "old"}
+    )
+    heartbeat_only = await advanced_alchemy_backend.enqueue("tasks.heartbeat.only", metadata={"existing": "untouched"})
+    patched_claim = await advanced_alchemy_backend.claim_task(patched.id)
+    heartbeat_only_claim = await advanced_alchemy_backend.claim_task(heartbeat_only.id)
+
+    assert patched_claim is not None
+    assert heartbeat_only_claim is not None
+    assert patched_claim.heartbeat_at is not None
+    assert heartbeat_only_claim.heartbeat_at is not None
+
+    result = await advanced_alchemy_backend.touch_heartbeats([
+        HeartbeatTouch(
+            task_id=patched_claim.id, expected_retry_count=patched_claim.retry_count, metadata_patch={"patch": "new"}
+        ),
+        HeartbeatTouch(task_id=heartbeat_only_claim.id, expected_retry_count=heartbeat_only_claim.retry_count),
+    ])
+    touched_patched = await advanced_alchemy_backend.get_task(patched_claim.id)
+    touched_heartbeat_only = await advanced_alchemy_backend.get_task(heartbeat_only_claim.id)
+
+    assert result.touched_task_ids == {patched_claim.id, heartbeat_only_claim.id}
+    assert result.missed_task_ids == set()
+    assert touched_patched is not None
+    assert touched_heartbeat_only is not None
+    assert touched_patched.heartbeat_at is not None
+    assert touched_heartbeat_only.heartbeat_at is not None
+    assert touched_patched.heartbeat_at >= patched_claim.heartbeat_at
+    assert touched_heartbeat_only.heartbeat_at >= heartbeat_only_claim.heartbeat_at
+    assert touched_patched.metadata == {"existing": "kept", "patch": "new"}
+    assert touched_heartbeat_only.metadata == {"existing": "untouched"}
+
+
 async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
     advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
 ) -> "None":

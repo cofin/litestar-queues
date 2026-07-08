@@ -309,6 +309,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         for touch in touches:
             groups.setdefault(touch.expected_retry_count, {})[touch.task_id] = touch
 
+        dialect_name = self._dialect_name()
         for expected_retry_count, grouped_touches in groups.items():
             task_ids = set(grouped_touches)
             criteria = [model_type.id.in_(task_ids), model_type.status == "running"]
@@ -319,6 +320,18 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             touched_task_ids = set(models_by_id)
             result.missed_task_ids.update(task_ids - touched_task_ids)
             if not touched_task_ids:
+                continue
+
+            if dialect_name == "oracle" and any(
+                grouped_touches[task_id].metadata_patch for task_id in touched_task_ids
+            ):
+                await self._touch_oracle_heartbeats(
+                    grouped_touches=grouped_touches,
+                    models_by_id=models_by_id,
+                    expected_retry_count=expected_retry_count,
+                    now=now,
+                    result=result,
+                )
                 continue
 
             values: "dict[str, Any]" = {"heartbeat_at": now}
@@ -352,6 +365,68 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             else:
                 result.missed_task_ids.update(touched_task_ids)
         return result
+
+    async def _touch_oracle_heartbeats(
+        self,
+        *,
+        grouped_touches: "dict[UUID, HeartbeatTouch]",
+        models_by_id: "dict[UUID, Any]",
+        expected_retry_count: "int | None",
+        now: "datetime",
+        result: "HeartbeatTouchResult",
+    ) -> "None":
+        """Touch Oracle JsonB metadata without CASE expressions over BLOB JSON."""
+        patched_task_ids = {task_id for task_id in models_by_id if grouped_touches[task_id].metadata_patch}
+        heartbeat_only_task_ids = set(models_by_id) - patched_task_ids
+        if heartbeat_only_task_ids:
+            await self._touch_heartbeat_rows(
+                heartbeat_only_task_ids,
+                values={"heartbeat_at": now},
+                expected_retry_count=expected_retry_count,
+                now=now,
+                result=result,
+            )
+
+        for task_id in patched_task_ids:
+            model = models_by_id[task_id]
+            metadata = dict(_deserialize_json(model.metadata_json) or {})
+            metadata_patch = grouped_touches[task_id].metadata_patch
+            if metadata_patch:
+                metadata.update(metadata_patch)
+            await self._touch_heartbeat_rows(
+                {task_id},
+                values={"heartbeat_at": now, "metadata_json": _serialize_json(metadata)},
+                expected_retry_count=expected_retry_count,
+                now=now,
+                result=result,
+            )
+
+    async def _touch_heartbeat_rows(
+        self,
+        task_ids: "set[UUID]",
+        *,
+        values: "dict[str, Any]",
+        expected_retry_count: "int | None",
+        now: "datetime",
+        result: "HeartbeatTouchResult",
+    ) -> "None":
+        if not task_ids:
+            return
+        model_type = self.model_type
+        update_criteria = [model_type.id.in_(task_ids), model_type.status == "running"]
+        if expected_retry_count is not None:
+            update_criteria.append(model_type.retry_count == expected_retry_count)
+        execution_result = await self.repository.session.execute(
+            update(model_type)
+            .where(*update_criteria)
+            .values(_update_values(model_type, values, now=now))
+            .execution_options(synchronize_session=False)
+        )
+        rowcount = int(execution_result.rowcount or 0)
+        if rowcount == len(task_ids) or rowcount < 0:
+            result.touched_task_ids.update(task_ids)
+        else:
+            result.missed_task_ids.update(task_ids)
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:
