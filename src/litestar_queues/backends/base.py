@@ -3,7 +3,12 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
-from litestar_queues.models import QueueBackendCapabilities, QueueStatistics, StaleTaskRecoveryResult
+from litestar_queues.models import (
+    HeartbeatTouchResult,
+    QueueBackendCapabilities,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -12,9 +17,13 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
+    from litestar_queues.events import EventLogConfig, QueueEventLog
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch, QueuedTaskRecord
 
 __all__ = ("BaseQueueBackend",)
+
+STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
+STALE_REQUEUE_PRIORITY = 4
 
 
 class BaseQueueBackend:
@@ -41,6 +50,10 @@ class BaseQueueBackend:
 
     async def close(self) -> "None":
         """Close queue resources."""
+
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+        """Return a backend-owned queue event history implementation, if supported."""
+        return None
 
     async def enqueue(
         self,
@@ -181,13 +194,13 @@ class BaseQueueBackend:
         """
         raise NotImplementedError
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
-        """Update the heartbeat timestamp for a running task.
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Update heartbeat timestamps for running tasks.
 
         Returns:
-            True when a running record matched the optional retry-count fence.
+            The task IDs confirmed touched or missed by the backend.
         """
-        return False
+        return HeartbeatTouchResult(missed_task_ids={touch.task_id for touch in touches})
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         """Clear heartbeat timestamps for task IDs.
@@ -205,6 +218,17 @@ class BaseQueueBackend:
             Summary of requeued, failed, skipped, and handler-needed records.
         """
         return StaleTaskRecoveryResult()
+
+    async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire a backend-scoped worker coordination lock.
+
+        Backends that can provide fleet-wide locks should override this. The
+        default preserves existing behavior for backends without lock support.
+
+        Returns:
+            True when the caller should run the coordinated worker action.
+        """
+        return True
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -305,3 +329,13 @@ def record_matches_filters(
 
 def _contains_items(source: "Mapping[str, Any]", expected: "Mapping[str, Any]") -> "bool":
     return all(source.get(key) == value for key, value in expected.items())
+
+
+def stale_requeue_error(current_error: "str | None") -> "str":
+    """Return the error to retain when a stale running task is requeued."""
+    return current_error or STALE_HEARTBEAT_ERROR
+
+
+def stale_requeue_priority(priority: "int") -> "int":
+    """Return the priority for a stale requeued task."""
+    return min(priority, STALE_REQUEUE_PRIORITY)

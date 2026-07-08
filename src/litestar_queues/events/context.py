@@ -8,11 +8,17 @@ from litestar_queues.events.models import QueueEvent
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from typing import Protocol
 
     from litestar_queues.events.publisher import QueueEventPublisher
 
+    class TaskBeatSink(Protocol):
+        def record_beat(self, task_id: "str", detail: "str | None") -> "None": ...
+
+
 __all__ = (
     "TaskExecutionContext",
+    "beat",
     "get_current_task_context",
     "publish_task_event",
     "publish_task_log",
@@ -23,6 +29,7 @@ __all__ = (
 _current_task_context: 'ContextVar["TaskExecutionContext | None"]' = ContextVar(
     "litestar_queues_task_context", default=None
 )
+_current_beat_sink: 'ContextVar["TaskBeatSink | None"]' = ContextVar("litestar_queues_beat_sink", default=None)
 
 
 @dataclass(slots=True)
@@ -48,6 +55,7 @@ class TaskExecutionContext:
         message: "str | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "None":
         """Publish a task progress event."""
         progress_percent = percent
@@ -61,6 +69,7 @@ class TaskExecutionContext:
             progress_percent=progress_percent,
             payload=payload,
             channels=channels,
+            immediate=immediate,
         )
 
     async def log(
@@ -70,9 +79,12 @@ class TaskExecutionContext:
         level: "str" = "info",
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "None":
         """Publish a task log event."""
-        await self.publish("task.log", level=level, message=message, payload=payload, channels=channels)
+        await self.publish(
+            "task.log", level=level, message=message, payload=payload, channels=channels, immediate=immediate
+        )
 
     async def event(
         self,
@@ -81,15 +93,27 @@ class TaskExecutionContext:
         message: "str | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "None":
         """Publish a custom task event."""
-        await self.publish(event_type, message=message, payload=payload, channels=channels)
+        await self.publish(event_type, message=message, payload=payload, channels=channels, immediate=immediate)
 
     async def lifecycle(
         self, event_type: "str", *, message: "str | None" = None, payload: "dict[str, Any] | None" = None
     ) -> "None":
         """Publish a worker-owned lifecycle event."""
         await self.publish(event_type, message=message, payload=payload)
+
+    def beat(self, detail: "str | None" = None) -> "None":
+        """Record last-value-wins progress for the next heartbeat tick.
+
+        Returns:
+            None.
+        """
+        sink = _current_beat_sink.get()
+        if sink is None:
+            return
+        sink.record_beat(self.task_id, detail)
 
     async def publish(
         self,
@@ -102,6 +126,7 @@ class TaskExecutionContext:
         progress_percent: "float | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        immediate: "bool" = False,
     ) -> "QueueEvent":
         """Build and publish an event for this task context.
 
@@ -126,7 +151,7 @@ class TaskExecutionContext:
             progress_percent=progress_percent,
             payload=dict(payload or {}),
         )
-        await self.event_publisher.publish(event, channels=channels)
+        await self.event_publisher.publish(event, channels=channels, immediate=immediate)
         return event
 
     def _next_sequence(self) -> "int":
@@ -160,10 +185,17 @@ async def publish_task_progress(
     message: "str | None" = None,
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    immediate: "bool" = False,
 ) -> "None":
     """Publish progress through the currently bound task context."""
     await require_current_task_context().progress(
-        current=current, total=total, percent=percent, message=message, payload=payload, channels=channels
+        current=current,
+        total=total,
+        percent=percent,
+        message=message,
+        payload=payload,
+        channels=channels,
+        immediate=immediate,
     )
 
 
@@ -173,9 +205,12 @@ async def publish_task_log(
     level: "str" = "info",
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    immediate: "bool" = False,
 ) -> "None":
     """Publish a log event through the currently bound task context."""
-    await require_current_task_context().log(message, level=level, payload=payload, channels=channels)
+    await require_current_task_context().log(
+        message, level=level, payload=payload, channels=channels, immediate=immediate
+    )
 
 
 async def publish_task_event(
@@ -184,9 +219,19 @@ async def publish_task_event(
     message: "str | None" = None,
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    immediate: "bool" = False,
 ) -> "None":
     """Publish a custom event through the currently bound task context."""
-    await require_current_task_context().event(event_type, message=message, payload=payload, channels=channels)
+    await require_current_task_context().event(
+        event_type, message=message, payload=payload, channels=channels, immediate=immediate
+    )
+
+
+def beat(detail: "str | None" = None) -> "None":
+    """Record progress through the currently bound task context, if any."""
+    context = get_current_task_context()
+    if context is not None:
+        context.beat(detail)
 
 
 def _bind_task_context(context: "TaskExecutionContext") -> "Token[TaskExecutionContext | None]":
@@ -195,3 +240,11 @@ def _bind_task_context(context: "TaskExecutionContext") -> "Token[TaskExecutionC
 
 def _reset_task_context(token: "Token[TaskExecutionContext | None]") -> "None":
     _current_task_context.reset(token)
+
+
+def _bind_beat_sink(sink: "TaskBeatSink") -> "Token[TaskBeatSink | None]":
+    return _current_beat_sink.set(sink)
+
+
+def _reset_beat_sink(token: "Token[TaskBeatSink | None]") -> "None":
+    _current_beat_sink.reset(token)

@@ -2,7 +2,12 @@
 
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, migration_directory, validate_table_name
+from litestar_queues.backends.sqlspec.schema import (
+    DEFAULT_TABLE_NAME,
+    event_log_table_name_for,
+    migration_directory,
+    validate_table_name,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -20,10 +25,19 @@ def queue_migration_directory() -> "Path":
 
 
 def configure_queue_migration_extension(
-    sqlspec_config: "SQLSpecConfig", *, table_name: "str" = DEFAULT_TABLE_NAME
+    sqlspec_config: "SQLSpecConfig",
+    *,
+    table_name: "str" = DEFAULT_TABLE_NAME,
+    event_log_enabled: "bool" = False,
+    event_log_table_name: "str | None" = None,
 ) -> "None":
     """Register the packaged queue migration with SQLSpec's extension runner."""
-    queue_settings = _configure_extension_settings(sqlspec_config, table_name=table_name)
+    queue_settings = _configure_extension_settings(
+        sqlspec_config,
+        table_name=table_name,
+        event_log_enabled=event_log_enabled,
+        event_log_table_name=event_log_table_name,
+    )
     commands = sqlspec_config.get_migration_commands()
     commands.extension_configs[QUEUE_EXTENSION_NAME] = queue_settings
 
@@ -35,8 +49,19 @@ def configure_queue_migration_extension(
         runner.context.extension_config = commands.extension_configs
 
 
-def _configure_extension_settings(sqlspec_config: "SQLSpecConfig", *, table_name: "str") -> "dict[str, Any]":
+def _configure_extension_settings(
+    sqlspec_config: "SQLSpecConfig",
+    *,
+    table_name: "str",
+    event_log_enabled: "bool" = False,
+    event_log_table_name: "str | None" = None,
+) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
     queue_settings["table_name"] = validate_table_name(table_name)
+    if event_log_enabled:
+        queue_settings["event_log_enabled"] = True
+        queue_settings["event_log_table_name"] = validate_table_name(
+            event_log_table_name or event_log_table_name_for(table_name)
+        )
     return queue_settings

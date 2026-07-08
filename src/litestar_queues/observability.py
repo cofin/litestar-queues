@@ -8,6 +8,7 @@ from litestar_queues.typing import (
     PROMETHEUS_INSTALLED,
     OtelSpanKind,
     PrometheusCounter,
+    PrometheusGauge,
     PrometheusHistogram,
     otel_metrics,
     otel_propagate,
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     "TRACE_CONTEXT_METADATA_KEY",
-    "QueueObservabilityConfig",
+    "ObservabilityConfig",
     "QueueObservabilityRuntime",
     "QueueObservabilityRuntimeProtocol",
     "create_observability_runtime",
@@ -31,7 +32,7 @@ TRACE_CONTEXT_METADATA_KEY = "_otel_context"
 
 
 @dataclass(slots=True)
-class QueueObservabilityConfig:
+class ObservabilityConfig:
     """Configuration for optional queue-domain observability."""
 
     enable_otel: "bool | None" = None
@@ -122,6 +123,10 @@ class QueueObservabilityRuntimeProtocol(Protocol):
         """Record a counter sample."""
         ...
 
+    def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
+        """Record a gauge delta sample."""
+        ...
+
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         """Record a duration sample."""
         ...
@@ -134,6 +139,7 @@ class QueueObservabilityRuntime:
         "_config",
         "_counters",
         "_durations",
+        "_gauges",
         "_meter",
         "_otel_enabled",
         "_prometheus_enabled",
@@ -141,7 +147,7 @@ class QueueObservabilityRuntime:
         "enabled",
     )
 
-    def __init__(self, config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None) -> "None":
+    def __init__(self, config: "ObservabilityConfig | None", *, app: "Litestar | None" = None) -> "None":
         self._config = config
         self._otel_enabled = config.should_enable_otel(app) if config is not None else False
         self._prometheus_enabled = config.should_enable_prometheus() if config is not None else False
@@ -150,6 +156,7 @@ class QueueObservabilityRuntime:
         self._meter: "Any | None" = None
         self._counters: "dict[str, Any]" = {}
         self._durations: "dict[str, Any]" = {}
+        self._gauges: "dict[str, Any]" = {}
 
     def get_tracer(self) -> "Any":
         """Return the configured tracer.
@@ -250,6 +257,28 @@ class QueueObservabilityRuntime:
                 self._counters[f"prometheus:{name}"] = counter
             counter.labels(**dict(attributes)).inc(value)
 
+    def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
+        """Record a gauge delta for enabled metrics sinks."""
+        if self._otel_enabled:
+            key = f"updown:{name}"
+            gauge = self._gauges.get(key)
+            if gauge is None:
+                gauge = self.get_meter().create_up_down_counter(name)
+                self._gauges[key] = gauge
+            gauge.add(delta, attributes=dict(attributes))
+        if self._prometheus_enabled:
+            key = f"prometheus_gauge:{name}"
+            gauge = self._gauges.get(key)
+            if gauge is None:
+                gauge = PrometheusGauge(
+                    _prometheus_name(name, self._config),
+                    name.replace(".", " "),
+                    labelnames=tuple(attributes),
+                    registry=self._config.prometheus_registry if self._config is not None else None,
+                )
+                self._gauges[key] = gauge
+            gauge.labels(**dict(attributes)).inc(delta)
+
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         """Record a duration for enabled metrics sinks."""
         if self._otel_enabled:
@@ -270,7 +299,7 @@ class QueueObservabilityRuntime:
                 self._durations[f"prometheus:{name}"] = histogram
             histogram.labels(**dict(attributes)).observe(seconds)
 
-    def _require_config(self) -> "QueueObservabilityConfig":
+    def _require_config(self) -> "ObservabilityConfig":
         if self._config is None:
             msg = "Queue observability runtime is not configured."
             raise RuntimeError(msg)
@@ -278,7 +307,7 @@ class QueueObservabilityRuntime:
 
 
 def create_observability_runtime(
-    config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None
+    config: "ObservabilityConfig | None", *, app: "Litestar | None" = None
 ) -> "QueueObservabilityRuntime":
     """Create the queue observability runtime for a service.
 
@@ -293,7 +322,7 @@ def _has_otel_plugin(app: "Litestar") -> "bool":
     return any(plugin.__class__.__name__ == "OpenTelemetryPlugin" for plugin in plugins)
 
 
-def _prometheus_name(name: "str", config: "QueueObservabilityConfig | None") -> "str":
+def _prometheus_name(name: "str", config: "ObservabilityConfig | None") -> "str":
     prefix = config.metric_prefix if config is not None else "litestar_queues"
     base = name.removeprefix("litestar_queues.").replace(".", "_")
     return f"{prefix}_{base}"

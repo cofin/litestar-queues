@@ -3,12 +3,17 @@
 from typing import ClassVar, Literal
 
 from sqlspec import sql
+from sqlspec.utils.text import split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 
 __all__ = ("CockroachQueueStore", "MssqlQueueStore", "MySQLQueueStore", "PostgresQueueStore")
 
 _NVARCHAR_MAX_THRESHOLD = 4000
+
+
+def _quote_tsql_identifier(identifier: "str") -> "str":
+    return f"[{identifier.replace(']', ']]')}]"
 
 
 class MssqlQueueStore(SQLSpecQueueStore):
@@ -55,28 +60,28 @@ class MssqlQueueStore(SQLSpecQueueStore):
         return f"""
         IF OBJECT_ID(N'{self.table_name}', N'U') IS NULL
         BEGIN
-            CREATE TABLE {self.table_name} (
-                {self._col("id")} {self._id_type()} PRIMARY KEY,
-                {self._col("task_name")} {self._indexed_text_type()} NOT NULL,
-                {self._col("args_json")} {self._payload_json_type("args_json")} NOT NULL,
-                {self._col("kwargs_json")} {self._payload_json_type("kwargs_json")} NOT NULL,
-                {self._col("queue")} {self._indexed_text_type()} NOT NULL,
-                {self._col("execution_backend")} {self._indexed_text_type()} NOT NULL,
-                {self._col("execution_profile")} {self._indexed_text_type()},
-                {self._col("execution_ref")} {self._indexed_text_type()},
-                {self._col("status")} {self._indexed_text_type()} NOT NULL,
-                {self._col("priority")} {self._integer_type()} NOT NULL,
-                {self._col("max_retries")} {self._integer_type()} NOT NULL,
-                {self._col("retry_count")} {self._integer_type()} NOT NULL,
-                {self._col("scheduled_at")} {self._timestamp_type()},
-                {self._col("created_at")} {self._timestamp_type()} NOT NULL,
-                {self._col("started_at")} {self._timestamp_type()},
-                {self._col("completed_at")} {self._timestamp_type()},
-                {self._col("heartbeat_at")} {self._timestamp_type()},
-                {self._col("result_json")} {self._result_json_type("result_json")} NOT NULL,
-                {self._col("error")} {self._error_type()},
-                {self._col("task_key")} {self._indexed_text_type()},
-                {self._col("metadata_json")} {self._metadata_json_type("metadata_json")} NOT NULL
+            CREATE TABLE {self._quoted_table_name()} (
+                {self._quoted_col("id")} {self._id_type()} PRIMARY KEY,
+                {self._quoted_col("task_name")} {self._indexed_text_type()} NOT NULL,
+                {self._quoted_col("args_json")} {self._payload_json_type("args_json")} NOT NULL,
+                {self._quoted_col("kwargs_json")} {self._payload_json_type("kwargs_json")} NOT NULL,
+                {self._quoted_col("queue")} {self._indexed_text_type()} NOT NULL,
+                {self._quoted_col("execution_backend")} {self._indexed_text_type()} NOT NULL,
+                {self._quoted_col("execution_profile")} {self._indexed_text_type()},
+                {self._quoted_col("execution_ref")} {self._indexed_text_type()},
+                {self._quoted_col("status")} {self._indexed_text_type()} NOT NULL,
+                {self._quoted_col("priority")} {self._integer_type()} NOT NULL,
+                {self._quoted_col("max_retries")} {self._integer_type()} NOT NULL,
+                {self._quoted_col("retry_count")} {self._integer_type()} NOT NULL,
+                {self._quoted_col("scheduled_at")} {self._timestamp_type()},
+                {self._quoted_col("created_at")} {self._timestamp_type()} NOT NULL,
+                {self._quoted_col("started_at")} {self._timestamp_type()},
+                {self._quoted_col("completed_at")} {self._timestamp_type()},
+                {self._quoted_col("heartbeat_at")} {self._timestamp_type()},
+                {self._quoted_col("result_json")} {self._result_json_type("result_json")} NOT NULL,
+                {self._quoted_col("error")} {self._error_type()},
+                {self._quoted_col("task_key")} {self._indexed_text_type()},
+                {self._quoted_col("metadata_json")} {self._metadata_json_type("metadata_json")} NOT NULL
             );
         END;
         """
@@ -86,47 +91,48 @@ class MssqlQueueStore(SQLSpecQueueStore):
         return (
             "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608 - filtered SQL Server index requires raw T-SQL
             f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
-            f"CREATE UNIQUE INDEX {index_name} ON {self.table_name} ({self._col('task_key')}) "
-            f"WHERE {self._col('task_key')} IS NOT NULL;"
+            f"CREATE UNIQUE INDEX {self._quoted_index_name('task_key')} "
+            f"ON {self._quoted_table_name()} ({self._quoted_col('task_key')}) "
+            f"WHERE {self._quoted_col('task_key')} IS NOT NULL;"
         )
 
     def _create_mssql_index_statement(self, suffix: str) -> str:
         if suffix == "pending":
-            return self._to_sql(
-                sql
-                .create_index(self._index_name("pending"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(
-                    *(
-                        self._col(canonical)
-                        for canonical in (
-                            "status",
-                            "queue",
-                            "execution_backend",
-                            "scheduled_at",
-                            "priority",
-                            "created_at",
-                        )
-                    )
-                )
+            columns = ", ".join(
+                self._quoted_col(canonical)
+                for canonical in ("status", "queue", "execution_backend", "scheduled_at", "priority", "created_at")
             )
+            return self._create_mssql_index_statement_sql("pending", columns)
         if suffix == "heartbeat":
-            return self._to_sql(
-                sql
-                .create_index(self._index_name("heartbeat"))
-                .if_not_exists()
-                .on_table(self.table_name)
-                .columns(*(self._col(canonical) for canonical in ("status", "heartbeat_at")))
-            )
+            columns = ", ".join(self._quoted_col(canonical) for canonical in ("status", "heartbeat_at"))
+            return self._create_mssql_index_statement_sql("heartbeat", columns)
         msg = f"Unsupported SQL Server index suffix: {suffix}"
         raise ValueError(msg)
 
+    def _create_mssql_index_statement_sql(self, suffix: str, columns: str) -> str:
+        index_name = self._index_name(suffix)
+        return (
+            "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608 - SQL Server index existence guard.
+            f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
+            f"CREATE INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()} ({columns});"
+        )
+
     def _drop_mssql_table_statement(self) -> str:
-        return f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {self.table_name};"
+        return f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};"
 
     def _drop_mssql_index_statement(self, suffix: str) -> str:
-        return self._to_sql(sql.drop_index(self._index_name(suffix)).if_exists())
+        index_name = self._index_name(suffix)
+        return (
+            "IF EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608 - SQL Server index existence guard.
+            f"WHERE name = N'{index_name}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
+            f"DROP INDEX {self._quoted_index_name(suffix)} ON {self._quoted_table_name()};"
+        )
+
+    def _quote_identifier(self, identifier: "str") -> "str":
+        parts = split_qualified_identifier(identifier)
+        if not parts:
+            return _quote_tsql_identifier(identifier)
+        return ".".join(_quote_tsql_identifier(part) for part in parts)
 
 
 class PostgresQueueStore(SQLSpecQueueStore):
@@ -142,6 +148,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
         "metadata_json",
         "result_json",
     })
+    supports_bulk_touch_heartbeats: "ClassVar[bool]" = True
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Postgres-family queue artifacts."""
@@ -196,6 +203,9 @@ class PostgresQueueStore(SQLSpecQueueStore):
 
     def _timestamp_type(self) -> "str":
         return "TIMESTAMPTZ"
+
+    def _bulk_metadata_merge_expression(self, *, target_metadata: "str", source_metadata: "str") -> "str":
+        return f"CASE WHEN {source_metadata} IS NULL THEN {target_metadata} ELSE {target_metadata} || {source_metadata} END"
 
 
 class CockroachQueueStore(PostgresQueueStore):

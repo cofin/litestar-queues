@@ -61,6 +61,31 @@ Use ``Task.using()`` when a configured copy is easier to pass around:
    heavy_render = render_report.using(execution_backend="cloudrun", execution_profile="heavy")
    await queue_service.enqueue(heavy_render, "report-1")
 
+Successful Completion Logs
+==========================
+
+Successful task completion logs are quiet by default. ``QueueConfig`` sets
+``quiet_success=True``, so a completed task still updates its queue record and
+still publishes ``task.completed`` lifecycle events, stream messages, and event
+history, but the worker does not emit the ``"Queue task completed"`` Python log
+line.
+
+Set the package-level default when those logs are useful for an operator:
+
+.. code-block:: python
+
+   config = QueueConfig(quiet_success=False)
+
+The override order is:
+
+1. ``QueueService.enqueue(..., quiet_success=...)``
+2. ``@task(..., quiet_success=...)`` or ``Task.using(quiet_success=...)``
+3. ``metadata={"quiet_success": ...}``
+4. ``QueueConfig.quiet_success``
+
+Use task or enqueue overrides for specific noisy or important tasks. There is
+no queue-level quiet setting.
+
 Deduplication Keys
 ==================
 

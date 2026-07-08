@@ -49,6 +49,44 @@ ADOPTER_COLUMN_MAP = {
 }
 
 
+def test_default_schema_uses_reference_friendly_physical_column_names(
+    tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
+) -> "None":
+    """The generated SQLSpec task table uses reusable physical column names by default."""
+    store = create_queue_store(sqlite_config_factory(tmp_path / "default-columns.db"))
+
+    ddl_sql = "\n".join(store.create_statements())
+    insert_sql = store.insert_task({"id": "task-1", "task_name": "tasks.sync"}).build(dialect="sqlite").sql
+    select_sql = store.select_task("task-1").build(dialect="sqlite").sql
+
+    for physical_name in (
+        "task_key",
+        "task_name",
+        "task_args",
+        "task_kwargs",
+        "execution_backend",
+        "result",
+        "metadata",
+    ):
+        assert f'"{physical_name}"' in ddl_sql
+    for legacy_name in (
+        "key",
+        "function",
+        "args",
+        "data",
+        "args_json",
+        "kwargs_json",
+        "execution_target",
+        "result_json",
+        "metadata_json",
+    ):
+        assert f'"{legacy_name}"' not in ddl_sql
+    assert '"task_name"' in insert_sql
+    assert '"function"' not in insert_sql
+    assert '"litestar_queue_task"."task_name"' in select_sql
+    assert '"litestar_queue_task"."metadata" AS "metadata_json"' in select_sql
+
+
 def test_column_map_resolves_generated_statement_columns(
     tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
 ) -> "None":

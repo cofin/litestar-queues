@@ -10,22 +10,23 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from litestar_queues.execution.cloudrun._typing import CloudRunExecutionLike, CloudRunOperation
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_queue_config_uses_single_observability_config_field() -> "None":
+async def test_queue_config_uses_single_observability_field() -> "None":
     """QueueConfig should keep package-level observability enablement in one field."""
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
 
-    observability_config = QueueObservabilityConfig(enable_otel=True, enable_prometheus=True)
-    config = QueueConfig(observability_config=observability_config)
+    observability = ObservabilityConfig(enable_otel=True, enable_prometheus=True)
+    config = QueueConfig(observability=observability)
     field_names = {config_field.name for config_field in fields(QueueConfig)}
 
-    assert config.observability_config is observability_config
-    assert observability_config.enable_otel is True
-    assert observability_config.enable_prometheus is True
+    assert config.observability is observability
+    assert observability.enable_otel is True
+    assert observability.enable_prometheus is True
+    assert "observability_config" not in field_names
     assert "enable_otel" not in field_names
     assert "enable_prometheus" not in field_names
 
@@ -113,32 +114,27 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     from litestar import Litestar
 
     from litestar_queues import QueuePlugin
-    from litestar_queues.observability import QueueObservabilityConfig
+    from litestar_queues.observability import ObservabilityConfig
 
     runtime = FakeObservabilityRuntime()
     seen_apps: "list[Litestar | None]" = []
 
     def create_runtime(
-        config: "QueueObservabilityConfig | None", *, app: "Litestar | None" = None
+        config: "ObservabilityConfig | None", *, app: "Litestar | None" = None
     ) -> "FakeObservabilityRuntime":
         assert config is not None
         seen_apps.append(app)
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
-    plugin = QueuePlugin(
-        QueueConfig(observability_config=QueueObservabilityConfig(enable_otel=None), in_app_worker=False)
-    )
+    plugin = QueuePlugin(QueueConfig(observability=ObservabilityConfig(enable_otel=None), in_app_worker=False))
     app = Litestar(plugins=[plugin])
 
-    await plugin._on_startup(app)
-    try:
+    async with plugin._lifespan(app):
         service = app.state[plugin.config.queue_service_state_key]
         assert isinstance(service, QueueService)
         assert service.observability_runtime is runtime
         assert seen_apps == [app]
-    finally:
-        await plugin._on_shutdown(app)
 
 
 async def test_worker_records_claim_and_loop_error_metrics() -> "None":
@@ -170,6 +166,63 @@ async def test_worker_records_claim_and_loop_error_metrics() -> "None":
         {"queue.execution.backend": "local", "worker.error.type": "RuntimeError"},
     ) in runtime.counters
     assert recovered.is_set()
+
+
+async def test_fake_runtime_records_gauge_delta() -> "None":
+    """Fake runtime should keep gauge deltas for local assertions."""
+    runtime = FakeObservabilityRuntime()
+
+    runtime.record_gauge_delta("litestar_queues.worker.active", 2, attributes={"messaging.destination.name": "default"})
+    runtime.record_gauge_delta(
+        "litestar_queues.worker.active", -1, attributes={"messaging.destination.name": "default"}
+    )
+
+    assert runtime.gauges == [
+        ("litestar_queues.worker.active", 2, {"messaging.destination.name": "default"}),
+        ("litestar_queues.worker.active", -1, {"messaging.destination.name": "default"}),
+    ]
+
+
+async def test_runtime_records_gauge_delta_with_otel_up_down_counter(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """OTel gauge deltas should use an up/down counter and cache it."""
+    from litestar_queues import observability as observability_module
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+    from litestar_queues.typing import otel_metrics
+
+    meter = _FakeOtelMeter()
+
+    def get_meter(*_args: "Any", **_kwargs: "Any") -> "_FakeOtelMeter":
+        return meter
+
+    monkeypatch.setattr(observability_module, "OPENTELEMETRY_INSTALLED", True)
+    monkeypatch.setattr(otel_metrics, "get_meter", get_meter)
+
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_otel=True))
+    runtime.record_gauge_delta(
+        "litestar_queues.worker.active", -2, attributes={"messaging.destination.name": "default"}
+    )
+    runtime.record_gauge_delta("litestar_queues.worker.active", 3, attributes={"messaging.destination.name": "default"})
+
+    assert meter.created_up_down_counters == ["litestar_queues.worker.active"]
+    assert meter.up_down_counter.samples == [
+        (-2, {"messaging.destination.name": "default"}),
+        (3, {"messaging.destination.name": "default"}),
+    ]
+
+
+async def test_runtime_records_gauge_delta_with_prometheus_gauge() -> "None":
+    """Prometheus gauge deltas should increment and decrement the same labeled gauge."""
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    registry = prometheus_client.CollectorRegistry()
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry))
+
+    runtime.record_gauge_delta("litestar_queues.worker.active", 2, attributes={"scope": "worker"})
+    runtime.record_gauge_delta("litestar_queues.worker.active", -1, attributes={"scope": "worker"})
+
+    assert registry.get_sample_value("litestar_queues_worker_active", labels={"scope": "worker"}) == 1.0
 
 
 async def test_cloudrun_dispatch_records_span_and_metrics() -> "None":
@@ -231,13 +284,14 @@ class FakeSpan:
 
 
 class FakeObservabilityRuntime:
-    __slots__ = ("counters", "durations", "enabled", "started_spans")
+    __slots__ = ("counters", "durations", "enabled", "gauges", "started_spans")
 
     def __init__(self) -> "None":
         self.enabled = True
         self.started_spans: "list[FakeSpan]" = []
         self.counters: "list[tuple[str, int, Mapping[str, str]]]" = []
         self.durations: "list[tuple[str, float, Mapping[str, str]]]" = []
+        self.gauges: "list[tuple[str, int, Mapping[str, str]]]" = []
 
     def start_span(
         self, name: "str", *, kind: "str", attributes: "Mapping[str, object]", parent: "object | None" = None
@@ -267,8 +321,33 @@ class FakeObservabilityRuntime:
     def record_counter(self, name: "str", value: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
         self.counters.append((name, value, dict(attributes)))
 
+    def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
+        self.gauges.append((name, delta, dict(attributes)))
+
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         self.durations.append((name, seconds, dict(attributes)))
+
+
+class _FakeOtelMetric:
+    __slots__ = ("samples",)
+
+    def __init__(self) -> "None":
+        self.samples: "list[tuple[int, dict[str, str]]]" = []
+
+    def add(self, delta: "int", *, attributes: "dict[str, str]") -> "None":
+        self.samples.append((delta, dict(attributes)))
+
+
+class _FakeOtelMeter:
+    __slots__ = ("created_up_down_counters", "up_down_counter")
+
+    def __init__(self) -> "None":
+        self.created_up_down_counters: "list[str]" = []
+        self.up_down_counter = _FakeOtelMetric()
+
+    def create_up_down_counter(self, name: "str") -> "_FakeOtelMetric":
+        self.created_up_down_counters.append(name)
+        return self.up_down_counter
 
 
 class _ObservabilityTransientWorker(Worker):

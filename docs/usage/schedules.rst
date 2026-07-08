@@ -89,6 +89,12 @@ next run time from the persisted schedule metadata. This keeps scheduling data
 close to the queue record and allows durable backends to recover after process
 restarts.
 
+Scheduled records include the same task metadata used by normal enqueue calls.
+When a task does not set ``quiet_success``, schedule startup stores
+``QueueConfig.quiet_success`` on the queued record. This affects only the
+successful completion log line; scheduled tasks still publish lifecycle events
+and event history.
+
 Configuration
 =============
 

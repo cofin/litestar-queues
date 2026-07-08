@@ -4,6 +4,7 @@ __all__ = (
     "NonRetryableError",
     "QueueConfigurationError",
     "QueueError",
+    "QueueEventBufferFull",
     "job_cancelled",
     "non_retryable",
 )
@@ -15,6 +16,10 @@ class QueueError(Exception):
 
 class QueueConfigurationError(QueueError):
     """Raised when queue backend configuration is invalid."""
+
+
+class QueueEventBufferFull(QueueError):  # noqa: N818
+    """Raised when queue event buffering cannot accept another event."""
 
 
 class NonRetryableError(QueueError):

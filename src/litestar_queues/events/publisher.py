@@ -1,21 +1,35 @@
 """Queue event publisher."""
 
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
+from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
-from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink
+from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, default_publish_many
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from litestar_queues.events._typing import ChannelsLike
+    from litestar_queues.events.chunking import QueueEventSizeEstimator
     from litestar_queues.events.models import QueueEvent
+    from litestar_queues.typing import ChannelsLike
 
-__all__ = ("QueueEventConfig", "QueueEventPublisher")
+__all__ = ("EventBufferConfig", "EventConfig", "QueueEventPublisher")
 
 logger = logging.getLogger(__name__)
+
+
+class _QueueEventHistoryWriter(Protocol):
+    async def publish_event(self, event: "QueueEvent") -> "None":
+        """Record a queue event for durable history."""
+
+
+@runtime_checkable
+class _QueueEventBatchSink(QueueEventSink, Protocol):
+    async def publish_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
+        """Publish a batch of events to their requested channels."""
+
 
 _LIFECYCLE_EVENT_TYPES = frozenset({
     "task.started",
@@ -25,15 +39,36 @@ _LIFECYCLE_EVENT_TYPES = frozenset({
     "task.claim_lost",
     "task.stale_failed",
 })
+_TERMINAL_EVENT_TYPES = frozenset({
+    "task.completed",
+    "task.failed",
+    "task.cancelled",
+    "task.claim_lost",
+    "task.stale_failed",
+})
 
 
 @dataclass(slots=True)
-class QueueEventConfig:
+class EventBufferConfig:
+    """Producer-side micro-batch buffer for live event delivery."""
+
+    enabled: "bool" = True
+    buffer_size: "int" = 20
+    flush_interval: "float" = 0.5
+    max_pending: "int" = 2000
+    overflow: 'Literal["drop_oldest", "drop_newest", "block", "error"]' = "drop_oldest"
+
+
+@dataclass(slots=True)
+class EventConfig:
     """Configuration for queue event publishing."""
 
-    enabled: "bool" = False
+    enabled: "bool" = True
+    buffer: "EventBufferConfig" = field(default_factory=EventBufferConfig)
     sink: "QueueEventSink | None" = None
     channels_backend: "ChannelsLike | None" = None
+    max_payload_bytes: "int | None" = None
+    payload_size_estimator: "QueueEventSizeEstimator | None" = None
     strict: "bool" = False
     publish_task_channel: "bool" = True
     publish_queue_channel: "bool" = True
@@ -43,38 +78,163 @@ class QueueEventConfig:
 class QueueEventPublisher:
     """Publish queue events through a configured sink."""
 
-    __slots__ = ("_sink", "publish_global_lifecycle", "publish_queue_channel", "publish_task_channel", "strict")
+    __slots__ = (
+        "_buffer",
+        "_event_log",
+        "_event_log_strict",
+        "_live_failure_signature",
+        "_sink",
+        "publish_global_lifecycle",
+        "publish_queue_channel",
+        "publish_task_channel",
+        "strict",
+    )
 
     def __init__(
         self,
         sink: "QueueEventSink | None" = None,
         *,
+        event_log: "_QueueEventHistoryWriter | None" = None,
+        event_log_strict: "bool" = False,
+        buffer_config: "EventBufferConfig | None" = None,
         strict: "bool" = False,
         publish_task_channel: "bool" = True,
         publish_queue_channel: "bool" = True,
         publish_global_lifecycle: "bool" = False,
     ) -> "None":
         self._sink = sink or NoopQueueEventSink()
+        self._event_log = event_log
+        self._event_log_strict = event_log_strict
+        self._buffer = (
+            LiveEventBuffer(buffer_config, sink_publish=self._deliver_live_many, record_drop=_ignore_buffer_drop)
+            if buffer_config is not None and buffer_config.enabled
+            else None
+        )
         self.strict = strict
         self.publish_task_channel = publish_task_channel
         self.publish_queue_channel = publish_queue_channel
         self.publish_global_lifecycle = publish_global_lifecycle
+        self._live_failure_signature: "tuple[str, str] | None" = None
 
     @property
     def sink(self) -> "QueueEventSink":
         """Configured event sink."""
         return self._sink
 
-    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None) -> "None":
-        """Publish an event to canonical and explicitly supplied channels."""
+    def set_event_log(self, event_log: "_QueueEventHistoryWriter", *, strict: "bool" = False) -> "None":
+        """Attach backend-owned durable event history to this publisher."""
+        self._event_log = event_log
+        self._event_log_strict = strict
+
+    async def publish(
+        self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None, immediate: "bool" = False
+    ) -> "None":
+        """Publish an event to canonical and explicitly supplied channels.
+
+        Returns:
+            None.
+        """
         resolved_channels = self.resolve_channels(event, channels=channels)
+        await self._record_event(event)
+        if self._buffer is not None and not immediate and event.type not in _TERMINAL_EVENT_TYPES:
+            try:
+                await self._buffer.add(event, resolved_channels)
+            except Exception:
+                if self.strict:
+                    raise
+                logger.warning(
+                    "Queue event buffer publish failed",
+                    exc_info=True,
+                    extra={"queue_event_type": event.type, "queue_event_id": event.id},
+                )
+            return
+        if self._buffer is not None:
+            try:
+                await self._buffer.flush(key=event_buffer_key(event))
+            except Exception:
+                if self.strict:
+                    raise
+                logger.warning(
+                    "Queue event buffer flush failed",
+                    exc_info=True,
+                    extra={"queue_event_type": event.type, "queue_event_id": event.id},
+                )
+        await self._deliver_live(event, resolved_channels)
+
+    async def flush_buffer(self) -> "None":
+        """Flush all buffered live events.
+
+        Returns:
+            None.
+        """
+        if self._buffer is not None:
+            await self._buffer.flush()
+
+    def start_buffer(self) -> "None":
+        """Start the live event buffer flush loop.
+
+        Returns:
+            None.
+        """
+        if self._buffer is not None:
+            self._buffer.start()
+
+    async def stop_buffer(self) -> "None":
+        """Stop and drain the live event buffer.
+
+        Returns:
+            None.
+        """
+        if self._buffer is not None:
+            await self._buffer.stop()
+
+    async def _deliver_live(self, event: "QueueEvent", channels: "Sequence[str]") -> "None":
         try:
-            await self._sink.publish(event, channels=resolved_channels)
+            await self._sink.publish(event, channels=channels)
         except Exception:
             if self.strict:
                 raise
             logger.warning(
                 "Queue event publish failed",
+                exc_info=True,
+                extra={"queue_event_type": event.type, "queue_event_id": event.id},
+            )
+
+    async def _deliver_live_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
+        try:
+            if isinstance(self._sink, _QueueEventBatchSink):
+                await self._sink.publish_many(batch)
+            else:
+                await default_publish_many(self._sink, batch)
+        except Exception as exc:
+            if self.strict:
+                raise
+            self._log_batch_delivery_failure(exc, len(batch))
+            return
+        self._live_failure_signature = None
+
+    def _log_batch_delivery_failure(self, exc: "BaseException", count: "int") -> "None":
+        # Warn-once dampener: the first failure logs at WARNING with a traceback; consecutive
+        # identical failures drop to DEBUG without a traceback so a misordered shutdown sink
+        # (e.g. a torn-down Channels backend during graceful drain) degrades quietly instead of
+        # spamming a WARNING per batch. Reset happens on the next successful delivery.
+        signature = (type(exc).__name__, str(exc))
+        if signature == self._live_failure_signature:
+            logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
+            return
+        self._live_failure_signature = signature
+        logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
+
+    async def _record_event(self, event: "QueueEvent") -> "None":
+        if self._event_log is None:
+            return
+        try:
+            await self._event_log.publish_event(event)
+        except Exception:
+            if self._event_log_strict:
+                raise
+            logger.warning(
+                "Queue event history publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},
             )
@@ -110,3 +270,7 @@ def _dedupe(channels: "Sequence[str]") -> "tuple[str, ...]":
         seen.add(channel)
         resolved.append(channel)
     return tuple(resolved)
+
+
+def _ignore_buffer_drop(_scope: "str") -> "None":
+    return None

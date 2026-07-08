@@ -21,8 +21,13 @@ def test_public_exports() -> "None":
         CloudRunExecutionBackend,
         CloudRunExecutionConfig,
         CloudRunExecutionStatus,
+        EventConfig,
+        EventLogConfig,
+        EventStreamConfig,
         ExecutionBackendConfig,
         ExecutionBackendConfigProtocol,
+        HeartbeatTouch,
+        HeartbeatTouchResult,
         ImmediateExecutionBackend,
         InMemoryQueueBackend,
         LocalExecutionBackend,
@@ -38,6 +43,7 @@ def test_public_exports() -> "None":
         Task,
         TaskResult,
         Worker,
+        beat,
         get_execution_backend_class,
         get_queue_backend_class,
         get_scheduled_tasks,
@@ -55,8 +61,13 @@ def test_public_exports() -> "None":
         "CloudRunExecutionConfig",
         "CloudRunExecutionStatus",
         "EnqueueSpec",
+        "EventConfig",
+        "EventLogConfig",
+        "EventStreamConfig",
         "ExecutionBackendConfig",
         "ExecutionBackendConfigProtocol",
+        "HeartbeatTouch",
+        "HeartbeatTouchResult",
         "ImmediateExecutionBackend",
         "InMemoryQueueBackend",
         "LocalExecutionBackend",
@@ -72,6 +83,7 @@ def test_public_exports() -> "None":
         "Task",
         "TaskResult",
         "Worker",
+        "beat",
         "discover_tasks",
         "get_execution_backend_class",
         "get_queue_backend_class",
@@ -93,10 +105,18 @@ def test_public_exports() -> "None":
     assert expected_exports.issubset(set(litestar_queues.__all__))
     assert forbidden_exports.isdisjoint(set(litestar_queues.__all__))
     assert QueueConfig().queue_backend == "memory"
+    assert EventConfig().enabled is True
+    assert EventLogConfig().enabled is True
+    assert EventStreamConfig().enabled is True
     assert QueueBackendConfig is not None
     assert ExecutionBackendConfig is not None
     assert QueueBackendConfigProtocol is not None
     assert ExecutionBackendConfigProtocol is not None
+    heartbeat_touch = HeartbeatTouch(task_id=QueuedTaskRecord(task_name="example").id, expected_retry_count=0)
+    assert heartbeat_touch.metadata_patch is None
+    assert HeartbeatTouchResult().touched_task_ids == set()
+    assert HeartbeatTouchResult().missed_task_ids == set()
+    assert HeartbeatTouchResult().failed_task_ids == set()
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
     assert {"advanced-alchemy", "memory", "redis", "sqlspec", "valkey"}.issubset(set(list_queue_backends()))
     assert get_execution_backend_class("cloudrun") is CloudRunExecutionBackend
@@ -119,6 +139,7 @@ def test_public_exports() -> "None":
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None
+    assert callable(beat)
     assert get_task_registry() == {}
     assert get_scheduled_tasks() == {}
     assert callable(task)
@@ -136,6 +157,34 @@ def test_optional_backends_resolve_lazily_via_factory() -> "None":
     assert get_queue_backend_class("redis") is RedisQueueBackend
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
     assert get_queue_backend_class("valkey") is ValkeyQueueBackend
+
+
+def test_core_imports_do_not_load_optional_backend_packages() -> "None":
+    """Core package imports must not load optional backend dependencies."""
+    code = """
+import sys
+
+import litestar_queues
+import litestar_queues.backends
+import litestar_queues.models
+from litestar_queues import QueueConfig
+
+for module_name in (
+    "advanced_alchemy",
+    "opentelemetry",
+    "prometheus_client",
+    "redis",
+    "sqlalchemy",
+    "sqlspec",
+    "valkey",
+):
+    assert module_name not in sys.modules, module_name
+
+assert QueueConfig().queue_backend == "memory"
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_queued_task_record_normalizes_naive_scheduled_at() -> "None":
@@ -164,23 +213,30 @@ def test_optional_backend_configs_live_on_submodules() -> "None":
 def test_task_dependency_resolver_is_re_exported_from_package_root() -> "None":
     """TaskDependencyResolver is part of the package root surface."""
     import litestar_queues
-    from litestar_queues import TaskDependencyResolver
+    from litestar_queues import TaskDependencyResolver, TaskErrorSanitizer
     from litestar_queues.config import TaskDependencyResolver as ConfigTaskDependencyResolver
+    from litestar_queues.config import TaskErrorSanitizer as ConfigTaskErrorSanitizer
 
     assert TaskDependencyResolver is ConfigTaskDependencyResolver
+    assert TaskErrorSanitizer is ConfigTaskErrorSanitizer
     assert "TaskDependencyResolver" in litestar_queues.__all__
+    assert "TaskErrorSanitizer" in litestar_queues.__all__
 
 
 def test_task_dependency_resolver_config_surface() -> "None":
     """The TaskDependencyResolver alias and config field are part of the config module surface."""
     from litestar_queues import config as config_module
-    from litestar_queues.config import QueueConfig, TaskDependencyResolver
+    from litestar_queues.config import QueueConfig, TaskDependencyResolver, TaskErrorSanitizer
 
     assert "TaskDependencyResolver" in config_module.__all__
+    assert "TaskErrorSanitizer" in config_module.__all__
     assert TaskDependencyResolver is not None
+    assert TaskErrorSanitizer is not None
     instance = QueueConfig()
     assert instance.task_dependency_resolver is None
+    assert instance.error_sanitizer is None
     assert instance.signature_namespace["TaskDependencyResolver"] is TaskDependencyResolver
+    assert instance.signature_namespace["TaskErrorSanitizer"] is TaskErrorSanitizer
 
 
 def test_job_cancelled_helper_is_public_and_in_signature_namespace() -> "None":
@@ -246,6 +302,60 @@ forbidden = (
     "opentelemetry.trace",
     "opentelemetry.metrics",
     "prometheus_client",
+)
+loaded = [name for name in forbidden if name in sys.modules]
+if loaded:
+    raise SystemExit(",".join(loaded))
+"""
+
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_event_package_does_not_expose_standalone_sqlite_sink() -> "None":
+    """Durable queue event history must not be exposed as a standalone SQLite sink."""
+    script = """
+import sys
+from litestar_queues import events
+
+sink_name = "SQLite" + "QueueEvent" + "Sink"
+sqlite_module = "sqlite" + "3"
+if hasattr(events, sink_name):
+    raise SystemExit("standalone SQLite event sink is still public")
+if sink_name in events.__all__:
+    raise SystemExit("standalone SQLite event sink is still exported")
+if sqlite_module in sys.modules:
+    raise SystemExit("importing litestar_queues.events imported SQLite runtime module")
+"""
+
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_importing_queue_config_does_not_import_streaming_stack() -> "None":
+    """The config surface must not import plugin-owned stream routing code."""
+    script = """
+import sys
+import litestar_queues
+import litestar_queues.events
+from litestar_queues import QueueConfig
+from litestar_queues.events import EventStreamConfig, QueueEventProducer, create_event_producer
+
+if QueueConfig().signature_namespace["EventStreamConfig"] is not EventStreamConfig:
+    raise SystemExit("EventStreamConfig missing from signature namespace")
+if QueueConfig().signature_namespace["QueueEventProducer"] is not QueueEventProducer:
+    raise SystemExit("QueueEventProducer missing from signature namespace")
+if create_event_producer is None:
+    raise SystemExit("create_event_producer missing from events")
+
+forbidden = (
+    "litestar_queues.events.streaming",
+    "litestar_queues.events.litestar",
+    "litestar.channels",
+    "litestar.channels.plugin",
+    "litestar.channels.backends.memory",
 )
 loaded = [name for name in forbidden if name in sys.modules]
 if loaded:

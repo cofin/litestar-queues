@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("redis")
 
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
+from litestar_queues.models import HeartbeatTouch
 
 if TYPE_CHECKING:
     from litestar_queues.backends.redis import RedisQueueBackend
@@ -173,6 +174,29 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
     assert [record.id for record in completed_records] == [completed.id]
     assert cleanup_count >= 3
     assert await redis_backend.get_task(completed.id) is None
+
+
+async def test_redis_backend_touch_heartbeats_fences_and_merges_metadata(redis_backend: "RedisQueueBackend") -> "None":
+    empty_result = await redis_backend.touch_heartbeats([])
+    assert empty_result.touched_task_ids == set()
+    assert empty_result.missed_task_ids == set()
+
+    record = await redis_backend.enqueue("tasks.redis.heartbeat.metadata", max_retries=1, metadata={"existing": "kept"})
+    claimed = await redis_backend.claim_task(record.id)
+    assert claimed is not None
+
+    result = await redis_backend.touch_heartbeats([
+        HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count + 1),
+        HeartbeatTouch(
+            task_id=claimed.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 5"}
+        ),
+    ])
+    touched = await redis_backend.get_task(claimed.id)
+
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == {claimed.id}
+    assert touched is not None
+    assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
 
 
 async def test_redis_backend_rejects_unserializable_results(redis_backend: "RedisQueueBackend") -> "None":

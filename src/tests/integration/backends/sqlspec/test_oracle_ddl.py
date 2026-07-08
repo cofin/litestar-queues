@@ -114,7 +114,7 @@ def test_sqlspec_backend_oracledb_json_storage_avoids_clob_and_honors_settings(
 
     assert isinstance(store, expected_store_type)
     assert "CLOB" not in ddl
-    for column_name in ("args_json", "kwargs_json", "result_json", "metadata_json"):
+    for column_name in ("task_args", "task_kwargs", "result", "metadata"):
         expected_column_type = expected_json_fragment.format(column=column_name)
         assert f"{column_name} {expected_column_type} NOT NULL" in ddl
     assert ("INMEMORY PRIORITY HIGH" in ddl) is bool(queue_settings.get("in_memory"))
@@ -193,7 +193,7 @@ def test_sqlspec_backend_oracledb_truncates_error_text_for_failure_statements() 
     ("driver", "expected_json_fragment"),
     (
         (FakeOracleDriver(FakeOracleVersionInfo(native_json=True)), "JSON"),
-        (FakeOracleDriver(FakeOracleVersionInfo(json_blob=True)), "BLOB CHECK (args_json IS JSON)"),
+        (FakeOracleDriver(FakeOracleVersionInfo(json_blob=True)), "BLOB CHECK (task_args IS JSON)"),
         (FakeOracleDriver(FakeOracleVersionInfo(native_json=False, json_blob=False)), "BLOB"),
         (FakeManagedDriver(FakeSyncOracleDriver(FakeOracleVersionInfo(native_json=True))), "JSON"),
     ),

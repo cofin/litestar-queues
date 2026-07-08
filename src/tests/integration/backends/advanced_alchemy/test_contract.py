@@ -23,7 +23,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from advanced_alchemy.operations import MergeStatement
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.advanced_alchemy import (
     AdvancedAlchemyBackendConfig,
@@ -91,7 +91,7 @@ async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path
 
 
 def test_advanced_alchemy_mixin_uses_native_json_column_types() -> "None":
-    column_type = ContractQueueTask.__table__.c.args_json.type
+    column_type = ContractQueueTask.args_json.property.columns[0].type
 
     assert column_type.compile(dialect=_postgresql_dialect()) == "JSONB"
     assert column_type.compile(dialect=_sqlite_dialect()) == "JSON"
@@ -160,19 +160,19 @@ def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialect
         "id": uuid4(),
         "task_name": "tasks.native_upsert",
         "task_key": "native:upsert",
-        "args_json": [],
-        "kwargs_json": {},
-        "metadata_json": {},
+        "task_args": [],
+        "task_kwargs": {},
+        "metadata": {},
     }
 
     postgres_statement, postgres_params = _build_keyed_enqueue_upsert(
-        ContractQueueTask.__table__, values, dialect_name="postgresql"
+        ContractQueueTask.__table__, values, dialect_name="postgresql", key_column="task_key"
     )
     mysql_statement, mysql_params = _build_keyed_enqueue_upsert(
-        ContractQueueTask.__table__, values, dialect_name="mysql"
+        ContractQueueTask.__table__, values, dialect_name="mysql", key_column="task_key"
     )
     oracle_statement, oracle_params = _build_keyed_enqueue_upsert(
-        ContractQueueTask.__table__, values, dialect_name="oracle"
+        ContractQueueTask.__table__, values, dialect_name="oracle", key_column="task_key"
     )
 
     assert _supports_native_keyed_enqueue("postgresql")
@@ -279,18 +279,25 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert cancelled is not None
     assert cancelled.status == "cancelled"
 
-    running = await advanced_alchemy_backend.enqueue("tasks.heartbeat", max_retries=1)
+    running = await advanced_alchemy_backend.enqueue("tasks.heartbeat", max_retries=1, metadata={"existing": "kept"})
     claimed = await advanced_alchemy_backend.claim_task(running.id)
 
     assert claimed is not None
     assert claimed.heartbeat_at is not None
 
-    await advanced_alchemy_backend.touch_heartbeat(claimed.id)
+    result = await advanced_alchemy_backend.touch_heartbeats([
+        HeartbeatTouch(
+            task_id=claimed.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 5"}
+        )
+    ])
     touched = await advanced_alchemy_backend.get_task(claimed.id)
 
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == set()
     assert touched is not None
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at
+    assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
 
     stale_result = await advanced_alchemy_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
     assert stale_result.requeued == 1
@@ -310,6 +317,42 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
     assert exhausted_stored is not None
     assert exhausted_stored.status == "failed"
     assert exhausted_stored.error == "Task heartbeat stale"
+
+
+async def test_advanced_alchemy_backend_touch_heartbeats_handles_mixed_metadata_patches(
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
+    patched = await advanced_alchemy_backend.enqueue(
+        "tasks.heartbeat.patched", metadata={"existing": "kept", "patch": "old"}
+    )
+    heartbeat_only = await advanced_alchemy_backend.enqueue("tasks.heartbeat.only", metadata={"existing": "untouched"})
+    patched_claim = await advanced_alchemy_backend.claim_task(patched.id)
+    heartbeat_only_claim = await advanced_alchemy_backend.claim_task(heartbeat_only.id)
+
+    assert patched_claim is not None
+    assert heartbeat_only_claim is not None
+    assert patched_claim.heartbeat_at is not None
+    assert heartbeat_only_claim.heartbeat_at is not None
+
+    result = await advanced_alchemy_backend.touch_heartbeats([
+        HeartbeatTouch(
+            task_id=patched_claim.id, expected_retry_count=patched_claim.retry_count, metadata_patch={"patch": "new"}
+        ),
+        HeartbeatTouch(task_id=heartbeat_only_claim.id, expected_retry_count=heartbeat_only_claim.retry_count),
+    ])
+    touched_patched = await advanced_alchemy_backend.get_task(patched_claim.id)
+    touched_heartbeat_only = await advanced_alchemy_backend.get_task(heartbeat_only_claim.id)
+
+    assert result.touched_task_ids == {patched_claim.id, heartbeat_only_claim.id}
+    assert result.missed_task_ids == set()
+    assert touched_patched is not None
+    assert touched_heartbeat_only is not None
+    assert touched_patched.heartbeat_at is not None
+    assert touched_heartbeat_only.heartbeat_at is not None
+    assert touched_patched.heartbeat_at >= patched_claim.heartbeat_at
+    assert touched_heartbeat_only.heartbeat_at >= heartbeat_only_claim.heartbeat_at
+    assert touched_patched.metadata == {"existing": "kept", "patch": "new"}
+    assert touched_heartbeat_only.metadata == {"existing": "untouched"}
 
 
 async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(

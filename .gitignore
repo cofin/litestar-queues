@@ -169,6 +169,12 @@ cython_debug/
 .vscode
 
 node_modules
+examples/**/node_modules/
+examples/**/.litestar.json
+examples/**/package-lock.json
+examples/**/public/
+examples/**/hot
+examples/**/*.db
 .aider*
 
 .DS_Store
@@ -200,3 +206,5 @@ GEMINI.md
 test-build
 .antigravitycli/
 opencode.json
+.playwright-mcp
+.python-version

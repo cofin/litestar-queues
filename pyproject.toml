@@ -56,6 +56,7 @@ litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
+examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 redis = ["redis>=5.0.0"]
@@ -189,6 +190,12 @@ filterwarnings = [
   "ignore::DeprecationWarning:pkg_resources.*",
   "ignore::DeprecationWarning:xdist.*",
   "ignore::DeprecationWarning:importlib._bootstrap",
+  # Temporary upstream SQLSpec filters: https://github.com/litestar-org/sqlspec/issues/623
+  "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning:sqlspec\\.adapters\\.duckdb\\.driver",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:litestar_queues\\.backends\\.sqlspec\\.backend",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:sqlspec\\.adapters\\.psycopg\\.driver",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
 ]
 testpaths = ["src/tests"]
 

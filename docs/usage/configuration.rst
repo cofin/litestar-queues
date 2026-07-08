@@ -71,9 +71,20 @@ Core Settings
    * - ``initialize_schedules``
      - ``True``
      - Create or refresh pending records for scheduled tasks on startup.
+   * - ``quiet_success``
+     - ``True``
+     - Suppress the operator log line for successful task completion by
+       default.
    * - ``in_app_worker``
      - ``True``
      - Start an in-process worker with the Litestar app.
+
+``quiet_success`` is a logging default only. It does not suppress
+``task.completed`` lifecycle events, task progress/log events, stream delivery,
+or backend-managed event history. Use ``QueueConfig(quiet_success=False)`` to
+emit successful completion logs by default, then override individual tasks or
+enqueue calls with ``quiet_success=True`` when they are too noisy. Queue-level
+quieting is not part of the public configuration.
 
 Dependency and State Keys
 =========================
@@ -121,21 +132,28 @@ Worker settings are used when ``in_app_worker=True`` or when constructing a
    * - ``worker_stale_after``
      - ``None``
      - Seconds after which stale running records can be requeued on startup.
+   * - ``worker_stale_check_interval``
+     - ``60``
+     - Seconds between stale-running recovery sweeps.
+   * - ``error_sanitizer``
+     - ``None``
+     - Optional callable that converts task exceptions into persisted error
+       messages and failed-event messages.
 
 Event Settings
 ==============
 
-``event_config`` controls application-facing queue event delivery. Events are
-disabled by default and can be enabled with a custom sink or an app-owned
-Litestar Channels backend:
+``event`` controls application-facing queue event delivery. Events are disabled
+when ``QueueConfig.event`` is ``None``. Providing ``EventConfig`` enables them
+by default unless ``enabled=False`` is explicit:
 
 .. code-block:: python
 
-   from litestar_queues.events import QueueEventConfig
+   from litestar_queues.events import EventConfig
 
 
    config = QueueConfig(
-       event_config=QueueEventConfig(enabled=True, channels_backend=channels),
+       event=EventConfig(channels_backend=channels),
    )
 
 See :doc:`events` for the event envelope, channels, helper APIs, and streaming

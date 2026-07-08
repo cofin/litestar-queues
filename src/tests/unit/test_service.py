@@ -4,12 +4,19 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import InMemoryQueueEventSink, QueueConfig, QueueEventConfig, QueueService
+from litestar_queues import EventConfig, InMemoryQueueEventSink, QueueConfig, QueueService
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import QueueEventPublisher
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
+    from litestar_queues.events import (
+        EventLogConfig,
+        QueueEvent,
+        QueueEventLog,
+        QueueEventLogRecord,
+        QueueEventStageSummary,
+    )
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -28,13 +35,13 @@ def test_get_event_publisher_warns_when_sink_is_configured_but_events_are_disabl
     caplog: "pytest.LogCaptureFixture",
 ) -> "None":
     sink = InMemoryQueueEventSink()
-    config = QueueConfig(event_config=QueueEventConfig(sink=sink))
+    config = QueueConfig(event=EventConfig(enabled=False, sink=sink))
 
     with caplog.at_level(logging.WARNING, logger="litestar_queues.config"):
         publisher = config.get_event_publisher()
 
     assert publisher.sink is not sink
-    assert "Queue event sink configured while event publishing is disabled" in caplog.text
+    assert "Queue event sink configured while event publishing is explicitly disabled" in caplog.text
 
 
 async def test_service_placeholder_enqueue_reports_unimplemented() -> "None":
@@ -74,6 +81,67 @@ async def test_enqueue_can_override_requeue_on_stale_metadata() -> "None":
 
     assert result.record is not None
     assert result.record.metadata["requeue_on_stale"] is False
+
+
+async def test_enqueue_uses_config_quiet_success_default() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("quiet.config_default")
+    async def config_default() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        result = await service.enqueue(config_default)
+
+    assert result.record is not None
+    assert result.record.metadata["quiet_success"] is True
+
+
+async def test_enqueue_respects_config_quiet_success_false_default() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("quiet.config_false")
+    async def config_false() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local", quiet_success=False)) as service:
+        result = await service.enqueue(config_false)
+
+    assert result.record is not None
+    assert result.record.metadata["quiet_success"] is False
+
+
+async def test_enqueue_quiet_success_precedence() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("quiet.metadata_only")
+    async def metadata_only() -> "str":
+        return "ok"
+
+    @task("quiet.task_override", quiet_success=True)
+    async def task_override() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local", quiet_success=True)) as service:
+        metadata_result = await service.enqueue(metadata_only, metadata={"quiet_success": False})
+        task_result = await service.enqueue(task_override, metadata={"quiet_success": False})
+        enqueue_result = await service.enqueue(task_override, quiet_success=False, metadata={"quiet_success": True})
+
+    assert metadata_result.record is not None
+    assert task_result.record is not None
+    assert enqueue_result.record is not None
+    assert metadata_result.record.metadata["quiet_success"] is False
+    assert task_result.record.metadata["quiet_success"] is True
+    assert enqueue_result.record.metadata["quiet_success"] is False
 
 
 async def test_enqueue_immediate_override_executes_inline_when_configured_backend_is_external() -> "None":
@@ -148,7 +216,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
     """Resolver fires after the task.started event and before task.completed."""
     import time
 
-    from litestar_queues import InMemoryQueueEventSink, QueueEventConfig, Task, TaskExecutionContext, task
+    from litestar_queues import EventConfig, InMemoryQueueEventSink, Task, TaskExecutionContext, task
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.task import clear_task_registry
 
@@ -170,9 +238,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
         timeline["body"] = time.monotonic()
         return "ok"
 
-    config = QueueConfig(
-        execution_backend="immediate", task_dependency_resolver=resolver, event_config=QueueEventConfig(enabled=True)
-    )
+    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver, event=EventConfig())
     service = QueueService(config, event_publisher=publisher)
 
     async with service:
@@ -241,9 +307,7 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", event_config=QueueEventConfig(enabled=True)),
-        queue_backend=backend,
-        event_publisher=publisher,
+        QueueConfig(execution_backend="local", event=EventConfig()), queue_backend=backend, event_publisher=publisher
     ) as service:
         result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-stale")
 
@@ -252,3 +316,208 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     assert event.scope == "worker"
     assert event.worker_id == "worker-stale"
     assert event.payload == {"requeued": 0, "failed": 1, "skipped": 0, "handler_needed": 0}
+
+
+async def test_event_log_config_is_public_and_memory_backend_is_unsupported() -> "None":
+    from litestar_queues import events
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    event_log_config_type = getattr(events, "EventLogConfig", None)
+    assert event_log_config_type is not None
+
+    config = QueueConfig(event_log=event_log_config_type(enabled=True))
+
+    with pytest.raises(QueueConfigurationError, match="event history"):
+        async with QueueService(config):
+            pass
+
+
+async def test_backend_event_log_records_events_when_live_events_are_disabled() -> "None":
+    from litestar_queues import events, task
+    from litestar_queues.events import publish_task_log
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    event_log_config_type = getattr(events, "EventLogConfig", None)
+    assert event_log_config_type is not None
+    event_log = _RecordingEventLog()
+
+    @task("tasks.event_history")
+    async def event_history_task() -> "None":
+        await publish_task_log("history only", payload={"stage": "load"})
+
+    config = QueueConfig(execution_backend="immediate", event_log=event_log_config_type(enabled=True))
+
+    async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
+        result = await service.enqueue(event_history_task)
+
+    assert result.status == "completed"
+    assert [event.type for event in event_log.events] == ["task.started", "task.log", "task.completed"]
+    assert event_log.flushed is True
+
+
+async def test_backend_event_log_and_live_sink_are_independent() -> "None":
+    from litestar_queues import events, task
+    from litestar_queues.events import publish_task_log
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    event_log_config_type = getattr(events, "EventLogConfig", None)
+    assert event_log_config_type is not None
+    event_log = _RecordingEventLog()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.event_history_with_live_sink")
+    async def event_history_with_live_sink_task() -> "None":
+        await publish_task_log("history and live", payload={"stage": "load"})
+
+    config = QueueConfig(
+        execution_backend="immediate", event=EventConfig(sink=sink), event_log=event_log_config_type(enabled=True)
+    )
+
+    async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
+        result = await service.enqueue(event_history_with_live_sink_task)
+
+    assert result.status == "completed"
+    assert [event.type for event in event_log.events] == ["task.started", "task.log", "task.completed"]
+    assert [event.type for event in sink.events] == ["task.started", "task.log", "task.completed"]
+
+
+async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("tasks.priority_schedule", interval=60, priority=5)
+    async def priority_schedule() -> "None":
+        return None
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        records = await service.initialize_schedules()
+
+    assert len(records) == 1
+    assert records[0].task_name == priority_schedule.name
+    assert records[0].priority == 5
+
+
+async def test_initialize_schedules_applies_config_quiet_success_default_and_task_override() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("tasks.quiet_schedule_default", interval=60)
+    async def quiet_schedule_default() -> "None":
+        return None
+
+    @task("tasks.quiet_schedule_override", interval=60, quiet_success=False)
+    async def quiet_schedule_override() -> "None":
+        return None
+
+    async with QueueService(QueueConfig(execution_backend="local", quiet_success=True)) as service:
+        records = await service.initialize_schedules()
+
+    by_task_name = {record.task_name: record for record in records}
+    assert by_task_name["tasks.quiet_schedule_default"].metadata["quiet_success"] is True
+    assert by_task_name["tasks.quiet_schedule_override"].metadata["quiet_success"] is False
+
+
+async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+    called: "list[str]" = []
+
+    async def on_stale_failure(record: "QueuedTaskRecord") -> "None":
+        called.append(str(record.id))
+
+    @task("tasks.stale_hook", requeue_on_stale=False, on_stale_failure=on_stale_failure)
+    async def stale_hook() -> "None":
+        return None
+
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue(stale_hook.name, max_retries=3, metadata=stale_hook.metadata())
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    async with QueueService(
+        QueueConfig(execution_backend="local", event=EventConfig()),
+        queue_backend=backend,
+        event_publisher=QueueEventPublisher(sink),
+    ) as service:
+        result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-stale")
+
+    assert result.failed == 1
+    assert called == [str(record.id)]
+    assert [event.type for event in sink.events] == ["task.stale_failed", "worker.stale_recovery"]
+
+
+async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+
+    def sanitize_error(exc: "BaseException", record: "QueuedTaskRecord") -> "str":
+        return f"{record.task_name}:{type(exc).__name__}:redacted"
+
+    @task("tasks.sanitize_error")
+    async def sanitize_error_task() -> "None":
+        msg = "secret-token"
+        raise RuntimeError(msg)
+
+    config = QueueConfig(execution_backend="local", event=EventConfig(), error_sanitizer=sanitize_error)
+
+    async with QueueService(config, event_publisher=QueueEventPublisher(sink)) as service:
+        result = await service.enqueue(sanitize_error_task)
+        claimed = await service.claim_next()
+        assert claimed is not None
+        updated = await service.execute_record(claimed)
+
+    failed_event = next(event for event in sink.events if event.type == "task.failed")
+    assert updated.status == "failed"
+    assert updated.error == "tasks.sanitize_error:RuntimeError:redacted"
+    assert failed_event.message == "tasks.sanitize_error:RuntimeError:redacted"
+    assert result.record is not None
+    assert result.record.error == "tasks.sanitize_error:RuntimeError:redacted"
+
+
+class _RecordingEventLog:
+    def __init__(self) -> "None":
+        self.events: "list[QueueEvent]" = []
+        self.flushed = False
+
+    async def publish_event(self, event: "QueueEvent") -> "None":
+        self.events.append(event)
+
+    async def flush_events(self) -> "None":
+        self.flushed = True
+
+    async def list_events(
+        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+    ) -> "list[QueueEventLogRecord]":
+        del task_id, task_name, limit
+        return []
+
+    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
+        del task_name
+        return []
+
+    async def cleanup_before(self, before: "datetime") -> "int":
+        del before
+        return 0
+
+
+class _EventLogBackend(InMemoryQueueBackend):
+    def __init__(self, event_log: "_RecordingEventLog") -> "None":
+        super().__init__()
+        self._event_log = event_log
+
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+        del config
+        return self._event_log

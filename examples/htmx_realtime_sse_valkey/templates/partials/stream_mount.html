@@ -1,0 +1,19 @@
+<!--
+  Returned by POST /demo/restart. This element IS the SSE connection: the htmx
+  SSE extension opens an EventSource for sse-connect when the element is swapped
+  in, and closes it automatically when the next restart replaces the element.
+  Connection lifecycle == swap lifecycle. sse-swap lists every queue event type
+  so htmx:sseBeforeMessage fires for each; the JS adapter renders them as crawl
+  lines and cancels the default HTML swap (hx-swap="none" belt-and-suspenders).
+-->
+<div
+  id="stream-mount"
+  class="stream-mount"
+  aria-hidden="true"
+  hx-ext="sse"
+  sse-connect="{{ task_sse_url }}"
+  sse-swap="task.started,task.progress,task.log,task.event,task.completed,task.failed"
+  hx-swap="none"
+  data-job-id="{{ job_id }}"
+  data-task-id="{{ task_id }}"
+></div>

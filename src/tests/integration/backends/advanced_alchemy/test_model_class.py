@@ -58,7 +58,7 @@ class RenamedColumnQueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
 
 def test_queue_task_model_mixin_adds_queue_schema_to_app_owned_model() -> "None":
     assert {"id", "created_at", "updated_at"} <= _column_names(BareQueueTaskModel)
-    assert {"task_name", "kwargs_json", "execution_ref", "metadata_json"} <= _column_names(BareQueueTaskModel)
+    assert {"task_name", "task_args", "task_kwargs", "execution_ref", "metadata"} <= _column_names(BareQueueTaskModel)
     assert {
         "ix_bare_queue_tasks_pending",
         "ix_bare_queue_tasks_heartbeat",
@@ -68,12 +68,22 @@ def test_queue_task_model_mixin_adds_queue_schema_to_app_owned_model() -> "None"
 
 def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> "None":
     assert {"id", "created_at", "updated_at"} <= _column_names(AppQueueTask)
-    assert {"task_name", "kwargs_json", "execution_ref", "metadata_json"} <= _column_names(AppQueueTask)
+    assert {"task_name", "task_args", "task_kwargs", "execution_ref", "metadata"} <= _column_names(AppQueueTask)
     assert {
         "ix_app_queue_tasks_pending",
         "ix_app_queue_tasks_heartbeat",
         "ix_app_queue_tasks_execution",
     } <= _index_names(AppQueueTask)
+
+
+def test_queue_task_model_mixin_preserves_canonical_python_attributes() -> "None":
+    assert _mapped_column_name(BareQueueTaskModel, "task_key") == "task_key"
+    assert _mapped_column_name(BareQueueTaskModel, "task_name") == "task_name"
+    assert _mapped_column_name(BareQueueTaskModel, "args_json") == "task_args"
+    assert _mapped_column_name(BareQueueTaskModel, "kwargs_json") == "task_kwargs"
+    assert _mapped_column_name(BareQueueTaskModel, "execution_backend") == "execution_backend"
+    assert _mapped_column_name(BareQueueTaskModel, "result_json") == "result"
+    assert _mapped_column_name(BareQueueTaskModel, "metadata_json") == "metadata"
 
 
 def test_advanced_alchemy_backend_uses_default_model_class(tmp_path: "Path") -> "None":
@@ -264,6 +274,10 @@ def _column_names(model: "type[object]") -> "set[str]":
 
 def _index_names(model: "type[object]") -> "set[str]":
     return {str(index.name) for index in _table(model).indexes if index.name is not None}
+
+
+def _mapped_column_name(model: "type[object]", attribute_name: "str") -> "str":
+    return str(getattr(model, attribute_name).property.columns[0].name)
 
 
 def _as_utc(value: "datetime") -> "datetime":

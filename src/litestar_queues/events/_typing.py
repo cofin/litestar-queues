@@ -25,6 +25,12 @@ class ChannelsWaitPublishedBackend(Protocol):
     def wait_published(self, data: bytes | str, channels: "Sequence[str]") -> object: ...
 
 
+class ChannelsWaitPublishedManyBackend(Protocol):
+    """Channels plugin variant that waits until batch publication completes."""
+
+    def wait_published_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> object: ...
+
+
 class ChannelsSubscriptionBackend(Protocol):
     """Channels plugin variant that exposes a subscription context manager."""
 

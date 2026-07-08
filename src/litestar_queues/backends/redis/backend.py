@@ -14,10 +14,17 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    BaseQueueBackend,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.exceptions import QueueError
 from litestar_queues.models import (
+    HeartbeatTouchResult,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
@@ -26,10 +33,11 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Mapping
+    from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("RedisQueueBackend",)
 
@@ -41,6 +49,45 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
 end
 return 0
+"""
+_TOUCH_HEARTBEAT_SCRIPT = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'running' then
+    return 0
+end
+
+local expected_retry_count = ARGV[1]
+if expected_retry_count ~= '' then
+    local retry_count = redis.call('HGET', KEYS[1], 'retry_count')
+    if retry_count ~= expected_retry_count then
+        return 0
+    end
+end
+
+local heartbeat_at = ARGV[2]
+local metadata_patch_json = ARGV[3]
+if metadata_patch_json ~= '' then
+    local metadata_json = redis.call('HGET', KEYS[1], 'metadata')
+    local metadata = {}
+    if metadata_json and metadata_json ~= '' then
+        local ok, decoded = pcall(cjson.decode, metadata_json)
+        if ok and type(decoded) == 'table' then
+            metadata = decoded
+        end
+    end
+
+    local ok_patch, metadata_patch = pcall(cjson.decode, metadata_patch_json)
+    if ok_patch and type(metadata_patch) == 'table' then
+        for key, value in pairs(metadata_patch) do
+            metadata[key] = value
+        end
+    end
+    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at, 'metadata', cjson.encode(metadata))
+else
+    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at)
+end
+
+return 1
 """
 
 
@@ -329,21 +376,62 @@ class RedisQueueBackend(BaseQueueBackend):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
-        """Update the heartbeat timestamp for a running task.
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Update heartbeat timestamps for running tasks.
 
         Returns:
-            True when the heartbeat was updated.
+            The task IDs confirmed touched or missed by the backend.
         """
-        async with self._lock(f"task:{task_id}", wait=True):
-            record = await self.get_task(task_id)
-            if record is None or record.status != "running":
-                return False
-            if expected_retry_count is not None and record.retry_count != expected_retry_count:
-                return False
-            record.heartbeat_at = _utc_now()
-            await self._save_record(record)
-            return True
+        result = HeartbeatTouchResult()
+        if not touches:
+            return result
+        client = await self._get_client()
+        pipeline = _create_pipeline(client)
+        if pipeline is None:
+            return await self._touch_heartbeats_loop(touches)
+
+        heartbeat_at = _serialize_datetime(_utc_now())
+        for touch in touches:
+            expected_retry_count = "" if touch.expected_retry_count is None else str(touch.expected_retry_count)
+            metadata_patch = _json_dumps(touch.metadata_patch) if touch.metadata_patch else ""
+            pipeline.eval(
+                _TOUCH_HEARTBEAT_SCRIPT,
+                1,
+                self._task_key(touch.task_id),
+                expected_retry_count,
+                heartbeat_at,
+                metadata_patch,
+            )
+        outcomes = await _execute_pipeline(pipeline)
+        for touch, outcome in zip(touches, outcomes, strict=True):
+            if int(outcome) == 1:
+                result.touched_task_ids.add(touch.task_id)
+            else:
+                result.missed_task_ids.add(touch.task_id)
+        return result
+
+    async def _touch_heartbeats_loop(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Fallback heartbeat touch path for clients without pipeline support.
+
+        Returns:
+            The task IDs confirmed touched or missed by the backend.
+        """
+        result = HeartbeatTouchResult()
+        for touch in touches:
+            async with self._lock(f"task:{touch.task_id}", wait=True):
+                record = await self.get_task(touch.task_id)
+                if record is None or record.status != "running":
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                if touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count:
+                    result.missed_task_ids.add(touch.task_id)
+                    continue
+                record.heartbeat_at = _utc_now()
+                if touch.metadata_patch:
+                    record.metadata.update(touch.metadata_patch)
+                await self._save_record(record)
+                result.touched_task_ids.add(touch.task_id)
+        return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         """Clear heartbeat timestamps for task IDs."""
@@ -385,15 +473,17 @@ class RedisQueueBackend(BaseQueueBackend):
                 requeue_on_stale = latest.metadata.get("requeue_on_stale", True) is not False
                 if requeue_on_stale and latest.retry_count < latest.max_retries:
                     latest.status = "pending"
+                    latest.priority = stale_requeue_priority(latest.priority)
                     latest.started_at = None
                     latest.heartbeat_at = None
+                    latest.error = stale_requeue_error(latest.error)
                     latest.retry_count += 1
                     result.requeued += 1
                 else:
                     latest.status = "failed"
                     latest.completed_at = _utc_now()
                     latest.heartbeat_at = None
-                    latest.error = "Task heartbeat stale"
+                    latest.error = STALE_HEARTBEAT_ERROR
                     result.failed += 1
                     result.failed_task_ids.append(latest.id)
                     if not requeue_on_stale:

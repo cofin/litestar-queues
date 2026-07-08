@@ -8,18 +8,30 @@ from advanced_alchemy.operations import OnConflictUpsert
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from advanced_alchemy.utils.serialization import decode_json as _decode_json
 from advanced_alchemy.utils.serialization import encode_json as _encode_json
-from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import and_, case, delete, desc, func, literal, or_, select, update
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.exc import UnmappedColumnError
 
 from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
-from litestar_queues.backends.base import record_matches_filters
-from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskStatus
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
+from litestar_queues.models import (
+    HeartbeatTouchResult,
+    QueuedTaskRecord,
+    QueueStatistics,
+    StaleTaskRecoveryResult,
+    TaskStatus,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("QueueTaskService",)
 
@@ -286,16 +298,135 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        result = HeartbeatTouchResult()
+        if not touches:
+            return result
+
         model_type = self.model_type
-        criteria = [model_type.id == task_id, model_type.status == "running"]
-        if expected_retry_count is not None:
-            criteria.append(model_type.retry_count == expected_retry_count)
         now = _utc_now()
-        result = await self.repository.session.execute(
-            update(model_type).where(*criteria).values(_update_values(model_type, {"heartbeat_at": now}, now=now))
+        groups: "dict[int | None, dict[UUID, HeartbeatTouch]]" = {}
+        for touch in touches:
+            groups.setdefault(touch.expected_retry_count, {})[touch.task_id] = touch
+
+        dialect_name = self._dialect_name()
+        for expected_retry_count, grouped_touches in groups.items():
+            task_ids = set(grouped_touches)
+            criteria = [model_type.id.in_(task_ids), model_type.status == "running"]
+            if expected_retry_count is not None:
+                criteria.append(model_type.retry_count == expected_retry_count)
+            models = (await self.repository.session.execute(select(model_type).where(*criteria))).scalars().all()
+            models_by_id = {UUID(str(model.id)): model for model in models}
+            touched_task_ids = set(models_by_id)
+            result.missed_task_ids.update(task_ids - touched_task_ids)
+            if not touched_task_ids:
+                continue
+
+            if dialect_name == "oracle" and any(
+                grouped_touches[task_id].metadata_patch for task_id in touched_task_ids
+            ):
+                await self._touch_oracle_heartbeats(
+                    grouped_touches=grouped_touches,
+                    models_by_id=models_by_id,
+                    expected_retry_count=expected_retry_count,
+                    now=now,
+                    result=result,
+                )
+                continue
+
+            values: "dict[str, Any]" = {"heartbeat_at": now}
+            metadata_column = _mapped_column(model_type, "metadata_json")
+            metadata_cases: "list[tuple[Any, Any]]" = []
+            for task_id, model in models_by_id.items():
+                metadata_patch = grouped_touches[task_id].metadata_patch
+                if not metadata_patch:
+                    continue
+                metadata = dict(_deserialize_json(model.metadata_json) or {})
+                metadata.update(metadata_patch)
+                metadata_cases.append((
+                    model_type.id == task_id,
+                    literal(_serialize_json(metadata), type_=metadata_column.type),
+                ))
+            if metadata_cases:
+                values["metadata_json"] = case(*metadata_cases, else_=metadata_column)
+
+            update_criteria = [model_type.id.in_(touched_task_ids), model_type.status == "running"]
+            if expected_retry_count is not None:
+                update_criteria.append(model_type.retry_count == expected_retry_count)
+            execution_result = await self.repository.session.execute(
+                update(model_type)
+                .where(*update_criteria)
+                .values(_update_values(model_type, values, now=now))
+                .execution_options(synchronize_session=False)
+            )
+            rowcount = int(execution_result.rowcount or 0)
+            if rowcount == len(touched_task_ids) or rowcount < 0:
+                result.touched_task_ids.update(touched_task_ids)
+            else:
+                result.missed_task_ids.update(touched_task_ids)
+        return result
+
+    async def _touch_oracle_heartbeats(
+        self,
+        *,
+        grouped_touches: "dict[UUID, HeartbeatTouch]",
+        models_by_id: "dict[UUID, Any]",
+        expected_retry_count: "int | None",
+        now: "datetime",
+        result: "HeartbeatTouchResult",
+    ) -> "None":
+        """Touch Oracle JsonB metadata without CASE expressions over BLOB JSON."""
+        patched_task_ids = {task_id for task_id in models_by_id if grouped_touches[task_id].metadata_patch}
+        heartbeat_only_task_ids = set(models_by_id) - patched_task_ids
+        if heartbeat_only_task_ids:
+            await self._touch_heartbeat_rows(
+                heartbeat_only_task_ids,
+                values={"heartbeat_at": now},
+                expected_retry_count=expected_retry_count,
+                now=now,
+                result=result,
+            )
+
+        for task_id in patched_task_ids:
+            model = models_by_id[task_id]
+            metadata = dict(_deserialize_json(model.metadata_json) or {})
+            metadata_patch = grouped_touches[task_id].metadata_patch
+            if metadata_patch:
+                metadata.update(metadata_patch)
+            await self._touch_heartbeat_rows(
+                {task_id},
+                values={"heartbeat_at": now, "metadata_json": _serialize_json(metadata)},
+                expected_retry_count=expected_retry_count,
+                now=now,
+                result=result,
+            )
+
+    async def _touch_heartbeat_rows(
+        self,
+        task_ids: "set[UUID]",
+        *,
+        values: "dict[str, Any]",
+        expected_retry_count: "int | None",
+        now: "datetime",
+        result: "HeartbeatTouchResult",
+    ) -> "None":
+        if not task_ids:
+            return
+        model_type = self.model_type
+        update_criteria = [model_type.id.in_(task_ids), model_type.status == "running"]
+        if expected_retry_count is not None:
+            update_criteria.append(model_type.retry_count == expected_retry_count)
+        execution_result = await self.repository.session.execute(
+            update(model_type)
+            .where(*update_criteria)
+            .values(_update_values(model_type, values, now=now))
+            .execution_options(synchronize_session=False)
         )
-        return int(result.rowcount or 0) == 1
+        rowcount = int(execution_result.rowcount or 0)
+        if rowcount == len(task_ids) or rowcount < 0:
+            result.touched_task_ids.update(task_ids)
+        else:
+            result.missed_task_ids.update(task_ids)
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:
@@ -340,7 +471,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                                 "started_at": None,
                                 "heartbeat_at": None,
                                 "retry_count": int(model.retry_count) + 1,
-                                "error": "Task heartbeat stale",
+                                "priority": stale_requeue_priority(int(model.priority)),
+                                "error": stale_requeue_error(model.error),
                             },
                         )
                     )
@@ -362,7 +494,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                                 "status": "failed",
                                 "completed_at": now,
                                 "heartbeat_at": now,
-                                "error": "Task heartbeat stale",
+                                "error": STALE_HEARTBEAT_ERROR,
                             },
                             now=now,
                         )
@@ -547,7 +679,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if key is not None and dialect_name is not None and _supports_native_keyed_enqueue(dialect_name):
             values = _model_insert_values(model, self.model_type)
             statement, params = _build_keyed_enqueue_upsert(
-                self.model_type.__table__, values, dialect_name=dialect_name
+                self.model_type.__table__,
+                values,
+                dialect_name=dialect_name,
+                key_column=_mapped_column(self.model_type, "task_key").name,
             )
             if params:
                 await self.repository.session.execute(statement, params)
@@ -621,29 +756,34 @@ def _build_claim_lock_statement(model_type: "type[Any]", task_id: "UUID") -> "An
 
 
 def _build_keyed_enqueue_upsert(
-    table: "Any", values: "dict[str, Any]", *, dialect_name: "str"
+    table: "Any", values: "dict[str, Any]", *, dialect_name: "str", key_column: "str | None" = None
 ) -> "tuple[Any, dict[str, Any]]":
+    key_column = key_column or ("task_key" if "task_key" in table.c else "key")
     if dialect_name == "oracle":
         return OnConflictUpsert.create_merge_upsert(
             table=table,
             values=values,
-            conflict_columns=["task_key"],
+            conflict_columns=[key_column],
             update_columns=[],
             dialect_name=dialect_name,
             validate_identifiers=True,
         )
-    update_columns = ["task_key"]
+    update_columns = [key_column]
     return (
         OnConflictUpsert.create_upsert(
             table=table,
             values=values,
-            conflict_columns=["task_key"],
+            conflict_columns=[key_column],
             update_columns=update_columns,
             dialect_name=dialect_name,
             validate_identifiers=True,
         ),
         {},
     )
+
+
+def _mapped_column(model_type: "type[Any]", attribute_name: "str") -> "Any":
+    return sqlalchemy_inspect(model_type).column_attrs[attribute_name].columns[0]
 
 
 def _update_values(

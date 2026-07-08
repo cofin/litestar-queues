@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
 
@@ -135,6 +136,30 @@ async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -
     assert stored.heartbeat_at is None
 
 
+async def test_memory_backend_demotes_stale_requeue_priority_and_preserves_prior_error() -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue(
+        "tasks.stale_demote", priority=10, max_retries=2, metadata={"requeue_on_stale": True}
+    )
+    first_claim = await backend.claim_task(record.id)
+    assert first_claim is not None
+    retried = await backend.fail_task(record.id, "first failure")
+    assert retried is record
+    second_claim = await backend.claim_task(record.id)
+    assert second_claim is not None
+    second_claim.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
+    stored = await backend.get_task(record.id)
+
+    assert result.requeued == 1
+    assert stored is record
+    assert stored.status == "pending"
+    assert stored.retry_count == 2
+    assert stored.priority == 4
+    assert stored.error == "first failure"
+
+
 async def test_memory_backend_fails_stale_running_task_when_retries_are_exhausted() -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.stale_exhausted", max_retries=0, metadata={"requeue_on_stale": True})
@@ -178,12 +203,42 @@ async def test_memory_backend_heartbeat_is_fenced_by_status_and_retry_count() ->
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.heartbeat", max_retries=1)
 
-    assert await backend.touch_heartbeat(record.id) is False
-
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    assert await backend.touch_heartbeat(record.id, expected_retry_count=claimed.retry_count + 1) is False
-    assert await backend.touch_heartbeat(record.id, expected_retry_count=claimed.retry_count) is True
+    result = await backend.touch_heartbeats([
+        HeartbeatTouch(task_id=record.id, expected_retry_count=claimed.retry_count + 1),
+        HeartbeatTouch(
+            task_id=record.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 200"}
+        ),
+    ])
+    stored = await backend.get_task(record.id)
+
+    assert result.touched_task_ids == {record.id}
+    assert result.missed_task_ids == {record.id}
+    assert stored is record
+    assert stored.metadata["progress_detail"] == "row 200"
+
+
+async def test_memory_backend_touch_heartbeats_acquires_lock_once() -> "None":
+    backend = InMemoryQueueBackend()
+    first = await backend.enqueue("tasks.heartbeat.first")
+    second = await backend.enqueue("tasks.heartbeat.second")
+    first_claimed = await backend.claim_task(first.id)
+    second_claimed = await backend.claim_task(second.id)
+    lock = _CountingAsyncLock()
+    backend._lock = cast("Any", lock)
+
+    assert first_claimed is not None
+    assert second_claimed is not None
+
+    result = await backend.touch_heartbeats([
+        HeartbeatTouch(task_id=first.id, expected_retry_count=first_claimed.retry_count),
+        HeartbeatTouch(task_id=second.id, expected_retry_count=second_claimed.retry_count),
+    ])
+
+    assert lock.entries == 1
+    assert result.touched_task_ids == {first.id, second.id}
+    assert result.missed_task_ids == set()
 
 
 async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() -> "None":
@@ -265,3 +320,14 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
     completed_status = result.status
     assert completed_status == "completed"
     assert result.result == "QUEUE"
+
+
+class _CountingAsyncLock:
+    def __init__(self) -> "None":
+        self.entries = 0
+
+    async def __aenter__(self) -> "None":
+        self.entries += 1
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> "None":
+        return None

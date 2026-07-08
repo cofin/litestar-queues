@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- docs: template-start -->
+<main class="stage" data-demo-root>
+  <div class="starfield" aria-hidden="true">
+    <div class="stars stars-far"></div>
+    <div class="stars stars-mid"></div>
+    <div class="stars stars-near"></div>
+  </div>
+  <div class="nebula" aria-hidden="true"></div>
+
+  <a class="brand" href="https://litestar.dev" aria-label="Litestar">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-hidden="true">
+      <g stroke="#edb641" stroke-width="3.4" stroke-linecap="round">
+        <line x1="24.4" y1="16.2" x2="36.6" y2="17.8"/>
+        <line x1="39.5" y1="25.4" x2="25.6" y2="41.6"/>
+        <line x1="46.3" y1="27.4" x2="47.8" y2="37.6"/>
+        <line x1="28.5" y1="47.4" x2="40.5" y2="46.6"/>
+      </g>
+      <g stroke="#edb641" stroke-width="3.4" fill="none">
+        <circle cx="16" cy="15" r="6"/>
+        <circle cx="45" cy="19" r="6"/>
+        <circle cx="20" cy="48" r="6"/>
+        <circle cx="49" cy="46" r="6"/>
+      </g>
+    </svg>
+  </a>
+
+  <!-- litestar-vite JSON-template extension: a whisper-quiet backend-name caption. -->
+  <div class="backend-caption" hx-ext="litestar" hx-get="/demo/status" hx-trigger="load" hx-swap="json">
+    <template ls-if="backend"><span>${backend}</span></template>
+    <template ls-else><span>{{ backend_name }}</span></template>
+  </div>
+
+  <div class="crawl-perspective" aria-live="polite" aria-label="Task event crawl">
+    <div id="crawl-lines" class="crawl-plane idle">
+      <p>Press restart to queue a background job and watch it report back.</p>
+    </div>
+  </div>
+
+  <p class="telemetry-caption"><span class="telemetry-dot" aria-hidden="true"></span>Live telemetry · every line is published by the running job</p>
+
+  <p id="job-readout" class="readout">Awaiting launch</p>
+
+  <button
+    class="planet"
+    type="button"
+    hx-post="/demo/restart"
+    hx-target="#stream-mount"
+    hx-swap="outerHTML"
+    hx-indicator="this"
+    hx-disabled-elt="this"
+    hx-sync="this:replace"
+    aria-label="Restart the demo queue job and crawl"
+  >
+    <span class="planet-orbit" aria-hidden="true"><span class="planet-satellite"></span></span>
+    <span class="planet-label">Restart</span>
+    <span class="planet-launching" aria-hidden="true">Launching</span>
+  </button>
+
+  <!-- The htmx SSE extension owns this element after each restart swaps it. -->
+  <div id="stream-mount" class="stream-mount" aria-hidden="true"></div>
+</main>
+<!-- docs: template-end -->
+{% endblock %}

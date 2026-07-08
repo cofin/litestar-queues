@@ -323,8 +323,8 @@ advertises, then fall back to the portable path when a capability is absent.
    * - ``psqlpy``
      - ``FOR UPDATE SKIP LOCKED`` when SQLSpec's data dictionary marks the
        dialect support.
-     - ``JSONB`` payload/metadata columns with native decode; ``result_json``
-       stays text-backed for driver compatibility.
+     - ``JSONB`` payload/metadata columns with native decode; ``result`` stays
+       text-backed for driver compatibility.
      - Arrow ``load_from_records`` path.
      - SQLSpec durable table queue.
      - PostgreSQL storage parameters tune queue-table churn where supported.
@@ -377,8 +377,8 @@ advertises, then fall back to the portable path when a capability is absent.
      - Arrow ``load_from_records`` path.
      - Polling.
      - Spanner sessions are write-capable by default; schema bootstrap uses
-       Spanner's DDL operation API, ``result_json`` is nullable for pending
-       tasks, and ``task_key`` uses a ``UNIQUE NULL_FILTERED`` index.
+       Spanner's DDL operation API, ``result`` is nullable for pending tasks,
+       and ``task_key`` uses a ``UNIQUE NULL_FILTERED`` index.
 
 Additional SQLSpec adapters can be added by implementing a queue store and
 registering it with the SQLSpec store factory.
@@ -893,7 +893,7 @@ queue-domain counters and custom queue spans. SQLSpec driver query spans and
 statement observers remain controlled by the SQLSpec config.
 
 When package-level queue observability is enabled through
-``QueueConfig(observability_config=QueueObservabilityConfig(...))``, SQLSpec
+``QueueConfig(observability=ObservabilityConfig(...))``, SQLSpec
 queue-domain counters and custom queue spans are disabled by default to avoid
 double counting the same queue operations. SQLSpec driver query spans and
 statement observers still run from the SQLSpec config.

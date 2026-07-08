@@ -5,9 +5,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import (
+    EventConfig,
+    HeartbeatTouch,
+    HeartbeatTouchResult,
     InMemoryQueueEventSink,
     QueueConfig,
-    QueueEventConfig,
     QueueService,
     Task,
     TaskExecutionContext,
@@ -130,12 +132,21 @@ async def test_backend_contract_exposes_operational_queries_and_cleanup(queue_ba
 
 
 async def test_backend_contract_recovers_stale_running_records(queue_backend: "BaseQueueBackend") -> "None":
-    requeued = await queue_backend.enqueue("tasks.stale.requeue", max_retries=1, metadata={"requeue_on_stale": True})
+    requeued = await queue_backend.enqueue(
+        "tasks.stale.requeue", priority=10, max_retries=2, metadata={"requeue_on_stale": True}
+    )
     failed = await queue_backend.enqueue("tasks.stale.fail", max_retries=0, metadata={"requeue_on_stale": True})
     handler_needed = await queue_backend.enqueue(
         "tasks.stale.handler", max_retries=3, metadata={"requeue_on_stale": False}
     )
-    for record in (requeued, failed, handler_needed):
+    claimed_requeued = await queue_backend.claim_task(requeued.id)
+    assert claimed_requeued is not None
+    retried_requeued = await queue_backend.fail_task(requeued.id, "first failure")
+    assert retried_requeued is not None
+    assert retried_requeued.status == "pending"
+    claimed_requeued = await queue_backend.claim_task(requeued.id)
+    assert claimed_requeued is not None
+    for record in (failed, handler_needed):
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
 
@@ -152,7 +163,9 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
     assert result.handler_needed == 1
     assert stored_requeued is not None
     assert stored_requeued.status == "pending"
-    assert stored_requeued.retry_count == 1
+    assert stored_requeued.retry_count == 2
+    assert stored_requeued.priority == 4
+    assert stored_requeued.error == "first failure"
     assert stored_failed is not None
     assert stored_failed.status == "failed"
     assert stored_handler_needed is not None
@@ -160,13 +173,27 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
 
 
 async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_backend: "BaseQueueBackend") -> "None":
-    record = await queue_backend.enqueue("tasks.stale.fenced", max_retries=1)
+    empty_result = await queue_backend.touch_heartbeats([])
+    assert empty_result == HeartbeatTouchResult()
+
+    record = await queue_backend.enqueue("tasks.stale.fenced", max_retries=1, metadata={"existing": "kept"})
     claimed = await queue_backend.claim_task(record.id)
     assert claimed is not None
     expected_retry_count = claimed.retry_count
 
-    assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count + 1) is False
-    assert await queue_backend.touch_heartbeat(record.id, expected_retry_count=expected_retry_count) is True
+    touch_result = await queue_backend.touch_heartbeats([
+        HeartbeatTouch(task_id=record.id, expected_retry_count=expected_retry_count + 1),
+        HeartbeatTouch(
+            task_id=record.id, expected_retry_count=expected_retry_count, metadata_patch={"progress_detail": "row 5"}
+        ),
+    ])
+    touched = await queue_backend.get_task(record.id)
+    assert touch_result.touched_task_ids == {record.id}
+    assert touch_result.missed_task_ids == {record.id}
+    assert touch_result.failed_task_ids == set()
+    assert touched is not None
+    assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
+
     stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
     assert stale_result.requeued == 1
 
@@ -275,9 +302,7 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     async def succeed() -> "str":
         return "ok"
 
-    config = QueueConfig(
-        task_dependency_resolver=resolver, execution_backend="local", event_config=QueueEventConfig(enabled=True)
-    )
+    config = QueueConfig(task_dependency_resolver=resolver, execution_backend="local", event=EventConfig())
     service = QueueService(config, queue_backend=queue_backend, event_publisher=publisher)
 
     async with service:

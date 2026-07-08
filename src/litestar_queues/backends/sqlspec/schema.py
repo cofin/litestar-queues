@@ -12,15 +12,26 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = (
+    "DEFAULT_COLUMN_MAP",
+    "DEFAULT_EVENT_LOG_TABLE_SUFFIX",
     "DEFAULT_TABLE_NAME",
+    "event_log_table_name_for",
     "migration_directory",
     "migration_paths",
+    "resolve_column_map",
     "validate_column_map",
     "validate_native_json_columns",
     "validate_table_name",
 )
 
 DEFAULT_TABLE_NAME = "litestar_queue_task"
+DEFAULT_EVENT_LOG_TABLE_SUFFIX = "_event_log"
+DEFAULT_COLUMN_MAP = {
+    "args_json": "task_args",
+    "kwargs_json": "task_kwargs",
+    "result_json": "result",
+    "metadata_json": "metadata",
+}
 _CANONICAL_COLUMNS = frozenset({
     "id",
     "task_name",
@@ -101,6 +112,11 @@ def validate_column_map(column_map: "Mapping[str, str]") -> "dict[str, str]":
     return resolved
 
 
+def resolve_column_map(column_map: "Mapping[str, str] | None" = None) -> "dict[str, str]":
+    """Return the default physical column map with adopter overrides applied."""
+    return validate_column_map({**DEFAULT_COLUMN_MAP, **dict(column_map or {})})
+
+
 def validate_native_json_columns(columns: "frozenset[str]") -> "frozenset[str]":
     """Validate native JSON passthrough columns.
 
@@ -117,9 +133,24 @@ def validate_native_json_columns(columns: "frozenset[str]") -> "frozenset[str]":
     return columns
 
 
+def event_log_table_name_for(table_name: "str") -> "str":
+    """Return the default event-log table for a queue table name.
+
+    Schema-qualified names keep their schema and append
+    :data:`DEFAULT_EVENT_LOG_TABLE_SUFFIX` to the table part.
+    """
+    validated = validate_table_name(table_name)
+    parts = validated.rsplit(".", maxsplit=1)
+    if len(parts) == 1:
+        return validate_table_name(f"{validated}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
+    schema, table = parts
+    return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
+
+
 def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
-    return (str(migration_directory().joinpath("0001_create_queue_tasks.py")),)
+    directory = migration_directory()
+    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
 
 
 def migration_directory() -> "Path":

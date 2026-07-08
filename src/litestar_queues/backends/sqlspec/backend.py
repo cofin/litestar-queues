@@ -11,15 +11,27 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID
 
 from sqlspec import SQLSpec
+from sqlspec.exceptions import SerializationConflictError
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
-from litestar_queues.backends.base import BaseQueueBackend, record_matches_filters
+from litestar_queues.backends.base import (
+    STALE_HEARTBEAT_ERROR,
+    BaseQueueBackend,
+    record_matches_filters,
+    stale_requeue_error,
+    stale_requeue_priority,
+)
 from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.event_log import (
+    SQLSpecQueueEventLog,
+    create_event_log_store,
+    resolve_event_log_table_name,
+)
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
-    validate_column_map,
+    resolve_column_map,
     validate_native_json_columns,
     validate_table_name,
 )
@@ -27,6 +39,7 @@ from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     EnqueueSpec,
+    HeartbeatTouchResult,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
@@ -46,6 +59,8 @@ if TYPE_CHECKING:
     )
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
     from litestar_queues.config import QueueConfig
+    from litestar_queues.events import EventLogConfig, QueueEventLog
+    from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("SQLSpecQueueBackend",)
 
@@ -66,7 +81,7 @@ def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool"
     """Return whether package-level queue observability should own queue-domain metrics."""
     if config is None:
         return False
-    observability_config = config.observability_config
+    observability_config = config.observability
     if observability_config is None:
         return False
     if not observability_config.disable_sqlspec_queue_observability:
@@ -99,6 +114,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_create_schema",
         "_event_backend",
         "_event_channel",
+        "_event_log",
+        "_event_log_store",
+        "_event_log_table_name",
         "_event_poll_interval",
         "_event_queue_table",
         "_event_settings",
@@ -128,7 +146,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "None":
         super().__init__(config=config)
         backend_config = backend_config or SQLSpecBackendConfig()
-        self._column_map = validate_column_map(backend_config.column_map)
+        self._column_map = resolve_column_map(backend_config.column_map)
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
         self._sqlspec = backend_config.sqlspec
@@ -147,6 +165,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._notifications_requested = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
         self._notify_transport = backend_config.notify_transport
+        self._event_log_table_name = (
+            validate_table_name(backend_config.event_log_table_name)
+            if backend_config.event_log_table_name is not None
+            else None
+        )
         self._event_backend = backend_config.event_backend
         self._event_queue_table = backend_config.event_queue_table
         self._event_poll_interval = backend_config.event_poll_interval
@@ -156,6 +179,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
         self._notification_backend: "str | None" = getattr(self._event_channel, "_backend_name", None)
         self._notifications_enabled = self._event_channel is not None
+        self._event_log_store: "Any | None" = None
+        self._event_log: "SQLSpecQueueEventLog | None" = None
         self._store: "SQLSpecQueueStore | None" = None
         self._opened = False
 
@@ -181,6 +206,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close SQLSpec resources."""
+        if self._event_log is not None:
+            await self._event_log.flush_events()
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
             await self._event_channel.shutdown()
@@ -189,6 +216,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self._sqlspec.close_all_pools()
             self._sqlspec = None
         self._opened = False
+
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+        """Return SQLSpec-managed durable queue event history when enabled."""
+        if not config.enabled:
+            return None
+        if self._event_log is None:
+            self._event_log = SQLSpecQueueEventLog(
+                session_factory=self._session,
+                datetime_serializer=self._serialize_datetime,
+                config=config,
+                store=self._get_event_log_store(),
+            )
+        return self._event_log
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
@@ -213,9 +253,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 result = create_for_config(self._get_sqlspec_config())
                 if isawaitable(result):
                     await result
-                return
+                if not self._event_log_enabled():
+                    return
             async with self._session() as driver:
-                for statement in await _create_schema_statements(self._get_store(), driver):
+                statements: "list[str]" = []
+                if not callable(create_for_config):
+                    statements.extend(await _create_schema_statements(self._get_store(), driver))
+                event_log_store = self._get_event_log_store_if_enabled()
+                if event_log_store is not None:
+                    statements.extend(event_log_store.create_statements())
+                for statement in statements:
                     await driver.execute_script(statement)
                 await driver.commit()
 
@@ -223,7 +270,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Apply packaged SQLSpec migrations."""
         if self._manage_schema:
             sqlspec_config = self._get_sqlspec_config()
-            with _temporary_queue_migration_extension(sqlspec_config, table_name=self._resolve_table_name()):
+            event_log_enabled = self._event_log_enabled()
+            with _temporary_queue_migration_extension(
+                sqlspec_config,
+                table_name=self._resolve_table_name(),
+                event_log_enabled=event_log_enabled,
+                event_log_table_name=self._resolve_event_log_table_name() if event_log_enabled else None,
+            ):
                 await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
@@ -271,9 +324,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     )
                     await driver.execute(self._get_store().insert_task(self._params_from_record(record)))
                     await driver.commit()
-                except Exception:
+                except Exception as exc:
                     with suppress(Exception):
                         await driver.rollback()
+                    if key is not None and _is_unique_violation(exc):
+                        winner = await self.get_task_by_key(key)
+                        if winner is not None and not winner.is_terminal:
+                            return winner
                     raise
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
@@ -389,7 +446,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
             task_id = UUID(str(row["id"]))
-            claimed = await self.claim_task(task_id)
+            try:
+                claimed = await self.claim_task(task_id)
+            except Exception as exc:
+                if _is_serialization_conflict(exc):
+                    continue
+                raise
             if claimed is not None:
                 return claimed
         return None
@@ -416,14 +478,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         now=self._serialize_datetime(now), limit=1, queue=queue, execution_backend=execution_backend
                     )
                     stream_chunk_size = cast("int | None", getattr(store, "claim_select_stream_chunk_size", None))
-                    if stream_chunk_size is None:
-                        rows = await driver.select(statement)
-                        row = cast("dict[str, Any] | None", rows[0] if rows else None)
-                    else:
-                        row = None
-                        async for claimable_row in _select_stream(driver, statement, chunk_size=stream_chunk_size):
-                            row = cast("dict[str, Any]", claimable_row)
-                            break
+                    row = await self._select_one_row(driver, statement, chunk_size=stream_chunk_size)
                     if row is None:
                         await driver.rollback()
                         return None
@@ -599,11 +654,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "int":
         store = self._get_store()
         async with self._session() as driver:
-            rows = await driver.select(
-                store.list_cancellable(include_running=include_running, task_name=task_name, queue=queue)
+            rows = await self._select_rows(
+                driver, store.list_cancellable(include_running=include_running, task_name=task_name, queue=queue)
             )
         cancelled = 0
-        for row in cast("list[dict[str, Any]]", rows):
+        for row in rows:
             record = self._record_from_row(row)
             if not record_matches_filters(record, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata):
                 continue
@@ -611,43 +666,101 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 cancelled += 1
         return cancelled
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        result = HeartbeatTouchResult()
+        if not touches:
+            return result
+
+        store = self._get_store()
         async with self._heartbeat_session() as driver:
             await driver.begin()
             try:
-                if expected_retry_count is not None:
-                    row = await self._select_task(driver, task_id)
-                    if row is None:
-                        await driver.rollback()
-                        return False
-                    record = self._record_from_row(row)
-                    if record.status != "running" or record.retry_count != expected_retry_count:
-                        await driver.rollback()
-                        return False
-                result = await driver.execute(
-                    self._get_store().touch_heartbeat(
-                        task_id=str(task_id), heartbeat_at=self._serialize_datetime(_utc_now())
-                    )
+                bulk_result = await self._touch_heartbeats_bulk(driver, store, touches)
+                result = (
+                    bulk_result
+                    if bulk_result is not None
+                    else await self._touch_heartbeats_loop(driver, store, touches)
                 )
-                rows_affected = int(result.rows_affected)
-                if rows_affected == 1:
-                    touched = True
-                elif rows_affected == 0:
-                    touched = False
-                else:
-                    touched_row = await self._select_task(driver, task_id)
-                    touched_record = self._record_from_row(touched_row) if touched_row is not None else None
-                    touched = (
-                        touched_record is not None
-                        and touched_record.status == "running"
-                        and (expected_retry_count is None or touched_record.retry_count == expected_retry_count)
-                    )
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
-        return touched
+        return result
+
+    async def _touch_heartbeats_bulk(
+        self, driver: "SQLSpecDriver", store: "SQLSpecQueueStore", touches: "Sequence[HeartbeatTouch]"
+    ) -> "HeartbeatTouchResult | None":
+        if not getattr(type(store), "supports_bulk_touch_heartbeats", False):
+            return None
+        task_ids = [touch.task_id for touch in touches]
+        if len(set(task_ids)) != len(task_ids):
+            return None
+
+        bulk_touches: "list[dict[str, Any]]" = []
+        for touch in touches:
+            metadata_json = None
+            if touch.metadata_patch:
+                metadata_json = store.serialize_json("metadata_json", touch.metadata_patch)
+            bulk_touches.append({
+                "task_id": str(touch.task_id),
+                "expected_retry_count": touch.expected_retry_count,
+                "metadata_json": metadata_json,
+            })
+
+        statement = store.bulk_touch_heartbeats(touches=bulk_touches, heartbeat_at=self._serialize_datetime(_utc_now()))
+        if statement is None:
+            return None
+
+        touched_rows = await driver.select(statement.sql, statement.parameters)
+        touched_task_ids = {UUID(str(row["id"])) for row in cast("list[dict[str, Any]]", touched_rows)}
+        return HeartbeatTouchResult(touched_task_ids=touched_task_ids, missed_task_ids=set(task_ids) - touched_task_ids)
+
+    async def _touch_heartbeats_loop(
+        self, driver: "SQLSpecDriver", store: "SQLSpecQueueStore", touches: "Sequence[HeartbeatTouch]"
+    ) -> "HeartbeatTouchResult":
+        result = HeartbeatTouchResult()
+        for touch in touches:
+            row = await self._select_task(driver, touch.task_id)
+            if row is None:
+                result.missed_task_ids.add(touch.task_id)
+                continue
+            record = self._record_from_row(row)
+            if record.status != "running" or (
+                touch.expected_retry_count is not None and record.retry_count != touch.expected_retry_count
+            ):
+                result.missed_task_ids.add(touch.task_id)
+                continue
+            metadata_json = None
+            if touch.metadata_patch:
+                metadata = dict(record.metadata)
+                metadata.update(touch.metadata_patch)
+                metadata_json = store.serialize_json("metadata_json", metadata)
+            execution_result = await driver.execute(
+                store.touch_heartbeats(
+                    task_id=str(touch.task_id),
+                    heartbeat_at=self._serialize_datetime(_utc_now()),
+                    expected_retry_count=touch.expected_retry_count,
+                    metadata_json=metadata_json,
+                )
+            )
+            rows_affected = int(execution_result.rows_affected)
+            if rows_affected == 1:
+                result.touched_task_ids.add(touch.task_id)
+            elif rows_affected == 0:
+                result.missed_task_ids.add(touch.task_id)
+            else:
+                touched_row = await self._select_task(driver, touch.task_id)
+                touched_record = self._record_from_row(touched_row) if touched_row is not None else None
+                if (
+                    touched_record is not None
+                    and touched_record.status == "running"
+                    and (touch.expected_retry_count is None or touched_record.retry_count == touch.expected_retry_count)
+                ):
+                    result.touched_task_ids.add(touch.task_id)
+                else:
+                    result.missed_task_ids.add(touch.task_id)
+        return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         if not task_ids:
@@ -682,7 +795,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         serialized_cutoff = self._serialize_datetime(cutoff)
         with self._observe_queue_operation("stale_recovered"):
             async with self._session() as driver:
-                rows = await driver.select(store.list_stale_running(cutoff=serialized_cutoff))
+                rows = await self._select_rows(driver, store.list_stale_running(cutoff=serialized_cutoff))
                 if not rows:
                     return result
                 # Reset any implicit read transaction the SELECT may have opened so
@@ -692,23 +805,32 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.begin()
                 try:
                     failed_handler_needed: "list[UUID]" = []
-                    for row in cast("list[dict[str, Any]]", rows):
+                    for row in rows:
                         record = self._record_from_row(row)
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                         if requeue_on_stale and record.retry_count < record.max_retries:
+                            retry_error = stale_requeue_error(record.error)
+                            retry_priority = stale_requeue_priority(record.priority)
                             updated = await driver.execute(
                                 store.retry_task(
                                     task_id=str(record.id),
-                                    error="Task heartbeat stale",
+                                    error=retry_error,
                                     retry_count=record.retry_count + 1,
                                     expected_retry_count=record.retry_count,
                                     heartbeat_cutoff=serialized_cutoff,
+                                    priority=retry_priority,
                                 )
                             )
                             rows_affected = _rows_affected(updated)
                             if rows_affected == 1 or (
                                 rows_affected < 0
-                                and await self._stale_retry_updated(driver, record.id, record.retry_count)
+                                and await self._stale_retry_updated(
+                                    driver,
+                                    record.id,
+                                    record.retry_count,
+                                    expected_error=retry_error,
+                                    expected_priority=retry_priority,
+                                )
                             ):
                                 result.requeued += 1
                             else:
@@ -720,7 +842,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     task_id=str(record.id),
                                     completed_at=self._serialize_datetime(now),
                                     heartbeat_at=self._serialize_datetime(now),
-                                    error="Task heartbeat stale",
+                                    error=STALE_HEARTBEAT_ERROR,
                                     expected_retry_count=record.retry_count,
                                     heartbeat_cutoff=serialized_cutoff,
                                 )
@@ -798,8 +920,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._session() as driver:
-            rows = await driver.select(self._get_store().list_running_external(limit=limit))
-        return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
+            rows = await self._select_rows(driver, self._get_store().list_running_external(limit=limit))
+        return [self._record_from_row(row) for row in rows]
 
     async def get_statistics(self) -> "QueueStatistics":
         statistics = QueueStatistics()
@@ -840,8 +962,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
         built = statement.build(dialect=store.dialect_name)
         async with self._session() as driver:
-            rows = await driver.select(built.sql, built.parameters)
-        return [self._record_from_row(row) for row in cast("list[dict[str, Any]]", rows)]
+            rows = await self._select_rows(driver, built.sql, built.parameters)
+        return [self._record_from_row(row) for row in rows]
 
     async def cleanup_terminal(self, before: "datetime") -> "int":
         store = self._get_store()
@@ -853,7 +975,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 # ``rows_affected`` for DELETE: they return ``-1`` as a
                 # sentinel for "unknown". Count first inside the same
                 # transaction so the cleanup count is always exact.
-                count_row = await driver.select_one_or_none(store.count_terminal(before=before_str))
+                count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
                 deleted = int(count_row["terminal_count"]) if count_row is not None else 0
                 if deleted > 0:
                     await driver.execute(store.cleanup_terminal(before=before_str))
@@ -1103,6 +1225,29 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             )
         return self._store
 
+    def _get_event_log_store(self) -> "Any":
+        if self._event_log_store is None:
+            store = create_event_log_store(
+                self._get_sqlspec_config(),
+                queue_table_name=self._resolve_table_name(),
+                event_log_table_name=self._event_log_table_name,
+                manage_schema=self._manage_schema,
+            )
+            self._event_log_table_name = store.table_name
+            self._event_log_store = store
+        return self._event_log_store
+
+    def _get_event_log_store_if_enabled(self) -> "Any | None":
+        return self._get_event_log_store() if self._event_log_enabled() else None
+
+    def _event_log_enabled(self) -> "bool":
+        return bool(self.config is not None and self.config.event_log is not None and self.config.event_log.enabled)
+
+    def _resolve_event_log_table_name(self) -> "str":
+        if self._event_log_table_name is None:
+            self._event_log_table_name = resolve_event_log_table_name(self._resolve_table_name())
+        return self._event_log_table_name
+
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[SQLSpecDriver]":
         if not self._opened or self._sqlspec is None:
@@ -1184,29 +1329,52 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
     ) -> "list[dict[str, Any]]":
         async with self._session() as driver:
-            rows = await driver.select(
+            return await self._select_rows(
+                driver,
                 self._get_store().list_pending(
                     now=self._serialize_datetime(_utc_now()),
                     limit=limit,
                     queue=queue,
                     execution_backend=execution_backend,
-                )
+                ),
             )
-        return cast("list[dict[str, Any]]", rows)
 
     async def _select_task(self, driver: "SQLSpecDriver", task_id: "UUID") -> "dict[str, Any] | None":
-        row = await driver.select_one_or_none(self._get_store().select_task(str(task_id)))
-        return cast("dict[str, Any] | None", row)
+        return await self._select_one_row(driver, self._get_store().select_task(str(task_id)))
 
     async def _select_task_by_key(self, driver: "SQLSpecDriver", key: "str") -> "dict[str, Any] | None":
-        row = await driver.select_one_or_none(self._get_store().select_task_by_key(key))
-        return cast("dict[str, Any] | None", row)
+        return await self._select_one_row(driver, self._get_store().select_task_by_key(key))
+
+    async def _select_rows(
+        self, driver: "SQLSpecDriver", statement: "Any", *parameters: "Any", chunk_size: "int | None" = None
+    ) -> "list[dict[str, Any]]":
+        stream_chunk_size = chunk_size
+        if stream_chunk_size is None:
+            stream_chunk_size = cast("int | None", getattr(self._get_store(), "select_stream_chunk_size", None))
+        if stream_chunk_size is not None and not isinstance(driver, _ManagedAsyncDriver):
+            rows: "list[dict[str, Any]]" = []
+            async for row in _select_stream(driver, statement, *parameters, chunk_size=stream_chunk_size):
+                rows.append(cast("dict[str, Any]", row))
+            return rows
+        return cast("list[dict[str, Any]]", await driver.select(statement, *parameters))
+
+    async def _select_one_row(
+        self, driver: "SQLSpecDriver", statement: "Any", *parameters: "Any", chunk_size: "int | None" = None
+    ) -> "dict[str, Any] | None":
+        rows = await self._select_rows(driver, statement, *parameters, chunk_size=chunk_size)
+        return rows[0] if rows else None
 
     async def _clear_key(self, driver: "SQLSpecDriver", task_id: "UUID") -> "None":
         await driver.execute(self._get_store().clear_key(task_id=str(task_id)))
 
     async def _stale_retry_updated(
-        self, driver: "SQLSpecDriver", task_id: "UUID", previous_retry_count: "int"
+        self,
+        driver: "SQLSpecDriver",
+        task_id: "UUID",
+        previous_retry_count: "int",
+        *,
+        expected_error: "str",
+        expected_priority: "int",
     ) -> "bool":
         row = await self._select_task(driver, task_id)
         if row is None:
@@ -1215,7 +1383,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return (
             record.status == "pending"
             and record.retry_count == previous_retry_count + 1
-            and record.error == "Task heartbeat stale"
+            and record.error == expected_error
+            and record.priority == expected_priority
         )
 
     async def _stale_fail_updated(self, driver: "SQLSpecDriver", task_id: "UUID") -> "bool":
@@ -1223,7 +1392,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if row is None:
             return False
         record = self._record_from_row(row)
-        return record.status == "failed" and record.error == "Task heartbeat stale"
+        return record.status == "failed" and record.error == STALE_HEARTBEAT_ERROR
 
     def _get_observability_runtime(self) -> "Any | None":
         if not self._queue_observability:
@@ -1263,8 +1432,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         existing: "dict[str, QueuedTaskRecord]" = {}
         if not keys:
             return existing
-        rows = await driver.select(store.select_tasks_by_keys(keys))
-        for row in cast("list[dict[str, Any]]", rows):
+        rows = await self._select_rows(driver, store.select_tasks_by_keys(keys))
+        for row in rows:
             record = self._record_from_row(row)
             if record.key is not None:
                 existing[record.key] = record
@@ -1543,7 +1712,7 @@ async def _rollback_sync_session(driver: "object", *, executor: "ThreadPoolExecu
 
 
 async def _select_stream(
-    driver: "SQLSpecDriver", statement: "Any", *, chunk_size: "int | None" = None
+    driver: "SQLSpecDriver", statement: "Any", *parameters: "Any", chunk_size: "int | None" = None
 ) -> "AsyncIterator[Any]":
     """Yield rows from SQLSpec async and sync stream implementations.
 
@@ -1551,14 +1720,14 @@ async def _select_stream(
         Rows returned by the SQLSpec statement.
     """
     if isinstance(driver, _ManagedAsyncDriver):
-        rows = await driver.select(statement)
+        rows = await driver.select(statement, *parameters)
         for row in rows:
             yield row
     else:
         if chunk_size is None:
-            stream = driver.select_stream(statement)
+            stream = driver.select_stream(statement, *parameters)
         else:
-            stream = driver.select_stream(statement, chunk_size=chunk_size)
+            stream = driver.select_stream(statement, *parameters, chunk_size=chunk_size)
         if isawaitable(stream):
             stream = await stream
         async for row in stream:
@@ -1571,6 +1740,37 @@ def _utc_now() -> "datetime":
 
 def _rows_affected(result: "Any") -> "int":
     return int(getattr(result, "rows_affected", 0) or 0)
+
+
+def _is_unique_violation(exc: "BaseException") -> "bool":
+    current: "BaseException | None" = exc
+    while current is not None:
+        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if sqlstate in {"23000", "23505"}:
+            return True
+        message = str(current).lower()
+        if any(
+            token in message
+            for token in ("duplicate entry", "duplicate key", "unique constraint", "unique violation", "ora-00001")
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_serialization_conflict(exc: "BaseException") -> "bool":
+    current: "BaseException | None" = exc
+    while current is not None:
+        if isinstance(current, SerializationConflictError):
+            return True
+        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if sqlstate == "40001":
+            return True
+        message = str(current).lower()
+        if "restart transaction" in message or "writetooold" in message or "serialization" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _coerce_record_args(value: "Any") -> "tuple[Any, ...]":
@@ -1632,18 +1832,34 @@ def _queue_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "d
 
 
 @contextmanager
-def _temporary_queue_migration_extension(sqlspec_config: "SQLSpecConfig", *, table_name: "str") -> "Iterator[None]":
+def _temporary_queue_migration_extension(
+    sqlspec_config: "SQLSpecConfig",
+    *,
+    table_name: "str",
+    event_log_enabled: "bool" = False,
+    event_log_table_name: "str | None" = None,
+) -> "Iterator[None]":
     original_extension_config = deepcopy(sqlspec_config.extension_config or {})
     original_migration_config = deepcopy(sqlspec_config.migration_config or {})
 
     extension_config = deepcopy(original_extension_config)
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
     queue_settings["table_name"] = validate_table_name(table_name)
+    if event_log_enabled:
+        queue_settings["event_log_enabled"] = True
+        queue_settings["event_log_table_name"] = resolve_event_log_table_name(
+            table_name, event_log_table_name=event_log_table_name
+        )
     extension_config[QUEUE_EXTENSION_NAME] = queue_settings
 
     sqlspec_config.extension_config = extension_config
     sqlspec_config.set_migration_config(deepcopy(original_migration_config))
-    configure_queue_migration_extension(sqlspec_config, table_name=table_name)
+    configure_queue_migration_extension(
+        sqlspec_config,
+        table_name=table_name,
+        event_log_enabled=event_log_enabled,
+        event_log_table_name=event_log_table_name,
+    )
     try:
         yield
     finally:

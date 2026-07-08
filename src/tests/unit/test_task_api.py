@@ -233,23 +233,16 @@ async def test_schedule_config_applies_deterministic_jitter_to_cron(monkeypatch:
     )
 
 
-@pytest.mark.parametrize(
-    "cron",
-    [
-        "0 0 L * *",
-        "0 0 15W * *",
-        "0 0 * * MON#2",
-        "0 0 * * * 2027",
-        "@reboot",
-        "0 0 1,,2 * *",
-        "0 0 * * FRI-MON",
-        "*/0 * * * *",
-        "0 0 ? * ?",
-    ],
-)
+@pytest.mark.parametrize("cron", ["0 0 1,,2 * *", "0 0 * * FRI-MON", "*/0 * * * *", "0 0 ? * ?"])
 async def test_schedule_config_rejects_unsupported_or_invalid_cron_syntax(cron: "str") -> "None":
     with pytest.raises(ValueError, match="Invalid cron expression"):
         ScheduleConfig(task_name="tasks.invalid_cron", cron=cron)
+
+
+@pytest.mark.parametrize("cron", ["0 0 L * *", "0 0 15W * *", "0 0 * * MON#2", "0 0 * * * 2027", "@reboot"])
+async def test_schedule_config_rejects_unsupported_cron_syntax_with_documented_reason(cron: "str") -> "None":
+    with pytest.raises(ValueError, match="Unsupported cron syntax"):
+        ScheduleConfig(task_name="tasks.unsupported_cron", cron=cron)
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ from uuid import UUID
 
 from litestar_queues.config import QueueConfig
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import HeartbeatTouch
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules
 
@@ -145,7 +146,10 @@ async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_re
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
-        if not await queue.get_queue_backend().touch_heartbeat(task_id, expected_retry_count=expected_retry_count):
+        result = await queue.get_queue_backend().touch_heartbeats([
+            HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)
+        ])
+        if task_id not in result.touched_task_ids:
             return False
 
 

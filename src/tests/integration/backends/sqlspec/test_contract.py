@@ -14,11 +14,13 @@ import asyncio
 import logging
 import sqlite3
 import sys
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 import pytest
 
@@ -27,8 +29,8 @@ pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues import QueueConfig, QueueService, task
-from litestar_queues.backends import get_queue_backend_class, list_queue_backends
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
@@ -42,6 +44,7 @@ from litestar_queues.backends.sqlspec.stores import (
     CockroachPsycopgAsyncQueueStore,
     CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
+    MssqlPythonQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
     OracledbAsyncQueueStore,
@@ -55,14 +58,19 @@ from litestar_queues.backends.sqlspec.stores import (
     create_queue_store,
 )
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import QueuedTaskRecord
 from tests.integration._backends import QUEUE_BACKENDS
+from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping
     from pathlib import Path
     from uuid import UUID
 
+    from pytest import FixtureRequest
+
     from litestar_queues.backends import BaseQueueBackend
-    from tests.integration._backends import BackendCase
+    from tests.integration._backends import BackendCase, PostgresService
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
 pytestmark = pytest.mark.anyio
@@ -74,6 +82,27 @@ class FakeSQLSpecConfig(SimpleNamespace):
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
+
+
+class _StreamOnlySelectDriver:
+    """Fake SQLSpec driver that only supports select_stream for read rows."""
+
+    def __init__(self, row: "dict[str, Any]") -> None:
+        self.row = row
+        self.select_one_calls = 0
+        self.stream_chunks: "list[int | None]" = []
+
+    async def select_one_or_none(self, *_args: "Any", **_kwargs: "Any") -> "None":
+        self.select_one_calls += 1
+        msg = "regular select_one_or_none should not be used"
+        raise AssertionError(msg)
+
+    def select_stream(self, _statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[dict[str, Any]]":
+        self.stream_chunks.append(chunk_size)
+        return self._iter_rows()
+
+    async def _iter_rows(self) -> "AsyncIterator[dict[str, Any]]":
+        yield self.row
 
 
 def _fake_adapter_config(
@@ -449,6 +478,45 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert "queue" in pending_statement.sql
 
 
+def test_postgres_and_duckdb_stores_build_bulk_heartbeat_updates() -> "None":
+    """Postgres-family and DuckDB stores expose one VALUES-driven heartbeat update."""
+    postgres_store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+    duckdb_store = DuckDBQueueStore(_fake_adapter_config("duckdb", dialect="duckdb"), table_name="queue_tasks")
+    touches: "list[Mapping[str, Any]]" = [
+        {"task_id": "task-1", "expected_retry_count": 0, "metadata_json": {"progress_detail": "row 1"}},
+        {"task_id": "task-2", "expected_retry_count": None, "metadata_json": None},
+    ]
+
+    postgres_statement = postgres_store.bulk_touch_heartbeats(touches=touches, heartbeat_at="2026-07-06T22:00:00Z")
+    duckdb_statement = duckdb_store.bulk_touch_heartbeats(touches=touches, heartbeat_at="2026-07-06T22:00:00Z")
+
+    assert postgres_statement is not None
+    assert duckdb_statement is not None
+    assert postgres_statement.sql.count("VALUES") == 1
+    assert duckdb_statement.sql.count("VALUES") == 1
+    assert 'UPDATE "queue_tasks" AS target' in postgres_statement.sql
+    assert 'UPDATE "queue_tasks" AS target' in duckdb_statement.sql
+    assert 'RETURNING target."id" AS id' in postgres_statement.sql
+    assert 'RETURNING target."id" AS id' in duckdb_statement.sql
+    assert "CAST(:expected_retry_count_0 AS INTEGER)" in postgres_statement.sql
+    assert 'target."metadata" || heartbeat_updates.metadata_json' in postgres_statement.sql
+    assert "CAST(? AS INTEGER)" in duckdb_statement.sql
+    assert "json_group_object(merged.key, merged.value)" in duckdb_statement.sql
+    assert isinstance(postgres_statement.parameters, dict)
+    assert isinstance(duckdb_statement.parameters, list)
+    assert postgres_statement.parameters["task_id_0"] == "task-1"
+    assert postgres_statement.parameters["expected_retry_count_1"] is None
+    assert duckdb_statement.parameters == [
+        "task-1",
+        0,
+        {"progress_detail": "row 1"},
+        "task-2",
+        None,
+        None,
+        "2026-07-06T22:00:00Z",
+    ]
+
+
 def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
     store = create_queue_store(
         _fake_adapter_config(
@@ -517,7 +585,7 @@ def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
     assert "DATETIME2(6)" in ddl
     assert " INT " in f" {ddl} "
     assert "CREATE UNIQUE INDEX" in ddl
-    assert "task_key IS NOT NULL" in ddl
+    assert "[task_key] IS NOT NULL" in ddl
     assert store.supports_skip_locked is False
 
 
@@ -583,6 +651,9 @@ def test_sqlspec_backend_accepts_arrow_odbc_sql_server_target() -> "None":
     assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.arrow_odbc.")
     assert "DATETIME" in ddl
     assert "NVARCHAR(MAX)" in ddl
+    assert "[task_key] VARCHAR(255) UNIQUE" not in ddl
+    assert "CREATE UNIQUE INDEX" in ddl
+    assert "WHERE [task_key] IS NOT NULL" in ddl
 
 
 @pytest.mark.parametrize(
@@ -669,8 +740,8 @@ def test_postgres_native_json_array_bind_shape_matches_adapter(
         ("duckdb", "duckdb", "DuckDBConfig", {}, DuckDBQueueStore, "JSON"),
         ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", {}, MysqlConnectorSyncQueueStore, "ENGINE=InnoDB"),
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
-        ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
-        ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
+        ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (task_args IS JSON)"),
+        ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (task_args IS JSON)"),
         ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
         ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
@@ -721,7 +792,7 @@ def test_sqlspec_spanner_store_uses_spanner_ddl_and_native_json_columns() -> "No
     assert "IF NOT EXISTS" not in ddl
     assert "PRIMARY KEY (`id`)" in ddl
     assert "`result_json` JSON NOT NULL" not in ddl
-    assert "`metadata_json` JSON NOT NULL" in ddl
+    assert "`metadata` JSON NOT NULL" in ddl
     assert "CREATE UNIQUE NULL_FILTERED INDEX" in ddl
     assert store._native_json_columns == frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
     assert type(store.serialize_json("result_json", None)).__name__ == "JsonObject"
@@ -801,6 +872,61 @@ def test_sqlspec_oracledb_sync_store_uses_cas_until_safe_streaming_claims() -> "
 
     assert isinstance(store, OracledbSyncQueueStore)
     assert store.supports_skip_locked is False
+
+
+async def test_sqlspec_mssql_python_select_task_uses_native_stream() -> "None":
+    """mssql-python queue reads should avoid the regular tuple-row result path."""
+    task_id = uuid4()
+    config = _fake_adapter_config("mssql_python", dialect="tsql", config_type_name="MssqlPythonAsyncConfig")
+    store = create_queue_store(config, table_name="queue_tasks")
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=config, table_name="queue_tasks", notifications=False)
+    )
+    backend._store = store
+    driver = _StreamOnlySelectDriver({"id": str(task_id)})
+
+    row = await backend._select_task(cast("Any", driver), task_id)
+
+    assert isinstance(store, MssqlPythonQueueStore)
+    assert store.select_stream_chunk_size == 100
+    assert row == {"id": str(task_id)}
+    assert driver.stream_chunks == [100]
+    assert driver.select_one_calls == 0
+
+
+async def test_sqlspec_claim_next_skips_serialization_conflict_candidate(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Optimistic CAS claims should treat serialization conflicts as claim contention."""
+    from sqlspec.exceptions import SerializationConflictError
+
+    first_id = uuid4()
+    second_id = uuid4()
+    claimed_record = QueuedTaskRecord(task_name="tasks.claimed", id=second_id, status="running")
+    backend = SQLSpecQueueBackend()
+    claim_attempts: "list[UUID]" = []
+
+    class NoSkipLockedStore:
+        supports_skip_locked = False
+
+    async def select_pending_rows(
+        self: "SQLSpecQueueBackend", *, limit: int, queue: str | None, execution_backend: str | None
+    ) -> "list[dict[str, Any]]":
+        del self, limit, queue, execution_backend
+        return [{"id": str(first_id)}, {"id": str(second_id)}]
+
+    async def claim_task(self: "SQLSpecQueueBackend", task_id: "UUID") -> "QueuedTaskRecord | None":
+        del self
+        claim_attempts.append(task_id)
+        if task_id == first_id:
+            msg = "restart transaction: WriteTooOldError"
+            raise SerializationConflictError(msg)
+        return claimed_record
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _self: NoSkipLockedStore())
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_pending_rows", select_pending_rows)
+    monkeypatch.setattr(SQLSpecQueueBackend, "claim_task", claim_task)
+
+    assert await backend.claim_next() is claimed_record
+    assert claim_attempts == [first_id, second_id]
 
 
 def test_sqlspec_store_supports_skip_locked_defaults_false_without_dialect() -> "None":
@@ -899,14 +1025,14 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name", "connection_config", "expected_fragment", "native_json_columns"),
     (
-        ("aiosqlite", "sqlite", "AiosqliteConfig", {}, '"args_json" TEXT NOT NULL', frozenset()),
-        ("duckdb", "duckdb", "DuckDBConfig", {}, '"args_json" JSON NOT NULL', frozenset()),
+        ("aiosqlite", "sqlite", "AiosqliteConfig", {}, '"task_args" TEXT NOT NULL', frozenset()),
+        ("duckdb", "duckdb", "DuckDBConfig", {}, '"task_args" JSON NOT NULL', frozenset()),
         (
             "asyncpg",
             "postgres",
             "AsyncpgConfig",
             {},
-            '"args_json" JSONB NOT NULL',
+            '"task_args" JSONB NOT NULL',
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
         (
@@ -914,7 +1040,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "postgres",
             "PsqlpyConfig",
             {},
-            '"result_json" TEXT NOT NULL',
+            '"result" TEXT NOT NULL',
             frozenset({"args_json", "kwargs_json", "metadata_json"}),
         ),
         (
@@ -922,7 +1048,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "mysql",
             "AsyncmyConfig",
             {},
-            "`args_json` JSON NOT NULL",
+            "`task_args` JSON NOT NULL",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
         (
@@ -930,7 +1056,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "mysql",
             "PyMysqlConfig",
             {},
-            "`args_json` JSON NOT NULL",
+            "`task_args` JSON NOT NULL",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
         (
@@ -1013,6 +1139,34 @@ async def test_sqlspec_backend_deduplicates_active_keys_and_replaces_terminal_ke
     assert keyed.id == replacement.id
 
 
+async def test_sqlspec_backend_reuses_winner_when_key_insert_races(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=AiosqliteConfig(), queue_observability=False)
+    )
+    driver = _UniqueViolationDriver()
+    winner = await InMemoryQueueBackend().enqueue("tasks.race", kwargs={"attempt": 1}, key="sync:race")
+
+    @asynccontextmanager
+    async def fake_session(_self: "SQLSpecQueueBackend") -> "AsyncIterator[_UniqueViolationDriver]":
+        yield driver
+
+    async def select_no_winner(_self: "SQLSpecQueueBackend", _driver: "Any", _key: "str") -> "None":
+        return None
+
+    async def get_winner(_self: "SQLSpecQueueBackend", key: "str") -> "QueuedTaskRecord | None":
+        return winner if key == "sync:race" else None
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", fake_session)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_task_by_key", select_no_winner)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _self: _InsertOnlyStore())
+    monkeypatch.setattr(SQLSpecQueueBackend, "get_task_by_key", get_winner)
+
+    record = await backend.enqueue("tasks.race", kwargs={"attempt": 2}, key="sync:race")
+
+    assert record is winner
+    assert driver.rolled_back is True
+
+
 async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
@@ -1073,9 +1227,13 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert claimed is not None
     assert claimed.heartbeat_at is not None
 
-    await sqlspec_backend.touch_heartbeat(claimed.id)
+    result = await sqlspec_backend.touch_heartbeats([
+        HeartbeatTouch(task_id=claimed.id, expected_retry_count=claimed.retry_count)
+    ])
     touched = await sqlspec_backend.get_task(claimed.id)
 
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == set()
     assert touched is not None
     assert touched.heartbeat_at is not None
     assert touched.heartbeat_at >= claimed.heartbeat_at
@@ -1098,6 +1256,143 @@ async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     assert exhausted_stored is not None
     assert exhausted_stored.status == "failed"
     assert exhausted_stored.error == "Task heartbeat stale"
+
+
+async def test_sqlspec_backend_touch_heartbeats_merges_metadata_patch(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
+    record = await sqlspec_backend.enqueue("tasks.heartbeat.metadata", metadata={"existing": "kept"})
+    claimed = await sqlspec_backend.claim_task(record.id)
+
+    assert claimed is not None
+
+    result = await sqlspec_backend.touch_heartbeats([
+        HeartbeatTouch(
+            task_id=claimed.id, expected_retry_count=claimed.retry_count, metadata_patch={"progress_detail": "row 5"}
+        )
+    ])
+    touched = await sqlspec_backend.get_task(claimed.id)
+
+    assert result.touched_task_ids == {claimed.id}
+    assert result.missed_task_ids == set()
+    assert touched is not None
+    assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
+
+
+async def test_sqlspec_duckdb_touch_heartbeats_uses_bulk_path(
+    duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    first = await duckdb_backend.enqueue(
+        "tasks.heartbeat.duckdb.first",
+        metadata={"existing": "kept", "nested": {"a": 1, "b": 2}, "nullable": "original"},
+    )
+    second = await duckdb_backend.enqueue("tasks.heartbeat.duckdb.second")
+    mismatch = await duckdb_backend.enqueue("tasks.heartbeat.duckdb.mismatch")
+    first_claim = await duckdb_backend.claim_task(first.id)
+    second_claim = await duckdb_backend.claim_task(second.id)
+    mismatch_claim = await duckdb_backend.claim_task(mismatch.id)
+
+    assert first_claim is not None
+    assert second_claim is not None
+    assert mismatch_claim is not None
+
+    async def fail_per_task_select(*_args: "object", **_kwargs: "object") -> "None":
+        msg = "bulk heartbeat path must not use per-task _select_task"
+        raise AssertionError(msg)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(SQLSpecQueueBackend, "_select_task", fail_per_task_select)
+        result = await duckdb_backend.touch_heartbeats([
+            HeartbeatTouch(
+                task_id=first_claim.id,
+                expected_retry_count=first_claim.retry_count,
+                metadata_patch={"progress_detail": "row 10", "nested": {"a": 3}, "nullable": None},
+            ),
+            HeartbeatTouch(task_id=second_claim.id, expected_retry_count=second_claim.retry_count),
+            HeartbeatTouch(task_id=mismatch_claim.id, expected_retry_count=mismatch_claim.retry_count + 1),
+        ])
+
+    first_stored = await duckdb_backend.get_task(first.id)
+    second_stored = await duckdb_backend.get_task(second.id)
+    mismatch_stored = await duckdb_backend.get_task(mismatch.id)
+
+    assert result.touched_task_ids == {first_claim.id, second_claim.id}
+    assert result.missed_task_ids == {mismatch_claim.id}
+    assert first_stored is not None
+    assert first_stored.metadata == {
+        "existing": "kept",
+        "nested": {"a": 3},
+        "nullable": None,
+        "progress_detail": "row 10",
+    }
+    assert second_stored is not None
+    assert second_stored.heartbeat_at is not None
+    assert mismatch_stored is not None
+    assert mismatch_stored.heartbeat_at == mismatch_claim.heartbeat_at
+
+
+async def test_sqlspec_postgres_touch_heartbeats_uses_bulk_path(
+    postgres_service: "PostgresService", request: "FixtureRequest", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    pytest.importorskip("asyncpg")
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+    table_name = table_name_for_test("lq_heartbeat_asyncpg", "asyncpg", request.node.nodeid)
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AsyncpgConfig(
+                connection_config={
+                    "host": postgres_service.host,
+                    "port": postgres_service.port,
+                    "user": postgres_service.user,
+                    "password": postgres_service.password,
+                    "database": postgres_service.database,
+                }
+            ),
+            table_name=table_name,
+        )
+    )
+    await backend.open()
+    try:
+        first = await backend.enqueue("tasks.heartbeat.postgres.first", metadata={"existing": "kept"})
+        second = await backend.enqueue("tasks.heartbeat.postgres.second")
+        mismatch = await backend.enqueue("tasks.heartbeat.postgres.mismatch")
+        first_claim = await backend.claim_task(first.id)
+        second_claim = await backend.claim_task(second.id)
+        mismatch_claim = await backend.claim_task(mismatch.id)
+
+        assert first_claim is not None
+        assert second_claim is not None
+        assert mismatch_claim is not None
+
+        async def fail_per_task_select(*_args: "object", **_kwargs: "object") -> "None":
+            msg = "bulk heartbeat path must not use per-task _select_task"
+            raise AssertionError(msg)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(SQLSpecQueueBackend, "_select_task", fail_per_task_select)
+            result = await backend.touch_heartbeats([
+                HeartbeatTouch(
+                    task_id=first_claim.id,
+                    expected_retry_count=first_claim.retry_count,
+                    metadata_patch={"progress_detail": "row 20"},
+                ),
+                HeartbeatTouch(task_id=second_claim.id, expected_retry_count=second_claim.retry_count),
+                HeartbeatTouch(task_id=mismatch_claim.id, expected_retry_count=mismatch_claim.retry_count + 1),
+            ])
+
+        first_stored = await backend.get_task(first.id)
+        second_stored = await backend.get_task(second.id)
+        mismatch_stored = await backend.get_task(mismatch.id)
+
+        assert result.touched_task_ids == {first_claim.id, second_claim.id}
+        assert result.missed_task_ids == {mismatch_claim.id}
+        assert first_stored is not None
+        assert first_stored.metadata == {"existing": "kept", "progress_detail": "row 20"}
+        assert second_stored is not None
+        assert second_stored.heartbeat_at is not None
+        assert mismatch_stored is not None
+        assert mismatch_stored.heartbeat_at == mismatch_claim.heartbeat_at
+    finally:
+        await backend.close()
 
 
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
@@ -1278,6 +1573,38 @@ async def _complete_report_task(backend: "BaseQueueBackend") -> "UUID":
     await backend.complete_task(claimed.id, result={"ok": True})
 
     return completed.id
+
+
+class _InsertOnlyStore:
+    bind_datetime_as_naive_utc = False
+    bind_datetime_as_text = False
+
+    def insert_task(self, params: "dict[str, object]") -> "str":
+        del params
+        return "insert into queue_tasks"
+
+    def serialize_json(self, canonical: "str", value: "object") -> "object":
+        del canonical
+        return value
+
+
+class _UniqueViolationDriver:
+    def __init__(self) -> "None":
+        self.rolled_back = False
+
+    async def begin(self) -> "None":
+        return None
+
+    async def commit(self) -> "None":
+        return None
+
+    async def rollback(self) -> "None":
+        self.rolled_back = True
+
+    async def execute(self, statement: "object") -> "None":
+        del statement
+        msg = "UNIQUE constraint failed: litestar_queue_task.task_key"
+        raise sqlite3.IntegrityError(msg)
 
 
 class _FakeSyncConfig:

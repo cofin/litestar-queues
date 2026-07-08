@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from advanced_alchemy.exceptions import DuplicateKeyError
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
@@ -11,16 +12,17 @@ from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import HeartbeatTouchResult
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from datetime import datetime, timedelta
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
+    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
 
@@ -176,9 +178,11 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
                 task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata, include_running=include_running
             )
 
-    async def touch_heartbeat(self, task_id: "UUID", *, expected_retry_count: "int | None" = None) -> "bool":
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        if not touches:
+            return HeartbeatTouchResult()
         async with self._heartbeat_operation() as service:
-            return await service.touch_heartbeat(task_id, expected_retry_count=expected_retry_count)
+            return await service.touch_heartbeats(touches)
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         async with self._heartbeat_operation() as service:
@@ -252,7 +256,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             msg = "AdvancedAlchemyBackendConfig.model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
         typed_model = cast("type[QueueTaskModelMixin]", model_class)
-        table = typed_model.__dict__["__table__"]
+        mapper = cast("Any", sqlalchemy_inspect(typed_model))
         missing_columns = {
             "id",
             "created_at",
@@ -275,7 +279,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             "error",
             "task_key",
             "metadata_json",
-        } - {column.name for column in table.columns}
+        } - {property_.key for property_ in mapper.column_attrs}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
             msg = f"AdvancedAlchemyBackendConfig.model_class is missing queue columns: {columns}."

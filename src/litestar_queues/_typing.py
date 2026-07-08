@@ -95,6 +95,9 @@ class _FallbackMeter:
     def create_counter(self, *_args: "Any", **_kwargs: "Any") -> "Any":
         return _OtelMetric()
 
+    def create_up_down_counter(self, *_args: "Any", **_kwargs: "Any") -> "Any":
+        return _OtelMetric()
+
     def create_histogram(self, *_args: "Any", **_kwargs: "Any") -> "Any":
         return _OtelMetric()
 
