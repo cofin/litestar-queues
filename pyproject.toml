@@ -129,6 +129,7 @@ version = "{current_version}"
 # Environment Setup #
 #####################
 [dependency-groups]
+build = ["bump-my-version"]
 dev = [
   "litestar[standard,attrs,pydantic]",
   # - Linting
@@ -143,7 +144,6 @@ dev = [
   { include-group = "build" },
   { include-group = "tests" },
 ]
-build = ["bump-my-version"]
 docs = [
   "auto-pytabs[sphinx]>=0.5.0",
   "sphinx-autobuild>=2021.3.14",
@@ -154,6 +154,7 @@ docs = [
   "sphinx-paramlinks>=0.6.0",
   "sphinx-togglebutton>=0.3.2",
   "shibuya",
+  "litestar-vite",
 ]
 tests = [
   "coverage[toml]",
