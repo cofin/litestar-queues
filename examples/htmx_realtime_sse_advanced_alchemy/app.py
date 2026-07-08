@@ -138,8 +138,10 @@ queue_config = QueueConfig(
     ),
     # A demo-only allow-all authorizer: it suppresses the missing-auth warning
     # for this local single-process example. Real deployments must authorize.
+    # Each demo registers only its own transport so a stale tab from the other
+    # example cannot silently reconnect to this app's routes.
     event_stream=EventStreamConfig(
-        scopes={"task"}, history=25, heartbeat_interval=15, channel_authorizer=allow_demo_channel
+        scopes={"task"}, websocket=False, history=25, heartbeat_interval=15, channel_authorizer=allow_demo_channel
     ),
 )
 

@@ -13,7 +13,7 @@ from litestar_queues.task import load_task_modules, set_default_service
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable
 
     from click import Group as ClickGroup
     from litestar import Litestar
@@ -22,16 +22,33 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events import QueueEventPublisher
+    from litestar_queues.typing import ChannelsLike
 
 __all__ = ("QueuePlugin",)
 
 logger = logging.getLogger(__name__)
 
+_UNKNOWN = object()
+
+
+def _find_registered_channels_plugin(plugins: "Iterable[object]") -> "ChannelsLike | None":
+    from litestar.channels import ChannelsPlugin
+
+    return next((plugin for plugin in plugins if isinstance(plugin, ChannelsPlugin)), None)
+
 
 class QueuePlugin(InitPlugin):
     """Litestar plugin for queue service dependency registration and lifecycle."""
 
-    __slots__ = ("_config", "_event_publisher", "_queue_backend", "_service", "_worker", "_worker_task")
+    __slots__ = (
+        "_auto_channels_backend",
+        "_config",
+        "_event_publisher",
+        "_queue_backend",
+        "_service",
+        "_worker",
+        "_worker_task",
+    )
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the queue plugin."""
@@ -39,6 +56,7 @@ class QueuePlugin(InitPlugin):
         self._service: "QueueService | None" = None
         self._queue_backend: "BaseQueueBackend | None" = None
         self._event_publisher: "QueueEventPublisher | None" = None
+        self._auto_channels_backend: "ChannelsLike | None" = None
         self._worker: "Worker | None" = None
         self._worker_task: "asyncio.Task[None] | None" = None
 
@@ -60,17 +78,38 @@ class QueuePlugin(InitPlugin):
             The updated application configuration.
         """
         self._queue_backend = self._config.get_queue_backend()
-        self._event_publisher = self._config.get_event_publisher()
+        event_config = self._config.event
+        if (
+            event_config is not None
+            and event_config.enabled
+            and event_config.sink is None
+            and event_config.channels_backend is None
+        ):
+            # Zero-wiring live delivery: EventConfig(enabled=True) without an explicit
+            # channels_backend resolves the app's registered ChannelsPlugin. The config
+            # object is never mutated so a QueueConfig shared across apps cannot leak
+            # one app's ChannelsPlugin into another's publisher.
+            self._auto_channels_backend = _find_registered_channels_plugin(app_config.plugins)
+        self._event_publisher = self._config.get_event_publisher(channels_backend=self._auto_channels_backend)
         app_config.dependencies.update(self._config.dependencies)
         app_config.signature_namespace.update(self._config.signature_namespace)
         state = {
             self._config.queue_service_state_key: self._config,
             self._config.queue_event_publisher_state_key: self._event_publisher,
         }
-        if self._config.event is not None and self._config.event.channels_backend is not None:
-            state[self._config.queue_event_channels_backend_state_key] = self._config.event.channels_backend
+        if self._config.event is not None and self._effective_channels_backend() is not None:
+            state[self._config.queue_event_channels_backend_state_key] = self._effective_channels_backend()
         stream_config = self._config.event_stream
         if stream_config is not None and stream_config.enabled:
+            if not stream_config.websocket and not stream_config.sse:
+                from litestar_queues.exceptions import QueueConfigurationError
+
+                msg = (
+                    "EventStreamConfig is enabled but both transports are disabled; "
+                    "set websocket=True and/or sse=True, or set enabled=False to turn "
+                    "queue event streaming off."
+                )
+                raise QueueConfigurationError(msg)
             from litestar_queues.events.streaming import build_stream_router
 
             self._verify_stream_channels_source(app_config)
@@ -91,6 +130,57 @@ class QueuePlugin(InitPlugin):
         # LIFO, so the worker drains before channels tears down.
         app_config.lifespan.append(self._lifespan)
         return app_config
+
+    def _effective_channels_backend(self) -> "ChannelsLike | None":
+        if self._config.event is not None and self._config.event.channels_backend is not None:
+            return self._config.event.channels_backend
+        return self._auto_channels_backend
+
+    def _validate_channels_shutdown_order(self, app: "Litestar") -> "None":
+        """Fail fast at startup when a live-sink ChannelsPlugin is registered after this plugin.
+
+        Litestar exits lifespan managers in LIFO order, so a ChannelsPlugin listed after
+        ``QueuePlugin`` tears its backend down before the queue worker drains and every
+        event published during the graceful-drain window hits a dead sink. Registration
+        order cannot be fixed from ``on_app_init`` (a later ChannelsPlugin has not
+        appended its lifespan manager yet), so misordering is rejected here instead.
+
+        Returns:
+            None.
+
+        Raises:
+            QueueConfigurationError: If the ChannelsPlugin targeted by the live event
+                sink is registered after this plugin.
+        """
+        event_config = self._config.event
+        if event_config is None or not event_config.enabled or event_config.sink is not None:
+            return
+        target = self._effective_channels_backend()
+        if target is None:
+            return
+        from litestar.channels import ChannelsPlugin
+
+        try:
+            registered: "object | None" = app.plugins.get(ChannelsPlugin)
+        except KeyError:
+            # PluginRegistry.get keys by exact type; fall back for ChannelsPlugin subclasses.
+            registered = _find_registered_channels_plugin(app.plugins)
+        if registered is None or registered is not target:
+            return
+        # ChannelsPlugin._on_startup creates _pub_queue; it is None before startup and
+        # after shutdown. A missing attribute (renamed litestar internals) degrades to
+        # "unknown" and skips validation rather than crashing.
+        if getattr(registered, "_pub_queue", _UNKNOWN) is not None:
+            return
+
+        from litestar_queues.exceptions import QueueConfigurationError
+
+        msg = (
+            "ChannelsPlugin must be registered before QueuePlugin so the queue worker "
+            "drains before the channels backend closes on shutdown: "
+            "plugins=[channels, QueuePlugin(config)]"
+        )
+        raise QueueConfigurationError(msg)
 
     def _verify_stream_channels_source(self, app_config: "AppConfig") -> "None":
         source: "object | None" = None
@@ -125,6 +215,7 @@ class QueuePlugin(InitPlugin):
 
     @asynccontextmanager
     async def _lifespan(self, app: "Litestar") -> "AsyncIterator[None]":
+        self._validate_channels_shutdown_order(app)
         if self._config.task_modules:
             load_task_modules(self._config.task_modules)
 
@@ -147,8 +238,9 @@ class QueuePlugin(InitPlugin):
         set_default_service(self._service)
         app.state[self._config.queue_service_state_key] = self._service
         app.state[self._config.queue_event_publisher_state_key] = self._service.get_event_publisher()
-        if self._config.event is not None and self._config.event.channels_backend is not None:
-            app.state[self._config.queue_event_channels_backend_state_key] = self._config.event.channels_backend
+        effective_channels = self._effective_channels_backend()
+        if self._config.event is not None and effective_channels is not None:
+            app.state[self._config.queue_event_channels_backend_state_key] = effective_channels
 
         if self._config.initialize_schedules:
             await self._service.initialize_schedules()

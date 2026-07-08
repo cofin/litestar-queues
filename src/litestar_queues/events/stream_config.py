@@ -32,6 +32,7 @@ class EventStreamConfig:
 
     enabled: "bool" = True
     sse: "bool" = True
+    websocket: "bool" = True
     path: "str" = "/queues/events"
     guards: list[Guard] | None = None
     channel_authorizer: ChannelAuthorizer | None = None

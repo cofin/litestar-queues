@@ -1,6 +1,6 @@
 from typing import get_args
 
-from litestar_queues.events._typing import ChannelsLike, ChannelsWaitPublishedManyBackend
+from litestar_queues.typing import ChannelsLike, ChannelsWaitPublishedManyBackend
 
 
 def test_channels_like_requires_single_event_publish_capability() -> None:

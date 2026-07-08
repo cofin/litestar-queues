@@ -9,7 +9,8 @@ from litestar_queues.events.models import QueueEvent
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
-    from litestar_queues.events._typing import (
+    from litestar_queues.events.chunking import QueueEventSizeEstimator
+    from litestar_queues.typing import (
         ChannelsLike,
         ChannelsPublishBackend,
         ChannelsStreamBackend,
@@ -17,7 +18,6 @@ if TYPE_CHECKING:
         ChannelsWaitPublishedBackend,
         ChannelsWaitPublishedManyBackend,
     )
-    from litestar_queues.events.chunking import QueueEventSizeEstimator
 
 __all__ = ("ChannelsQueueEventSink",)
 

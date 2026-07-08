@@ -15,7 +15,9 @@ from litestar.testing import AsyncTestClient
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, Worker, get_scheduled_tasks, get_task_registry, task
 from litestar_queues.backends import BaseQueueBackend, queue_backend
 from litestar_queues.backends.factory import _queue_backend_registry
-from litestar_queues.events import EventBufferConfig, EventConfig, publish_task_progress
+from litestar_queues.events import EventBufferConfig, EventConfig, QueueChannels, publish_task_progress
+from litestar_queues.events.litestar import ChannelsQueueEventSink
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
@@ -147,6 +149,77 @@ async def test_channels_before_queues_drains_worker_before_channels_close(caplog
     assert "publish_after_shutdown" not in order
     assert publisher._live_failure_signature is None
     assert order.index("worker_task_cancelled") < order.index("channels_shutdown")
+
+
+async def test_queues_before_channels_raises_configuration_error_at_startup() -> "None":
+    """Misordered registration (QueuePlugin before ChannelsPlugin) fails fast at lifespan enter."""
+    channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
+    plugin = QueuePlugin(QueueConfig(event=EventConfig(enabled=True, channels_backend=channels)))
+    app = Litestar(plugins=[plugin, channels])
+
+    # Litestar's event emitter task group wraps startup failures in ExceptionGroups.
+    def _find_configuration_error(exc: "BaseException") -> "QueueConfigurationError | None":
+        if isinstance(exc, QueueConfigurationError):
+            return exc
+        for sub_exc in getattr(exc, "exceptions", ()):
+            found = _find_configuration_error(sub_exc)
+            if found is not None:
+                return found
+        return None
+
+    with pytest.raises(BaseException) as exc_info:
+        async with app.lifespan():
+            pass
+
+    error = _find_configuration_error(exc_info.value)
+    assert error is not None
+    assert "ChannelsPlugin must be registered before QueuePlugin" in str(error)
+    assert "plugins=[channels, QueuePlugin(config)]" in str(error)
+
+
+async def test_event_config_auto_resolves_registered_channels_plugin() -> "None":
+    """EventConfig(enabled=True) without channels_backend targets the registered ChannelsPlugin."""
+
+    @task("tests.auto_resolved")
+    async def auto_resolved() -> "str":
+        await publish_task_progress(percent=50)
+        return "ok"
+
+    channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
+    config = QueueConfig(
+        in_app_worker=True,
+        worker_poll_interval=0.01,
+        event=EventConfig(enabled=True, buffer=EventBufferConfig(enabled=False)),
+    )
+    plugin = QueuePlugin(config)
+    app = Litestar(plugins=[channels, plugin])
+
+    assert config.event is not None
+    assert config.event.channels_backend is None  # auto-resolve must not mutate the config
+
+    async with AsyncTestClient(app=app) as client:
+        assert client.app.state[plugin.config.queue_event_channels_backend_state_key] is channels
+        publisher = client.app.state[plugin.config.queue_event_publisher_state_key]
+        assert isinstance(publisher.sink, ChannelsQueueEventSink)
+        assert publisher.sink.channels_backend is channels
+
+        async with channels.start_subscription(QueueChannels.queue("default")) as subscriber:
+            service = client.app.state[plugin.config.queue_service_state_key]
+            result = await service.enqueue(auto_resolved)
+            received: "list[bytes]" = []
+
+            async def collect() -> "None":
+                async for payload in subscriber.iter_events():
+                    received.append(payload)
+                    if len(received) >= 3:
+                        return
+
+            await asyncio.wait_for(collect(), timeout=5)
+            await result.refresh()
+
+    assert result.status == "completed"
+    assert any(b"task.progress" in payload for payload in received)
+    assert config.event.channels_backend is None
 
 
 async def test_plugin_uses_registered_queue_backend_instance() -> "None":

@@ -23,9 +23,9 @@ if TYPE_CHECKING:
     from litestar.types import SSEData
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events._typing import ChannelsLike
     from litestar_queues.events.stream_config import EventStreamConfig
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
+    from litestar_queues.typing import ChannelsLike
 
 __all__ = ("StreamMetrics", "build_stream_router", "stream_queue_events_hardened", "stream_queue_events_sse")
 
@@ -243,10 +243,11 @@ def _resolve_stream_metrics(connection: Any, config: "QueueConfig") -> "StreamMe
 
 
 def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig") -> "Router":
-    """Build plugin-owned queue-event WebSocket handlers for configured scopes.
+    """Build plugin-owned queue-event stream handlers for configured scopes.
 
     Returns:
-        A router containing one WebSocket handler per recognized configured scope.
+        A router containing one handler per recognized configured scope for each
+        enabled transport (WebSocket and/or SSE).
     """
     from litestar import Router
     from litestar.exceptions import PermissionDeniedException, WebSocketException
@@ -309,11 +310,12 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
         )
 
     handlers: list[Any] = []
-    _append_task_handler(handlers, stream_config.scopes, _relay)
-    _append_queue_handler(handlers, stream_config.scopes, _relay)
-    _append_worker_handler(handlers, stream_config.scopes, _relay)
-    _append_global_handler(handlers, stream_config.scopes, _relay)
-    _append_custom_handler(handlers, stream_config.scopes, _relay)
+    if stream_config.websocket:
+        _append_task_handler(handlers, stream_config.scopes, _relay)
+        _append_queue_handler(handlers, stream_config.scopes, _relay)
+        _append_worker_handler(handlers, stream_config.scopes, _relay)
+        _append_global_handler(handlers, stream_config.scopes, _relay)
+        _append_custom_handler(handlers, stream_config.scopes, _relay)
     if stream_config.sse:
         _append_sse_task_handler(handlers, stream_config.scopes, _sse)
         _append_sse_queue_handler(handlers, stream_config.scopes, _sse)

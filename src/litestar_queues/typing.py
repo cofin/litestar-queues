@@ -1,4 +1,4 @@
-"""Public typing helpers for optional observability support."""
+"""Public typing helpers for optional observability support and event sinks."""
 
 from litestar_queues._typing import (
     OPENTELEMETRY_INSTALLED,
@@ -16,10 +16,26 @@ from litestar_queues._typing import (
     otel_propagate,
     otel_trace,
 )
+from litestar_queues.events._typing import (
+    ChannelsLike,
+    ChannelsPublishBackend,
+    ChannelsStreamBackend,
+    ChannelsSubscriber,
+    ChannelsSubscriptionBackend,
+    ChannelsWaitPublishedBackend,
+    ChannelsWaitPublishedManyBackend,
+)
 
 __all__ = (
     "OPENTELEMETRY_INSTALLED",
     "PROMETHEUS_INSTALLED",
+    "ChannelsLike",
+    "ChannelsPublishBackend",
+    "ChannelsStreamBackend",
+    "ChannelsSubscriber",
+    "ChannelsSubscriptionBackend",
+    "ChannelsWaitPublishedBackend",
+    "ChannelsWaitPublishedManyBackend",
     "OtelMeter",
     "OtelSpan",
     "OtelSpanKind",

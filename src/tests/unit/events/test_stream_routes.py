@@ -40,6 +40,28 @@ def test_build_stream_router_narrows_to_configured_scopes() -> None:
     assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}", "/queues/events/sse/tasks/{task_id:str}"}
 
 
+def test_build_stream_router_websocket_only_registers_no_sse_routes() -> None:
+    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, sse=False))
+
+    assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}"}
+
+
+def test_build_stream_router_sse_only_registers_no_websocket_routes() -> None:
+    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, websocket=False))
+
+    assert _stream_paths(router) == {"/queues/events/sse/tasks/{task_id:str}"}
+
+
+def test_stream_config_with_both_transports_disabled_raises_at_app_init() -> None:
+    from litestar_queues import QueuePlugin
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    plugin = QueuePlugin(QueueConfig(event_stream=EventStreamConfig(websocket=False, sse=False)))
+
+    with pytest.raises(QueueConfigurationError, match=r"both transports are disabled"):
+        Litestar(plugins=[plugin])
+
+
 def test_build_stream_router_ignores_unrecognized_scopes() -> None:
     stream_config = EventStreamConfig(scopes=cast("Any", {"task", "unknown"}))
 

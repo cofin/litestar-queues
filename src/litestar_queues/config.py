@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from litestar_queues.observability import ObservabilityConfig
     from litestar_queues.service import QueueService
     from litestar_queues.task import Task
+    from litestar_queues.typing import ChannelsLike
 
 __all__ = (
     "AsyncServiceProvider",
@@ -331,8 +332,15 @@ class QueueConfig:
 
         return get_execution_backend(self.execution_backend, config=self)
 
-    def get_event_publisher(self) -> "QueueEventPublisher":
-        """Return a configured queue event publisher."""
+    def get_event_publisher(self, *, channels_backend: "ChannelsLike | None" = None) -> "QueueEventPublisher":
+        """Return a configured queue event publisher.
+
+        Args:
+            channels_backend: Fallback live sink target used only when
+                ``EventConfig.channels_backend`` is unset. ``QueuePlugin`` passes the
+                app's registered ``ChannelsPlugin`` here so ``EventConfig(enabled=True)``
+                needs no manual channel wiring.
+        """
         from litestar_queues.events import (
             ChannelsQueueEventSink,
             NoopQueueEventSink,
@@ -354,14 +362,18 @@ class QueueConfig:
             sink = NoopQueueEventSink()
         elif event_config.sink is not None:
             sink = event_config.sink
-        elif event_config.channels_backend is not None:
-            sink = ChannelsQueueEventSink(
-                event_config.channels_backend,
-                max_payload_bytes=event_config.max_payload_bytes,
-                payload_size_estimator=event_config.payload_size_estimator,
-            )
         else:
-            sink = NoopQueueEventSink()
+            live_backend = event_config.channels_backend
+            if live_backend is None:
+                live_backend = channels_backend
+            if live_backend is not None:
+                sink = ChannelsQueueEventSink(
+                    live_backend,
+                    max_payload_bytes=event_config.max_payload_bytes,
+                    payload_size_estimator=event_config.payload_size_estimator,
+                )
+            else:
+                sink = NoopQueueEventSink()
         return QueueEventPublisher(
             sink,
             buffer_config=event_config.buffer,

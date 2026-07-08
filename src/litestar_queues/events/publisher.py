@@ -11,9 +11,9 @@ from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, def
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from litestar_queues.events._typing import ChannelsLike
     from litestar_queues.events.chunking import QueueEventSizeEstimator
     from litestar_queues.events.models import QueueEvent
+    from litestar_queues.typing import ChannelsLike
 
 __all__ = ("EventBufferConfig", "EventConfig", "QueueEventPublisher")
 

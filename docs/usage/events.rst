@@ -246,7 +246,10 @@ scopes and applies the same guards and ``channel_authorizer`` to both transports
 The default path is ``/queues/events``. Task-scoped streams are available at
 ``/queues/events/tasks/{task_id}`` for WebSocket clients and
 ``/queues/events/sse/tasks/{task_id}`` for SSE clients. Queue, worker, global,
-and custom scopes follow the same path pattern.
+and custom scopes follow the same path pattern. Both transports are served by
+default; set ``EventStreamConfig(websocket=False)`` or ``sse=False`` to serve a
+single transport (disabling both while ``enabled=True`` raises
+``QueueConfigurationError``).
 
 Subscribers receive at-most-once delivery per ``eventKey`` (or per ``id`` when
 no key is set) within a single connection. Set ``QueueEvent(..., event_key=...)``
@@ -400,12 +403,17 @@ state updates:
 
        app = Litestar(plugins=[channels, QueuePlugin(config)])
 
-   Both plugins install lifespan context managers, which Litestar exits in
-   reverse (LIFO) order. Registering channels first means the queue worker
-   drains on shutdown *before* the Channels backend closes, so in-flight tasks
-   can still publish their final progress and lifecycle events. Reversing the
-   order tears the Channels backend down first and a mid-run task's events flush
-   into a closed sink (``Backend not yet initialized``).
+   Litestar exits lifespan managers in reverse (LIFO) order, so channels-first
+   registration drains the queue worker on shutdown before the Channels backend
+   closes. ``QueuePlugin`` validates this at startup and raises
+   ``QueueConfigurationError`` with the corrected registration when the order is
+   reversed, so a misordered app fails fast instead of flushing in-flight task
+   events into a closed sink.
+
+   When ``EventConfig(enabled=True)`` is configured without an explicit
+   ``channels_backend`` (and no custom ``sink``), ``QueuePlugin`` auto-resolves
+   the app's registered ``ChannelsPlugin`` as the live sink, so no manual
+   wiring is needed.
 
 Transport Recommendations
 =========================
