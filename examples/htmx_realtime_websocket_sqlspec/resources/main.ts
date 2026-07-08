@@ -1,34 +1,29 @@
 // docs: htmx-extension-start
+import htmx from "htmx.org"
 import { registerHtmxExtension } from "litestar-vite-plugin/helpers"
-import "htmx.org"
-import "htmx-ext-ws"
 import "./styles.css"
 
+// htmx 2's ESM build never attaches itself to window, and the extensions read
+// the global. Publish it first, register the litestar JSON extension, then load
+// the WebSocket extension AFTER the global exists (a dynamic import runs in
+// order, unlike a hoisted static import). Vite loads this module async, so it
+// can run after DOMContentLoaded has already fired while readyState is
+// "interactive" — htmx's own boot listener misses that window, so process the
+// DOM explicitly.
+;(window as unknown as { htmx: typeof htmx }).htmx = htmx
 registerHtmxExtension()
+void import("htmx-ext-ws").then(() => htmx.process(document.body))
 // docs: htmx-extension-end
+
+const MAX_LINES = 40
 
 type QueueEvent = {
   type: string
   message?: string | null
-  taskId?: string | null
-  scope?: string | null
-  scopeKey?: string | null
-  progressCurrent?: number | null
-  progressTotal?: number | null
-  progressPercent?: number | null
   payload?: Record<string, unknown>
 }
 
-type StreamConnection = {
-  close: () => void
-}
-
-const MISSION_SCOPE = "demo:mission-control"
-const root = document.querySelector<HTMLElement>("[data-demo-root]")
-let taskConnection: StreamConnection | null = null
-let missionConnection: StreamConnection | null = null
-
-function parseEventPayload(raw: string): QueueEvent | null {
+function parseQueueEvent(raw: string): QueueEvent | null {
   try {
     return JSON.parse(raw) as QueueEvent
   } catch {
@@ -36,105 +31,76 @@ function parseEventPayload(raw: string): QueueEvent | null {
   }
 }
 
-function setConnectionState(state: string): void {
-  const target = document.querySelector<HTMLElement>("#connection-state")
-  if (target) target.textContent = state
-}
-
-function eventLine(event: QueueEvent): string {
+function eventLine(event: QueueEvent): string | null {
   if (event.message) return event.message
   if (typeof event.payload?.line === "string") return event.payload.line
-  if (event.type === "task.completed") return "Mission complete."
-  return event.type
+  return null
+}
+
+function setReadout(text: string, completed = false): void {
+  const readout = document.querySelector<HTMLElement>("#job-readout")
+  if (!readout) return
+  readout.textContent = text
+  readout.classList.toggle("completed", completed)
 }
 
 function appendCrawlLine(event: QueueEvent): void {
   const target = document.querySelector<HTMLElement>("#crawl-lines")
   if (!target) return
+  const text = eventLine(event)
+  if (!text || target.lastElementChild?.textContent === text) return
   const line = document.createElement("p")
-  line.textContent = eventLine(event)
+  line.textContent = text
   line.dataset.eventType = event.type
   target.append(line)
-  while (target.children.length > 18) target.firstElementChild?.remove()
+  while (target.children.length > MAX_LINES) target.firstElementChild?.remove()
+}
+
+// The one adapter the extensions cannot replace: queue frames are JSON, so they
+// cannot be swapped as HTML. Parse each frame, ignore ping heartbeats, drop
+// back-to-back duplicates (progress and custom events share a message), and
+// append a crawl line. The terminal event only flips the readout — the task's
+// own closing log line is the on-screen finale.
+function handleQueueEvent(raw: string): void {
+  const event = parseQueueEvent(raw)
+  if (!event || event.type === "ping") return
+  if (event.type === "task.completed") {
+    setReadout("Mission complete", true)
+    return
+  }
+  appendCrawlLine(event)
 }
 
 function resetCrawl(jobId?: string): void {
-  const target = document.querySelector<HTMLElement>("#crawl-lines")
-  if (!target) return
-  const line = document.createElement("p")
-  line.textContent = jobId ? `Mission ${jobId} queued.` : "Mission queued."
-  target.replaceChildren(line)
-  document.querySelector("#job-status")?.classList.remove("completed")
-  setConnectionState("connecting")
-}
-
-function appendMissionLine(event: QueueEvent): void {
-  const feed = document.querySelector<HTMLOListElement>("#mission-feed")
-  if (!feed) return
-  const item = document.createElement("li")
-  item.textContent = eventLine(event)
-  item.dataset.eventType = event.type
-  feed.prepend(item)
-  while (feed.children.length > 12) feed.lastElementChild?.remove()
-}
-
-function renderQueueEvent(event: QueueEvent, target: "task" | "mission"): void {
-  if (event.type === "ping") return
-  if (target === "mission" || event.scopeKey === MISSION_SCOPE) appendMissionLine(event)
-  if (target === "task") appendCrawlLine(event)
-  if (event.type === "task.completed") {
-    document.querySelector("#job-status")?.classList.add("completed")
-    setConnectionState("complete")
+  const plane = document.querySelector<HTMLElement>("#crawl-lines")
+  if (plane) {
+    plane.replaceChildren()
+    // The crawl keyframe is one-shot and time-based; restart it so every
+    // mission's lines enter from the bottom instead of mid-flight.
+    plane.style.animation = "none"
+    void plane.offsetHeight
+    plane.style.animation = ""
   }
+  setReadout(jobId ? `Mission ${jobId} underway` : "Mission underway")
 }
 
 // docs: websocket-client-start
-function connectWebSocket(url: string, onEvent: (event: QueueEvent) => void): StreamConnection {
-  const socket = new WebSocket(url)
-  socket.addEventListener("open", () => setConnectionState("websocket"))
-  socket.addEventListener("message", (message) => {
-    if (typeof message.data !== "string") return
-    const event = parseEventPayload(message.data)
-    if (event) onEvent(event)
-  })
-  return { close: () => socket.close() }
-}
+// htmx-ext-ws fires htmx:wsBeforeMessage (cancelable) for every socket message
+// before it would swap. detail.message is the raw JSON string; preventDefault
+// keeps htmx from injecting JSON into the DOM.
+document.body.addEventListener("htmx:wsBeforeMessage", (event) => {
+  event.preventDefault()
+  const detail = (event as CustomEvent<{ message: string }>).detail
+  handleQueueEvent(detail.message)
+})
 // docs: websocket-client-end
 
-function wsUrl(path: string): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  return `${protocol}//${window.location.host}${path}`
-}
-
-function disconnectStreams(): void {
-  taskConnection?.close()
-  missionConnection?.close()
-  taskConnection = null
-  missionConnection = null
-}
-
 // docs: stream-adapter-start
-function connectStreams(): void {
-  const status = document.querySelector<HTMLElement>("#job-status")
-  disconnectStreams()
-
-  const missionWsUrl = status?.dataset.missionWsUrl ?? `/queues/events/custom/${MISSION_SCOPE}`
-  missionConnection = connectWebSocket(wsUrl(missionWsUrl), (event) => renderQueueEvent(event, "mission"))
-
-  const taskWsUrl = status?.dataset.taskWsUrl
-  if (!taskWsUrl) return
-  taskConnection = connectWebSocket(wsUrl(taskWsUrl), (event) => renderQueueEvent(event, "task"))
-}
-// docs: stream-adapter-end
-
-document.body.addEventListener("htmx:afterSwap", (event) => {
-  if ((event.target as HTMLElement | null)?.id === "job-status") connectStreams()
-})
-
+// HTMXTemplate(trigger_event="queue-demo:started") fires after the restart swap
+// replaces #stream-mount. Swapping the element reconnects the stream (the old
+// WebSocket closes with the removed element); reset the crawl to match.
 document.body.addEventListener("queue-demo:started", (event) => {
   const detail = (event as CustomEvent<{ jobId?: string }>).detail
   resetCrawl(detail?.jobId)
-  connectStreams()
 })
-
-if (root) connectStreams()
+// docs: stream-adapter-end

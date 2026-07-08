@@ -18,12 +18,6 @@ Litestar + HTMX + `litestar-vite` app for queue event streams over the
 plugin-owned SSE endpoints. It runs with the default memory queue backend and a
 memory Channels backend in one process.
 
-Both apps have the same UI:
-
-- An animated task-event crawl fed by a task-scoped event stream.
-- A mission-control panel that publishes and receives custom channel events on
-  `demo:mission-control`.
-
 ## Backend Copies
 
 Each transport has the same backend variants:

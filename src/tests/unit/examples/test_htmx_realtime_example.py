@@ -4,6 +4,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 EXAMPLES_ROOT = ROOT / "examples"
 
+# All ten examples carry the "space opera" design where the htmx SSE/WS
+# extensions own the stream connection declaratively.
 BACKEND_VARIANTS = {
     "memory": {"suffix": "", "backend_markers": ('BACKEND_NAME = "memory"',)},
     "sqlspec": {
@@ -44,43 +46,35 @@ BACKEND_VARIANTS = {
     },
 }
 
-TRANSPORT_VARIANTS = {
+# Transport-specific markers: the connection is a declarative htmx extension
+# element and the JS adapter cancels the default swap.
+TRANSPORT_MARKERS = {
     "websocket": {
         "expected_markers": (
-            "connectWebSocket",
-            "new WebSocket",
-            "wsUrl(",
-            "/queues/events/tasks/",
-            "/queues/events/custom/",
             "htmx-ext-ws",
+            'hx-ext="ws"',
+            "ws-connect",
+            "/queues/events/tasks/",
+            "htmx:wsBeforeMessage",
         ),
         "forbidden_markers": (
-            "connectSse",
-            "EventSource",
-            "/queues/events/sse",
-            "task_sse_url",
-            "mission_sse_url",
             "htmx-ext-sse",
-            "data-transport-toggle",
+            "sse-connect",
+            "/queues/events/sse",
+            "EventSource",
+            "htmx:sseBeforeMessage",
+            "task_sse_url",
         ),
     },
     "sse": {
         "expected_markers": (
-            "connectSse",
-            "EventSource",
-            "/queues/events/sse/tasks/",
-            "/queues/events/sse/custom/",
             "htmx-ext-sse",
+            'hx-ext="sse"',
+            "sse-connect",
+            "/queues/events/sse/tasks/",
+            "htmx:sseBeforeMessage",
         ),
-        "forbidden_markers": (
-            "connectWebSocket",
-            "new WebSocket",
-            "/queues/events/tasks/",
-            "task_ws_url",
-            "mission_ws_url",
-            "htmx-ext-ws",
-            "data-transport-toggle",
-        ),
+        "forbidden_markers": ("htmx-ext-ws", "ws-connect", "htmx:wsBeforeMessage", "task_ws_url", "new WebSocket"),
     },
 }
 
@@ -91,7 +85,7 @@ EXAMPLE_VARIANTS = {
         "backend_name": backend_name,
         "backend_markers": backend["backend_markers"],
     }
-    for transport in TRANSPORT_VARIANTS
+    for transport in TRANSPORT_MARKERS
     for backend_name, backend in BACKEND_VARIANTS.items()
 }
 
@@ -106,7 +100,7 @@ EXAMPLE_VARIANTS["htmx_realtime_sse"].update({
 
 
 def test_htmx_realtime_example_variants_have_expected_files() -> None:
-    expected_files = {
+    shared_files = {
         "app.py",
         "README.md",
         "package.json",
@@ -115,13 +109,13 @@ def test_htmx_realtime_example_variants_have_expected_files() -> None:
         "resources/styles.css",
         "templates/base.html",
         "templates/index.html",
-        "templates/partials/job_status.html",
+        "templates/partials/stream_mount.html",
         "scripts/external_publisher.py",
     }
 
     for name in EXAMPLE_VARIANTS:
         example_root = EXAMPLES_ROOT / name
-        for relative_path in expected_files:
+        for relative_path in shared_files:
             assert (example_root / relative_path).is_file(), f"{name}/{relative_path}"
 
 
@@ -143,10 +137,13 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         assert "worker_poll_interval=" not in app_source
         assert 'buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2, overflow="drop_oldest")' in app_source
         assert "EventStreamConfig(" in app_source
-        assert 'scopes={"task", "custom"}' in app_source
         assert "status_json" in app_source
         assert "HTMXTemplate(" in app_source
         assert "trigger_event=" in app_source
+        assert 'scopes={"task"}' in app_source
+        assert "mission-control" not in app_source
+        assert "MISSION_CONTROL" not in app_source
+        assert "publish_mission_control" not in app_source
 
         for marker in config["backend_markers"]:
             assert marker in app_source
@@ -157,33 +154,41 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
     assert "queue_backend=" not in sse_memory_app
 
 
+def _assert_canonical_frontend(example_root: Path) -> str:
+    frontend_source = (example_root / "resources" / "main.ts").read_text()
+    assert 'from "litestar-vite-plugin/helpers"' in frontend_source
+    assert 'import htmx from "htmx.org"' in frontend_source
+    assert "registerHtmxExtension()" in frontend_source
+    assert "window as unknown" in frontend_source
+    assert "task.completed" in frontend_source
+    assert '"ping"' in frontend_source
+    assert "queue-demo:started" in frontend_source
+    assert "mission-control" not in frontend_source
+
+    template_source = (example_root / "templates" / "index.html").read_text()
+    assert 'hx-swap="json"' in template_source
+    assert 'ls-if="backend"' in template_source
+    assert 'hx-post="/demo/restart"' in template_source
+    assert 'hx-target="#stream-mount"' in template_source
+    assert 'hx-disabled-elt="this"' in template_source
+    assert 'hx-sync="this:replace"' in template_source
+    assert "<form" not in template_source
+
+    partial_source = (example_root / "templates" / "partials" / "stream_mount.html").read_text()
+    package_source = (example_root / "package.json").read_text()
+    app_source = (example_root / "app.py").read_text()
+    return f"{frontend_source}\n{template_source}\n{partial_source}\n{package_source}\n{app_source}"
+
+
 def test_htmx_realtime_examples_use_transport_specific_frontend_features() -> None:
     for name, config in EXAMPLE_VARIANTS.items():
         example_root = EXAMPLES_ROOT / name
-        frontend_source = (example_root / "resources" / "main.ts").read_text()
         script_source = (example_root / "scripts" / "external_publisher.py").read_text()
         assert "from __future__ import annotations" not in script_source
-        assert 'from "litestar-vite-plugin/helpers"' in frontend_source
-        assert "registerHtmxExtension()" in frontend_source
-        assert "task.completed" in frontend_source
-        assert '"ping"' in frontend_source
-        assert "queue-demo:started" in frontend_source
-        assert "demo:mission-control" in frontend_source
 
-        template_source = (example_root / "templates" / "index.html").read_text()
-        assert 'hx-swap="json"' in template_source
-        assert 'ls-if="backend"' in template_source
-        assert 'hx-disabled-elt="find button"' in template_source
-        assert 'hx-sync="this:replace"' in template_source
-        assert "transition:true" in template_source
-        assert 'hx-indicator="#launch-indicator"' in template_source
-        assert "hx-on:htmx:after-request" in template_source
+        combined_source = _assert_canonical_frontend(example_root)
+        transport_config = TRANSPORT_MARKERS[config["transport"]]
 
-        job_status_source = (example_root / "templates" / "partials" / "job_status.html").read_text()
-        package_source = (example_root / "package.json").read_text()
-        app_source = (example_root / "app.py").read_text()
-        combined_source = f"{frontend_source}\n{template_source}\n{job_status_source}\n{package_source}\n{app_source}"
-        transport_config = TRANSPORT_VARIANTS[config["transport"]]
         for marker in transport_config["expected_markers"]:
             assert marker in combined_source, f"{name} missing {marker}"
         for marker in transport_config["forbidden_markers"]:
@@ -195,6 +200,7 @@ def test_htmx_realtime_examples_use_litestar_asset_commands_and_current_packages
         example_root = EXAMPLES_ROOT / name
         readme_source = (example_root / "README.md").read_text()
         assert "uv run litestar assets install" in readme_source
+        assert "uv run litestar assets build" in readme_source
         assert "npm install" not in readme_source
         assert "bun install" not in readme_source
 
@@ -226,7 +232,7 @@ def test_htmx_realtime_docs_import_from_runnable_example() -> None:
     assert "examples/htmx_realtime_sse/app.py" in docs_source
     assert "examples/htmx_realtime_sse/resources/main.ts" in docs_source
     assert "examples/htmx_realtime_sse/templates/index.html" in docs_source
-    for transport in TRANSPORT_VARIANTS:
+    for transport in TRANSPORT_MARKERS:
         assert f"examples/htmx_realtime_{transport}_sqlspec" in docs_source
         assert f"examples/htmx_realtime_{transport}_advanced_alchemy" in docs_source
         assert f"examples/htmx_realtime_{transport}_redis" in docs_source

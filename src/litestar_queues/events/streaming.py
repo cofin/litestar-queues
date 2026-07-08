@@ -10,7 +10,7 @@ import inspect
 import time
 from collections import OrderedDict
 from collections.abc import Container, Sequence
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.models import QueueEventScope
@@ -228,10 +228,10 @@ def _resolve_observability_runtime(
     with contextlib.suppress(KeyError, TypeError):
         runtime = state[key]
         if runtime is not None:
-            return runtime
+            return cast("QueueObservabilityRuntimeProtocol", runtime)
     runtime = getattr(state, key, None)
     if runtime is not None:
-        return runtime
+        return cast("QueueObservabilityRuntimeProtocol", runtime)
     return None
 
 
@@ -465,7 +465,7 @@ def _append_sse_task_handler(handlers: list[Any], scopes: Container[str], relay:
     from litestar import Request, get
     from litestar.params import FromPath
 
-    @get("/sse/tasks/{task_id:str}", name="queue_event_sse_task")
+    @get("/sse/tasks/{task_id:str}", name="queue_event_sse_task", media_type="text/event-stream")
     async def task_sse(request: Request, task_id: FromPath[str]) -> Any:
         return await relay(request, "task", task_id, QueueChannels.task(task_id))
 
@@ -493,7 +493,7 @@ def _append_sse_queue_handler(handlers: list[Any], scopes: Container[str], relay
     from litestar import Request, get
     from litestar.params import FromPath
 
-    @get("/sse/queues/{queue:str}", name="queue_event_sse_queue")
+    @get("/sse/queues/{queue:str}", name="queue_event_sse_queue", media_type="text/event-stream")
     async def queue_sse(request: Request, queue: FromPath[str]) -> Any:
         return await relay(request, "queue", queue, QueueChannels.queue(queue))
 
@@ -521,7 +521,7 @@ def _append_sse_worker_handler(handlers: list[Any], scopes: Container[str], rela
     from litestar import Request, get
     from litestar.params import FromPath
 
-    @get("/sse/workers/{worker_id:str}", name="queue_event_sse_worker")
+    @get("/sse/workers/{worker_id:str}", name="queue_event_sse_worker", media_type="text/event-stream")
     async def worker_sse(request: Request, worker_id: FromPath[str]) -> Any:
         return await relay(request, "worker", worker_id, QueueChannels.worker(worker_id))
 
@@ -547,7 +547,7 @@ def _append_sse_global_handler(handlers: list[Any], scopes: Container[str], rela
 
     from litestar import Request, get
 
-    @get("/sse/global", name="queue_event_sse_global")
+    @get("/sse/global", name="queue_event_sse_global", media_type="text/event-stream")
     async def global_sse(request: Request) -> Any:
         return await relay(request, "global", None, QueueChannels.global_channel())
 
@@ -575,7 +575,7 @@ def _append_sse_custom_handler(handlers: list[Any], scopes: Container[str], rela
     from litestar import Request, get
     from litestar.params import FromPath
 
-    @get("/sse/custom/{scope_key:str}", name="queue_event_sse_custom")
+    @get("/sse/custom/{scope_key:str}", name="queue_event_sse_custom", media_type="text/event-stream")
     async def custom_sse(request: Request, scope_key: FromPath[str]) -> Any:
         return await relay(request, "custom", scope_key, QueueChannels.custom(scope_key))
 

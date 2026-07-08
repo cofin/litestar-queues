@@ -265,21 +265,26 @@ The task stream is available to WebSocket clients at
 ``/queues/events/custom/{scope_key}``.
 
 The standalone WebSocket example in ``examples/htmx_realtime_websocket`` is a
-runnable server-rendered app. It registers task and custom-channel streams:
+runnable server-rendered app: a full-screen animated crawl fed by task events,
+with a single planet-styled restart button. It registers only the task event
+stream:
 
 .. literalinclude:: ../../examples/htmx_realtime_websocket/app.py
    :language: python
    :start-after: # -- docs-app-config-start --
    :end-before: # -- docs-app-config-end --
 
-Its restart endpoint returns only WebSocket stream URLs to the browser:
+Its restart endpoint returns a small partial whose element the htmx WebSocket
+extension turns into a live socket; replacing that element on the next restart
+closes the old socket, so the connection lifecycle equals the swap lifecycle:
 
 .. literalinclude:: ../../examples/htmx_realtime_websocket/app.py
    :language: python
    :start-after: # -- docs-routes-start --
    :end-before: # -- docs-routes-end --
 
-The browser opens the plugin-owned WebSocket URLs and ignores ping frames:
+A small adapter parses each JSON frame, ignores ping frames, and appends a
+crawl line, cancelling the extension's default HTML swap:
 
 .. literalinclude:: ../../examples/htmx_realtime_websocket/resources/main.ts
    :language: typescript
@@ -316,8 +321,8 @@ event configuration, but returns only SSE stream URLs to the browser:
    :start-after: # -- docs-routes-start --
    :end-before: # -- docs-routes-end --
 
-Its browser client listens for the named queue event frames with
-``EventSource``:
+A small adapter parses each named SSE frame and appends a crawl line,
+cancelling the extension's default HTML swap:
 
 .. literalinclude:: ../../examples/htmx_realtime_sse/resources/main.ts
    :language: typescript
@@ -337,9 +342,10 @@ progress, logs, and a terminal completion event:
    :start-after: # -- docs-task-start --
    :end-before: # -- docs-task-end --
 
-The page shell registers the Litestar Vite HTMX helper, uses
-``hx-ext="litestar"`` for ``ls-*`` JSON templates, and uses HTMX request
-attributes for the restart and custom-channel forms:
+The page shell publishes htmx on ``window``, registers the Litestar Vite HTMX
+helper, and dynamically imports the stream extension after the global exists. A
+single restart button carries the ``hx-post`` directly, and a muted corner
+caption uses ``hx-ext="litestar"`` for ``ls-*`` JSON templates:
 
 .. literalinclude:: ../../examples/htmx_realtime_websocket/resources/main.ts
    :language: typescript

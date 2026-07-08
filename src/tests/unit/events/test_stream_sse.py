@@ -65,6 +65,34 @@ async def test_sse_authorizer_denies_before_subscribe() -> None:
     assert channels.subscribed_channels is None
 
 
+async def test_sse_task_route_serves_event_stream_content_type() -> None:
+    event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
+    channels = _FakeChannelsPlugin([event.to_json()])
+    router = build_stream_router(
+        QueueConfig(event=EventConfig(channels_backend=channels)),
+        EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
+    )
+
+    with create_test_client(route_handlers=[router], openapi_config=None) as client:
+        response = client.get("/queues/events/sse/tasks/task-1")
+
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+
+async def test_sse_custom_route_serves_event_stream_content_type() -> None:
+    event = QueueEvent(type="task.progress", scope="custom", message="working")
+    channels = _FakeChannelsPlugin([event.to_json()])
+    router = build_stream_router(
+        QueueConfig(event=EventConfig(channels_backend=channels)),
+        EventStreamConfig(scopes={"custom"}, heartbeat_interval=0),
+    )
+
+    with create_test_client(route_handlers=[router], openapi_config=None) as client:
+        response = client.get("/queues/events/sse/custom/key-1")
+
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+
 async def test_sse_guard_denies_before_authorizer() -> None:
     calls: list[object] = []
 

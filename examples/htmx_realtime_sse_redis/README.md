@@ -1,18 +1,20 @@
 # HTMX Realtime Queue Events - SSE (Redis Backend)
 
-This standalone app runs a Litestar page with Redis queue persistence plus memory Channels delivery.
-The first viewport is an animated crawl fed by task events. The second
-viewport publishes and subscribes to the custom `demo:mission-control` channel.
+A cinematic, full-screen "space opera" page: an animated opening crawl of text
+receding into an animated galaxy starfield, fed live by queue task events over
+Server-Sent Events. There is one control, a planet-styled **Restart** button
+that (re)enqueues the roughly one-minute demo job and restarts the crawl.
 
-This copy is SSE-only. It uses the plugin-owned `/queues/events/sse/tasks/{task_id}` and `/queues/events/sse/custom/{scope_key}`
-endpoints so the transport requirements stay visible in the code.
+This copy is SSE-only. It uses the plugin-owned
+`/queues/events/sse/tasks/{task_id}` endpoint so the transport stays visible in
+the code. Queue persistence runs through Redis, and delivery uses memory
+Channels in the same process, so only Redis is needed as an external service.
 
-The example leaves queue defaults alone. Its `QueueConfig` only enables buffered
-events and task/custom event streams.
+Set `LITESTAR_QUEUES_EXAMPLE_REDIS_URL` when Redis is not available at
+`redis://localhost:6379/0`. See the repository's local infra helpers for
+spinning up a Redis container.
 
-Set LITESTAR_QUEUES_EXAMPLE_REDIS_URL when Redis is not available at redis://localhost:6379/0.
-
-## Run It
+## Run It (dev server, hot reload)
 
 From the repository root:
 
@@ -22,6 +24,7 @@ LITESTAR_APP=examples.htmx_realtime_sse_redis.app:app \
 uv run litestar assets install
 LITESTAR_APP=examples.htmx_realtime_sse_redis.app:app \
 LITESTAR_QUEUES_EXAMPLE_VITE_DEV=1 \
+LITESTAR_PORT=8000 \
 uv run litestar run --reload
 ```
 
@@ -32,21 +35,59 @@ LITESTAR_APP=examples.htmx_realtime_sse_redis.app:app \
 LITESTAR_QUEUES_EXAMPLE_VITE_DEV=1 \
 LITESTAR_QUEUES_EXAMPLE_STEPS=4 \
 LITESTAR_QUEUES_EXAMPLE_STEP_DELAY=0.5 \
+LITESTAR_PORT=8000 \
 uv run litestar run --reload
 ```
 
-Open `http://127.0.0.1:8000` and press Restart.
+Open `http://127.0.0.1:8000` (the `LITESTAR_PORT` app variable) and press
+Restart.
 
-## What It Demonstrates
+## Run It (without the dev server)
 
-- `HTMXPlugin()` with `litestar-vite` `mode="htmx"`.
-- The Litestar Vite HTMX helper registered with `registerHtmxExtension()`.
-- HTMX 2 indicators, disabled elements, sync replacement, transition swaps,
-  and `HX-Trigger-After-Swap` events through `HTMXTemplate`.
-- `hx-swap="json"` with the Litestar `ls-*` JSON-template extension.
-- `EventStreamConfig(scopes={"task", "custom"})` for task and application
-  channel streams.
-- Task progress, task logs, `ctx.beat(...)`, and a terminal completion event.
+`LITESTAR_QUEUES_EXAMPLE_VITE_DEV` defaults to off. Without it, the page loads
+built assets from the manifest, so `GET /` returns 500 until you build them
+once. Build, then run:
+
+```bash
+LITESTAR_APP=examples.htmx_realtime_sse_redis.app:app \
+uv run litestar assets install
+LITESTAR_APP=examples.htmx_realtime_sse_redis.app:app \
+uv run litestar assets build
+LITESTAR_APP=examples.htmx_realtime_sse_redis.app:app \
+LITESTAR_PORT=8000 \
+uv run litestar run
+```
+
+## How It Works
+
+- **One button, no forms.** `hx-post="/demo/restart"` lives directly on the
+  planet `<button>`. Clicking it enqueues the demo job and swaps the returned
+  `partials/stream_mount.html` into `#stream-mount`.
+- **The htmx SSE extension owns the connection.** The swapped-in
+  `#stream-mount` element carries `hx-ext="sse"` and
+  `sse-connect="/queues/events/sse/tasks/{task_id}"`, so htmx opens the
+  `EventSource` declaratively. Because each restart replaces the element, the
+  previous `EventSource` closes automatically: the connection lifecycle equals
+  the swap lifecycle, so a restart is a reconnect. This is the idiomatic
+  pattern and replaces roughly ninety lines of hand-rolled `EventSource` code.
+- **One small JS adapter.** Queue events are JSON, so the extension cannot swap
+  them as HTML. `resources/main.ts` listens for `htmx:sseBeforeMessage`, parses
+  the frame, ignores `{"type":"ping"}` heartbeats, appends a line to the crawl,
+  flips the readout to gold on `task.completed`, and calls `preventDefault()` so
+  htmx never attempts an HTML swap. On the `queue-demo:started` trigger event
+  (fired by `HTMXTemplate` after the swap) it clears the crawl for the new run.
+- **htmx wiring.** `resources/main.ts` imports htmx, publishes it as
+  `window.htmx`, calls `registerHtmxExtension()`, then dynamically imports
+  `htmx-ext-sse` so the extension sees the global. htmx 2's ESM build does not
+  attach itself to `window`, so this ordering is required.
+- **Litestar Vite JSON template.** A muted corner caption uses
+  `hx-ext="litestar"` with `hx-swap="json"` and `<template ls-if>` to render the
+  backend name from `GET /demo/status`.
+
+The `QueueConfig` enables buffered events and the task event stream only
+(`EventStreamConfig(scopes={"task"})`). Its `channel_authorizer` allows every
+channel; this is a demo-only shortcut that suppresses the missing-auth warning
+for a local single-process app. Real deployments must authorize stream access.
 
 ## External Publisher
 

@@ -2,83 +2,65 @@
 
 {% block content %}
 <!-- docs: template-start -->
-<main class="demo-shell" data-demo-root>
-  <section class="crawl-viewport" aria-label="Task event crawl">
-    <div class="brand-bar">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span>Litestar Queues</span>
-    </div>
+<main class="stage" data-demo-root>
+  <div class="starfield" aria-hidden="true">
+    <div class="stars stars-far"></div>
+    <div class="stars stars-mid"></div>
+    <div class="stars stars-near"></div>
+  </div>
+  <div class="nebula" aria-hidden="true"></div>
 
-    <div class="json-status" hx-get="/demo/status" hx-trigger="load" hx-swap="json">
-      <template ls-if="backend">
-        <span>${backend}</span>
-        <span>${scope}</span>
-      </template>
-      <template ls-else>
-        <span>{{ backend_name }}</span>
-        <span>{{ mission_scope }}</span>
-      </template>
-    </div>
+  <a class="brand" href="https://litestar.dev" aria-label="Litestar">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-hidden="true">
+      <g stroke="#edb641" stroke-width="3.4" stroke-linecap="round">
+        <line x1="24.4" y1="16.2" x2="36.6" y2="17.8"/>
+        <line x1="39.5" y1="25.4" x2="25.6" y2="41.6"/>
+        <line x1="46.3" y1="27.4" x2="47.8" y2="37.6"/>
+        <line x1="28.5" y1="47.4" x2="40.5" y2="46.6"/>
+      </g>
+      <g stroke="#edb641" stroke-width="3.4" fill="none">
+        <circle cx="16" cy="15" r="6"/>
+        <circle cx="45" cy="19" r="6"/>
+        <circle cx="20" cy="48" r="6"/>
+        <circle cx="49" cy="46" r="6"/>
+      </g>
+    </svg>
+  </a>
 
-    <div class="crawl-stage" aria-live="polite">
-      <div id="crawl-lines" class="crawl-lines">
-        <p>Press restart to launch a one-minute queue task.</p>
-      </div>
-    </div>
+  <!-- litestar-vite JSON-template extension: a whisper-quiet backend-name caption. -->
+  <div class="backend-caption" hx-ext="litestar" hx-get="/demo/status" hx-trigger="load" hx-swap="json">
+    <template ls-if="backend"><span>${backend}</span></template>
+    <template ls-else><span>{{ backend_name }}</span></template>
+  </div>
 
-    <form
-      class="launch-console"
-      hx-post="/demo/restart"
-      hx-target="#job-status"
-      hx-swap="outerHTML transition:true"
-      hx-indicator="#launch-indicator"
-      hx-disabled-elt="find button"
-      hx-sync="this:replace"
-    >
-      <button class="planet-button" type="submit">
-        <span class="planet-core" aria-hidden="true"></span>
-        <span>Restart</span>
-        <span id="launch-indicator" class="htmx-indicator">Launching</span>
-      </button>
-    </form>
-
-    <div
-      id="job-status"
-      class="status-strip"
-      data-mission-scope="{{ mission_scope }}"
-      data-mission-sse-url="{{ mission_sse_url }}"
-    >
-      <span>Awaiting launch</span>
+  <div class="crawl-perspective" aria-live="polite" aria-label="Task event crawl">
+    <div id="crawl-lines" class="crawl-plane">
+      <p>Press restart to enqueue the demo job. Every line that follows is published from inside it.</p>
     </div>
-  </section>
+  </div>
 
-  <section class="mission-control" aria-label="Mission control channel">
-    <div class="panel-heading">
-      <h1>Mission Control</h1>
-      <span id="connection-state">offline</span>
-    </div>
-    <form
-      class="mission-form"
-      hx-post="/demo/mission-control"
-      hx-target="#mission-ack"
-      hx-swap="outerHTML transition:true"
-      hx-indicator="#mission-indicator"
-      hx-disabled-elt="find button"
-      hx-sync="this:replace"
-      hx-on:htmx:after-request="if(event.detail.successful) this.reset()"
-    >
-      <label for="message">Custom channel message</label>
-      <div>
-        <input id="message" name="message" value="Manual check-in from mission control" required>
-        <button type="submit">
-          Publish
-          <span id="mission-indicator" class="htmx-indicator">Sending</span>
-        </button>
-      </div>
-    </form>
-    <div id="mission-ack" class="mission-ack">No custom message published yet.</div>
-    <ol id="mission-feed" class="mission-feed"></ol>
-  </section>
+  <p class="telemetry-caption"><span class="telemetry-dot" aria-hidden="true"></span>Live telemetry · every line is published by the running job</p>
+
+  <p id="job-readout" class="readout">Awaiting launch</p>
+
+  <button
+    class="planet"
+    type="button"
+    hx-post="/demo/restart"
+    hx-target="#stream-mount"
+    hx-swap="outerHTML"
+    hx-indicator="this"
+    hx-disabled-elt="this"
+    hx-sync="this:replace"
+    aria-label="Restart the demo queue job and crawl"
+  >
+    <span class="planet-orbit" aria-hidden="true"><span class="planet-satellite"></span></span>
+    <span class="planet-label">Restart</span>
+    <span class="planet-launching" aria-hidden="true">Launching</span>
+  </button>
+
+  <!-- The htmx SSE extension owns this element after each restart swaps it. -->
+  <div id="stream-mount" class="stream-mount" aria-hidden="true"></div>
 </main>
 <!-- docs: template-end -->
 {% endblock %}

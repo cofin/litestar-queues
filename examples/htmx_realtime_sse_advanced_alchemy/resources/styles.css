@@ -1,303 +1,385 @@
 :root {
-  color: #ffffff;
-  background: #202235;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: dark;
+  --bg: #202235;
+  --text: #ffffff;
+  --muted: #dcdfe4;
+  --gold: #edb641;
+  --gold-bright: #ffd480;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at 20% 20%, rgb(255 212 128 / 18%), transparent 28rem),
-    radial-gradient(circle at 80% 10%, rgb(220 223 228 / 14%), transparent 22rem),
-    #202235;
+  height: 100%;
 }
 
-button,
-input {
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+button {
   font: inherit;
+  color: inherit;
 }
 
-.demo-shell {
-  min-height: 100vh;
-  display: grid;
-  grid-template-rows: minmax(92vh, auto) auto;
-}
-
-.crawl-viewport {
-  position: relative;
-  min-height: 92vh;
+/* Full-screen fixed stage, no page scroll. */
+.stage {
+  position: fixed;
+  inset: 0;
   overflow: hidden;
-  display: grid;
-  align-items: center;
-  justify-items: center;
-  padding: 2rem;
-  perspective: 420px;
+  background:
+    radial-gradient(circle at 50% 120%, rgb(237 182 65 / 8%), transparent 60%),
+    var(--bg);
 }
 
-.crawl-viewport::before {
-  content: "";
+/* --- Galaxy starfield: three parallax layers of hard-coded box-shadow dots. --- */
+.starfield {
   position: absolute;
   inset: 0;
-  background-image:
-    radial-gradient(circle, rgb(255 255 255 / 90%) 0 1px, transparent 1.5px),
-    radial-gradient(circle, rgb(220 223 228 / 70%) 0 1px, transparent 1.5px);
-  background-position:
-    0 0,
-    36px 52px;
-  background-size:
-    92px 92px,
-    140px 140px;
-  opacity: 0.34;
+  pointer-events: none;
 }
 
-.brand-bar,
-.json-status,
-.launch-console,
-.status-strip {
+.stars {
   position: absolute;
-  z-index: 2;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  border-radius: 50%;
+  background: transparent;
 }
 
-.brand-bar {
-  top: 1rem;
-  left: 1rem;
-  display: inline-flex;
-  gap: 0.6rem;
-  align-items: center;
-  color: #dcdfe4;
-  font-weight: 700;
+/* Duplicate the shadow tile 2000px below so the upward drift never shows a seam. */
+.stars::after {
+  content: "";
+  position: absolute;
+  top: 2000px;
+  left: 0;
+  width: inherit;
+  height: inherit;
+  border-radius: inherit;
+  box-shadow: inherit;
 }
 
-.brand-mark {
-  width: 1.4rem;
-  aspect-ratio: 1;
-  display: inline-block;
-  border: 0.28rem solid #ffffff;
-  border-left-color: #edb641;
-  transform: rotate(45deg);
+.stars-far {
+  box-shadow: 275px 1165px #fff, 522px 241px #DCDFE4, 1558px 920px #DCDFE4, 1334px 777px #fff, 192px 999px #fff, 1829px 1711px #DCDFE4, 886px 1244px #fff, 1425px 912px #DCDFE4, 1477px 1642px #fff, 1210px 1935px #fff, 1846px 650px #fff, 45px 52px #DCDFE4, 1108px 18px #DCDFE4, 1405px 443px #DCDFE4, 1486px 59px #DCDFE4, 454px 1564px #DCDFE4, 1923px 1015px #DCDFE4, 477px 707px #fff, 1386px 448px #DCDFE4, 1950px 593px #fff, 852px 1715px #DCDFE4, 1888px 1315px #fff, 380px 1288px #DCDFE4, 1761px 607px #fff, 1521px 681px #DCDFE4, 1993px 1456px #DCDFE4, 1917px 1980px #DCDFE4, 1039px 1699px #DCDFE4, 388px 621px #DCDFE4, 1203px 1993px #DCDFE4, 1733px 1926px #DCDFE4, 805px 1206px #fff, 983px 497px #DCDFE4, 1633px 827px #DCDFE4, 1361px 354px #DCDFE4, 1123px 1807px #DCDFE4, 1588px 1381px #DCDFE4, 767px 177px #DCDFE4, 1359px 1041px #fff, 1594px 335px #DCDFE4, 1720px 805px #DCDFE4, 1002px 1500px #fff, 961px 89px #DCDFE4, 1440px 1737px #DCDFE4, 1214px 1184px #DCDFE4, 1325px 348px #fff, 1028px 464px #fff, 1578px 408px #DCDFE4, 1884px 1761px #DCDFE4, 475px 828px #DCDFE4, 704px 1950px #DCDFE4, 723px 940px #DCDFE4, 1350px 1122px #DCDFE4, 1960px 1493px #fff, 785px 1604px #DCDFE4, 1049px 1657px #fff, 1062px 1592px #DCDFE4, 420px 872px #fff, 985px 1781px #DCDFE4, 1167px 1135px #fff, 1927px 1033px #DCDFE4, 993px 1665px #DCDFE4, 848px 708px #fff, 1102px 1106px #DCDFE4, 1610px 1254px #DCDFE4, 938px 1228px #fff, 1647px 470px #DCDFE4, 362px 1127px #DCDFE4, 370px 1763px #fff, 1635px 1128px #DCDFE4, 66px 1723px #DCDFE4, 144px 170px #fff, 927px 29px #DCDFE4, 511px 550px #fff, 1632px 1279px #fff, 705px 594px #fff, 342px 326px #DCDFE4, 1080px 1949px #fff, 1344px 558px #DCDFE4, 1457px 603px #DCDFE4, 1438px 659px #DCDFE4, 970px 233px #fff, 638px 791px #DCDFE4, 862px 1630px #fff, 529px 222px #DCDFE4, 1842px 1495px #DCDFE4, 428px 1977px #DCDFE4, 884px 1673px #fff, 461px 36px #DCDFE4, 299px 72px #DCDFE4, 1965px 328px #DCDFE4, 1443px 1036px #DCDFE4, 873px 1115px #fff, 1998px 1291px #DCDFE4, 1057px 923px #fff, 1072px 1328px #fff, 808px 1382px #DCDFE4, 1645px 657px #DCDFE4, 1292px 873px #fff, 1510px 611px #fff, 1982px 434px #fff, 627px 144px #fff, 635px 1878px #DCDFE4, 1523px 324px #DCDFE4, 1156px 516px #fff, 17px 1148px #fff, 1209px 1678px #fff, 1970px 1844px #DCDFE4, 943px 351px #DCDFE4, 1275px 1042px #fff, 774px 410px #DCDFE4, 202px 421px #DCDFE4, 1380px 1836px #DCDFE4, 1211px 397px #DCDFE4, 213px 1920px #DCDFE4, 798px 606px #DCDFE4, 1023px 35px #DCDFE4, 1253px 1785px #DCDFE4, 1842px 576px #fff, 321px 411px #DCDFE4;
+  animation: drift 240s linear infinite, twinkle 6s ease-in-out infinite alternate;
 }
 
-.json-status {
-  top: 3.8rem;
-  left: 1rem;
-  display: inline-flex;
-  gap: 0.6rem;
-  align-items: center;
-  max-width: min(26rem, calc(100vw - 2rem));
-  color: #dcdfe4;
-  font-size: 0.85rem;
+.stars-mid {
+  width: 2px;
+  height: 2px;
+  box-shadow: 1957px 1767px #fff, 187px 173px #fff, 1711px 346px #DCDFE4, 1656px 1371px #fff, 515px 1240px #fff, 1242px 73px #DCDFE4, 1395px 324px #fff, 1307px 805px #DCDFE4, 1761px 1042px #fff, 1114px 1916px #fff, 1028px 549px #fff, 1783px 56px #fff, 952px 1908px #fff, 1859px 778px #fff, 1826px 1810px #DCDFE4, 336px 1147px #fff, 483px 472px #fff, 361px 665px #fff, 279px 1044px #DCDFE4, 736px 1052px #DCDFE4, 1146px 372px #fff, 1631px 849px #DCDFE4, 1075px 1856px #fff, 1617px 1215px #fff, 741px 1759px #fff, 330px 1955px #fff, 1464px 1512px #fff, 1341px 1086px #fff, 1003px 571px #fff, 1025px 1055px #fff, 1355px 1808px #fff, 1842px 1849px #fff, 718px 1162px #DCDFE4, 1884px 1141px #DCDFE4, 935px 996px #DCDFE4, 454px 1926px #fff, 1668px 1432px #fff, 1795px 1859px #DCDFE4, 549px 1583px #fff, 633px 621px #DCDFE4, 1702px 1032px #DCDFE4, 1060px 1039px #DCDFE4, 1261px 1204px #fff, 638px 1496px #fff, 1001px 1048px #fff, 1913px 1401px #DCDFE4, 1806px 154px #fff, 1486px 17px #fff, 1525px 217px #fff, 1176px 1337px #fff, 559px 1211px #fff, 1397px 1793px #fff, 1544px 1069px #fff, 1748px 544px #fff, 1689px 431px #fff, 866px 1839px #DCDFE4, 1555px 65px #fff, 742px 737px #fff, 510px 1377px #fff, 169px 235px #fff, 51px 83px #DCDFE4, 1881px 43px #fff, 523px 261px #fff, 1504px 376px #DCDFE4, 1416px 3px #fff, 1207px 88px #fff, 310px 1988px #fff, 8px 704px #DCDFE4, 1285px 1520px #DCDFE4, 231px 585px #fff, 1000px 63px #fff, 918px 1129px #DCDFE4, 1515px 93px #fff, 1547px 822px #DCDFE4, 1444px 314px #fff, 1963px 461px #fff, 1353px 1407px #fff, 1717px 208px #fff, 917px 1614px #fff, 1061px 1197px #fff;
+  animation: drift 180s linear infinite, twinkle 5s ease-in-out infinite alternate;
+  animation-delay: 0s, -1.5s;
 }
 
-.json-status span {
-  min-width: 0;
-  overflow-wrap: anywhere;
+.stars-near {
+  width: 2px;
+  height: 2px;
+  box-shadow: 487px 1213px #fff, 757px 1875px #fff, 1281px 1189px #fff, 1240px 26px #fff, 531px 1128px #fff, 392px 1468px #fff, 1107px 1713px #fff, 813px 1308px #fff, 474px 1300px #fff, 1777px 1896px #fff, 1518px 31px #fff, 326px 1552px #fff, 616px 1597px #fff, 1686px 1772px #fff, 968px 1218px #fff, 1462px 1614px #fff, 808px 1491px #fff, 1974px 1916px #fff, 1799px 748px #fff, 73px 278px #fff, 444px 528px #fff, 1595px 1283px #fff, 862px 1038px #fff, 1175px 718px #fff, 1196px 475px #fff, 1396px 1875px #fff, 1753px 572px #fff, 1430px 1762px #fff, 1975px 1109px #fff, 1461px 1342px #fff, 1296px 1703px #fff, 583px 254px #fff, 987px 1748px #fff, 181px 704px #fff, 840px 1837px #fff, 41px 601px #fff, 1574px 850px #fff, 90px 1239px #fff, 773px 1471px #fff, 1128px 1804px #fff, 1035px 483px #fff, 634px 14px #fff, 221px 1228px #fff, 1943px 404px #fff, 597px 1250px #fff, 319px 1412px #fff, 1777px 695px #fff, 737px 1963px #fff, 1836px 1764px #fff, 771px 942px #fff;
+  animation: drift 120s linear infinite, twinkle 4s ease-in-out infinite alternate;
+  animation-delay: 0s, -0.75s;
 }
 
-.json-status span:first-child {
-  color: #ffd480;
-  font-weight: 700;
+@keyframes drift {
+  from { transform: translateY(0); }
+  to { transform: translateY(-2000px); }
 }
-.crawl-stage {
-  position: relative;
-  z-index: 1;
-  width: min(58rem, 90vw);
-  height: 72vh;
+
+@keyframes twinkle {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
+/* --- Nebula: soft drifting color clouds. --- */
+.nebula {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  background:
+    radial-gradient(35% 40% at 25% 30%, rgb(237 182 65 / 10%), transparent 70%),
+    radial-gradient(30% 35% at 75% 40%, rgb(255 212 128 / 8%), transparent 70%),
+    radial-gradient(40% 45% at 55% 75%, rgb(220 223 228 / 6%), transparent 70%);
+  filter: blur(40px);
+  animation: nebula-drift 90s ease-in-out infinite alternate;
+}
+
+@keyframes nebula-drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); }
+  to { transform: translate3d(2%, 2%, 0) scale(1.15); }
+}
+
+/* --- Opening crawl receding into the distance. --- */
+.crawl-perspective {
+  position: absolute;
+  inset: 0;
+  perspective: 500px;
+  perspective-origin: 50% 20%;
   overflow: hidden;
-  transform: rotateX(58deg);
-  transform-origin: 50% 100%;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 25%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 25%);
 }
 
-.crawl-lines {
+/* Anchored just below the fold and translated in viewport units so lines the
+   stream appends always enter from the bottom, however tall the plane grows. */
+.crawl-plane {
   position: absolute;
-  inset-inline: 0;
-  bottom: -20%;
-  display: grid;
+  inset-inline: 10%;
+  top: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
   gap: 1.1rem;
-  color: #ffd480;
-  font-size: clamp(1.2rem, 3vh, 2.1rem);
-  font-weight: 750;
-  line-height: 1.35;
+  transform-origin: 50% 0%;
+  transform: rotateX(26deg) translateY(-28vh);
   text-align: center;
-  text-transform: uppercase;
-  animation: crawl 64s linear infinite;
+  color: var(--gold-bright);
+  animation: crawl 90s linear forwards;
 }
 
-.crawl-lines p {
+.crawl-plane p {
   margin: 0;
-  text-shadow: 0 0 16px rgb(237 182 65 / 40%);
-}
-
-.launch-console {
-  bottom: 5rem;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.planet-button {
-  display: inline-flex;
-  min-width: 9rem;
-  justify-content: center;
-  align-items: center;
-  gap: 0.65rem;
-  border: 1px solid rgb(255 212 128 / 55%);
-  color: #202235;
-  background: #ffd480;
-  padding: 0.8rem 1.1rem;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.planet-button .planet-core {
-  width: 1.2rem;
-  flex: 0 0 auto;
-  aspect-ratio: 1;
-  border-radius: 999px;
-  background: #edb641;
-  box-shadow: 0 0 0 0.22rem rgb(32 34 53 / 22%);
-}
-
-.planet-button .htmx-indicator,
-.mission-form .htmx-indicator {
-  display: none;
-  font-size: 0.82em;
+  font-size: clamp(1.4rem, 4vw, 3rem);
   font-weight: 700;
-}
-
-.htmx-request .htmx-indicator,
-.htmx-request.htmx-indicator {
-  display: inline;
-}
-
-.status-strip {
-  right: 1rem;
-  bottom: 1rem;
-  left: 1rem;
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  color: #dcdfe4;
-  border-top: 1px solid rgb(220 223 228 / 22%);
-  padding-top: 0.75rem;
-  font-size: 0.9rem;
-}
-
-.status-strip.completed {
-  color: #ffd480;
-}
-
-.mission-control {
-  display: grid;
-  gap: 1rem;
-  padding: clamp(1rem, 4vw, 3rem);
-  background: #ffffff;
-  color: #202235;
-}
-
-.panel-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 1rem;
-}
-
-.panel-heading h1 {
-  margin: 0;
-  font-size: 1.35rem;
-}
-
-.panel-heading span {
-  color: #4d5166;
-  font-size: 0.9rem;
-}
-
-.mission-form {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.mission-form label {
-  font-weight: 700;
-}
-
-.mission-form div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.65rem;
-}
-
-.mission-form input {
-  min-width: 0;
-  border: 1px solid #dcdfe4;
-  padding: 0.7rem 0.8rem;
-}
-
-.mission-form button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.45rem;
-  min-width: 6.8rem;
-  border: 0;
-  background: #202235;
-  color: #ffffff;
-  padding: 0.7rem 1rem;
-  cursor: pointer;
-}
-
-.mission-ack {
-  color: #4d5166;
-}
-
-.mission-feed {
-  display: grid;
-  gap: 0.45rem;
-  margin: 0;
-  padding-left: 1.25rem;
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+  text-shadow: 0 0 18px rgb(237 182 65 / 45%);
+  animation: line-in 400ms ease-out both;
 }
 
 @keyframes crawl {
-  from {
-    transform: translateY(45%);
-  }
-
-  to {
-    transform: translateY(-112%);
-  }
+  from { transform: rotateX(26deg) translateY(-28vh); }
+  to { transform: rotateX(26deg) translateY(-190vh); }
 }
 
-@media (max-width: 720px) {
-  .crawl-viewport {
-    padding: 1rem;
+@keyframes line-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+
+/* --- Live-telemetry caption: names the source of every crawl line. --- */
+.telemetry-caption {
+  position: absolute;
+  left: 2rem;
+  bottom: 2rem;
+  z-index: 5;
+  margin: 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  color: rgb(220 223 228 / 55%);
+}
+
+.telemetry-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.5rem;
+  border-radius: 50%;
+  background: var(--gold);
+  animation: telemetry-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes telemetry-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+/* --- Brand mark: whisper-quiet, top-left. --- */
+.brand {
+  position: absolute;
+  top: 1.25rem;
+  left: 1.25rem;
+  z-index: 5;
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  opacity: 0.7;
+  transition: opacity 200ms ease;
+}
+
+.brand:hover,
+.brand:focus-visible {
+  opacity: 1;
+}
+
+.brand svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* --- Backend-name caption via the litestar-vite JSON template extension. --- */
+.backend-caption {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.25rem;
+  z-index: 5;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgb(220 223 228 / 55%);
+}
+
+.backend-caption span::before {
+  content: "backend · ";
+  color: rgb(220 223 228 / 40%);
+}
+
+/* --- Whisper-quiet status readout near the button. --- */
+.readout {
+  position: absolute;
+  right: 2.5rem;
+  bottom: 9.25rem;
+  z-index: 5;
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  color: rgb(220 223 228 / 60%);
+  text-align: right;
+  transition: color 300ms ease;
+}
+
+.readout.completed {
+  color: var(--gold-bright);
+}
+
+/* --- Planet-styled restart button, tucked into the bottom-right. --- */
+.planet {
+  position: absolute;
+  right: 2.5rem;
+  bottom: 2.5rem;
+  z-index: 6;
+  width: 5.5rem;
+  height: 5.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  background: radial-gradient(circle at 32% 28%, var(--gold-bright) 0%, var(--gold) 45%, #8a611c 100%);
+  box-shadow:
+    0 0 0 1px rgb(237 182 65 / 40%),
+    0 0 22px rgb(237 182 65 / 45%),
+    0 0 55px rgb(237 182 65 / 25%);
+  transition: box-shadow 250ms ease, transform 250ms ease;
+}
+
+.planet:hover,
+.planet:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px rgb(255 212 128 / 60%),
+    0 0 30px rgb(255 212 128 / 60%),
+    0 0 75px rgb(237 182 65 / 40%);
+}
+
+.planet:active {
+  transform: scale(0.96);
+}
+
+/* Orbiting ring with a small satellite dot. */
+.planet-orbit {
+  position: absolute;
+  inset: -0.9rem;
+  border-radius: 50%;
+  border: 1px solid rgb(220 223 228 / 30%);
+  animation: orbit 12s linear infinite;
+}
+
+.planet-satellite {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgb(255 255 255 / 80%);
+}
+
+@keyframes orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.planet-label {
+  position: relative;
+  z-index: 1;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #3a2708;
+  text-shadow: 0 1px 0 rgb(255 212 128 / 60%);
+}
+
+/* Indicator: the litestar-vite htmx-indicator convention. */
+.planet-launching {
+  position: absolute;
+  left: 50%;
+  bottom: -1.6rem;
+  transform: translateX(-50%);
+  display: none;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold-bright);
+  animation: shimmer 1.1s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+.htmx-request .planet-launching,
+.htmx-request.planet-launching {
+  display: inline;
+}
+
+@keyframes shimmer {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* The stream-mount connection element carries no visual weight. */
+.stream-mount {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* --- Reduced-motion: freeze the cosmos, make the crawl a readable list. --- */
+@media (prefers-reduced-motion: reduce) {
+  .stars,
+  .stars-mid,
+  .stars-near,
+  .nebula,
+  .planet-orbit,
+  .planet-launching,
+  .telemetry-dot {
+    animation: none;
   }
 
-  .brand-bar,
-  .json-status,
-  .transport-toggle,
-  .status-strip {
-    position: relative;
-    inset: auto;
-    justify-self: stretch;
+  .crawl-perspective {
+    perspective: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+    overflow-y: auto;
   }
 
-  .transport-toggle {
-    justify-content: center;
+  .crawl-plane {
+    position: static;
+    inset-inline: auto;
+    transform: none;
+    animation: none;
+    padding: 6rem 1.5rem 10rem;
   }
 
-  .crawl-stage {
-    height: 58vh;
-  }
-
-  .launch-console {
-    bottom: 3rem;
-  }
-
-  .mission-form div,
-  .status-strip {
-    grid-template-columns: 1fr;
+  .crawl-plane p {
+    animation: none;
   }
 }
