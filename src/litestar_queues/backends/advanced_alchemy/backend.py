@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from advanced_alchemy.exceptions import DuplicateKeyError
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
@@ -255,7 +256,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             msg = "AdvancedAlchemyBackendConfig.model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
         typed_model = cast("type[QueueTaskModelMixin]", model_class)
-        table = typed_model.__dict__["__table__"]
+        mapper = cast("Any", sqlalchemy_inspect(typed_model))
         missing_columns = {
             "id",
             "created_at",
@@ -278,7 +279,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             "error",
             "task_key",
             "metadata_json",
-        } - {column.name for column in table.columns}
+        } - {property_.key for property_ in mapper.column_attrs}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
             msg = f"AdvancedAlchemyBackendConfig.model_class is missing queue columns: {columns}."

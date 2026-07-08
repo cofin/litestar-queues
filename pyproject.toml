@@ -193,6 +193,9 @@ filterwarnings = [
   # Temporary upstream SQLSpec filters: https://github.com/litestar-org/sqlspec/issues/623
   "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning:sqlspec\\.adapters\\.duckdb\\.driver",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:litestar_queues\\.backends\\.sqlspec\\.backend",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:sqlspec\\.adapters\\.psycopg\\.driver",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
+  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
 ]
 testpaths = ["src/tests"]
 

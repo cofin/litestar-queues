@@ -13,7 +13,7 @@ from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, spli
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
-    validate_column_map,
+    resolve_column_map,
     validate_native_json_columns,
     validate_table_name,
 )
@@ -96,7 +96,7 @@ class SQLSpecQueueStore:
     ) -> "None":
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
-        self._column_map = validate_column_map(column_map or {})
+        self._column_map = resolve_column_map(column_map)
         configured = validate_native_json_columns(native_json_columns or frozenset())
         self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
@@ -656,7 +656,7 @@ RETURNING {target}.{id_col} AS id
             .column(self._col("heartbeat_at"), self._timestamp_type())
             .column(self._col("result_json"), self._result_json_type("result_json"), not_null=True)
             .column(self._col("error"), self._error_type())
-            .column(self._col("task_key"), self._indexed_text_type(), unique=True)
+            .column(self._col("task_key"), self._indexed_text_type(), unique=self._inline_unique_task_key())
             .column(self._col("metadata_json"), self._metadata_json_type("metadata_json"), not_null=True)
         )
 
@@ -736,6 +736,9 @@ RETURNING {target}.{id_col} AS id
 
     def _metadata_json_type(self, column_name: "str") -> "str":
         return self._json_type()
+
+    def _inline_unique_task_key(self) -> "bool":
+        return True
 
     def _timestamp_type(self) -> "str":
         return self._dialect_type("timestamp", fallback=self._text_type())

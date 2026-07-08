@@ -499,7 +499,7 @@ def test_postgres_and_duckdb_stores_build_bulk_heartbeat_updates() -> "None":
     assert 'RETURNING target."id" AS id' in postgres_statement.sql
     assert 'RETURNING target."id" AS id' in duckdb_statement.sql
     assert "CAST(:expected_retry_count_0 AS INTEGER)" in postgres_statement.sql
-    assert 'target."metadata_json" || heartbeat_updates.metadata_json' in postgres_statement.sql
+    assert 'target."metadata" || heartbeat_updates.metadata_json' in postgres_statement.sql
     assert "CAST(? AS INTEGER)" in duckdb_statement.sql
     assert "json_group_object(merged.key, merged.value)" in duckdb_statement.sql
     assert isinstance(postgres_statement.parameters, dict)
@@ -585,7 +585,7 @@ def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
     assert "DATETIME2(6)" in ddl
     assert " INT " in f" {ddl} "
     assert "CREATE UNIQUE INDEX" in ddl
-    assert "task_key IS NOT NULL" in ddl
+    assert "[task_key] IS NOT NULL" in ddl
     assert store.supports_skip_locked is False
 
 
@@ -651,6 +651,9 @@ def test_sqlspec_backend_accepts_arrow_odbc_sql_server_target() -> "None":
     assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.arrow_odbc.")
     assert "DATETIME" in ddl
     assert "NVARCHAR(MAX)" in ddl
+    assert "[task_key] VARCHAR(255) UNIQUE" not in ddl
+    assert "CREATE UNIQUE INDEX" in ddl
+    assert "WHERE [task_key] IS NOT NULL" in ddl
 
 
 @pytest.mark.parametrize(
@@ -737,8 +740,8 @@ def test_postgres_native_json_array_bind_shape_matches_adapter(
         ("duckdb", "duckdb", "DuckDBConfig", {}, DuckDBQueueStore, "JSON"),
         ("mysqlconnector", "mysql", "MysqlConnectorSyncConfig", {}, MysqlConnectorSyncQueueStore, "ENGINE=InnoDB"),
         ("mysqlconnector", "mysql", "MysqlConnectorAsyncConfig", {}, MysqlConnectorAsyncQueueStore, "ENGINE=InnoDB"),
-        ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
-        ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (args_json IS JSON)"),
+        ("oracledb", "oracle", "OracleSyncConfig", {}, OracledbSyncQueueStore, "BLOB CHECK (task_args IS JSON)"),
+        ("oracledb", "oracle", "OracleAsyncConfig", {}, OracledbAsyncQueueStore, "BLOB CHECK (task_args IS JSON)"),
         ("pymysql", "mysql", "PyMysqlConfig", {}, PymysqlQueueStore, "ENGINE=InnoDB"),
         ("psqlpy", "postgres", "PsqlpyConfig", {}, PsqlpyQueueStore, 'WHERE "status" IN'),
         ("psycopg", "postgres", "PsycopgSyncConfig", {}, PsycopgSyncQueueStore, 'WHERE "status" IN'),
@@ -789,7 +792,7 @@ def test_sqlspec_spanner_store_uses_spanner_ddl_and_native_json_columns() -> "No
     assert "IF NOT EXISTS" not in ddl
     assert "PRIMARY KEY (`id`)" in ddl
     assert "`result_json` JSON NOT NULL" not in ddl
-    assert "`metadata_json` JSON NOT NULL" in ddl
+    assert "`metadata` JSON NOT NULL" in ddl
     assert "CREATE UNIQUE NULL_FILTERED INDEX" in ddl
     assert store._native_json_columns == frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"})
     assert type(store.serialize_json("result_json", None)).__name__ == "JsonObject"
@@ -1022,14 +1025,14 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name", "connection_config", "expected_fragment", "native_json_columns"),
     (
-        ("aiosqlite", "sqlite", "AiosqliteConfig", {}, '"args_json" TEXT NOT NULL', frozenset()),
-        ("duckdb", "duckdb", "DuckDBConfig", {}, '"args_json" JSON NOT NULL', frozenset()),
+        ("aiosqlite", "sqlite", "AiosqliteConfig", {}, '"task_args" TEXT NOT NULL', frozenset()),
+        ("duckdb", "duckdb", "DuckDBConfig", {}, '"task_args" JSON NOT NULL', frozenset()),
         (
             "asyncpg",
             "postgres",
             "AsyncpgConfig",
             {},
-            '"args_json" JSONB NOT NULL',
+            '"task_args" JSONB NOT NULL',
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
         (
@@ -1037,7 +1040,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "postgres",
             "PsqlpyConfig",
             {},
-            '"result_json" TEXT NOT NULL',
+            '"result" TEXT NOT NULL',
             frozenset({"args_json", "kwargs_json", "metadata_json"}),
         ),
         (
@@ -1045,7 +1048,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "mysql",
             "AsyncmyConfig",
             {},
-            "`args_json` JSON NOT NULL",
+            "`task_args` JSON NOT NULL",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
         (
@@ -1053,7 +1056,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
             "mysql",
             "PyMysqlConfig",
             {},
-            "`args_json` JSON NOT NULL",
+            "`task_args` JSON NOT NULL",
             frozenset({"args_json", "kwargs_json", "metadata_json", "result_json"}),
         ),
         (

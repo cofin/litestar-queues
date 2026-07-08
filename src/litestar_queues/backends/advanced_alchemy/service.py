@@ -335,7 +335,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 continue
 
             values: "dict[str, Any]" = {"heartbeat_at": now}
-            metadata_column = model_type.__table__.c.metadata_json
+            metadata_column = _mapped_column(model_type, "metadata_json")
             metadata_cases: "list[tuple[Any, Any]]" = []
             for task_id, model in models_by_id.items():
                 metadata_patch = grouped_touches[task_id].metadata_patch
@@ -679,7 +679,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if key is not None and dialect_name is not None and _supports_native_keyed_enqueue(dialect_name):
             values = _model_insert_values(model, self.model_type)
             statement, params = _build_keyed_enqueue_upsert(
-                self.model_type.__table__, values, dialect_name=dialect_name
+                self.model_type.__table__,
+                values,
+                dialect_name=dialect_name,
+                key_column=_mapped_column(self.model_type, "task_key").name,
             )
             if params:
                 await self.repository.session.execute(statement, params)
@@ -753,29 +756,34 @@ def _build_claim_lock_statement(model_type: "type[Any]", task_id: "UUID") -> "An
 
 
 def _build_keyed_enqueue_upsert(
-    table: "Any", values: "dict[str, Any]", *, dialect_name: "str"
+    table: "Any", values: "dict[str, Any]", *, dialect_name: "str", key_column: "str | None" = None
 ) -> "tuple[Any, dict[str, Any]]":
+    key_column = key_column or ("task_key" if "task_key" in table.c else "key")
     if dialect_name == "oracle":
         return OnConflictUpsert.create_merge_upsert(
             table=table,
             values=values,
-            conflict_columns=["task_key"],
+            conflict_columns=[key_column],
             update_columns=[],
             dialect_name=dialect_name,
             validate_identifiers=True,
         )
-    update_columns = ["task_key"]
+    update_columns = [key_column]
     return (
         OnConflictUpsert.create_upsert(
             table=table,
             values=values,
-            conflict_columns=["task_key"],
+            conflict_columns=[key_column],
             update_columns=update_columns,
             dialect_name=dialect_name,
             validate_identifiers=True,
         ),
         {},
     )
+
+
+def _mapped_column(model_type: "type[Any]", attribute_name: "str") -> "Any":
+    return sqlalchemy_inspect(model_type).column_attrs[attribute_name].columns[0]
 
 
 def _update_values(

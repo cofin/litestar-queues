@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from litestar_queues.backends.sqlspec.schema import (
-    validate_column_map,
+    resolve_column_map,
     validate_native_json_columns,
     validate_table_name,
 )
@@ -70,7 +70,7 @@ class SQLSpecBackendConfig:
             self.table_name = validate_table_name(self.table_name)
         if self.event_log_table_name is not None:
             self.event_log_table_name = validate_table_name(self.event_log_table_name)
-        self.column_map = validate_column_map(self.column_map)
+        self.column_map = resolve_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
         if self.notify_transport is not None and self.notify_transport not in NOTIFY_TRANSPORTS:
             valid = ", ".join(sorted(NOTIFY_TRANSPORTS))

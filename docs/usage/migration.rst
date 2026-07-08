@@ -173,25 +173,22 @@ Run it with workers drained unless you have separately verified that old and new
 workers can safely share the table during the cutover.
 
 1. Back up the job table and any job-log table before changing schema.
-2. Point SQLSpec at the existing table with canonical-to-existing column names:
+2. Point SQLSpec at the existing table. If it already uses the default
+   physical names (``task_key``, ``task_name``, ``task_args``,
+   ``task_kwargs``, ``execution_backend``, ``result``, and ``metadata``), no
+   ``column_map`` is needed:
 
    .. code-block:: python
 
-      SQLSpecBackendConfig(
-          table_name="job",
-          column_map={
-              "task_name": "function",
-              "kwargs_json": "data",
-              "task_key": "key",
-              "result_json": "result",
-              "metadata_json": "metadata",
-              "execution_backend": "execution_target",
-          },
-      )
+      SQLSpecBackendConfig(table_name="job")
+
+   If an existing table uses different names, set ``column_map`` only for
+   those differences.
 
 3. Add the columns required by ``litestar_queues`` when they are missing:
-   ``args_json`` (backfill ``[]``), ``queue`` (backfill ``"default"``),
-   ``execution_profile``, and ``execution_ref``. Backfill
+   ``task_args`` (backfill ``[]``), ``task_kwargs`` (backfill ``{}``),
+   ``queue`` (backfill ``"default"``), ``execution_profile``, and
+   ``execution_ref``. Backfill
    ``execution_profile`` and ``execution_ref`` from existing metadata keys such
    as ``profile``, ``execution_ref``, or ``cloudrun_execution`` before adding
    ``NOT NULL`` constraints where your schema requires them.
@@ -199,11 +196,11 @@ workers can safely share the table during the cutover.
    ``running``, ``completed``, ``failed``, and ``cancelled``. Drain or
    explicitly account for ``running`` rows before switching workers.
 5. If existing result values are wrapped as ``{"result": value}``, unwrap them
-   into the raw ``result_json`` value expected by ``litestar_queues``.
+   into the raw ``result`` value expected by ``litestar_queues``.
 6. Rewrite schedule rows:
 
    * keys from ``scheduled-<name>`` to ``scheduled:<name>``;
-   * schedule config from task data into ``metadata_json["schedule"]``;
+   * schedule config from task data into ``metadata["schedule"]``;
    * ``max_retries`` to ``0`` unless a task explicitly opts into another value;
    * remove legacy schedule-only columns after validation.
 

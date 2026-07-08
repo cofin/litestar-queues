@@ -43,7 +43,7 @@ _EVENT_COLUMNS = (
     "stage",
     "level",
     "message",
-    "detail_json",
+    "detail",
     "progress_current",
     "progress_total",
     "progress_percent",
@@ -58,6 +58,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     """SQLSpec statement store for backend-managed queue event history."""
 
     __slots__ = ()
+
+    def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
+        super().__init__(*args, **kwargs)
+        self._column_map = {}
 
     def create_statements(self) -> "list[str]":
         """Return statements that create the event-log table and indexes."""
@@ -143,7 +147,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         Returns:
             The decoded detail mapping, or an empty mapping for non-object JSON.
         """
-        detail = self.deserialize_json("detail_json", value)
+        detail = self.deserialize_json("detail", value)
         return detail if isinstance(detail, dict) else {}
 
     def _create_event_table_statement(self) -> "CreateTable":
@@ -162,7 +166,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             .column("stage", self._indexed_text_type())
             .column("level", self._indexed_text_type())
             .column("message", self._text_type())
-            .column("detail_json", self._json_type(), not_null=True)
+            .column("detail", self._json_type(), not_null=True)
             .column("progress_current", self._float_type())
             .column("progress_total", self._float_type())
             .column("progress_percent", self._float_type())
@@ -335,7 +339,7 @@ class SQLSpecQueueEventLog:
             "stage": _optional_str(detail.get("stage")),
             "level": event.level,
             "message": event.message,
-            "detail_json": self._store.serialize_detail(detail),
+            "detail": self._store.serialize_detail(detail),
             "progress_current": _optional_float(event.progress_current),
             "progress_total": _optional_float(event.progress_total),
             "progress_percent": _optional_float(event.progress_percent),
@@ -358,7 +362,7 @@ class SQLSpecQueueEventLog:
             stage=cast("str | None", row["stage"]),
             level=cast("str | None", row["level"]),
             message=cast("str | None", row["message"]),
-            detail=self._store.deserialize_detail(row["detail_json"]),
+            detail=self._store.deserialize_detail(row["detail"]),
             progress_current=_optional_float(row["progress_current"]),
             progress_total=_optional_float(row["progress_total"]),
             progress_percent=_optional_float(row["progress_percent"]),

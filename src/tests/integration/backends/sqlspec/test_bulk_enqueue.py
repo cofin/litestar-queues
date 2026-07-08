@@ -175,8 +175,8 @@ def test_bulk_values_orders_columns_to_match_create_table() -> "None":
 
     (mapped,) = store.bulk_values([alphabetical])
 
-    assert list(mapped) == list(_TASK_COLUMNS)
-    assert mapped["kwargs_json"] == alphabetical["kwargs_json"]
+    assert list(mapped) == [store._col(column) for column in _TASK_COLUMNS]
+    assert mapped["task_kwargs"] == alphabetical["kwargs_json"]
 
 
 async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpecQueueBackend") -> "None":

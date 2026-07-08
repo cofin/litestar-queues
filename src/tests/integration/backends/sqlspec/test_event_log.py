@@ -152,10 +152,10 @@ async def test_sqlspec_event_log_table_name_follows_queue_table_name(
 
 
 async def test_sqlspec_event_log_migration_down_drops_event_table() -> "None":
-    """The packaged event-log migration can remove the managed history table."""
+    """The packaged migration can remove the managed history table."""
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0002_create_queue_event_log")
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(
         config=AiosqliteConfig(extension_config={QUEUE_EXTENSION_NAME: {"event_log_enabled": True}})
     )

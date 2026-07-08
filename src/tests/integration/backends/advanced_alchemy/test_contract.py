@@ -91,7 +91,7 @@ async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path
 
 
 def test_advanced_alchemy_mixin_uses_native_json_column_types() -> "None":
-    column_type = ContractQueueTask.__table__.c.args_json.type
+    column_type = ContractQueueTask.args_json.property.columns[0].type
 
     assert column_type.compile(dialect=_postgresql_dialect()) == "JSONB"
     assert column_type.compile(dialect=_sqlite_dialect()) == "JSON"
@@ -160,19 +160,19 @@ def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialect
         "id": uuid4(),
         "task_name": "tasks.native_upsert",
         "task_key": "native:upsert",
-        "args_json": [],
-        "kwargs_json": {},
-        "metadata_json": {},
+        "task_args": [],
+        "task_kwargs": {},
+        "metadata": {},
     }
 
     postgres_statement, postgres_params = _build_keyed_enqueue_upsert(
-        ContractQueueTask.__table__, values, dialect_name="postgresql"
+        ContractQueueTask.__table__, values, dialect_name="postgresql", key_column="task_key"
     )
     mysql_statement, mysql_params = _build_keyed_enqueue_upsert(
-        ContractQueueTask.__table__, values, dialect_name="mysql"
+        ContractQueueTask.__table__, values, dialect_name="mysql", key_column="task_key"
     )
     oracle_statement, oracle_params = _build_keyed_enqueue_upsert(
-        ContractQueueTask.__table__, values, dialect_name="oracle"
+        ContractQueueTask.__table__, values, dialect_name="oracle", key_column="task_key"
     )
 
     assert _supports_native_keyed_enqueue("postgresql")

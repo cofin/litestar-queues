@@ -37,11 +37,11 @@ class QueueTaskModelMixin:
 
     @declared_attr
     def args_json(cls) -> "Mapped[list[Any]]":
-        return mapped_column(JsonB, default=list, nullable=False)
+        return mapped_column("task_args", JsonB, default=list, nullable=False)
 
     @declared_attr
     def kwargs_json(cls) -> "Mapped[dict[str, Any]]":
-        return mapped_column(JsonB, default=dict, nullable=False)
+        return mapped_column("task_kwargs", JsonB, default=dict, nullable=False)
 
     @declared_attr
     def queue(cls) -> "Mapped[str]":
@@ -93,7 +93,7 @@ class QueueTaskModelMixin:
 
     @declared_attr
     def result_json(cls) -> "Mapped[JSONValue]":
-        return mapped_column(JsonB, default=None, nullable=True)
+        return mapped_column("result", JsonB, default=None, nullable=True)
 
     @declared_attr
     def error(cls) -> "Mapped[str | None]":
@@ -105,7 +105,7 @@ class QueueTaskModelMixin:
 
     @declared_attr
     def metadata_json(cls) -> "Mapped[dict[str, Any]]":
-        return mapped_column(JsonB, default=dict, nullable=False)
+        return mapped_column("metadata", JsonB, default=dict, nullable=False)
 
 
 class _NamedTable(Protocol):

@@ -31,7 +31,7 @@ from litestar_queues.backends.sqlspec.event_log import (
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
-    validate_column_map,
+    resolve_column_map,
     validate_native_json_columns,
     validate_table_name,
 )
@@ -146,7 +146,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "None":
         super().__init__(config=config)
         backend_config = backend_config or SQLSpecBackendConfig()
-        self._column_map = validate_column_map(backend_config.column_map)
+        self._column_map = resolve_column_map(backend_config.column_map)
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
         self._sqlspec = backend_config.sqlspec

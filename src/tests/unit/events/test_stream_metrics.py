@@ -196,7 +196,7 @@ def _assert_bounded_labels(runtime: "_FakeObservabilityRuntime") -> None:
         metric_attributes.append(attributes)
     for _name, _value, attributes in runtime.gauges:
         metric_attributes.append(attributes)
-    for _name, _value, attributes in runtime.durations:
+    for _name, _duration, attributes in runtime.durations:
         metric_attributes.append(attributes)
     for attributes in metric_attributes:
         assert set(attributes) <= {"scope", "reason"}

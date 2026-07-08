@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[4]
 EXAMPLES_ROOT = ROOT / "examples"
@@ -187,7 +188,7 @@ def test_htmx_realtime_examples_use_transport_specific_frontend_features() -> No
         assert "from __future__ import annotations" not in script_source
 
         combined_source = _assert_canonical_frontend(example_root)
-        transport_config = TRANSPORT_MARKERS[config["transport"]]
+        transport_config = cast("dict[str, tuple[str, ...]]", TRANSPORT_MARKERS[str(config["transport"])])
 
         for marker in transport_config["expected_markers"]:
             assert marker in combined_source, f"{name} missing {marker}"
