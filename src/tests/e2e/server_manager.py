@@ -151,6 +151,7 @@ class ExampleServer:
             "LITESTAR_QUEUES_EXAMPLE_STEPS": "2",
             "LITESTAR_QUEUES_EXAMPLE_STEP_DELAY": "0.05",
             "LITESTAR_QUEUES_EXAMPLE_VITE_DEV": "1" if self.mode == "dev" else "0",
+            "LITESTAR_BYPASS_ENV_CHECK": "1",
             "PYTHONUNBUFFERED": "1",
         })
         env.update(self._extra_environment)
