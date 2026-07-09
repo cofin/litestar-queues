@@ -22,6 +22,7 @@ from litestar_queues.backends.base import (
     stale_requeue_priority,
 )
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
+from litestar_queues.backends.redis.event_log import RedisQueueEventLog, hashed_index_value
 from litestar_queues.exceptions import QueueError
 from litestar_queues.models import (
     HeartbeatTouchResult,
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
+    from litestar_queues.events import EventLogConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("RedisQueueBackend",)
@@ -98,6 +100,7 @@ class RedisQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_client",
+        "_event_log",
         "_key_prefix",
         "_lock_timeout",
         "_notification_channel",
@@ -122,6 +125,7 @@ class RedisQueueBackend(BaseQueueBackend):
         self._pubsub: "RedisPubSubLike | None" = None
         self._lock_timeout = backend_config.lock_timeout
         self._poll_interval = backend_config.poll_interval
+        self._event_log: "RedisQueueEventLog | None" = None
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
@@ -145,6 +149,8 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close owned Redis-protocol client resources."""
+        if self._event_log is not None:
+            await self._event_log.flush_events()
         if self._pubsub is not None:
             await _close_pubsub(self._pubsub, self._notification_channel)
             self._pubsub = None
@@ -155,6 +161,14 @@ class RedisQueueBackend(BaseQueueBackend):
                 if inspect.isawaitable(result):
                     await result
             self._client = None
+
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+        """Return Redis-protocol queue event history when enabled."""
+        if not config.enabled:
+            return None
+        if self._event_log is None:
+            self._event_log = RedisQueueEventLog(backend=self, config=config)
+        return self._event_log
 
     async def enqueue(
         self,
@@ -802,6 +816,21 @@ class RedisQueueBackend(BaseQueueBackend):
 
     def _lock_key(self, lock_name: "str") -> "str":
         return f"{self._key_prefix}:locks:{lock_name}"
+
+    def _event_log_global_key(self) -> "str":
+        return f"{self._key_prefix}:events"
+
+    def _event_log_event_key(self, event_id: "str") -> "str":
+        return f"{self._key_prefix}:events:record:{event_id}"
+
+    def _event_log_task_key(self, task_id: "str") -> "str":
+        return f"{self._key_prefix}:events:task:{hashed_index_value(task_id)}"
+
+    def _event_log_task_name_key(self, task_name: "str") -> "str":
+        return f"{self._key_prefix}:events:task_name:{hashed_index_value(task_name)}"
+
+    def _event_log_event_type_key(self, event_type: "str") -> "str":
+        return f"{self._key_prefix}:events:event_type:{hashed_index_value(event_type)}"
 
     def _record_to_mapping(self, record: "QueuedTaskRecord") -> "dict[str, str]":
         return {
