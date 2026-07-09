@@ -27,6 +27,43 @@ async def test_publish_many_groups_single_channel_into_one_call() -> "None":
     assert [QueueEvent.from_json(payload).type for payload in payloads] == ["task.progress", "task.log"]
 
 
+@pytest.mark.parametrize("backend_kind", ["sqlspec", "redis"])
+async def test_publish_many_keeps_channel_groups_separate(backend_kind: "str") -> "None":
+    backend = _RedisPipelineChannelsBackend() if backend_kind == "redis" else _BatchPublishingChannelsBackend()
+    sink = ChannelsQueueEventSink(cast("Any", backend))
+    first = QueueEvent(type="task.progress", scope="task", task_id="task-1")
+    second = QueueEvent(type="task.log", scope="task", task_id="task-2")
+    third = QueueEvent(type="task.event", scope="queue", scope_key="critical", queue="critical")
+
+    await sink.publish_many((
+        (first, ("task-1", "global")),
+        (second, ("task-2", "global")),
+        (third, ("task-1", "global")),
+    ))
+
+    assert len(backend.published_many) == 2
+    assert [channels for _, channels in backend.published_many] == [("task-1", "global"), ("task-2", "global")]
+    assert [[QueueEvent.from_json(payload).type for payload in payloads] for payloads, _ in backend.published_many] == [
+        ["task.progress", "task.event"],
+        ["task.log"],
+    ]
+
+
+async def test_publish_many_uses_valkey_native_batch_capability_without_redis_import() -> "None":
+    backend = _ValkeyPipelineChannelsBackend()
+    sink = ChannelsQueueEventSink(cast("Any", backend))
+    first = QueueEvent(type="task.progress", scope="task", task_id="task-1")
+    second = QueueEvent(type="task.log", scope="task", task_id="task-1")
+
+    await sink.publish_many(((first, ("events",)), (second, ("events",))))
+
+    assert backend.transport_label == "valkey"
+    assert backend.pipeline_count == 1
+    [(payloads, channels)] = backend.published_many
+    assert channels == ("events",)
+    assert [QueueEvent.from_json(payload).type for payload in payloads] == ["task.progress", "task.log"]
+
+
 async def test_publish_many_fallback_loops_when_no_batch_api() -> "None":
     backend = _WaitPublishingChannelsBackend()
     sink = ChannelsQueueEventSink(backend)
@@ -65,11 +102,29 @@ async def test_publish_many_honours_max_payload_bytes() -> "None":
 
 
 class _BatchPublishingChannelsBackend:
+    transport_label = "sqlspec"
+
     def __init__(self) -> None:
         self.published_many: "list[tuple[tuple[bytes | str, ...], tuple[str, ...]]]" = []
 
     def wait_published_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None:
         self.published_many.append((tuple(data), tuple(channels)))
+
+
+class _RedisPipelineChannelsBackend(_BatchPublishingChannelsBackend):
+    transport_label = "redis"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pipeline_count = 0
+
+    def wait_published_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None:
+        self.pipeline_count += 1
+        super().wait_published_many(data, channels)
+
+
+class _ValkeyPipelineChannelsBackend(_RedisPipelineChannelsBackend):
+    transport_label = "valkey"
 
 
 class _WaitPublishingChannelsBackend:

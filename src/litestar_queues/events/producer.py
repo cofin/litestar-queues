@@ -4,8 +4,9 @@ import inspect
 from typing import TYPE_CHECKING, Any, Literal
 
 from litestar_queues.events.models import QueueEvent
-from litestar_queues.events.publisher import QueueEventPublisher
+from litestar_queues.events.publisher import EventConfig, QueueEventPublisher
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -13,6 +14,8 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
 
 __all__ = ("QueueEventProducer", "create_event_producer")
+
+EventProducerTransport = Literal["configured", "sqlspec"]
 
 
 class QueueEventProducer:
@@ -40,23 +43,29 @@ class QueueEventProducer:
         return _ScopeEventHandle(self._publisher, "custom", scope_key)
 
 
-def create_event_producer(config: "QueueConfig") -> "_ExternalProducer":
+def create_event_producer(
+    config: "QueueConfig", *, transport: "EventProducerTransport" = "configured"
+) -> "_ExternalProducer":
     """Return an external producer context manager for queue event publishing."""
-    return _ExternalProducer(config)
+    return _ExternalProducer(config, transport=transport)
 
 
 class _ExternalProducer:
-    __slots__ = ("_config", "_producer", "_resource")
+    __slots__ = ("_config", "_producer", "_publisher", "_resource", "_transport")
 
-    def __init__(self, config: "QueueConfig") -> "None":
+    def __init__(self, config: "QueueConfig", *, transport: "EventProducerTransport") -> "None":
         self._config = config
+        self._transport = transport
         self._producer: "QueueEventProducer | None" = None
+        self._publisher: "QueueEventPublisher | None" = None
         self._resource: "object | None" = None
 
     async def __aenter__(self) -> "QueueEventProducer":
         sink, resource, publisher = self._build_publisher()
         self._resource = resource if resource is not None else sink
         await _call_optional_lifecycle(self._resource, "open", "on_startup")
+        publisher.start_buffer()
+        self._publisher = publisher
         self._producer = QueueEventProducer(publisher)
         return self._producer
 
@@ -70,10 +79,16 @@ class _ExternalProducer:
 
     async def aclose(self) -> "None":
         """Close the external producer transport if it is open."""
+        publisher = self._publisher
         resource = self._resource
         self._producer = None
+        self._publisher = None
         self._resource = None
-        await _call_optional_lifecycle(resource, "close", "on_shutdown")
+        try:
+            if publisher is not None:
+                await publisher.stop_buffer()
+        finally:
+            await _call_optional_lifecycle(resource, "close", "on_shutdown")
 
     async def close(self) -> "None":
         """Close the external producer transport if it is open."""
@@ -81,6 +96,8 @@ class _ExternalProducer:
 
     def _build_publisher(self) -> "tuple[QueueEventSink, object | None, QueueEventPublisher]":
         event_config = self._config.event
+        if event_config is None and self._transport == "sqlspec":
+            event_config = EventConfig()
         resource: "object | None" = None
         if event_config is None:
             sink: "QueueEventSink" = NoopQueueEventSink()
@@ -88,6 +105,13 @@ class _ExternalProducer:
             return sink, resource, publisher
         if not event_config.enabled:
             sink = NoopQueueEventSink()
+        elif self._transport == "sqlspec":
+            sink = _build_sqlspec_sink(
+                self._config,
+                max_payload_bytes=event_config.max_payload_bytes,
+                payload_size_estimator=event_config.payload_size_estimator,
+            )
+            resource = sink
         elif event_config.sink is not None:
             sink = event_config.sink
             resource = sink
@@ -104,6 +128,7 @@ class _ExternalProducer:
             sink = NoopQueueEventSink()
         publisher = QueueEventPublisher(
             sink,
+            buffer_config=event_config.buffer,
             strict=event_config.strict,
             publish_task_channel=event_config.publish_task_channel,
             publish_queue_channel=event_config.publish_queue_channel,
@@ -266,3 +291,19 @@ async def _call_optional_lifecycle(resource: "object | None", primary: "str", fa
     result = method()
     if inspect.isawaitable(result):
         await result
+
+
+def _build_sqlspec_sink(
+    config: "QueueConfig", *, max_payload_bytes: "int | None", payload_size_estimator: "Any"
+) -> "QueueEventSink":
+    queue_backend = config.queue_backend
+    backend_name = queue_backend if isinstance(queue_backend, str) else getattr(queue_backend, "backend_name", None)
+    if backend_name != "sqlspec" or isinstance(queue_backend, str):
+        msg = "transport='sqlspec' requires QueueConfig.queue_backend to be a SQLSpecBackendConfig-like object."
+        raise QueueConfigurationError(msg)
+
+    from litestar_queues.events.sqlspec import SQLSpecQueueEventSink
+
+    return SQLSpecQueueEventSink(
+        queue_backend, max_payload_bytes=max_payload_bytes, payload_size_estimator=payload_size_estimator
+    )
