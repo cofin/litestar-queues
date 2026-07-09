@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from litestar_queues.config import QueueConfig
+    from litestar_queues.events import EventLogConfig, QueueEventLog
     from litestar_queues.models import (
         EnqueueSpec,
         HeartbeatTouch,
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
         StaleTaskRecoveryResult,
     )
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
-    from litestar_queues.events import EventLogConfig, QueueEventLog
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
 
@@ -53,10 +53,10 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_create_schema",
-        "_event_poll_interval",
         "_event_log",
         "_event_log_model_class",
         "_event_log_service_class",
+        "_event_poll_interval",
         "_heartbeat_session_maker",
         "_model_class",
         "_notification_channel",
@@ -343,7 +343,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         notified = await listener.wait(wait_timeout)
         if notified:
             self._increment_queue_metric("listener_wakeup")
-        return notified
+        return bool(notified)
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
