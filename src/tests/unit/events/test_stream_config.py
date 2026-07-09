@@ -1,6 +1,8 @@
 from dataclasses import fields
 from typing import get_type_hints
 
+import pytest
+
 
 def test_event_stream_config_defaults() -> "None":
     from litestar_queues.events import EventStreamConfig
@@ -52,6 +54,7 @@ def test_queue_config_sub_config_field_defaults() -> "None":
     assert config.observability is None
     assert EventConfig().enabled is True
     assert EventLogConfig().enabled is True
+    assert EventLogConfig().max_records == 1000
     assert EventStreamConfig().enabled is True
     assert config.signature_namespace["EventConfig"] is EventConfig
     assert config.signature_namespace["EventLogConfig"] is EventLogConfig
@@ -76,3 +79,10 @@ def test_queue_config_explicit_disable_keeps_config_object() -> "None":
     assert config.event_log.enabled is False
     assert config.event_stream is not None
     assert config.event_stream.enabled is False
+
+
+def test_event_log_config_requires_positive_max_records() -> "None":
+    from litestar_queues.events import EventLogConfig
+
+    with pytest.raises(ValueError, match="max_records"):
+        EventLogConfig(max_records=0)

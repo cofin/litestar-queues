@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
+    from litestar_queues.events import EventLogConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("InMemoryQueueBackend",)
@@ -30,7 +31,7 @@ __all__ = ("InMemoryQueueBackend",)
 class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
-    __slots__ = ("_keys", "_lock", "_notification_event", "_records")
+    __slots__ = ("_event_log", "_keys", "_lock", "_notification_event", "_records")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         super().__init__(config=config)
@@ -38,6 +39,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         self._keys: "dict[str, UUID]" = {}
         self._lock = asyncio.Lock()
         self._notification_event = asyncio.Event()
+        self._event_log: "QueueEventLog | None" = None
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
@@ -45,6 +47,16 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return QueueBackendCapabilities(
             supports_notifications=True, notification_backend="asyncio-event", notifications_durable=False
         )
+
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+        """Return bounded, process-local queue event history when enabled."""
+        if not config.enabled:
+            return None
+        if self._event_log is None:
+            from litestar_queues.backends.memory.event_log import InMemoryQueueEventLog
+
+            self._event_log = InMemoryQueueEventLog(config)
+        return self._event_log
 
     async def enqueue(
         self,
@@ -350,6 +362,10 @@ class InMemoryQueueBackend(BaseQueueBackend):
             self._records.clear()
             self._keys.clear()
             self._notification_event.clear()
+        if self._event_log is not None:
+            clear = getattr(self._event_log, "clear", None)
+            if clear is not None:
+                await clear()
 
 
 def _utc_now() -> "datetime":
