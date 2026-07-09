@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import HeartbeatTouch
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
 
 __all__ = ("RedisQueueBackend",)
 
@@ -229,6 +229,65 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
         await self.notify_new_task(record)
         return record
+
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+        """Persist a batch of Redis-backed tasks and coalesce worker wakeups.
+
+        Returns:
+            Queue task records in the same order as ``specs``.
+        """
+        if not specs:
+            return []
+
+        results: "list[QueuedTaskRecord]" = []
+        unkeyed_records: "list[QueuedTaskRecord]" = []
+        for spec in specs:
+            if spec.key is not None:
+                async with self._lock(f"key:{spec.key}", wait=True):
+                    existing = await self.get_task_by_key(spec.key)
+                    if existing is not None and not existing.is_terminal:
+                        results.append(existing)
+                        continue
+                    if existing is not None:
+                        await self._clear_key(existing)
+                    record = self._create_record(
+                        spec.task_name,
+                        args=spec.args,
+                        kwargs=spec.kwargs,
+                        queue=spec.queue,
+                        priority=spec.priority,
+                        max_retries=spec.max_retries,
+                        scheduled_at=spec.scheduled_at,
+                        key=spec.key,
+                        execution_backend=spec.execution_backend,
+                        execution_profile=spec.execution_profile,
+                        metadata=spec.metadata,
+                    )
+                    await self._save_record(record)
+                    await self._client_hset(self._keys_key, spec.key, str(record.id))
+                    results.append(record)
+                continue
+
+            record = self._create_record(
+                spec.task_name,
+                args=spec.args,
+                kwargs=spec.kwargs,
+                queue=spec.queue,
+                priority=spec.priority,
+                max_retries=spec.max_retries,
+                scheduled_at=spec.scheduled_at,
+                key=None,
+                execution_backend=spec.execution_backend,
+                execution_profile=spec.execution_profile,
+                metadata=spec.metadata,
+            )
+            unkeyed_records.append(record)
+            results.append(record)
+
+        if unkeyed_records:
+            await self._save_records(unkeyed_records)
+        await self.notify_new_tasks(results)
+        return results
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         """Return a queued task by ID."""
@@ -607,13 +666,8 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a Redis-protocol pub/sub message when work is available."""
-        if self._notifications and record.status in _DUE_STATUSES:
-            payload = _json_dumps({
-                "task_id": str(record.id),
-                "task_name": record.task_name,
-                "queue": record.queue,
-                "execution_backend": record.execution_backend,
-            })
+        if self._notifications and record.status in _DUE_STATUSES and record.is_due:
+            payload = _json_dumps({"event": "task_available"})
             client = await self._get_client()
             await client.publish(self._notification_channel, payload)
 
@@ -709,31 +763,42 @@ class RedisQueueBackend(BaseQueueBackend):
         )
 
     async def _save_record(self, record: "QueuedTaskRecord") -> "None":
+        await self._save_records([record])
+
+    async def _save_records(self, records: "Sequence[QueuedTaskRecord]") -> "None":
+        if not records:
+            return
         client = await self._get_client()
-        record_id = str(record.id)
         pipeline = _create_pipeline(client)
         if pipeline is not None:
-            pipeline.hset(self._task_key(record.id), mapping=self._record_to_mapping(record))
-            pipeline.sadd(self._tasks_key, record_id)
-            for status in _STATUS_VALUES:
-                pipeline.srem(self._status_key(status), record_id)
-            pipeline.sadd(self._status_key(record.status), record_id)
-            if record.status in _DUE_STATUSES:
-                pipeline.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
-            else:
-                pipeline.zrem(self._pending_key, record_id)
+            for record in records:
+                self._queue_save_record(pipeline, record)
             await _execute_pipeline(pipeline)
             return
 
-        await client.hset(self._task_key(record.id), mapping=self._record_to_mapping(record))
-        await client.sadd(self._tasks_key, record_id)
+        for record in records:
+            record_id = str(record.id)
+            await client.hset(self._task_key(record.id), mapping=self._record_to_mapping(record))
+            await client.sadd(self._tasks_key, record_id)
+            for status in _STATUS_VALUES:
+                await client.srem(self._status_key(status), record_id)
+            await client.sadd(self._status_key(record.status), record_id)
+            if record.status in _DUE_STATUSES:
+                await client.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
+            else:
+                await client.zrem(self._pending_key, record_id)
+
+    def _queue_save_record(self, pipeline: "RedisPipelineLike", record: "QueuedTaskRecord") -> "None":
+        record_id = str(record.id)
+        pipeline.hset(self._task_key(record.id), mapping=self._record_to_mapping(record))
+        pipeline.sadd(self._tasks_key, record_id)
         for status in _STATUS_VALUES:
-            await client.srem(self._status_key(status), record_id)
-        await client.sadd(self._status_key(record.status), record_id)
+            pipeline.srem(self._status_key(status), record_id)
+        pipeline.sadd(self._status_key(record.status), record_id)
         if record.status in _DUE_STATUSES:
-            await client.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
+            pipeline.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
         else:
-            await client.zrem(self._pending_key, record_id)
+            pipeline.zrem(self._pending_key, record_id)
 
     async def _delete_record(self, record: "QueuedTaskRecord") -> "None":
         client = await self._get_client()

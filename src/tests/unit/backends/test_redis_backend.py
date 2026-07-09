@@ -1,12 +1,13 @@
 import builtins
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 
-from litestar_queues import HeartbeatTouch
+from litestar_queues import EnqueueSpec, HeartbeatTouch
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.models import QueuedTaskRecord
 
@@ -57,6 +58,34 @@ async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "Non
     assert client.pubsubs[0].subscribe_calls == 1
     assert client.pubsubs[0].unsubscribe_calls == 1
     assert client.pubsubs[0].close_calls == 1
+
+
+async def test_redis_enqueue_many_persists_unkeyed_batch_with_one_pipeline_and_one_notification() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+
+    records = await backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.redis.batch", kwargs={"index": 0}),
+        EnqueueSpec(task_name="tasks.redis.batch", kwargs={"index": 1}),
+        EnqueueSpec(task_name="tasks.redis.batch", kwargs={"index": 2}),
+    ])
+
+    assert [record.kwargs["index"] for record in records] == [0, 1, 2]
+    assert client.pipeline_calls == 1
+    assert client.pipeline_execute_calls == 1
+    assert client.publish_calls == 1
+    assert json.loads(client.published[0][1]) == {"event": "task_available"}
+
+
+async def test_redis_enqueue_many_future_batch_does_not_publish_notification() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([EnqueueSpec(task_name="tasks.redis.later", scheduled_at=later)])
+
+    assert records[0].status == "scheduled"
+    assert client.publish_calls == 0
 
 
 async def test_redis_backend_touch_heartbeats_fences_and_merges_metadata() -> "None":
@@ -154,6 +183,8 @@ class _CountingRedisClient:
         self.hgetall_calls = 0
         self.pipeline_calls = 0
         self.pipeline_execute_calls = 0
+        self.publish_calls = 0
+        self.published: "list[tuple[str, str]]" = []
         self.pubsub_calls = 0
         self.scard_calls = 0
         self.smembers_calls = 0
@@ -162,6 +193,11 @@ class _CountingRedisClient:
     async def hgetall(self, key: "str") -> "dict[str, str]":
         self.hgetall_calls += 1
         return self.hashes.get(key, {})
+
+    async def publish(self, channel: "str", payload: "str") -> "int":
+        self.publish_calls += 1
+        self.published.append((channel, payload))
+        return 1
 
     async def get(self, key: "str") -> "str | None":
         return self.strings.get(key)

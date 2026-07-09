@@ -1,9 +1,10 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
 
-from litestar_queues import EventLogConfig, HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues import EnqueueSpec, EventLogConfig, HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import QueueEvent, publish_task_event, publish_task_log, publish_task_progress
 from litestar_queues.task import clear_task_registry
@@ -311,6 +312,42 @@ async def test_memory_backend_touch_heartbeats_acquires_lock_once() -> "None":
     assert result.missed_task_ids == set()
 
 
+async def test_memory_backend_enqueue_many_acquires_lock_once_and_sets_event_once() -> "None":
+    backend = InMemoryQueueBackend()
+    lock = _CountingAsyncLock()
+    event = _CountingEvent()
+    backend._lock = cast("Any", lock)
+    backend._notification_event = cast("Any", event)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.bulk.first", key="bulk:first"),
+        EnqueueSpec(task_name="tasks.bulk.later", scheduled_at=later),
+        EnqueueSpec(task_name="tasks.bulk.second", key="bulk:second"),
+    ])
+
+    assert lock.entries == 1
+    assert event.sets == 1
+    assert [record.task_name for record in records] == ["tasks.bulk.first", "tasks.bulk.later", "tasks.bulk.second"]
+    assert [record.id for record in await backend.list_pending(limit=10)] == [records[0].id, records[2].id]
+
+
+async def test_memory_backend_enqueue_many_future_records_do_not_wake_workers() -> "None":
+    backend = InMemoryQueueBackend()
+    lock = _CountingAsyncLock()
+    event = _CountingEvent()
+    backend._lock = cast("Any", lock)
+    backend._notification_event = cast("Any", event)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([EnqueueSpec(task_name="tasks.bulk.later", scheduled_at=later)])
+
+    assert lock.entries == 1
+    assert event.sets == 0
+    assert records[0].status == "scheduled"
+    assert await backend.list_pending(limit=10) == []
+
+
 async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.fenced", max_retries=1)
@@ -401,3 +438,24 @@ class _CountingAsyncLock:
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> "None":
         return None
+
+
+class _CountingEvent:
+    def __init__(self) -> "None":
+        self.clears = 0
+        self.sets = 0
+        self._event = asyncio.Event()
+
+    def is_set(self) -> "bool":
+        return self._event.is_set()
+
+    def set(self) -> "None":
+        self.sets += 1
+        self._event.set()
+
+    def clear(self) -> "None":
+        self.clears += 1
+        self._event.clear()
+
+    async def wait(self) -> "bool":
+        return await self._event.wait()
