@@ -24,18 +24,18 @@ DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 
 NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({
     "aq",
-    "listen_notify",
-    "listen_notify_durable",
+    "notify",
+    "notify_queue",
+    "poll_queue",
     "polling",
-    "table_queue",
     "txeventq",
 })
 """Valid worker-wakeup transports for :attr:`SQLSpecBackendConfig.notify_transport`.
 
-``listen_notify``/``listen_notify_durable`` push wakeups through native
-LISTEN/NOTIFY, ``table_queue`` uses the durable events table, ``aq`` and
-``txeventq`` use Oracle Advanced Queuing backends, and ``polling`` disables
-push wakeups so workers fall back to interval polling.
+``notify`` uses native push wakeups, ``notify_queue`` uses native push wakeups
+with a durable queue fallback, ``poll_queue`` uses the durable events table,
+``aq`` and ``txeventq`` use Oracle Advanced Queuing backends, and ``polling``
+disables push wakeups so workers fall back to interval polling.
 """
 
 
