@@ -13,8 +13,25 @@ on:
 
 jobs:
   browser:
+    name: ${{ matrix.suite }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: example-server
+            pytest_args: src/tests/e2e/test_example_server.py
+          - suite: sse-contract
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k test_sse_browser_contract
+          - suite: websocket-contract
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k test_websocket_browser_contract
+          - suite: sse-reconnect
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and sse"
+          - suite: websocket-reconnect
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and websocket"
+          - suite: topology
+            pytest_args: src/tests/e2e/test_realtime_topology.py
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -39,7 +56,7 @@ jobs:
       - name: Run realtime browser E2E tests
         env:
           LITESTAR_QUEUES_E2E_TIMEOUT: "90"
-        run: uv run pytest src/tests/e2e -m e2e
+        run: uv run pytest ${{ matrix.pytest_args }} -m e2e
 
       - name: Stop topology services
         if: ${{ always() }}

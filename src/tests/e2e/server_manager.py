@@ -27,6 +27,7 @@ EXAMPLE_APPS: dict[str, str] = {
     "sse_valkey": "examples.htmx_realtime_sse_valkey.app:app",
     "websocket_valkey": "examples.htmx_realtime_websocket_valkey.app:app",
 }
+INSTALLED_EXAMPLES: set[str] = set()
 
 
 def find_free_port() -> int:
@@ -75,8 +76,11 @@ class ExampleServer:
             raise RuntimeError(message)
 
         env = self._environment()
-        if self.mode == "production":
+        if self.example_name not in INSTALLED_EXAMPLES:
             self._run_cli(["assets", "install"], env=env)
+            INSTALLED_EXAMPLES.add(self.example_name)
+
+        if self.mode == "production":
             self._run_cli(["assets", "build"], env=env)
 
         self.port = find_free_port()
