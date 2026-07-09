@@ -4,10 +4,10 @@ from datetime import datetime  # noqa: TC003
 from typing import Any, Protocol, TypeAlias, cast
 
 from advanced_alchemy.types import JsonB
-from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
-__all__ = ("QueueTaskModelMixin",)
+__all__ = ("QueueEventLogModelMixin", "QueueTaskModelMixin")
 
 JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
@@ -106,6 +106,87 @@ class QueueTaskModelMixin:
     @declared_attr
     def metadata_json(cls) -> "Mapped[dict[str, Any]]":
         return mapped_column("metadata", JsonB, default=dict, nullable=False)
+
+
+@declarative_mixin
+class QueueEventLogModelMixin:
+    """Declarative mixin carrying generic queue event-history columns and indexes."""
+
+    __abstract__ = True
+
+    @declared_attr.directive
+    def __table_args__(cls) -> "tuple[Any, ...]":
+        table = str(cast("_NamedTable", cls).__tablename__)
+        return (
+            Index(f"ix_{table}_task_id", "task_id", "sequence", "occurred_at"),
+            Index(f"ix_{table}_task_name", "task_name", "occurred_at"),
+            Index(f"ix_{table}_event_type", "event_type", "occurred_at"),
+            Index(f"ix_{table}_occurred_at", "occurred_at"),
+        )
+
+    @declared_attr
+    def event_id(cls) -> "Mapped[str]":
+        return mapped_column(String(length=64), unique=True, nullable=False)
+
+    @declared_attr
+    def event_type(cls) -> "Mapped[str]":
+        return mapped_column(String(length=255), nullable=False)
+
+    @declared_attr
+    def task_id(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=64), default=None)
+
+    @declared_attr
+    def task_name(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=500), default=None)
+
+    @declared_attr
+    def queue(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def worker_id(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def execution_backend(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def execution_profile(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def level(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=32), default=None)
+
+    @declared_attr
+    def message(cls) -> "Mapped[str | None]":
+        return mapped_column(Text(), default=None)
+
+    @declared_attr
+    def detail_json(cls) -> "Mapped[dict[str, Any]]":
+        return mapped_column(JsonB, default=dict, nullable=False)
+
+    @declared_attr
+    def progress_current(cls) -> "Mapped[float | None]":
+        return mapped_column(Float(), default=None)
+
+    @declared_attr
+    def progress_total(cls) -> "Mapped[float | None]":
+        return mapped_column(Float(), default=None)
+
+    @declared_attr
+    def progress_percent(cls) -> "Mapped[float | None]":
+        return mapped_column(Float(), default=None)
+
+    @declared_attr
+    def sequence(cls) -> "Mapped[int | None]":
+        return mapped_column(Integer(), default=None)
+
+    @declared_attr
+    def occurred_at(cls) -> "Mapped[datetime]":
+        return mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class _NamedTable(Protocol):
