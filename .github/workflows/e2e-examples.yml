@@ -1,0 +1,63 @@
+name: Realtime example E2E
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/e2e-examples.yml"
+      - "examples/htmx_realtime_*/**"
+      - "src/tests/e2e/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+  workflow_dispatch:
+
+jobs:
+  browser:
+    name: ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: example-server
+            pytest_args: src/tests/e2e/test_example_server.py
+          - suite: sse-contract
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k test_sse_browser_contract
+          - suite: websocket-contract
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k test_websocket_browser_contract
+          - suite: sse-reconnect
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and sse"
+          - suite: websocket-reconnect
+            pytest_args: src/tests/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and websocket"
+          - suite: topology
+            pytest_args: src/tests/e2e/test_realtime_topology.py
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install E2E dependencies
+        env:
+          UV_PYTHON: "3.12"
+        run: make install-e2e
+
+      - name: Install Chromium and system dependencies
+        run: uv run playwright install --with-deps chromium
+
+      - name: Start Redis and Valkey topology services
+        run: make start-infra
+
+      - name: Run realtime browser E2E tests
+        env:
+          LITESTAR_QUEUES_E2E_TIMEOUT: "90"
+        run: uv run pytest ${{ matrix.pytest_args }} -m e2e
+
+      - name: Stop topology services
+        if: ${{ always() }}
+        run: make stop-infra

@@ -32,9 +32,26 @@ Each transport has the same backend variants:
 - `htmx_realtime_websocket_valkey/` and `htmx_realtime_sse_valkey/`:
   `ValkeyBackendConfig`.
 
+The backend name describes queue persistence, not browser event fan-out. Every
+shipped copy currently uses `MemoryChannelsBackend` for live Channels delivery,
+so the web app and worker must stay in one process. Redis or Valkey queue
+notifications can wake a worker, but they do not make the browser stream
+shared. A separate worker topology requires an explicit broker-backed Channels
+configuration; do not infer it from selecting a Redis or Valkey queue backend.
+
+All demos inherit `QueueConfig`'s in-process worker default. The Redis and
+Valkey copies accept `LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER=0` only for their
+documented shared web/worker topology.
+
 Start with the README in the directory you want to run. Every example uses the
 optional `litestar-queues[examples]` Python extra and local frontend
 dependencies from its own `package.json`.
+
+You can provision frontend assets for all shipped examples at once with:
+
+```bash
+make install
+```
 
 ## Conventions
 

@@ -31,19 +31,11 @@ BACKEND_VARIANTS = {
     },
     "redis": {
         "suffix": "_redis",
-        "backend_markers": (
-            "RedisBackendConfig",
-            "LITESTAR_QUEUES_EXAMPLE_REDIS_URL",
-            'key_prefix="litestar_queues:examples:',
-        ),
+        "backend_markers": ("RedisBackendConfig", "LITESTAR_QUEUES_EXAMPLE_REDIS_URL", "REDIS_KEY_PREFIX"),
     },
     "valkey": {
         "suffix": "_valkey",
-        "backend_markers": (
-            "ValkeyBackendConfig",
-            "LITESTAR_QUEUES_EXAMPLE_VALKEY_URL",
-            'key_prefix="litestar_queues:examples:',
-        ),
+        "backend_markers": ("ValkeyBackendConfig", "LITESTAR_QUEUES_EXAMPLE_VALKEY_URL", "VALKEY_KEY_PREFIX"),
     },
 }
 
@@ -136,7 +128,7 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         assert "execution_backend=" not in app_source
         assert "in_app_worker=" not in app_source
         assert "worker_poll_interval=" not in app_source
-        assert 'buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2, overflow="drop_oldest")' in app_source
+        assert "buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)" in app_source
         assert "EventStreamConfig(" in app_source
         assert "status_json" in app_source
         assert "HTMXTemplate(" in app_source
@@ -153,6 +145,31 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
     assert "queue_backend=" not in memory_app
     sse_memory_app = (EXAMPLES_ROOT / "htmx_realtime_sse" / "app.py").read_text()
     assert "queue_backend=" not in sse_memory_app
+
+
+def test_htmx_realtime_examples_keep_live_channels_process_local_by_default() -> None:
+    for name in EXAMPLE_VARIANTS:
+        app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
+        assert "MemoryChannelsBackend" in app_source, name
+        assert "ChannelsPlugin(" in app_source, name
+
+
+def test_redis_and_valkey_examples_offer_explicit_shared_channels_mode() -> None:
+    common_source = (EXAMPLES_ROOT / "htmx_realtime_common.py").read_text()
+    assert 'os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") == "0"' in common_source
+    assert 'return {"in_app_worker": False}' in common_source
+
+    for name in EXAMPLE_VARIANTS:
+        if str(EXAMPLE_VARIANTS[name]["backend_name"]) not in {"redis", "valkey"}:
+            continue
+        app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
+        assert "LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS" in app_source, name
+        assert "standalone_worker_options" in app_source, name
+        assert "RedisChannelsStreamBackend" in app_source, name
+        assert "decode_responses=False" in app_source, name
+        assert "CHANNELS_KEY_PREFIX" in app_source, name
+        if str(EXAMPLE_VARIANTS[name]["backend_name"]) == "valkey":
+            assert "from redis" not in app_source, name
 
 
 def _assert_canonical_frontend(example_root: Path) -> str:

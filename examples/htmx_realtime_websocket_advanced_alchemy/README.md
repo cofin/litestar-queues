@@ -11,6 +11,9 @@ code. Queue persistence runs through Advanced Alchemy with `sqlite+aiosqlite`,
 and delivery uses memory Channels in the same process, so no external service
 is needed.
 
+This is a one-process topology: the SQLite queue database is persistence only;
+it does not make live Channels delivery available to a separate worker process.
+
 The queue database defaults to `queue-advanced-alchemy.db` under the example
 directory. The demo enables `create_all=True` and `create_schema=True` so the
 local schema is auto-created for a copyable app.

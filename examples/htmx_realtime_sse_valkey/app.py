@@ -6,13 +6,16 @@ from uuid import uuid4
 from litestar import Litestar, get, post
 from litestar.channels import ChannelsPlugin
 from litestar.channels.backends.memory import MemoryChannelsBackend
+from litestar.channels.backends.redis import RedisChannelsStreamBackend
 from litestar.di import NamedDependency
 from litestar.plugins.htmx import HTMXPlugin, HTMXTemplate
 from litestar.plugins.jinja import JinjaTemplateEngine
 from litestar.response import Template
 from litestar.template.config import TemplateConfig
 from litestar_vite import PathConfig, ViteConfig, VitePlugin
+from valkey import asyncio as valkey_asyncio
 
+from examples.htmx_realtime_common import standalone_worker_options
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 from litestar_queues.backends.valkey import ValkeyBackendConfig
 from litestar_queues.events import (
@@ -32,6 +35,13 @@ DEMO_STEPS = int(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEPS", "6"))
 DEMO_STEP_DELAY = float(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEP_DELAY", "5"))
 VITE_DEV_MODE = os.getenv("LITESTAR_QUEUES_EXAMPLE_VITE_DEV", "0") == "1"
 VALKEY_URL = os.getenv("LITESTAR_QUEUES_EXAMPLE_VALKEY_URL", "redis://localhost:6379/0")
+VALKEY_KEY_PREFIX = os.getenv(
+    "LITESTAR_QUEUES_EXAMPLE_VALKEY_KEY_PREFIX", "litestar_queues:examples:htmx_realtime_sse_valkey"
+)
+CHANNELS_KEY_PREFIX = os.getenv(
+    "LITESTAR_QUEUES_EXAMPLE_CHANNELS_KEY_PREFIX", "litestar_queues:channels:htmx_realtime_sse_valkey"
+)
+SHARED_CHANNELS = os.getenv("LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS", "0") == "1"
 
 CRAWL_LINES = (
     "You clicked restart, so the app queued a background job.",
@@ -112,8 +122,14 @@ async def restart_demo(queue_service: NamedDependency[QueueService]) -> Template
 
 
 # -- docs-app-config-start --
+channels_client = None
+channels_backend = MemoryChannelsBackend(history=200)
+if SHARED_CHANNELS:
+    channels_client = valkey_asyncio.from_url(VALKEY_URL, decode_responses=False)
+    channels_backend = RedisChannelsStreamBackend(history=200, redis=channels_client, key_prefix=CHANNELS_KEY_PREFIX)
+
 channels = ChannelsPlugin(
-    backend=MemoryChannelsBackend(history=200),
+    backend=channels_backend,
     arbitrary_channels_allowed=True,
     subscriber_max_backlog=1000,
     subscriber_backlog_strategy="dropleft",
@@ -122,12 +138,8 @@ channels = ChannelsPlugin(
 queue_config = QueueConfig(
     # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
     worker_graceful_shutdown_timeout=5,
-    queue_backend=ValkeyBackendConfig(url=VALKEY_URL, key_prefix="litestar_queues:examples:htmx_realtime_sse_valkey"),
-    event=EventConfig(
-        enabled=True,
-        channels_backend=channels,
-        buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2, overflow="drop_oldest"),
-    ),
+    queue_backend=ValkeyBackendConfig(url=VALKEY_URL, key_prefix=VALKEY_KEY_PREFIX),
+    event=EventConfig(channels_backend=channels, buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)),
     # A demo-only allow-all authorizer: it suppresses the missing-auth warning
     # for this local single-process example. Real deployments must authorize.
     # Each demo registers only its own transport so a stale tab from the other
@@ -135,16 +147,25 @@ queue_config = QueueConfig(
     event_stream=EventStreamConfig(
         scopes={"task"}, websocket=False, history=25, heartbeat_interval=15, channel_authorizer=allow_demo_channel
     ),
+    **standalone_worker_options(),
 )
 
 vite_config = ViteConfig(
     mode="htmx", dev_mode=VITE_DEV_MODE, paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources")
 )
 
+
+async def close_shared_channels() -> None:
+    """Close the separately owned Valkey Channels client on app shutdown."""
+    if channels_client is not None:
+        await channels_client.aclose()
+
+
 app = Litestar(
     route_handlers=[index, status_json, restart_demo],
     template_config=TemplateConfig(directory=EXAMPLE_ROOT / "templates", engine=JinjaTemplateEngine),
     signature_namespace={"NamedDependency": NamedDependency},
+    on_shutdown=[close_shared_channels],
     plugins=[HTMXPlugin(), channels, QueuePlugin(queue_config), VitePlugin(config=vite_config)],
 )
 # -- docs-app-config-end --
