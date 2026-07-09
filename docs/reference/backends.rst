@@ -31,6 +31,11 @@ Memory
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: litestar_queues.backends.memory.event_log
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 SQLSpec
 =======
 
@@ -50,6 +55,11 @@ SQLSpec
    :show-inheritance:
 
 .. automodule:: litestar_queues.backends.sqlspec.stores.factory
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.sqlspec.event_log
    :members:
    :undoc-members:
    :show-inheritance:
@@ -82,6 +92,16 @@ Advanced Alchemy
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: litestar_queues.backends.advanced_alchemy.event_log
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.advanced_alchemy.models
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Redis
 =====
 
@@ -91,6 +111,11 @@ Redis
    :show-inheritance:
 
 .. automodule:: litestar_queues.backends.redis.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.backends.redis.event_log
    :members:
    :undoc-members:
    :show-inheritance:

@@ -52,6 +52,28 @@ configuration. A 403 on an enqueue POST is an auth/CSRF problem, not a
 Channels delivery failure. A stream error after a successful enqueue is a
 Channels, origin, or proxy problem.
 
+Topology and security
+---------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Component
+     - Required shared state
+     - Security boundary
+   * - Web service
+     - Persistent queue backend
+     - Authenticate enqueue routes and protect queue credentials.
+   * - Dispatcher service
+     - Same queue backend and Cloud Run configuration
+     - Grant only ``run.jobs.runWithOverrides``-equivalent access.
+   * - Cloud Run Job
+     - Same queue backend and task modules
+     - Use a dedicated service account and least-privilege data access.
+   * - Browser event replicas
+     - Explicit shared Channels transport
+     - Authorize stream scopes; queue wakeups are not browser events.
+
 Recommended topology
 ====================
 

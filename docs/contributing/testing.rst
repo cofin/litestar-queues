@@ -43,11 +43,44 @@ tiers. Install their Python dependencies and Chromium, then run:
 
 .. code-block:: bash
 
+   make install-e2e
+   uv run playwright install chromium
    make test-examples-e2e
 
-The E2E target starts the real Litestar/Vite example processes through
-``litestar run`` and drives them with Chromium. It is not included in
-``make test`` or the ordinary integration workflow.
+The ``e2e`` dependency group supplies Playwright and pytest-playwright. The E2E
+target installs the group and Chromium again so CI and a fresh workstation use
+the same self-contained command. It starts real Litestar/Vite example
+processes through ``litestar run`` and drives them with Chromium. It is not
+included in ``make test`` or the ordinary integration workflow.
+
+Browser topology boundaries
+---------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Test slice
+     - Processes and services
+     - What it proves
+   * - Memory SSE/WebSocket browser tests
+     - One Litestar process plus Chromium
+     - HTMX boot, enqueue request, stream lifecycle, DOM progress, terminal event.
+   * - Redis/Valkey topology tests
+     - Web process, standalone ``litestar queues run`` worker, Chromium, real service
+     - Shared queue persistence and explicitly shared Channels delivery.
+   * - Unit stream tests
+     - Test process only
+     - Route content type, authorization hooks, envelopes, keepalives, and sink behavior.
+
+The memory browser cases are process-local and cannot prove a separate worker
+or multiple web replicas. Redis/Valkey cases opt into shared Channels with
+unique queue and Channels prefixes; selecting a Redis/Valkey queue backend by
+itself is not sufficient. Browser tests use demo-only stream authorization.
+Production routes must enforce tenant/user ownership, authenticated service
+connections, and origin/proxy policy.
+
+CI keeps unit/integration and browser jobs separate because Chromium and real
+Redis/Valkey topology have different setup, runtime, and failure diagnostics.
 
 If you want to prebuild all example frontend assets in one step:
 

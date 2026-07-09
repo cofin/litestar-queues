@@ -1,111 +1,139 @@
-Usage
-=====
+=============
+How-to guides
+=============
 
-This section contains focused guides for runtime configuration and production
-queue behavior.
+After the :doc:`../getting_started/quickstart`, follow this three-step route:
 
-Choose a Topic
-==============
+1. :doc:`tasks` — define and enqueue work.
+2. :doc:`workers` and :doc:`results` — run and observe it.
+3. :doc:`backends` and :doc:`events` — choose production persistence,
+   execution, and delivery options.
+
+Define and control tasks
+========================
 
 .. grid:: 1 1 2 3
    :gutter: 2
    :padding: 0
 
-   .. grid-item-card:: Configuration
-      :link: configuration
-      :link-type: doc
-
-      Configure the plugin, service, workers, dependency keys, and runtime
-      settings.
-
-   .. grid-item-card:: Tasks
+   .. grid-item-card:: Define and enqueue
       :link: tasks
       :link-type: doc
 
-      Register tasks, enqueue work, set retries, deduplicate records, and use
-      task context helpers.
+      Register task functions and enqueue them through ``QueueService``.
+
+   .. grid-item-card:: Configure task options
+      :link: task-options
+      :link-type: doc
+
+      Set retries, timeouts, priority, delay, metadata, and deduplication keys.
+
+   .. grid-item-card:: Inspect results
+      :link: results
+      :link-type: doc
+
+      Refresh records, wait for terminal state, and inspect results or errors.
+
+   .. grid-item-card:: Background responses
+      :link: background-tasks
+      :link-type: doc
+
+      Choose whether enqueueing happens before or after the response starts.
+
+   .. grid-item-card:: Failures and cancellation
+      :link: failures-and-cancellation
+      :link-type: doc
+
+      Control retries and cooperative cancellation.
 
    .. grid-item-card:: Schedules
       :link: schedules
       :link-type: doc
 
-      Run recurring interval and cron tasks with startup synchronization.
+      Register interval and cron tasks.
 
-   .. grid-item-card:: Workers
+Run and operate workers
+=======================
+
+.. grid:: 1 1 2 3
+   :gutter: 2
+   :padding: 0
+
+   .. grid-item-card:: Run workers
       :link: workers
       :link-type: doc
 
-      Run local workers, process batches, send heartbeats, and reconcile
-      external execution.
+      Pick in-app or standalone placement and start worker processes.
 
-   .. grid-item-card:: Events
-      :link: events
+   .. grid-item-card:: Understand wakeups
+      :link: worker-wakeups
       :link-type: doc
 
-      Publish lifecycle, progress, log, and custom task events to application
-      realtime infrastructure.
+      Combine notification hints with polling and shutdown interruption.
 
-   .. grid-item-card:: Observability
+   .. grid-item-card:: Recover stale work
+      :link: worker-recovery
+      :link-type: doc
+
+      Configure heartbeats, recovery, identity, and diagnosis.
+
+   .. grid-item-card:: Observe queues
       :link: observability
       :link-type: doc
 
-      Add OpenTelemetry traces, OpenTelemetry metrics, and Prometheus metrics
-      for queue operations, workers, and external execution.
+      Add traces, metrics, logs, and operational status checks.
 
-   .. grid-item-card:: Backends
+Choose production options
+=========================
+
+.. grid:: 1 1 2 3
+   :gutter: 2
+   :padding: 0
+
+   .. grid-item-card:: Choose backends
       :link: backends
       :link-type: doc
 
-      Select queue and execution backends while keeping optional drivers
-      optional.
+      Select queue persistence, execution placement, and wakeups independently.
 
-   .. grid-item-card:: Deployment
+   .. grid-item-card:: Publish task events
+      :link: events
+      :link-type: doc
+
+      Publish progress and connect live SSE or WebSocket consumers.
+
+   .. grid-item-card:: Deploy Cloud Run execution
       :link: deployment/cloud-run
       :link-type: doc
 
-      Plan Cloud Run dispatcher services, worker Jobs, IAM, and database
-      connectivity for external execution.
-
-   .. grid-item-card:: Dependency Resolver
-      :link: dependency-resolver
-      :link-type: doc
-
-      Inject services into task callables through an external DI container
-      with the optional ``task_dependency_resolver`` hook.
-
-   .. grid-item-card:: CLI
-      :link: cli
-      :link-type: doc
-
-      Run worker fleets, inspect queue status, and check scheduler health
-      via the ``litestar queues`` subcommand group.
-
-Recommended Path
-----------------
-
-1. Start with :doc:`../getting_started/quickstart` to wire the plugin and
-   enqueue a task.
-2. Configure deployment defaults in :doc:`configuration`.
-3. Add task-level behavior with :doc:`tasks` and recurring work with
-   :doc:`schedules`.
-4. Choose queue persistence and execution integrations in :doc:`backends`.
-5. Read :doc:`deployment/cloud-run` when you are deploying on Cloud Run.
-6. Add progress streaming or external subscribers with :doc:`events`.
-7. Add telemetry with :doc:`observability`.
+      Persist, dispatch, and execute work across Cloud Run services and Jobs.
 
 .. toctree::
    :hidden:
-   :maxdepth: 1
+   :maxdepth: 2
 
-   configuration
+   concepts
    tasks
+   task-options
+   results
+   background-tasks
+   failures-and-cancellation
    schedules
    workers
-   events
-   observability
-   backends
-   deployment/cloud-run
+   worker-wakeups
+   worker-recovery
+   configuration
    cli
-   dependency-resolver
    testing
+   backends
+   backends/sqlspec
+   backends/advanced-alchemy
+   backends/redis-valkey
+   events
+   event-streams
+   event-history
+   event-testing
+   observability
+   dependency-resolver
+   deployment/cloud-run
    migration

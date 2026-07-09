@@ -109,3 +109,10 @@ Configuration
 
 Set ``initialize_schedules=False`` when schedules are initialized by a separate
 worker or management command.
+
+See also
+========
+
+Use :doc:`task-options` for retry, timeout, and execution defaults on scheduled
+tasks. Use :doc:`workers` to ensure exactly one intended startup path
+synchronizes schedules and enough workers are running to execute due records.
