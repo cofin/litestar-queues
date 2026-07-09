@@ -12,8 +12,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
-from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
-from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
+from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
+from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy.service import QueueEventLogService, QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         StaleTaskRecoveryResult,
     )
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
+    from litestar_queues.events import EventLogConfig, QueueEventLog
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
 
@@ -46,10 +48,15 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     _model_class: "type[QueueTaskModelMixin]"
     _service_class: 'type["QueueTaskService"]'
+    _event_log_model_class: "type[QueueEventLogModelMixin]"
+    _event_log_service_class: 'type["QueueEventLogService"]'
 
     __slots__ = (
         "_create_schema",
         "_event_poll_interval",
+        "_event_log",
+        "_event_log_model_class",
+        "_event_log_service_class",
         "_heartbeat_session_maker",
         "_model_class",
         "_notification_channel",
@@ -69,12 +76,16 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._sqlalchemy_config = backend_config.sqlalchemy_config
         self._heartbeat_session_maker = backend_config.heartbeat_session_maker
         self._model_class, self._service_class = self._resolve_model_classes(backend_config.model_class)
+        self._event_log_model_class, self._event_log_service_class = self._resolve_event_log_model_classes(
+            backend_config.event_log_model_class
+        )
         self._create_schema = backend_config.create_schema
         self._notifications = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
         self._event_poll_interval = backend_config.event_poll_interval
         self._notification_listener: "Any | None" = None
         self._observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None
+        self._event_log: "AdvancedAlchemyQueueEventLog | None" = None
         self._opened = False
 
     @property
@@ -107,10 +118,12 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         if self._notification_listener is not None:
             await self._notification_listener.close()
             self._notification_listener = None
+        if self._event_log is not None:
+            await self._event_log.flush_events()
         self._opened = False
 
     async def create_schema(self) -> "None":
-        """Create the queue task table and indexes."""
+        """Create the queue task table and enabled event-history table."""
         self._ensure_configured()
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None:
@@ -120,6 +133,19 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         table = self._model_class.__dict__["__table__"]
         async with engine.begin() as connection:
             await connection.run_sync(table.create, checkfirst=True)
+            if self._event_log_enabled():
+                event_log_table = self._event_log_model_class.__dict__["__table__"]
+                await connection.run_sync(event_log_table.create, checkfirst=True)
+
+    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+        """Return Advanced Alchemy-managed queue event history when enabled."""
+        if not config.enabled:
+            return None
+        if self._event_log is None:
+            self._event_log = AdvancedAlchemyQueueEventLog(
+                config=config, service_factory=self._event_log_service, transaction_factory=self._event_log_operation
+            )
+        return self._event_log
 
     async def enqueue(
         self,
@@ -447,6 +473,53 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             raise QueueConfigurationError(msg)
         return typed_model, QueueTaskService.for_model(typed_model)
 
+    def _resolve_event_log_model_classes(
+        self, model_class: "type[object] | None"
+    ) -> 'tuple[type[QueueEventLogModelMixin], type["QueueEventLogService"]]':
+        if model_class is None:
+            msg = "AdvancedAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
+            raise QueueConfigurationError(msg)
+        try:
+            valid_model = issubclass(model_class, QueueEventLogModelMixin)
+        except TypeError:
+            valid_model = False
+        if not valid_model:
+            msg = "AdvancedAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
+            raise QueueConfigurationError(msg)
+        if "__tablename__" not in model_class.__dict__:
+            msg = "AdvancedAlchemyBackendConfig.event_log_model_class must declare __tablename__."
+            raise QueueConfigurationError(msg)
+        typed_model = cast("type[QueueEventLogModelMixin]", model_class)
+        mapper = cast("Any", sqlalchemy_inspect(typed_model))
+        missing_columns = {
+            "created_at",
+            "event_id",
+            "event_type",
+            "task_id",
+            "task_name",
+            "queue",
+            "worker_id",
+            "execution_backend",
+            "execution_profile",
+            "level",
+            "message",
+            "detail_json",
+            "progress_current",
+            "progress_total",
+            "progress_percent",
+            "sequence",
+            "occurred_at",
+        } - {property_.key for property_ in mapper.column_attrs}
+        if missing_columns:
+            columns = ", ".join(sorted(missing_columns))
+            msg = f"AdvancedAlchemyBackendConfig.event_log_model_class is missing event-log columns: {columns}."
+            raise QueueConfigurationError(msg)
+        return typed_model, QueueEventLogService.for_model(typed_model)
+
+    def _event_log_enabled(self) -> "bool":
+        event_log_config = self.config.event_log if self.config is not None else None
+        return event_log_config is not None and event_log_config.enabled
+
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[AsyncSession]":
         self._ensure_configured()
@@ -469,6 +542,18 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._ensure_opened()
         async with self._session() as session, session.begin():
             yield self._service_class(session=session)
+
+    @asynccontextmanager
+    async def _event_log_service(self) -> 'AsyncIterator["QueueEventLogService"]':
+        self._ensure_opened()
+        async with self._session() as session:
+            yield self._event_log_service_class(session=session)
+
+    @asynccontextmanager
+    async def _event_log_operation(self) -> 'AsyncIterator["QueueEventLogService"]':
+        self._ensure_opened()
+        async with self._session() as session, session.begin():
+            yield self._event_log_service_class(session=session)
 
     @asynccontextmanager
     async def _heartbeat_operation(self) -> 'AsyncIterator["QueueTaskService"]':

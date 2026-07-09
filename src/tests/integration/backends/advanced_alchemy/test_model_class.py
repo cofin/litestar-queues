@@ -1,6 +1,7 @@
 """Advanced Alchemy custom queue model integration tests."""
 
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
@@ -16,8 +17,9 @@ from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from litestar_queues import EventLogConfig, QueueConfig
 from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
-from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -46,7 +48,15 @@ class CustomQueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "custom_queue_tasks"
 
 
+class CustomQueueEventLogModel(UUIDAuditBase, QueueEventLogModelMixin):
+    __tablename__ = "custom_queue_task_events"
+
+
 class AbstractQueueTaskModel(QueueTaskModelMixin):
+    __abstract__ = True
+
+
+class AbstractQueueEventLogModel(QueueEventLogModelMixin):
     __abstract__ = True
 
 
@@ -76,6 +86,35 @@ def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> 
     } <= _index_names(AppQueueTask)
 
 
+def test_queue_event_log_model_mixin_adds_generic_event_history_schema() -> "None":
+    assert {"id", "created_at", "updated_at"} <= _column_names(CustomQueueEventLogModel)
+    assert {
+        "event_id",
+        "event_type",
+        "task_id",
+        "task_name",
+        "queue",
+        "worker_id",
+        "execution_backend",
+        "execution_profile",
+        "level",
+        "message",
+        "detail_json",
+        "progress_current",
+        "progress_total",
+        "progress_percent",
+        "sequence",
+        "occurred_at",
+    } <= _column_names(CustomQueueEventLogModel)
+    assert {"stage", "duration_ms"}.isdisjoint(_column_names(CustomQueueEventLogModel))
+    assert {
+        "ix_custom_queue_task_events_task_id",
+        "ix_custom_queue_task_events_task_name",
+        "ix_custom_queue_task_events_event_type",
+        "ix_custom_queue_task_events_occurred_at",
+    } <= _index_names(CustomQueueEventLogModel)
+
+
 def test_queue_task_model_mixin_preserves_canonical_python_attributes() -> "None":
     assert _mapped_column_name(BareQueueTaskModel, "task_key") == "task_key"
     assert _mapped_column_name(BareQueueTaskModel, "task_name") == "task_name"
@@ -87,14 +126,52 @@ def test_queue_task_model_mixin_preserves_canonical_python_attributes() -> "None
 
 
 def test_advanced_alchemy_backend_uses_default_model_class(tmp_path: "Path") -> "None":
-    from litestar_queues.backends.advanced_alchemy import QueueTaskModel
+    from litestar_queues.backends.advanced_alchemy import QueueEventLogModel, QueueTaskModel
 
     backend = AdvancedAlchemyQueueBackend(
         backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=_sqlite_config(tmp_path / "default-model.db"))
     )
 
     assert backend._model_class is QueueTaskModel
+    assert backend._event_log_model_class is QueueEventLogModel
     assert _table(QueueTaskModel).name == "litestar_queue_task"
+    assert _table(QueueEventLogModel).name == "litestar_queue_task_event_log"
+
+
+async def test_advanced_alchemy_event_log_schema_is_gated_by_event_log_config(tmp_path: "Path") -> "None":
+    disabled_db = tmp_path / "event-log-disabled.db"
+    disabled_backend = AdvancedAlchemyQueueBackend(
+        QueueConfig(),
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(disabled_db),
+            model_class=CustomQueueTaskModel,
+            event_log_model_class=CustomQueueEventLogModel,
+            create_schema=True,
+        ),
+    )
+
+    await disabled_backend.open()
+    await disabled_backend.close()
+
+    assert "custom_queue_tasks" in _sqlite_table_names(disabled_db)
+    assert "custom_queue_task_events" not in _sqlite_table_names(disabled_db)
+
+    enabled_db = tmp_path / "event-log-enabled.db"
+    enabled_backend = AdvancedAlchemyQueueBackend(
+        QueueConfig(event_log=EventLogConfig()),
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(enabled_db),
+            model_class=CustomQueueTaskModel,
+            event_log_model_class=CustomQueueEventLogModel,
+            create_schema=True,
+        ),
+    )
+
+    await enabled_backend.open()
+    await enabled_backend.close()
+
+    assert "custom_queue_tasks" in _sqlite_table_names(enabled_db)
+    assert "custom_queue_task_events" in _sqlite_table_names(enabled_db)
 
 
 async def test_advanced_alchemy_backend_uses_supplied_model_class(tmp_path: "Path") -> "None":
@@ -259,6 +336,18 @@ def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: "Path") 
             backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config, model_class=AbstractQueueTaskModel)
         )
 
+    with pytest.raises(QueueConfigurationError, match="QueueEventLogModelMixin"):
+        AdvancedAlchemyQueueBackend(
+            backend_config=AdvancedAlchemyBackendConfig(sqlalchemy_config=config, event_log_model_class=object)
+        )
+
+    with pytest.raises(QueueConfigurationError, match="__tablename__"):
+        AdvancedAlchemyQueueBackend(
+            backend_config=AdvancedAlchemyBackendConfig(
+                sqlalchemy_config=config, event_log_model_class=AbstractQueueEventLogModel
+            )
+        )
+
 
 def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
     return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
@@ -274,6 +363,12 @@ def _column_names(model: "type[object]") -> "set[str]":
 
 def _index_names(model: "type[object]") -> "set[str]":
     return {str(index.name) for index in _table(model).indexes if index.name is not None}
+
+
+def _sqlite_table_names(path: "Path") -> "set[str]":
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        return {cast("str", row[0]) for row in rows}
 
 
 def _mapped_column_name(model: "type[object]", attribute_name: "str") -> "str":
