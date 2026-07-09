@@ -25,3 +25,6 @@ class AdvancedAlchemyBackendConfig:
     heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None
     model_class: "type[object] | None" = field(default_factory=_default_model_class)
     create_schema: "bool" = False
+    notifications: "bool" = False
+    notification_channel: "str" = "litestar_queues_tasks"
+    event_poll_interval: "float | None" = None

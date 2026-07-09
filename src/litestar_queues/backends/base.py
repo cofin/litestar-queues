@@ -132,6 +132,27 @@ class BaseQueueBackend:
             return None
         return await self.claim_task(records[0].id)
 
+    async def claim_many(
+        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` due tasks.
+
+        Backends that advertise ``supports_batch_claim`` should override this
+        with a native batch path. The fallback preserves existing
+        :meth:`claim_next` semantics for backends with only a single-record
+        primitive.
+
+        Returns:
+            Claimed task records.
+        """
+        records: "list[QueuedTaskRecord]" = []
+        for _ in range(max(0, limit)):
+            claimed = await self.claim_next(queue=queue, execution_backend=execution_backend)
+            if claimed is None:
+                break
+            records.append(claimed)
+        return records
+
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -286,6 +307,12 @@ class BaseQueueBackend:
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Notify waiters that a new task is available."""
+
+    async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
+        """Notify waiters that new tasks are available."""
+        for record in records:
+            if record.status in {"pending", "scheduled"} and record.is_due:
+                await self.notify_new_task(record)
 
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait until backend notification arrives.

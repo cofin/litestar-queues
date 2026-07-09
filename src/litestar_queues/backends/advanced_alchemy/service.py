@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
-    from litestar_queues.models import HeartbeatTouch
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
 
 __all__ = ("QueueTaskService",)
 
@@ -96,6 +96,31 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         )
         return await self._insert_task_record(record, key=key)
 
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+        """Persist many enqueue specs in the current repository transaction.
+
+        Returns:
+            Queue task records in input order.
+        """
+        records: "list[QueuedTaskRecord]" = []
+        for spec in specs:
+            records.append(
+                await self.enqueue(
+                    spec.task_name,
+                    args=spec.args,
+                    kwargs=dict(spec.kwargs or {}),
+                    queue=spec.queue,
+                    priority=spec.priority,
+                    max_retries=spec.max_retries,
+                    scheduled_at=spec.scheduled_at,
+                    key=spec.key,
+                    execution_backend=spec.execution_backend,
+                    execution_profile=spec.execution_profile,
+                    metadata=dict(spec.metadata or {}),
+                )
+            )
+        return records
+
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
@@ -148,6 +173,27 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 return None
             pending_limit += _CAS_CLAIM_BATCH_SIZE
 
+    async def claim_many(
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` records in the current repository transaction.
+
+        Returns:
+            Claimed task records.
+        """
+        if limit <= 0:
+            return []
+        if _supports_batch_claim(self._dialect_name()):
+            return await self._claim_many_skip_locked(limit=limit, queue=queue, execution_backend=execution_backend)
+
+        records: "list[QueuedTaskRecord]" = []
+        for _ in range(limit):
+            claimed = await self.claim_next(queue=queue, execution_backend=execution_backend)
+            if claimed is None:
+                break
+            records.append(claimed)
+        return records
+
     async def _claim_next_skip_locked(
         self, *, queue: "str | None", execution_backend: "str | None"
     ) -> "QueuedTaskRecord | None":
@@ -178,6 +224,41 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if row is None:
             return None
         return await self.claim_task(UUID(str(row.id)))
+
+    async def _claim_many_skip_locked(
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "list[QueuedTaskRecord]":
+        now = _utc_now()
+        model_type = self.model_type
+        statement = _build_claim_candidate_statement(
+            model_type, queue=queue, execution_backend=execution_backend, now=now, limit=limit, skip_locked=True
+        )
+        candidates = (await self.repository.session.execute(statement)).scalars().all()
+        task_ids = [UUID(str(candidate.id)) for candidate in candidates]
+        if not task_ids:
+            return []
+
+        await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id.in_(task_ids),
+                model_type.status.in_(_DUE_STATUSES),
+                or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+            )
+            .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
+            .execution_options(synchronize_session=False)
+        )
+        models = (
+            (
+                await self.repository.session.execute(
+                    select(model_type).where(model_type.id.in_(task_ids)).execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {UUID(str(model.id)): self.record_from_model(model) for model in models}
+        return [by_id[task_id] for task_id in task_ids if task_id in by_id and by_id[task_id].status == "running"]
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -720,6 +801,10 @@ def _supports_skip_locked_claim(dialect_name: "str | None") -> "bool":
 
 def _supports_native_keyed_enqueue(dialect_name: "str | None") -> "bool":
     return dialect_name in _NATIVE_KEYED_ENQUEUE_DIALECTS
+
+
+def _supports_batch_claim(dialect_name: "str | None") -> "bool":
+    return dialect_name == "postgresql"
 
 
 def _build_claim_candidate_statement(
