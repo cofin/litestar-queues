@@ -128,19 +128,31 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
 
 
 def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
-    """Map a SQLSpec event backend name to the queue transport vocabulary."""
+    """Map a SQLSpec event backend name to the queue transport vocabulary.
+
+    Returns:
+        The canonical queue transport name, if one can be resolved.
+    """
     if backend_name is None:
         return None
     return _CANONICAL_EVENT_BACKENDS.get(backend_name, backend_name)
 
 
 def _sqlspec_event_backend(transport: "str") -> "str":
-    """Map a canonical queue transport to the SQLSpec Events backend name."""
+    """Map a canonical queue transport to the SQLSpec Events backend name.
+
+    Returns:
+        The SQLSpec Events backend name.
+    """
     return _SQLSPEC_EVENT_BACKENDS.get(transport, transport)
 
 
 def _validate_queue_notify_transport(transport: "str") -> "str":
-    """Validate explicit queue transport configuration from extension settings."""
+    """Validate explicit queue transport configuration from extension settings.
+
+    Returns:
+        The validated canonical queue transport name.
+    """
     if transport in _CANONICAL_NOTIFY_TRANSPORTS:
         return transport
     valid = ", ".join(sorted(_CANONICAL_NOTIFY_TRANSPORTS))
@@ -418,10 +430,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     raise
 
         self._increment_queue_metric("enqueue", float(len(to_insert)))
-        for record in to_insert:
-            if record.status not in _DUE_STATUSES or not record.is_due:
-                continue
-            await self.notify_new_task(record)
+        await self.notify_new_tasks(to_insert)
         return results
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -1033,16 +1042,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a SQLSpec event when configured queue work becomes available."""
-        if self._notifications_enabled and self._event_channel is not None and record.status in _DUE_STATUSES:
-            with self._observe_queue_operation("notify", task_id=str(record.id), queue=record.queue):
+        if (
+            self._notifications_enabled
+            and self._event_channel is not None
+            and record.status in _DUE_STATUSES
+            and record.is_due
+        ):
+            with self._observe_queue_operation("notify", queue=record.queue):
                 await self._event_channel.publish(
                     self._resolve_notification_channel(),
-                    {
-                        "task_id": str(record.id),
-                        "task_name": record.task_name,
-                        "queue": record.queue,
-                        "execution_backend": record.execution_backend,
-                    },
+                    {"event": "task_available"},
                     {"event_type": "litestar_queues.task_available"},
                 )
             self._increment_queue_metric("notify")
@@ -1057,8 +1066,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return await super().wait_for_notifications(timeout=timeout)
 
         stream = self._event_channel.iter_events(
-            self._resolve_notification_channel(),
-            poll_interval=self._event_poll_interval,
+            self._resolve_notification_channel(), poll_interval=self._event_poll_interval
         )
         try:
             if timeout is None:
@@ -1163,8 +1171,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         configured_transport = _setting(queue_settings, "notify_transport")
         if configured_transport is not None:
             return _validate_queue_notify_transport(str(configured_transport))
-        configured_backend = self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get(
-            "backend"
+        configured_backend = (
+            self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
         )
         if configured_backend is not None:
             return _canonical_notify_transport(str(configured_backend)) or _NOTIFY_TRANSPORT_POLLING

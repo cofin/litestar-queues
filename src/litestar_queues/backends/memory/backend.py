@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import HeartbeatTouch
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
 
 __all__ = ("InMemoryQueueBackend",)
 
@@ -100,6 +100,49 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 self._keys[key] = record.id
         await self.notify_new_task(record)
         return record
+
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+        """Persist multiple in-memory tasks while signaling waiters once.
+
+        Returns:
+            Queue task records in the same order as ``specs``.
+        """
+        if not specs:
+            return []
+
+        records: "list[QueuedTaskRecord]" = []
+        now = _utc_now()
+        async with self._lock:
+            for spec in specs:
+                if spec.key is not None:
+                    existing_id = self._keys.get(spec.key)
+                    if existing_id is not None:
+                        existing = self._records.get(existing_id)
+                        if existing is not None and not existing.is_terminal:
+                            records.append(existing)
+                            continue
+
+                record = QueuedTaskRecord(
+                    task_name=spec.task_name,
+                    args=spec.args,
+                    kwargs=dict(spec.kwargs or {}),
+                    queue=spec.queue,
+                    execution_backend=spec.execution_backend,
+                    execution_profile=spec.execution_profile,
+                    status="scheduled" if spec.scheduled_at is not None and spec.scheduled_at > now else "pending",
+                    priority=spec.priority,
+                    max_retries=spec.max_retries,
+                    scheduled_at=spec.scheduled_at,
+                    key=spec.key,
+                    metadata=dict(spec.metadata or {}),
+                )
+                self._records[record.id] = record
+                if spec.key is not None:
+                    self._keys[spec.key] = record.id
+                records.append(record)
+
+        await self.notify_new_tasks(records)
+        return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         return self._records.get(task_id)
@@ -342,7 +385,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return removed
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
-        if record.status in {"pending", "scheduled"}:
+        if record.status in {"pending", "scheduled"} and record.is_due:
             self._notification_event.set()
 
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":

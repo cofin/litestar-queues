@@ -7,11 +7,14 @@ integration suite.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
 from litestar_queues import EnqueueSpec
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -72,3 +75,71 @@ async def test_enqueue_many_deduplicates_active_keys() -> "None":
     assert records[0].id == first.id
     assert records[0].kwargs == {"v": 1}
     assert records[1].task_name == "tasks.other"
+
+
+async def test_base_enqueue_many_calls_batch_notification_once_for_due_records() -> "None":
+    backend = _BatchNotifyingBackend()
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.one"),
+        EnqueueSpec(task_name="tasks.two", scheduled_at=later),
+        EnqueueSpec(task_name="tasks.three"),
+    ])
+
+    assert [record.task_name for record in records] == ["tasks.one", "tasks.two", "tasks.three"]
+    assert [record.task_name for record in backend.notified_records] == ["tasks.one"]
+
+
+async def test_base_enqueue_many_skips_batch_notification_when_no_records_are_due() -> "None":
+    backend = _BatchNotifyingBackend()
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([EnqueueSpec(task_name="tasks.later", scheduled_at=later)])
+
+    assert [record.status for record in records] == ["scheduled"]
+    assert backend.notified_records == []
+
+
+class _BatchNotifyingBackend(BaseQueueBackend):
+    __slots__ = ("notified_records", "records")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.records: "list[QueuedTaskRecord]" = []
+        self.notified_records: "list[QueuedTaskRecord]" = []
+
+    async def enqueue(
+        self,
+        task_name: "str",
+        *,
+        args: "tuple[Any, ...]" = (),
+        kwargs: "dict[str, Any] | None" = None,
+        queue: "str" = "default",
+        priority: "int" = 0,
+        max_retries: "int" = 0,
+        scheduled_at: "datetime | None" = None,
+        key: "str | None" = None,
+        execution_backend: "str" = "local",
+        execution_profile: "str | None" = None,
+        metadata: "dict[str, Any] | None" = None,
+    ) -> "QueuedTaskRecord":
+        record = QueuedTaskRecord(
+            task_name=task_name,
+            args=args,
+            kwargs=dict(kwargs or {}),
+            queue=queue,
+            priority=priority,
+            max_retries=max_retries,
+            scheduled_at=scheduled_at,
+            key=key,
+            execution_backend=execution_backend,
+            execution_profile=execution_profile,
+            metadata=dict(metadata or {}),
+            status="scheduled" if scheduled_at is not None and scheduled_at > datetime.now(timezone.utc) else "pending",
+        )
+        self.records.append(record)
+        return record
+
+    async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
+        self.notified_records.append(record)

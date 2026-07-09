@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("valkey")
 
+from litestar_queues import EnqueueSpec
+
 if TYPE_CHECKING:
     from litestar_queues.backends.valkey import ValkeyQueueBackend
 
@@ -31,3 +33,16 @@ async def test_valkey_backend_pubsub_notifications_wake_waiters(valkey_backend: 
     assert valkey_backend.capabilities.notification_backend == "valkey-pubsub"
     assert await valkey_backend.wait_for_notifications(timeout=0.01) is False
     assert record.status == "pending"
+
+
+async def test_valkey_backend_enqueue_many_publishes_one_batch_notification(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    waiter = asyncio.create_task(valkey_backend.wait_for_notifications(timeout=2.0))
+    await asyncio.sleep(0.2)
+
+    records = await valkey_backend.enqueue_many([EnqueueSpec(task_name=f"tasks.batch.{index}") for index in range(5)])
+
+    assert await waiter is True
+    assert len(records) == 5
+    assert await valkey_backend.wait_for_notifications(timeout=0.05) is False

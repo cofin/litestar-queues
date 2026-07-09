@@ -84,7 +84,7 @@ class BaseQueueBackend:
         Returns:
             Queue task records in the same order as ``specs``.
         """
-        return [
+        records = [
             await self.enqueue(
                 spec.task_name,
                 args=spec.args,
@@ -100,6 +100,8 @@ class BaseQueueBackend:
             )
             for spec in specs
         ]
+        await self.notify_new_tasks(records)
+        return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         """Return a queued task by ID."""
@@ -309,10 +311,10 @@ class BaseQueueBackend:
         """Notify waiters that a new task is available."""
 
     async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
-        """Notify waiters that new tasks are available."""
-        for record in records:
-            if record.status in {"pending", "scheduled"} and record.is_due:
-                await self.notify_new_task(record)
+        """Emit one worker-wakeup hint for a batch of newly available tasks."""
+        due = tuple(record for record in records if record.status in {"pending", "scheduled"} and record.is_due)
+        if due:
+            await self.notify_new_task(due[0])
 
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait until backend notification arrives.

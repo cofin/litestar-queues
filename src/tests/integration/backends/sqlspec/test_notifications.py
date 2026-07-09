@@ -267,23 +267,14 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
     await backend.open()
     try:
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
-        record = await backend.enqueue("tasks.notified", queue="critical", execution_backend="local")
+        await backend.enqueue("tasks.notified", queue="critical", execution_backend="local")
 
         assert await waiter is True
         assert backend.capabilities.supports_notifications is True
         assert backend.capabilities.notification_backend == "poll_queue"
         assert backend.capabilities.notifications_durable is True
         assert event_channel.published == [
-            (
-                "queue_notifications",
-                {
-                    "task_id": str(record.id),
-                    "task_name": "tasks.notified",
-                    "queue": "critical",
-                    "execution_backend": "local",
-                },
-                {"event_type": "litestar_queues.task_available"},
-            )
+            ("queue_notifications", {"event": "task_available"}, {"event_type": "litestar_queues.task_available"})
         ]
         assert event_channel.acked == ["event-1"]
     finally:

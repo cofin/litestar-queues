@@ -22,14 +22,7 @@ __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "NOTIFY_TRANSPORTS", "SQLSpecBackendC
 
 DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 
-NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({
-    "aq",
-    "notify",
-    "notify_queue",
-    "poll_queue",
-    "polling",
-    "txeventq",
-})
+NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
 """Valid worker-wakeup transports for :attr:`SQLSpecBackendConfig.notify_transport`.
 
 ``notify`` uses native push wakeups, ``notify_queue`` uses native push wakeups
