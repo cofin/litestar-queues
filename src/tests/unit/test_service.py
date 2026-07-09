@@ -318,18 +318,16 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     assert event.payload == {"requeued": 0, "failed": 1, "skipped": 0, "handler_needed": 0}
 
 
-async def test_event_log_config_is_public_and_memory_backend_is_unsupported() -> "None":
+async def test_event_log_config_is_public_and_memory_backend_is_supported() -> "None":
     from litestar_queues import events
-    from litestar_queues.exceptions import QueueConfigurationError
 
     event_log_config_type = getattr(events, "EventLogConfig", None)
     assert event_log_config_type is not None
 
     config = QueueConfig(event_log=event_log_config_type(enabled=True))
 
-    with pytest.raises(QueueConfigurationError, match="event history"):
-        async with QueueService(config):
-            pass
+    async with QueueService(config) as service:
+        assert service.get_queue_backend().get_event_log(event_log_config_type()) is not None
 
 
 async def test_backend_event_log_records_events_when_live_events_are_disabled() -> "None":

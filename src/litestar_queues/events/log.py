@@ -19,6 +19,13 @@ class EventLogConfig:
     buffer_size: "int" = 20
     flush_interval: "float" = 1.0
     strict: "bool" = False
+    max_records: "int" = 1000
+
+    def __post_init__(self) -> "None":
+        """Validate event-history configuration."""
+        if self.max_records <= 0:
+            msg = "EventLogConfig.max_records must be greater than 0."
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
