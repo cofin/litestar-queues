@@ -11,6 +11,9 @@ the code. Queue persistence runs through SQLSpec with the Aiosqlite driver,
 and delivery uses memory Channels in the same process, so no external service
 is needed.
 
+This is a one-process topology: the SQLite queue database is persistence only;
+it does not make live Channels delivery available to a separate worker process.
+
 The queue database defaults to `queue-sqlspec.db` under the example directory.
 `SQLSpecBackendConfig` sets `create_schema=False` and `run_migrations=True`, so
 startup calls the SQLSpec migration path for the local queue schema.

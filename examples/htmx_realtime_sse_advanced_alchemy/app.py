@@ -131,11 +131,7 @@ queue_config = QueueConfig(
         ),
         create_schema=True,
     ),
-    event=EventConfig(
-        enabled=True,
-        channels_backend=channels,
-        buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2, overflow="drop_oldest"),
-    ),
+    event=EventConfig(channels_backend=channels, buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)),
     # A demo-only allow-all authorizer: it suppresses the missing-auth warning
     # for this local single-process example. Real deployments must authorize.
     # Each demo registers only its own transport so a stale tab from the other

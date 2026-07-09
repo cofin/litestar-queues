@@ -40,7 +40,7 @@ license = { text = "MIT" }
 name = "litestar-queues"
 readme = "README.md"
 requires-python = ">=3.10"
-version = "0.2.0"
+version = "0.3.0"
 
 [project.urls]
 Changelog = "https://github.com/cofin/litestar-queues/releases/"
@@ -84,7 +84,7 @@ allow-direct-references = true
 allow_dirty = true
 commit = false
 commit_args = "--no-verify"
-current_version = "0.2.0"
+current_version = "0.3.0"
 ignore_missing_files = false
 ignore_missing_version = false
 message = "chore(release): bump to v{new_version}"
@@ -181,6 +181,10 @@ tests = [
   # SQLSpec adapters covered by the default integration matrix
   "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,mssql-python,pymssql]>=0.52.0",
 ]
+e2e = [
+  "playwright>=1.50.0",
+  "pytest-playwright>=0.7.0",
+]
 
 #####################
 # Testing           #
@@ -199,6 +203,10 @@ filterwarnings = [
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
 ]
 testpaths = ["src/tests"]
+markers = [
+  "e2e: end-to-end tests that start real example processes and Chromium",
+  "topology: cross-process queue and Channels topology tests",
+]
 
 [tool.coverage.report]
 exclude_lines = [

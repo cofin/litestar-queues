@@ -1,0 +1,46 @@
+name: Realtime example E2E
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/e2e-examples.yml"
+      - "examples/htmx_realtime_*/**"
+      - "src/tests/e2e/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+  workflow_dispatch:
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install E2E dependencies
+        env:
+          UV_PYTHON: "3.12"
+        run: make install-e2e
+
+      - name: Install Chromium and system dependencies
+        run: uv run playwright install --with-deps chromium
+
+      - name: Start Redis and Valkey topology services
+        run: make start-infra
+
+      - name: Run realtime browser E2E tests
+        env:
+          LITESTAR_QUEUES_E2E_TIMEOUT: "90"
+        run: uv run pytest src/tests/e2e -m e2e
+
+      - name: Stop topology services
+        if: ${{ always() }}
+        run: make stop-infra

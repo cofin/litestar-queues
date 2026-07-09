@@ -11,6 +11,8 @@ SHELL := /bin/bash
 MAKEFLAGS += --no-print-directory
 UV_SYNC_ARGS ?= --all-extras --dev
 INFRA_ARGS ?=
+EXAMPLE_APPS := $(wildcard examples/htmx_realtime_*/)
+EXAMPLE_APP_MODULES := $(addsuffix .app:app, $(subst /,.,$(patsubst %/,%,$(EXAMPLE_APPS))))
 
 # -----------------------------------------------------------------------------
 # Display Formatting and Colors
@@ -47,13 +49,42 @@ install-uv:                                         ## Install latest version of
 install: clean                                      ## Install the project and dependencies for local development
 	@echo "${INFO} Starting fresh installation..."
 	@uv sync $(UV_SYNC_ARGS)
+	@$(MAKE) install-examples-assets
 	@echo "${OK} Installation complete"
+
+.PHONY: install-examples-assets
+install-examples-assets:                              ## Install frontend assets for bundled example apps
+	@if [ -n "$(EXAMPLE_APP_MODULES)" ]; then \
+		for app in $(EXAMPLE_APP_MODULES); do \
+			echo "${INFO} Installing frontend assets for $$app..."; \
+			LITESTAR_APP=$$app uv run litestar assets install; \
+		done; \
+	else \
+		echo "${WARN} No example apps matched examples/htmx_realtime_*"; \
+	fi
+
+.PHONY: build-examples-assets
+build-examples-assets:                               ## Build frontend assets for bundled example apps
+	@if [ -n "$(EXAMPLE_APP_MODULES)" ]; then \
+		for app in $(EXAMPLE_APP_MODULES); do \
+			echo "${INFO} Building frontend assets for $$app..."; \
+			LITESTAR_APP=$$app uv run litestar assets build; \
+		done; \
+	else \
+		echo "${WARN} No example apps matched examples/htmx_realtime_*"; \
+	fi
 
 .PHONY: install-test-adapters
 install-test-adapters:                              ## Install test dependencies for the full integration matrix
 	@echo "${INFO} Installing test dependencies..."
 	@uv sync --group tests $(UV_SYNC_ARGS)
 	@echo "${OK} Test dependencies installed"
+
+.PHONY: install-e2e
+install-e2e:                                       ## Install browser E2E dependencies (Chromium is separate)
+	@echo "${INFO} Installing browser E2E dependencies..."
+	@uv sync $(UV_SYNC_ARGS) --group e2e
+	@echo "${OK} Browser E2E dependencies installed"
 
 .PHONY: destroy
 destroy:                                            ## Destroy the virtual environment
@@ -145,7 +176,7 @@ clean:                                              ## Cleanup temporary build a
 .PHONY: test
 test:                                               ## Run the tests
 	@echo "${INFO} Running test cases..."
-	@uv run pytest src/tests
+	@uv run pytest src/tests/unit src/tests/integration
 	@echo "${OK} Tests complete"
 
 .PHONY: test-all
@@ -166,10 +197,18 @@ test-integration:                                   ## Run integration tests onl
 .PHONY: coverage
 coverage:                                           ## Run tests with coverage report
 	@echo "${INFO} Running tests with coverage..."
-	@uv run pytest src/tests --cov -n auto
+	@uv run pytest src/tests/unit src/tests/integration --cov -n auto
 	@uv run coverage html >/dev/null 2>&1
 	@uv run coverage xml >/dev/null 2>&1
 	@echo "${OK} Coverage report generated"
+
+.PHONY: test-examples-e2e
+test-examples-e2e: install-e2e                       ## Install Chromium and run real-browser example tests
+	@echo "${INFO} Installing Chromium for browser E2E tests..."
+	@uv run playwright install chromium
+	@echo "${INFO} Running browser E2E tests..."
+	@uv run pytest src/tests/e2e -m e2e
+	@echo "${OK} Browser E2E tests complete"
 
 # -----------------------------------------------------------------------------
 # Local Infrastructure

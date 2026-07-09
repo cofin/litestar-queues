@@ -25,6 +25,28 @@ Install optional extras only when an application needs them:
 The core package import does not require optional queue or execution client
 libraries.
 
+Choosing a Live Channels Backend
+--------------------------------
+
+Queue persistence and live browser delivery are independent. ``RedisBackendConfig``
+and ``ValkeyBackendConfig`` persist and wake workers; they do not make the
+application's SSE or WebSocket Channels stream cross-process. Use
+``MemoryChannelsBackend`` only for one-process apps, or explicitly configure a
+shared Channels backend as well.
+
+For the Redis/Valkey realtime examples, the shared branch uses
+``RedisChannelsStreamBackend`` because ``EventStreamConfig(history=25)`` needs
+stream history. ``RedisChannelsPubSubBackend`` is a valid low-overhead choice
+only when history is intentionally zero. The Valkey example passes a Valkey
+client into the Litestar Redis-protocol Channels backend; it does not import or
+construct a Redis client in that path.
+
+For PostgreSQL-only deployments, prefer ``AsyncPgChannelsBackend`` or
+``PsycoPgChannelsBackend`` when ephemeral LISTEN/NOTIFY fan-out is sufficient.
+SQLSpec and Advanced Alchemy SQLite queue persistence do not create that
+cross-process fan-out automatically. Oracle AQ and TxEventQ are queue-worker
+wakeup transports, not browser event transports.
+
 SQLSpec
 -------
 

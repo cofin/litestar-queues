@@ -352,13 +352,16 @@ Every command loads the application the same way the Litestar CLI does: via
 <summary>Development</summary>
 
 ```bash
-# Install local development dependencies.
+# Install local development dependencies and provision assets for all shipped examples.
 make install
+
+# Optionally pre-build bundled example frontend bundles.
+make build-examples-assets
 
 # Run unit tests only.
 make test-unit
 
-# Run integration tests. Docker-backed services autoskip when unavailable.
+# Run integration tests. Docker-backed services auto-skip when unavailable.
 make test-integration
 
 # Build documentation.

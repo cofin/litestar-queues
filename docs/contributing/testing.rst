@@ -22,12 +22,38 @@ behavior:
 
    uv run pytest src/tests/unit
 
+Install project dependencies for local development before running tests:
+
+.. code-block:: bash
+
+   make install
+
+This installs package/test dependencies and provisions frontend assets for the shipped
+example apps.
+
 Install test dependencies before running the full integration matrix:
 
 .. code-block:: bash
 
    make install-test-adapters
    uv run pytest src/tests/integration
+
+Browser E2E tests are intentionally separate from the unit and integration
+tiers. Install their Python dependencies and Chromium, then run:
+
+.. code-block:: bash
+
+   make test-examples-e2e
+
+The E2E target starts the real Litestar/Vite example processes through
+``litestar run`` and drives them with Chromium. It is not included in
+``make test`` or the ordinary integration workflow.
+
+If you want to prebuild all example frontend assets in one step:
+
+.. code-block:: bash
+
+   make build-examples-assets
 
 The integration tier intentionally relies on pytest-databases autoskip
 behavior. A test should request a service fixture such as ``postgres_service``,

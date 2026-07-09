@@ -10,9 +10,42 @@ This copy is SSE-only. It uses the plugin-owned
 the code. Queue persistence runs through Valkey, and delivery uses memory
 Channels in the same process, so only Valkey is needed as an external service.
 
+The default remains one process: Valkey stores queue records and can provide
+worker wakeups, but it does not make the live Channels stream shared. A
+separate `litestar queues run` worker needs an explicit broker-backed Channels
+configuration; selecting `ValkeyBackendConfig` alone is not enough.
+
 Set `LITESTAR_QUEUES_EXAMPLE_VALKEY_URL` when Valkey is not available at
 `redis://localhost:6379/0`. See the repository's local infra helpers for
 spinning up a Valkey container.
+
+## Shared Web and Worker Mode
+
+The opt-in shared topology uses Litestar's Redis Channels Streams backend with
+the Valkey client. It keeps the configured event history (`history=25`) and is
+intentionally separate from Valkey queue wakeup pub/sub:
+
+```bash
+export LITESTAR_QUEUES_EXAMPLE_VALKEY_URL=redis://127.0.0.1:16380/0
+export LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS=1
+export LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER=0
+export LITESTAR_QUEUES_EXAMPLE_VALKEY_KEY_PREFIX=litestar_queues:demo:valkey:queue
+export LITESTAR_QUEUES_EXAMPLE_CHANNELS_KEY_PREFIX=litestar_queues:demo:valkey:channels
+
+LITESTAR_APP=examples.htmx_realtime_sse_valkey.app:app uv run litestar run
+```
+
+In a second terminal, run the worker with the same environment and app:
+
+```bash
+LITESTAR_APP=examples.htmx_realtime_sse_valkey.app:app \
+uv run litestar queues run --queue demo --drain-timeout 30
+```
+
+Do not switch this branch to `RedisChannelsPubSubBackend`: it has no history
+support. The Valkey queue backend's notifications wake workers; Redis Channels
+Streams carry the browser events. The Valkey branch never creates a Redis
+client directly.
 
 ## Run It (dev server, hot reload)
 

@@ -177,7 +177,6 @@ Configure buffering on ``EventConfig``:
                buffer_size=50,
                flush_interval=0.25,
                max_pending=5000,
-               overflow="drop_oldest",
            ),
        ),
    )
@@ -254,6 +253,53 @@ single transport (disabling both while ``enabled=True`` raises
 Subscribers receive at-most-once delivery per ``eventKey`` (or per ``id`` when
 no key is set) within a single connection. Set ``QueueEvent(..., event_key=...)``
 at publish time when worker-level retries should not double-emit downstream.
+
+Queue Storage, Worker Wakeups, and Browser Fan-Out
+==================================================
+
+These are three separate decisions. Queue storage holds task records. A queue
+backend's notification mechanism is a worker wakeup hint. The Channels backend
+is the live event fan-out path consumed by SSE or WebSocket clients. Choosing a
+Redis or Valkey queue backend does not configure shared browser Channels.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Topology
+     - Queue storage
+     - Worker wakeup
+     - Browser event fan-out
+   * - Local example
+     - Memory
+     - In-process
+     - ``MemoryChannelsBackend``
+   * - Shared Redis
+     - ``RedisBackendConfig``
+     - Redis queue pub/sub (hint)
+     - ``RedisChannelsStreamBackend``
+   * - Shared Valkey
+     - ``ValkeyBackendConfig``
+     - Valkey queue pub/sub (hint)
+     - Redis Channels Streams with the Valkey client
+   * - SQLSpec / Advanced Alchemy SQLite
+     - SQLite database
+     - Polling or in-process
+     - ``MemoryChannelsBackend`` unless a separate Channels backend is configured
+   * - Oracle AQ / TxEventQ
+     - Oracle queue backend
+     - AQ or TxEventQ worker wakeup
+     - Not a browser Channels transport
+
+The shipped Redis and Valkey realtime copies keep ``MemoryChannelsBackend`` by
+default. Set their shared-Channels environment switch and run a separate
+``litestar queues run --queue demo --drain-timeout 30`` process when the web
+service and worker are split. Because the examples request event history, the
+shared branch uses Redis Streams rather than Redis Pub/Sub; Pub/Sub has no
+history for a subscriber that connects later.
+
+The queue record remains the source of truth if a wakeup is dropped or
+coalesced. Conversely, a successful worker wakeup does not prove that a
+browser subscriber received an event. Test these planes independently.
 
 Consuming Stream Events
 =======================
@@ -410,7 +456,7 @@ state updates:
    reversed, so a misordered app fails fast instead of flushing in-flight task
    events into a closed sink.
 
-   When ``EventConfig(enabled=True)`` is configured without an explicit
+   When ``EventConfig()`` is configured without an explicit
    ``channels_backend`` (and no custom ``sink``), ``QueuePlugin`` auto-resolves
    the app's registered ``ChannelsPlugin`` as the live sink, so no manual
    wiring is needed.
@@ -490,7 +536,7 @@ the queue table:
 
    config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(config=sqlspec_config),
-       event_log=EventLogConfig(enabled=True),
+       event_log=EventLogConfig(),
    )
 
 By default SQLSpec stores history in ``<queue_table>_event_log``. For example,

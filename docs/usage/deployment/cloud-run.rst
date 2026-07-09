@@ -34,6 +34,24 @@ The important rule is simple:
 If no dispatcher process is running, records routed to ``cloudrun`` stay
 pending forever.
 
+Realtime fan-out is a separate concern
+--------------------------------------
+
+If the web service and dispatcher are separate Cloud Run processes, do not use
+``MemoryChannelsBackend`` for browser events. It is process-local even when the
+queue records are stored in a shared database. Configure a shared Redis
+Channels Streams backend (or a PostgreSQL Channels backend when that is the
+existing stack) in both processes, with the same channel key prefix and event
+contract. Redis/Valkey queue notifications only wake the dispatcher; they do
+not carry SSE or WebSocket event payloads.
+
+Keep browser authentication and proxy behavior explicit: same-origin relative
+stream URLs are the simplest deployment, while a separate frontend origin
+needs the corresponding CORS, cookie, WebSocket upgrade, and proxy timeout
+configuration. A 403 on an enqueue POST is an auth/CSRF problem, not a
+Channels delivery failure. A stream error after a successful enqueue is a
+Channels, origin, or proxy problem.
+
 Recommended topology
 ====================
 
