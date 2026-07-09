@@ -6,7 +6,9 @@ fixture parametrized over ``AA_ENGINES`` (aiosqlite + Postgres + MySQL +
 Oracle async configs) by the subdir conftest.
 """
 
+import asyncio
 import sys
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from subprocess import run
 from typing import TYPE_CHECKING, Any, cast
@@ -30,11 +32,14 @@ from litestar_queues.backends.advanced_alchemy import (
     AdvancedAlchemyQueueBackend,
     QueueTaskModelMixin,
 )
-from litestar_queues.models import QueuedTaskRecord
+from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
+
+    from tests.integration._backends import PostgresService
 
 pytestmark = pytest.mark.anyio
 
@@ -205,6 +210,214 @@ async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_te
     keyed = await advanced_alchemy_backend.get_task_by_key("sync:acct-1")
     assert keyed is not None
     assert keyed.id == replacement.id
+
+
+async def test_advanced_alchemy_enqueue_many_uses_one_operation_and_coalesces_due_wakeups(tmp_path: "Path") -> "None":
+    backend = _CountingAdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "bulk.db"), model_class=ContractQueueTask, create_schema=True
+        )
+    )
+    await backend.open()
+    try:
+        later = datetime.now(timezone.utc) + timedelta(minutes=5)
+        records = await backend.enqueue_many([
+            EnqueueSpec("tasks.bulk.first", key="bulk:active", kwargs={"value": 1}),
+            EnqueueSpec("tasks.bulk.future", scheduled_at=later),
+            EnqueueSpec("tasks.bulk.duplicate", key="bulk:active", kwargs={"value": 2}),
+        ])
+
+        assert backend.operation_count == 1
+        assert [record.task_name for record in records] == ["tasks.bulk.first", "tasks.bulk.future", "tasks.bulk.first"]
+        assert records[0].id == records[2].id
+        assert records[1].status == "scheduled"
+        assert len(backend.notification_batches) == 1
+        assert [record.id for record in backend.notification_batches[0]] == [records[0].id]
+    finally:
+        await backend.close()
+
+
+async def test_advanced_alchemy_enqueue_many_empty_batch_opens_no_operation(tmp_path: "Path") -> "None":
+    backend = _CountingAdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "empty-bulk.db"),
+            model_class=ContractQueueTask,
+            create_schema=True,
+        )
+    )
+    await backend.open()
+    try:
+        assert await backend.enqueue_many([]) == []
+        assert backend.operation_count == 0
+        assert backend.notification_batches == []
+    finally:
+        await backend.close()
+
+
+async def test_advanced_alchemy_enqueue_many_rolls_back_and_skips_notification_on_failure(tmp_path: "Path") -> "None":
+    backend = _CountingAdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "bulk-failure.db"),
+            model_class=ContractQueueTask,
+            create_schema=True,
+        )
+    )
+    await backend.open()
+    failing_service = type("FailingBulkService", (backend._service_class,), {"enqueue_many": _failing_enqueue_many})
+    backend._service_class = failing_service
+    try:
+        with pytest.raises(RuntimeError, match="bulk failed"):
+            await backend.enqueue_many([EnqueueSpec("tasks.bulk.failure")])
+
+        assert backend.notification_batches == []
+        assert (await backend.get_statistics()).total == 0
+    finally:
+        await backend.close()
+
+
+async def test_advanced_alchemy_enqueue_many_handles_large_batch_with_bounded_operation(tmp_path: "Path") -> "None":
+    backend = _CountingAdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "bulk-large.db"),
+            model_class=ContractQueueTask,
+            create_schema=True,
+        )
+    )
+    await backend.open()
+    try:
+        records = await backend.enqueue_many([EnqueueSpec(f"tasks.bulk.{index}") for index in range(1000)])
+        pending = await backend.list_pending(limit=1000)
+
+        assert len(records) == 1000
+        assert len(pending) == 1000
+        assert backend.operation_count == 1
+        assert len(backend.notification_batches) == 1
+    finally:
+        await backend.close()
+
+
+async def test_advanced_alchemy_claim_many_falls_back_safely_on_sqlite(
+    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+) -> "None":
+    first = await advanced_alchemy_backend.enqueue("tasks.claim.first", priority=1)
+    second = await advanced_alchemy_backend.enqueue("tasks.claim.second", priority=10)
+    future = await advanced_alchemy_backend.enqueue(
+        "tasks.claim.future", priority=100, scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=5)
+    )
+
+    claimed = await advanced_alchemy_backend.claim_many(limit=5)
+
+    assert [record.id for record in claimed] == [second.id, first.id]
+    assert all(record.status == "running" for record in claimed)
+    stored_future = await advanced_alchemy_backend.get_task(future.id)
+    assert stored_future is not None
+    assert stored_future.status == "scheduled"
+
+
+async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_notifications(
+    tmp_path: "Path",
+) -> "None":
+    sqlite_backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "polling.db"),
+            model_class=ContractQueueTask,
+            create_schema=True,
+            notifications=True,
+        )
+    )
+    postgres_backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+asyncpg://user:pass@localhost/db"),
+            model_class=ContractQueueTask,
+            notifications=True,
+        )
+    )
+    mysql_backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="mysql+asyncmy://user:pass@localhost/db"),
+            model_class=ContractQueueTask,
+            notifications=True,
+        )
+    )
+    oracle_backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=SQLAlchemyAsyncConfig(
+                connection_string="oracle+oracledb_async://user:pass@localhost:1521/?service_name=FREEPDB1"
+            ),
+            model_class=ContractQueueTask,
+            notifications=True,
+        )
+    )
+
+    assert sqlite_backend.capabilities.supports_notifications is False
+    assert sqlite_backend.capabilities.notification_backend is None
+    assert sqlite_backend.capabilities.notifications_durable is False
+    assert mysql_backend.capabilities.supports_notifications is False
+    assert oracle_backend.capabilities.supports_notifications is False
+    assert postgres_backend.capabilities.supports_notifications is True
+    assert postgres_backend.capabilities.notification_backend == "postgres-listen-notify"
+    assert postgres_backend.capabilities.notifications_durable is False
+
+
+async def test_advanced_alchemy_wait_for_notifications_uses_dedicated_listener(tmp_path: "Path") -> "None":
+    backend = _FakeListenerAdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+asyncpg://user:pass@localhost/db"),
+            model_class=ContractQueueTask,
+            notifications=True,
+        )
+    )
+    backend.listener.due_on_reconcile = True
+
+    assert await backend.wait_for_notifications(timeout=0.01) is True
+    assert backend.listener.started == 1
+    assert backend.listener.waits == []
+
+    backend.listener.due_on_reconcile = False
+    backend.listener.mark_notified()
+
+    assert await backend.wait_for_notifications(timeout=0.01) is True
+    assert backend.listener.started == 1
+    assert backend.listener.waits == [0.01]
+
+    await backend.close()
+    assert backend.listener.closed is True
+
+
+async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_service: "PostgresService") -> "None":
+    pytest.importorskip("asyncpg")
+    table_name = f"aa_notify_{uuid4().hex}"
+    model_class = _dynamic_queue_model(table_name)
+    backend = AdvancedAlchemyQueueBackend(
+        backend_config=AdvancedAlchemyBackendConfig(
+            sqlalchemy_config=SQLAlchemyAsyncConfig(
+                connection_string=(
+                    f"postgresql+asyncpg://{postgres_service.user}:{postgres_service.password}"
+                    f"@{postgres_service.host}:{postgres_service.port}/{postgres_service.database}"
+                )
+            ),
+            model_class=model_class,
+            create_schema=True,
+            notifications=True,
+            notification_channel=f"lq_notify_{uuid4().hex}",
+        )
+    )
+    await backend.open()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2.0))
+        record = await backend.enqueue("tasks.pg.notify")
+
+        assert await waiter is True
+        assert backend.capabilities.supports_notifications is True
+        assert backend.capabilities.notification_backend == "postgres-listen-notify"
+
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert await backend.wait_for_notifications(timeout=0.01) is False
+    finally:
+        with suppress(Exception):
+            await _drop_dynamic_queue_model(backend, model_class)
+        await backend.close()
 
 
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
@@ -438,6 +651,23 @@ def _oracle_dialect() -> "Any":
     return oracle.dialect()  # type: ignore[no-untyped-call]
 
 
+def _dynamic_queue_model(table_name: "str") -> "type[object]":
+    return type(
+        f"NotificationQueueTask{table_name[-8:]}",
+        (UUIDAuditBase, QueueTaskModelMixin),
+        {"__module__": __name__, "__tablename__": table_name},
+    )
+
+
+async def _drop_dynamic_queue_model(backend: "AdvancedAlchemyQueueBackend", model_class: "type[object]") -> "None":
+    sqlalchemy_config = backend._sqlalchemy_config
+    if sqlalchemy_config is None:
+        return
+    engine = sqlalchemy_config.get_engine()
+    async with engine.begin() as connection:
+        await connection.run_sync(cast("Any", model_class).__table__.drop, checkfirst=True)
+
+
 class _CasClaimService:
     def __init__(self, records: "list[QueuedTaskRecord]", target: "QueuedTaskRecord") -> "None":
         self.records = records
@@ -458,3 +688,72 @@ class _CasClaimService:
         if task_id == self.target.id:
             return self.target
         return None
+
+
+async def _failing_enqueue_many(self: "Any", specs: "Any") -> "Any":
+    del self, specs
+    msg = "bulk failed"
+    raise RuntimeError(msg)
+
+
+class _CountingAdvancedAlchemyQueueBackend(AdvancedAlchemyQueueBackend):
+    __slots__ = ("notification_batches", "operation_count")
+
+    def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
+        super().__init__(*args, **kwargs)
+        self.operation_count = 0
+        self.notification_batches: "list[tuple[QueuedTaskRecord, ...]]" = []
+
+    @asynccontextmanager
+    async def _operation(self) -> "Any":
+        self.operation_count += 1
+        async with super()._operation() as service:
+            yield service
+
+    async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
+        for record in records:
+            if record.is_due and record.status in {"pending", "scheduled"}:
+                self.notification_batches.append((record,))
+                return
+
+
+class _FakeNotificationListener:
+    __slots__ = ("closed", "due_on_reconcile", "notified", "started", "waits")
+
+    def __init__(self) -> "None":
+        self.closed = False
+        self.due_on_reconcile = False
+        self.notified = False
+        self.started = 0
+        self.waits: "list[float | None]" = []
+
+    async def start(self) -> "None":
+        if self.started:
+            return
+        self.started += 1
+
+    async def wait(self, timeout: "float | None") -> "bool":
+        self.waits.append(timeout)
+        notified = self.notified
+        self.notified = False
+        return notified
+
+    async def close(self) -> "None":
+        self.closed = True
+
+    def mark_notified(self) -> "None":
+        self.notified = True
+
+
+class _FakeListenerAdvancedAlchemyQueueBackend(AdvancedAlchemyQueueBackend):
+    __slots__ = ("listener",)
+
+    def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
+        super().__init__(*args, **kwargs)
+        self.listener = _FakeNotificationListener()
+
+    def _create_notification_listener(self) -> "_FakeNotificationListener":
+        return self.listener
+
+    async def _has_due_tasks(self) -> "bool":
+        return self.listener.due_on_reconcile

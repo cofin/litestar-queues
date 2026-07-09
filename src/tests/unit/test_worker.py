@@ -22,6 +22,7 @@ from litestar_queues import (
 )
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import EventConfig, InMemoryQueueEventSink
+from litestar_queues.models import QueueBackendCapabilities
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -152,6 +153,24 @@ async def test_worker_claims_local_records_through_claim_next() -> "None":
     assert backend.claim_next_calls == [(None, "local"), (None, "local")]
     assert backend.list_pending_calls == []
     assert backend.claim_task_calls == []
+
+
+async def test_worker_uses_claim_many_when_backend_advertises_batch_claim() -> "None":
+    backend = _ClaimManyRecordingInMemoryQueueBackend()
+
+    @task("tasks.batch_claim")
+    async def batch_claim(value: "int") -> "int":
+        return value
+
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        for value in range(5):
+            await service.enqueue(batch_claim, value)
+        worker = Worker(service, batch_size=10, max_concurrency=3)
+
+        assert await worker.run_once() == 3
+
+    assert backend.claim_many_calls == [(3, None, "local")]
+    assert backend.claim_next_calls == []
 
 
 async def test_worker_queue_filter_restricts_claimed_records() -> "None":
@@ -719,6 +738,31 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
     ) -> 'list["QueuedTaskRecord"]':
         self.list_pending_calls.append((limit, queue, execution_backend))
         return await super().list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+
+
+class _ClaimManyRecordingInMemoryQueueBackend(_ClaimNextRecordingInMemoryQueueBackend):
+    __slots__ = ("claim_many_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.claim_many_calls: "list[tuple[int, str | None, str | None]]" = []
+
+    @property
+    def capabilities(self) -> "QueueBackendCapabilities":
+        return QueueBackendCapabilities(supports_batch_claim=True)
+
+    async def claim_many(
+        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> 'list["QueuedTaskRecord"]':
+        self.claim_many_calls.append((limit, queue, execution_backend))
+        records: 'list["QueuedTaskRecord"]' = []
+        for pending in await InMemoryQueueBackend.list_pending(
+            self, limit=limit, queue=queue, execution_backend=execution_backend
+        ):
+            claimed = await InMemoryQueueBackend.claim_task(self, pending.id)
+            if claimed is not None:
+                records.append(claimed)
+        return records
 
 
 class _HeartbeatCleanupRecordingBackend(InMemoryQueueBackend):

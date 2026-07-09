@@ -1,10 +1,14 @@
 """Advanced Alchemy queue backend."""
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
 from advanced_alchemy.exceptions import DuplicateKeyError
 from sqlalchemy import inspect as sqlalchemy_inspect
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
@@ -12,7 +16,7 @@ from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueTaskService
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import HeartbeatTouchResult
+from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
@@ -22,9 +26,19 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult
+    from litestar_queues.models import (
+        EnqueueSpec,
+        HeartbeatTouch,
+        QueuedTaskRecord,
+        QueueStatistics,
+        StaleTaskRecoveryResult,
+    )
+    from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("AdvancedAlchemyQueueBackend",)
+
+_POSTGRES_NOTIFY_BACKEND = "postgres-listen-notify"
+_POSTGRES_NOTIFY_PAYLOAD = "tasks"
 
 
 class AdvancedAlchemyQueueBackend(BaseQueueBackend):
@@ -35,8 +49,13 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_create_schema",
+        "_event_poll_interval",
         "_heartbeat_session_maker",
         "_model_class",
+        "_notification_channel",
+        "_notification_listener",
+        "_notifications",
+        "_observability_runtime",
         "_opened",
         "_service_class",
         "_sqlalchemy_config",
@@ -51,7 +70,23 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._heartbeat_session_maker = backend_config.heartbeat_session_maker
         self._model_class, self._service_class = self._resolve_model_classes(backend_config.model_class)
         self._create_schema = backend_config.create_schema
+        self._notifications = backend_config.notifications
+        self._notification_channel = backend_config.notification_channel
+        self._event_poll_interval = backend_config.event_poll_interval
+        self._notification_listener: "Any | None" = None
+        self._observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None
         self._opened = False
+
+    @property
+    def capabilities(self) -> "QueueBackendCapabilities":
+        """Backend behavior capabilities."""
+        notifications_enabled = self._notifications_supported()
+        return QueueBackendCapabilities(
+            supports_notifications=notifications_enabled,
+            notification_backend=_POSTGRES_NOTIFY_BACKEND if notifications_enabled else None,
+            notifications_durable=False,
+            supports_batch_claim=_supports_batch_claim_driver(self._driver_name()),
+        )
 
     async def open(self) -> "bool":
         """Open Advanced Alchemy resources.
@@ -69,6 +104,9 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close backend-owned resources."""
+        if self._notification_listener is not None:
+            await self._notification_listener.close()
+            self._notification_listener = None
         self._opened = False
 
     async def create_schema(self) -> "None":
@@ -124,6 +162,20 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+        """Persist multiple queued tasks in one Advanced Alchemy operation.
+
+        Returns:
+            Queue task records in input order.
+        """
+        if not specs:
+            return []
+        async with self._operation() as service:
+            records = await service.enqueue_many(specs)
+        self._increment_queue_metric("enqueue", float(len(records)))
+        await self.notify_new_tasks(records)
+        return records
+
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         async with self._service() as service:
             return await service.get_task(task_id)
@@ -147,6 +199,21 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.claim_next(queue=queue, execution_backend=execution_backend)
+
+    async def claim_many(
+        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` due tasks.
+
+        Returns:
+            Claimed task records.
+        """
+        if limit <= 0:
+            return []
+        async with self._operation() as service:
+            records = await service.claim_many(limit=limit, queue=queue, execution_backend=execution_backend)
+        self._increment_queue_metric("claim", float(len(records)))
+        return records
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -211,6 +278,47 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
             await self.notify_new_task(record)
         return record
 
+    async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
+        """Publish a PostgreSQL worker wakeup marker when enabled.
+
+        Returns:
+            None.
+        """
+        if not self._notifications_supported() or record.status not in {"pending", "scheduled"} or not record.is_due:
+            return
+        await self._send_notification_marker()
+        self._increment_queue_metric("notify")
+
+    async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
+        """Coalesce a batch of task records into at most one wakeup marker.
+
+        Returns:
+            None.
+        """
+        for record in records:
+            if record.status in {"pending", "scheduled"} and record.is_due:
+                await self.notify_new_task(record)
+                return
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        """Wait for a PostgreSQL worker wakeup marker when configured.
+
+        Returns:
+            True when a wakeup marker or due-row reconciliation is observed.
+        """
+        if not self._notifications_supported():
+            return await super().wait_for_notifications(timeout=timeout)
+        listener = self._get_notification_listener()
+        await listener.start()
+        if await self._has_due_tasks():
+            self._increment_queue_metric("poll_fallback")
+            return True
+        wait_timeout = self._event_poll_interval if self._event_poll_interval is not None else timeout
+        notified = await listener.wait(wait_timeout)
+        if notified:
+            self._increment_queue_metric("listener_wakeup")
+        return notified
+
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
             return await service.list_running_external(limit=limit)
@@ -238,6 +346,59 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         if not self._opened:
             msg = "AdvancedAlchemyQueueBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
+
+    def _driver_name(self) -> "str | None":
+        sqlalchemy_config = self._sqlalchemy_config
+        if sqlalchemy_config is None or sqlalchemy_config.connection_string is None:
+            return None
+        return make_url(sqlalchemy_config.connection_string).drivername
+
+    def _notifications_supported(self) -> "bool":
+        return self._notifications and self._driver_name() == "postgresql+asyncpg"
+
+    def _get_notification_listener(self) -> "Any":
+        if self._notification_listener is None:
+            self._notification_listener = self._create_notification_listener()
+        return self._notification_listener
+
+    def _create_notification_listener(self) -> "Any":
+        sqlalchemy_config = self._sqlalchemy_config
+        if sqlalchemy_config is None or sqlalchemy_config.connection_string is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config for PostgreSQL notifications."
+            raise QueueConfigurationError(msg)
+        url = make_url(sqlalchemy_config.connection_string).set(drivername="postgresql")
+        return _AsyncpgNotificationListener(
+            dsn=url.render_as_string(hide_password=False), channel=self._notification_channel
+        )
+
+    async def _send_notification_marker(self) -> "None":
+        sqlalchemy_config = self._sqlalchemy_config
+        if sqlalchemy_config is None:
+            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config for PostgreSQL notifications."
+            raise QueueConfigurationError(msg)
+        engine = sqlalchemy_config.get_engine()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": self._notification_channel, "payload": _POSTGRES_NOTIFY_PAYLOAD},
+            )
+
+    async def _has_due_tasks(self) -> "bool":
+        async with self._service() as service:
+            return bool(await service.list_pending(limit=1, queue=None, execution_backend=None))
+
+    def _increment_queue_metric(self, name: "str", amount: "float" = 1.0) -> "None":
+        if amount == 0 or self.config is None or self.config.observability is None:
+            return
+        if self._observability_runtime is None:
+            from litestar_queues.observability import create_observability_runtime
+
+            self._observability_runtime = create_observability_runtime(self.config.observability)
+        self._observability_runtime.record_counter(
+            f"litestar_queues.queue.{name}",
+            int(amount),
+            attributes={"messaging.system": "litestar_queues", "backend": "advanced-alchemy"},
+        )
 
     def _resolve_model_classes(
         self, model_class: "type[object] | None"
@@ -327,3 +488,61 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         else:
             async with self._heartbeat_session_maker() as session, session.begin():
                 yield self._service_class(session=session)
+
+
+class _AsyncpgNotificationListener:
+    """Dedicated asyncpg LISTEN connection for Advanced Alchemy wakeups."""
+
+    __slots__ = ("_channel", "_connection", "_dsn", "_event")
+
+    def __init__(self, *, dsn: "str", channel: "str") -> "None":
+        self._dsn = dsn
+        self._channel = channel
+        self._event = asyncio.Event()
+        self._connection: "Any | None" = None
+
+    async def start(self) -> "None":
+        connection = self._connection
+        if connection is not None and not connection.is_closed():
+            return
+        await self.close()
+        connection = await self._connect()
+        await connection.add_listener(self._channel, self._handle_notification)
+        self._connection = connection
+
+    async def wait(self, timeout: "float | None") -> "bool":
+        await self.start()
+        if self._event.is_set():
+            self._event.clear()
+            return True
+        try:
+            await asyncio.wait_for(self._event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        self._event.clear()
+        return True
+
+    async def close(self) -> "None":
+        connection = self._connection
+        self._connection = None
+        if connection is None:
+            return
+        with suppress(Exception):
+            await connection.remove_listener(self._channel, self._handle_notification)
+        with suppress(Exception):
+            await connection.close()
+
+    async def _connect(self) -> "Any":
+        try:
+            asyncpg = import_module("asyncpg")
+        except ImportError as exc:
+            msg = "AdvancedAlchemyBackendConfig.notifications=True for postgresql+asyncpg requires asyncpg."
+            raise QueueConfigurationError(msg) from exc
+        return await cast("Any", asyncpg).connect(dsn=self._dsn)
+
+    def _handle_notification(self, _connection: "Any", _pid: "int", _channel: "str", _payload: "str") -> "None":
+        self._event.set()
+
+
+def _supports_batch_claim_driver(driver_name: "str | None") -> "bool":
+    return driver_name == "postgresql+asyncpg"
