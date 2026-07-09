@@ -5,3 +5,4 @@ Contributing
    :maxdepth: 1
 
    testing
+   documentation

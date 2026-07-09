@@ -243,7 +243,7 @@ def test_htmx_realtime_examples_use_litestar_asset_commands_and_current_packages
 
 
 def test_htmx_realtime_docs_import_from_runnable_example() -> None:
-    docs_source = (ROOT / "docs" / "usage" / "events.rst").read_text()
+    docs_source = (ROOT / "docs" / "usage" / "event-streams.rst").read_text()
     assert "examples/htmx_realtime_websocket/app.py" in docs_source
     assert "examples/htmx_realtime_websocket/resources/main.ts" in docs_source
     assert "examples/htmx_realtime_websocket/templates/index.html" in docs_source

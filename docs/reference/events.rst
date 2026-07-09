@@ -18,6 +18,19 @@ Publisher
    :undoc-members:
    :show-inheritance:
 
+Buffering and Chunking
+======================
+
+.. automodule:: litestar_queues.events.buffer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.events.chunking
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Task Context
 ============
 
@@ -42,10 +55,39 @@ Sinks
    :undoc-members:
    :show-inheritance:
 
+Event History
+=============
+
+.. automodule:: litestar_queues.events.log
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+External Producers
+==================
+
+.. automodule:: litestar_queues.events.producer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Litestar Channels
 =================
 
 .. automodule:: litestar_queues.events.litestar
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Stream Configuration and Routes
+===============================
+
+.. automodule:: litestar_queues.events.stream_config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.events.streaming
    :members:
    :undoc-members:
    :show-inheritance:
