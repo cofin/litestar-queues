@@ -1058,7 +1058,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         stream = self._event_channel.iter_events(
             self._resolve_notification_channel(),
-            poll_interval=self._event_poll_interval if self._event_poll_interval is not None else timeout,
+            poll_interval=self._event_poll_interval,
         )
         try:
             if timeout is None:

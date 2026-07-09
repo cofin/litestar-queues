@@ -51,6 +51,21 @@ _ORACLE_AQ_QUEUE = "LQ_EVENTS_AQ_QUEUE"
 _ORACLE_TXEVENTQ_QUEUE = "LQ_EVENTS_TXQ"
 
 
+class RecordingPollIntervalEventChannel(StubAsyncEventChannel):
+    """Stub channel that records the poll interval passed to ``iter_events``."""
+
+    __slots__ = ("poll_intervals",)
+
+    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+        super().__init__(backend_name=backend_name)
+        self.poll_intervals: "list[float | None]" = []
+
+    async def iter_events(self, channel: "str", *, poll_interval: "float | None" = None) -> "Any":
+        self.poll_intervals.append(poll_interval)
+        async for event in super().iter_events(channel, poll_interval=poll_interval):
+            yield event
+
+
 def _oracle_sync_config(
     oracle_service: "OracleService", *, user: "str | None" = None, password: "str | None" = None
 ) -> "Any":
@@ -271,6 +286,53 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
             )
         ]
         assert event_channel.acked == ["event-1"]
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_worker_timeout_does_not_set_event_poll_interval(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = RecordingPollIntervalEventChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "worker-timeout.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="worker_timeout",
+        )
+    )
+
+    await backend.open()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=0.25))
+        await backend.enqueue("tasks.worker_timeout")
+
+        assert await waiter is True
+        assert event_channel.poll_intervals == [None]
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_event_poll_interval_is_passed_to_event_channel(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = RecordingPollIntervalEventChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "event-poll-interval.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="event_poll_interval",
+            event_poll_interval=0.01,
+        )
+    )
+
+    await backend.open()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=0.25))
+        await backend.enqueue("tasks.event_poll_interval")
+
+        assert await waiter is True
+        assert event_channel.poll_intervals == [0.01]
     finally:
         await backend.close()
 
