@@ -1,24 +1,20 @@
 """Process lifecycle for the shipped HTMX realtime examples."""
 
-from __future__ import annotations
-
 import os
 import signal
 import socket
 import subprocess
 import time
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock, Thread
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import httpx
 
 from .assertions import assert_asset_urls_on_origin, assert_production_assets
 from .health_check import wait_for_paths
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ExampleMode = Literal["dev", "production"]

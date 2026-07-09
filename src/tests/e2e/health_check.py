@@ -1,14 +1,9 @@
 """HTTP readiness checks for example-process E2E tests."""
 
-from __future__ import annotations
-
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
 
 import httpx
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 
 def wait_for_paths(base_url: str, paths: Iterable[str], *, timeout: float) -> dict[str, httpx.Response]:

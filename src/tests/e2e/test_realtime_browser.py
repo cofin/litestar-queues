@@ -1,14 +1,11 @@
 """Browser contracts for the HTMX SSE and WebSocket examples."""
 
-from __future__ import annotations
-
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 import pytest
 
-if TYPE_CHECKING:
-    from .conftest import BrowserDiagnostics
+from .conftest import BrowserDiagnostics
 
 pytestmark = pytest.mark.e2e
 
@@ -44,7 +41,7 @@ def _install_event_collector(page: Any) -> None:
 
 
 def _events(page: Any) -> list[str]:
-    return page.evaluate("() => window.__queueE2EEvents ?? []")
+    return cast("list[str]", page.evaluate("() => window.__queueE2EEvents ?? []"))
 
 
 def _frames(page: Any) -> list[str]:
@@ -96,7 +93,7 @@ def _start_mission(page: Any, base_url: str) -> str:
 
     mount = page.locator("#stream-mount")
     mount.wait_for(state="attached")
-    task_id = mount.get_attribute("data-task-id")
+    task_id = cast("str | None", mount.get_attribute("data-task-id"))
     assert task_id
     return task_id
 

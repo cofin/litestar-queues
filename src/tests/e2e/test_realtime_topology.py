@@ -1,8 +1,7 @@
 """Cross-process queue and Channels topology tests."""
 
-from __future__ import annotations
-
 import os
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
@@ -17,6 +16,9 @@ from .test_realtime_browser import (
     _start_mission,
     _wait_for_completion,
 )
+
+if TYPE_CHECKING:
+    from .conftest import BrowserDiagnostics
 
 pytestmark = [pytest.mark.e2e, pytest.mark.topology]
 
@@ -40,8 +42,8 @@ def test_shared_channels_deliver_from_a_standalone_worker(
     default_url: str,
     key_env: str,
     transport: str,
-    browser_page: object,
-    browser_diagnostics: object,
+    browser_page: Any,
+    browser_diagnostics: "BrowserDiagnostics",
 ) -> None:
     """A separate queue worker publishes live events through shared Channels."""
     url = os.getenv(url_env, default_url)
@@ -99,12 +101,12 @@ def test_shared_channels_deliver_from_a_standalone_worker(
         client.close()
 
 
-def _connect_or_skip(backend: str, url: str) -> object:
+def _connect_or_skip(backend: str, url: str) -> Any:
     try:
         if backend == "redis":
             from redis import Redis
 
-            client = Redis.from_url(url, socket_connect_timeout=1, socket_timeout=1)
+            client: Any = Redis.from_url(url, socket_connect_timeout=1, socket_timeout=1)
         else:
             from valkey import Valkey
 

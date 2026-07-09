@@ -1,10 +1,9 @@
 """Fixtures for queue example browser tests."""
 
-from __future__ import annotations
-
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -40,11 +39,11 @@ def server_mode(request: pytest.FixtureRequest) -> ExampleMode:
     Returns:
         The selected Litestar/Vite asset mode.
     """
-    return request.param
+    return cast("ExampleMode", request.param)
 
 
 @pytest.fixture(scope="session")
-def example_server(example_name: str, server_mode: ExampleMode) -> ExampleServer:
+def example_server(example_name: str, server_mode: ExampleMode) -> Iterator[ExampleServer]:
     """Start one example per example/mode pair and clean it up at session end.
 
     Yields:

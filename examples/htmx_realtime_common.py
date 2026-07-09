@@ -2,6 +2,8 @@
 
 import os
 
+__all__ = ("standalone_worker_options",)
+
 
 def standalone_worker_options() -> dict[str, bool]:
     """Return only the explicit override for a separately run queue worker."""

@@ -1,7 +1,5 @@
 """Assertions shared by browser and process-level example tests."""
 
-from __future__ import annotations
-
 import re
 from urllib.parse import urljoin, urlsplit
 
