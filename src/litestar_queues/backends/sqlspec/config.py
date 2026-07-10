@@ -40,9 +40,7 @@ class SQLSpecBackendConfig:
     sqlspec: "SQLSpec | None" = None
     config: "SQLSpecStoreConfig | None" = None
     heartbeat_pool_config: "SQLSpecStoreConfig | None" = None
-    table_name: "str | None" = None
-    create_schema: "bool | None" = None
-    run_migrations: "bool | None" = None
+    queue_table_name: "str | None" = None
     event_channel: "AsyncEventChannel | None" = None
     notifications: "bool | None" = None
     notification_channel: "str | None" = None
@@ -59,8 +57,8 @@ class SQLSpecBackendConfig:
 
     def __post_init__(self) -> "None":
         """Validate adopter-owned table and wakeup-transport configuration."""
-        if self.table_name is not None:
-            self.table_name = validate_table_name(self.table_name)
+        if self.queue_table_name is not None:
+            self.queue_table_name = validate_table_name(self.queue_table_name)
         if self.event_log_table_name is not None:
             self.event_log_table_name = validate_table_name(self.event_log_table_name)
         self.column_map = resolve_column_map(self.column_map)

@@ -2,8 +2,8 @@
 Concepts
 ========
 
-Litestar Queues separates the durable description of work from the place that
-runs it. This keeps the task API stable while deployment choices change.
+Litestar Queues stores a description of the work separately from the process
+that runs it. You can change the deployment without changing the task API.
 
 The task flow
 =============
@@ -24,10 +24,10 @@ The record—not the Python coroutine—is what a worker claims.
 Queue backend
 =============
 
-The **queue backend** stores task records and their states. Memory is the
-default and is process-local. SQLSpec, Advanced Alchemy, Redis, and Valkey can
-share records between web and worker processes. Persisted task state remains
-the source of truth.
+The **queue backend** stores task records and their states. The default memory
+backend stores them in one process. SQLSpec, Advanced Alchemy, Redis, and
+Valkey can share records between web and worker processes. The saved task
+record is always the source of truth.
 
 Execution backend
 =================
@@ -39,25 +39,26 @@ it to a Cloud Run Job. Execution placement does not replace queue persistence.
 Worker lifecycle
 ================
 
-A worker finds due records, claims them, runs or dispatches them, records the
-outcome, and retries eligible failures. The plugin can start a worker in the
-web process; production deployments commonly run workers separately.
+A worker finds tasks that are ready, claims them, and runs or dispatches them.
+It then saves the result and retries failures when allowed. The plugin can
+start a worker in the web process. Production deployments often run workers
+separately.
 
 Wakeups and reconciliation
 ==========================
 
-A backend may notify workers when work arrives. A **worker wakeup is a hint**:
-notifications can be delayed or dropped, so workers also poll and reconcile
-against persisted state. A wakeup is never durable task storage.
+A backend may notify workers when work arrives. A **worker wakeup** is only a
+hint to check the queue. Because notifications may be late or lost, workers
+also poll the saved task state. A wakeup never stores a task.
 
 Task events
 ===========
 
-Tasks can publish lifecycle, progress, log, and custom events for application
-or operator consumers. Live task event delivery uses event sinks and Litestar
-Channels. It is separate from queue-backend wakeups and is not worker discovery.
-Durable event history is another queue-backend capability and is also separate
-from live browser fan-out.
+Tasks can publish lifecycle, progress, log, and custom events for applications
+and operators. Event sinks and Litestar Channels deliver these events live.
+This live delivery is not worker discovery. It does not wake workers or help
+them find tasks. Event history is stored by the queue backend and is also
+separate from live browser delivery.
 
 Choose the next guide
 =====================

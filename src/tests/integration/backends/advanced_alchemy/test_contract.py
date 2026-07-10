@@ -27,13 +27,10 @@ from advanced_alchemy.operations import MergeStatement
 
 from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
-from litestar_queues.backends.advanced_alchemy import (
-    AdvancedAlchemyBackendConfig,
-    AdvancedAlchemyQueueBackend,
-    QueueTaskModelMixin,
-)
+from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackend, SQLAlchemyBackendConfig
 from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
 from litestar_queues.task import clear_task_registry
+from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -50,12 +47,12 @@ def clean_task_registry() -> "None":
 
 
 class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
-    __tablename__ = "aa_contract_queue_tasks"
+    __tablename__ = "aa_contract_queue_task"
 
 
 async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> "None":
     assert "advanced-alchemy" in list_queue_backends()
-    assert get_queue_backend_class("advanced-alchemy") is AdvancedAlchemyQueueBackend
+    assert get_queue_backend_class("advanced-alchemy") is SQLAlchemyBackend
 
 
 def test_top_level_litestar_queues_import_does_not_require_advanced_alchemy() -> "None":
@@ -78,7 +75,7 @@ import litestar_queues
 from litestar_queues import InMemoryQueueBackend, QueueConfig
 
 assert "InMemoryQueueBackend" in litestar_queues.__all__
-assert "AdvancedAlchemyQueueBackend" not in litestar_queues.__all__
+assert "SQLAlchemyBackend" not in litestar_queues.__all__
 assert QueueConfig().queue_backend == "memory"
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
@@ -86,13 +83,13 @@ assert QueueConfig().queue_backend == "memory"
     assert result.returncode == 0, result.stderr
 
 
-async def test_advanced_alchemy_backend_exposes_schema_bootstrap_config(tmp_path: "Path") -> "None":
-    backend_config = AdvancedAlchemyBackendConfig(
-        sqlalchemy_config=_sqlite_config(tmp_path / "configured.db"), model_class=ContractQueueTask, create_schema=True
-    )
+def test_advanced_alchemy_backend_uses_upstream_schema_lifecycle(tmp_path: "Path") -> "None":
+    sqlalchemy_config = _sqlite_config(tmp_path / "configured.db")
+    backend_config = SQLAlchemyBackendConfig(sqlalchemy_config=sqlalchemy_config, model_class=ContractQueueTask)
 
     assert backend_config.model_class is ContractQueueTask
-    assert backend_config.create_schema is True
+    assert sqlalchemy_config.create_all is False
+    assert not hasattr(backend_config, "create_schema")
 
 
 def test_advanced_alchemy_mixin_uses_native_json_column_types() -> "None":
@@ -192,7 +189,7 @@ def test_advanced_alchemy_keyed_enqueue_uses_native_upsert_for_supported_dialect
 
 
 async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_terminal_keys(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     first = await advanced_alchemy_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-1"}, key="sync:acct-1")
     duplicate = await advanced_alchemy_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
@@ -213,10 +210,10 @@ async def test_advanced_alchemy_backend_deduplicates_active_keys_and_replaces_te
 
 
 async def test_advanced_alchemy_enqueue_many_uses_one_operation_and_coalesces_due_wakeups(tmp_path: "Path") -> "None":
-    backend = _CountingAdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "bulk.db"), model_class=ContractQueueTask, create_schema=True
-        )
+    config = _sqlite_config(tmp_path / "bulk.db")
+    await create_tables(config, ContractQueueTask)
+    backend = _CountingSQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=ContractQueueTask)
     )
     await backend.open()
     try:
@@ -238,12 +235,10 @@ async def test_advanced_alchemy_enqueue_many_uses_one_operation_and_coalesces_du
 
 
 async def test_advanced_alchemy_enqueue_many_empty_batch_opens_no_operation(tmp_path: "Path") -> "None":
-    backend = _CountingAdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "empty-bulk.db"),
-            model_class=ContractQueueTask,
-            create_schema=True,
-        )
+    config = _sqlite_config(tmp_path / "empty-bulk.db")
+    await create_tables(config, ContractQueueTask)
+    backend = _CountingSQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=ContractQueueTask)
     )
     await backend.open()
     try:
@@ -255,12 +250,10 @@ async def test_advanced_alchemy_enqueue_many_empty_batch_opens_no_operation(tmp_
 
 
 async def test_advanced_alchemy_enqueue_many_rolls_back_and_skips_notification_on_failure(tmp_path: "Path") -> "None":
-    backend = _CountingAdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "bulk-failure.db"),
-            model_class=ContractQueueTask,
-            create_schema=True,
-        )
+    config = _sqlite_config(tmp_path / "bulk-failure.db")
+    await create_tables(config, ContractQueueTask)
+    backend = _CountingSQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=ContractQueueTask)
     )
     await backend.open()
     failing_service = type("FailingBulkService", (backend._service_class,), {"enqueue_many": _failing_enqueue_many})
@@ -276,12 +269,10 @@ async def test_advanced_alchemy_enqueue_many_rolls_back_and_skips_notification_o
 
 
 async def test_advanced_alchemy_enqueue_many_handles_large_batch_with_bounded_operation(tmp_path: "Path") -> "None":
-    backend = _CountingAdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "bulk-large.db"),
-            model_class=ContractQueueTask,
-            create_schema=True,
-        )
+    config = _sqlite_config(tmp_path / "bulk-large.db")
+    await create_tables(config, ContractQueueTask)
+    backend = _CountingSQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=ContractQueueTask)
     )
     await backend.open()
     try:
@@ -297,7 +288,7 @@ async def test_advanced_alchemy_enqueue_many_handles_large_batch_with_bounded_op
 
 
 async def test_advanced_alchemy_claim_many_falls_back_safely_on_sqlite(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     first = await advanced_alchemy_backend.enqueue("tasks.claim.first", priority=1)
     second = await advanced_alchemy_backend.enqueue("tasks.claim.second", priority=10)
@@ -317,30 +308,27 @@ async def test_advanced_alchemy_claim_many_falls_back_safely_on_sqlite(
 async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_notifications(
     tmp_path: "Path",
 ) -> "None":
-    sqlite_backend = AdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "polling.db"),
-            model_class=ContractQueueTask,
-            create_schema=True,
-            notifications=True,
+    sqlite_backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=_sqlite_config(tmp_path / "polling.db"), model_class=ContractQueueTask, notifications=True
         )
     )
-    postgres_backend = AdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
+    postgres_backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+asyncpg://user:pass@localhost/db"),
             model_class=ContractQueueTask,
             notifications=True,
         )
     )
-    mysql_backend = AdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
+    mysql_backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="mysql+asyncmy://user:pass@localhost/db"),
             model_class=ContractQueueTask,
             notifications=True,
         )
     )
-    oracle_backend = AdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
+    oracle_backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(
                 connection_string="oracle+oracledb_async://user:pass@localhost:1521/?service_name=FREEPDB1"
             ),
@@ -360,8 +348,8 @@ async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_n
 
 
 async def test_advanced_alchemy_wait_for_notifications_uses_dedicated_listener(tmp_path: "Path") -> "None":
-    backend = _FakeListenerAdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
+    backend = _FakeListenerSQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+asyncpg://user:pass@localhost/db"),
             model_class=ContractQueueTask,
             notifications=True,
@@ -388,16 +376,17 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_serv
     pytest.importorskip("asyncpg")
     table_name = f"aa_notify_{uuid4().hex}"
     model_class = _dynamic_queue_model(table_name)
-    backend = AdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=SQLAlchemyAsyncConfig(
-                connection_string=(
-                    f"postgresql+asyncpg://{postgres_service.user}:{postgres_service.password}"
-                    f"@{postgres_service.host}:{postgres_service.port}/{postgres_service.database}"
-                )
-            ),
+    sqlalchemy_config = SQLAlchemyAsyncConfig(
+        connection_string=(
+            f"postgresql+asyncpg://{postgres_service.user}:{postgres_service.password}"
+            f"@{postgres_service.host}:{postgres_service.port}/{postgres_service.database}"
+        )
+    )
+    await create_tables(sqlalchemy_config, model_class)
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=sqlalchemy_config,
             model_class=model_class,
-            create_schema=True,
             notifications=True,
             notification_channel=f"lq_notify_{uuid4().hex}",
         )
@@ -421,7 +410,7 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_serv
 
 
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
@@ -444,7 +433,7 @@ async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
 
 
 async def test_advanced_alchemy_backend_fail_task_retries_then_fails_permanently(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     record = await advanced_alchemy_backend.enqueue("tasks.flaky", max_retries=1)
 
@@ -465,7 +454,7 @@ async def test_advanced_alchemy_backend_fail_task_retries_then_fails_permanently
 
 
 async def test_advanced_alchemy_backend_preserves_json_string_results(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     record = await advanced_alchemy_backend.enqueue("tasks.string-result")
     claimed = await advanced_alchemy_backend.claim_task(record.id)
@@ -481,7 +470,7 @@ async def test_advanced_alchemy_backend_preserves_json_string_results(
 
 
 async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_running(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     pending = await advanced_alchemy_backend.enqueue("tasks.cancel")
 
@@ -533,7 +522,7 @@ async def test_advanced_alchemy_backend_cancels_heartbeats_and_requeues_stale_ru
 
 
 async def test_advanced_alchemy_backend_touch_heartbeats_handles_mixed_metadata_patches(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     patched = await advanced_alchemy_backend.enqueue(
         "tasks.heartbeat.patched", metadata={"existing": "kept", "patch": "old"}
@@ -569,7 +558,7 @@ async def test_advanced_alchemy_backend_touch_heartbeats_handles_mixed_metadata_
 
 
 async def test_advanced_alchemy_backend_operational_queries_and_execution_refs(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend",
+    advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     local = await advanced_alchemy_backend.enqueue("tasks.local", priority=100, execution_backend="local")
     external = await advanced_alchemy_backend.enqueue(
@@ -616,10 +605,10 @@ async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: "Path") -> 
     async def aa_task() -> "str":
         return "ok"
 
+    sqlalchemy_config = _sqlite_config(tmp_path / "service.db")
+    await create_tables(sqlalchemy_config, ContractQueueTask)
     queue_config = QueueConfig(
-        queue_backend=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "service.db"), model_class=ContractQueueTask, create_schema=True
-        )
+        queue_backend=SQLAlchemyBackendConfig(sqlalchemy_config=sqlalchemy_config, model_class=ContractQueueTask)
     )
 
     async with QueueService(queue_config) as service:
@@ -659,7 +648,7 @@ def _dynamic_queue_model(table_name: "str") -> "type[object]":
     )
 
 
-async def _drop_dynamic_queue_model(backend: "AdvancedAlchemyQueueBackend", model_class: "type[object]") -> "None":
+async def _drop_dynamic_queue_model(backend: "SQLAlchemyBackend", model_class: "type[object]") -> "None":
     sqlalchemy_config = backend._sqlalchemy_config
     if sqlalchemy_config is None:
         return
@@ -696,7 +685,7 @@ async def _failing_enqueue_many(self: "Any", specs: "Any") -> "Any":
     raise RuntimeError(msg)
 
 
-class _CountingAdvancedAlchemyQueueBackend(AdvancedAlchemyQueueBackend):
+class _CountingSQLAlchemyBackend(SQLAlchemyBackend):
     __slots__ = ("notification_batches", "operation_count")
 
     def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
@@ -745,7 +734,7 @@ class _FakeNotificationListener:
         self.notified = True
 
 
-class _FakeListenerAdvancedAlchemyQueueBackend(AdvancedAlchemyQueueBackend):
+class _FakeListenerSQLAlchemyBackend(SQLAlchemyBackend):
     __slots__ = ("listener",)
 
     def __init__(self, *args: "Any", **kwargs: "Any") -> "None":

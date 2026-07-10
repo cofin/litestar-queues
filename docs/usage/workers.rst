@@ -16,8 +16,8 @@ deployments.
 Run standalone workers
 ======================
 
-Use a shared persistent queue backend, turn off the web process worker, and run
-the same Litestar application as a worker service:
+Choose a shared, persistent queue backend. Then turn off the worker in the web
+process and run the same Litestar application as a worker service:
 
 .. code-block:: python
 
@@ -40,19 +40,19 @@ Memory persistence cannot coordinate separate processes. Choose a backend in
 What one worker loop does
 =========================
 
-A worker promotes due work, claims up to its available concurrency, schedules
-local executions, heartbeats running records, and reconciles external work.
-``Worker.run_once()`` returns after claims are scheduled; it is not a
-completion barrier. Use :doc:`results` when a caller must observe terminal
-state.
+A worker makes due scheduled tasks ready, claims as many tasks as its
+concurrency limit allows, and starts local execution. It also sends heartbeats
+for running records and checks external work. ``Worker.run_once()`` returns
+after it schedules claimed tasks; it does not wait for them to finish. Use
+:doc:`results` when a caller must observe the final state.
 
 Shutdown
 ========
 
-The first termination signal stops new claims and drains running tasks up to
-the configured graceful timeout. A second signal forces cancellation. The CLI
-returns ``0`` for clean shutdown, ``1`` for a worker error, and ``2`` when
-draining escalates to cancellation.
+The first termination signal stops new claims and gives running tasks time to
+finish. A second signal cancels them. The CLI returns ``0`` for a clean
+shutdown, ``1`` for a worker error, and ``2`` when the graceful timeout ends
+and cancellation begins.
 
 See :doc:`worker-wakeups` for idle waiting and :doc:`worker-recovery` for
 heartbeats and stale work.

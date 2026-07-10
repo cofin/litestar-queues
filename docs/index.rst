@@ -10,9 +10,9 @@
 
       <h1 class="brand-text" aria-label="Litestar Queues">Litestar Queues</h1>
 
-Define background work with a typed decorator, enqueue it through Litestar,
-and let a managed worker execute it. Start in one process; adopt durable queue
-persistence, separate workers, or live task events when the application grows.
+Define background work with a typed decorator, add it to a queue through
+Litestar, and let a managed worker run it. Start in one process. Add persistent
+storage, separate workers, or live task events as the application grows.
 
 .. toctree::
    :hidden:
@@ -40,7 +40,7 @@ persistence, separate workers, or live task events when the application grows.
       :link: usage/concepts
       :link-type: doc
 
-      Learn the boundaries between records, persistence, workers, execution, and events.
+      Learn how task records, storage, workers, execution, and events fit together.
 
    .. grid-item-card:: How-to guides
       :link: usage/index

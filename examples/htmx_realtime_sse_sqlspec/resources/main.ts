@@ -16,9 +16,9 @@ void import("htmx-ext-sse").then(() => htmx.process(document.body))
 
 const MAX_LINES = 40
 // After the final event, wait for the last lines to drift out of view, then
-// return to the idle hint unless another mission starts first.
+// return to the idle hint unless another task starts first.
 const IDLE_DELAY_MS = 45_000
-const IDLE_TEXT = document.querySelector<HTMLElement>("#crawl-lines p")?.textContent ?? "Press restart to queue a background job."
+const IDLE_TEXT = document.querySelector<HTMLElement>("#crawl-lines p")?.textContent ?? "Press restart to send a background task."
 let idleTimer: ReturnType<typeof setTimeout> | null = null
 
 type QueueEvent = {
@@ -60,16 +60,27 @@ function appendCrawlLine(event: QueueEvent): void {
   while (target.children.length > MAX_LINES) target.firstElementChild?.remove()
 }
 
+function markBackendMessage(event: QueueEvent): void {
+  const status = document.querySelector<HTMLElement>("#delivery-status")
+  const label = document.querySelector<HTMLElement>("#delivery-label")
+  if (!status || !label) return
+  label.textContent = `Backend message received · ${event.type}`
+  status.classList.remove("received")
+  void status.offsetHeight
+  status.classList.add("received")
+}
+
 // The one adapter the extensions cannot replace: queue frames are JSON, so they
 // cannot be swapped as HTML. Parse each frame, ignore ping heartbeats, drop
 // back-to-back duplicates (progress and custom events share a message), and
-// append a crawl line. The terminal event only flips the readout — the task's
+// append the event line. The terminal event only flips the readout — the task's
 // own closing log line is the on-screen finale.
 function handleQueueEvent(raw: string): void {
   const event = parseQueueEvent(raw)
   if (!event || event.type === "ping") return
+  markBackendMessage(event)
   if (event.type === "task.completed") {
-    setReadout("Mission complete", true)
+    setReadout("Task complete", true)
     if (idleTimer) clearTimeout(idleTimer)
     idleTimer = setTimeout(goIdle, IDLE_DELAY_MS)
     return
@@ -87,7 +98,7 @@ function goIdle(): void {
   setReadout("Awaiting launch")
 }
 
-function resetCrawl(jobId?: string): void {
+function resetCrawl(taskId?: string, reused = false): void {
   if (idleTimer) clearTimeout(idleTimer)
   idleTimer = null
   const plane = document.querySelector<HTMLElement>("#crawl-lines")
@@ -95,12 +106,18 @@ function resetCrawl(jobId?: string): void {
     plane.classList.remove("idle")
     plane.replaceChildren()
     // The crawl keyframe is one-shot and time-based; restart it so every
-    // mission's lines enter from the bottom instead of mid-flight.
+    // task's lines enter from the bottom instead of mid-flight.
     plane.style.animation = "none"
     void plane.offsetHeight
     plane.style.animation = ""
   }
-  setReadout(jobId ? `Mission ${jobId} underway` : "Mission underway")
+  setReadout(
+    taskId
+      ? reused
+        ? `Task ${taskId} is already running`
+        : `Task ${taskId} queued`
+      : "Task queued",
+  )
 }
 
 // docs: sse-client-start
@@ -119,7 +136,7 @@ document.body.addEventListener("htmx:sseBeforeMessage", (event) => {
 // replaces #stream-mount. Swapping the element reconnects the stream (the old
 // EventSource closes with the removed element); reset the crawl to match.
 document.body.addEventListener("queue-demo:started", (event) => {
-  const detail = (event as CustomEvent<{ jobId?: string }>).detail
-  resetCrawl(detail?.jobId)
+  const detail = (event as CustomEvent<{ taskId?: string; reused?: boolean }>).detail
+  resetCrawl(detail?.taskId, detail?.reused === true)
 })
 // docs: stream-adapter-end

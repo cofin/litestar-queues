@@ -2,8 +2,9 @@
 Choose backends
 ===============
 
-Make five independent decisions. Most applications need only the first two;
-the others add latency improvements or user-facing delivery.
+Make these five choices separately. Most applications need only task storage
+and execution placement. The other choices can reduce worker delay or deliver
+events to users.
 
 .. list-table::
    :header-rows: 1
@@ -28,7 +29,7 @@ the others add latency improvements or user-facing delivery.
      - Configure Channels separately
      - :doc:`backends/sqlspec`
    * - SQLAlchemy application
-     - ``AdvancedAlchemyBackendConfig``
+     - ``SQLAlchemyBackendConfig``
      - ``local`` or Cloud Run
      - Optional PostgreSQL hint, otherwise polling
      - Configure Channels separately
@@ -46,10 +47,10 @@ the others add latency improvements or user-facing delivery.
      - Optional Valkey-compatible Channels
      - :doc:`backends/redis-valkey`
 
-The queue backend stores records. ``local`` means worker-process execution,
-``immediate`` means inline execution, and Cloud Run is remote execution—not
-queue storage. A backend notification wakes workers; it does not fan task
-events out to browsers.
+The queue backend stores task records. ``local`` runs work in a worker process.
+``immediate`` runs it during the enqueue call. Cloud Run runs it remotely; it
+does not store the queue. Backend notifications wake workers, but they do not
+send task events to browsers.
 
 Install extras
 ==============
@@ -93,15 +94,16 @@ Event-history support
      - ``EventLogConfig.max_records`` caps records in the process.
    * - SQLSpec
      - Supported
-     - Queue schema, migrations, and SQLSpec session lifecycle.
+     - The app owns the queue schema and migrations; SQLSpec manages the sessions.
    * - Advanced Alchemy
      - Supported
-     - Application-owned model and schema migrations.
+     - The app owns the model and migrations.
    * - Redis / Valkey
      - Supported
-     - Operator controls service durability, retention, backups, and cleanup.
+     - You choose how long records stay and whether to back them up.
 
-History is not a live sink. See :doc:`event-history` and :doc:`event-streams`.
+Event history saves records for later queries. It does not deliver live events.
+See :doc:`event-history` and :doc:`event-streams`.
 
 Topology and security
 =====================

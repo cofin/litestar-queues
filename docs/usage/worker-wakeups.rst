@@ -20,13 +20,12 @@ Hints, not state
 
 Redis and Valkey use pub/sub hints. SQLSpec can use a configured SQLSpec event
 transport. Advanced Alchemy can use PostgreSQL notification hints when enabled.
-These messages say “check the queue”; they do not contain the authoritative
-task lifecycle.
+The message only tells the worker to check. The saved task record has the real
+state.
 
-Notifications can be coalesced, delayed, or dropped. Correctness comes from
-polling and reconciliation against the durable task table or data structure.
-Do not increase the poll interval beyond the recovery latency your service can
-tolerate.
+Notifications may arrive late or not at all. The worker stays correct by
+checking the saved task state. Do not set the poll interval higher than the
+delay your service can tolerate.
 
 Separate from task events
 =========================

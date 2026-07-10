@@ -2,8 +2,8 @@
 Installation
 ============
 
-Install the core package for task registration, the Litestar plugin, memory
-queue persistence, and local or immediate execution:
+Install the core package. It provides task registration, the Litestar plugin,
+in-memory queue storage, and local or immediate execution:
 
 .. code-block:: bash
 
@@ -36,5 +36,6 @@ Install only the integration your application uses:
    * - ``pip install "litestar-queues[examples]"``
      - Dependencies used by the runnable HTMX examples.
 
-Extras install libraries, but they do not choose your architecture. See
-:doc:`../usage/backends` after completing the :doc:`quickstart`.
+An extra installs the libraries for an integration. It does not configure that
+integration or choose where tasks run. Complete the :doc:`quickstart`, then
+see :doc:`../usage/backends`.

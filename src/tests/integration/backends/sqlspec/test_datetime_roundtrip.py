@@ -49,6 +49,7 @@ async def test_duckdb_roundtrips_aware_utc_datetimes_on_non_utc_host(
         )
     )
     await backend.open()
+    await backend.create_schema()
     try:
         scheduled_at = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
         record = await backend.enqueue("tasks.duckdb-timezone", scheduled_at=scheduled_at)

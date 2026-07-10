@@ -17,13 +17,13 @@ from litestar_queues.backends.advanced_alchemy.service import QueueTaskService, 
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+    from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_advanced_alchemy_stale_recovery_does_not_requeue_task_completed_after_stale_select(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+    advanced_alchemy_backend: "SQLAlchemyBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
     record = await advanced_alchemy_backend.enqueue("tasks.stale.completed", max_retries=2)
     claimed = await advanced_alchemy_backend.claim_task(record.id)
@@ -55,7 +55,7 @@ async def test_advanced_alchemy_stale_recovery_does_not_requeue_task_completed_a
 
 
 async def test_advanced_alchemy_expected_retry_count_prevents_stale_owner_from_failing_reclaimed_task(
-    advanced_alchemy_backend: "AdvancedAlchemyQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+    advanced_alchemy_backend: "SQLAlchemyBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
     record = await advanced_alchemy_backend.enqueue("tasks.stale.owner", max_retries=2)
     claimed = await advanced_alchemy_backend.claim_task(record.id)

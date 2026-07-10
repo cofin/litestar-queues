@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
-from litestar_queues.backends.advanced_alchemy.config import AdvancedAlchemyBackendConfig
+from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
 from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
 from litestar_queues.backends.advanced_alchemy.service import QueueEventLogService, QueueTaskService
@@ -37,14 +37,14 @@ if TYPE_CHECKING:
     )
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
-__all__ = ("AdvancedAlchemyQueueBackend",)
+__all__ = ("SQLAlchemyBackend",)
 
 _POSTGRES_NOTIFY_BACKEND = "postgres-listen-notify"
 _POSTGRES_NOTIFY_PAYLOAD = "tasks"
 
 
-class AdvancedAlchemyQueueBackend(BaseQueueBackend):
-    """Advanced Alchemy-backed queue backend."""
+class SQLAlchemyBackend(BaseQueueBackend):
+    """SQLAlchemy queue backend using Advanced Alchemy services."""
 
     _model_class: "type[QueueTaskModelMixin]"
     _service_class: 'type["QueueTaskService"]'
@@ -52,7 +52,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     _event_log_service_class: 'type["QueueEventLogService"]'
 
     __slots__ = (
-        "_create_schema",
         "_event_log",
         "_event_log_model_class",
         "_event_log_service_class",
@@ -69,17 +68,16 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     )
 
     def __init__(
-        self, config: "QueueConfig | None" = None, *, backend_config: "AdvancedAlchemyBackendConfig | None" = None
+        self, config: "QueueConfig | None" = None, *, backend_config: "SQLAlchemyBackendConfig | None" = None
     ) -> "None":
         super().__init__(config=config)
-        backend_config = backend_config or AdvancedAlchemyBackendConfig()
+        backend_config = backend_config or SQLAlchemyBackendConfig()
         self._sqlalchemy_config = backend_config.sqlalchemy_config
         self._heartbeat_session_maker = backend_config.heartbeat_session_maker
         self._model_class, self._service_class = self._resolve_model_classes(backend_config.model_class)
         self._event_log_model_class, self._event_log_service_class = self._resolve_event_log_model_classes(
             backend_config.event_log_model_class
         )
-        self._create_schema = backend_config.create_schema
         self._notifications = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
         self._event_poll_interval = backend_config.event_poll_interval
@@ -108,8 +106,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         if self._opened:
             return True
         self._ensure_configured()
-        if self._create_schema:
-            await self.create_schema()
         self._opened = True
         return True
 
@@ -121,21 +117,6 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         if self._event_log is not None:
             await self._event_log.flush_events()
         self._opened = False
-
-    async def create_schema(self) -> "None":
-        """Create the queue task table and enabled event-history table."""
-        self._ensure_configured()
-        sqlalchemy_config = self._sqlalchemy_config
-        if sqlalchemy_config is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
-            raise QueueConfigurationError(msg)
-        engine = sqlalchemy_config.get_engine()
-        table = self._model_class.__dict__["__table__"]
-        async with engine.begin() as connection:
-            await connection.run_sync(table.create, checkfirst=True)
-            if self._event_log_enabled():
-                event_log_table = self._event_log_model_class.__dict__["__table__"]
-                await connection.run_sync(event_log_table.create, checkfirst=True)
 
     def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
         """Return Advanced Alchemy-managed queue event history when enabled."""
@@ -365,12 +346,12 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
 
     def _ensure_configured(self) -> "None":
         if self._sqlalchemy_config is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
+            msg = "SQLAlchemyBackend requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
 
     def _ensure_opened(self) -> "None":
         if not self._opened:
-            msg = "AdvancedAlchemyQueueBackend.open() must be called before using the backend."
+            msg = "SQLAlchemyBackend.open() must be called before using the backend."
             raise RuntimeError(msg)
 
     def _driver_name(self) -> "str | None":
@@ -390,7 +371,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     def _create_notification_listener(self) -> "Any":
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None or sqlalchemy_config.connection_string is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config for PostgreSQL notifications."
+            msg = "SQLAlchemyBackend requires sqlalchemy_config for PostgreSQL notifications."
             raise QueueConfigurationError(msg)
         url = make_url(sqlalchemy_config.connection_string).set(drivername="postgresql")
         return _AsyncpgNotificationListener(
@@ -400,7 +381,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
     async def _send_notification_marker(self) -> "None":
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config for PostgreSQL notifications."
+            msg = "SQLAlchemyBackend requires sqlalchemy_config for PostgreSQL notifications."
             raise QueueConfigurationError(msg)
         engine = sqlalchemy_config.get_engine()
         async with engine.begin() as connection:
@@ -430,17 +411,17 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self, model_class: "type[object] | None"
     ) -> 'tuple[type[QueueTaskModelMixin], type["QueueTaskService"]]':
         if model_class is None:
-            msg = "AdvancedAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
+            msg = "SQLAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
             raise QueueConfigurationError(msg)
         try:
             valid_model = issubclass(model_class, QueueTaskModelMixin)
         except TypeError:
             valid_model = False
         if not valid_model:
-            msg = "AdvancedAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
+            msg = "SQLAlchemyBackendConfig.model_class must inherit QueueTaskModelMixin."
             raise QueueConfigurationError(msg)
         if "__tablename__" not in model_class.__dict__:
-            msg = "AdvancedAlchemyBackendConfig.model_class must declare __tablename__."
+            msg = "SQLAlchemyBackendConfig.model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
         typed_model = cast("type[QueueTaskModelMixin]", model_class)
         mapper = cast("Any", sqlalchemy_inspect(typed_model))
@@ -469,7 +450,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         } - {property_.key for property_ in mapper.column_attrs}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
-            msg = f"AdvancedAlchemyBackendConfig.model_class is missing queue columns: {columns}."
+            msg = f"SQLAlchemyBackendConfig.model_class is missing queue columns: {columns}."
             raise QueueConfigurationError(msg)
         return typed_model, QueueTaskService.for_model(typed_model)
 
@@ -477,17 +458,17 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self, model_class: "type[object] | None"
     ) -> 'tuple[type[QueueEventLogModelMixin], type["QueueEventLogService"]]':
         if model_class is None:
-            msg = "AdvancedAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
+            msg = "SQLAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
             raise QueueConfigurationError(msg)
         try:
             valid_model = issubclass(model_class, QueueEventLogModelMixin)
         except TypeError:
             valid_model = False
         if not valid_model:
-            msg = "AdvancedAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
+            msg = "SQLAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
             raise QueueConfigurationError(msg)
         if "__tablename__" not in model_class.__dict__:
-            msg = "AdvancedAlchemyBackendConfig.event_log_model_class must declare __tablename__."
+            msg = "SQLAlchemyBackendConfig.event_log_model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
         typed_model = cast("type[QueueEventLogModelMixin]", model_class)
         mapper = cast("Any", sqlalchemy_inspect(typed_model))
@@ -512,7 +493,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         } - {property_.key for property_ in mapper.column_attrs}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
-            msg = f"AdvancedAlchemyBackendConfig.event_log_model_class is missing event-log columns: {columns}."
+            msg = f"SQLAlchemyBackendConfig.event_log_model_class is missing event-log columns: {columns}."
             raise QueueConfigurationError(msg)
         return typed_model, QueueEventLogService.for_model(typed_model)
 
@@ -525,7 +506,7 @@ class AdvancedAlchemyQueueBackend(BaseQueueBackend):
         self._ensure_configured()
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None:
-            msg = "AdvancedAlchemyQueueBackend requires sqlalchemy_config."
+            msg = "SQLAlchemyBackend requires sqlalchemy_config."
             raise QueueConfigurationError(msg)
         session_maker = sqlalchemy_config.create_session_maker()
         async with session_maker() as session:
@@ -621,7 +602,7 @@ class _AsyncpgNotificationListener:
         try:
             asyncpg = import_module("asyncpg")
         except ImportError as exc:
-            msg = "AdvancedAlchemyBackendConfig.notifications=True for postgresql+asyncpg requires asyncpg."
+            msg = "SQLAlchemyBackendConfig.notifications=True for postgresql+asyncpg requires asyncpg."
             raise QueueConfigurationError(msg) from exc
         return await cast("Any", asyncpg).connect(dsn=self._dsn)
 

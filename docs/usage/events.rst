@@ -2,10 +2,10 @@
 Task events
 ===========
 
-Task events are application-facing lifecycle, progress, log, and custom
-messages. They are distinct from queue-backend notifications that wake
-workers. Event delivery does not discover work, claim records, or replace
-queue persistence.
+Task events tell applications and operators about a task's lifecycle, progress,
+logs, or custom state. They are not the queue-backend notifications that wake
+workers. Delivering an event does not help a worker find or claim a task, and
+it does not store the queue record.
 
 Enable publishing
 =================
@@ -24,9 +24,9 @@ Provide a sink or Channels backend:
        )
    )
 
-Without a configured sink or Channels backend, event publishing is a no-op.
-Live delivery is best effort by default; set ``strict=True`` only when a sink
-failure should fail the publishing path.
+Without a configured sink or Channels backend, publishing does nothing. By
+default, a live-delivery failure does not fail the task. Set ``strict=True``
+only when the caller must receive a sink error.
 
 Publish from a task
 ===================
@@ -42,20 +42,20 @@ Publish from a task
        await publish_task_log("Import started", payload={"path": path})
        await publish_task_progress(current=50, total=100, message="Halfway")
 
-The active task context fills in task ID, task name, queue, worker identity,
-attempt, execution backend, and sequence. Use ``publish_task_event()`` for a
-custom type, or accept ``_task_context`` when direct context methods are more
-convenient.
+The active task context adds the task ID, task name, queue, worker ID, attempt,
+execution backend, and sequence. Use ``publish_task_event()`` for a custom
+event type. Accept ``_task_context`` when you prefer to call the context
+methods directly.
 
 Buffering and external producers
 ================================
 
-The publisher records configured history before live delivery. It micro-batches
-non-terminal live events and flushes a task's buffered events before its
-terminal event. Sinks with ``publish_many`` receive a batch; other sinks fall
-back to ordered single-event ``publish`` calls.
+When enabled, history is written before live delivery. Non-terminal live events
+are sent in small batches, and the buffer is flushed before the final event.
+Sinks with ``publish_many`` receive a batch; other sinks receive the events one
+at a time in order.
 
-Code outside a worker uses the lifecycle-owning context manager:
+Code outside a worker should use this context manager:
 
 .. code-block:: python
 
@@ -64,9 +64,8 @@ Code outside a worker uses the lifecycle-owning context manager:
    async with create_event_producer(queue_config) as events:
        await events.task(task_id).progress(current=1, total=2, message="Started")
 
-The context manager opens the configured resource, starts and flushes the
-buffer, then closes the resource. ``QueueEventProducer`` itself is a thin,
-lifecycle-free facade.
+The context manager opens the resource, starts it, flushes pending events, and
+closes it. ``QueueEventProducer`` does not manage resources by itself.
 
 Topology and security
 =====================
@@ -87,8 +86,8 @@ Topology and security
      - Broadcast-capable shared Channels transport
      - Authorize task/queue/worker/custom scope subscriptions.
 
-SQLSpec durable table queues use competing-consumer semantics. They are not
-broadcast fan-out for multiple browser-serving processes.
+SQLSpec durable table queues are shared work queues: one consumer claims each
+record. They are not broadcast delivery for multiple browser-serving processes.
 
 Next steps
 ==========

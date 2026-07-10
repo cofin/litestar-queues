@@ -20,25 +20,26 @@ Leaving ``worker_stale_after=None`` disables automatic stale recovery.
 Heartbeats and stale records
 ============================
 
-The worker heartbeat manager updates active records. A distributed worker lock
-allows one worker at a time to run a stale sweep. Eligible stale work is
-requeued while retries remain; otherwise it becomes a terminal stale failure.
-Tasks may disable stale requeue or register ``on_stale_failure`` for cleanup.
+The heartbeat manager updates active records. A shared lock lets only one
+worker at a time check for stale records. A stale task returns to the queue if
+it has retries left. Otherwise, it ends with a stale failure. A task may turn
+off stale requeueing or register ``on_stale_failure`` for cleanup.
 
 Heartbeat pool isolation
 ========================
 
-SQLSpec can route heartbeat-only writes through ``heartbeat_pool_config``.
-Advanced Alchemy can use an adopter-owned ``heartbeat_session_maker``. Both
-must point at the same database as ordinary queue operations. Lifecycle writes
-remain on the main transaction path.
+SQLSpec can send heartbeat-only writes through ``heartbeat_pool_config``.
+Advanced Alchemy can use an app-owned ``heartbeat_session_maker``. Both must
+point to the same database as normal queue operations. Other task-state writes
+continue to use the main transaction path.
 
 Worker identity
 ===============
 
-Workers default to ``worker-{pid}``. Provide an explicit ``worker_id`` when
-process IDs are ambiguous across hosts or prefork processes. The ID appears in
-logs, metrics, and task events; it does not provide mutual exclusion.
+Workers default to ``worker-{pid}``, where ``pid`` is the process ID. Set an
+explicit ``worker_id`` when process IDs may repeat across hosts or preforked
+processes. The ID appears in logs, metrics, and task events. It does not stop
+another worker from running.
 
 Diagnosis
 =========

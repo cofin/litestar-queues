@@ -1,7 +1,7 @@
 """Fixtures and parametrize hook for Advanced Alchemy backend tests.
 
 Provides the ``advanced_alchemy_backend`` async fixture that yields an
-opened ``AdvancedAlchemyQueueBackend`` parametrized over ``AA_ENGINES``.
+opened ``SQLAlchemyBackend`` parametrized over ``AA_ENGINES``.
 For service-backed engines, drops the queue table on teardown so the
 shared Docker DB stays isolated between tests.
 """
@@ -14,6 +14,7 @@ import pytest
 from tests.integration._backends import FixtureCtx
 from tests.integration._names import table_name_for_test
 from tests.integration.backends.advanced_alchemy._aa_engines import AA_ENGINES, AAEngineCase
+from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy import Table
 
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+    from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend
 
 
 class MappedQueueModel(Protocol):
@@ -47,7 +48,7 @@ def _queue_model(table_name: "str") -> "type[object]":
 @pytest.fixture
 async def advanced_alchemy_backend(
     request: "pytest.FixtureRequest", tmp_path: "Path"
-) -> "AsyncIterator[AdvancedAlchemyQueueBackend]":
+) -> "AsyncIterator[SQLAlchemyBackend]":
     """Yield an opened Advanced Alchemy queue backend parametrized over AA_ENGINES.
 
     For service-backed engines (Postgres/MySQL/Oracle), the queue table is
@@ -55,7 +56,7 @@ async def advanced_alchemy_backend(
     In-process (aiosqlite) gets a unique tmp_path DB file per test so no extra
     cleanup is required.
     """
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, AdvancedAlchemyQueueBackend
+    from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
 
     case: "AAEngineCase" = request.param
     for extra in case.extras:
@@ -73,10 +74,10 @@ async def advanced_alchemy_backend(
     ctx = FixtureCtx(tmp_path=tmp_path, service=service)
     config = case.build_config(ctx)
     table_name = table_name_for_test("aa_queue_task", case.name, request.node.nodeid)
-    backend = AdvancedAlchemyQueueBackend(
-        backend_config=AdvancedAlchemyBackendConfig(
-            sqlalchemy_config=config, model_class=_queue_model(table_name), create_schema=True
-        )
+    model_class = _queue_model(table_name)
+    await create_tables(config, model_class)
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=model_class)
     )
     await backend.open()
     try:
@@ -88,7 +89,7 @@ async def advanced_alchemy_backend(
         await backend.close()
 
 
-async def _drop_queue_tables(backend: "AdvancedAlchemyQueueBackend") -> "None":
+async def _drop_queue_tables(backend: "SQLAlchemyBackend") -> "None":
     """Drop the queue table for service-backed engines.
 
     Uses the dialect-aware ``Table.drop()`` path for the queue table so

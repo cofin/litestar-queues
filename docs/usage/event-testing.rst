@@ -23,14 +23,14 @@ publisher and task tests:
 
        assert any(event.type == "task.progress" for event in sink.events)
 
-Inspect ``sink.published`` when the channel names matter, or
-``events_for(channel)`` for one canonical task/queue channel. Disable buffering
-or flush it before assertions that require intermediate non-terminal events.
+Inspect ``sink.published`` when channel names matter. Use
+``events_for(channel)`` for one task or queue channel. Turn off buffering, or
+flush it, before checking events that occur before the task's final state.
 
-Stream tests should focus on package-owned SSE/WebSocket route behavior,
-authorization, content type, keepalives, and envelope delivery. Browser-facing
-claims belong to the Playwright suite in ``src/tests/e2e`` because curl cannot
-prove HTMX boot, DOM updates, reconnection, or socket cleanup.
+Stream tests should cover the package's SSE/WebSocket routes, authorization,
+content type, keepalives, and event envelopes. Use the Playwright suite in
+``src/tests/e2e`` for browser behavior. Curl cannot prove that HTMX starts,
+updates the page, reconnects, or closes sockets.
 
 Use unique Redis/Valkey queue and Channels prefixes in topology tests. Never
 flush a shared service globally.

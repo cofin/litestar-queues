@@ -3,7 +3,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
 from logging import getLogger
@@ -28,7 +27,7 @@ from litestar_queues.backends.sqlspec.event_log import (
     create_event_log_store,
     resolve_event_log_table_name,
 )
-from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
@@ -168,7 +167,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_column_map",
-        "_create_schema",
         "_event_backend",
         "_event_channel",
         "_event_log",
@@ -191,11 +189,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_owns_event_channel",
         "_owns_sqlspec",
         "_queue_observability",
-        "_run_migrations",
+        "_queue_table_name",
         "_sqlspec",
         "_sqlspec_config",
         "_store",
-        "_table_name",
     )
 
     def __init__(
@@ -212,11 +209,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._heartbeat_pool_enabled = self._heartbeat_pool_config is not None
         self._heartbeat_pool_registered = False
         self._owns_sqlspec = self._sqlspec is None
-        self._table_name = (
-            validate_table_name(backend_config.table_name) if backend_config.table_name is not None else None
+        self._queue_table_name = (
+            validate_table_name(backend_config.queue_table_name)
+            if backend_config.queue_table_name is not None
+            else None
         )
-        self._create_schema = backend_config.create_schema
-        self._run_migrations = backend_config.run_migrations
         self._event_channel = backend_config.event_channel
         self._owns_event_channel = self._event_channel is None
         self._notifications_requested = backend_config.notifications
@@ -251,14 +248,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return True
 
         self._get_or_create_sqlspec()
-        self._resolve_table_name()
+        self._resolve_queue_table_name()
         self._configure_notifications()
         self._register_heartbeat_pool()
         self._opened = True
-        if self._resolve_run_migrations():
-            await self.run_migrations()
-        if self._resolve_create_schema():
-            await self.create_schema()
         return True
 
     async def close(self) -> "None":
@@ -322,19 +315,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 for statement in statements:
                     await driver.execute_script(statement)
                 await driver.commit()
-
-    async def run_migrations(self) -> "None":
-        """Apply packaged SQLSpec migrations."""
-        if self._manage_schema:
-            sqlspec_config = self._get_sqlspec_config()
-            event_log_enabled = self._event_log_enabled()
-            with _temporary_queue_migration_extension(
-                sqlspec_config,
-                table_name=self._resolve_table_name(),
-                event_log_enabled=event_log_enabled,
-                event_log_table_name=self._resolve_event_log_table_name() if event_log_enabled else None,
-            ):
-                await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
         self,
@@ -1087,26 +1067,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         return cast("SQLSpecConfig", AiosqliteConfig())
 
-    def _resolve_table_name(self) -> "str":
-        if self._table_name is None:
+    def _resolve_queue_table_name(self) -> "str":
+        if self._queue_table_name is None:
             queue_settings = _queue_extension_settings(self._sqlspec_config)
             configured_table_name = _setting(queue_settings, "table_name") or DEFAULT_TABLE_NAME
-            self._table_name = validate_table_name(str(configured_table_name))
-        return self._table_name
-
-    def _resolve_create_schema(self) -> "bool":
-        if not self._manage_schema:
-            return False
-        return _resolve_bool(
-            self._create_schema, _queue_extension_settings(self._sqlspec_config), "create_schema", True
-        )
-
-    def _resolve_run_migrations(self) -> "bool":
-        if not self._manage_schema:
-            return False
-        return _resolve_bool(
-            self._run_migrations, _queue_extension_settings(self._sqlspec_config), "run_migrations", False
-        )
+            self._queue_table_name = validate_table_name(str(configured_table_name))
+        return self._queue_table_name
 
     def _resolve_notification_channel(self) -> "str":
         if self._notification_channel is not None:
@@ -1276,7 +1242,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._store is None:
             self._store = create_queue_store(
                 self._get_sqlspec_config(),
-                table_name=self._resolve_table_name(),
+                table_name=self._resolve_queue_table_name(),
                 column_map=self._column_map,
                 native_json_columns=self._native_json_columns,
                 manage_schema=self._manage_schema,
@@ -1287,7 +1253,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._event_log_store is None:
             store = create_event_log_store(
                 self._get_sqlspec_config(),
-                queue_table_name=self._resolve_table_name(),
+                queue_table_name=self._resolve_queue_table_name(),
                 event_log_table_name=self._event_log_table_name,
                 manage_schema=self._manage_schema,
             )
@@ -1303,7 +1269,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _resolve_event_log_table_name(self) -> "str":
         if self._event_log_table_name is None:
-            self._event_log_table_name = resolve_event_log_table_name(self._resolve_table_name())
+            self._event_log_table_name = resolve_event_log_table_name(self._resolve_queue_table_name())
         return self._event_log_table_name
 
     @asynccontextmanager
@@ -1889,42 +1855,6 @@ def _queue_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "d
     return dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
 
 
-@contextmanager
-def _temporary_queue_migration_extension(
-    sqlspec_config: "SQLSpecConfig",
-    *,
-    table_name: "str",
-    event_log_enabled: "bool" = False,
-    event_log_table_name: "str | None" = None,
-) -> "Iterator[None]":
-    original_extension_config = deepcopy(sqlspec_config.extension_config or {})
-    original_migration_config = deepcopy(sqlspec_config.migration_config or {})
-
-    extension_config = deepcopy(original_extension_config)
-    queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    queue_settings["table_name"] = validate_table_name(table_name)
-    if event_log_enabled:
-        queue_settings["event_log_enabled"] = True
-        queue_settings["event_log_table_name"] = resolve_event_log_table_name(
-            table_name, event_log_table_name=event_log_table_name
-        )
-    extension_config[QUEUE_EXTENSION_NAME] = queue_settings
-
-    sqlspec_config.extension_config = extension_config
-    sqlspec_config.set_migration_config(deepcopy(original_migration_config))
-    configure_queue_migration_extension(
-        sqlspec_config,
-        table_name=table_name,
-        event_log_enabled=event_log_enabled,
-        event_log_table_name=event_log_table_name,
-    )
-    try:
-        yield
-    finally:
-        sqlspec_config.extension_config = original_extension_config
-        sqlspec_config.set_migration_config(original_migration_config)
-
-
 async def _create_schema_statements(store: "SQLSpecQueueStore", driver: "SQLSpecDriver") -> "list[str]":
     create_for_driver = getattr(store, "create_statements_for_driver", None)
     if callable(create_for_driver):
@@ -1947,14 +1877,6 @@ def _setting(queue_settings: "dict[str, Any]", *names: "str") -> "Any":
         if name in queue_settings:
             return queue_settings[name]
     return None
-
-
-def _resolve_bool(value: "bool | None", queue_settings: "dict[str, Any]", key: "str", default: "bool") -> "bool":
-    if value is not None:
-        return value
-    if key in queue_settings:
-        return bool(queue_settings[key])
-    return default
 
 
 def _normalize_notification_channel(channel: "str") -> "str":

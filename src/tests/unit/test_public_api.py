@@ -94,7 +94,7 @@ def test_public_exports() -> "None":
         "task",
     }
     forbidden_exports = {
-        "AdvancedAlchemyQueueBackend",
+        "SQLAlchemyBackend",
         "RedisBackendConfig",
         "RedisQueueBackend",
         "SQLSpecQueueBackend",
@@ -148,12 +148,12 @@ def test_public_exports() -> "None":
 def test_optional_backends_resolve_lazily_via_factory() -> "None":
     """Optional backends are not top-level exports but are resolvable by name through the factory."""
     from litestar_queues import get_queue_backend_class
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+    from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend
     from litestar_queues.backends.redis import RedisQueueBackend
     from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
     from litestar_queues.backends.valkey import ValkeyQueueBackend
 
-    assert get_queue_backend_class("advanced-alchemy") is AdvancedAlchemyQueueBackend
+    assert get_queue_backend_class("advanced-alchemy") is SQLAlchemyBackend
     assert get_queue_backend_class("redis") is RedisQueueBackend
     assert get_queue_backend_class("sqlspec") is SQLSpecQueueBackend
     assert get_queue_backend_class("valkey") is ValkeyQueueBackend

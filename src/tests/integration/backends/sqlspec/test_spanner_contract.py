@@ -62,11 +62,12 @@ async def _run_spanner_contract(connection_config: "dict[str, object]", *, table
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
             config=SpannerSyncConfig(connection_config=connection_config, driver_features={"timeout": 30.0}),
-            table_name=table_name,
+            queue_table_name=table_name,
         )
     )
     try:
         await backend.open()
+        await backend.create_schema()
         record = await backend.enqueue("tasks.spanner.live", kwargs={"ok": True}, metadata={"source": "live"})
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
