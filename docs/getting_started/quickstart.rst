@@ -66,8 +66,9 @@ You receive JSON shaped like this:
 
    {"task_id":"...","status":"pending"}
 
-The ID identifies the persisted task record. ``pending`` is the enqueue-time
-status; the in-app worker can complete the task immediately afterward.
+The ID identifies the saved task record. ``pending`` is its status when it
+enters the queue. The in-app worker may complete the task immediately after
+the response is created.
 
 Next steps
 ==========

@@ -2,9 +2,9 @@
 Start here
 ==========
 
-Litestar Queues turns a Python callable into tracked background work. Start
-with one process, then choose durable storage and separate workers only when
-your deployment needs them.
+Litestar Queues turns a Python function into tracked background work. Start
+with one process. Add persistent storage and separate workers only when your
+deployment needs them.
 
 .. grid:: 1 1 2 3
    :gutter: 2

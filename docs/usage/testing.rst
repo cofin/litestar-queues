@@ -19,9 +19,10 @@ Use immediate execution when a test should receive the terminal record before
        assert result.status == "completed"
        assert result.result == "report-123"
 
-Use local execution when the worker lifecycle is part of the behavior. Start a
-``Worker``, enqueue work, and await ``TaskResult.wait()`` before asserting the
-terminal state. Do not treat ``Worker.run_once()`` as a completion barrier.
+Use local execution when the test covers worker behavior. Start a ``Worker``,
+enqueue work, and await ``TaskResult.wait()`` before checking the final state.
+``Worker.run_once()`` schedules claimed work; it does not mean the work has
+finished.
 
 Backend contracts
 =================

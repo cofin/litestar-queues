@@ -2,7 +2,7 @@
 How-to guides
 =============
 
-After the :doc:`../getting_started/quickstart`, follow this three-step route:
+After the :doc:`../getting_started/quickstart`, use these guides in order:
 
 1. :doc:`tasks` — define and enqueue work.
 2. :doc:`workers` and :doc:`results` — run and observe it.
@@ -94,7 +94,7 @@ Choose production options
       :link: backends
       :link-type: doc
 
-      Select queue persistence, execution placement, and wakeups independently.
+      Choose task storage, execution placement, and worker wakeups separately.
 
    .. grid-item-card:: Publish task events
       :link: events

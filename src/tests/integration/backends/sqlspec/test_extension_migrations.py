@@ -2,8 +2,8 @@
 
 Covers the ``ext_litestar_queues_0001`` packaged migration script: that it
 dispatches through the per-adapter queue store, that the packaged asset is
-discoverable, and that running it twice is idempotent (the
-``run_migrations``-twice flow is exercised by the contract suite).
+discoverable, and that running it twice is idempotent (the twice-open flow is
+exercised by the contract suite).
 """
 
 import importlib

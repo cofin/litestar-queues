@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from advanced_alchemy.config.asyncio import SQLAlchemyAsyncConfig
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-__all__ = ("AdvancedAlchemyBackendConfig",)
+__all__ = ("SQLAlchemyBackendConfig",)
 
 
 def _default_model_class() -> "type[object]":
@@ -23,15 +23,14 @@ def _default_event_log_model_class() -> "type[object]":
 
 
 @dataclass(slots=True)
-class AdvancedAlchemyBackendConfig:
-    """Configuration values for the Advanced Alchemy queue backend."""
+class SQLAlchemyBackendConfig:
+    """Configuration values for the SQLAlchemy queue backend."""
 
     backend_name: "ClassVar[str]" = "advanced-alchemy"
     sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None
     heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None
     model_class: "type[object] | None" = field(default_factory=_default_model_class)
     event_log_model_class: "type[object] | None" = field(default_factory=_default_event_log_model_class)
-    create_schema: "bool" = False
     notifications: "bool" = False
     notification_channel: "str" = "litestar_queues_tasks"
     event_poll_interval: "float | None" = None

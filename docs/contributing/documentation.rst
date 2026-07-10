@@ -2,8 +2,8 @@
 Writing documentation
 =========================
 
-Write for the reader's next goal. Keep the beginner path short, put the
-default before alternatives, and move backend internals or matrices into a
+Write for the reader's next goal. Keep the beginner path short. Explain the
+default before alternatives, and move backend internals or matrices to a
 focused guide or reference page.
 
 Authoring workflow
@@ -30,17 +30,17 @@ Authoring workflow
 Page templates
 ==============
 
-**Concept:** define the boundary, show one compact flow, contrast commonly
-confused terms, then link to goal-oriented guides.
+**Concept:** define the topic and its limits, show one compact flow, contrast
+terms readers may confuse, then link to goal-oriented guides.
 
 **How-to:** state the outcome, show a complete minimal example, explain only
 the decisions in that example, then link to alternatives and operations.
 
-**Reference:** enumerate the public contract, defaults, fields, return values,
-and errors. Do not turn generated API output into a tutorial.
+**Reference:** list the public API, defaults, fields, return values, and errors.
+Do not turn generated API output into a tutorial.
 
-**Gallery:** identify the canonical runnable example, describe variants as
-deltas, state topology requirements, and link to browser acceptance coverage.
+**Gallery:** identify the main runnable example, explain how each variant
+differs, state its process layout, and link to browser test coverage.
 
 Review rubric
 =============

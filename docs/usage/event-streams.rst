@@ -2,8 +2,8 @@
 SSE and WebSockets
 ===================
 
-The plugin can register task, queue, worker, global, and custom stream routes
-under ``/queues/events``:
+The plugin can add task, queue, worker, global, and custom stream routes under
+``/queues/events``:
 
 .. code-block:: python
 
@@ -27,30 +27,30 @@ Both deliver the same JSON ``QueueEvent`` envelope.
 Envelope and delivery semantics
 ===============================
 
-Top-level fields use camel case on the wire, including ``taskId``,
+Top-level JSON fields use camel case, including ``taskId``,
 ``workerId``, ``scopeKey``, ``progressCurrent``, ``occurredAt``, and
 ``eventKey``. Null-valued keys are preserved; user-owned ``payload`` keys are
 not renamed. Consumers should deduplicate by ``eventKey`` when present and by
 ``id`` otherwise.
 
-Live streams are delivery paths, not durable work queues. Keepalives preserve
-idle connections; they do not confirm task health. Slow clients can miss
-best-effort events depending on the Channels backend and backlog policy. Query
-:doc:`event-history` when replay is required.
+Live streams deliver events; they do not store tasks. Keepalives keep an idle
+connection open, but they do not prove that a task is healthy. A slow client
+may miss best-effort events, depending on the Channels backend and its backlog
+policy. Query :doc:`event-history` when a client must replay events.
 
 Authorization
 =============
 
-Use ``guards`` for route-wide access and ``channel_authorizer`` for each scope
-and key. Never accept an arbitrary task ID or queue name from a client without
-checking tenant and user ownership. Set ``include_in_schema=True`` only when
-the generated route surface is intended to be public.
+Use ``guards`` to protect an entire route. Use ``channel_authorizer`` to check
+each scope and key. Never accept a task ID or queue name from a client without
+checking that the tenant and user may access it. Set ``include_in_schema=True``
+only when these generated routes should be public.
 
 Canonical runnable sources
 ==========================
 
-The memory examples are the long-form authority. The backend copies change
-persistence wiring while preserving the same frontend contract.
+The memory examples are the complete examples. Each backend copy changes only
+the queue-storage setup and keeps the same frontend behavior.
 
 WebSocket application:
 
@@ -98,6 +98,6 @@ The gallery includes these runnable source families:
 * ``examples/htmx_realtime_websocket_valkey`` and
   ``examples/htmx_realtime_sse_valkey``
 
-Browser acceptance clicks the restart control, observes the enqueue request,
-watches DOM updates, and waits for the terminal event. A curl stream alone
-does not prove the HTMX extension or browser connection lifecycle.
+The browser test clicks Restart, observes the enqueue request and page updates,
+then waits for the final event. A curl stream cannot prove that the HTMX
+extension starts or that the browser opens and closes the connection correctly.

@@ -1,12 +1,14 @@
 Testing
 =======
 
-The project test suite lives under ``src/tests``. Keep that layout intact:
-``src/tests/unit`` is for pure-Python behavior, ``src/tests/integration`` is
-for driver-backed queues, service containers, vendor emulators, and execution
-backend coverage, and ``src/tests/_factories`` holds shared test factories.
+The test suite lives under ``src/tests``. Keep these roles separate:
 
-The root ``src/tests/conftest.py`` owns fixtures that every tier can use:
+* ``src/tests/unit`` covers pure-Python behavior.
+* ``src/tests/integration`` covers queue drivers, service containers, vendor
+  emulators, and execution backends.
+* ``src/tests/_factories`` contains shared test factories.
+
+The root ``src/tests/conftest.py`` provides fixtures that every tier can use:
 ``anyio_backend``, task-registry cleanup, and default Litestar app/plugin
 fixtures. Unit tests must not import optional queue drivers. Integration tests
 may import drivers, request pytest-databases services, and use Docker-backed
@@ -47,11 +49,11 @@ tiers. Install their Python dependencies and Chromium, then run:
    uv run playwright install chromium
    make test-examples-e2e
 
-The ``e2e`` dependency group supplies Playwright and pytest-playwright. The E2E
-target installs the group and Chromium again so CI and a fresh workstation use
-the same self-contained command. It starts real Litestar/Vite example
-processes through ``litestar run`` and drives them with Chromium. It is not
-included in ``make test`` or the ordinary integration workflow.
+The ``e2e`` dependency group installs Playwright and pytest-playwright. The E2E
+target installs that group and Chromium so CI and a new workstation use one
+self-contained command. It starts real Litestar/Vite examples with
+``litestar run`` and controls them through Chromium. ``make test`` and the
+normal integration workflow do not include these browser tests.
 
 Browser topology boundaries
 ---------------------------
@@ -72,12 +74,12 @@ Browser topology boundaries
      - Test process only
      - Route content type, authorization hooks, envelopes, keepalives, and sink behavior.
 
-The memory browser cases are process-local and cannot prove a separate worker
-or multiple web replicas. Redis/Valkey cases opt into shared Channels with
-unique queue and Channels prefixes; selecting a Redis/Valkey queue backend by
-itself is not sufficient. Browser tests use demo-only stream authorization.
-Production routes must enforce tenant/user ownership, authenticated service
-connections, and origin/proxy policy.
+The memory browser cases run in one process. They cannot prove behavior with a
+separate worker or multiple web replicas. Redis/Valkey cases enable shared
+Channels and use unique queue and Channels prefixes. Selecting a Redis/Valkey
+queue backend alone is not enough. Browser tests use demo-only stream
+authorization. Production routes must check tenant and user ownership,
+authenticate service connections, and enforce origin and proxy policy.
 
 CI keeps unit/integration and browser jobs separate because Chromium and real
 Redis/Valkey topology have different setup, runtime, and failure diagnostics.
@@ -88,11 +90,11 @@ If you want to prebuild all example frontend assets in one step:
 
    make build-examples-assets
 
-The integration tier intentionally relies on pytest-databases autoskip
-behavior. A test should request a service fixture such as ``postgres_service``,
-``mysql_service``, ``oracle_service``, ``redis_service``, or ``valkey_service`` and let the
-fixture skip when Docker or an emulator dependency is unavailable. Do not add
-custom "Docker is available" assertions to tests.
+Integration tests rely on pytest-databases to skip unavailable services. A
+test should request a fixture such as ``postgres_service``, ``mysql_service``,
+``oracle_service``, ``redis_service``, or ``valkey_service``. Let the fixture
+skip when Docker or an emulator is unavailable. Do not add custom "Docker is
+available" assertions.
 
 Backend Registry
 ----------------
@@ -107,10 +109,11 @@ Backend Registry
 * ``build``: the async builder that returns an unopened queue backend.
 * ``capabilities``: behavior tags used by contract tests.
 
-``src/tests/integration/conftest.py`` parametrizes any test that asks for the
-``queue_backend`` fixture across the registry. It builds a ``FixtureCtx`` with
-``tmp_path`` and any requested service handle, opens the backend, yields it to
-the test, and drops queue artifacts on teardown for service-backed adapters.
+``src/tests/integration/conftest.py`` runs each test that requests
+``queue_backend`` against the registry. It creates a ``FixtureCtx`` with
+``tmp_path`` and any requested service. It then opens the backend, gives it to
+the test, and removes queue artifacts during teardown for service-backed
+adapters.
 
 Adding a Backend
 ----------------
@@ -130,9 +133,8 @@ Adding a Backend
 Cloud Run
 ---------
 
-Google Cloud Run Jobs does not provide a public local emulator. The Cloud Run
-execution suite therefore lives under
-``src/tests/integration/execution/cloudrun`` and uses injected fake
-``JobsClient`` and ``ExecutionsClient`` implementations to exercise request
-construction, dispatch ownership, reconciliation, entrypoint behavior, and the
+Google Cloud Run Jobs has no public local emulator. Tests under
+``src/tests/integration/execution/cloudrun`` therefore inject fake
+``JobsClient`` and ``ExecutionsClient`` implementations. They cover request
+construction, dispatch ownership, status checks, entrypoint behavior, and the
 optional import boundary without calling GCP.

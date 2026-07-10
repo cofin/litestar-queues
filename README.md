@@ -65,11 +65,11 @@ queue and in-app worker are ideal for this first run.
 
 ## Production boundary
 
-Queue persistence and execution placement are separate choices. The default
-memory backend is process-local, so production deployments with separate web
-and worker processes need a shared backend such as SQLSpec, Advanced Alchemy,
-Redis, or Valkey. Run standalone workers when web and task capacity should
-scale independently. Cloud Run is an execution backend, not queue storage.
+Choose where tasks are stored separately from where they run. The default
+memory backend stores tasks in one Python process. If the web app and worker
+run in separate processes, use a shared backend such as SQLSpec, Advanced
+Alchemy, Redis, or Valkey. Use standalone workers when the web app and task
+workers must scale separately. Cloud Run runs tasks; it does not store them.
 
 ## Next steps
 

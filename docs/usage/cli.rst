@@ -3,29 +3,28 @@ Command-Line Interface
 ==========================
 
 ``QueuePlugin`` implements Litestar's :class:`~litestar.plugins.CLIPluginProtocol`
-and contributes a ``queues`` subcommand group to the ``litestar`` CLI. Three
-subcommands ship today: ``run``, ``status``, and ``scheduler-health``. A
-``discover_tasks`` helper supports adopters with ``app.domain.<x>.jobs/``
-layouts.
+and adds a ``queues`` group to the ``litestar`` CLI. It provides ``run``,
+``status``, and ``scheduler-health``. The ``discover_tasks`` helper supports
+applications that keep tasks under ``app.domain.<x>.jobs/``.
 
 Pre-requisites
 ==============
 
-Every ``litestar queues …`` invocation resolves the application the same way
+Every ``litestar queues …`` command finds the application the same way
 ``litestar run`` and ``litestar routes`` do: via ``LITESTAR_APP``, the
 ``--app`` flag, or one of the standard discovery paths (``app.py``,
 ``asgi.py``, ``application.py``, ``app/__init__.py``). When none are
 present, the CLI errors before any queue subcommand runs.
 
-``click`` is not a runtime dependency of ``litestar-queues``. It arrives
-transitively through ``litestar``; importing ``litestar_queues`` (without
-invoking the CLI) does **not** load ``click`` into ``sys.modules``.
+``click`` is not a direct runtime dependency of ``litestar-queues``. Litestar
+installs it. Importing ``litestar_queues`` without using the CLI does **not**
+load ``click`` into ``sys.modules``.
 
 ``litestar queues run``
 =======================
 
-Starts a standalone worker fleet outside the Litestar web app process. Use
-this for sidecar worker containers, ``systemd`` units, or Cloud Run jobs.
+Starts standalone workers outside the Litestar web process. Use this command
+for sidecar worker containers, ``systemd`` units, or Cloud Run jobs.
 
 .. code-block:: console
 
@@ -45,10 +44,9 @@ Options:
 Signal handling
 ---------------
 
-``SIGTERM`` and ``SIGINT`` both trigger a graceful drain:
-``Worker.stop()`` is set and the worker task is awaited up to
-``--drain-timeout``. A **second** signal during drain escalates: every
-running asyncio task is cancelled immediately. Exit codes:
+``SIGTERM`` and ``SIGINT`` both start a graceful shutdown. The worker stops
+claiming new tasks and waits up to ``--drain-timeout`` for running tasks. A
+**second** signal cancels every running asyncio task immediately. Exit codes:
 
 ============  ==================================================================
 Code          Meaning
@@ -95,8 +93,8 @@ Exit codes: ``0`` on success, ``1`` on backend error.
 ``litestar queues scheduler-health``
 ====================================
 
-Exits non-zero when no completion record exists for a configured canary
-task within the staleness window.
+Exits with a nonzero code when the configured canary task has no recent
+completion record. A canary is a small recurring task used as a health check.
 
 .. code-block:: console
 
@@ -135,10 +133,10 @@ subcommand.
 ``discover_tasks``
 ==================
 
-Adopters with an ``app.domain.<x>.jobs/`` layout can use the
-:func:`~litestar_queues.discover_tasks` walker to import every module
-under any ``jobs`` subpackage at startup, replacing manual enumeration
-in :attr:`QueueConfig.task_modules`:
+Applications with an ``app.domain.<x>.jobs/`` layout can use
+:func:`~litestar_queues.discover_tasks` to import every module under each
+``jobs`` package at startup. This replaces a manual list in
+:attr:`QueueConfig.task_modules`:
 
 .. code-block:: python
 
@@ -156,17 +154,16 @@ Signature:
 .. autofunction:: litestar_queues.discover_tasks
    :noindex:
 
-The default ``subpackage="jobs"`` matches modules whose dotted path
-contains a ``jobs`` segment (e.g. ``app.domain.billing.jobs.send_invoice``).
-The return value is a sorted, deduplicated tuple of fully-qualified task
-names that reflects the post-walk registry, suitable for logging or
-metrics labels.
+The default ``subpackage="jobs"`` matches modules with a ``jobs`` segment in
+their dotted path, such as ``app.domain.billing.jobs.send_invoice``. The
+function returns a sorted tuple of unique, fully qualified task names found in
+the registry. You can use it in logs or metric labels.
 
 Deployment example
 ==================
 
-For a sidecar worker fleet behind Granian-served web pods (e.g. Cloud
-Run service + Cloud Run job, or Kubernetes Deployment + StatefulSet):
+This shortened ``systemd`` unit shows a sidecar worker command. The same
+command can run beside Granian web pods on Cloud Run or Kubernetes:
 
 .. code-block:: yaml
 
@@ -177,6 +174,5 @@ Run service + Cloud Run job, or Kubernetes Deployment + StatefulSet):
    Restart=on-failure
    TimeoutStopSec=90
 
-The ``TimeoutStopSec`` value should exceed ``--drain-timeout`` so the
-service manager does not ``SIGKILL`` the worker while it is still
-draining.
+Set ``TimeoutStopSec`` higher than ``--drain-timeout``. Otherwise, the service
+manager may send ``SIGKILL`` while the worker is still shutting down.

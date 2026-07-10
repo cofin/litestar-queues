@@ -2,8 +2,8 @@
 SQLSpec backend
 ===============
 
-Use SQLSpec when the application already uses SQLSpec or needs queue
-persistence across its supported adapter families without adopting an ORM.
+Use SQLSpec when the application already uses it or needs SQL queue storage
+without an object-relational mapper (ORM).
 
 Install and configure
 =====================
@@ -17,29 +17,50 @@ example is suitable for local development:
 
 .. code-block:: python
 
+   from litestar import Litestar
    from sqlspec.adapters.aiosqlite import AiosqliteConfig
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, QueuePlugin
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+
+   sqlspec_config = AiosqliteConfig(connection_config={"database": "queue.db"})
 
    queue_config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
-           config=AiosqliteConfig(connection_config={"database": "queue.db"}),
-           run_migrations=True,
+           config=sqlspec_config,
        ),
        execution_backend="local",
-       in_app_worker=False,
    )
+   app = Litestar(plugins=[QueuePlugin(queue_config)])
 
-Adapter selection follows the supplied SQLSpec config. Unsupported adapters
-raise a configuration error instead of silently using a generic SQL path.
+   # Run this from the app's normal SQLSpec migration command or deploy step.
+   await sqlspec_config.migrate_up(echo=False)
+
+The supplied SQLSpec config selects the adapter. ``QueuePlugin`` registers the
+queue migration during app and CLI initialization; SQLSpec then runs it through
+the same migration command used by the rest of the application. The queue
+backend does not migrate the database when it opens. An unsupported adapter
+raises a configuration error instead of silently using generic SQL.
 
 Schema ownership
 ================
 
-Packaged migrations run as SQLSpec extension migrations. Do not replace the
-application migration ``script_location``. Set ``manage_schema=False`` when
-the application owns an existing table; use ``table_name``, ``column_map``,
-and ``native_json_columns`` to map it safely.
+Packaged migrations run through SQLSpec's extension system. Do not replace the
+application's migration ``script_location``. When migrations run outside the
+Litestar app, call ``configure_queue_migration_extension(sqlspec_config)``
+before the normal SQLSpec migration command. If the application owns an
+existing table, set ``manage_schema=False``. Map that table with
+``queue_table_name``, ``column_map``, and ``native_json_columns``.
+
+For a small local bootstrap without a migration command, call the backend's
+explicit ``create_schema()`` operation after ``open()``. This emits adapter-
+specific DDL directly and does not record a migration revision; it is a
+development fallback, not a replacement for application migrations.
+
+The default queue table is ``litestar_queue_task``. When event history is
+enabled, SQLSpec derives its table by adding ``_event_log`` to the queue table,
+so the default is ``litestar_queue_task_event_log``. Set
+``event_log_table_name`` only when the application needs a different name.
+Schema-qualified names keep their schema and add the suffix to the table part.
 
 Wakeups
 -------
@@ -56,14 +77,16 @@ browser fan-out. See :doc:`../worker-wakeups`.
 Heartbeat isolation
 ===================
 
-``heartbeat_pool_config`` can route heartbeat-only writes through a dedicated
-pool pointing at the same database. The backend owns that pool's open/close
-lifecycle and falls back to the main pool if registration fails.
+``heartbeat_pool_config`` can use a dedicated connection pool for heartbeat
+writes. It must point to the same database. The backend opens and closes that
+pool, and falls back to the main pool if registration fails.
 
 Event history
 =============
 
-SQLSpec event history uses the queue schema, packaged migration path, and
-SQLSpec session lifecycle. ``event_log_table_name`` customizes the table.
+SQLSpec event history uses the queue schema, the packaged SQLSpec migration,
+and the SQLSpec session lifecycle. Its table naming follows the queue-table
+``_event_log`` suffix described above. ``event_log_table_name`` customizes the
+table.
 Live SSE/WebSocket delivery still needs a Channels backend. See
 :doc:`../event-history`.

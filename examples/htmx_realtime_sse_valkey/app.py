@@ -1,7 +1,6 @@
 import asyncio
 import os
 from pathlib import Path
-from uuid import uuid4
 
 from litestar import Litestar, get, post
 from litestar.channels import ChannelsPlugin
@@ -26,14 +25,14 @@ from litestar_queues.events import (
     publish_task_log,
 )
 
-__all__ = ("allow_demo_channel", "index", "restart_demo", "run_crawl", "status_json")
+__all__ = ("index", "restart_demo", "run_crawl", "status_json")
 
 
 EXAMPLE_ROOT = Path(__file__).parent
 BACKEND_NAME = "valkey"
-DEMO_STEPS = int(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEPS", "6"))
-DEMO_STEP_DELAY = float(os.getenv("LITESTAR_QUEUES_EXAMPLE_STEP_DELAY", "5"))
-VITE_DEV_MODE = os.getenv("LITESTAR_QUEUES_EXAMPLE_VITE_DEV", "0") == "1"
+DEMO_STEPS = 6
+DEMO_STEP_DELAY = 1
+DEMO_KEY = "demo:current"
 VALKEY_URL = os.getenv("LITESTAR_QUEUES_EXAMPLE_VALKEY_URL", "redis://localhost:6379/0")
 VALKEY_KEY_PREFIX = os.getenv(
     "LITESTAR_QUEUES_EXAMPLE_VALKEY_KEY_PREFIX", "litestar_queues:examples:htmx_realtime_sse_valkey"
@@ -44,31 +43,20 @@ CHANNELS_KEY_PREFIX = os.getenv(
 SHARED_CHANNELS = os.getenv("LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS", "0") == "1"
 
 CRAWL_LINES = (
-    "You clicked restart, so the app queued a background job.",
-    "A worker picked up the job and started running it.",
-    'ctx.event("here") - the job sent this line from inside itself.',
-    "Every update streams live to this page.",
-    "The browser just listens - no polling, no refresh.",
-    "When the job finishes, a final event marks it complete.",
+    "The task started.",
+    "The task sent an event from the backend.",
+    "The task is sleeping before the next event.",
+    "The task sent another event.",
+    "The page received the event.",
+    "The task finished.",
 )
-
-
-def allow_demo_channel(*_: object) -> bool:
-    """Allow every stream channel in this local demo app.
-
-    Returns:
-        Always ``True`` for the demo-only stream authorizer.
-    """
-    return True
 
 
 # -- docs-task-start --
 @task("examples.htmx_realtime_sse_valkey.crawl", queue="demo", retries=0, timeout=90)
-async def run_crawl(job_id: str, *, _task_context: TaskExecutionContext) -> dict[str, str]:
+async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     ctx = _task_context
-    await publish_task_log(
-        "Job started - everything below comes from the job", payload={"job_id": job_id}, immediate=True
-    )
+    await publish_task_log("The task started", payload={"task_id": ctx.task_id}, immediate=True)
 
     for step in range(1, DEMO_STEPS + 1):
         line = CRAWL_LINES[(step - 1) % len(CRAWL_LINES)]
@@ -78,13 +66,13 @@ async def run_crawl(job_id: str, *, _task_context: TaskExecutionContext) -> dict
         await ctx.event(
             "task.event",
             message=message,
-            payload={"job_id": job_id, "line": message, "step": step},
+            payload={"task_id": ctx.task_id, "line": message, "step": step},
             immediate=step == DEMO_STEPS,
         )
         await asyncio.sleep(DEMO_STEP_DELAY)
 
-    await publish_task_log("Job finished", payload={"job_id": job_id}, immediate=True)
-    return {"job_id": job_id, "status": "complete"}
+    await publish_task_log("The task finished", payload={"task_id": ctx.task_id}, immediate=True)
+    return {"task_id": ctx.task_id, "status": "complete"}
 
 
 # -- docs-task-end --
@@ -103,17 +91,17 @@ async def status_json() -> dict[str, str]:
 
 @post("/demo/restart")
 async def restart_demo(queue_service: NamedDependency[QueueService]) -> Template:
-    job_id = uuid4().hex[:8]
-    result = await queue_service.enqueue(
-        run_crawl, job_id, key=f"demo:{job_id}", description="Run the HTMX realtime queue event demo"
-    )
+    existing = await queue_service.get_queue_backend().get_task_by_key(DEMO_KEY)
+    result = await queue_service.enqueue(run_crawl, key=DEMO_KEY, description="Run the HTMX realtime queue event demo")
+    task_id = str(result.id)
+    reused = existing is not None and not existing.is_terminal and existing.id == result.id
     return HTMXTemplate(
         template_name="partials/stream_mount.html",
-        context={"job_id": job_id, "task_id": str(result.id), "task_sse_url": f"/queues/events/sse/tasks/{result.id}"},
+        context={"task_id": task_id, "task_sse_url": f"/queues/events/sse/tasks/{result.id}"},
         push_url=False,
         re_target="#stream-mount",
         trigger_event="queue-demo:started",
-        params={"jobId": job_id, "taskId": str(result.id)},
+        params={"taskId": task_id, "reused": reused},
         after="swap",
     )
 
@@ -140,19 +128,13 @@ queue_config = QueueConfig(
     worker_graceful_shutdown_timeout=5,
     queue_backend=ValkeyBackendConfig(url=VALKEY_URL, key_prefix=VALKEY_KEY_PREFIX),
     event=EventConfig(channels_backend=channels, buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)),
-    # A demo-only allow-all authorizer: it suppresses the missing-auth warning
-    # for this local single-process example. Real deployments must authorize.
-    # Each demo registers only its own transport so a stale tab from the other
+    # The demo registers only its own transport so a stale tab from another
     # example cannot silently reconnect to this app's routes.
-    event_stream=EventStreamConfig(
-        scopes={"task"}, websocket=False, history=25, heartbeat_interval=15, channel_authorizer=allow_demo_channel
-    ),
+    event_stream=EventStreamConfig(scopes={"task"}, websocket=False, history=25, heartbeat_interval=15),
     **standalone_worker_options(),
 )
 
-vite_config = ViteConfig(
-    mode="htmx", dev_mode=VITE_DEV_MODE, paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources")
-)
+vite_config = ViteConfig(mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
 
 
 async def close_shared_channels() -> None:

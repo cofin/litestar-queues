@@ -47,12 +47,11 @@ to queue operations, not browser Channels.
 Event history and live delivery
 ===============================
 
-Backend-managed event history is supported. Redis/Valkey operators control
-persistence configuration, retention, backups, memory policy, and cleanup;
-the library cannot make an ephemeral service durable.
+Backend-managed event history is supported. You choose how long Redis or
+Valkey keeps history, what it backs up, and when it removes old records. The
+library cannot make an otherwise temporary service durable.
 
-A Redis or Valkey queue backend does not automatically provide live fan-out.
-Configure a shared Channels backend with a separate Channels key prefix for
-standalone workers and multiple web processes. Redis pub/sub is ephemeral
-broadcast; Redis Streams can retain backlog. Keep stream authorization at the
-Litestar route boundary.
+A Redis or Valkey queue backend does not automatically send events to browsers.
+For standalone workers or multiple web processes, configure a shared Channels
+backend with its own key prefix. Redis pub/sub is temporary; Redis Streams can
+keep a backlog. Protect stream access at the Litestar route.

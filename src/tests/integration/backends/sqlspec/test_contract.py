@@ -61,6 +61,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
 from tests.integration._backends import QUEUE_BACKENDS
 from tests.integration._names import table_name_for_test
+from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema, run_queue_migrations
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -233,6 +234,7 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
         )
     )
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue("tasks.sync_bridge", kwargs={"a": 1})
         claimed = await backend.claim_task(record.id)
@@ -263,6 +265,7 @@ async def test_adbc_sqlite_completed_query_survives_prior_aiosqlite_query(tmp_pa
         )
     )
     await aiosqlite_backend.open()
+    await aiosqlite_backend.create_schema()
     try:
         await _complete_report_task(aiosqlite_backend)
         aiosqlite_records = await aiosqlite_backend.list_completed_by_task("tasks.report")
@@ -277,6 +280,7 @@ async def test_adbc_sqlite_completed_query_survives_prior_aiosqlite_query(tmp_pa
         )
     )
     await adbc_backend.open()
+    await adbc_backend.create_schema()
     try:
         completed_id = await _complete_report_task(adbc_backend)
         adbc_records = await adbc_backend.list_completed_by_task("tasks.report")
@@ -459,10 +463,10 @@ for adapter_name, dialect, config_type_name, expected_store in expected:
 async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> "None":
-    backend_config = SQLSpecBackendConfig(table_name="queue_tasks")
-    store = create_queue_store(sqlite_config_factory(tmp_path / "queue.db"), table_name=backend_config.table_name)
+    backend_config = SQLSpecBackendConfig(queue_table_name="queue_tasks")
+    store = create_queue_store(sqlite_config_factory(tmp_path / "queue.db"), table_name=backend_config.queue_table_name)
 
-    assert backend_config.table_name == "queue_tasks"
+    assert backend_config.queue_table_name == "queue_tasks"
     assert isinstance(store, AiosqliteQueueStore)
     assert store.table_name == "queue_tasks"
     assert any('"queue_tasks"' in statement for statement in store.create_statements())
@@ -816,10 +820,11 @@ async def test_sqlspec_backend_uses_spanner_update_ddl_for_schema_bootstrap() ->
     config = _fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerSyncConfig")
     config.get_database = lambda: database
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=config, table_name="queue_tasks", notifications=False)
+        backend_config=SQLSpecBackendConfig(config=config, queue_table_name="queue_tasks", notifications=False)
     )
 
     await backend.open()
+    await backend.create_schema()
     await backend.close()
 
     assert database.statement_batches
@@ -880,7 +885,7 @@ async def test_sqlspec_mssql_python_select_task_uses_native_stream() -> "None":
     config = _fake_adapter_config("mssql_python", dialect="tsql", config_type_name="MssqlPythonAsyncConfig")
     store = create_queue_store(config, table_name="queue_tasks")
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=config, table_name="queue_tasks", notifications=False)
+        backend_config=SQLSpecBackendConfig(config=config, queue_table_name="queue_tasks", notifications=False)
     )
     backend._store = store
     driver = _StreamOnlySelectDriver({"id": str(task_id)})
@@ -1004,12 +1009,12 @@ async def test_sqlspec_sync_bridge_can_skip_cleanup_rollback_for_driver_owned_se
 )
 def test_sqlspec_backend_accepts_sqlspec_qualified_table_names(table_name: "str", expected: "str") -> "None":
     """Table-name validation follows SQLSpec's identifier splitter."""
-    backend_config = SQLSpecBackendConfig(table_name=table_name)
+    backend_config = SQLSpecBackendConfig(queue_table_name=table_name)
     store = create_queue_store(
-        _fake_adapter_config("aiosqlite", dialect="sqlite"), table_name=backend_config.table_name
+        _fake_adapter_config("aiosqlite", dialect="sqlite"), table_name=backend_config.queue_table_name
     )
 
-    assert backend_config.table_name == expected
+    assert backend_config.queue_table_name == expected
     assert store.table_name == expected
     assert ".".join(f'"{part}"' for part in expected.split(".")) in "\n".join(store.create_statements())
 
@@ -1019,7 +1024,7 @@ def test_sqlspec_backend_accepts_sqlspec_qualified_table_names(table_name: "str"
 )
 def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None":
     with pytest.raises(QueueConfigurationError, match="Invalid SQLSpec queue table name"):
-        SQLSpecBackendConfig(table_name=table_name)
+        SQLSpecBackendConfig(queue_table_name=table_name)
 
 
 @pytest.mark.parametrize(
@@ -1347,10 +1352,11 @@ async def test_sqlspec_postgres_touch_heartbeats_uses_bulk_path(
                     "database": postgres_service.database,
                 }
             ),
-            table_name=table_name,
+            queue_table_name=table_name,
         )
     )
     await backend.open()
+    await backend.create_schema()
     try:
         first = await backend.enqueue("tasks.heartbeat.postgres.first", metadata={"existing": "kept"})
         second = await backend.enqueue("tasks.heartbeat.postgres.second")
@@ -1415,20 +1421,20 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
 ) -> "None":
     db_path = tmp_path / "migrated.db"
 
-    first = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=sqlite_config_factory(db_path), create_schema=False, run_migrations=True
-        )
-    )
+    first_config = sqlite_config_factory(db_path)
+    await run_queue_migrations(first_config)
+
+    first = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=first_config))
     await first.open()
+    await first.create_schema()
     await first.close()
 
-    second = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=sqlite_config_factory(db_path), create_schema=False, run_migrations=True
-        )
-    )
+    second_config = sqlite_config_factory(db_path)
+    await run_queue_migrations(second_config)
+
+    second = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=second_config))
     await second.open()
+    await second.create_schema()
     try:
         record = await second.enqueue("tasks.migrated")
     finally:
@@ -1449,13 +1455,13 @@ async def test_sqlspec_backend_packaged_migrations_do_not_mutate_adopter_config(
     sqlspec_config = sqlite_config_factory(db_path)
     original_extension_config = deepcopy(sqlspec_config.extension_config)
     original_migration_config = deepcopy(sqlspec_config.migration_config)
+    await run_queue_migrations(sqlspec_config)
 
-    backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=sqlspec_config, create_schema=False, run_migrations=True)
-    )
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config))
 
     caplog.set_level(logging.WARNING, logger="sqlspec.migrations.base")
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue("tasks.migrated_config")
     finally:
@@ -1472,10 +1478,11 @@ async def test_sqlspec_backend_uses_configured_table_name(
 ) -> "None":
     db_path = tmp_path / "custom-table.db"
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=sqlite_config_factory(db_path), table_name="queue_tasks")
+        backend_config=SQLSpecBackendConfig(config=sqlite_config_factory(db_path), queue_table_name="queue_tasks")
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue("tasks.custom_table")
     finally:
@@ -1500,6 +1507,7 @@ async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_va
     backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config))
 
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue("tasks.extension_config")
     finally:
@@ -1520,10 +1528,11 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
         extension_config={QUEUE_EXTENSION_NAME: {"table_name": "extension_queue_tasks"}},
     )
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=sqlspec_config, table_name="explicit_queue_tasks")
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_table_name="explicit_queue_tasks")
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue("tasks.explicit_config")
     finally:
@@ -1544,10 +1553,9 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
     async def lowercase(value: "str") -> "str":
         return value.lower()
 
-    config = QueueConfig(
-        queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(tmp_path / "service.db")),
-        execution_backend="local",
-    )
+    backend_config = SQLSpecBackendConfig(config=sqlite_config_factory(tmp_path / "service.db"))
+    await bootstrap_queue_schema(backend_config)
+    config = QueueConfig(queue_backend=backend_config, execution_backend="local")
 
     async with QueueService(config) as service:
         result = await service.enqueue(lowercase, "QUEUE")

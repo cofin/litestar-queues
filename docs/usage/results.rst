@@ -15,9 +15,9 @@ Every enqueue returns a :class:`~litestar_queues.TaskResult` linked to its
    elif result.status == "failed":
        error = result.error
 
-``wait()`` polls until ``completed``, ``failed``, or ``cancelled`` and raises
-``TimeoutError`` if its timeout expires. The queue record continues running
-after that local timeout.
+``wait()`` checks the task until its state is ``completed``, ``failed``, or
+``cancelled``. It raises ``TimeoutError`` when its timeout expires. That local
+timeout does not stop the queued task.
 
 Refresh cached state
 ====================
@@ -28,14 +28,14 @@ Refresh cached state
 
    await result.refresh()
 
-before reading later state. This is essential with persistent backends, which
-return fresh record objects instead of mutating the enqueue-time object in
-place. Code that works with every backend should refresh explicitly.
+before reading a later state. Persistent backends return a new record object
+instead of changing the original object in place. Call ``refresh()`` so the
+same code works with every backend.
 
 Result ownership
 ================
 
-The queue backend owns the authoritative record. A ``TaskResult`` is only a
-handle and needs its associated service for ``refresh()`` or ``wait()``.
-Terminal cleanup policies can eventually remove records, so copy business
-results into application-owned storage when they must be retained indefinitely.
+The queue backend owns the source record. A ``TaskResult`` is a handle to that
+record and needs its queue service for ``refresh()`` or ``wait()``. Cleanup may
+eventually remove finished records. Copy business results into app-owned
+storage when you must keep them indefinitely.

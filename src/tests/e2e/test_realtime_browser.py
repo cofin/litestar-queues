@@ -87,7 +87,7 @@ def _start_mission(page: Any, base_url: str) -> str:
     with page.expect_response(
         lambda response: response.request.method == "POST" and response.url == f"{base_url}/demo/restart"
     ) as response_info:
-        page.get_by_role("button", name="Restart the demo queue job and crawl").click()
+        page.get_by_role("button", name="Restart the demo queue task").click()
     response = response_info.value
     assert response.status == 200, response.status_text
 
@@ -98,9 +98,11 @@ def _start_mission(page: Any, base_url: str) -> str:
     return task_id
 
 
-def _wait_for_completion(page: Any) -> None:
-    page.locator("#job-readout").filter(has_text="Mission complete").wait_for(state="visible")
-    assert "1/2 -" in page.locator("#crawl-lines").inner_text()
+def _wait_for_completion(page: Any, *, require_first_line: bool = True) -> None:
+    page.locator("#job-readout").filter(has_text="Task complete").wait_for(state="visible")
+    if require_first_line:
+        assert "1/6 -" in page.locator("#crawl-lines").inner_text()
+    assert "Backend message received" in page.locator("#delivery-status").inner_text()
 
 
 @pytest.mark.parametrize("example_name", ["sse"], indirect=True)
@@ -204,4 +206,22 @@ def test_replacing_stream_mount_reconnects_cleanly(
         assert second_socket is not None, websocket_states
         assert websocket_states[first_socket], websocket_states
     assert not _ERROR_EVENTS.intersection(events), events
+    _assert_clean_browser(browser_diagnostics, server_mode=example_server.mode, allow_stream_abort=True)
+
+
+@pytest.mark.parametrize("example_name", ["sse"], indirect=True)
+def test_repeated_start_reuses_active_task(
+    example_server: Any, browser_page: Any, browser_diagnostics: BrowserDiagnostics
+) -> None:
+    """A second click while the demo is active follows the same queue record."""
+    page = browser_page
+    page.goto(example_server.base_url, wait_until="domcontentloaded")
+    _install_event_collector(page)
+
+    first_task_id = _start_mission(page, example_server.base_url)
+    second_task_id = _start_mission(page, example_server.base_url)
+
+    assert second_task_id == first_task_id
+    page.locator("#job-readout").filter(has_text="already running").wait_for(state="visible")
+    _wait_for_completion(page, require_first_line=False)
     _assert_clean_browser(browser_diagnostics, server_mode=example_server.mode, allow_stream_abort=True)

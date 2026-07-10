@@ -22,9 +22,9 @@ Set behavior that applies to every enqueue on the decorator:
        return report_id
 
 ``retries`` is the number of retries after the first attempt. ``timeout`` is
-the execution ceiling in seconds. Lower numeric priority values are claimed
-first. ``run_after`` delays eligibility. ``key`` deduplicates non-terminal
-records for the same logical job.
+the maximum run time in seconds. Workers claim lower numeric priority values
+first. ``run_after`` delays when the task can run. ``key`` names the logical
+job and prevents more than one active record for that key.
 
 Override one enqueue
 ====================
@@ -43,8 +43,8 @@ Override one enqueue
        description="Render the monthly report",
    )
 
-Queue records store JSON-like arguments and metadata. Persistent backends
-require values their serializer can encode.
+Queue records store JSON-like arguments and metadata. A persistent backend can
+store only values supported by its serializer.
 
 Execution overrides
 ===================
@@ -53,5 +53,8 @@ Execution overrides
 one task. ``execution_profile`` lets an external backend select a configured
 profile. These options change placement, not queue persistence.
 
-Use a key only when duplicate requests should share one active record. A
-terminal record does not permanently reserve the key.
+Use a key when duplicate requests should share one active record. If an active
+record already has that key, enqueueing returns that record. A task in a final
+state does not reserve the key forever, so the next enqueue can create a new
+record. Omit the key, or generate a different one, when concurrent
+invocations are wanted.

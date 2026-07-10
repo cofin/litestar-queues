@@ -25,9 +25,9 @@ Start with a named task and enqueue it through the injected
        result = await queue_service.enqueue(render_report, report_id)
        return {"task_id": str(result.id)}
 
-The decorator registers the callable under ``reports.render``. Enqueueing
-persists its arguments and returns a :class:`~litestar_queues.TaskResult`; it
-does not wait for the task body to finish.
+The decorator registers the function as ``reports.render``. Enqueueing saves
+its arguments and returns a :class:`~litestar_queues.TaskResult`. It does not
+wait for the task function to finish.
 
 Enqueue by name
 ===============

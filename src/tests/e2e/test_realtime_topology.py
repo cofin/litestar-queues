@@ -54,8 +54,6 @@ def test_shared_channels_deliver_from_a_standalone_worker(
         url_env: url,
         "LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS": "1",
         "LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER": "0",
-        "LITESTAR_QUEUES_EXAMPLE_STEPS": "2",
-        "LITESTAR_QUEUES_EXAMPLE_STEP_DELAY": "0.05",
         f"LITESTAR_QUEUES_EXAMPLE_{key_env}_KEY_PREFIX": queue_prefix,
         "LITESTAR_QUEUES_EXAMPLE_CHANNELS_KEY_PREFIX": f"litestar_queues:e2e:{suffix}:channels",
     }

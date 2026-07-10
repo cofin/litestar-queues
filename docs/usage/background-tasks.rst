@@ -41,11 +41,11 @@ background phase:
            background=QueuedBackgroundTask(process_import, "/tmp/data.csv"),
        )
 
-Here the response lifecycle begins first and the queue record is persisted
-afterward. The plugin keeps its application-scoped service alive for this
-phase. This shape cannot return a queue task ID in the initial body unless the
-application creates and manages one separately.
+Here Litestar starts the response before it saves the queue record. The plugin
+keeps the app's queue service open until that step finishes. The initial
+response cannot include a queue task ID unless the application creates and
+manages an ID separately.
 
-A plain Litestar ``BackgroundTask`` executes its callable in the web process;
-it does not persist a queue record. ``QueuedBackgroundTask`` uses the same
-response hook but enqueues through the active ``QueuePlugin`` service.
+A plain Litestar ``BackgroundTask`` runs its function in the web process. It
+does not save a queue record. ``QueuedBackgroundTask`` uses the same response
+hook, but adds the task through the active ``QueuePlugin`` service.

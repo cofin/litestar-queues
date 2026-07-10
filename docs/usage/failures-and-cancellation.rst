@@ -25,17 +25,17 @@ Cancel pending work
 
    cancelled = await queue_service.cancel_task(result.id)
 
-Pending and scheduled records can be cancelled before claim. Bulk cancellation
-can filter by task name, queue, keyword arguments, or metadata.
+You can cancel pending and scheduled records before a worker claims them. Bulk
+cancellation can filter by task name, queue, keyword arguments, or metadata.
 
 Cooperative running cancellation
 ================================
 
-A running task can terminate itself with ``job_cancelled("reason")`` or raise
+A running task can stop itself with ``job_cancelled("reason")`` or raise
 :class:`~litestar_queues.JobCancelledError`. This records ``cancelled`` and
 does not retry. Backend cancellation with ``include_running=True`` changes the
-record state, but user code must still cooperate with cancellation and release
-its resources safely.
+record state, but it cannot force user code to stop. The task must check for
+cancellation and release its resources safely.
 
-Timeouts use normal failure handling. Make external calls cancellable and
-idempotent so a retry can safely resume after partial work.
+Timeouts use normal failure handling. Make external calls cancellable and safe
+to repeat so a retry does not corrupt partially completed work.

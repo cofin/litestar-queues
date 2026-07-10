@@ -35,14 +35,15 @@ transport is working.
       Run local copies or opt into shared Channels and a standalone worker.
 
 Every variant has its own README, application module, templates, frontend
-source, and asset commands. The memory apps are canonical for concepts; backend
-copies demonstrate persistence wiring rather than repeating the full tutorial.
+source, and asset commands. The memory apps are the main examples. The backend
+copies show only how persistence changes.
 
 .. note::
 
-   Selecting Redis or Valkey queue persistence does not select browser fan-out.
-   The default examples use process-local Channels. Set the documented shared
-   Channels and standalone-worker environment variables together.
+   Selecting Redis or Valkey for queue storage does not configure browser event
+   delivery. By default, the examples use Channels in one process. To run a
+   separate worker, set both the shared-Channels and standalone-worker
+   environment variables described in the example README.
 
 See :doc:`../usage/event-streams` for the source imports and delivery contract,
 or browse the complete `examples directory

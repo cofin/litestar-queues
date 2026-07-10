@@ -2,9 +2,8 @@
 Event history
 =============
 
-Event history records task events through the queue backend before live sink
-delivery. It supports later queries and stage summaries; it is not a live sink
-and does not fan events out to browsers.
+Event history saves task events in the queue backend. You can query the records
+later and review their stages. It is separate from live SSE/WebSocket delivery.
 
 Enable history
 ==============
@@ -23,9 +22,8 @@ Enable history
        ),
    )
 
-``strict=False`` keeps history failures from turning successful task work into
-failure. Choose ``strict=True`` only when event retention is a business
-transaction requirement.
+With ``strict=False``, a history write failure does not fail the task. Use
+``strict=True`` only when saving every event is required.
 
 Support matrix
 ==============
@@ -36,21 +34,48 @@ Support matrix
    * - Backend
      - Support and persistence boundary
    * - Memory
-     - Bounded ephemeral history. ``EventLogConfig.max_records`` caps retained records in the process.
+     - Bounded, temporary history. ``EventLogConfig.max_records`` sets the limit in that process.
    * - SQLSpec
-     - Durable history in the SQLSpec queue schema and migration/session lifecycle.
+     - History stored in the SQLSpec queue schema.
    * - Advanced Alchemy
-     - Durable history through an application-owned concrete event-log model and migrations.
+     - History stored through an app-owned event-log model and migrations.
    * - Redis / Valkey
-     - Shared history whose durability and cleanup depend on operator persistence, retention, and backup policy.
+     - Shared history. You choose how long it stays and whether it is backed up.
 
 Query and cleanup
 =================
 
-The backend-owned ``QueueEventLog`` lists events by task ID or task name,
-summarizes stages, flushes buffered writes, and removes records older than a
-timestamp. Retention should match audit and privacy requirements. Terminal
-task-record cleanup and event-history cleanup are separate operations.
+Use ``QueueEventLog`` to find events by task ID or task name, review stages,
+flush pending writes, and delete old records. Choose retention rules that fit
+your audit and privacy needs. Deleting finished task records does not delete
+event history, and vice versa.
+
+Run cleanup from an application-owned scheduler, cron job, or maintenance
+worker. The library does not create a hidden cleanup task, because retention
+and the number of maintenance workers are deployment decisions:
+
+.. code-block:: python
+
+   from datetime import datetime, timedelta, timezone
+
+   from litestar_queues import QueueService
+   from litestar_queues.events import EventLogConfig
+
+   async def prune_queue_history(service: QueueService) -> None:
+       cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+       backend = service.get_queue_backend()
+
+       # These are separate policies. Use different cutoffs when needed.
+       await backend.cleanup_terminal(cutoff)
+       event_log = backend.get_event_log(EventLogConfig(enabled=True))
+       if event_log is not None:
+           await event_log.flush_events()
+           await event_log.cleanup_before(cutoff)
+
+Memory history is bounded by ``max_records`` and disappears with the process.
+SQLSpec, Advanced Alchemy, Redis, and Valkey history is durable or shared, so
+those deployments should schedule cleanup and include it in their backup and
+privacy policies.
 
 History versus live delivery
 ============================

@@ -38,7 +38,7 @@ button {
     var(--bg);
 }
 
-/* --- Galaxy starfield: three parallax layers of hard-coded box-shadow dots. --- */
+/* --- Decorative background with three parallax layers. --- */
 .starfield {
   position: absolute;
   inset: 0;
@@ -196,6 +196,40 @@ button {
 @keyframes telemetry-pulse {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
+}
+
+/* A short pulse makes each backend-delivered message visible even when its
+   text is already familiar. */
+.delivery-status {
+  position: absolute;
+  left: 2rem;
+  bottom: 4.25rem;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+
+.delivery-pulse {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 0 rgb(237 182 65 / 75%);
+}
+
+.delivery-status.received .delivery-pulse {
+  animation: message-pulse 700ms ease-out;
+}
+
+@keyframes message-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(237 182 65 / 75%); transform: scale(0.8); }
+  55% { box-shadow: 0 0 0 0.85rem rgb(237 182 65 / 0%); transform: scale(1.15); }
+  100% { box-shadow: 0 0 0 0 rgb(237 182 65 / 0%); transform: scale(1); }
 }
 
 /* --- Brand mark: whisper-quiet, top-left. --- */
@@ -366,7 +400,8 @@ button {
   .nebula,
   .planet-orbit,
   .planet-launching,
-  .telemetry-dot {
+  .telemetry-dot,
+  .delivery-status.received .delivery-pulse {
     animation: none;
   }
 
