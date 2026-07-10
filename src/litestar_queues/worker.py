@@ -162,6 +162,8 @@ class Worker:
         queue_backend = self._service.get_queue_backend()
         execution_backend_name_ = execution_backend_name(self._service.config.execution_backend)
         records: 'list["QueuedTaskRecord"]' = []
+        if queue_backend.capabilities.supports_batch_claim and not self._queues:
+            return await queue_backend.claim_many(limit=limit, execution_backend=execution_backend_name_)
         if not self._queues:
             for _ in range(limit):
                 claimed = await queue_backend.claim_next(execution_backend=execution_backend_name_)
@@ -175,6 +177,15 @@ class Worker:
             for queue in self._queues:
                 if len(records) >= limit:
                     break
+                if queue_backend.capabilities.supports_batch_claim:
+                    claimed_records = await queue_backend.claim_many(
+                        limit=1, queue=queue, execution_backend=execution_backend_name_
+                    )
+                    if not claimed_records:
+                        continue
+                    records.extend(claimed_records)
+                    claimed_this_pass = True
+                    continue
                 claimed = await queue_backend.claim_next(queue=queue, execution_backend=execution_backend_name_)
                 if claimed is None:
                     continue

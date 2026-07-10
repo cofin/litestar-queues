@@ -1,33 +1,36 @@
-Testing
--------
+=============
+Testing tasks
+=============
 
-With ``QueuePlugin``, the default ``QueueConfig`` uses the memory queue backend,
-local execution, and an in-app worker. Use immediate execution when a test needs
-completed results without running a worker:
-
-.. code-block:: python
-
-   from litestar_queues import QueueConfig, QueueService, task
-
-   @task("math.double")
-   async def double(value: int) -> int:
-       return value * 2
-
-   config = QueueConfig(execution_backend="immediate")
-
-   async with QueueService(config) as queue_service:
-       result = await queue_service.enqueue(double, 21)
-
-   assert result.status == "completed"
-   assert result.result == 42
-
-Use ``QueueConfig.provide_service()`` when a test needs the same lifecycle shape
-as Litestar dependency injection:
+Use immediate execution when a test should receive the terminal record before
+``enqueue()`` returns:
 
 .. code-block:: python
 
-   async with config.provide_service() as queue_service:
-       assert queue_service.config is config
+   from litestar_queues import QueueConfig, QueueService
 
-Use ``execution_backend="local"`` with ``Worker.run_once()`` when a test needs
-to assert queued state before processing.
+
+   async def test_report_task() -> None:
+       async with QueueService(
+           QueueConfig(queue_backend="memory", execution_backend="immediate")
+       ) as service:
+           result = await service.enqueue(render_report, "report-123")
+
+       assert result.status == "completed"
+       assert result.result == "report-123"
+
+Use local execution when the test covers worker behavior. Start a ``Worker``,
+enqueue work, and await ``TaskResult.wait()`` before checking the final state.
+``Worker.run_once()`` schedules claimed work; it does not mean the work has
+finished.
+
+Backend contracts
+=================
+
+Persistent backends return fresh record objects. Always call
+``await result.refresh()`` before post-execution assertions so the test does
+not depend on memory backend object mutation.
+
+For event publishing and stream tests, see :doc:`event-testing`. Repository
+contributors should use :doc:`../contributing/testing` for the package's unit,
+integration, and browser commands.

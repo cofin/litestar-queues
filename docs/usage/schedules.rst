@@ -2,8 +2,8 @@
 Schedules
 =========
 
-Tasks can declare a recurring interval or cron schedule. Scheduled tasks are
-registered in process and synchronized to the queue backend during startup when
+Tasks can declare a recurring interval or cron schedule. The process registers
+these tasks. At startup, it writes their schedules to the queue backend when
 ``QueueConfig.initialize_schedules`` is enabled.
 
 Interval Schedules
@@ -79,15 +79,14 @@ unsupported cron extensions.
 Startup Synchronization
 =======================
 
-When startup synchronization runs, Litestar Queues creates a pending queue
-record keyed as ``scheduled:<task-name>``. If an active record already exists
-with matching schedule metadata, it is reused. If schedule metadata changed,
-the old active record is cancelled and a replacement is created.
+During startup synchronization, Litestar Queues creates a pending record with
+the key ``scheduled:<task-name>``. It reuses an active record when its schedule
+metadata still matches. If the schedule changed, it cancels the old record and
+creates a new one.
 
-Completed and failed scheduled records are rescheduled after execution using the
-next run time from the persisted schedule metadata. This keeps scheduling data
-close to the queue record and allows durable backends to recover after process
-restarts.
+After a scheduled task completes or fails, Litestar Queues reads the saved
+schedule metadata and creates its next run. Keeping the schedule with the
+queue record lets persistent backends recover after a process restart.
 
 Scheduled records include the same task metadata used by normal enqueue calls.
 When a task does not set ``quiet_success``, schedule startup stores
@@ -109,3 +108,10 @@ Configuration
 
 Set ``initialize_schedules=False`` when schedules are initialized by a separate
 worker or management command.
+
+See also
+========
+
+Use :doc:`task-options` for retry, timeout, and execution defaults on scheduled
+tasks. Use :doc:`workers` to ensure exactly one intended startup path
+synchronizes schedules and enough workers are running to execute due records.

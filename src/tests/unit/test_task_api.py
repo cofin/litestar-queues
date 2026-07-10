@@ -69,20 +69,19 @@ async def test_task_execute_record_merges_extra_kwargs_into_call() -> "None":
     assert result["another"] == 42
 
 
-async def test_task_execute_record_extra_kwargs_cannot_override_sentinels() -> "None":
-    @task("inject.sentinels")
-    async def sentinels(**kwargs: "object") -> "dict[str, object]":
+async def test_task_execute_record_injects_only_typed_context() -> "None":
+    @task("inject.context")
+    async def consume(**kwargs: "object") -> "dict[str, object]":
         return dict(kwargs)
 
-    record = QueuedTaskRecord(task_name="inject.sentinels")
+    record = QueuedTaskRecord(task_name="inject.context")
     context = _build_test_context(record)
 
-    result = await sentinels.execute_record(
-        record, task_context=context, extra_kwargs={"_job_id": "hijacked", "_task_context": "hijacked"}
+    result = await consume.execute_record(
+        record, task_context=context, extra_kwargs={"injected_service": "resolved", "_task_context": "hijacked"}
     )
 
-    assert result["_job_id"] == str(record.id)
-    assert result["_task_context"] is context
+    assert result == {"injected_service": "resolved", "_task_context": context}
 
 
 async def test_task_using_returns_configured_copy_without_mutating_original() -> "None":

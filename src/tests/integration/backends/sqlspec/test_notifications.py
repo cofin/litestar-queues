@@ -2,7 +2,7 @@
 
 Covers ``event_channel`` wiring, derivation from extension config,
 explicit-override precedence, and the per-adapter wakeup-transport gate
-(``listen_notify_durable`` / ``table_queue`` / ``polling``). Adapter-agnostic
+(``notify`` / ``notify_queue`` / ``poll_queue`` / ``polling``). Adapter-agnostic
 cases pin to the aiosqlite adapter so the StubAsyncEventChannel can be injected
 without bringing up a real LISTEN/NOTIFY service; one case exercises the real
 Postgres NOTIFY path against a live container.
@@ -30,6 +30,7 @@ from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueB
 from litestar_queues.backends.sqlspec.backend import _adapter_notify_transport
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.exceptions import QueueConfigurationError
+from tests.integration.backends.sqlspec._schema import run_queue_migrations
 from tests.integration.backends.sqlspec.conftest import StubAsyncEventChannel
 
 if TYPE_CHECKING:
@@ -49,6 +50,21 @@ pytestmark = pytest.mark.anyio
 _ORACLE_AQ_QUEUE_TABLE = "LQ_EVENTS_AQ_TABLE"
 _ORACLE_AQ_QUEUE = "LQ_EVENTS_AQ_QUEUE"
 _ORACLE_TXEVENTQ_QUEUE = "LQ_EVENTS_TXQ"
+
+
+class RecordingPollIntervalEventChannel(StubAsyncEventChannel):
+    """Stub channel that records the poll interval passed to ``iter_events``."""
+
+    __slots__ = ("poll_intervals",)
+
+    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+        super().__init__(backend_name=backend_name)
+        self.poll_intervals: "list[float | None]" = []
+
+    async def iter_events(self, channel: "str", *, poll_interval: "float | None" = None) -> "Any":
+        self.poll_intervals.append(poll_interval)
+        async for event in super().iter_events(channel, poll_interval=poll_interval):
+            yield event
 
 
 def _oracle_sync_config(
@@ -250,27 +266,68 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
-        record = await backend.enqueue("tasks.notified", queue="critical", execution_backend="local")
+        await backend.enqueue("tasks.notified", queue="critical", execution_backend="local")
 
         assert await waiter is True
         assert backend.capabilities.supports_notifications is True
-        assert backend.capabilities.notification_backend == "table_queue"
+        assert backend.capabilities.notification_backend == "poll_queue"
         assert backend.capabilities.notifications_durable is True
         assert event_channel.published == [
-            (
-                "queue_notifications",
-                {
-                    "task_id": str(record.id),
-                    "task_name": "tasks.notified",
-                    "queue": "critical",
-                    "execution_backend": "local",
-                },
-                {"event_type": "litestar_queues.task_available"},
-            )
+            ("queue_notifications", {"event": "task_available"}, {"event_type": "litestar_queues.task_available"})
         ]
         assert event_channel.acked == ["event-1"]
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_worker_timeout_does_not_set_event_poll_interval(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = RecordingPollIntervalEventChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "worker-timeout.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="worker_timeout",
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=0.25))
+        await backend.enqueue("tasks.worker_timeout")
+
+        assert await waiter is True
+        assert event_channel.poll_intervals == [None]
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_event_poll_interval_is_passed_to_event_channel(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = RecordingPollIntervalEventChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "event-poll-interval.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="event_poll_interval",
+            event_poll_interval=0.01,
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    try:
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=0.25))
+        await backend.enqueue("tasks.event_poll_interval")
+
+        assert await waiter is True
+        assert event_channel.poll_intervals == [0.01]
     finally:
         await backend.close()
 
@@ -282,22 +339,20 @@ async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_pat
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            config=sqlspec_config,
-            create_schema=False,
-            run_migrations=True,
-            notifications=True,
-            notification_channel="derived_notifications",
+            config=sqlspec_config, notifications=True, notification_channel="derived_notifications"
         )
     )
 
     await backend.open()
+    await backend.create_schema()
+    await run_queue_migrations(sqlspec_config)
     try:
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
         await backend.enqueue("tasks.derived_notified")
 
         assert await waiter is True
         assert backend.capabilities.supports_notifications is True
-        assert backend.capabilities.notification_backend == "table_queue"
+        assert backend.capabilities.notification_backend == "poll_queue"
         assert backend.capabilities.notifications_durable is True
     finally:
         await backend.close()
@@ -317,6 +372,7 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
         )
     )
     await extension_backend.open()
+    await extension_backend.create_schema()
     try:
         await extension_backend.enqueue("tasks.extension_notified")
     finally:
@@ -328,10 +384,11 @@ async def test_sqlspec_backend_notification_channel_uses_extension_config_with_e
             config=sqlspec_config,
             event_channel=cast("AsyncEventChannel", explicit_channel),
             notification_channel="explicit_notifications",
-            table_name="explicit_notification_queue",
+            queue_table_name="explicit_notification_queue",
         )
     )
     await explicit_backend.open()
+    await explicit_backend.create_schema()
     try:
         await explicit_backend.enqueue("tasks.explicit_notified")
     finally:
@@ -348,24 +405,21 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
     sqlspec_config = sqlite_config_factory(tmp_path / "litestar.db")
     sqlspec.add_config(sqlspec_config)
 
-    plugin = QueuePlugin(
-        QueueConfig(
-            queue_backend=SQLSpecBackendConfig(sqlspec=sqlspec, create_schema=False), initialize_schedules=False
-        )
-    )
+    plugin = QueuePlugin(QueueConfig(queue_backend=SQLSpecBackendConfig(sqlspec=sqlspec), initialize_schedules=False))
 
     app = Litestar(plugins=[SQLSpecPlugin(sqlspec), plugin])
 
     assert "db_session" in app.dependencies
     assert "AiosqliteDriver" in app.signature_namespace
+    assert QUEUE_EXTENSION_NAME in sqlspec_config.get_migration_commands().extension_configs
 
 
 @pytest.mark.parametrize(
     ("adapter_name", "expected_transport"),
     [
-        ("asyncpg", "listen_notify_durable"),
-        ("psycopg", "table_queue"),
-        ("psqlpy", "table_queue"),
+        ("asyncpg", "notify_queue"),
+        ("psycopg", "poll_queue"),
+        ("psqlpy", "poll_queue"),
         ("cockroach_asyncpg", "polling"),
         ("cockroach_psycopg", "polling"),
         ("aiosqlite", "polling"),
@@ -382,9 +436,9 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
 def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", expected_transport: "str") -> "None":
     """The wakeup transport is gated by adapter knowledge.
 
-    Postgres-over-asyncpg gets the durable LISTEN/NOTIFY hybrid; psycopg/psqlpy
-    fall back to the durable table queue until their LISTEN/NOTIFY path lands
-    upstream; every other family polls.
+    Postgres-over-asyncpg gets ``notify_queue``; psycopg/psqlpy fall back to
+    ``poll_queue`` until their native NOTIFY path lands upstream; every other
+    family reports ``polling``.
     """
     assert _adapter_notify_transport(adapter_name) == expected_transport
 
@@ -392,6 +446,24 @@ def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", ex
 def test_notify_transport_config_rejects_unknown_value() -> "None":
     with pytest.raises(QueueConfigurationError):
         SQLSpecBackendConfig(notify_transport="not-a-transport")
+
+
+def test_queue_plugin_registers_sqlspec_migrations_for_cli() -> "None":
+    """CLI initialization exposes queue migrations to SQLSpec's database command."""
+    from click import Group
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    plugin = QueuePlugin(QueueConfig(queue_backend=SQLSpecBackendConfig(config=sqlspec_config)))
+
+    plugin.on_cli_init(Group())
+
+    assert QUEUE_EXTENSION_NAME in sqlspec_config.get_migration_commands().extension_configs
+
+
+@pytest.mark.parametrize("transport", ("listen_notify", "listen_notify_durable", "table_queue"))
+def test_notify_transport_config_rejects_legacy_public_names(transport: "str") -> "None":
+    with pytest.raises(QueueConfigurationError):
+        SQLSpecBackendConfig(notify_transport=transport)
 
 
 @pytest.mark.parametrize("transport", ("aq", "txeventq"))
@@ -416,6 +488,7 @@ async def test_oracle_event_backend_names_are_reported_durable(
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         assert backend.capabilities.supports_notifications is True
         assert backend.capabilities.notification_backend == backend_name
@@ -443,7 +516,7 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
             config=sqlspec_config,
-            table_name=table_name,
+            queue_table_name=table_name,
             notifications=True,
             notify_transport=event_backend,
             event_settings={"aq_queue": aq_queue, "aq_wait_seconds": 1},
@@ -453,6 +526,7 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
 
     with queue_manager:
         await backend.open()
+        await backend.create_schema()
         try:
             assert backend.capabilities.supports_notifications is True
             assert backend.capabilities.notification_backend == event_backend
@@ -484,6 +558,7 @@ async def test_sqlspec_backend_non_notify_adapter_polls(
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         assert backend.capabilities.supports_notifications is False
         assert backend.capabilities.notification_backend is None
@@ -498,28 +573,28 @@ async def test_sqlspec_backend_non_notify_adapter_polls(
         await backend.close()
 
 
-async def test_sqlspec_backend_notify_transport_override_enables_table_queue(tmp_path: "Path") -> "None":
+async def test_sqlspec_backend_notify_transport_override_enables_poll_queue(tmp_path: "Path") -> "None":
     """An explicit ``notify_transport`` overrides the adapter's polling default."""
-    sqlspec_config = AiosqliteConfig(connection_config={"database": str(tmp_path / "override-table-queue.db")})
+    sqlspec_config = AiosqliteConfig(connection_config={"database": str(tmp_path / "override-poll-queue.db")})
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
             config=sqlspec_config,
-            notify_transport="table_queue",
-            create_schema=False,
-            run_migrations=True,
-            notification_channel="override_table_queue",
+            notify_transport="poll_queue",
+            notification_channel="override_poll_queue",
             event_poll_interval=0.01,
         )
     )
 
     await backend.open()
+    await backend.create_schema()
+    await run_queue_migrations(sqlspec_config)
     try:
         assert backend.capabilities.supports_notifications is True
-        assert backend.capabilities.notification_backend == "table_queue"
+        assert backend.capabilities.notification_backend == "poll_queue"
         assert backend.capabilities.notifications_durable is True
 
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2))
-        await backend.enqueue("tasks.override_table_queue")
+        await backend.enqueue("tasks.override_poll_queue")
         assert await waiter is True
     finally:
         await backend.close()
@@ -532,12 +607,11 @@ async def test_sqlspec_backend_notify_transport_polling_overrides_extension_conf
         extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01}},
     )
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=sqlspec_config, notify_transport="polling", create_schema=False, run_migrations=True
-        )
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, notify_transport="polling")
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         assert backend.capabilities.supports_notifications is False
         assert backend.capabilities.notification_backend is None
@@ -564,19 +638,19 @@ async def test_sqlspec_backend_postgres_listen_notify_durable_wakes(
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
             config=sqlspec_config,
-            table_name="lq_notify_asyncpg",
+            queue_table_name="lq_notify_asyncpg",
             notifications=True,
-            create_schema=False,
-            run_migrations=True,
             notification_channel="lq_asyncpg_wake",
             event_poll_interval=0.05,
         )
     )
 
     await backend.open()
+    await backend.create_schema()
+    await run_queue_migrations(sqlspec_config, queue_table_name="lq_notify_asyncpg")
     try:
         assert backend.capabilities.supports_notifications is True
-        assert backend.capabilities.notification_backend == "listen_notify_durable"
+        assert backend.capabilities.notification_backend == "notify_queue"
         assert backend.capabilities.notifications_durable is True
 
         # NOTIFY wake: subscribe first, then enqueue, and measure latency.

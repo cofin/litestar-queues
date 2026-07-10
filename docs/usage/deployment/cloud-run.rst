@@ -2,14 +2,13 @@
 Cloud Run Deployment
 ====================
 
-This guide covers the generic Cloud Run pattern for ``litestar-queues``.
-Replace the project, region, service, job, and import-path placeholders with
-your own values.
+This guide shows a general Cloud Run setup for ``litestar-queues``. Replace the
+project, region, service, job, and import-path placeholders with your values.
 
 The core model
 ==============
 
-Cloud Run deployments work best when you keep three responsibilities separate:
+A Cloud Run deployment has three separate responsibilities:
 
 .. code-block:: text
 
@@ -25,38 +24,59 @@ Cloud Run deployments work best when you keep three responsibilities separate:
                                                                      │ executes task │
                                                                      └───────────────┘
 
-The important rule is simple:
+Each part has one job:
 
 * ``enqueue()`` writes a pending queue record.
-* ``dispatch()`` happens only inside a running worker loop.
-* ``execute`` happens inside the Cloud Run Job container.
+* A running worker loop calls ``dispatch()``.
+* The Cloud Run Job container executes the task.
 
-If no dispatcher process is running, records routed to ``cloudrun`` stay
-pending forever.
+The **dispatcher** is the worker loop that starts Cloud Run Jobs. Without a
+running dispatcher, records routed to ``cloudrun`` remain pending.
 
 Realtime fan-out is a separate concern
 --------------------------------------
 
-If the web service and dispatcher are separate Cloud Run processes, do not use
-``MemoryChannelsBackend`` for browser events. It is process-local even when the
-queue records are stored in a shared database. Configure a shared Redis
-Channels Streams backend (or a PostgreSQL Channels backend when that is the
-existing stack) in both processes, with the same channel key prefix and event
-contract. Redis/Valkey queue notifications only wake the dispatcher; they do
-not carry SSE or WebSocket event payloads.
+If the web service and dispatcher run in separate processes, do not use
+``MemoryChannelsBackend`` for browser events. It works in one process only,
+even when queue records use a shared database. Configure the same shared
+Channels backend in both processes. Use Redis Channels Streams, or PostgreSQL
+Channels when it matches the existing stack, with the same channel prefix and
+event contract. Redis/Valkey queue notifications only wake the dispatcher.
+They do not carry SSE or WebSocket events.
 
-Keep browser authentication and proxy behavior explicit: same-origin relative
-stream URLs are the simplest deployment, while a separate frontend origin
-needs the corresponding CORS, cookie, WebSocket upgrade, and proxy timeout
-configuration. A 403 on an enqueue POST is an auth/CSRF problem, not a
-Channels delivery failure. A stream error after a successful enqueue is a
-Channels, origin, or proxy problem.
+Configure browser authentication and proxies explicitly. Same-origin relative
+stream URLs are the simplest choice. A separate frontend origin also needs the
+right CORS, cookie, WebSocket upgrade, and proxy timeout settings. A ``403`` on
+an enqueue POST points to authentication or CSRF, not Channels. If enqueueing
+succeeds but the stream fails, check Channels, the origin, and the proxy.
+
+Topology and security
+---------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Component
+     - Required shared state
+     - Security boundary
+   * - Web service
+     - Persistent queue backend
+     - Authenticate enqueue routes and protect queue credentials.
+   * - Dispatcher service
+     - Same queue backend and Cloud Run configuration
+     - Grant only ``run.jobs.runWithOverrides``-equivalent access.
+   * - Cloud Run Job
+     - Same queue backend and task modules
+     - Use a dedicated service account and least-privilege data access.
+   * - Browser event replicas
+     - Explicit shared Channels transport
+     - Authorize stream scopes; queue wakeups are not browser events.
 
 Recommended topology
 ====================
 
 Use one web service, one always-on dispatcher service, and one Cloud Run Job
-that actually runs the queued task.
+that runs the queued task.
 
 The web service should keep ``in_app_worker=False`` so it only enqueues
 records. The dispatcher service owns the worker loop.
@@ -84,9 +104,9 @@ records. The dispatcher service owns the worker loop.
        task_modules=("myapp.tasks",),
    )
 
-The same queue backend must be reachable from the web service, the dispatcher,
-and the Cloud Run Job. The dispatcher needs the typed
-``CloudRunExecutionConfig`` so it can resolve the job name for each record.
+The web service, dispatcher, and Cloud Run Job must all reach the same queue
+backend. The dispatcher needs ``CloudRunExecutionConfig`` to choose the Cloud
+Run Job for each record.
 
 Example deployment commands:
 
@@ -108,16 +128,15 @@ Example deployment commands:
      --no-cpu-throttling \
      --add-cloudsql-instances my-project:my-region:my-db
 
-The dispatcher service should keep CPU available between requests. That is why
-the recommended pattern uses ``--min-instances 1`` together with
+The dispatcher must keep CPU available while it waits for tasks. Therefore,
+the recommended command uses both ``--min-instances 1`` and
 ``--no-cpu-throttling``.
 
 In-app worker alternative
 ==========================
 
-You can run the dispatcher inside the API process instead of splitting it out.
-This is simpler, but Cloud Run only keeps background polling healthy when the
-service stays warm and CPU is not throttled.
+You can run the dispatcher in the API process. This uses fewer services, but
+background polling works only while the service stays warm and has CPU.
 
 .. code-block:: python
 
@@ -145,20 +164,20 @@ service stays warm and CPU is not throttled.
      --no-cpu-throttling \
      --add-cloudsql-instances my-project:my-region:my-db
 
-Use this only for low-volume deployments. The dedicated dispatcher service is
-the safer default because web and background capacity can scale independently.
+Use this only for low-volume deployments. A dedicated dispatcher is the safer
+default because web and background capacity can scale separately.
 
 Cloud Run Job worker
 ====================
 
-The Cloud Run Job is the process that executes the queued task. The shipped
-console script is ``litestar-queues-cloudrun-worker``. The equivalent module
-invocation is ``python -m litestar_queues.execution.cloudrun.entrypoint``.
+The Cloud Run Job executes the queued task. Run it with the shipped
+``litestar-queues-cloudrun-worker`` command or the equivalent module command,
+``python -m litestar_queues.execution.cloudrun.entrypoint``.
 
-The worker loads the shared queue configuration, imports the configured task
-modules, claims the persisted record, executes the task, and exits with a
-deterministic code. The entry point resolves the config factory before it reads
-``TASK_ID``, so custom ``env_prefix`` values are honored end-to-end.
+The worker loads the shared queue config, imports task modules, claims the
+saved record, runs the task, and exits with a defined code. It resolves the
+config factory before reading ``TASK_ID``. This lets a custom ``env_prefix``
+work throughout the process.
 
 Environment contract
 --------------------
@@ -206,8 +225,8 @@ prefix changes everywhere.
 Profile-based job selection
 ---------------------------
 
-Use ``execution_profile`` when different task families should run in different
-Cloud Run Jobs. The dispatcher resolves the job name in this order:
+Use ``execution_profile`` to send different task families to different Cloud
+Run Jobs. The dispatcher chooses the job name in this order:
 
 1. ``profiles[record.execution_profile]``
 2. ``job_name``
@@ -229,9 +248,9 @@ Example job command:
      LITESTAR_QUEUES_TASK_MODULES=myapp.tasks \
      --task-timeout 3600s
 
-The task timeout should match the longest task you expect the Job to run.
-Set the queue timeout and the Cloud Run Job timeout to the same ceiling, or to
-values where the Job timeout is at least as long as the queue timeout.
+Set the timeout for the longest expected task. The Cloud Run Job timeout must
+be at least as long as the queue timeout. Using the same value for both is the
+simplest option.
 
 If you need a different prefix for the worker environment variables, set it on
 ``CloudRunExecutionConfig.env_prefix`` and use the matching prefix when you
@@ -240,9 +259,9 @@ deploy the Job.
 IAM
 ===
 
-The dispatcher or API service account needs permission to run the worker Job
-with container overrides. The simplest grant is ``roles/run.developer`` on the
-worker Job, because it includes ``run.jobs.runWithOverrides``.
+The dispatcher or API service account must be allowed to run the worker Job
+with container overrides. The simplest grant is ``roles/run.developer`` on
+that Job because it includes ``run.jobs.runWithOverrides``.
 
 .. code-block:: bash
 
@@ -258,7 +277,7 @@ Database connectivity
 =====================
 
 The web service, dispatcher, and Job must all reach the same queue database.
-That requirement is separate from the Cloud Run Job itself.
+Creating the Cloud Run Job does not provide that connection.
 
 If you use Cloud SQL:
 
@@ -287,28 +306,28 @@ Example:
      --region my-region \
      --set-cloudsql-instances my-project:my-region:my-db
 
-Use the connection form your driver expects. The important part is that all
-three processes point at the same durable queue store.
+Use the connection format required by your driver. All three processes must
+point to the same persistent queue store.
 
 Dispatch failure behavior
 ==========================
 
-By default, dispatch failures surface in logs and events and the record stays
-routed to ``cloudrun``. The default fallback backend is ``None``.
+By default, Litestar Queues reports dispatch failures in logs and events. The
+record remains routed to ``cloudrun``. The default fallback backend is
+``None``.
 
 If you want the older reroute behavior, set
 ``fallback_execution_backend="local"`` explicitly and run a local worker that
 can consume the fallback queue.
 
-Transient Cloud Run status probe failures are treated as still running so
-reconciliation does not create false terminal states. If the remote execution
-is missing, reconciliation marks the record failed so retryable work can run
-again.
+A temporary Cloud Run status-check failure is treated as still running. This
+prevents a false final state. If the remote execution is missing, the status
+check marks the record failed so retryable work can run again.
 
 Scheduling
 ==========
 
-Scheduled work still needs a dispatcher. You have two common options:
+Scheduled work still needs a dispatcher. Choose one of these options:
 
 * use ``@task(schedule=...)`` so the dispatcher creates the pending records on
   a schedule, or

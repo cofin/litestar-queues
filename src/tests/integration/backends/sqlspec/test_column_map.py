@@ -168,13 +168,14 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
             config=sqlite_config_factory(db_path),
-            table_name="adopter_jobs",
+            queue_table_name="adopter_jobs",
             column_map=ADOPTER_COLUMN_MAP,
             manage_schema=False,
         )
     )
 
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue(
             "tasks.adopter",
@@ -239,6 +240,7 @@ async def test_manage_schema_false_emits_no_schema_ddl(
 
     store = create_queue_store(config, manage_schema=False)
     await backend.open()
+    await backend.create_schema()
     await backend.close()
 
     assert store.create_statements() == []

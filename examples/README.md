@@ -1,8 +1,8 @@
 # Examples
 
-Standalone example apps live here. Each example owns its app module, templates,
-frontend assets, and README so it can be copied or run without reaching into the
-test suite.
+This directory contains standalone example apps. Each example has its own app
+module, templates, frontend assets, and README. You can copy or run one without
+using files from the test suite.
 
 ## Available Apps
 
@@ -25,23 +25,24 @@ Each transport has the same backend variants:
 - `htmx_realtime_websocket_sqlspec/` and `htmx_realtime_sse_sqlspec/`:
   `SQLSpecBackendConfig` with `AiosqliteConfig`.
 - `htmx_realtime_websocket_advanced_alchemy/` and
-  `htmx_realtime_sse_advanced_alchemy/`: `AdvancedAlchemyBackendConfig` with
+  `htmx_realtime_sse_advanced_alchemy/`: `SQLAlchemyBackendConfig` with
   `sqlite+aiosqlite`.
 - `htmx_realtime_websocket_redis/` and `htmx_realtime_sse_redis/`:
   `RedisBackendConfig`.
 - `htmx_realtime_websocket_valkey/` and `htmx_realtime_sse_valkey/`:
   `ValkeyBackendConfig`.
 
-The backend name describes queue persistence, not browser event fan-out. Every
-shipped copy currently uses `MemoryChannelsBackend` for live Channels delivery,
-so the web app and worker must stay in one process. Redis or Valkey queue
-notifications can wake a worker, but they do not make the browser stream
-shared. A separate worker topology requires an explicit broker-backed Channels
-configuration; do not infer it from selecting a Redis or Valkey queue backend.
+The backend name tells you where queue records are stored. It does not tell you
+how events reach the browser. By default, every example uses
+`MemoryChannelsBackend`, which works in one process only. Redis or Valkey queue
+notifications can wake a worker, but they do not share the browser stream. To
+run the worker in another process, configure a shared Channels backend
+explicitly. Selecting a Redis or Valkey queue backend is not enough.
 
-All demos inherit `QueueConfig`'s in-process worker default. The Redis and
-Valkey copies accept `LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER=0` only for their
-documented shared web/worker topology.
+All demos use the `QueueConfig` default and run the worker in the web process.
+The Redis and Valkey copies accept
+`LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER=0` only with their documented shared
+web-and-worker setup.
 
 Start with the README in the directory you want to run. Every example uses the
 optional `litestar-queues[examples]` Python extra and local frontend

@@ -10,11 +10,12 @@ try:
 except ModuleNotFoundError:
     SAWarning = None
 else:
-    warnings.filterwarnings(
-        "ignore",
-        message="Unmanaged access of declarative attribute .* from non-mapped class QueueTaskModelMixin",
-        category=SAWarning,
-    )
+    for declarative_class in ("QueueTaskModelMixin", "QueueEventLogModelMixin", "UUIDAuditBase"):
+        warnings.filterwarnings(
+            "ignore",
+            message=f"Unmanaged access of declarative attribute .* from non-mapped class {declarative_class}",
+            category=SAWarning,
+        )
 
 current_path = Path(__file__).parent.parent.resolve()
 sys.path.append(str(current_path))
@@ -98,22 +99,27 @@ html_theme_options: "dict[str, Any]" = {
             "title": "Docs",
             "children": [
                 {
-                    "title": "Get Started",
+                    "title": "Start here",
                     "url": "getting_started/index",
-                    "summary": "Install the package and enqueue the first task.",
+                    "summary": "Install the package and enqueue your first task.",
                 },
                 {
-                    "title": "Usage",
+                    "title": "Concepts",
+                    "url": "usage/concepts",
+                    "summary": "Understand task records, workers, backends, and events.",
+                },
+                {
+                    "title": "How-to guides",
                     "url": "usage/index",
-                    "summary": "Configure tasks, workers, schedules, events, and testing.",
+                    "summary": "Complete focused task, worker, backend, and event goals.",
                 },
                 {
-                    "title": "Backends",
-                    "url": "usage/backends",
-                    "summary": "Choose queue persistence and execution integrations.",
+                    "title": "Examples",
+                    "url": "examples/index",
+                    "summary": "Run WebSocket and SSE applications with backend variants.",
                 },
                 {
-                    "title": "API Reference",
+                    "title": "Reference",
                     "url": "reference/index",
                     "summary": "Browse the public queue, backend, worker, and event APIs.",
                 },
@@ -131,6 +137,11 @@ html_theme_options: "dict[str, Any]" = {
                     "title": "Testing",
                     "url": "contributing/testing",
                     "summary": "Run unit, integration, backend, and docs checks.",
+                },
+                {
+                    "title": "Documentation",
+                    "url": "contributing/documentation",
+                    "summary": "Write and audit focused, source-backed documentation.",
                 },
             ],
         },

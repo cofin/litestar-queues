@@ -112,16 +112,20 @@ async def _build_memory(ctx: "FixtureCtx") -> "BaseQueueBackend":
     return InMemoryQueueBackend()
 
 
-def _sqlspec_backend(sqlspec_config: "SQLSpecStoreConfig", *, table_name: "str | None" = None) -> "BaseQueueBackend":
+def _sqlspec_backend(
+    sqlspec_config: "SQLSpecStoreConfig", *, queue_table_name: "str | None" = None
+) -> "BaseQueueBackend":
     """Return a SQLSpec backend configured through the typed config object.
 
-    ``table_name`` is set per-case by the fixture so adapters sharing the
+    ``queue_table_name`` is set per-case by the fixture so adapters sharing the
     same Docker database (the Postgres/MySQL/Oracle service containers)
     each own a dedicated queue table and cannot pollute one another.
     """
     from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
-    return SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, table_name=table_name))
+    return SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_table_name=queue_table_name)
+    )
 
 
 async def _build_aiosqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
@@ -129,7 +133,7 @@ async def _build_aiosqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
 
     return _sqlspec_backend(
         AiosqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-aiosqlite.db")}),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -140,7 +144,7 @@ async def _build_adbc_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
         AdbcConfig(
             connection_config={"driver_name": "adbc_driver_sqlite", "uri": str(ctx.tmp_path / "queue-adbc-sqlite.db")}
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -148,7 +152,8 @@ async def _build_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.sqlite import SqliteConfig
 
     return _sqlspec_backend(
-        SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")}), table_name=ctx.table_name
+        SqliteConfig(connection_config={"database": str(ctx.tmp_path / "queue-sqlite.db")}),
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -156,7 +161,8 @@ async def _build_duckdb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.duckdb import DuckDBConfig
 
     return _sqlspec_backend(
-        DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}), table_name=ctx.table_name
+        DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}),
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -175,7 +181,7 @@ async def _build_postgres_asyncpg(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "database": svc.database,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -194,7 +200,7 @@ async def _build_postgres_psycopg(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "dbname": svc.database,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -213,7 +219,7 @@ async def _build_postgres_psqlpy(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "db_name": svc.database,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -233,7 +239,7 @@ async def _build_cockroach_asyncpg(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "ssl": False,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -244,7 +250,7 @@ async def _build_cockroach_psycopg(ctx: "FixtureCtx") -> "BaseQueueBackend":
     assert svc is not None
     conninfo = f"postgresql://root@{svc.host}:{svc.port}/{svc.database}?sslmode=disable"
     return _sqlspec_backend(
-        CockroachPsycopgAsyncConfig(connection_config={"conninfo": conninfo}), table_name=ctx.table_name
+        CockroachPsycopgAsyncConfig(connection_config={"conninfo": conninfo}), queue_table_name=ctx.table_name
     )
 
 
@@ -263,7 +269,7 @@ async def _build_mysql_asyncmy(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "database": svc.db,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -282,7 +288,7 @@ async def _build_mysql_aiomysql(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "db": svc.db,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -301,7 +307,7 @@ async def _build_mysql_mysqlconnector(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "database": svc.db,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -320,7 +326,7 @@ async def _build_mysql_pymysql(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "database": svc.db,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -339,7 +345,7 @@ async def _build_oracle_oracledb(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "service_name": svc.service_name,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -366,7 +372,7 @@ async def _build_mssql_mssql_python(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "trust_server_certificate": True,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -391,7 +397,7 @@ async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "database": svc.database,
             }
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 
@@ -405,7 +411,7 @@ async def _build_arrow_odbc_mssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
             connection_config={"connection_string": svc.connection_string},
             driver_features={"dbms_name": "Microsoft SQL Server"},
         ),
-        table_name=ctx.table_name,
+        queue_table_name=ctx.table_name,
     )
 
 

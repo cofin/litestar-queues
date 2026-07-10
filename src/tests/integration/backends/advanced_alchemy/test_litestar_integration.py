@@ -12,7 +12,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig, SQLAlchemyPlugin
 
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
-from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackendConfig
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ def clean_task_registry() -> "None":
 
 
 def _sqlite_config(path: "Path") -> "SQLAlchemyAsyncConfig":
-    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}")
+    return SQLAlchemyAsyncConfig(connection_string=f"sqlite+aiosqlite:///{path}", create_all=True)
 
 
 class LitestarQueueTask(UUIDAuditBase, QueueTaskModelMixin):
@@ -42,9 +42,7 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     alchemy_config = _sqlite_config(tmp_path / "litestar.db")
     queue_plugin = QueuePlugin(
         QueueConfig(
-            queue_backend=AdvancedAlchemyBackendConfig(
-                sqlalchemy_config=alchemy_config, model_class=LitestarQueueTask, create_schema=True
-            ),
+            queue_backend=SQLAlchemyBackendConfig(sqlalchemy_config=alchemy_config, model_class=LitestarQueueTask),
             initialize_schedules=False,
         )
     )
@@ -61,12 +59,12 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
 
     assert response.status_code == 201
     assert response.json()["status"] == "pending"
-    assert isinstance(queue_plugin.config.queue_backend, AdvancedAlchemyBackendConfig)
+    assert isinstance(queue_plugin.config.queue_backend, SQLAlchemyBackendConfig)
     assert queue_plugin.config.queue_backend.sqlalchemy_config is alchemy_config
 
 
 def test_advanced_alchemy_backend_does_not_create_sqlalchemy_litestar_plugin() -> "None":
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+    from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend
 
     with pytest.raises(TypeError):
-        AdvancedAlchemyQueueBackend(register_plugin=True)  # type: ignore[call-arg]
+        SQLAlchemyBackend(register_plugin=True)  # type: ignore[call-arg]

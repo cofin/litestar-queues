@@ -64,6 +64,7 @@ async def test_sqlspec_backend_sync_sessions_use_sqlspec_managed_async_executor(
         )
     )
     await backend.open()
+    await backend.create_schema()
     try:
         record = await backend.enqueue("tasks.sync_bridge")
         claimed = await backend.claim_task(record.id)
@@ -88,6 +89,7 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_isolates_heartbeat_write
         backend_config=SQLSpecBackendConfig(sqlspec=sqlspec, config=main_config, heartbeat_pool_config=heartbeat_config)
     )
     await backend.open()
+    await backend.create_schema()
     try:
         assert id(heartbeat_config) in sqlspec.configs
         assert backend._heartbeat_pool_registered is True
@@ -155,6 +157,7 @@ async def test_sqlspec_backend_heartbeat_pool_failure_falls_back_to_main(
     )
     with caplog.at_level("WARNING", logger="litestar_queues"):
         await backend.open()
+        await backend.create_schema()
     try:
         assert backend._heartbeat_pool_registered is False
         assert backend._heartbeat_pool_enabled is False
@@ -184,6 +187,7 @@ async def test_sqlspec_backend_dedicated_heartbeat_pool_handles_concurrent_heart
         backend_config=SQLSpecBackendConfig(config=main_config, heartbeat_pool_config=heartbeat_config)
     )
     await backend.open()
+    await backend.create_schema()
     try:
         records = [await backend.enqueue(f"tasks.bulk-{i}") for i in range(16)]
         claimed = []

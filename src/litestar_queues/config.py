@@ -267,9 +267,9 @@ class QueueConfig:
             "non_retryable": non_retryable,
         }
         with suppress(ImportError):
-            from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyQueueBackend
+            from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend
 
-            namespace["AdvancedAlchemyQueueBackend"] = AdvancedAlchemyQueueBackend
+            namespace["SQLAlchemyBackend"] = SQLAlchemyBackend
         with suppress(ImportError):
             from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 

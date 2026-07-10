@@ -1,8 +1,8 @@
 .. title:: Litestar Queues
 
 .. meta::
-   :description: Task queues, workers, schedules, backend integrations, and realtime task events for Litestar applications.
-   :keywords: Litestar, task queue, workers, background jobs, schedules, Redis, Valkey, SQLSpec, Advanced Alchemy
+   :description: Beginner-first task queues, workers, schedules, persistence backends, and realtime events for Litestar.
+   :keywords: Litestar, task queue, worker, background job, Redis, Valkey, SQLSpec, Advanced Alchemy
 
 .. container:: title-with-logo
 
@@ -10,9 +10,9 @@
 
       <h1 class="brand-text" aria-label="Litestar Queues">Litestar Queues</h1>
 
-Litestar Queues provides task queue support for Litestar applications: typed
-task registration, queue persistence, worker lifecycle management, scheduled
-jobs, pluggable execution backends, and realtime task event delivery.
+Define background work with a typed decorator, add it to a queue through
+Litestar, and let a managed worker run it. Start in one process. Add persistent
+storage, separate workers, or live task events as the application grows.
 
 .. toctree::
    :hidden:
@@ -20,45 +20,48 @@ jobs, pluggable execution backends, and realtime task event delivery.
    :caption: Documentation
 
    getting_started/index
+   usage/concepts
    usage/index
-   contributing/index
+   examples/index
    reference/index
+   contributing/index
 
-.. grid:: 1 1 2 2
+.. grid:: 1 1 2 3
    :padding: 0
    :gutter: 2
 
-   .. grid-item-card:: Get Started
+   .. grid-item-card:: Start here
       :link: getting_started/index
       :link-type: doc
 
-      Install Litestar Queues, register your first task, and enqueue work from
-      a Litestar route backed by an in-app or standalone worker.
+      Install the package, copy one complete application, and enqueue a task.
 
-   .. grid-item-card:: Usage Guides
+   .. grid-item-card:: Concepts
+      :link: usage/concepts
+      :link-type: doc
+
+      Learn how task records, storage, workers, execution, and events fit together.
+
+   .. grid-item-card:: How-to guides
       :link: usage/index
       :link-type: doc
 
-      Configure workers, tasks, schedules, realtime events, and backend
-      integrations.
+      Define tasks, inspect results, operate workers, and choose production options.
 
-   .. grid-item-card:: Backends
-      :link: usage/backends
+   .. grid-item-card:: Examples
+      :link: examples/index
       :link-type: doc
 
-      Choose queue persistence and execution backends without requiring every
-      optional driver dependency.
+      Run visual WebSocket and SSE examples with memory or persistent backends.
 
-   .. grid-item-card:: Contributing
-      :link: contributing/index
-      :link-type: doc
-
-      Run the unit and integration tiers, use the backend registry, and add
-      adapter coverage without making optional drivers mandatory.
-
-   .. grid-item-card:: API Reference
+   .. grid-item-card:: Reference
       :link: reference/index
       :link-type: doc
 
-      Browse the generated API reference grouped by core, backend, execution,
-      and realtime event modules.
+      Browse generated API documentation grouped by subsystem.
+
+   .. grid-item-card:: Developers
+      :link: contributing/index
+      :link-type: doc
+
+      Test changes, maintain examples, and audit documentation.

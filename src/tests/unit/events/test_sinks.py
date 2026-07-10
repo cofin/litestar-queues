@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -20,6 +20,24 @@ async def test_inmemory_publish_many_records_all_in_order() -> None:
         (second, (QueueChannels.task("task-a"), QueueChannels.global_channel())),
     ))
 
+    assert sink.events == [first, second]
+    assert sink.events_for(QueueChannels.task("task-a")) == [first, second]
+    assert sink.events_for(QueueChannels.global_channel()) == [second]
+
+
+async def test_inmemory_publish_many_takes_one_lock_for_batch() -> None:
+    sink = InMemoryQueueEventSink()
+    lock = _CountingAsyncLock()
+    sink._lock = cast("Any", lock)
+    first = QueueEvent(type="task.progress", scope="task", task_id="task-a")
+    second = QueueEvent(type="task.log", scope="task", task_id="task-a")
+
+    await sink.publish_many((
+        (first, (QueueChannels.task("task-a"),)),
+        (second, (QueueChannels.task("task-a"), QueueChannels.global_channel())),
+    ))
+
+    assert lock.enter_count == 1
     assert sink.events == [first, second]
     assert sink.events_for(QueueChannels.task("task-a")) == [first, second]
     assert sink.events_for(QueueChannels.global_channel()) == [second]
@@ -50,3 +68,14 @@ class _PublishOnlySink:
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> None:
         self.published.append((event, tuple(channels)))
+
+
+class _CountingAsyncLock:
+    def __init__(self) -> None:
+        self.enter_count = 0
+
+    async def __aenter__(self) -> None:
+        self.enter_count += 1
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None

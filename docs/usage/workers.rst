@@ -1,127 +1,58 @@
-Workers
-=======
+===========
+Run workers
+===========
 
-The local worker claims due records from the configured queue backend and
-executes them with the configured execution backend.
-
-Plugin Worker
-=============
-
-Set ``in_app_worker=True`` to run an in-app worker with the Litestar
-application:
+The default configuration starts a local worker inside the Litestar process:
 
 .. code-block:: python
 
-   from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+   from litestar_queues import QueueConfig
 
-   config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(config=...),
-       execution_backend="local",
-       in_app_worker=True,
-       worker_batch_size=20,
-       worker_max_concurrency=4,
-   )
+   queue_config = QueueConfig(in_app_worker=True)
 
-This is useful for tests, local development, and lightweight deployments. For
-heavier production workloads, consider running workers as separate processes so
-web and background capacity can be scaled independently.
+This is the shortest path for development, tests, and small single-process
+deployments.
 
-Manual Worker
-=============
+Run standalone workers
+======================
 
-Use ``Worker`` directly for scripts, process managers, or custom entry points:
+Choose a shared, persistent queue backend. Then turn off the worker in the web
+process and run the same Litestar application as a worker service:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, QueueService, Worker
+   queue_config = QueueConfig(in_app_worker=False)
 
+.. code-block:: bash
 
-   async with QueueService(QueueConfig(queue_backend="memory", execution_backend="local")) as service:
-       worker = Worker(service, batch_size=10, max_concurrency=2)
-       await worker.start()
+   LITESTAR_APP=app:app litestar queues run --drain-timeout 30
 
-``run_once()`` processes one batch and is useful in tests:
+Process only selected queues or override concurrency:
 
-.. code-block:: python
+.. code-block:: bash
 
-   processed = await worker.run_once()
+   LITESTAR_APP=app:app litestar queues run \
+     --queue reports --queue email --max-concurrency 4
 
-Heartbeats and Stale Records
-============================
+Memory persistence cannot coordinate separate processes. Choose a backend in
+:doc:`backends` before separating the worker.
 
-Workers update heartbeats while a local task is running and clear heartbeat
-values after execution finishes. Backends that support stale recovery can
-requeue running records whose heartbeat is older than ``worker_stale_after``.
-The worker re-checks stale records every ``worker_stale_check_interval``
-seconds (default ``60``) from inside the poll loop, so a worker that survives
-a peer crash will rescue orphaned records without operator intervention. Set
-``worker_stale_after`` to ``None`` (the default) to disable stale recovery
-entirely; the periodic check is skipped in that case.
+What one worker loop does
+=========================
 
-When a stale running task is retried, its priority is demoted to at most ``4``
-and any previous error message is preserved. If no previous error exists, the
-backend stores ``"Task heartbeat stale"``. When stale recovery marks a task
-terminal, it emits ``task.stale_failed`` and invokes the task's
-``on_stale_failure`` callback when one is registered:
+A worker makes due scheduled tasks ready, claims as many tasks as its
+concurrency limit allows, and starts local execution. It also sends heartbeats
+for running records and checks external work. ``Worker.run_once()`` returns
+after it schedules claimed tasks; it does not wait for them to finish. Use
+:doc:`results` when a caller must observe the final state.
 
-.. code-block:: python
+Shutdown
+========
 
-   from litestar_queues import QueuedTaskRecord, task
+The first termination signal stops new claims and gives running tasks time to
+finish. A second signal cancels them. The CLI returns ``0`` for a clean
+shutdown, ``1`` for a worker error, and ``2`` when the graceful timeout ends
+and cancellation begins.
 
-
-   async def notify_operator(record: QueuedTaskRecord) -> None:
-       ...
-
-
-   @task("reports.refresh", requeue_on_stale=False, on_stale_failure=notify_operator)
-   async def refresh_report(report_id: str) -> None:
-       ...
-
-Workers ask the backend for an ``acquire_worker_lock()`` coordination lock
-before running stale-recovery and external-reconciliation sweeps. Backends that
-override that hook can make those sweeps single-owner across a fleet for each
-interval. Backends without lock support return ``True`` and keep the local
-timer behavior.
-
-SQL-backed backends can optionally route heartbeat writes through a dedicated
-connection so they do not contend with task fetch and lifecycle UPDATEs under
-high concurrency. See :ref:`Heartbeat Pool Isolation
-<heartbeat-pool-isolation>` (SQLSpec) and
-:ref:`Heartbeat Session Maker Isolation <aa-heartbeat-session-maker>`
-(Advanced Alchemy).
-
-External Execution
-==================
-
-External execution backends dispatch work outside the local process and store an
-execution reference on the queue record. The worker periodically calls
-``reconcile_external()`` so external backends can move records into terminal
-queue states after the remote execution completes.
-
-Cloud Run uses this flow: local workers dispatch records to Cloud Run Jobs, and
-the Cloud Run worker entry point claims the persisted record inside the remote
-container.
-
-Worker Wakeups
-==============
-
-Queue backends can implement notifications to wake sleeping workers. These
-notifications are only hints. Workers always fall back to polling via
-``worker_poll_interval`` when notifications are unavailable or missed.
-
-Worker Identity
-===============
-
-Each :class:`~litestar_queues.Worker` carries a string ``worker_id`` used to
-tag published ``QueueEvent`` envelopes (the ``workerId`` field on the wire).
-The default is ``"worker-{os.getpid()}"``; operators that run multiple
-workers per host, or that need stable identities across hosts where PIDs
-may collide, should pass an explicit ``worker_id`` to ``Worker(...)``:
-
-.. code-block:: python
-
-   worker = Worker(service, worker_id="orders-worker-3")
-
-The :class:`~litestar_queues.QueuePlugin` startup path uses the PID-based
-default. Standalone worker entry points should pass an explicit ``worker_id``
-per process.
+See :doc:`worker-wakeups` for idle waiting and :doc:`worker-recovery` for
+heartbeats and stale work.

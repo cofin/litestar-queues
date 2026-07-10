@@ -5,8 +5,8 @@ from typing import cast
 ROOT = Path(__file__).resolve().parents[4]
 EXAMPLES_ROOT = ROOT / "examples"
 
-# All ten examples carry the "space opera" design where the htmx SSE/WS
-# extensions own the stream connection declaratively.
+# All ten examples use the same simple frontend and declarative htmx stream
+# connection; only the queue backend and transport vary.
 BACKEND_VARIANTS = {
     "memory": {"suffix": "", "backend_markers": ('BACKEND_NAME = "memory"',)},
     "sqlspec": {
@@ -14,19 +14,17 @@ BACKEND_VARIANTS = {
         "backend_markers": (
             "SQLSpecBackendConfig",
             "AiosqliteConfig",
-            "LITESTAR_QUEUES_EXAMPLE_SQLSPEC_DB",
-            "create_schema=False",
-            "run_migrations=True",
+            'QUEUE_DB_PATH = EXAMPLE_ROOT / "queue-sqlspec.db"',
         ),
     },
     "advanced-alchemy": {
         "suffix": "_advanced_alchemy",
         "backend_markers": (
-            "AdvancedAlchemyBackendConfig",
+            "SQLAlchemyBackendConfig",
             "SQLAlchemyAsyncConfig",
             "create_all=True",
             "sqlite+aiosqlite",
-            "LITESTAR_QUEUES_EXAMPLE_ADVANCED_ALCHEMY_DB",
+            'QUEUE_DB_PATH = EXAMPLE_ROOT / "queue-advanced-alchemy.db"',
         ),
     },
     "redis": {
@@ -243,7 +241,7 @@ def test_htmx_realtime_examples_use_litestar_asset_commands_and_current_packages
 
 
 def test_htmx_realtime_docs_import_from_runnable_example() -> None:
-    docs_source = (ROOT / "docs" / "usage" / "events.rst").read_text()
+    docs_source = (ROOT / "docs" / "usage" / "event-streams.rst").read_text()
     assert "examples/htmx_realtime_websocket/app.py" in docs_source
     assert "examples/htmx_realtime_websocket/resources/main.ts" in docs_source
     assert "examples/htmx_realtime_websocket/templates/index.html" in docs_source

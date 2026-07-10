@@ -146,6 +146,12 @@ docs-linkcheck:                                     ## Check documentation links
 	@uv run sphinx-build -b linkcheck docs docs/_build/linkcheck
 	@echo "${OK} Docs linkcheck complete"
 
+.PHONY: docs-audit
+docs-audit:                                         ## Audit documentation structure and terminology
+	@echo "${INFO} Auditing docs..."
+	@uv run python tools/docs_audit.py
+	@echo "${OK} Docs audit complete"
+
 .PHONY: docs-clean
 docs-clean:                                         ## Clean documentation artifacts
 	@echo "${INFO} Cleaning docs artifacts..."

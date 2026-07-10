@@ -2,18 +2,16 @@
 Dependency Resolver
 ===================
 
-The ``QueueConfig.task_dependency_resolver`` hook lets callers wire an external
-dependency container into queued task callables. Until Litestar 3.0 beta DI
-becomes the canonical answer, this is the bridge that lets adopters with their
-own DI machinery (Dishka, an in-house container, or a hand-rolled provider)
-inject services such as database sessions, settings, or HTTP clients into task
-functions.
+``QueueConfig.task_dependency_resolver`` lets queued tasks receive services
+from an external dependency-injection (DI) container. A DI container creates
+and supplies objects such as database sessions, settings, and HTTP clients.
+Use this hook with Dishka, an in-house container, or a simple custom provider
+until Litestar 3.0 beta DI becomes the standard integration.
 
-When configured, the resolver is awaited exactly once per task execution
-attempt, after the ``task.started`` lifecycle event and before the registered
-task callable runs. The returned mapping is merged into the task's keyword
-arguments. The package-owned sentinels ``_job_id`` and ``_task_context`` always
-take precedence over resolver output.
+Litestar Queues awaits the resolver once for each task attempt. This happens
+after the ``task.started`` event and before the task function runs. It adds the
+returned mapping to the task's keyword arguments. The package-owned
+``_task_context`` value always overrides resolver output.
 
 Type Alias
 ==========
@@ -23,25 +21,25 @@ Type Alias
    from litestar_queues import TaskDependencyResolver
 
 ``TaskDependencyResolver`` is exported from the package root and is also
-available through :attr:`litestar_queues.QueueConfig.signature_namespace`. It
-is an alias for an ``async`` callable with the signature::
+available through :attr:`litestar_queues.QueueConfig.signature_namespace`.
+It names an async function with this signature::
 
    async def resolver(task, record, task_context) -> dict[str, Any]: ...
 
-* ``task`` - the registered :class:`litestar_queues.Task` wrapper
+* ``task`` - the registered :class:`litestar_queues.Task` wrapper.
 * ``record`` - the :class:`litestar_queues.QueuedTaskRecord` that is about to
-  execute
+  run.
 * ``task_context`` - the active
   :class:`litestar_queues.TaskExecutionContext` (the same instance bound to the
-  contextvar for the duration of the attempt)
+  context variable for the duration of the attempt).
 
 Wiring an External Container
 ============================
 
-The example below uses a tiny home-grown container so the pattern is portable
-across DI frameworks. Replace ``Container.get(...)`` with whatever your
-container exposes - the resolver only has to return a mapping of kwargs that
-match parameters declared on the task callable.
+This example uses a small custom container so the pattern works with any DI
+framework. Replace ``Container.get(...)`` with the equivalent method from your
+container. The resolver only needs to return keyword arguments that match the
+task function's parameters.
 
 .. code-block:: python
 
@@ -97,28 +95,23 @@ match parameters declared on the task callable.
 Resolver Failures and Retries
 =============================
 
-The resolver participates in the standard task failure path. If it raises, the
-exception is recorded through ``fail_task``, counts toward
-``record.max_retries``, and emits a ``task.failed`` lifecycle event. There is
-no separate retry budget for resolver failures. A resolver that connects to an
-external system should treat connection errors the same way the task body
-does.
+Resolver errors follow the normal task failure path. Litestar Queues records
+the exception through ``fail_task``, counts it against ``record.max_retries``,
+and emits ``task.failed``. Resolver failures do not have a separate retry
+limit. Handle connection errors in the same way as errors from the task body.
 
 Per-Attempt Invocation
 ======================
 
-Resolvers are called once per attempt. They should treat each invocation as a
-fresh attempt and avoid memoizing per-record state across retries. Reusing a
-session, transaction, or cached object that survived a previous failed attempt
-is an easy way to leak corrupted state into a retry. If a resource is
-expensive to build, build it once at process scope (a module-level singleton or
-a shared connection pool) and let the resolver hand out fresh handles per
-attempt.
+The resolver runs once per attempt. Return fresh per-attempt resources. Do not
+reuse a session, transaction, or cached object from a failed attempt because it
+may contain invalid state. You may create an expensive shared resource, such as
+a connection pool, once per process. The resolver should still return a fresh
+handle from that resource for each attempt.
 
 See Also
 ========
 
 * :doc:`configuration` for the rest of the ``QueueConfig`` surface
-* :doc:`tasks` for task registration and the ``_job_id`` / ``_task_context``
-  sentinels
+* :doc:`tasks` for task registration and the typed ``_task_context`` value
 * :doc:`events` for the lifecycle events that bracket resolver execution

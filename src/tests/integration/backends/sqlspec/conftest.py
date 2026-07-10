@@ -45,6 +45,7 @@ async def sqlspec_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBacken
     """Yield an opened aiosqlite-backed SQLSpec queue backend."""
     backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=_sqlite_config(tmp_path / "queue.db")))
     await backend.open()
+    await backend.create_schema()
     try:
         yield backend
     finally:
@@ -63,6 +64,7 @@ async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend
         )
     )
     await backend.open()
+    await backend.create_schema()
     try:
         yield backend
     finally:

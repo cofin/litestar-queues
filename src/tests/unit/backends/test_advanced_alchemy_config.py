@@ -8,9 +8,9 @@ pytest.importorskip("sqlalchemy")
 
 def test_advanced_alchemy_config_defaults_to_singular_queue_task_model() -> "None":
     """Default Advanced Alchemy config should use the built-in queue task model."""
-    from litestar_queues.backends.advanced_alchemy import AdvancedAlchemyBackendConfig, QueueTaskModel
+    from litestar_queues.backends.advanced_alchemy import QueueTaskModel, SQLAlchemyBackendConfig
 
-    config = AdvancedAlchemyBackendConfig()
+    config = SQLAlchemyBackendConfig()
 
     assert config.model_class is QueueTaskModel
     assert QueueTaskModel.__tablename__ == "litestar_queue_task"

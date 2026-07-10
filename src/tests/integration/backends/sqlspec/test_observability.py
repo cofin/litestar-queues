@@ -75,6 +75,7 @@ async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_pat
         )
     )
     await backend.open()
+    await backend.create_schema()
     runtime = sqlspec_config.get_observability_runtime()
     runtime.register_lifecycle_hook("on_query_complete", lifecycle_events.append)
     span_manager = RecordingSpanManager()
@@ -151,6 +152,7 @@ async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: 
     )
     backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_observability=False))
     await backend.open()
+    await backend.create_schema()
     try:
         with CorrelationContext.context("queue-observability-disabled"):
             await backend.enqueue("tasks.observed.disabled")
@@ -171,6 +173,7 @@ async def test_package_observability_disables_sqlspec_queue_domain_observability
     queue_config = QueueConfig(observability=ObservabilityConfig(enable_otel=True))
     backend = SQLSpecQueueBackend(config=queue_config, backend_config=SQLSpecBackendConfig(config=sqlspec_config))
     await backend.open()
+    await backend.create_schema()
     try:
         with CorrelationContext.context("package-queue-observability"):
             await backend.enqueue("tasks.observed.package")

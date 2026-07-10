@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("redis")
 
+from litestar_queues import EnqueueSpec
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.models import HeartbeatTouch
 
@@ -107,6 +108,25 @@ async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execu
     stored_low = await redis_backend.get_task(low.id)
     assert stored_low is not None
     assert stored_low.status == "pending"
+
+
+async def test_redis_enqueue_many_records_remain_claimable_when_batch_marker_is_dropped(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    async def drop_marker(self: "RedisQueueBackend", records: "object") -> "None":
+        del self, records
+
+    monkeypatch.setattr(type(redis_backend), "notify_new_tasks", drop_marker)
+
+    records = await redis_backend.enqueue_many([
+        EnqueueSpec(task_name=f"tasks.batch.{index}", kwargs={"index": index}) for index in range(25)
+    ])
+    pending = await redis_backend.list_pending(limit=30)
+    claimed = [await redis_backend.claim_task(record.id) for record in pending]
+
+    assert [record.kwargs["index"] for record in records] == list(range(25))
+    assert {record.id for record in pending} == {record.id for record in records}
+    assert {record.id for record in claimed if record is not None} == {record.id for record in records}
 
 
 async def test_redis_backend_releases_locks_by_token_via_lua_script(redis_backend: "RedisQueueBackend") -> "None":
