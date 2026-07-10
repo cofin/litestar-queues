@@ -11,7 +11,7 @@ until Litestar 3.0 beta DI becomes the standard integration.
 Litestar Queues awaits the resolver once for each task attempt. This happens
 after the ``task.started`` event and before the task function runs. It adds the
 returned mapping to the task's keyword arguments. The package-owned
-``_job_id`` and ``_task_context`` values always override resolver output.
+``_task_context`` value always overrides resolver output.
 
 Type Alias
 ==========
@@ -113,6 +113,5 @@ See Also
 ========
 
 * :doc:`configuration` for the rest of the ``QueueConfig`` surface
-* :doc:`tasks` for task registration and the ``_job_id`` / ``_task_context``
-  sentinels
+* :doc:`tasks` for task registration and the typed ``_task_context`` value
 * :doc:`events` for the lifecycle events that bracket resolver execution
