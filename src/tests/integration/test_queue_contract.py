@@ -22,8 +22,83 @@ from litestar_queues.task import clear_task_registry
 if TYPE_CHECKING:
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.models import QueuedTaskRecord
+    from tests.integration._backends import BackendCase
 
 pytestmark = pytest.mark.anyio
+
+
+async def test_backend_contract_claim_many_claims_owned_ordered_running_records(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    """``claim_many`` returns owned, running records in claim order across backends.
+
+    Exercises the shared claim contract for every registered backend: native fast
+    paths (memory, SKIP LOCKED SQLSpec stores) and the sequential fallback must
+    all preserve priority ordering, the queue/execution filters, scheduled-record
+    exclusion, and the partial-batch (fewer-than-limit) result shape.
+    """
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    high = await queue_backend.enqueue("tasks.batch.high", priority=10, queue="default")
+    mid = await queue_backend.enqueue("tasks.batch.mid", priority=5, queue="default")
+    low = await queue_backend.enqueue("tasks.batch.low", priority=1, queue="default")
+    scheduled = await queue_backend.enqueue("tasks.batch.scheduled", priority=100, scheduled_at=later)
+    external = await queue_backend.enqueue(
+        "tasks.batch.external", priority=7, queue="reports", execution_backend="cloudrun"
+    )
+
+    first = await queue_backend.claim_many(limit=1, queue="default")
+    assert [record.id for record in first] == [high.id]
+    assert first[0].status == "running"
+    assert first[0].started_at is not None
+    assert first[0].heartbeat_at is not None
+
+    remaining = await queue_backend.claim_many(limit=10, queue="default")
+    assert [record.id for record in remaining] == [mid.id, low.id]
+    assert all(record.status == "running" for record in remaining)
+
+    claimed_external = await queue_backend.claim_many(limit=10, execution_backend="cloudrun")
+    assert [record.id for record in claimed_external] == [external.id]
+    assert claimed_external[0].execution_backend == "cloudrun"
+
+    stored_scheduled = await queue_backend.get_task(scheduled.id)
+    assert stored_scheduled is not None
+    assert stored_scheduled.status == "scheduled"
+
+    assert await queue_backend.claim_many(limit=5, queue="default") == []
+    assert await queue_backend.claim_many(limit=0) == []
+
+
+async def test_backend_contract_claim_many_concurrent_claimers_never_double_claim(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    """Concurrent ``claim_many`` callers must never share a task, at 2 and 4 workers.
+
+    Single-writer sync drivers share one DBAPI connection and cannot be driven
+    concurrently through the bridge; their exclusive-claim behavior is covered by
+    the sequential contract tests instead.
+    """
+    if "sync-driver" in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: single-writer sync driver cannot claim concurrently")
+
+    for worker_count in (2, 4):
+        task_count = 12
+        enqueued = {
+            (await queue_backend.enqueue(f"tasks.batch.race.{worker_count}", priority=5)).id
+            for _ in range(task_count)
+        }
+
+        bursts = await asyncio.gather(
+            *(queue_backend.claim_many(limit=task_count) for _ in range(worker_count))
+        )
+        claimed = [record for burst in bursts for record in burst]
+        claimed_ids = [record.id for record in claimed]
+        while stragglers := await queue_backend.claim_many(limit=task_count):
+            claimed.extend(stragglers)
+            claimed_ids.extend(record.id for record in stragglers)
+
+        assert all(record.status == "running" for record in claimed)
+        assert len(claimed_ids) == len(set(claimed_ids)), "a task was claimed by more than one worker"
+        assert {task_id for task_id in claimed_ids if task_id in enqueued} == enqueued
 
 
 async def test_backend_contract_persists_execution_metadata_and_filters_claims(
