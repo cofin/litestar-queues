@@ -97,24 +97,24 @@ async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQue
     assert fetched.status == "scheduled"
 
 
-async def test_enqueue_many_notifies_only_immediately_due_records(
+async def test_enqueue_many_notifies_once_after_persistence(
     sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
-    notified_ids = []
+    notified_batches: "list[list[Any]]" = []
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
-    async def notify(self: "SQLSpecQueueBackend", record: "Any") -> "None":
+    async def notify(self: "SQLSpecQueueBackend", records: "Any") -> "None":
         del self
-        notified_ids.append(record.id)
+        notified_batches.append(list(records))
 
-    monkeypatch.setattr(SQLSpecQueueBackend, "notify_new_task", notify)
+    monkeypatch.setattr(SQLSpecQueueBackend, "notify_new_tasks", notify)
 
     records = await sqlspec_backend.enqueue_many([
         EnqueueSpec(task_name="tasks.now"),
         EnqueueSpec(task_name="tasks.later", scheduled_at=later),
     ])
 
-    assert notified_ids == [records[0].id]
+    assert [[record.id for record in batch] for batch in notified_batches] == [[record.id for record in records]]
 
 
 async def test_enqueue_many_deduplicates_active_keys(

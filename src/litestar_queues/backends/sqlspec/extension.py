@@ -27,14 +27,14 @@ def queue_migration_directory() -> "Path":
 def configure_queue_migration_extension(
     sqlspec_config: "SQLSpecConfig",
     *,
-    table_name: "str" = DEFAULT_TABLE_NAME,
+    queue_table_name: "str" = DEFAULT_TABLE_NAME,
     event_log_enabled: "bool" = False,
     event_log_table_name: "str | None" = None,
 ) -> "None":
     """Register the packaged queue migration with SQLSpec's extension runner."""
     queue_settings = _configure_extension_settings(
         sqlspec_config,
-        table_name=table_name,
+        queue_table_name=queue_table_name,
         event_log_enabled=event_log_enabled,
         event_log_table_name=event_log_table_name,
     )
@@ -52,16 +52,16 @@ def configure_queue_migration_extension(
 def _configure_extension_settings(
     sqlspec_config: "SQLSpecConfig",
     *,
-    table_name: "str",
+    queue_table_name: "str",
     event_log_enabled: "bool" = False,
     event_log_table_name: "str | None" = None,
 ) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    queue_settings["table_name"] = validate_table_name(table_name)
+    queue_settings["table_name"] = validate_table_name(queue_table_name)
     if event_log_enabled:
         queue_settings["event_log_enabled"] = True
         queue_settings["event_log_table_name"] = validate_table_name(
-            event_log_table_name or event_log_table_name_for(table_name)
+            event_log_table_name or event_log_table_name_for(queue_table_name)
         )
     return queue_settings

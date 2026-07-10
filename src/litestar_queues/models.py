@@ -47,6 +47,7 @@ class QueueBackendCapabilities:
     supports_notifications: "bool" = False
     notification_backend: "str | None" = None
     notifications_durable: "bool" = False
+    supports_batch_claim: "bool" = False
     supports_heartbeats: "bool" = True
     supports_atomic_claim: "bool" = True
     supports_atomic_delayed_promotion: "bool" = True

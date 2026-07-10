@@ -12,7 +12,7 @@ from sqlalchemy import and_, case, delete, desc, func, literal, or_, select, upd
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.exc import UnmappedColumnError
 
-from litestar_queues.backends.advanced_alchemy.repository import QueueTaskRepository
+from litestar_queues.backends.advanced_alchemy.repository import QueueEventLogRepository, QueueTaskRepository
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     record_matches_filters,
@@ -30,10 +30,11 @@ from litestar_queues.models import (
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from litestar_queues.backends.advanced_alchemy.mixins import QueueTaskModelMixin
-    from litestar_queues.models import HeartbeatTouch
+    from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
+    from litestar_queues.events import QueueEventLogRecord
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
 
-__all__ = ("QueueTaskService",)
+__all__ = ("QueueEventLogService", "QueueTaskService")
 
 _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -41,6 +42,114 @@ _SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"oracle", "postgresql"})
 _NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
 _ORACLE_CLAIM_CANDIDATE_LIMIT = 10
 _CAS_CLAIM_BATCH_SIZE = 10
+
+
+class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
+    """Persistence operations for Advanced Alchemy queue event-history records."""
+
+    @classmethod
+    def for_model(cls, model_class: "type[QueueEventLogModelMixin]") -> 'type["QueueEventLogService"]':
+        """Return a service subclass bound to ``model_class``."""
+        repository_type = QueueEventLogRepository.for_model(model_class)
+        return cast(
+            "type[QueueEventLogService]",
+            type(f"QueueEventLogServiceFor{model_class.__name__}", (cls,), {"repository_type": repository_type}),
+        )
+
+    async def add_records(self, records: "Sequence[QueueEventLogRecord]") -> "None":
+        """Persist event-history records."""
+        self.repository.session.add_all([self.model_from_record(record) for record in records])
+
+    async def list_events(
+        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+    ) -> "list[QueueEventLogRecord]":
+        """Return matching event-history records in ascending event order."""
+        model_type = self.model_type
+        criteria: "list[Any]" = []
+        if task_id is not None:
+            criteria.append(model_type.task_id == task_id)
+        if task_name is not None:
+            criteria.append(model_type.task_name == task_name)
+        statement = select(model_type)
+        if criteria:
+            statement = statement.where(*criteria)
+        statement = statement.order_by(model_type.occurred_at, model_type.sequence, model_type.event_id)
+        if limit is not None:
+            statement = statement.limit(limit)
+        models = await self.get_many(statement=statement)
+        return [self.record_from_model(model) for model in models]
+
+    async def cleanup_before(self, before: "datetime") -> "int":
+        """Delete event-history records older than ``before``.
+
+        Returns:
+            Number of deleted event-history rows.
+        """
+        result = await self.repository.session.execute(
+            delete(self.model_type).where(self.model_type.occurred_at < before)
+        )
+        return int(result.rowcount or 0)
+
+    def model_from_record(self, record: "QueueEventLogRecord") -> "Any":
+        """Convert a backend-neutral event-history record into an ORM model.
+
+        Returns:
+            Advanced Alchemy event-history model.
+        """
+        return self.model_type(
+            event_id=record.event_id,
+            event_type=record.event_type,
+            task_id=record.task_id,
+            task_name=record.task_name,
+            queue=record.queue,
+            worker_id=record.worker_id,
+            execution_backend=record.execution_backend,
+            execution_profile=record.execution_profile,
+            level=record.level,
+            message=record.message,
+            detail_json=_serialize_json(record.detail),
+            progress_current=record.progress_current,
+            progress_total=record.progress_total,
+            progress_percent=record.progress_percent,
+            sequence=record.sequence,
+            occurred_at=record.occurred_at,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
+    def record_from_model(model: "Any") -> "QueueEventLogRecord":
+        """Convert an ORM model into a backend-neutral event-history record.
+
+        Returns:
+            Backend-neutral event-history record.
+        """
+        from litestar_queues.events._log_records import optional_float, optional_str
+        from litestar_queues.events.log import QueueEventLogRecord
+
+        detail = _deserialize_json(model.detail_json)
+        if not isinstance(detail, dict):
+            detail = {}
+        return QueueEventLogRecord(
+            event_id=str(model.event_id),
+            event_type=str(model.event_type),
+            task_id=cast("str | None", model.task_id),
+            task_name=cast("str | None", model.task_name),
+            queue=cast("str | None", model.queue),
+            worker_id=cast("str | None", model.worker_id),
+            execution_backend=cast("str | None", model.execution_backend),
+            execution_profile=cast("str | None", model.execution_profile),
+            stage=optional_str(detail.get("stage")),
+            level=cast("str | None", model.level),
+            message=cast("str | None", model.message),
+            detail=detail,
+            progress_current=optional_float(model.progress_current),
+            progress_total=optional_float(model.progress_total),
+            progress_percent=optional_float(model.progress_percent),
+            duration_ms=optional_float(detail.get("duration_ms")),
+            sequence=int(model.sequence) if model.sequence is not None else None,
+            occurred_at=cast("datetime", _coerce_datetime(model.occurred_at)),
+            created_at=cast("datetime", _coerce_datetime(model.created_at)),
+        )
 
 
 class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
@@ -96,6 +205,31 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         )
         return await self._insert_task_record(record, key=key)
 
+    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+        """Persist many enqueue specs in the current repository transaction.
+
+        Returns:
+            Queue task records in input order.
+        """
+        records: "list[QueuedTaskRecord]" = []
+        for spec in specs:
+            records.append(
+                await self.enqueue(
+                    spec.task_name,
+                    args=spec.args,
+                    kwargs=dict(spec.kwargs or {}),
+                    queue=spec.queue,
+                    priority=spec.priority,
+                    max_retries=spec.max_retries,
+                    scheduled_at=spec.scheduled_at,
+                    key=spec.key,
+                    execution_backend=spec.execution_backend,
+                    execution_profile=spec.execution_profile,
+                    metadata=dict(spec.metadata or {}),
+                )
+            )
+        return records
+
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
@@ -148,6 +282,27 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 return None
             pending_limit += _CAS_CLAIM_BATCH_SIZE
 
+    async def claim_many(
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` records in the current repository transaction.
+
+        Returns:
+            Claimed task records.
+        """
+        if limit <= 0:
+            return []
+        if _supports_batch_claim(self._dialect_name()):
+            return await self._claim_many_skip_locked(limit=limit, queue=queue, execution_backend=execution_backend)
+
+        records: "list[QueuedTaskRecord]" = []
+        for _ in range(limit):
+            claimed = await self.claim_next(queue=queue, execution_backend=execution_backend)
+            if claimed is None:
+                break
+            records.append(claimed)
+        return records
+
     async def _claim_next_skip_locked(
         self, *, queue: "str | None", execution_backend: "str | None"
     ) -> "QueuedTaskRecord | None":
@@ -178,6 +333,41 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if row is None:
             return None
         return await self.claim_task(UUID(str(row.id)))
+
+    async def _claim_many_skip_locked(
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "list[QueuedTaskRecord]":
+        now = _utc_now()
+        model_type = self.model_type
+        statement = _build_claim_candidate_statement(
+            model_type, queue=queue, execution_backend=execution_backend, now=now, limit=limit, skip_locked=True
+        )
+        candidates = (await self.repository.session.execute(statement)).scalars().all()
+        task_ids = [UUID(str(candidate.id)) for candidate in candidates]
+        if not task_ids:
+            return []
+
+        await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id.in_(task_ids),
+                model_type.status.in_(_DUE_STATUSES),
+                or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+            )
+            .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
+            .execution_options(synchronize_session=False)
+        )
+        models = (
+            (
+                await self.repository.session.execute(
+                    select(model_type).where(model_type.id.in_(task_ids)).execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {UUID(str(model.id)): self.record_from_model(model) for model in models}
+        return [by_id[task_id] for task_id in task_ids if task_id in by_id and by_id[task_id].status == "running"]
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -720,6 +910,10 @@ def _supports_skip_locked_claim(dialect_name: "str | None") -> "bool":
 
 def _supports_native_keyed_enqueue(dialect_name: "str | None") -> "bool":
     return dialect_name in _NATIVE_KEYED_ENQUEUE_DIALECTS
+
+
+def _supports_batch_claim(dialect_name: "str | None") -> "bool":
+    return dialect_name == "postgresql"
 
 
 def _build_claim_candidate_statement(

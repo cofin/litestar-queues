@@ -1,19 +1,18 @@
 # HTMX Realtime Queue Events - WebSocket (Redis Backend)
 
-A cinematic, full-screen "space opera" page: an animated opening crawl of text
-receding into an animated galaxy starfield, fed live by queue task events over a
-WebSocket. There is one control, a planet-styled **Restart** button that
-(re)enqueues the roughly one-minute demo job and restarts the crawl.
+This is a small app that shows realtime messages moving from a queue task to
+the frontend. Each update is pushed from the backend over a WebSocket and
+shown on the page. The **Restart** button starts the demo task again.
 
 This copy is WebSocket-only. It uses the plugin-owned
 `/queues/events/tasks/{task_id}` endpoint so the transport stays visible in the
 code. Queue persistence runs through Redis, and delivery uses memory Channels
 in the same process, so only Redis is needed as an external service.
 
-The default remains one process: Redis stores queue records and can provide
-worker wakeups, but it does not make the live Channels stream shared. A
-separate `litestar queues run` worker needs an explicit broker-backed Channels
-configuration; selecting `RedisBackendConfig` alone is not enough.
+By default, the example runs in one process. Redis stores queue records and can
+wake workers, but it does not share the live Channels stream. To run
+`litestar queues run` in another process, configure a shared Channels backend.
+`RedisBackendConfig` alone is not enough.
 
 Set `LITESTAR_QUEUES_EXAMPLE_REDIS_URL` when Redis is not available at
 `redis://localhost:6379/0`. See the repository's local infra helpers for
@@ -21,9 +20,9 @@ spinning up a Redis container.
 
 ## Shared Web and Worker Mode
 
-The opt-in shared topology uses Redis Streams for live Channels delivery. It
-keeps the configured event history (`history=25`) and is intentionally separate
-from Redis queue wakeup pub/sub:
+The optional shared setup uses Redis Streams for live Channels delivery. It
+keeps the configured event history (`history=25`) separate from the Redis
+pub/sub messages that wake queue workers:
 
 ```bash
 export LITESTAR_QUEUES_EXAMPLE_REDIS_URL=redis://127.0.0.1:16379/0
@@ -55,7 +54,7 @@ uv sync --extra examples --group dev
 LITESTAR_APP=examples.htmx_realtime_websocket_redis.app:app \
 uv run litestar assets install
 LITESTAR_APP=examples.htmx_realtime_websocket_redis.app:app \
-LITESTAR_QUEUES_EXAMPLE_VITE_DEV=1 \
+VITE_DEV_MODE=1 \
 LITESTAR_PORT=8000 \
 uv run litestar run --reload
 ```
@@ -64,9 +63,7 @@ For a faster local run:
 
 ```bash
 LITESTAR_APP=examples.htmx_realtime_websocket_redis.app:app \
-LITESTAR_QUEUES_EXAMPLE_VITE_DEV=1 \
-LITESTAR_QUEUES_EXAMPLE_STEPS=4 \
-LITESTAR_QUEUES_EXAMPLE_STEP_DELAY=0.5 \
+VITE_DEV_MODE=1 \
 LITESTAR_PORT=8000 \
 uv run litestar run --reload
 ```
@@ -76,7 +73,7 @@ Restart.
 
 ## Run It (without the dev server)
 
-`LITESTAR_QUEUES_EXAMPLE_VITE_DEV` defaults to off. Without it, the page loads
+`VITE_DEV_MODE` defaults to off. Without it, the page loads
 built assets from the manifest, so `GET /` returns 500 until you build them
 once. Build, then run:
 
@@ -92,38 +89,47 @@ uv run litestar run
 
 ## How It Works
 
+### Repeated clicks
+
+The demo enqueues the task with `key="demo:current"`. If you click
+**Restart** while that task is pending or running, the queue returns the
+same task instead of starting a second copy. The page shows that the task is
+already running. After the task finishes, the next click creates a new task.
+Remove the key, or use a different key for each job, when concurrent runs are
+what your application needs.
+
 - **One button, no forms.** `hx-post="/demo/restart"` lives directly on the
   planet `<button>`. Clicking it enqueues the demo job and swaps the returned
   `partials/stream_mount.html` into `#stream-mount`.
-- **The htmx WebSocket extension owns the connection.** The swapped-in
+- **The htmx WebSocket extension manages the connection.** The swapped-in
   `#stream-mount` element carries `hx-ext="ws"` and
   `ws-connect="/queues/events/tasks/{task_id}"`, so htmx opens the socket
-  declaratively. Because each restart replaces the element, the previous socket
-  closes automatically: the connection lifecycle equals the swap lifecycle, so a
-  restart is a reconnect. This is the idiomatic pattern and replaces roughly
-  ninety lines of hand-rolled `WebSocket` code.
+  for you. Each restart replaces this element, so htmx closes the old socket and
+  opens a new one. This replaces roughly ninety lines of custom `WebSocket`
+  code.
 - **One small JS adapter.** Queue events are JSON, so the extension cannot swap
   them as HTML. `resources/main.ts` listens for `htmx:wsBeforeMessage`, parses
-  the frame, ignores `{"type":"ping"}` heartbeats, appends a line to the crawl,
-  flips the readout to gold on `task.completed`, and calls `preventDefault()` so
-  htmx never attempts an HTML swap. On the `queue-demo:started` trigger event
-  (fired by `HTMXTemplate` after the swap) it clears the crawl for the new run.
+  the frame, ignores `{"type":"ping"}` heartbeats, appends the event to the page,
+  turns the readout gold on `task.completed`, and calls `preventDefault()` so
+  htmx does not treat the JSON as HTML. After `HTMXTemplate` swaps the element,
+  its `queue-demo:started` event resets the display for the task returned by
+  the backend.
 - **htmx wiring.** `resources/main.ts` imports htmx, publishes it as
-  `window.htmx`, calls `registerHtmxExtension()`, then dynamically imports
-  `htmx-ext-ws` so the extension sees the global. htmx 2's ESM build does not
-  attach itself to `window`, so this ordering is required.
+  `window.htmx`, calls `registerHtmxExtension()`, and then imports
+  `htmx-ext-ws`. This order is required because the htmx 2 ESM build does not
+  add itself to `window`.
 - **Litestar Vite JSON template.** A muted corner caption uses
   `hx-ext="litestar"` with `hx-swap="json"` and `<template ls-if>` to render the
   backend name from `GET /demo/status`.
 
-The `QueueConfig` enables buffered events and the task event stream only
-(`EventStreamConfig(scopes={"task"})`). Its `channel_authorizer` allows every
-channel; this is a demo-only shortcut that suppresses the missing-auth warning
-for a local single-process app. Real deployments must authorize stream access.
+`QueueConfig` buffers events and enables only the task event stream
+(`EventStreamConfig(scopes={"task"})`). This local demo does not add
+authentication to its stream. Real deployments must protect the stream route
+and check who may access each task.
 
 ## External Publisher
 
-`scripts/external_publisher.py` shows the shape for non-Litestar publishers via
-`create_event_producer`. The script deliberately raises until you replace the
-placeholder config with a shared Redis or SQLSpec Channels backend. The memory
-Channels backend cannot bridge two separate processes.
+`scripts/external_publisher.py` shows how code outside Litestar can publish with
+`create_event_producer`. It raises an error until you replace its placeholder
+with a shared Redis or SQLSpec Channels backend. The memory Channels backend
+cannot connect separate processes.

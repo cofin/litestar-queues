@@ -33,13 +33,18 @@
     <template ls-else><span>{{ backend_name }}</span></template>
   </div>
 
-  <div class="crawl-perspective" aria-live="polite" aria-label="Task event crawl">
+  <div class="crawl-perspective" aria-live="polite" aria-label="Task events">
     <div id="crawl-lines" class="crawl-plane idle">
-      <p>Press restart to queue a background job and watch it report back.</p>
+      <p>Press restart to send a background task and watch its messages arrive.</p>
     </div>
   </div>
 
-  <p class="telemetry-caption"><span class="telemetry-dot" aria-hidden="true"></span>Live telemetry · every line is published by the running job</p>
+  <p class="telemetry-caption"><span class="telemetry-dot" aria-hidden="true"></span>Live messages · each update is pushed from the backend job</p>
+
+  <div id="delivery-status" class="delivery-status" role="status" aria-live="polite">
+    <span class="delivery-pulse" aria-hidden="true"></span>
+    <span id="delivery-label">Waiting for a backend message</span>
+  </div>
 
   <p id="job-readout" class="readout">Awaiting launch</p>
 
@@ -52,7 +57,7 @@
     hx-indicator="this"
     hx-disabled-elt="this"
     hx-sync="this:replace"
-    aria-label="Restart the demo queue job and crawl"
+    aria-label="Restart the demo queue task"
   >
     <span class="planet-orbit" aria-hidden="true"><span class="planet-satellite"></span></span>
     <span class="planet-label">Restart</span>

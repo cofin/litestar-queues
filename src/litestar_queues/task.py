@@ -502,8 +502,6 @@ class Task(Generic[P, T]):
         kwargs = dict(record.kwargs)
         if extra_kwargs:
             kwargs.update(extra_kwargs)
-        if self._accepts_job_id():
-            kwargs["_job_id"] = str(record.id)
         if task_context is not None and self._accepts_task_context():
             kwargs["_task_context"] = task_context
         if inspect.iscoroutinefunction(self._func):
@@ -577,13 +575,6 @@ class Task(Generic[P, T]):
 
         async with QueueService(QueueConfig(execution_backend="immediate")) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
-
-    def _accepts_job_id(self) -> "bool":
-        signature = inspect.signature(self._func)
-        parameters = signature.parameters
-        return "_job_id" in parameters or any(
-            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
-        )
 
     def _accepts_task_context(self) -> "bool":
         signature = inspect.signature(self._func)

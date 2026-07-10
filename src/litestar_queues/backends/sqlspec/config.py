@@ -22,20 +22,13 @@ __all__ = ("DEFAULT_NOTIFICATION_CHANNEL", "NOTIFY_TRANSPORTS", "SQLSpecBackendC
 
 DEFAULT_NOTIFICATION_CHANNEL = "litestar_queues_tasks"
 
-NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({
-    "aq",
-    "listen_notify",
-    "listen_notify_durable",
-    "polling",
-    "table_queue",
-    "txeventq",
-})
+NOTIFY_TRANSPORTS: "frozenset[str]" = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
 """Valid worker-wakeup transports for :attr:`SQLSpecBackendConfig.notify_transport`.
 
-``listen_notify``/``listen_notify_durable`` push wakeups through native
-LISTEN/NOTIFY, ``table_queue`` uses the durable events table, ``aq`` and
-``txeventq`` use Oracle Advanced Queuing backends, and ``polling`` disables
-push wakeups so workers fall back to interval polling.
+``notify`` uses native push wakeups, ``notify_queue`` uses native push wakeups
+with a durable queue fallback, ``poll_queue`` uses the durable events table,
+``aq`` and ``txeventq`` use Oracle Advanced Queuing backends, and ``polling``
+disables push wakeups so workers fall back to interval polling.
 """
 
 
@@ -47,9 +40,7 @@ class SQLSpecBackendConfig:
     sqlspec: "SQLSpec | None" = None
     config: "SQLSpecStoreConfig | None" = None
     heartbeat_pool_config: "SQLSpecStoreConfig | None" = None
-    table_name: "str | None" = None
-    create_schema: "bool | None" = None
-    run_migrations: "bool | None" = None
+    queue_table_name: "str | None" = None
     event_channel: "AsyncEventChannel | None" = None
     notifications: "bool | None" = None
     notification_channel: "str | None" = None
@@ -66,8 +57,8 @@ class SQLSpecBackendConfig:
 
     def __post_init__(self) -> "None":
         """Validate adopter-owned table and wakeup-transport configuration."""
-        if self.table_name is not None:
-            self.table_name = validate_table_name(self.table_name)
+        if self.queue_table_name is not None:
+            self.queue_table_name = validate_table_name(self.queue_table_name)
         if self.event_log_table_name is not None:
             self.event_log_table_name = validate_table_name(self.event_log_table_name)
         self.column_map = resolve_column_map(self.column_map)

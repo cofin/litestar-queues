@@ -1,10 +1,12 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
 
-from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues import EnqueueSpec, EventLogConfig, HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.events import QueueEvent, publish_task_event, publish_task_log, publish_task_progress
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -29,6 +31,75 @@ async def test_memory_backend_deduplicates_active_keys_and_replaces_terminal_key
 
     assert replacement.id != first.id
     assert replacement.kwargs == {"account_id": "acct-2"}
+
+
+async def test_memory_backend_event_log_records_task_history_with_custom_detail() -> "None":
+    @task("tasks.memory_event_history")
+    async def memory_event_history() -> "str":
+        await publish_task_log("loaded", payload={"stage": "load", "duration_ms": 7})
+        await publish_task_progress(current=2, total=4, payload={"stage": "load", "duration_ms": 5})
+        await publish_task_event("task.event", message="custom", payload={"stage": "store", "duration_ms": 11})
+        return "ok"
+
+    event_log_config = EventLogConfig(buffer_size=100, flush_interval=60)
+    async with QueueService(QueueConfig(execution_backend="immediate", event_log=event_log_config)) as service:
+        result = await service.enqueue(memory_event_history)
+        event_log = service.get_queue_backend().get_event_log(event_log_config)
+        assert event_log is not None
+        records = await event_log.list_events(task_id=str(result.id))
+        task_name_records = await event_log.list_events(task_name=memory_event_history.name, limit=2)
+
+    assert [record.event_type for record in records] == [
+        "task.started",
+        "task.log",
+        "task.progress",
+        "task.event",
+        "task.completed",
+    ]
+    assert [record.sequence for record in task_name_records] == [1, 2]
+    custom = next(record for record in records if record.event_type == "task.event")
+    assert custom.message == "custom"
+    assert custom.detail == {"stage": "store", "duration_ms": 11}
+
+
+async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() -> "None":
+    event_log_config = EventLogConfig(max_records=3)
+    backend = InMemoryQueueBackend(QueueConfig(event_log=event_log_config))
+    event_log = backend.get_event_log(event_log_config)
+    assert event_log is not None
+
+    for index in range(5):
+        await event_log.publish_event(
+            QueueEvent(
+                type="task.log",
+                scope="task",
+                task_id=f"task-{index}",
+                task_name="tasks.bounded",
+                sequence=index,
+                payload={"index": index},
+                occurred_at=datetime(2026, 1, 1, 0, 0, index, tzinfo=timezone.utc),
+            )
+        )
+
+    records = await event_log.list_events(task_name="tasks.bounded")
+    deleted = await event_log.cleanup_before(datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc))
+    remaining = await event_log.list_events(task_name="tasks.bounded")
+
+    assert [record.detail["index"] for record in records] == [2, 3, 4]
+    assert deleted == 2
+    assert [record.detail["index"] for record in remaining] == [4]
+
+
+async def test_memory_backend_clear_clears_event_log() -> "None":
+    event_log_config = EventLogConfig()
+    backend = InMemoryQueueBackend(QueueConfig(event_log=event_log_config))
+    event_log = backend.get_event_log(event_log_config)
+    assert event_log is not None
+
+    await event_log.publish_event(QueueEvent(type="task.log", scope="task", task_name="tasks.clear"))
+    await backend.clear()
+
+    assert await event_log.list_events(task_name="tasks.clear") == []
 
 
 async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle() -> "None":
@@ -241,6 +312,42 @@ async def test_memory_backend_touch_heartbeats_acquires_lock_once() -> "None":
     assert result.missed_task_ids == set()
 
 
+async def test_memory_backend_enqueue_many_acquires_lock_once_and_sets_event_once() -> "None":
+    backend = InMemoryQueueBackend()
+    lock = _CountingAsyncLock()
+    event = _CountingEvent()
+    backend._lock = cast("Any", lock)
+    backend._notification_event = cast("Any", event)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([
+        EnqueueSpec(task_name="tasks.bulk.first", key="bulk:first"),
+        EnqueueSpec(task_name="tasks.bulk.later", scheduled_at=later),
+        EnqueueSpec(task_name="tasks.bulk.second", key="bulk:second"),
+    ])
+
+    assert lock.entries == 1
+    assert event.sets == 1
+    assert [record.task_name for record in records] == ["tasks.bulk.first", "tasks.bulk.later", "tasks.bulk.second"]
+    assert [record.id for record in await backend.list_pending(limit=10)] == [records[0].id, records[2].id]
+
+
+async def test_memory_backend_enqueue_many_future_records_do_not_wake_workers() -> "None":
+    backend = InMemoryQueueBackend()
+    lock = _CountingAsyncLock()
+    event = _CountingEvent()
+    backend._lock = cast("Any", lock)
+    backend._notification_event = cast("Any", event)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    records = await backend.enqueue_many([EnqueueSpec(task_name="tasks.bulk.later", scheduled_at=later)])
+
+    assert lock.entries == 1
+    assert event.sets == 0
+    assert records[0].status == "scheduled"
+    assert await backend.list_pending(limit=10) == []
+
+
 async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.fenced", max_retries=1)
@@ -331,3 +438,24 @@ class _CountingAsyncLock:
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> "None":
         return None
+
+
+class _CountingEvent:
+    def __init__(self) -> "None":
+        self.clears = 0
+        self.sets = 0
+        self._event = asyncio.Event()
+
+    def is_set(self) -> "bool":
+        return self._event.is_set()
+
+    def set(self) -> "None":
+        self.sets += 1
+        self._event.set()
+
+    def clear(self) -> "None":
+        self.clears += 1
+        self._event.clear()
+
+    async def wait(self) -> "bool":
+        return await self._event.wait()

@@ -3,7 +3,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
 from logging import getLogger
@@ -28,7 +27,7 @@ from litestar_queues.backends.sqlspec.event_log import (
     create_event_log_store,
     resolve_event_log_table_name,
 )
-from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
+from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
@@ -65,11 +64,32 @@ if TYPE_CHECKING:
 __all__ = ("SQLSpecQueueBackend",)
 
 _DUE_STATUSES = ("pending", "scheduled")
-_DURABLE_NOTIFICATION_BACKENDS = frozenset({"aq", "listen_notify_durable", "table_queue", "txeventq"})
+_DURABLE_NOTIFICATION_BACKENDS = frozenset({"aq", "notify_queue", "poll_queue", "txeventq"})
 _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 _NOTIFY_TRANSPORT_POLLING = "polling"
+_CANONICAL_NOTIFY_TRANSPORTS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
+_LEGACY_NOTIFY_TRANSPORTS = frozenset({"listen_notify", "listen_notify_durable", "table_queue"})
+_SQLSPEC_EVENT_BACKENDS = {
+    "aq": "aq",
+    "notify": "listen_notify",
+    "notify_queue": "listen_notify_durable",
+    "poll_queue": "table_queue",
+    "polling": "polling",
+    "txeventq": "txeventq",
+}
+_CANONICAL_EVENT_BACKENDS = {
+    "aq": "aq",
+    "listen_notify": "notify",
+    "listen_notify_durable": "notify_queue",
+    "notify": "notify",
+    "notify_queue": "notify_queue",
+    "poll_queue": "poll_queue",
+    "polling": "polling",
+    "table_queue": "poll_queue",
+    "txeventq": "txeventq",
+}
 # Adapter families that can push worker wakeups. Postgres-over-asyncpg ships the
 # durable LISTEN/NOTIFY hybrid; psycopg/psqlpy fall back to the durable table
 # queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
@@ -96,14 +116,50 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
     advertise push wakeups where the driver can deliver them.
 
     Returns:
-        ``"listen_notify_durable"`` for asyncpg, ``"table_queue"`` for
-        psycopg/psqlpy, otherwise ``"polling"``.
+        ``"notify_queue"`` for asyncpg, ``"poll_queue"`` for psycopg/psqlpy,
+        otherwise ``"polling"``.
     """
     if adapter_name in _NOTIFY_DURABLE_ADAPTERS:
-        return "listen_notify_durable"
+        return "notify_queue"
     if adapter_name in _NOTIFY_TABLE_QUEUE_ADAPTERS:
-        return "table_queue"
+        return "poll_queue"
     return _NOTIFY_TRANSPORT_POLLING
+
+
+def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
+    """Map a SQLSpec event backend name to the queue transport vocabulary.
+
+    Returns:
+        The canonical queue transport name, if one can be resolved.
+    """
+    if backend_name is None:
+        return None
+    return _CANONICAL_EVENT_BACKENDS.get(backend_name, backend_name)
+
+
+def _sqlspec_event_backend(transport: "str") -> "str":
+    """Map a canonical queue transport to the SQLSpec Events backend name.
+
+    Returns:
+        The SQLSpec Events backend name.
+    """
+    return _SQLSPEC_EVENT_BACKENDS.get(transport, transport)
+
+
+def _validate_queue_notify_transport(transport: "str") -> "str":
+    """Validate explicit queue transport configuration from extension settings.
+
+    Returns:
+        The validated canonical queue transport name.
+    """
+    if transport in _CANONICAL_NOTIFY_TRANSPORTS:
+        return transport
+    valid = ", ".join(sorted(_CANONICAL_NOTIFY_TRANSPORTS))
+    if transport in _LEGACY_NOTIFY_TRANSPORTS:
+        msg = f"Invalid notify_transport {transport!r}; use canonical queue transport names: {valid}."
+    else:
+        msg = f"Invalid notify_transport {transport!r}; expected one of: {valid}."
+    raise QueueConfigurationError(msg)
 
 
 class SQLSpecQueueBackend(BaseQueueBackend):
@@ -111,7 +167,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_column_map",
-        "_create_schema",
         "_event_backend",
         "_event_channel",
         "_event_log",
@@ -134,11 +189,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_owns_event_channel",
         "_owns_sqlspec",
         "_queue_observability",
-        "_run_migrations",
+        "_queue_table_name",
         "_sqlspec",
         "_sqlspec_config",
         "_store",
-        "_table_name",
     )
 
     def __init__(
@@ -155,11 +209,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._heartbeat_pool_enabled = self._heartbeat_pool_config is not None
         self._heartbeat_pool_registered = False
         self._owns_sqlspec = self._sqlspec is None
-        self._table_name = (
-            validate_table_name(backend_config.table_name) if backend_config.table_name is not None else None
+        self._queue_table_name = (
+            validate_table_name(backend_config.queue_table_name)
+            if backend_config.queue_table_name is not None
+            else None
         )
-        self._create_schema = backend_config.create_schema
-        self._run_migrations = backend_config.run_migrations
         self._event_channel = backend_config.event_channel
         self._owns_event_channel = self._event_channel is None
         self._notifications_requested = backend_config.notifications
@@ -177,7 +231,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._queue_observability = backend_config.queue_observability and not _package_queue_observability_enabled(
             config
         )
-        self._notification_backend: "str | None" = getattr(self._event_channel, "_backend_name", None)
+        self._notification_backend = _canonical_notify_transport(getattr(self._event_channel, "_backend_name", None))
         self._notifications_enabled = self._event_channel is not None
         self._event_log_store: "Any | None" = None
         self._event_log: "SQLSpecQueueEventLog | None" = None
@@ -194,14 +248,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return True
 
         self._get_or_create_sqlspec()
-        self._resolve_table_name()
+        self._resolve_queue_table_name()
         self._configure_notifications()
         self._register_heartbeat_pool()
         self._opened = True
-        if self._resolve_run_migrations():
-            await self.run_migrations()
-        if self._resolve_create_schema():
-            await self.create_schema()
         return True
 
     async def close(self) -> "None":
@@ -265,19 +315,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 for statement in statements:
                     await driver.execute_script(statement)
                 await driver.commit()
-
-    async def run_migrations(self) -> "None":
-        """Apply packaged SQLSpec migrations."""
-        if self._manage_schema:
-            sqlspec_config = self._get_sqlspec_config()
-            event_log_enabled = self._event_log_enabled()
-            with _temporary_queue_migration_extension(
-                sqlspec_config,
-                table_name=self._resolve_table_name(),
-                event_log_enabled=event_log_enabled,
-                event_log_table_name=self._resolve_event_log_table_name() if event_log_enabled else None,
-            ):
-                await sqlspec_config.migrate_up(echo=False)
 
     async def enqueue(
         self,
@@ -373,10 +410,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     raise
 
         self._increment_queue_metric("enqueue", float(len(to_insert)))
-        for record in to_insert:
-            if record.status not in _DUE_STATUSES or not record.is_due:
-                continue
-            await self.notify_new_task(record)
+        await self.notify_new_tasks(to_insert)
         return results
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -988,16 +1022,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a SQLSpec event when configured queue work becomes available."""
-        if self._notifications_enabled and self._event_channel is not None and record.status in _DUE_STATUSES:
-            with self._observe_queue_operation("notify", task_id=str(record.id), queue=record.queue):
+        if (
+            self._notifications_enabled
+            and self._event_channel is not None
+            and record.status in _DUE_STATUSES
+            and record.is_due
+        ):
+            with self._observe_queue_operation("notify", queue=record.queue):
                 await self._event_channel.publish(
                     self._resolve_notification_channel(),
-                    {
-                        "task_id": str(record.id),
-                        "task_name": record.task_name,
-                        "queue": record.queue,
-                        "execution_backend": record.execution_backend,
-                    },
+                    {"event": "task_available"},
                     {"event_type": "litestar_queues.task_available"},
                 )
             self._increment_queue_metric("notify")
@@ -1012,8 +1046,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return await super().wait_for_notifications(timeout=timeout)
 
         stream = self._event_channel.iter_events(
-            self._resolve_notification_channel(),
-            poll_interval=self._event_poll_interval if self._event_poll_interval is not None else timeout,
+            self._resolve_notification_channel(), poll_interval=self._event_poll_interval
         )
         try:
             if timeout is None:
@@ -1034,26 +1067,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         return cast("SQLSpecConfig", AiosqliteConfig())
 
-    def _resolve_table_name(self) -> "str":
-        if self._table_name is None:
+    def _resolve_queue_table_name(self) -> "str":
+        if self._queue_table_name is None:
             queue_settings = _queue_extension_settings(self._sqlspec_config)
             configured_table_name = _setting(queue_settings, "table_name") or DEFAULT_TABLE_NAME
-            self._table_name = validate_table_name(str(configured_table_name))
-        return self._table_name
-
-    def _resolve_create_schema(self) -> "bool":
-        if not self._manage_schema:
-            return False
-        return _resolve_bool(
-            self._create_schema, _queue_extension_settings(self._sqlspec_config), "create_schema", True
-        )
-
-    def _resolve_run_migrations(self) -> "bool":
-        if not self._manage_schema:
-            return False
-        return _resolve_bool(
-            self._run_migrations, _queue_extension_settings(self._sqlspec_config), "run_migrations", False
-        )
+            self._queue_table_name = validate_table_name(str(configured_table_name))
+        return self._queue_table_name
 
     def _resolve_notification_channel(self) -> "str":
         if self._notification_channel is not None:
@@ -1089,7 +1108,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             # An injected channel already owns its backend; still resolve the
             # configured poll interval so wait_for_notifications honors it.
             self._resolve_event_poll_interval(queue_settings, events_settings)
-        self._notification_backend = cast("str | None", getattr(self._event_channel, "_backend_name", None))
+        self._notification_backend = _canonical_notify_transport(
+            cast("str | None", getattr(self._event_channel, "_backend_name", None))
+        )
 
     def _resolve_notifications_requested(self, queue_settings: "dict[str, Any]") -> "bool | None":
         notifications_requested = self._notifications_requested
@@ -1107,17 +1128,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         capability gate.
 
         Returns:
-            A wakeup transport name (``listen_notify``, ``listen_notify_durable``,
-            ``table_queue``, or ``polling``), or an events backend name carried
-            over from existing ``event_backend`` configuration.
+            A canonical wakeup transport name (``notify``, ``notify_queue``,
+            ``poll_queue``, ``polling``, ``aq``, or ``txeventq``).
         """
-        explicit = self._notify_transport or _setting(queue_settings, "notify_transport")
-        if explicit is None:
-            explicit = (
-                self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
-            )
+        explicit = self._notify_transport
         if explicit is not None:
-            return str(explicit)
+            return explicit
+        configured_transport = _setting(queue_settings, "notify_transport")
+        if configured_transport is not None:
+            return _validate_queue_notify_transport(str(configured_transport))
+        configured_backend = (
+            self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
+        )
+        if configured_backend is not None:
+            return _canonical_notify_transport(str(configured_backend)) or _NOTIFY_TRANSPORT_POLLING
         return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
 
     def _notifications_should_enable(
@@ -1178,7 +1202,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if isinstance(configured_events, dict):
                 merged_event_settings.update(configured_events)
         merged_event_settings.update(self._event_settings)
-        merged_event_settings["backend"] = transport
+        merged_event_settings["backend"] = _sqlspec_event_backend(transport)
 
         configured_queue_table = self._event_queue_table or _setting(queue_settings, "event_queue_table")
         if configured_queue_table is not None:
@@ -1218,7 +1242,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._store is None:
             self._store = create_queue_store(
                 self._get_sqlspec_config(),
-                table_name=self._resolve_table_name(),
+                table_name=self._resolve_queue_table_name(),
                 column_map=self._column_map,
                 native_json_columns=self._native_json_columns,
                 manage_schema=self._manage_schema,
@@ -1229,7 +1253,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._event_log_store is None:
             store = create_event_log_store(
                 self._get_sqlspec_config(),
-                queue_table_name=self._resolve_table_name(),
+                queue_table_name=self._resolve_queue_table_name(),
                 event_log_table_name=self._event_log_table_name,
                 manage_schema=self._manage_schema,
             )
@@ -1245,7 +1269,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _resolve_event_log_table_name(self) -> "str":
         if self._event_log_table_name is None:
-            self._event_log_table_name = resolve_event_log_table_name(self._resolve_table_name())
+            self._event_log_table_name = resolve_event_log_table_name(self._resolve_queue_table_name())
         return self._event_log_table_name
 
     @asynccontextmanager
@@ -1831,42 +1855,6 @@ def _queue_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "d
     return dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
 
 
-@contextmanager
-def _temporary_queue_migration_extension(
-    sqlspec_config: "SQLSpecConfig",
-    *,
-    table_name: "str",
-    event_log_enabled: "bool" = False,
-    event_log_table_name: "str | None" = None,
-) -> "Iterator[None]":
-    original_extension_config = deepcopy(sqlspec_config.extension_config or {})
-    original_migration_config = deepcopy(sqlspec_config.migration_config or {})
-
-    extension_config = deepcopy(original_extension_config)
-    queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    queue_settings["table_name"] = validate_table_name(table_name)
-    if event_log_enabled:
-        queue_settings["event_log_enabled"] = True
-        queue_settings["event_log_table_name"] = resolve_event_log_table_name(
-            table_name, event_log_table_name=event_log_table_name
-        )
-    extension_config[QUEUE_EXTENSION_NAME] = queue_settings
-
-    sqlspec_config.extension_config = extension_config
-    sqlspec_config.set_migration_config(deepcopy(original_migration_config))
-    configure_queue_migration_extension(
-        sqlspec_config,
-        table_name=table_name,
-        event_log_enabled=event_log_enabled,
-        event_log_table_name=event_log_table_name,
-    )
-    try:
-        yield
-    finally:
-        sqlspec_config.extension_config = original_extension_config
-        sqlspec_config.set_migration_config(original_migration_config)
-
-
 async def _create_schema_statements(store: "SQLSpecQueueStore", driver: "SQLSpecDriver") -> "list[str]":
     create_for_driver = getattr(store, "create_statements_for_driver", None)
     if callable(create_for_driver):
@@ -1889,14 +1877,6 @@ def _setting(queue_settings: "dict[str, Any]", *names: "str") -> "Any":
         if name in queue_settings:
             return queue_settings[name]
     return None
-
-
-def _resolve_bool(value: "bool | None", queue_settings: "dict[str, Any]", key: "str", default: "bool") -> "bool":
-    if value is not None:
-        return value
-    if key in queue_settings:
-        return bool(queue_settings[key])
-    return default
 
 
 def _normalize_notification_channel(channel: "str") -> "str":

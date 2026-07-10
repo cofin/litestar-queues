@@ -16,7 +16,7 @@ __all__ = ("get_queue_backend", "get_queue_backend_class", "list_queue_backends"
 _queue_backend_registry: "dict[str, type[BaseQueueBackend]]" = {}
 
 _BUILTIN_BACKENDS: "dict[str, str]" = {
-    "advanced-alchemy": "litestar_queues.backends.advanced_alchemy:AdvancedAlchemyQueueBackend",
+    "advanced-alchemy": "litestar_queues.backends.advanced_alchemy:SQLAlchemyBackend",
     "memory": "litestar_queues.backends.memory:InMemoryQueueBackend",
     "redis": "litestar_queues.backends.redis:RedisQueueBackend",
     "sqlspec": "litestar_queues.backends.sqlspec:SQLSpecQueueBackend",
