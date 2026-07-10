@@ -49,7 +49,7 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
     try:
         await backend.open()
         if hasattr(backend, "create_schema"):
-            await backend.create_schema()  # type: ignore[attr-defined]
+            await backend.create_schema()
     except Exception as exc:
         if _is_missing_arrow_odbc_sql_server_driver(case, exc):
             pytest.skip("arrow-odbc-mssql requires ODBC Driver 18 for SQL Server")

@@ -394,6 +394,9 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_serv
     await backend.open()
     try:
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2.0))
+        # Give the dedicated LISTEN connection time to subscribe before the
+        # enqueue commits and publishes its notification.
+        await asyncio.sleep(0.2)
         record = await backend.enqueue("tasks.pg.notify")
 
         assert await waiter is True
