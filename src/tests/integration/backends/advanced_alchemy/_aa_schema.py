@@ -1,6 +1,6 @@
 """Native SQLAlchemy schema helpers for Advanced Alchemy integration tests."""
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
@@ -13,9 +13,10 @@ class MappedModel(Protocol):
     __table__: "Table"
 
 
-async def create_tables(config: "SQLAlchemyAsyncConfig", *models: "type[MappedModel]") -> "None":
+async def create_tables(config: "SQLAlchemyAsyncConfig", *models: "type[object]") -> "None":
     """Create selected tables through SQLAlchemy's native table lifecycle."""
     engine = config.get_engine()
     async with engine.begin() as connection:
         for model in models:
-            await connection.run_sync(model.__table__.create, checkfirst=True)
+            table = cast("MappedModel", model).__table__
+            await connection.run_sync(table.create, checkfirst=True)
