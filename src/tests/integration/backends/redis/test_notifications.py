@@ -47,3 +47,33 @@ async def test_redis_backend_enqueue_many_publishes_one_batch_notification(
     assert await waiter is True
     assert len(records) == 5
     assert await redis_backend.wait_for_notifications(timeout=0.05) is False
+
+
+async def test_redis_backend_reuses_subscription_after_timeout(redis_backend: "RedisQueueBackend") -> "None":
+    assert await redis_backend.wait_for_notifications(timeout=0.1) is False
+    pubsub = redis_backend._pubsub
+    assert pubsub is not None
+    assert redis_backend._pending_read.has_pending is True
+
+    assert await redis_backend.wait_for_notifications(timeout=0.1) is False
+    # No re-subscription across empty poll timeouts.
+    assert redis_backend._pubsub is pubsub
+    assert redis_backend._pending_read.has_pending is True
+
+    await redis_backend.enqueue("tasks.reuse", execution_backend="local")
+
+    # The notification wakes the retained receive on the same subscription.
+    assert await redis_backend.wait_for_notifications(timeout=2.0) is True
+    assert redis_backend._pubsub is pubsub
+    assert bool(redis_backend._pending_read.has_pending) is False
+
+
+async def test_redis_backend_close_while_reading_leaves_no_task(redis_backend: "RedisQueueBackend") -> "None":
+    assert await redis_backend.wait_for_notifications(timeout=0.1) is False
+    assert redis_backend._pending_read.has_pending is True
+
+    await redis_backend.close()
+    assert bool(redis_backend._pending_read.has_pending) is False
+    assert redis_backend._pubsub is None
+    # Double close is idempotent.
+    await redis_backend.close()

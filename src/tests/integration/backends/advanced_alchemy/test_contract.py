@@ -412,6 +412,54 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_serv
         await backend.close()
 
 
+async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_listener(
+    postgres_service: "PostgresService",
+) -> "None":
+    pytest.importorskip("asyncpg")
+    table_name = f"aa_notify_reuse_{uuid4().hex}"
+    model_class = _dynamic_queue_model(table_name)
+    sqlalchemy_config = SQLAlchemyAsyncConfig(
+        connection_string=(
+            f"postgresql+asyncpg://{postgres_service.user}:{postgres_service.password}"
+            f"@{postgres_service.host}:{postgres_service.port}/{postgres_service.database}"
+        )
+    )
+    await create_tables(sqlalchemy_config, model_class)
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=sqlalchemy_config,
+            model_class=model_class,
+            notifications=True,
+            notification_channel=f"lq_reuse_{uuid4().hex}",
+        )
+    )
+    await backend.open()
+    try:
+        # A first empty wait establishes the LISTEN connection and retains its read.
+        assert await backend.wait_for_notifications(timeout=0.2) is False
+        listener = backend._notification_listener
+        assert listener is not None
+        connection = listener._connection
+        assert connection is not None
+        assert listener._pending_read.has_pending is True
+
+        # A concurrent waiter reuses the retained read; the enqueue's NOTIFY wakes it.
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2.0))
+        await asyncio.sleep(0.1)
+        await backend.enqueue("tasks.pg.reuse")
+
+        assert await waiter is True
+        assert listener._connection is connection
+        assert bool(listener._pending_read.has_pending) is False
+        # Identity check last: ``is`` widens ``listener`` back to the attribute's type.
+        assert backend._notification_listener is listener
+    finally:
+        with suppress(Exception):
+            await _drop_dynamic_queue_model(backend, model_class)
+        await backend.close()
+        assert backend._notification_listener is None
+
+
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(
     advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
