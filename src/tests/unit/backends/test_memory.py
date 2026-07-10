@@ -402,6 +402,47 @@ async def test_memory_backend_null_heartbeats_is_fenced_by_retry_count() -> "Non
     assert stored.heartbeat_at == second_heartbeat
 
 
+async def test_memory_backend_repeated_timeouts_reuse_one_notification_read() -> "None":
+    backend = InMemoryQueueBackend()
+    event = _CountingEvent()
+    backend._notification_event = cast("Any", event)
+
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+
+    assert event.waits == 1
+    assert backend._pending_read.has_pending is True
+    await backend.close()
+
+
+async def test_memory_backend_notification_after_timeout_is_consumed_once() -> "None":
+    backend = InMemoryQueueBackend()
+    event = _CountingEvent()
+    backend._notification_event = cast("Any", event)
+
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    await backend.enqueue("tasks.after_timeout")
+
+    assert await backend.wait_for_notifications(timeout=0.01) is True
+    assert event.waits == 1
+    assert backend._pending_read.has_pending is False
+    # The consumed wakeup must not linger for a second waiter.
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert event.waits == 2
+    await backend.close()
+
+
+async def test_memory_backend_close_cancels_retained_notification_read() -> "None":
+    backend = InMemoryQueueBackend()
+
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert backend._pending_read.has_pending is True
+
+    await backend.close()
+    assert backend._pending_read.has_pending is False
+
+
 async def test_queue_service_memory_fixture_yields_running_service(queue_service_memory: "QueueService") -> "None":
     """The unit-tier `queue_service_memory` fixture yields a running QueueService."""
     assert queue_service_memory.config.queue_backend == "memory"
@@ -444,6 +485,7 @@ class _CountingEvent:
     def __init__(self) -> "None":
         self.clears = 0
         self.sets = 0
+        self.waits = 0
         self._event = asyncio.Event()
 
     def is_set(self) -> "bool":
@@ -458,4 +500,5 @@ class _CountingEvent:
         self._event.clear()
 
     async def wait(self) -> "bool":
+        self.waits += 1
         return await self._event.wait()

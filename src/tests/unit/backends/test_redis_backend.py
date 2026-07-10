@@ -1,3 +1,4 @@
+import asyncio
 import builtins
 import json
 from contextlib import asynccontextmanager
@@ -56,8 +57,30 @@ async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "Non
 
     assert client.pubsub_calls == 1
     assert client.pubsubs[0].subscribe_calls == 1
+    # Ten empty waits must not create ten receive reads on the subscription.
+    assert client.pubsubs[0].get_message_calls == 1
     assert client.pubsubs[0].unsubscribe_calls == 1
     assert client.pubsubs[0].close_calls == 1
+
+
+async def test_redis_wait_for_notifications_wakes_after_prior_timeout() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+
+    assert await backend.wait_for_notifications(timeout=0.001) is False
+    pubsub = client.pubsubs[0]
+    pubsub.deliver()
+
+    # The retained receive resumes on the same subscription without re-subscribing.
+    assert await backend.wait_for_notifications(timeout=1.0) is True
+    assert pubsub.subscribe_calls == 1
+    assert pubsub.get_message_calls == 1
+    assert backend._pending_read.has_pending is False
+
+    # The consumed message does not linger for the next waiter.
+    assert await backend.wait_for_notifications(timeout=0.001) is False
+    assert pubsub.get_message_calls == 2
+    await backend.close()
 
 
 async def test_redis_enqueue_many_persists_unkeyed_batch_with_one_pipeline_and_one_notification() -> "None":
@@ -437,6 +460,8 @@ class _CountingPubSub:
         self.close_calls = 0
         self.subscribe_calls = 0
         self.unsubscribe_calls = 0
+        self.get_message_calls = 0
+        self._message: "asyncio.Queue[object]" = asyncio.Queue()
 
     async def subscribe(self, channel: "str") -> "None":
         del channel
@@ -446,9 +471,19 @@ class _CountingPubSub:
         del channel
         self.unsubscribe_calls += 1
 
-    async def get_message(self, *, ignore_subscribe_messages: "bool", timeout: "float | None") -> "None":
-        del ignore_subscribe_messages, timeout
-        return None
+    async def get_message(self, *, ignore_subscribe_messages: "bool", timeout: "float | None") -> "object | None":
+        del ignore_subscribe_messages
+        self.get_message_calls += 1
+        # Model the real client: ``timeout=None`` blocks until a message lands.
+        if timeout is None:
+            return await self._message.get()
+        try:
+            return await asyncio.wait_for(self._message.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    def deliver(self) -> "None":
+        self._message.put_nowait({"type": "message", "data": "task_available"})
 
     async def aclose(self) -> "None":
         self.close_calls += 1
