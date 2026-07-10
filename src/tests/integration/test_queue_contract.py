@@ -247,37 +247,36 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backe
     assert result.result["injected_service"] == "from-resolver"
 
 
-async def test_task_dependency_resolver_cannot_override_sentinels(queue_backend: "BaseQueueBackend") -> "None":
+async def test_task_dependency_resolver_cannot_override_task_context(queue_backend: "BaseQueueBackend") -> "None":
     clear_task_registry()
 
     async def resolver(
         _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
     ) -> "dict[str, object]":
-        return {"_job_id": "hijacked", "_task_context": "hijacked"}
+        return {"injected_service": "resolved", "_task_context": "hijacked"}
 
-    @task("contract.resolver.sentinels")
-    async def sentinels(**kwargs: "object") -> "dict[str, object]":
-        task_context = kwargs["_task_context"]
+    @task("contract.resolver.context")
+    async def consume(**kwargs: "object") -> "dict[str, object]":
+        task_context = kwargs.pop("_task_context")
         assert isinstance(task_context, TaskExecutionContext)
         return {
-            "job_id": kwargs["_job_id"],
             "ctx_type": type(task_context).__name__,
             "ctx_task_name": task_context.task_name,
+            "extra_keys": sorted(kwargs),
         }
 
     config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
-        result = await service.enqueue("contract.resolver.sentinels")
+        result = await service.enqueue("contract.resolver.context")
         await result.refresh()
 
     assert result.status == "completed"
     assert isinstance(result.result, dict)
-    assert result.record is not None
-    assert str(result.result["job_id"]) == str(result.record.id)
     assert result.result["ctx_type"] == "TaskExecutionContext"
-    assert result.result["ctx_task_name"] == "contract.resolver.sentinels"
+    assert result.result["ctx_task_name"] == "contract.resolver.context"
+    assert result.result["extra_keys"] == ["injected_service"]
 
 
 async def test_task_dependency_resolver_exception_records_failure_and_retries(

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues._heartbeat import WorkerHeartbeatManager
+    from litestar_queues.events import TaskExecutionContext
     from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord, StaleTaskRecoveryResult
     from litestar_queues.task import TaskResult
 
@@ -79,13 +80,13 @@ async def test_worker_retries_failed_task_until_success() -> "None":
     assert result.result == "ok"
 
 
-async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -> "None":
-    captured_job_id: "str | None" = None
+async def test_worker_non_retryable_failure_skips_retries_and_injects_task_context() -> "None":
+    captured_task_id: "str | None" = None
 
     @task("tasks.permanent", retries=3)
-    async def permanent_failure(*, _job_id: "str") -> "None":
-        nonlocal captured_job_id
-        captured_job_id = _job_id
+    async def permanent_failure(*, _task_context: "TaskExecutionContext") -> "None":
+        nonlocal captured_task_id
+        captured_task_id = _task_context.task_id
         non_retryable("permanent failure")
 
     async with QueueService(QueueConfig(execution_backend="local")) as service:
@@ -95,7 +96,7 @@ async def test_worker_non_retryable_failure_skips_retries_and_injects_job_id() -
         assert await worker.run_once() == 1
         await result.wait(timeout=1, poll_interval=0.01)
 
-    assert captured_job_id == str(result.id)
+    assert captured_task_id == str(result.id)
     assert result.status == "failed"
     assert result.error == "permanent failure"
     assert result.record is not None
@@ -666,10 +667,14 @@ async def test_plugin_logs_when_in_app_worker_task_dies(monkeypatch: "pytest.Mon
 
 async def test_sync_task_uses_configured_executor_and_preserves_task_context() -> "None":
     @task("tasks.sync_context")
-    def sync_context(*, _job_id: "str") -> "dict[str, str | None]":
+    def sync_context(*, _task_context: "TaskExecutionContext") -> "dict[str, str | None]":
         context = get_current_task_context()
         assert context is not None
-        return {"job_id": _job_id, "context_task_id": context.task_id, "thread_name": threading.current_thread().name}
+        return {
+            "injected_task_id": _task_context.task_id,
+            "context_task_id": context.task_id,
+            "thread_name": threading.current_thread().name,
+        }
 
     async with QueueService(
         QueueConfig(execution_backend="immediate", sync_executor_max_workers=1, sync_executor_thread_name_prefix="lq")
@@ -677,7 +682,7 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
         result = await service.enqueue(sync_context)
 
     assert isinstance(result.result, dict)
-    assert result.result["job_id"] == result.result["context_task_id"]
+    assert result.result["injected_task_id"] == result.result["context_task_id"]
     assert str(result.result["thread_name"]).startswith("lq")
 
 
