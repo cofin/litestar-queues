@@ -4,7 +4,7 @@ import os
 import threading
 from contextlib import suppress
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from litestar import Litestar
@@ -272,6 +272,93 @@ async def test_worker_start_wakes_from_backend_notifications() -> "None":
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(worker_task, timeout=1)
 
+    assert result.status == "completed"
+    assert result.result == 42
+
+
+async def test_worker_repeated_idle_polls_reuse_one_native_read() -> "None":
+    backend = InMemoryQueueBackend()
+    event = _CountingWaitEvent()
+    backend._notification_event = cast("Any", event)
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.001)
+
+        for _ in range(10):
+            await worker._wait_for_work()
+
+        assert event.waits == 1
+        assert backend._pending_read.has_pending is True
+
+
+async def test_worker_stop_interrupts_blocked_native_read_promptly() -> "None":
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        backend = cast("InMemoryQueueBackend", service.get_queue_backend())
+        # Large intervals ensure a prompt stop cannot be attributed to a poll/reconcile tick.
+        worker = Worker(service, poll_interval=60, reconcile_interval=3600)
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.sleep(0.05)
+        assert backend._pending_read.has_pending is True
+
+        started = asyncio.get_running_loop().time()
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+        elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.0
+    # Backend close (on service exit) cancels and awaits the retained read.
+    # ``bool(...)`` keeps mypy from narrowing the property across the earlier assertion.
+    assert bool(backend._pending_read.has_pending) is False
+
+
+async def test_worker_survives_native_read_failure_and_reconciles() -> "None":
+    @task("tasks.after_read_failure")
+    async def after_read_failure(value: "int") -> "int":
+        return value + 1
+
+    backend = _FailingReadInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.01)
+
+        with pytest.raises(RuntimeError):
+            await worker._wait_for_work()
+        assert backend.read_starts == 1
+        assert backend._pending_read.has_pending is False
+
+        # The durable claim scan still discovers work after a listener failure.
+        result = await service.enqueue(after_read_failure, 41)
+        assert await worker.run_once() == 1
+        await _wait_for_worker_tasks_done(worker)
+        await result.refresh()
+        assert result.status == "completed"
+
+        # The next wait re-establishes the native read from a clean listener state.
+        backend._notification_event.clear()
+        await worker._wait_for_work()
+        assert backend.read_starts == 2
+
+
+async def test_worker_processes_task_when_notification_is_dropped() -> "None":
+    @task("tasks.dropped_notification")
+    async def dropped_notification(value: "int") -> "int":
+        return value + 1
+
+    backend = _DroppedNotificationInMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.01)
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.sleep(0)
+
+        result = await service.enqueue(dropped_notification, 41)
+        await result.wait(timeout=2, poll_interval=0.01)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    # The wakeup was attempted but never signalled the waiter; durable polling still ran.
+    assert backend.notify_calls >= 1
+    assert backend._notification_event.is_set() is False
     assert result.status == "completed"
     assert result.result == 42
 
@@ -712,6 +799,73 @@ async def _wait_for_worker_tasks_done(worker: "Worker", *, timeout: "float" = 1.
             return
         await asyncio.sleep(0.01)
     pytest.fail("worker tasks did not finish")
+
+
+class _CountingWaitEvent:
+    """Asyncio-event double that counts how many native reads are created."""
+
+    def __init__(self) -> "None":
+        self.waits = 0
+        self._event = asyncio.Event()
+
+    def is_set(self) -> "bool":
+        return self._event.is_set()
+
+    def set(self) -> "None":
+        self._event.set()
+
+    def clear(self) -> "None":
+        self._event.clear()
+
+    async def wait(self) -> "bool":
+        self.waits += 1
+        return await self._event.wait()
+
+
+class _FailingReadInMemoryQueueBackend(InMemoryQueueBackend):
+    """Memory backend whose first native read raises to model a listener failure."""
+
+    __slots__ = ("_fail_pending", "read_starts")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.read_starts = 0
+        self._fail_pending = True
+
+    async def _native_read(self) -> "bool":
+        self.read_starts += 1
+        if self._fail_pending:
+            self._fail_pending = False
+            msg = "listener boom"
+            raise RuntimeError(msg)
+        return await self._notification_event.wait()
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        if not self._pending_read.has_pending and self._notification_event.is_set():
+            self._notification_event.clear()
+            return True
+        task = await self._pending_read.race(self._native_read, timeout)
+        if task is None:
+            return False
+        exc = task.exception()
+        if exc is not None:
+            raise exc
+        task.result()
+        self._notification_event.clear()
+        return True
+
+
+class _DroppedNotificationInMemoryQueueBackend(InMemoryQueueBackend):
+    """Memory backend that never emits wakeups, forcing durable polling."""
+
+    __slots__ = ("notify_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.notify_calls = 0
+
+    async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
+        self.notify_calls += 1
 
 
 class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
