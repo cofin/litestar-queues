@@ -47,7 +47,10 @@ class InMemoryQueueBackend(BaseQueueBackend):
     def capabilities(self) -> "QueueBackendCapabilities":
         """Backend behavior capabilities."""
         return QueueBackendCapabilities(
-            supports_notifications=True, notification_backend="asyncio-event", notifications_durable=False
+            supports_notifications=True,
+            notification_backend="asyncio-event",
+            notifications_durable=False,
+            supports_batch_claim=True,
         )
 
     def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
@@ -179,6 +182,41 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.started_at = now
             record.heartbeat_at = now
             return record
+
+    async def claim_many(
+        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` due tasks under a single lock acquisition.
+
+        Selects eligible records with the same queue/execution/due filter and
+        priority ordering as :meth:`list_pending`, then transitions them to
+        ``running`` inside one critical section using a single ``now`` snapshot.
+        The returned records carry the same owner/start/heartbeat fields a
+        sequential :meth:`claim_next` loop would produce.
+
+        Returns:
+            Claimed task records in claim order.
+        """
+        if limit <= 0:
+            return []
+        async with self._lock:
+            now = _utc_now()
+            eligible = [
+                record
+                for record in self._records.values()
+                if record.status in {"pending", "scheduled"}
+                and (record.scheduled_at is None or record.scheduled_at <= now)
+                and (queue is None or record.queue == queue)
+                and (execution_backend is None or record.execution_backend == execution_backend)
+            ]
+            eligible.sort(key=lambda record: (-record.priority, record.created_at))
+            claimed: "list[QueuedTaskRecord]" = []
+            for record in eligible[:limit]:
+                record.status = "running"
+                record.started_at = now
+                record.heartbeat_at = now
+                claimed.append(record)
+            return claimed
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None

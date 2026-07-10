@@ -879,6 +879,14 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
         self.claim_task_calls: "list[object]" = []
         self.list_pending_calls: "list[tuple[int, str | None, str | None]]" = []
 
+    @property
+    def capabilities(self) -> "QueueBackendCapabilities":
+        # Force the worker onto the single-record claim_next path so this double
+        # can record it; the native in-memory batch path is exercised elsewhere.
+        base = super().capabilities
+        base.supports_batch_claim = False
+        return base
+
     async def claim_next(
         self, *, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":

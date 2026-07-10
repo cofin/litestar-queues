@@ -130,6 +130,20 @@ class SQLSpecQueueStore:
         )
 
     @property
+    def supports_batch_claim(self) -> "bool":
+        """Whether the adapter can claim a batch of due tasks in one transaction.
+
+        Gated purely on :attr:`supports_skip_locked` so the native
+        :meth:`claim_many` fast path is advertised for exactly the dialect
+        families whose SQLSpec data dictionary reports ``FOR UPDATE SKIP
+        LOCKED`` support — the same families the single-record
+        skip-locked claim path already uses. Stores that force the portable
+        CAS path (e.g. Cockroach) opt out via :attr:`supports_skip_locked` and
+        fall back to the sequential base implementation.
+        """
+        return self.supports_skip_locked
+
+    @property
     def supports_native_bulk_ingest(self) -> "bool":
         """Whether the adapter can ingest records via the native Arrow import path.
 
@@ -213,6 +227,14 @@ class SQLSpecQueueStore:
         """
         return self._select_all().where_in(self._col("task_key"), list(keys))
 
+    def select_tasks_by_ids(self, task_ids: "Sequence[str]") -> "Select":
+        """Return a SELECT statement for all tasks matching any of ``task_ids``.
+
+        Used by the native batch claim to reload the rows it transitioned to
+        ``running`` in the same transaction, preserving candidate order.
+        """
+        return self._select_all().where_in(self._col("id"), list(task_ids))
+
     def list_pending(
         self, *, now: "DatetimeParam", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "Select":
@@ -255,6 +277,29 @@ class SQLSpecQueueStore:
             .update(self.table_name)
             .set(**self._mapped_values({"status": "running", "started_at": started_at, "heartbeat_at": heartbeat_at}))
             .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
+        )
+
+    def claim_tasks(
+        self,
+        *,
+        task_ids: "Sequence[str]",
+        due_at: "DatetimeParam",
+        started_at: "DatetimeParam",
+        heartbeat_at: "DatetimeParam",
+    ) -> "Update":
+        """Return an UPDATE statement that claims a batch of due tasks.
+
+        Mirrors :meth:`claim_task` for a set of ids: only rows still due and in
+        a due status transition to ``running``, so a competitor that already
+        claimed a locked candidate leaves that row untouched.
+        """
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"status": "running", "started_at": started_at, "heartbeat_at": heartbeat_at}))
+            .where_in(self._col("id"), list(task_ids))
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
         )
