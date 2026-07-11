@@ -513,7 +513,14 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"mssql_python", "sqlspec"}),
         "mssql_service",
         _build_mssql_mssql_python,
-        frozenset({"polling-only", "json-text", "sync-driver"}),
+        # ``xfail-cross-session-commit`` gates contract tests that enqueue in one
+        # session and read the row back from another pooled connection. SQLSpec
+        # 0.55.0's sync-only mssql-python adapter implements ``begin()`` by issuing
+        # a raw ``BEGIN TRANSACTION`` statement, but the mssql-python driver's
+        # ``connection.commit()`` does not commit a transaction started that way,
+        # so the write is discarded when the connection returns to the pool.
+        # Reproduced against pure mssql-python (no SQLSpec) — upstream defect.
+        frozenset({"polling-only", "json-text", "sync-driver", "xfail-cross-session-commit"}),
     ),
     BackendCase(
         "pymssql",

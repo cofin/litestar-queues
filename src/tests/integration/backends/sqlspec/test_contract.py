@@ -138,8 +138,15 @@ def _fake_adapter_config(
 # ---------------------------------------------------------------------------
 
 
-async def test_backend_contract_enqueue_claim_complete_cycle(queue_backend: "BaseQueueBackend") -> "None":
+async def test_backend_contract_enqueue_claim_complete_cycle(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
     """A backend must support the full enqueue → claim → complete cycle."""
+    if "xfail-cross-session-commit" in queue_backend_case.capabilities:
+        pytest.xfail(
+            f"{queue_backend_case.name}: SQLSpec 0.55.0 mssql-python sync adapter does not persist "
+            "writes committed after its raw BEGIN TRANSACTION (upstream defect)"
+        )
     record = await queue_backend.enqueue("tasks.contract.cycle", priority=10)
 
     claimed = await queue_backend.claim_task(record.id)
@@ -190,7 +197,9 @@ async def test_backend_contract_concurrent_claim_next_never_double_claims(
     assert set(claimed_ids) == enqueued_ids, "every due task should be claimed exactly once"
 
 
-async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_backend: "BaseQueueBackend") -> "None":
+async def test_backend_contract_requeue_stale_running_recovers_every_task(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
     """Stale recovery must requeue every stale running task.
 
     For SQLSpec backends the per-row stale-recovery writes are batched into a
@@ -198,6 +207,11 @@ async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_
     >=23ai and psycopg, sequential elsewhere). This asserts the batched writes
     actually apply on the real container behind each adapter.
     """
+    if "xfail-cross-session-commit" in queue_backend_case.capabilities:
+        pytest.xfail(
+            f"{queue_backend_case.name}: SQLSpec 0.55.0 mssql-python sync adapter does not persist "
+            "writes committed after its raw BEGIN TRANSACTION (upstream defect)"
+        )
     stale_count = 5
     records = [
         await queue_backend.enqueue(f"tasks.contract.stale.{index}", max_retries=3) for index in range(stale_count)
