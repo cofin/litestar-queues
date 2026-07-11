@@ -594,7 +594,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     if not candidate_rows:
                         await driver.rollback()
                         return []
-                    candidate_ids = [str(UUID(str(row["id"]))) for row in candidate_rows]
+                    # Bound the ordered candidate set to ``limit``: dialects such as Oracle cannot
+                    # combine ``FOR UPDATE SKIP LOCKED`` with ``FETCH FIRST`` and stream the whole
+                    # ordered result instead, so the SQL-level limit is absent for them.
+                    candidate_ids = [str(UUID(str(row["id"]))) for row in candidate_rows[:limit]]
                     await driver.execute(
                         store.claim_tasks(
                             task_ids=candidate_ids,
