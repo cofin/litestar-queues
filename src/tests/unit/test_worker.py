@@ -311,7 +311,7 @@ async def test_worker_stop_interrupts_blocked_native_read_promptly() -> "None":
     assert bool(backend._pending_read.has_pending) is False
 
 
-async def test_worker_survives_native_read_failure_and_reconciles() -> "None":
+async def test_worker_survives_native_read_failure_and_reconciles(caplog: "pytest.LogCaptureFixture") -> "None":
     @task("tasks.after_read_failure")
     async def after_read_failure(value: "int") -> "int":
         return value + 1
@@ -320,22 +320,24 @@ async def test_worker_survives_native_read_failure_and_reconciles() -> "None":
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
         worker = Worker(service, poll_interval=0.01)
 
-        with pytest.raises(RuntimeError):
-            await worker._wait_for_work()
-        assert backend.read_starts == 1
-        assert backend._pending_read.has_pending is False
+        with caplog.at_level(logging.ERROR, logger="litestar_queues.worker"):
+            worker_task = asyncio.create_task(worker.start())
+            await asyncio.sleep(0)
 
-        # The durable claim scan still discovers work after a listener failure.
-        result = await service.enqueue(after_read_failure, 41)
-        assert await worker.run_once() == 1
-        await _wait_for_worker_tasks_done(worker)
-        await result.refresh()
-        assert result.status == "completed"
+            # The first native read raises a driver-style error; the run loop must
+            # survive it and keep discovering work via durable polling.
+            result = await service.enqueue(after_read_failure, 41)
+            await result.wait(timeout=2, poll_interval=0.01)
 
-        # The next wait re-establishes the native read from a clean listener state.
-        backend._notification_event.clear()
-        await worker._wait_for_work()
-        assert backend.read_starts == 2
+            await worker.stop()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(worker_task, timeout=1)
+
+    assert result.status == "completed"
+    assert result.result == 42
+    assert backend.read_starts >= 1
+    assert worker.is_running is False
+    assert "Queue worker loop iteration failed" in caplog.text
 
 
 async def test_worker_processes_task_when_notification_is_dropped() -> "None":

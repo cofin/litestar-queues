@@ -380,13 +380,27 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         for task in done:
-            with contextlib.suppress(asyncio.TimeoutError):
-                task.result()
+            await self._consume_wait_task(task)
         self._service.observability_runtime.record_duration(
             "litestar_queues.worker.idle.duration",
             time.perf_counter() - started_at,
             attributes={**self._worker_metric_base_attributes(), "worker.wakeup": str(notification_task in done)},
         )
+
+    async def _consume_wait_task(self, task: "asyncio.Task[bool]") -> "None":
+        try:
+            task.result()
+        except asyncio.TimeoutError:
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A native read failure must not kill the run loop; durable polling
+            # (run_once) still discovers work, and the next wait re-establishes
+            # the listener from a clean state.
+            self._record_counter("litestar_queues.worker.loop.error.count", {"worker.error.type": type(exc).__name__})
+            logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
+            await self._backoff_after_loop_error()
 
     async def _backoff_after_loop_error(self) -> "None":
         timeout = min(max(self._poll_interval, 0.01), 1.0)
