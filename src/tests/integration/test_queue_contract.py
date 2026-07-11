@@ -83,13 +83,10 @@ async def test_backend_contract_claim_many_concurrent_claimers_never_double_clai
     for worker_count in (2, 4):
         task_count = 12
         enqueued = {
-            (await queue_backend.enqueue(f"tasks.batch.race.{worker_count}", priority=5)).id
-            for _ in range(task_count)
+            (await queue_backend.enqueue(f"tasks.batch.race.{worker_count}", priority=5)).id for _ in range(task_count)
         }
 
-        bursts = await asyncio.gather(
-            *(queue_backend.claim_many(limit=task_count) for _ in range(worker_count))
-        )
+        bursts = await asyncio.gather(*(queue_backend.claim_many(limit=task_count) for _ in range(worker_count)))
         claimed = [record for burst in bursts for record in burst]
         claimed_ids = [record.id for record in claimed]
         while stragglers := await queue_backend.claim_many(limit=task_count):

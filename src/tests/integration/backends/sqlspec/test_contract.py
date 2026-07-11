@@ -1070,9 +1070,7 @@ async def test_sqlspec_batch_claim_concurrent_workers_never_double_claim(
             for _ in range(task_count)
         }
 
-        bursts = await asyncio.gather(
-            *(queue_backend.claim_many(limit=task_count) for _ in range(worker_count))
-        )
+        bursts = await asyncio.gather(*(queue_backend.claim_many(limit=task_count) for _ in range(worker_count)))
         claimed = [record for burst in bursts for record in burst]
         claimed_ids = [record.id for record in claimed]
         while remainder := await queue_backend.claim_many(limit=task_count):

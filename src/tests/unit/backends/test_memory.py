@@ -516,9 +516,9 @@ async def test_memory_backend_claim_many_matches_sequential_claim_next() -> "Non
         "scheduled_at",
         "status",
     )
-    assert [
-        {field: getattr(record, field) for field in compared_fields} for record in sequential
-    ] == [{field: getattr(record, field) for field in compared_fields} for record in native]
+    assert [{field: getattr(record, field) for field in compared_fields} for record in sequential] == [
+        {field: getattr(record, field) for field in compared_fields} for record in native
+    ]
     for record in native:
         assert record.status == "running"
         assert record.started_at is not None
@@ -551,9 +551,7 @@ async def test_memory_backend_claim_many_never_double_claims_under_contention() 
     task_count = 40
     enqueued = {(await backend.enqueue(f"tasks.batch.contended.{index}")).id for index in range(task_count)}
 
-    first, second = await asyncio.gather(
-        backend.claim_many(limit=task_count), backend.claim_many(limit=task_count)
-    )
+    first, second = await asyncio.gather(backend.claim_many(limit=task_count), backend.claim_many(limit=task_count))
     claimed_ids = [record.id for record in (*first, *second)]
 
     assert len(claimed_ids) == task_count
