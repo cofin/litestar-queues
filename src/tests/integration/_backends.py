@@ -519,7 +519,8 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         # a raw ``BEGIN TRANSACTION`` statement, but the mssql-python driver's
         # ``connection.commit()`` does not commit a transaction started that way,
         # so the write is discarded when the connection returns to the pool.
-        # Reproduced against pure mssql-python (no SQLSpec) — upstream defect.
+        # Reproduced against pure mssql-python (no SQLSpec) — upstream defect:
+        # https://github.com/litestar-org/sqlspec/issues/642
         frozenset({"polling-only", "json-text", "sync-driver", "xfail-cross-session-commit"}),
     ),
     BackendCase(
