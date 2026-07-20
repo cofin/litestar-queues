@@ -31,3 +31,12 @@ When moving from memory to a persistent backend:
 
 See :doc:`backends` for the current support matrix and :doc:`event-history`
 for event-history ownership.
+
+SQLSpec event transport names
+=============================
+
+SQLSpec 0.55 removed the old ``listen_notify``, ``listen_notify_durable``, and
+``table_queue`` event transport names. Litestar Queues removes them in the same
+release rather than retaining aliases. Update configuration to ``notify``,
+``notify_queue``, or ``poll_queue`` respectively. Oracle ``aq`` and
+``txeventq`` names are unchanged.

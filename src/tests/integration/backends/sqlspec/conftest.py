@@ -85,7 +85,7 @@ class StubAsyncEventChannel:
 
     __slots__ = ("_backend_name", "_events", "acked", "published")
 
-    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+    def __init__(self, backend_name: "str" = "poll_queue") -> "None":
         self._backend_name = backend_name
         self.acked: "list[str]" = []
         self.published: "list[tuple[str, EventPayload, EventMetadata | None]]" = []

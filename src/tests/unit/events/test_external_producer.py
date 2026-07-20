@@ -4,6 +4,7 @@ import pytest
 
 from litestar_queues import EventConfig, QueueConfig
 from litestar_queues.events import EventBufferConfig, QueueChannels, QueueEvent
+from litestar_queues.events.sqlspec import SQLSpecQueueEventSink
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -96,6 +97,57 @@ async def test_factory_sqlspec_transport_drains_buffer_before_close() -> None:
         assert event_channel.published == []
 
     assert [payload["type"] for _, payload, _ in event_channel.published] == ["task.log", "task.progress"]
+    assert event_channel.publish_calls == 0
+    assert event_channel.publish_many_calls == 1
+
+
+async def test_sqlspec_sink_publish_many_flattens_ordered_events_into_one_call() -> None:
+    event_channel = _RecordingSqlSpecEventChannel()
+    sink = SQLSpecQueueEventSink(_SqlSpecBackendConfig(event_channel=event_channel))
+    first = QueueEvent(type="task.progress", scope="task", task_id="task-1")
+    second = QueueEvent(type="task.log", scope="task", task_id="task-2")
+
+    await sink.publish_many(((first, ("task-1", "global")), (second, ("task-2",))))
+
+    assert event_channel.publish_calls == 0
+    assert event_channel.publish_many_calls == 1
+    assert [(channel, payload["type"]) for channel, payload, _ in event_channel.published] == [
+        ("task-1", "task.progress"),
+        ("global", "task.progress"),
+        ("task-2", "task.log"),
+    ]
+
+
+async def test_sqlspec_sink_publish_many_supports_sync_event_channel() -> None:
+    event_channel = _RecordingSyncSqlSpecEventChannel()
+    sink = SQLSpecQueueEventSink(_SqlSpecBackendConfig(event_channel=event_channel))
+    event = QueueEvent(type="task.log", scope="task", task_id="task-1")
+
+    await sink.publish_many(((event, ("task-1",)),))
+
+    assert event_channel.publish_many_calls == 1
+    assert [(channel, payload["type"]) for channel, payload, _ in event_channel.published] == [("task-1", "task.log")]
+
+
+async def test_sqlspec_sink_publish_many_empty_batch_does_not_create_channel() -> None:
+    sqlspec = _RecordingSQLSpec()
+    sink = SQLSpecQueueEventSink(_SqlSpecBackendConfig(sqlspec=sqlspec, config=_RecordingSQLSpecConfig()))
+
+    await sink.publish_many(())
+
+    assert sqlspec.channel_calls == 0
+
+
+async def test_sqlspec_sink_publish_many_propagates_batch_failure() -> None:
+    event_channel = _FailingSqlSpecEventChannel()
+    sink = SQLSpecQueueEventSink(_SqlSpecBackendConfig(event_channel=event_channel))
+    event = QueueEvent(type="task.log", scope="task", task_id="task-1")
+
+    with pytest.raises(RuntimeError, match="batch publish failed"):
+        await sink.publish_many(((event, ("task-1",)),))
+
+    assert event_channel.publish_calls == 0
+    assert event_channel.publish_many_calls == 1
 
 
 async def test_factory_sqlspec_transport_builds_channel_lazily_and_closes_owned_channel() -> None:
@@ -200,14 +252,14 @@ class _SqlSpecBackendConfig:
     def __init__(
         self,
         *,
-        event_channel: "_RecordingSqlSpecEventChannel | None" = None,
+        event_channel: "object | None" = None,
         sqlspec: "_RecordingSQLSpec | None" = None,
         config: "_RecordingSQLSpecConfig | None" = None,
     ) -> None:
         self.event_channel = event_channel
         self.sqlspec = sqlspec
         self.config = config
-        self.event_backend = "table_queue"
+        self.event_backend = "poll_queue"
         self.event_queue_table = "litestar_queue_events"
         self.event_poll_interval = None
         self.event_settings: "dict[str, object]" = {}
@@ -240,14 +292,45 @@ class _RecordingSQLSpec:
 class _RecordingSqlSpecEventChannel:
     def __init__(self) -> None:
         self.published: "list[tuple[str, dict[str, object], dict[str, object] | None]]" = []
+        self.publish_calls = 0
+        self.publish_many_calls = 0
         self.shutdown_count = 0
 
     async def publish(
         self, channel: "str", payload: "dict[str, object]", metadata: "dict[str, object] | None" = None
     ) -> "str":
+        self.publish_calls += 1
         event_id = f"event-{len(self.published) + 1}"
         self.published.append((channel, payload, metadata))
         return event_id
 
+    async def publish_many(
+        self, events: "Sequence[tuple[str, dict[str, object], dict[str, object] | None]]"
+    ) -> "list[str]":
+        self.publish_many_calls += 1
+        event_ids = [f"event-{len(self.published) + index + 1}" for index in range(len(events))]
+        self.published.extend(events)
+        return event_ids
+
     async def shutdown(self) -> None:
         self.shutdown_count += 1
+
+
+class _FailingSqlSpecEventChannel(_RecordingSqlSpecEventChannel):
+    async def publish_many(
+        self, events: "Sequence[tuple[str, dict[str, object], dict[str, object] | None]]"
+    ) -> "list[str]":
+        self.publish_many_calls += 1
+        msg = "batch publish failed"
+        raise RuntimeError(msg)
+
+
+class _RecordingSyncSqlSpecEventChannel:
+    def __init__(self) -> None:
+        self.published: "list[tuple[str, dict[str, object], dict[str, object] | None]]" = []
+        self.publish_many_calls = 0
+
+    def publish_many(self, events: "Sequence[tuple[str, dict[str, object], dict[str, object] | None]]") -> "list[str]":
+        self.publish_many_calls += 1
+        self.published.extend(events)
+        return [f"event-{index + 1}" for index in range(len(events))]

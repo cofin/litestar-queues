@@ -13,10 +13,10 @@ if TYPE_CHECKING:
     from litestar_queues.typing import (
         ChannelsLike,
         ChannelsPublishBackend,
+        ChannelsPublishManyBackend,
         ChannelsStreamBackend,
         ChannelsSubscriptionBackend,
         ChannelsWaitPublishedBackend,
-        ChannelsWaitPublishedManyBackend,
     )
 
 __all__ = ("ChannelsQueueEventSink",)
@@ -71,11 +71,9 @@ class ChannelsQueueEventSink:
         return split_event_batch_by_size(event, max_bytes=self._max_payload_bytes, size_estimator=estimator)
 
     async def _publish_group(self, events: "Sequence[QueueEvent]", *, channels: "Sequence[str]") -> "None":
-        if hasattr(self._channels_backend, "wait_published_many"):
-            wait_backend = cast("ChannelsWaitPublishedManyBackend", self._channels_backend)
-            result = wait_backend.wait_published_many([event.to_json() for event in events], list(channels))
-            if inspect.isawaitable(result):
-                await result
+        if hasattr(self._channels_backend, "publish_many"):
+            batch_backend = cast("ChannelsPublishManyBackend", self._channels_backend)
+            await batch_backend.publish_many([event.to_json() for event in events], list(channels))
             return
         for event in events:
             await self._publish_one(event, channels=channels)
