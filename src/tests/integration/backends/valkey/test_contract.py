@@ -23,6 +23,35 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
+async def test_valkey_backend_keeps_claim_fallback_without_batch_capability(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    """Valkey mirrors Redis: no native batch claim, correctness fallback only.
+
+    The Valkey sorted set is ordered by due time, so a bounded atomic
+    ``claim_many`` needs a ready-by-priority index migration. The inherited
+    ``claim_next`` loop must preserve priority ordering and exclusive ownership.
+    """
+    assert valkey_backend.capabilities.supports_batch_claim is False
+
+    high = await valkey_backend.enqueue("tasks.valkey.batch.high", priority=10)
+    mid = await valkey_backend.enqueue("tasks.valkey.batch.mid", priority=5)
+    low = await valkey_backend.enqueue("tasks.valkey.batch.low", priority=1)
+
+    claimed = await valkey_backend.claim_many(limit=2)
+
+    assert [record.id for record in claimed] == [high.id, mid.id]
+    assert all(record.status == "running" for record in claimed)
+    stored_low = await valkey_backend.get_task(low.id)
+    assert stored_low is not None
+    assert stored_low.status == "pending"
+
+    remaining = await valkey_backend.claim_many(limit=5)
+    assert [record.id for record in remaining] == [low.id]
+    assert remaining[0].status == "running"
+    assert await valkey_backend.claim_many(limit=5) == []
+
+
 async def test_valkey_backend_deduplicates_active_keys_and_replaces_terminal_keys(
     valkey_backend: "ValkeyQueueBackend",
 ) -> "None":

@@ -47,6 +47,19 @@ async def test_redis_statistics_use_status_indexes_without_task_scan() -> "None"
     assert client.smembers_calls == 0
 
 
+async def test_redis_backend_does_not_advertise_native_batch_claim() -> "None":
+    """Redis stays on the correctness fallback: its ZSET orders by due time only.
+
+    A bounded atomic ``claim_many`` needs a ready-by-priority index migration
+    (out of scope), so the backend must not advertise ``supports_batch_claim``
+    and the worker keeps looping the exclusive ``claim_next`` primitive.
+    """
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client)))
+
+    assert backend.capabilities.supports_batch_claim is False
+
+
 async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "None":
     client = _CountingRedisClient()
     backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))

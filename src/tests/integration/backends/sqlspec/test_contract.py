@@ -951,6 +951,163 @@ def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect()
     assert 'FROM "queue_tasks"' in built.sql
 
 
+@pytest.mark.parametrize(
+    ("adapter_name", "dialect"),
+    (
+        ("asyncpg", "postgres"),
+        ("asyncmy", "mysql"),
+        ("pymysql", "mysql"),
+        ("psqlpy", "postgres"),
+        ("spanner", "spanner"),
+        ("aiosqlite", "sqlite"),
+        ("duckdb", "duckdb"),
+    ),
+)
+def test_sqlspec_store_supports_batch_claim_tracks_skip_locked(adapter_name: "str", dialect: "str") -> "None":
+    """Native batch claim is advertised for exactly the SKIP LOCKED dialect families."""
+    store = create_queue_store(_fake_adapter_config(adapter_name, dialect=dialect), table_name="queue_tasks")
+
+    assert store.supports_batch_claim is store.supports_skip_locked
+
+
+def test_sqlspec_cockroach_store_opts_out_of_batch_claim_despite_postgres_dialect() -> "None":
+    """Cockroach forces the portable CAS path, so it must not advertise batch claim."""
+    store = create_queue_store(
+        _fake_adapter_config("cockroach_asyncpg", dialect="cockroachdb"), table_name="queue_tasks"
+    )
+
+    assert store.supports_skip_locked is False
+    assert store.supports_batch_claim is False
+
+
+def test_sqlspec_store_claim_tasks_builds_fenced_bulk_update() -> "None":
+    """``claim_tasks`` transitions a batch of ids fenced on due status and time."""
+    store = create_queue_store(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    built = store.claim_tasks(
+        task_ids=["id-a", "id-b"],
+        due_at="2026-01-01T00:00:00+00:00",
+        started_at="2026-01-01T00:00:00+00:00",
+        heartbeat_at="2026-01-01T00:00:00+00:00",
+    ).build(dialect="postgres")
+    sql_text = built.sql.upper()
+
+    assert "UPDATE" in sql_text
+    assert '"status" = ' in built.sql
+    assert '"id" IN (' in built.sql
+    assert '"status" IN (' in built.sql
+    assert "SCHEDULED_AT" in sql_text
+    assert "running" in str(built.parameters)
+
+
+def test_sqlspec_store_select_tasks_by_ids_filters_to_requested_ids() -> "None":
+    """``select_tasks_by_ids`` reloads exactly the requested rows for batch claim."""
+    store = create_queue_store(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    built = store.select_tasks_by_ids(["id-a", "id-b"]).build(dialect="postgres")
+
+    assert '"id" IN (' in built.sql
+    assert 'FROM "queue_tasks"' in built.sql
+
+
+async def test_sqlspec_aiosqlite_backend_falls_back_to_sequential_claim_many(
+    sqlspec_backend: "SQLSpecQueueBackend",
+) -> "None":
+    """Adapters without SKIP LOCKED must not advertise batch claim but still batch."""
+    assert sqlspec_backend.capabilities.supports_batch_claim is False
+
+    high = await sqlspec_backend.enqueue("tasks.batch.high", priority=10)
+    mid = await sqlspec_backend.enqueue("tasks.batch.mid", priority=5)
+    low = await sqlspec_backend.enqueue("tasks.batch.low", priority=1)
+
+    claimed = await sqlspec_backend.claim_many(limit=2)
+
+    assert [record.id for record in claimed] == [high.id, mid.id]
+    assert all(record.status == "running" for record in claimed)
+    assert all(record.started_at is not None and record.heartbeat_at is not None for record in claimed)
+    stored_low = await sqlspec_backend.get_task(low.id)
+    assert stored_low is not None
+    assert stored_low.status == "pending"
+
+
+async def test_sqlspec_batch_claim_uses_single_transaction(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Supported SQLSpec stores must claim a batch in exactly one session/transaction."""
+    if not (isinstance(queue_backend, SQLSpecQueueBackend) and queue_backend.capabilities.supports_batch_claim):
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise native SQLSpec batch claim")
+
+    for index in range(5):
+        await queue_backend.enqueue(f"tasks.batch.count.{index}", priority=5)
+
+    original_session = SQLSpecQueueBackend._session
+    session_calls = 0
+
+    def counting_session(self: "SQLSpecQueueBackend", *args: "Any", **kwargs: "Any") -> "Any":
+        nonlocal session_calls
+        session_calls += 1
+        return original_session(self, *args, **kwargs)
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", counting_session)
+
+    claimed = await queue_backend.claim_many(limit=5)
+
+    assert len(claimed) == 5
+    assert session_calls == 1
+
+
+async def test_sqlspec_batch_claim_concurrent_workers_never_double_claim(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    """Two and four concurrent batch claimers must skip locked rows, never duplicate."""
+    if not (isinstance(queue_backend, SQLSpecQueueBackend) and queue_backend.capabilities.supports_batch_claim):
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise native SQLSpec batch claim")
+
+    for worker_count in (2, 4):
+        task_count = 12
+        enqueued = {
+            (await queue_backend.enqueue(f"tasks.batch.contended.{worker_count}", priority=5)).id
+            for _ in range(task_count)
+        }
+
+        bursts = await asyncio.gather(*(queue_backend.claim_many(limit=task_count) for _ in range(worker_count)))
+        claimed = [record for burst in bursts for record in burst]
+        claimed_ids = [record.id for record in claimed]
+        while remainder := await queue_backend.claim_many(limit=task_count):
+            claimed.extend(remainder)
+            claimed_ids.extend(record.id for record in remainder)
+
+        assert all(record.status == "running" for record in claimed)
+        assert len(claimed_ids) == len(set(claimed_ids)), "a task was claimed by more than one batch worker"
+        assert {task_id for task_id in claimed_ids if task_id in enqueued} == enqueued
+
+
+async def test_sqlspec_batch_claim_rollback_leaves_no_running_rows(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """A failure inside the batch claim transaction must not leave rows running."""
+    if not (isinstance(queue_backend, SQLSpecQueueBackend) and queue_backend.capabilities.supports_batch_claim):
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise native SQLSpec batch claim")
+
+    records = [await queue_backend.enqueue(f"tasks.batch.rollback.{index}", priority=5) for index in range(4)]
+    store = queue_backend._get_store()
+
+    def failing_reload(_self: "Any", task_ids: "Any") -> "Any":
+        del task_ids
+        msg = "boom during batch reload"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(type(store), "select_tasks_by_ids", failing_reload)
+
+    with pytest.raises(RuntimeError, match="boom during batch reload"):
+        await queue_backend.claim_many(limit=4)
+
+    for record in records:
+        stored = await queue_backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "pending", "rolled-back batch claim must not leave running rows"
+
+
 async def test_sqlspec_sync_bridge_rolls_back_read_transactions_before_pool_return() -> "None":
     """Sync sessions must not return pooled connections with stale read snapshots."""
     manager = _FakeSyncSQLSpec()

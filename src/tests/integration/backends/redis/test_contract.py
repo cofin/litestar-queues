@@ -64,6 +64,36 @@ def test_redis_valkey_backends_are_registered() -> "None":
     assert "valkey" in list_queue_backends()
 
 
+async def test_redis_backend_keeps_claim_fallback_without_batch_capability(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    """Redis must not advertise native batch claim yet still batch via the fallback.
+
+    The sorted set is ordered by due time only, so a bounded atomic
+    ``claim_many`` would require a ready-by-priority index migration. Until then
+    the inherited ``claim_next`` loop must preserve priority ordering and hand
+    each task to exactly one caller.
+    """
+    assert redis_backend.capabilities.supports_batch_claim is False
+
+    high = await redis_backend.enqueue("tasks.redis.batch.high", priority=10)
+    mid = await redis_backend.enqueue("tasks.redis.batch.mid", priority=5)
+    low = await redis_backend.enqueue("tasks.redis.batch.low", priority=1)
+
+    claimed = await redis_backend.claim_many(limit=2)
+
+    assert [record.id for record in claimed] == [high.id, mid.id]
+    assert all(record.status == "running" for record in claimed)
+    stored_low = await redis_backend.get_task(low.id)
+    assert stored_low is not None
+    assert stored_low.status == "pending"
+
+    remaining = await redis_backend.claim_many(limit=5)
+    assert [record.id for record in remaining] == [low.id]
+    assert remaining[0].status == "running"
+    assert await redis_backend.claim_many(limit=5) == []
+
+
 async def test_redis_backend_deduplicates_active_keys_and_replaces_terminal_keys(
     redis_backend: "RedisQueueBackend",
 ) -> "None":
