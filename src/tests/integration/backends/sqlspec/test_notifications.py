@@ -57,7 +57,7 @@ class RecordingPollIntervalEventChannel(StubAsyncEventChannel):
 
     __slots__ = ("poll_intervals",)
 
-    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+    def __init__(self, backend_name: "str" = "poll_queue") -> "None":
         super().__init__(backend_name=backend_name)
         self.poll_intervals: "list[float | None]" = []
 
@@ -72,7 +72,7 @@ class CountingIterEventsChannel(StubAsyncEventChannel):
 
     __slots__ = ("iter_events_calls",)
 
-    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+    def __init__(self, backend_name: "str" = "poll_queue") -> "None":
         super().__init__(backend_name=backend_name)
         self.iter_events_calls = 0
 
@@ -87,7 +87,7 @@ class FailingIterEventsChannel(CountingIterEventsChannel):
 
     __slots__ = ("fail_next",)
 
-    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+    def __init__(self, backend_name: "str" = "poll_queue") -> "None":
         super().__init__(backend_name=backend_name)
         self.fail_next = True
 
@@ -453,7 +453,7 @@ async def test_sqlspec_backend_event_poll_interval_is_passed_to_event_channel(
 async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_path: "Path") -> "None":
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "derived-notifications.db")},
-        extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01, "queue_table": "queue_events"}},
+        extension_config={"events": {"backend": "poll_queue", "poll_interval": 0.01, "queue_table": "queue_events"}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
@@ -542,7 +542,7 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
         ("cockroach_psycopg", "polling"),
         ("aiosqlite", "polling"),
         ("sqlite", "polling"),
-        ("duckdb", "polling"),
+        ("duckdb", "poll_queue"),
         ("asyncmy", "polling"),
         ("aiomysql", "polling"),
         ("pymysql", "polling"),
@@ -554,9 +554,8 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
 def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", expected_transport: "str") -> "None":
     """The wakeup transport is gated by adapter knowledge.
 
-    Postgres-over-asyncpg gets ``notify_queue``; psycopg/psqlpy fall back to
-    ``poll_queue`` until their native NOTIFY path lands upstream; every other
-    family reports ``polling``.
+    Postgres-over-asyncpg gets ``notify_queue``; DuckDB, psycopg, and psqlpy
+    use ``poll_queue``; every other family reports ``polling``.
     """
     assert _adapter_notify_transport(adapter_name) == expected_transport
 
@@ -582,6 +581,28 @@ def test_queue_plugin_registers_sqlspec_migrations_for_cli() -> "None":
 def test_notify_transport_config_rejects_legacy_public_names(transport: "str") -> "None":
     with pytest.raises(QueueConfigurationError):
         SQLSpecBackendConfig(notify_transport=transport)
+
+
+@pytest.mark.parametrize("transport", ("listen_notify", "listen_notify_durable", "table_queue"))
+async def test_sqlspec_backend_rejects_legacy_extension_event_backend(transport: "str", tmp_path: "Path") -> "None":
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": str(tmp_path / f"legacy-{transport}.db")},
+        extension_config={"events": {"backend": transport}},
+    )
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, notifications=True))
+
+    with pytest.raises(QueueConfigurationError, match="expected one of"):
+        await backend.open()
+
+
+@pytest.mark.parametrize("transport", ("aq", "notify", "notify_queue", "poll_queue", "txeventq"))
+def test_sqlspec_backend_forwards_canonical_extension_event_backend(transport: "str") -> "None":
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": ":memory:"}, extension_config={"events": {"backend": transport}}
+    )
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, notifications=True))
+
+    assert backend._select_notify_transport(sqlspec_config, {}, {"backend": transport}) == transport
 
 
 @pytest.mark.parametrize("transport", ("aq", "txeventq"))
@@ -718,11 +739,41 @@ async def test_sqlspec_backend_notify_transport_override_enables_poll_queue(tmp_
         await backend.close()
 
 
+async def test_sqlspec_backend_duckdb_defaults_to_poll_queue(tmp_path: "Path") -> "None":
+    """DuckDB uses SQLSpec's durable table-backed event transport when requested."""
+    pytest.importorskip("duckdb")
+    from sqlspec.adapters.duckdb import DuckDBConfig
+
+    sqlspec_config = DuckDBConfig(connection_config={"database": str(tmp_path / "duckdb-poll-queue.db")})
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlspec_config,
+            notifications=True,
+            notification_channel="duckdb_poll_queue",
+            event_poll_interval=0.01,
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    await run_queue_migrations(sqlspec_config)
+    try:
+        assert backend.capabilities.supports_notifications is True
+        assert backend.capabilities.notification_backend == "poll_queue"
+        assert backend.capabilities.notifications_durable is True
+
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2))
+        await backend.enqueue("tasks.duckdb_poll_queue")
+        assert await waiter is True
+    finally:
+        await backend.close()
+
+
 async def test_sqlspec_backend_notify_transport_polling_overrides_extension_config(tmp_path: "Path") -> "None":
     """``queue_backend_config`` polling override beats an ``extension_config`` events default."""
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "override-polling.db")},
-        extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01}},
+        extension_config={"events": {"backend": "poll_queue", "poll_interval": 0.01}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(config=sqlspec_config, notify_transport="polling")
@@ -737,7 +788,7 @@ async def test_sqlspec_backend_notify_transport_polling_overrides_extension_conf
         await backend.close()
 
 
-async def test_sqlspec_backend_postgres_listen_notify_durable_wakes(
+async def test_sqlspec_backend_postgres_notify_queue_wakes(
     postgres_service: "PostgresService", tmp_path: "Path"
 ) -> "None":
     """Postgres workers wake via NOTIFY with a durable fallback, no missed bursts."""
@@ -800,4 +851,71 @@ async def test_sqlspec_backend_postgres_listen_notify_durable_wakes(
                     'DROP TABLE IF EXISTS "ddl_migrations"',
                 ):
                     await driver.execute_script(ddl)
+            await backend.close()
+
+
+@pytest.mark.parametrize(("adapter_name", "expected_transport"), [("psycopg", "poll_queue"), ("psqlpy", "poll_queue")])
+async def test_sqlspec_backend_postgres_poll_queue_defaults_wake(
+    adapter_name: "str", expected_transport: "str", postgres_service: "PostgresService"
+) -> "None":
+    """PostgreSQL async adapters without native listeners use the canonical table queue."""
+    sqlspec_config: "Any"
+    if adapter_name == "psycopg":
+        pytest.importorskip("psycopg")
+        from sqlspec.adapters.psycopg import PsycopgAsyncConfig
+
+        sqlspec_config = PsycopgAsyncConfig(
+            connection_config={
+                "host": postgres_service.host,
+                "port": postgres_service.port,
+                "user": postgres_service.user,
+                "password": postgres_service.password,
+                "dbname": postgres_service.database,
+            }
+        )
+    else:
+        pytest.importorskip("psqlpy")
+        from sqlspec.adapters.psqlpy import PsqlpyConfig
+
+        sqlspec_config = PsqlpyConfig(
+            connection_config={
+                "host": postgres_service.host,
+                "port": postgres_service.port,
+                "username": postgres_service.user,
+                "password": postgres_service.password,
+                "db_name": postgres_service.database,
+            }
+        )
+
+    table_name = f"lq_notify_{adapter_name}"
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlspec_config,
+            queue_table_name=table_name,
+            notifications=True,
+            notification_channel=f"lq_{adapter_name}_wake",
+            event_poll_interval=0.01,
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    await run_queue_migrations(sqlspec_config, queue_table_name=table_name)
+    try:
+        assert backend.capabilities.notification_backend == expected_transport
+        assert backend.capabilities.notifications_durable is True
+
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=5))
+        await backend.enqueue(f"tasks.{adapter_name}_wake")
+        assert await waiter is True
+    finally:
+        from litestar_queues.backends.sqlspec.backend import _bridge_session
+
+        with suppress(Exception):
+            assert backend._sqlspec is not None
+            assert backend._sqlspec_config is not None
+            async with _bridge_session(
+                cast("SQLSpecManager", backend._sqlspec), cast("SQLSpecSessionConfig", backend._sqlspec_config)
+            ) as driver:
+                await driver.execute_script(f'DROP TABLE IF EXISTS "{table_name}"')
         await backend.close()

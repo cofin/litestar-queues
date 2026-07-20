@@ -19,16 +19,16 @@ class ChannelsPublishBackend(Protocol):
     def publish(self, data: bytes | str, channels: "Sequence[str]") -> object: ...
 
 
+class ChannelsPublishManyBackend(Protocol):
+    """Backend that publishes multiple channel payloads in one operation."""
+
+    async def publish_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None: ...
+
+
 class ChannelsWaitPublishedBackend(Protocol):
     """Channels plugin variant that waits until publication completes."""
 
     def wait_published(self, data: bytes | str, channels: "Sequence[str]") -> object: ...
-
-
-class ChannelsWaitPublishedManyBackend(Protocol):
-    """Channels plugin variant that waits until batch publication completes."""
-
-    def wait_published_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> object: ...
 
 
 class ChannelsSubscriptionBackend(Protocol):
@@ -50,5 +50,9 @@ class ChannelsStreamBackend(Protocol):
 
 
 ChannelsLike: TypeAlias = (
-    ChannelsPublishBackend | ChannelsWaitPublishedBackend | ChannelsSubscriptionBackend | ChannelsStreamBackend
+    ChannelsPublishBackend
+    | ChannelsPublishManyBackend
+    | ChannelsWaitPublishedBackend
+    | ChannelsSubscriptionBackend
+    | ChannelsStreamBackend
 )

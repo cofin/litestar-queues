@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID
@@ -69,32 +69,13 @@ _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 _NOTIFY_TRANSPORT_POLLING = "polling"
-_CANONICAL_NOTIFY_TRANSPORTS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
-_LEGACY_NOTIFY_TRANSPORTS = frozenset({"listen_notify", "listen_notify_durable", "table_queue"})
-_SQLSPEC_EVENT_BACKENDS = {
-    "aq": "aq",
-    "notify": "notify",
-    "notify_queue": "notify_queue",
-    "poll_queue": "poll_queue",
-    "polling": "polling",
-    "txeventq": "txeventq",
-}
-_CANONICAL_EVENT_BACKENDS = {
-    "aq": "aq",
-    "listen_notify": "notify",
-    "listen_notify_durable": "notify_queue",
-    "notify": "notify",
-    "notify_queue": "notify_queue",
-    "poll_queue": "poll_queue",
-    "polling": "polling",
-    "table_queue": "poll_queue",
-    "txeventq": "txeventq",
-}
+_CANONICAL_EVENT_BACKENDS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
+_CANONICAL_NOTIFY_TRANSPORTS = _CANONICAL_EVENT_BACKENDS | {_NOTIFY_TRANSPORT_POLLING}
 # Adapter families that can push worker wakeups. Postgres-over-asyncpg ships the
-# durable LISTEN/NOTIFY hybrid; psycopg/psqlpy fall back to the durable table
-# queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
+# durable LISTEN/NOTIFY hybrid; psycopg/psqlpy and DuckDB use the durable table
+# queue. Everything else polls.
 _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
-_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
+_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb", "psycopg", "psqlpy"})
 # psqlpy's ``QueryResult`` exposes no command-tag/status metadata and
 # arrow-odbc's cursor exposes no portable rowcount API, so SQLSpec's
 # rows-affected extraction can only ever report ``0`` for non-SELECT
@@ -125,8 +106,8 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
     advertise push wakeups where the driver can deliver them.
 
     Returns:
-        ``"notify_queue"`` for asyncpg, ``"poll_queue"`` for psycopg/psqlpy,
-        otherwise ``"polling"``.
+        ``"notify_queue"`` for asyncpg, ``"poll_queue"`` for DuckDB,
+        psycopg, and psqlpy, otherwise ``"polling"``.
     """
     if adapter_name in _NOTIFY_DURABLE_ADAPTERS:
         return "notify_queue"
@@ -136,23 +117,12 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
 
 
 def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
-    """Map a SQLSpec event backend name to the queue transport vocabulary.
+    """Return a canonical SQLSpec event backend name.
 
     Returns:
-        The canonical queue transport name, if one can be resolved.
+        The canonical queue transport name, if the backend is supported.
     """
-    if backend_name is None:
-        return None
-    return _CANONICAL_EVENT_BACKENDS.get(backend_name, backend_name)
-
-
-def _sqlspec_event_backend(transport: "str") -> "str":
-    """Map a canonical queue transport to the SQLSpec Events backend name.
-
-    Returns:
-        The SQLSpec Events backend name.
-    """
-    return _SQLSPEC_EVENT_BACKENDS.get(transport, transport)
+    return backend_name if backend_name in _CANONICAL_EVENT_BACKENDS else None
 
 
 def _validate_queue_notify_transport(transport: "str") -> "str":
@@ -164,10 +134,7 @@ def _validate_queue_notify_transport(transport: "str") -> "str":
     if transport in _CANONICAL_NOTIFY_TRANSPORTS:
         return transport
     valid = ", ".join(sorted(_CANONICAL_NOTIFY_TRANSPORTS))
-    if transport in _LEGACY_NOTIFY_TRANSPORTS:
-        msg = f"Invalid notify_transport {transport!r}; use canonical queue transport names: {valid}."
-    else:
-        msg = f"Invalid notify_transport {transport!r}; expected one of: {valid}."
+    msg = f"Invalid notify_transport {transport!r}; expected one of: {valid}."
     raise QueueConfigurationError(msg)
 
 
@@ -274,7 +241,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await self._close_notification_stream()
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
-            await self._event_channel.shutdown()
+            await _invoke_event_channel_method(self._event_channel, "shutdown")
             self._event_channel = None
         if self._owns_sqlspec and self._sqlspec is not None:
             await self._sqlspec.close_all_pools()
@@ -1118,7 +1085,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             and record.is_due
         ):
             with self._observe_queue_operation("notify", queue=record.queue):
-                await self._event_channel.publish(
+                await _invoke_event_channel_method(
+                    self._event_channel,
+                    "publish",
                     self._resolve_notification_channel(),
                     {"event": "task_available"},
                     {"event_type": "litestar_queues.task_available"},
@@ -1144,7 +1113,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 self._resolve_notification_channel(), poll_interval=self._event_poll_interval
             )
             self._event_stream = stream
-        task = await self._pending_read.race(lambda: anext(cast("Any", stream)), timeout)
+        task = await self._pending_read.race(lambda: _next_event(stream), timeout)
         if task is None:
             return False
         exc = task.exception()
@@ -1152,7 +1121,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self._close_notification_stream()
             raise exc
         event = task.result()
-        await self._event_channel.ack(event.event_id)
+        await _invoke_event_channel_method(self._event_channel, "ack", event.event_id)
         return True
 
     async def _close_notification_stream(self) -> "None":
@@ -1162,7 +1131,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_stream = None
         if stream is not None:
             with suppress(Exception):
-                await cast("Any", stream).aclose()
+                close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+                if close is not None:
+                    result = close()
+                    if isawaitable(result):
+                        await result
 
     @staticmethod
     def _default_sqlspec_config() -> "SQLSpecConfig":
@@ -1244,7 +1217,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
         )
         if configured_backend is not None:
-            return _canonical_notify_transport(str(configured_backend)) or _NOTIFY_TRANSPORT_POLLING
+            return _validate_queue_notify_transport(str(configured_backend))
         return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
 
     def _notifications_should_enable(
@@ -1305,7 +1278,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if isinstance(configured_events, dict):
                 merged_event_settings.update(configured_events)
         merged_event_settings.update(self._event_settings)
-        merged_event_settings["backend"] = _sqlspec_event_backend(transport)
+        merged_event_settings["backend"] = transport
 
         configured_queue_table = self._event_queue_table or _setting(queue_settings, "event_queue_table")
         if configured_queue_table is not None:
@@ -1986,6 +1959,47 @@ def _events_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "
         return {}
     extension_config = sqlspec_config.extension_config or {}
     return dict(extension_config.get(_EVENT_EXTENSION_NAME, {}) or {})
+
+
+async def _invoke_event_channel_method(event_channel: "Any", method_name: "str", *args: "Any") -> "Any":
+    """Invoke a SQLSpec sync or async event-channel method without blocking the loop.
+
+    Returns:
+        The event-channel method result.
+    """
+    method = getattr(event_channel, method_name)
+    if iscoroutinefunction(method):
+        return await method(*args)
+    result = await async_(method)(*args)
+    if isawaitable(result):
+        return await result
+    return result
+
+
+async def _next_event(stream: "Any") -> "Any":
+    """Read from a SQLSpec sync or async event iterator.
+
+    Returns:
+        The next event message.
+    """
+    if hasattr(stream, "__anext__"):
+        return await anext(stream)
+    has_event, event = await async_(_next_sync_event)(stream)
+    if not has_event:
+        raise StopAsyncIteration
+    return event
+
+
+def _next_sync_event(stream: "Iterator[Any]") -> "tuple[bool, Any]":
+    """Read one sync event without leaking ``StopIteration`` through a future.
+
+    Returns:
+        A pair indicating whether an event was read and the event value.
+    """
+    try:
+        return True, next(stream)
+    except StopIteration:
+        return False, None
 
 
 def _setting(queue_settings: "dict[str, Any]", *names: "str") -> "Any":

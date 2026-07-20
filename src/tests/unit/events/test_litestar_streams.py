@@ -107,7 +107,7 @@ class _BatchPublishingChannelsBackend:
     def __init__(self) -> None:
         self.published_many: "list[tuple[tuple[bytes | str, ...], tuple[str, ...]]]" = []
 
-    def wait_published_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None:
+    async def publish_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None:
         self.published_many.append((tuple(data), tuple(channels)))
 
 
@@ -118,9 +118,9 @@ class _RedisPipelineChannelsBackend(_BatchPublishingChannelsBackend):
         super().__init__()
         self.pipeline_count = 0
 
-    def wait_published_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None:
+    async def publish_many(self, data: "Sequence[bytes | str]", channels: "Sequence[str]") -> None:
         self.pipeline_count += 1
-        super().wait_published_many(data, channels)
+        await super().publish_many(data, channels)
 
 
 class _ValkeyPipelineChannelsBackend(_RedisPipelineChannelsBackend):

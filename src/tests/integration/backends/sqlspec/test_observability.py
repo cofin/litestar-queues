@@ -189,7 +189,7 @@ class StubEventChannel:
     __slots__ = ("_backend_name", "published")
 
     def __init__(self) -> "None":
-        self._backend_name = "table_queue"
+        self._backend_name = "poll_queue"
         self.published: "list[tuple[str, dict[str, object], dict[str, object] | None]]" = []
 
     async def publish(

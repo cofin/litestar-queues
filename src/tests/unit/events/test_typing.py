@@ -1,7 +1,7 @@
 from typing import get_args
 
-from litestar_queues.typing import ChannelsLike, ChannelsWaitPublishedManyBackend
+from litestar_queues.typing import ChannelsLike, ChannelsPublishManyBackend
 
 
-def test_channels_like_requires_single_event_publish_capability() -> None:
-    assert ChannelsWaitPublishedManyBackend not in get_args(ChannelsLike)
+def test_channels_like_accepts_public_batch_publish_capability() -> None:
+    assert ChannelsPublishManyBackend in get_args(ChannelsLike)
