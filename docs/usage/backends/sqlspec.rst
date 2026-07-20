@@ -41,6 +41,15 @@ the same migration command used by the rest of the application. The queue
 backend does not migrate the database when it opens. An unsupported adapter
 raises a configuration error instead of silently using generic SQL.
 
+.. warning::
+
+   The ``mssql-python`` adapter is temporarily unsupported with SQLSpec 0.55.0
+   because its transaction path can report a successful commit while discarding
+   queue writes. Litestar Queues rejects that adapter at configuration time;
+   use ``pymssql`` or ``arrow-odbc`` for SQL Server until
+   `SQLSpec issue 642 <https://github.com/litestar-org/sqlspec/issues/642>`_
+   is fixed upstream.
+
 Schema ownership
 ================
 

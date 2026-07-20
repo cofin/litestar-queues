@@ -14,7 +14,6 @@ from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
 )
 from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
-from litestar_queues.backends.sqlspec.stores.mssql_python import MssqlPythonQueueStore
 from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
@@ -38,7 +37,6 @@ __all__ = (
     "CockroachPsycopgAsyncQueueStore",
     "CockroachPsycopgSyncQueueStore",
     "DuckDBQueueStore",
-    "MssqlPythonQueueStore",
     "MysqlConnectorAsyncQueueStore",
     "MysqlConnectorSyncQueueStore",
     "OracledbAsyncQueueStore",

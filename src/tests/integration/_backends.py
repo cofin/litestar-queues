@@ -349,33 +349,6 @@ async def _build_oracle_oracledb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
-async def _build_mssql_mssql_python(ctx: "FixtureCtx") -> "BaseQueueBackend":
-    from sqlspec.adapters.mssql_python import MssqlPythonConfig
-
-    class MssqlPythonConfigNoMigrations(_NoMigrationComponentsMixin, MssqlPythonConfig):
-        """mssql-python config wrapper without migration bootstrap."""
-
-        __module__ = "sqlspec.adapters.mssql_python.config"
-        __slots__ = ()
-
-    svc = cast("MSSQLService", ctx.service)
-    assert svc is not None
-    return _sqlspec_backend(
-        MssqlPythonConfigNoMigrations(
-            connection_config={
-                "server": svc.host,
-                "port": svc.port,
-                "database": svc.database,
-                "uid": svc.user,
-                "pwd": svc.password,
-                "encrypt": False,
-                "trust_server_certificate": True,
-            }
-        ),
-        queue_table_name=ctx.table_name,
-    )
-
-
 async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.pymssql import PymssqlConfig
 
@@ -507,21 +480,6 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         "mysql_service",
         _build_mysql_pymysql,
         frozenset({"polling-only", "json-column", "sync-driver"}),
-    ),
-    BackendCase(
-        "mssql-python",
-        frozenset({"mssql_python", "sqlspec"}),
-        "mssql_service",
-        _build_mssql_mssql_python,
-        # ``xfail-cross-session-commit`` gates contract tests that enqueue in one
-        # session and read the row back from another pooled connection. SQLSpec
-        # 0.55.0's sync-only mssql-python adapter implements ``begin()`` by issuing
-        # a raw ``BEGIN TRANSACTION`` statement, but the mssql-python driver's
-        # ``connection.commit()`` does not commit a transaction started that way,
-        # so the write is discarded when the connection returns to the pool.
-        # Reproduced against pure mssql-python (no SQLSpec) — upstream defect:
-        # https://github.com/litestar-org/sqlspec/issues/642
-        frozenset({"polling-only", "json-text", "sync-driver", "xfail-cross-session-commit"}),
     ),
     BackendCase(
         "pymssql",
