@@ -73,9 +73,9 @@ _CANONICAL_NOTIFY_TRANSPORTS = frozenset({"aq", "notify", "notify_queue", "poll_
 _LEGACY_NOTIFY_TRANSPORTS = frozenset({"listen_notify", "listen_notify_durable", "table_queue"})
 _SQLSPEC_EVENT_BACKENDS = {
     "aq": "aq",
-    "notify": "listen_notify",
-    "notify_queue": "listen_notify_durable",
-    "poll_queue": "table_queue",
+    "notify": "notify",
+    "notify_queue": "notify_queue",
+    "poll_queue": "poll_queue",
     "polling": "polling",
     "txeventq": "txeventq",
 }
@@ -95,6 +95,15 @@ _CANONICAL_EVENT_BACKENDS = {
 # queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
 _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
 _NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
+# psqlpy's ``QueryResult`` exposes no command-tag/status metadata and
+# arrow-odbc's cursor exposes no portable rowcount API, so SQLSpec's
+# rows-affected extraction can only ever report ``0`` for non-SELECT
+# statements on these adapters, regardless of whether the statement actually
+# matched a row. Every write-then-verify check in this module already treats
+# a negative rows-affected as "unknown, verify via SELECT"; normalizing these
+# adapters' unconditional ``0`` to that same sentinel reuses that existing
+# fallback instead of misreading it as a genuine zero-row result.
+_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"psqlpy", "arrow_odbc"})
 
 
 def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool":
@@ -459,7 +468,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             started_at=self._serialize_datetime(now),
                         )
                     )
-                    if result.rows_affected == 0:
+                    if self._resolve_rows_affected(result) == 0:
                         await driver.rollback()
                         return None
 
@@ -531,7 +540,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             started_at=self._serialize_datetime(now),
                         )
                     )
-                    if result.rows_affected == 0:
+                    if self._resolve_rows_affected(result) == 0:
                         await driver.rollback()
                         return None
                     updated_row = await self._select_task(driver, record.id)
@@ -639,7 +648,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             expected_retry_count=expected_retry_count,
                         )
                     )
-                    rows_affected = _rows_affected(updated)
+                    rows_affected = self._resolve_rows_affected(updated)
                     row = await self._select_task(driver, task_id) if rows_affected == 1 or rows_affected < 0 else None
                     if row is not None:
                         completed_record = self._record_from_row(row)
@@ -708,7 +717,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         expected_status = "failed"
                         expected_retry_after_update = record.retry_count
 
-                    rows_affected = _rows_affected(updated)
+                    rows_affected = self._resolve_rows_affected(updated)
                     if rows_affected == 1 or rows_affected < 0:
                         updated_row = await self._select_task(driver, task_id)
                         if updated_row is not None:
@@ -744,7 +753,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         include_running=include_running,
                     )
                 )
-                rows_affected = _rows_affected(result)
+                rows_affected = self._resolve_rows_affected(result)
                 if rows_affected < 0:
                     updated_row = await self._select_task(driver, task_id)
                     cancelled = updated_row is not None and self._record_from_row(updated_row).status == "cancelled"
@@ -858,7 +867,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     metadata_json=metadata_json,
                 )
             )
-            rows_affected = int(execution_result.rows_affected)
+            rows_affected = self._resolve_rows_affected(execution_result)
             if rows_affected == 1:
                 result.touched_task_ids.add(touch.task_id)
             elif rows_affected == 0:
@@ -935,7 +944,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     priority=retry_priority,
                                 )
                             )
-                            rows_affected = _rows_affected(updated)
+                            rows_affected = self._resolve_rows_affected(updated)
                             if rows_affected == 1 or (
                                 rows_affected < 0
                                 and await self._stale_retry_updated(
@@ -961,7 +970,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     heartbeat_cutoff=serialized_cutoff,
                                 )
                             )
-                            rows_affected = _rows_affected(updated)
+                            rows_affected = self._resolve_rows_affected(updated)
                             if rows_affected == 1 or (
                                 rows_affected < 0 and await self._stale_fail_updated(driver, record.id)
                             ):
@@ -1002,7 +1011,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         execution_ref=execution_ref,
                     )
                 )
-                row = await self._select_task(driver, task_id) if result.rows_affected else None
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1021,7 +1030,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         task_id=str(task_id), execution_backend=execution_backend, execution_profile=execution_profile
                     )
                 )
-                row = await self._select_task(driver, task_id) if result.rows_affected else None
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1085,10 +1094,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                # Some drivers (e.g. psqlpy) cannot reliably report
-                # ``rows_affected`` for DELETE: they return ``-1`` as a
-                # sentinel for "unknown". Count first inside the same
-                # transaction so the cleanup count is always exact.
+                # Some drivers (e.g. psqlpy, see _UNRELIABLE_ROWCOUNT_ADAPTERS)
+                # cannot reliably report ``rows_affected`` for DELETE. Count
+                # first inside the same transaction so the cleanup count is
+                # always exact.
                 count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
                 deleted = int(count_row["terminal_count"]) if count_row is not None else 0
                 if deleted > 0:
@@ -1331,6 +1340,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             else:
                 self._sqlspec_config = self._default_sqlspec_config()
         return cast("SQLSpecConfig", self._sqlspec_config)
+
+    def _resolve_rows_affected(self, result: "Any") -> "int":
+        """Return :func:`_rows_affected` normalized for this backend's configured adapter."""
+        return _rows_affected(result, resolve_adapter_name(self._get_sqlspec_config()))
 
     def _get_store(self) -> "SQLSpecQueueStore":
         if self._store is None:
@@ -1856,8 +1869,17 @@ def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
 
-def _rows_affected(result: "Any") -> "int":
-    return int(getattr(result, "rows_affected", 0) or 0)
+def _rows_affected(result: "Any", adapter_name: "str | None" = None) -> "int":
+    """Return the reported affected-row count.
+
+    Normalized to ``-1`` (the existing "unknown, verify" sentinel) when
+    ``adapter_name`` is one of :data:`_UNRELIABLE_ROWCOUNT_ADAPTERS`, whose
+    driver can report a genuine ``0`` and an unparsable result identically.
+    """
+    rows_affected = int(getattr(result, "rows_affected", 0) or 0)
+    if rows_affected == 0 and adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS:
+        return -1
+    return rows_affected
 
 
 def _is_unique_violation(exc: "BaseException") -> "bool":

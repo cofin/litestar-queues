@@ -349,33 +349,6 @@ async def _build_oracle_oracledb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
-async def _build_mssql_mssql_python(ctx: "FixtureCtx") -> "BaseQueueBackend":
-    from sqlspec.adapters.mssql_python import MssqlPythonAsyncConfig
-
-    class MssqlPythonAsyncConfigNoMigrations(_NoMigrationComponentsMixin, MssqlPythonAsyncConfig):
-        """mssql-python config wrapper without migration bootstrap."""
-
-        __module__ = "sqlspec.adapters.mssql_python.config"
-        __slots__ = ()
-
-    svc = cast("MSSQLService", ctx.service)
-    assert svc is not None
-    return _sqlspec_backend(
-        MssqlPythonAsyncConfigNoMigrations(
-            connection_config={
-                "server": svc.host,
-                "port": svc.port,
-                "database": svc.database,
-                "uid": svc.user,
-                "pwd": svc.password,
-                "encrypt": False,
-                "trust_server_certificate": True,
-            }
-        ),
-        queue_table_name=ctx.table_name,
-    )
-
-
 async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.pymssql import PymssqlConfig
 
@@ -507,13 +480,6 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         "mysql_service",
         _build_mysql_pymysql,
         frozenset({"polling-only", "json-column", "sync-driver"}),
-    ),
-    BackendCase(
-        "mssql-python",
-        frozenset({"mssql_python", "sqlspec"}),
-        "mssql_service",
-        _build_mssql_mssql_python,
-        frozenset({"polling-only", "json-text"}),
     ),
     BackendCase(
         "pymssql",

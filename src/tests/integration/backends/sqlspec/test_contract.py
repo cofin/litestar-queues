@@ -44,7 +44,6 @@ from litestar_queues.backends.sqlspec.stores import (
     CockroachPsycopgAsyncQueueStore,
     CockroachPsycopgSyncQueueStore,
     DuckDBQueueStore,
-    MssqlPythonQueueStore,
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
     OracledbAsyncQueueStore,
@@ -85,27 +84,6 @@ class FakeSQLSpecConfig(SimpleNamespace):
     connection_config: "dict[str, object]"
 
 
-class _StreamOnlySelectDriver:
-    """Fake SQLSpec driver that only supports select_stream for read rows."""
-
-    def __init__(self, row: "dict[str, Any]") -> None:
-        self.row = row
-        self.select_one_calls = 0
-        self.stream_chunks: "list[int | None]" = []
-
-    async def select_one_or_none(self, *_args: "Any", **_kwargs: "Any") -> "None":
-        self.select_one_calls += 1
-        msg = "regular select_one_or_none should not be used"
-        raise AssertionError(msg)
-
-    def select_stream(self, _statement: "Any", *, chunk_size: "int | None" = None) -> "AsyncIterator[dict[str, Any]]":
-        self.stream_chunks.append(chunk_size)
-        return self._iter_rows()
-
-    async def _iter_rows(self) -> "AsyncIterator[dict[str, Any]]":
-        yield self.row
-
-
 def _fake_adapter_config(
     adapter_name: "str",
     *,
@@ -138,7 +116,9 @@ def _fake_adapter_config(
 # ---------------------------------------------------------------------------
 
 
-async def test_backend_contract_enqueue_claim_complete_cycle(queue_backend: "BaseQueueBackend") -> "None":
+async def test_backend_contract_enqueue_claim_complete_cycle(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
     """A backend must support the full enqueue → claim → complete cycle."""
     record = await queue_backend.enqueue("tasks.contract.cycle", priority=10)
 
@@ -190,7 +170,9 @@ async def test_backend_contract_concurrent_claim_next_never_double_claims(
     assert set(claimed_ids) == enqueued_ids, "every due task should be claimed exactly once"
 
 
-async def test_backend_contract_requeue_stale_running_recovers_every_task(queue_backend: "BaseQueueBackend") -> "None":
+async def test_backend_contract_requeue_stale_running_recovers_every_task(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
     """Stale recovery must requeue every stale running task.
 
     For SQLSpec backends the per-row stale-recovery writes are batched into a
@@ -550,11 +532,7 @@ def test_sqlspec_backend_store_factory_resolves_adapter_config_subclasses(tmp_pa
 
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "config_type_name", "expected_store_name"),
-    (
-        ("mssql_python", "tsql", "MssqlPythonConfig", "MssqlPythonQueueStore"),
-        ("mssql_python", "tsql", "MssqlPythonAsyncConfig", "MssqlPythonQueueStore"),
-        ("pymssql", "tsql", "PymssqlConfig", "PymssqlQueueStore"),
-    ),
+    (("pymssql", "tsql", "PymssqlConfig", "PymssqlQueueStore"),),
 )
 def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
     adapter_name: "str", dialect: "str | None", config_type_name: "str", expected_store_name: "str"
@@ -567,14 +545,7 @@ def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
     assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
 
 
-@pytest.mark.parametrize(
-    ("adapter_name", "dialect", "config_type_name"),
-    (
-        ("mssql_python", "tsql", "MssqlPythonConfig"),
-        ("mssql_python", "tsql", "MssqlPythonAsyncConfig"),
-        ("pymssql", "tsql", "PymssqlConfig"),
-    ),
-)
+@pytest.mark.parametrize(("adapter_name", "dialect", "config_type_name"), (("pymssql", "tsql", "PymssqlConfig"),))
 def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
     adapter_name: "str", dialect: "str | None", config_type_name: "str"
 ) -> "None":
@@ -602,6 +573,13 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
             _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
             table_name="queue_tasks",
         )
+
+
+def test_sqlspec_backend_rejects_mssql_python_until_upstream_transaction_fix() -> "None":
+    config = _fake_adapter_config("mssql_python", dialect="tsql", config_type_name="MssqlPythonConfig")
+
+    with pytest.raises(QueueConfigurationError, match=r"mssql_python.*sqlspec/issues/642"):
+        create_queue_store(config, table_name="queue_tasks")
 
 
 @pytest.mark.parametrize(("dialect",), (("bigquery",), ("postgres",)))
@@ -774,13 +752,12 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     assert expected_sql_fragment in "\n".join(store.create_statements())
 
 
-def test_sqlspec_backend_registry_includes_sql_server_adapters() -> "None":
+def test_sqlspec_backend_registry_excludes_broken_mssql_python_adapter() -> "None":
     names = {case.name for case in QUEUE_BACKENDS}
     service_attrs = {case.name: case.service_attr for case in QUEUE_BACKENDS}
 
-    assert "mssql-python" in names
+    assert "mssql-python" not in names
     assert "pymssql" in names
-    assert service_attrs["mssql-python"] == "mssql_service"
     assert service_attrs["pymssql"] == "mssql_service"
 
 
@@ -877,26 +854,6 @@ def test_sqlspec_oracledb_sync_store_uses_cas_until_safe_streaming_claims() -> "
 
     assert isinstance(store, OracledbSyncQueueStore)
     assert store.supports_skip_locked is False
-
-
-async def test_sqlspec_mssql_python_select_task_uses_native_stream() -> "None":
-    """mssql-python queue reads should avoid the regular tuple-row result path."""
-    task_id = uuid4()
-    config = _fake_adapter_config("mssql_python", dialect="tsql", config_type_name="MssqlPythonAsyncConfig")
-    store = create_queue_store(config, table_name="queue_tasks")
-    backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=config, queue_table_name="queue_tasks", notifications=False)
-    )
-    backend._store = store
-    driver = _StreamOnlySelectDriver({"id": str(task_id)})
-
-    row = await backend._select_task(cast("Any", driver), task_id)
-
-    assert isinstance(store, MssqlPythonQueueStore)
-    assert store.select_stream_chunk_size == 100
-    assert row == {"id": str(task_id)}
-    assert driver.stream_chunks == [100]
-    assert driver.select_one_calls == 0
 
 
 async def test_sqlspec_claim_next_skips_serialization_conflict_candidate(monkeypatch: "pytest.MonkeyPatch") -> "None":

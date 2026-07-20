@@ -60,7 +60,7 @@ examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 redis = ["redis>=5.0.0"]
-sqlspec = ["sqlspec>=0.52.0"]
+sqlspec = ["sqlspec>=0.55.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -179,7 +179,7 @@ tests = [
   "numpy",
   "advanced-alchemy>=1.10.0",
   # SQLSpec adapters covered by the default integration matrix
-  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,mssql-python,pymssql]>=0.52.0",
+  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql]>=0.55.0",
 ]
 e2e = [
   "playwright>=1.50.0",
@@ -196,7 +196,6 @@ filterwarnings = [
   "ignore::DeprecationWarning:xdist.*",
   "ignore::DeprecationWarning:importlib._bootstrap",
   # Temporary upstream SQLSpec filters: https://github.com/litestar-org/sqlspec/issues/623
-  "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning:sqlspec\\.adapters\\.duckdb\\.driver",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:litestar_queues\\.backends\\.sqlspec\\.backend",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:sqlspec\\.adapters\\.psycopg\\.driver",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
