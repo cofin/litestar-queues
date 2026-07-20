@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
+from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
@@ -106,6 +107,7 @@ class RedisQueueBackend(BaseQueueBackend):
         "_notification_channel",
         "_notifications",
         "_owns_client",
+        "_pending_read",
         "_poll_interval",
         "_pubsub",
         "_url",
@@ -123,6 +125,7 @@ class RedisQueueBackend(BaseQueueBackend):
         self._notifications = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
         self._pubsub: "RedisPubSubLike | None" = None
+        self._pending_read = PendingNativeRead()
         self._lock_timeout = backend_config.lock_timeout
         self._poll_interval = backend_config.poll_interval
         self._event_log: "RedisQueueEventLog | None" = None
@@ -151,6 +154,7 @@ class RedisQueueBackend(BaseQueueBackend):
         """Close owned Redis-protocol client resources."""
         if self._event_log is not None:
             await self._event_log.flush_events()
+        await self._pending_read.aclose()
         if self._pubsub is not None:
             await _close_pubsub(self._pubsub, self._notification_channel)
             self._pubsub = None
@@ -674,13 +678,31 @@ class RedisQueueBackend(BaseQueueBackend):
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait for a Redis-protocol pub/sub message when notifications are enabled.
 
+        A single pub/sub receive is retained across worker poll timeouts; only
+        a real message, a read failure, or backend close ends it.
+
         Returns:
             True when a notification was observed.
         """
         if not self._notifications:
             return await super().wait_for_notifications(timeout=timeout)
         pubsub = await self._get_pubsub()
-        return await _wait_for_pubsub_message(pubsub, timeout=timeout)
+        task = await self._pending_read.race(lambda: _receive_pubsub_message(pubsub), timeout)
+        if task is None:
+            return False
+        exc = task.exception()
+        if exc is not None:
+            await self._reset_pubsub()
+            raise exc
+        return bool(task.result())
+
+    async def _reset_pubsub(self) -> "None":
+        """Drop the pub/sub subscription so the next wait re-establishes it."""
+        await self._pending_read.aclose()
+        pubsub = self._pubsub
+        self._pubsub = None
+        if pubsub is not None:
+            await _close_pubsub(pubsub, self._notification_channel)
 
     def _create_client(self, url: "str") -> "RedisClientLike":
         from redis import asyncio as redis_asyncio
@@ -1064,27 +1086,22 @@ def _coerce_status(value: "Any") -> "TaskStatus":
     return cast("TaskStatus", status)
 
 
-async def _wait_for_pubsub_message(pubsub: "RedisPubSubLike", *, timeout: "float | None") -> "bool":
-    """Drain pubsub responses until a real ``message`` arrives or timeout.
+async def _receive_pubsub_message(pubsub: "RedisPubSubLike") -> "bool":
+    """Block until a real published ``message`` arrives on the subscription.
 
-    ``pubsub.get_message(ignore_subscribe_messages=True)`` returns ``None``
-    for both "no message in this read window" AND "subscribe-confirmation
-    was filtered". Looping with a deadline distinguishes the two cases.
+    ``get_message(timeout=None)`` blocks indefinitely; subscribe/unsubscribe
+    confirmations are filtered to ``None`` by ``ignore_subscribe_messages``, so
+    they are skipped without ending the retained read. This coroutine carries
+    no deadline of its own — worker poll timeouts race it via
+    :class:`PendingNativeRead`, leaving it pending until a message lands.
 
     Returns:
-        True when a real published message was observed before the deadline.
+        True once a real published message is observed.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout if timeout is not None else None
     while True:
-        remaining = None if deadline is None else max(0.0, deadline - loop.time())
-        if remaining is not None and remaining <= 0.0:
-            return False
-        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining)
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=None)
         if message is not None:
             return True
-        if deadline is None:
-            return False
 
 
 async def _close_pubsub(pubsub: "RedisPubSubLike", channel: "str") -> "None":

@@ -1,6 +1,5 @@
 """SQLSpec queue backend."""
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
@@ -14,6 +13,7 @@ from sqlspec.exceptions import SerializationConflictError
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
+from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
@@ -175,6 +175,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_event_poll_interval",
         "_event_queue_table",
         "_event_settings",
+        "_event_stream",
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
@@ -188,6 +189,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_opened",
         "_owns_event_channel",
         "_owns_sqlspec",
+        "_pending_read",
         "_queue_observability",
         "_queue_table_name",
         "_sqlspec",
@@ -236,6 +238,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_log_store: "Any | None" = None
         self._event_log: "SQLSpecQueueEventLog | None" = None
         self._store: "SQLSpecQueueStore | None" = None
+        self._event_stream: "Any | None" = None
+        self._pending_read = PendingNativeRead()
         self._opened = False
 
     async def open(self) -> "bool":
@@ -258,6 +262,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Close SQLSpec resources."""
         if self._event_log is not None:
             await self._event_log.flush_events()
+        await self._close_notification_stream()
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
             await self._event_channel.shutdown()
@@ -1039,27 +1044,41 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait for a SQLSpec event when queue notifications are configured.
 
+        One ``iter_events`` stream and its pending ``anext`` read are retained
+        across worker poll timeouts; only an event, a driver failure, or
+        backend close ends them.
+
         Returns:
             True when a notification was received.
         """
         if not self._notifications_enabled or self._event_channel is None:
             return await super().wait_for_notifications(timeout=timeout)
 
-        stream = self._event_channel.iter_events(
-            self._resolve_notification_channel(), poll_interval=self._event_poll_interval
-        )
-        try:
-            if timeout is None:
-                event = await anext(stream)
-            else:
-                event = await asyncio.wait_for(anext(stream), timeout=timeout)
-        except asyncio.TimeoutError:
+        stream = self._event_stream
+        if stream is None:
+            stream = self._event_channel.iter_events(
+                self._resolve_notification_channel(), poll_interval=self._event_poll_interval
+            )
+            self._event_stream = stream
+        task = await self._pending_read.race(lambda: anext(cast("Any", stream)), timeout)
+        if task is None:
             return False
-        finally:
-            await cast("Any", stream).aclose()
-
+        exc = task.exception()
+        if exc is not None:
+            await self._close_notification_stream()
+            raise exc
+        event = task.result()
         await self._event_channel.ack(event.event_id)
         return True
+
+    async def _close_notification_stream(self) -> "None":
+        """Cancel the retained event read and close the iterator."""
+        await self._pending_read.aclose()
+        stream = self._event_stream
+        self._event_stream = None
+        if stream is not None:
+            with suppress(Exception):
+                await cast("Any", stream).aclose()
 
     @staticmethod
     def _default_sqlspec_config() -> "SQLSpecConfig":

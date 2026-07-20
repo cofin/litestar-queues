@@ -46,3 +46,33 @@ async def test_valkey_backend_enqueue_many_publishes_one_batch_notification(
     assert await waiter is True
     assert len(records) == 5
     assert await valkey_backend.wait_for_notifications(timeout=0.05) is False
+
+
+async def test_valkey_backend_reuses_subscription_after_timeout(valkey_backend: "ValkeyQueueBackend") -> "None":
+    assert await valkey_backend.wait_for_notifications(timeout=0.1) is False
+    pubsub = valkey_backend._pubsub
+    assert pubsub is not None
+    assert valkey_backend._pending_read.has_pending is True
+
+    assert await valkey_backend.wait_for_notifications(timeout=0.1) is False
+    # No re-subscription across empty poll timeouts.
+    assert valkey_backend._pubsub is pubsub
+    assert valkey_backend._pending_read.has_pending is True
+
+    await valkey_backend.enqueue("tasks.reuse", execution_backend="local")
+
+    # The notification wakes the retained receive on the same subscription.
+    assert await valkey_backend.wait_for_notifications(timeout=2.0) is True
+    assert valkey_backend._pubsub is pubsub
+    assert bool(valkey_backend._pending_read.has_pending) is False
+
+
+async def test_valkey_backend_close_while_reading_leaves_no_task(valkey_backend: "ValkeyQueueBackend") -> "None":
+    assert await valkey_backend.wait_for_notifications(timeout=0.1) is False
+    assert valkey_backend._pending_read.has_pending is True
+
+    await valkey_backend.close()
+    assert bool(valkey_backend._pending_read.has_pending) is False
+    assert valkey_backend._pubsub is None
+    # Double close is idempotent.
+    await valkey_backend.close()

@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
+from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
 from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
@@ -559,13 +560,14 @@ class SQLAlchemyBackend(BaseQueueBackend):
 class _AsyncpgNotificationListener:
     """Dedicated asyncpg LISTEN connection for Advanced Alchemy wakeups."""
 
-    __slots__ = ("_channel", "_connection", "_dsn", "_event")
+    __slots__ = ("_channel", "_connection", "_dsn", "_event", "_pending_read")
 
     def __init__(self, *, dsn: "str", channel: "str") -> "None":
         self._dsn = dsn
         self._channel = channel
         self._event = asyncio.Event()
         self._connection: "Any | None" = None
+        self._pending_read = PendingNativeRead()
 
     async def start(self) -> "None":
         connection = self._connection
@@ -578,17 +580,18 @@ class _AsyncpgNotificationListener:
 
     async def wait(self, timeout: "float | None") -> "bool":
         await self.start()
-        if self._event.is_set():
+        if not self._pending_read.has_pending and self._event.is_set():
             self._event.clear()
             return True
-        try:
-            await asyncio.wait_for(self._event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        task = await self._pending_read.race(self._event.wait, timeout)
+        if task is None:
             return False
+        task.result()
         self._event.clear()
         return True
 
     async def close(self) -> "None":
+        await self._pending_read.aclose()
         connection = self._connection
         self._connection = None
         if connection is None:

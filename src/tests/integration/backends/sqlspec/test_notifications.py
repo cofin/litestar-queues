@@ -67,6 +67,40 @@ class RecordingPollIntervalEventChannel(StubAsyncEventChannel):
             yield event
 
 
+class CountingIterEventsChannel(StubAsyncEventChannel):
+    """Stub channel that counts how many event iterators are created."""
+
+    __slots__ = ("iter_events_calls",)
+
+    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+        super().__init__(backend_name=backend_name)
+        self.iter_events_calls = 0
+
+    async def iter_events(self, channel: "str", *, poll_interval: "float | None" = None) -> "Any":
+        self.iter_events_calls += 1
+        async for event in super().iter_events(channel, poll_interval=poll_interval):
+            yield event
+
+
+class FailingIterEventsChannel(CountingIterEventsChannel):
+    """Stub channel whose first ``anext`` raises to model a driver read failure."""
+
+    __slots__ = ("fail_next",)
+
+    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+        super().__init__(backend_name=backend_name)
+        self.fail_next = True
+
+    async def iter_events(self, channel: "str", *, poll_interval: "float | None" = None) -> "Any":
+        self.iter_events_calls += 1
+        if self.fail_next:
+            self.fail_next = False
+            msg = "event stream boom"
+            raise RuntimeError(msg)
+        async for event in StubAsyncEventChannel.iter_events(self, channel, poll_interval=poll_interval):
+            yield event
+
+
 def _oracle_sync_config(
     oracle_service: "OracleService", *, user: "str | None" = None, password: "str | None" = None
 ) -> "Any":
@@ -279,6 +313,90 @@ async def test_sqlspec_backend_event_channel_notifications_wake_waiters(
             ("queue_notifications", {"event": "task_available"}, {"event_type": "litestar_queues.task_available"})
         ]
         assert event_channel.acked == ["event-1"]
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_reuses_one_event_stream_across_timeouts(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = CountingIterEventsChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "reuse.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="reuse",
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    try:
+        assert await backend.wait_for_notifications(timeout=0.05) is False
+        assert await backend.wait_for_notifications(timeout=0.05) is False
+        assert await backend.wait_for_notifications(timeout=0.05) is False
+        assert event_channel.iter_events_calls == 1
+        assert backend._pending_read.has_pending is True
+
+        await backend.enqueue("tasks.reuse", queue="critical", execution_backend="local")
+
+        # A notification arriving after timeouts wakes the retained read without a new iterator.
+        assert await backend.wait_for_notifications(timeout=1) is True
+        assert event_channel.iter_events_calls == 1
+        assert event_channel.acked == ["event-1"]
+        assert bool(backend._pending_read.has_pending) is False
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_backend_close_while_reading_leaves_no_stream(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = CountingIterEventsChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "close-reading.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="close_reading",
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    assert await backend.wait_for_notifications(timeout=0.05) is False
+    assert backend._pending_read.has_pending is True
+
+    await backend.close()
+    assert bool(backend._pending_read.has_pending) is False
+    assert backend._event_stream is None
+    # Double close is idempotent.
+    await backend.close()
+
+
+async def test_sqlspec_backend_read_error_resets_stream_and_recovers(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    event_channel = FailingIterEventsChannel()
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=sqlite_config_factory(tmp_path / "read-error.db"),
+            event_channel=cast("AsyncEventChannel", event_channel),
+            notification_channel="read_error",
+        )
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    try:
+        with pytest.raises(RuntimeError, match="event stream boom"):
+            await backend.wait_for_notifications(timeout=1)
+        assert backend._event_stream is None
+        assert bool(backend._pending_read.has_pending) is False
+
+        # A bounded re-establishment builds a fresh stream that reconciles normally.
+        await backend.enqueue("tasks.recover", execution_backend="local")
+        assert await backend.wait_for_notifications(timeout=1) is True
+        assert event_channel.iter_events_calls == 2
     finally:
         await backend.close()
 
