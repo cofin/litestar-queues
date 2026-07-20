@@ -25,6 +25,7 @@ class Worker:
 
     __slots__ = (
         "_batch_size",
+        "_completion_event",
         "_final_cancel_timeout",
         "_graceful_shutdown_timeout",
         "_heartbeat_manager",
@@ -77,6 +78,7 @@ class Worker:
         self._queues = queues
         self._running_tasks: "set[asyncio.Task[None]]" = set()
         self._stop_event = asyncio.Event()
+        self._completion_event = asyncio.Event()
         self._is_running = False
         self._last_reconcile_at = -float("inf")
         self._last_stale_check_at = -float("inf")
@@ -161,39 +163,9 @@ class Worker:
     async def _claim_available(self, *, limit: "int") -> "list[QueuedTaskRecord]":
         queue_backend = self._service.get_queue_backend()
         execution_backend_name_ = execution_backend_name(self._service.config.execution_backend)
-        records: 'list["QueuedTaskRecord"]' = []
-        if queue_backend.capabilities.supports_batch_claim and not self._queues:
-            return await queue_backend.claim_many(limit=limit, execution_backend=execution_backend_name_)
-        if not self._queues:
-            for _ in range(limit):
-                claimed = await queue_backend.claim_next(execution_backend=execution_backend_name_)
-                if claimed is None:
-                    break
-                records.append(claimed)
-            return records
-
-        while len(records) < limit:
-            claimed_this_pass = False
-            for queue in self._queues:
-                if len(records) >= limit:
-                    break
-                if queue_backend.capabilities.supports_batch_claim:
-                    claimed_records = await queue_backend.claim_many(
-                        limit=1, queue=queue, execution_backend=execution_backend_name_
-                    )
-                    if not claimed_records:
-                        continue
-                    records.extend(claimed_records)
-                    claimed_this_pass = True
-                    continue
-                claimed = await queue_backend.claim_next(queue=queue, execution_backend=execution_backend_name_)
-                if claimed is None:
-                    continue
-                records.append(claimed)
-                claimed_this_pass = True
-            if not claimed_this_pass:
-                break
-        return records
+        return await queue_backend.claim_many(
+            limit=limit, queues=self._queues, execution_backend=execution_backend_name_
+        )
 
     async def _list_pending(self, *, limit: "int") -> "list[QueuedTaskRecord]":
         queue_backend = self._service.get_queue_backend()
@@ -221,8 +193,12 @@ class Worker:
     def _track_execution(self, record: "QueuedTaskRecord") -> "asyncio.Task[None]":
         task = asyncio.create_task(self._execute_claimed(record))
         self._running_tasks.add(task)
-        task.add_done_callback(self._running_tasks.discard)
+        task.add_done_callback(self._on_execution_done)
         return task
+
+    def _on_execution_done(self, task: "asyncio.Task[None]") -> "None":
+        self._running_tasks.discard(task)
+        self._completion_event.set()
 
     async def reconcile_external(self, *, limit: "int | None" = None) -> "int":
         """Reconcile externally dispatched records.
@@ -272,12 +248,7 @@ class Worker:
                 except Exception as exc:  # noqa: BLE001 - heartbeat cleanup must not skip backend clearing.
                     self._record_heartbeat_failure(exc, "Queue task heartbeat cleanup failed")
             finally:
-                try:
-                    await self._service.get_queue_backend().null_heartbeats(
-                        [record.id], expected_retry_count=record.retry_count
-                    )
-                finally:
-                    await self._close_heartbeat_manager_if_idle()
+                await self._close_heartbeat_manager_if_idle()
 
     async def _dispatch_external(self, records: "list[QueuedTaskRecord]") -> "int":
         execution_backend = self._service.get_execution_backend()
@@ -370,11 +341,18 @@ class Worker:
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=self._final_cancel_timeout)
 
     async def _wait_for_work(self) -> "None":
+        if self._completion_event.is_set():
+            self._completion_event.clear()
+            return
         queue_backend = self._service.get_queue_backend()
         started_at = time.perf_counter()
         notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=self._poll_interval))
         stop_task = asyncio.create_task(self._stop_event.wait())
-        done, pending = await asyncio.wait({notification_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        completion_task = asyncio.create_task(self._completion_event.wait())
+        done, pending = await asyncio.wait(
+            {notification_task, stop_task, completion_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        self._completion_event.clear()
         for task in pending:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

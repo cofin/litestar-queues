@@ -300,14 +300,14 @@ class QueueService:
         return await self.get_queue_backend().get_task(task_id)
 
     async def claim_next(
-        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
-        """Claim the next due queued task.
+        """Claim the next due queued task across the requested queues.
 
         Returns:
             The claimed task record, if one was available.
         """
-        return await self.get_queue_backend().claim_next(queue=queue, execution_backend=execution_backend)
+        return await self.get_queue_backend().claim_next(queues=queues, execution_backend=execution_backend)
 
     async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: "str | None" = None) -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.

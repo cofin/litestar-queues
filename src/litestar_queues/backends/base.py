@@ -122,34 +122,40 @@ class BaseQueueBackend:
         raise NotImplementedError
 
     async def claim_next(
-        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
-        """Claim the next due task.
+        """Claim the next due task across the requested queues.
+
+        An empty ``queues`` tuple claims across all queues.
 
         Returns:
             The claimed task record, if one was available.
         """
-        records = await self.list_pending(limit=1, queue=queue, execution_backend=execution_backend)
-        if not records:
-            return None
-        return await self.claim_task(records[0].id)
+        for queue in queues or (None,):
+            records = await self.list_pending(limit=1, queue=queue, execution_backend=execution_backend)
+            if not records:
+                continue
+            claimed = await self.claim_task(records[0].id)
+            if claimed is not None:
+                return claimed
+        return None
 
     async def claim_many(
-        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
-        """Claim up to ``limit`` due tasks.
+        """Claim up to ``limit`` due tasks across the requested queues.
 
-        Backends that advertise ``supports_batch_claim`` should override this
-        with a native batch path. The fallback preserves existing
-        :meth:`claim_next` semantics for backends with only a single-record
-        primitive.
+        An empty ``queues`` tuple claims across all queues. Backends that
+        advertise ``supports_batch_claim`` override this with a native batch
+        path. The fallback preserves :meth:`claim_next` semantics for backends
+        with only a single-record primitive.
 
         Returns:
             Claimed task records.
         """
         records: "list[QueuedTaskRecord]" = []
         for _ in range(max(0, limit)):
-            claimed = await self.claim_next(queue=queue, execution_backend=execution_backend)
+            claimed = await self.claim_next(queues=queues, execution_backend=execution_backend)
             if claimed is None:
                 break
             records.append(claimed)

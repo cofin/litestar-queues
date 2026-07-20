@@ -472,11 +472,21 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return claimed
 
     async def claim_next(
-        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
         store = self._get_store()
-        if store.supports_skip_locked:
-            return await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
+        for queue in queues or (None,):
+            if store.supports_skip_locked:
+                claimed = await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
+            else:
+                claimed = await self._claim_next_optimistic(store, queue=queue, execution_backend=execution_backend)
+            if claimed is not None:
+                return claimed
+        return None
+
+    async def _claim_next_optimistic(
+        self, store: "SQLSpecQueueStore", *, queue: "str | None", execution_backend: "str | None"
+    ) -> "QueuedTaskRecord | None":
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
             task_id = UUID(str(row["id"]))

@@ -192,7 +192,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             now = _utc_now()
             record.status = "completed"
             record.completed_at = now
-            record.heartbeat_at = now
+            record.heartbeat_at = None
             record.result = result
             record.error = None
             return record
@@ -220,7 +220,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             now = _utc_now()
             record.status = "failed"
             record.completed_at = now
-            record.heartbeat_at = now
+            record.heartbeat_at = None
             return record
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
