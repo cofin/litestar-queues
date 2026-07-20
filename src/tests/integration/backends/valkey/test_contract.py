@@ -32,6 +32,7 @@ async def test_valkey_backend_deduplicates_active_keys_and_replaces_terminal_key
     assert duplicate.id == first.id
     assert duplicate.kwargs == {"account_id": "acct-1"}
 
+    await valkey_backend.claim_task(first.id)
     await valkey_backend.complete_task(first.id, result={"ok": True})
     replacement = await valkey_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
     keyed = await valkey_backend.get_task_by_key("sync:acct-1")
@@ -118,6 +119,7 @@ async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_ba
     assert failed.status == "failed"
     assert failed.error == "second failure"
     assert failed.completed_at is not None
+    assert failed.heartbeat_at is None
 
     cancellable = await valkey_backend.enqueue("tasks.cancel")
     assert await valkey_backend.cancel_task(cancellable.id) is True
@@ -142,7 +144,9 @@ async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_ba
 
     completed = await valkey_backend.enqueue("tasks.completed")
     await valkey_backend.claim_task(completed.id)
-    await valkey_backend.complete_task(completed.id, result={"ok": True})
+    completed_record = await valkey_backend.complete_task(completed.id, result={"ok": True})
+    assert completed_record is not None
+    assert completed_record.heartbeat_at is None
     statistics = await valkey_backend.get_statistics()
     completed_records = await valkey_backend.list_completed_by_task("tasks.completed")
     cleanup_count = await valkey_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
@@ -180,3 +184,91 @@ async def test_valkey_backend_touch_heartbeats_fences_and_merges_metadata(
     assert result.missed_task_ids == {claimed.id}
     assert touched is not None
     assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
+
+
+async def test_valkey_backend_claim_many_orders_by_priority_then_created(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    first_high = await valkey_backend.enqueue("tasks.h1", priority=5)
+    await asyncio.sleep(0.005)
+    second_high = await valkey_backend.enqueue("tasks.h2", priority=5)
+    await asyncio.sleep(0.005)
+    first_low = await valkey_backend.enqueue("tasks.l1", priority=1)
+    await asyncio.sleep(0.005)
+    second_low = await valkey_backend.enqueue("tasks.l2", priority=1)
+
+    claimed = await valkey_backend.claim_many(limit=4)
+
+    assert [record.id for record in claimed] == [first_high.id, second_high.id, first_low.id, second_low.id]
+    assert all(record.status == "running" for record in claimed)
+
+
+async def test_valkey_backend_claim_many_filters_queue_and_execution_backend(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    match = await valkey_backend.enqueue("tasks.match", queue="a", execution_backend="local")
+    wrong_eb = await valkey_backend.enqueue("tasks.wrong_eb", queue="a", execution_backend="cloudrun")
+    wrong_queue = await valkey_backend.enqueue("tasks.wrong_queue", queue="b", execution_backend="local")
+    wrong_both = await valkey_backend.enqueue("tasks.wrong_both", queue="b", execution_backend="cloudrun")
+
+    claimed = await valkey_backend.claim_many(limit=10, queues=("a",), execution_backend="local")
+
+    assert [record.id for record in claimed] == [match.id]
+    for other in (wrong_eb, wrong_queue, wrong_both):
+        stored = await valkey_backend.get_task(other.id)
+        assert stored is not None
+        assert stored.status == "pending"
+
+
+async def test_valkey_backend_claim_many_promotes_due_scheduled(valkey_backend: "ValkeyQueueBackend") -> "None":
+    soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    due_soon = await valkey_backend.enqueue("tasks.soon", scheduled_at=soon)
+    scheduled_far = await valkey_backend.enqueue("tasks.far", scheduled_at=far)
+    await asyncio.sleep(0.3)
+
+    claimed = await valkey_backend.claim_many(limit=10)
+
+    assert [record.id for record in claimed] == [due_soon.id]
+    assert claimed[0].status == "running"
+    stored_far = await valkey_backend.get_task(scheduled_far.id)
+    assert stored_far is not None
+    assert stored_far.status == "scheduled"
+
+
+async def test_valkey_backend_scheduled_zset_holds_future_tasks(valkey_backend: "ValkeyQueueBackend") -> "None":
+    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scheduled = await valkey_backend.enqueue("tasks.future", scheduled_at=far)
+
+    client = await valkey_backend._get_client()
+    scheduled_members = {str(member) for member in await client.zrange(valkey_backend._scheduled_key, 0, -1)}
+    ready_members = {str(member) for member in await client.zrange(valkey_backend._ready_key, 0, -1)}
+
+    assert str(scheduled.id) in scheduled_members
+    assert str(scheduled.id) not in ready_members
+
+
+async def test_valkey_backend_complete_clears_heartbeat_and_publishes(valkey_backend: "ValkeyQueueBackend") -> "None":
+    record = await valkey_backend.enqueue("tasks.publish")
+    claimed = await valkey_backend.claim_task(record.id)
+    assert claimed is not None
+
+    client = await valkey_backend._get_client()
+    pubsub = client.pubsub()
+    await pubsub.subscribe(valkey_backend._completion_channel)
+    await asyncio.sleep(0.2)
+
+    completed = await valkey_backend.complete_task(record.id, result={"ok": True})
+
+    message = None
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while asyncio.get_running_loop().time() < deadline:
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+        if message is not None:
+            break
+    await pubsub.aclose()
+
+    assert completed is not None
+    assert completed.heartbeat_at is None
+    assert message is not None
+    assert str(message["data"]) == str(record.id)

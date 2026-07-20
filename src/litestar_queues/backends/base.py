@@ -332,6 +332,18 @@ class BaseQueueBackend:
             await asyncio.sleep(timeout)
         return False
 
+    async def wait_for_completion(self, task_id: "UUID", *, timeout: "float | None" = None) -> "bool":
+        """Wait for a terminal-completion signal for one task.
+
+        Backends that advertise ``supports_completion_events`` override this to
+        subscribe to a completion channel. The default returns ``False`` so
+        callers fall back to polling.
+
+        Returns:
+            True when a completion signal for ``task_id`` was observed.
+        """
+        return False
+
     async def __aenter__(self) -> "Self":
         await self.open()
         return self

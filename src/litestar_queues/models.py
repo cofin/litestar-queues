@@ -53,6 +53,7 @@ class QueueBackendCapabilities:
     supports_atomic_delayed_promotion: "bool" = True
     supports_external_refs: "bool" = True
     supports_terminal_cleanup: "bool" = True
+    supports_completion_events: "bool" = False
 
 
 @dataclass(slots=True)

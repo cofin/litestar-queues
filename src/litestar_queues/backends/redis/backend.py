@@ -91,10 +91,160 @@ end
 
 return 1
 """
+_CLAIM_SCRIPT = """
+local ready = KEYS[1]
+local scheduled = KEYS[2]
+local prefix = ARGV[1]
+local now_ms = tonumber(ARGV[2])
+local now_iso = ARGV[3]
+local limit = tonumber(ARGV[4])
+local eb_filter = ARGV[5]
+local window = tonumber(ARGV[6])
+
+local queue_filter = {}
+local has_queue_filter = false
+for i = 7, #ARGV do
+    queue_filter[ARGV[i]] = true
+    has_queue_filter = true
+end
+
+local due = redis.call('ZRANGEBYSCORE', scheduled, '-inf', now_ms)
+for _, id in ipairs(due) do
+    local hkey = prefix .. ':task:' .. id
+    local status = redis.call('HGET', hkey, 'status')
+    if status == 'scheduled' or status == 'pending' then
+        local ready_score = redis.call('HGET', hkey, 'ready_score')
+        if ready_score then
+            redis.call('ZADD', ready, ready_score, id)
+        end
+        if status == 'scheduled' then
+            redis.call('SREM', prefix .. ':status:scheduled', id)
+            redis.call('SADD', prefix .. ':status:pending', id)
+            redis.call('HSET', hkey, 'status', 'pending')
+        end
+    end
+    redis.call('ZREM', scheduled, id)
+end
+
+local claimed = {}
+local candidates = redis.call('ZRANGE', ready, 0, window)
+for _, id in ipairs(candidates) do
+    if #claimed >= limit then break end
+    local hkey = prefix .. ':task:' .. id
+    local status = redis.call('HGET', hkey, 'status')
+    if status ~= 'pending' then
+        redis.call('ZREM', ready, id)
+    else
+        local eb = redis.call('HGET', hkey, 'execution_backend')
+        local q = redis.call('HGET', hkey, 'queue')
+        local eb_ok = (eb_filter == '' or eb == eb_filter)
+        local q_ok = (not has_queue_filter or queue_filter[q] == true)
+        if eb_ok and q_ok then
+            redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso)
+            redis.call('SREM', prefix .. ':status:pending', id)
+            redis.call('SADD', prefix .. ':status:running', id)
+            redis.call('ZREM', ready, id)
+            claimed[#claimed + 1] = id
+        end
+    end
+end
+return claimed
+"""
+_COMPLETE_SCRIPT = """
+local hkey = KEYS[1]
+local prefix = ARGV[1]
+local task_id = ARGV[2]
+local expected = ARGV[3]
+local completed_at = ARGV[4]
+local result_json = ARGV[5]
+local channel = ARGV[6]
+
+local status = redis.call('HGET', hkey, 'status')
+if status ~= 'running' then
+    return {0}
+end
+if expected ~= '' then
+    local retry_count = redis.call('HGET', hkey, 'retry_count')
+    if retry_count ~= expected then
+        return {0}
+    end
+end
+redis.call('HSET', hkey, 'status', 'completed', 'completed_at', completed_at,
+    'heartbeat_at', '', 'result', result_json, 'error', '')
+redis.call('SREM', prefix .. ':status:running', task_id)
+redis.call('SADD', prefix .. ':status:completed', task_id)
+redis.call('PUBLISH', channel, task_id)
+return {1}
+"""
+_FAIL_SCRIPT = """
+local hkey = KEYS[1]
+local ready = KEYS[2]
+local prefix = ARGV[1]
+local task_id = ARGV[2]
+local expected = ARGV[3]
+local error = ARGV[4]
+local retry = ARGV[5]
+local completed_at = ARGV[6]
+local channel = ARGV[7]
+
+local status = redis.call('HGET', hkey, 'status')
+if status ~= 'running' then
+    return {0, ''}
+end
+local retry_count = tonumber(redis.call('HGET', hkey, 'retry_count')) or 0
+if expected ~= '' and tostring(retry_count) ~= expected then
+    return {0, ''}
+end
+redis.call('HSET', hkey, 'error', error)
+local max_retries = tonumber(redis.call('HGET', hkey, 'max_retries')) or 0
+if retry == '1' and retry_count < max_retries then
+    local new_retry_count = retry_count + 1
+    redis.call('HSET', hkey, 'status', 'pending', 'retry_count', new_retry_count,
+        'started_at', '', 'heartbeat_at', '')
+    redis.call('SREM', prefix .. ':status:running', task_id)
+    redis.call('SADD', prefix .. ':status:pending', task_id)
+    local ready_score = redis.call('HGET', hkey, 'ready_score')
+    if ready_score then
+        redis.call('ZADD', ready, ready_score, task_id)
+    end
+    return {1, 'pending'}
+end
+redis.call('HSET', hkey, 'status', 'failed', 'completed_at', completed_at, 'heartbeat_at', '')
+redis.call('SREM', prefix .. ':status:running', task_id)
+redis.call('SADD', prefix .. ':status:failed', task_id)
+redis.call('PUBLISH', channel, task_id)
+return {1, 'failed'}
+"""
 
 
 class RedisQueueBackend(BaseQueueBackend):
-    """Queue backend that stores records in a Redis-protocol key-value server."""
+    """Queue backend that stores records in a Redis-protocol key-value server.
+
+    Ready work lives in one global ``{prefix}:ready`` sorted set scored
+    priority-major / created_at-minor, so the claim pops the globally-correct
+    next task with one ordered ``ZRANGE`` instead of a Python-side sort over an
+    ``HGETALL`` of every due candidate. A separate ``{prefix}:scheduled`` sorted
+    set scored by ``scheduled_at`` preserves exact delayed-promotion due-gating:
+    the claim script promotes now-due scheduled ids into ``ready`` before
+    scanning, so future-scheduled tasks are never claimable early. Keeping one
+    global ``ready`` set rather than per-queue sets makes the claim a single
+    ``EVAL`` with no queue enumeration; the queue and execution_backend filters
+    skip non-matching top entries inside the script.
+
+    Ready scores are IEEE-754 doubles, exact for integers up to 2^53. With
+    stride ``1e13`` and ``created_ms`` near ``1.7e12`` the priority band
+    ``(-priority) * 1e13`` stays exact for ``abs(priority) <= 450``, far beyond
+    realistic priorities; ties break on ``created_ms`` ascending at millisecond
+    resolution.
+
+    All Lua scripts build their keys from a ``key_prefix`` ARG via string
+    concatenation, which is single-node/replica only. Redis Cluster is out of
+    scope: multi-key scripts on a cluster require same-slot hash-tagged keys and
+    no hash-tag support is added. The composite-score ``ready``/``scheduled``
+    layout replaces the old ``{prefix}:pending`` zset outright with no data
+    migration; records enqueued under the old layout are stranded (benchmark
+    namespaces are ephemeral).
+    """
 
     _backend_name: "ClassVar[str]" = "redis"
 
@@ -134,6 +284,8 @@ class RedisQueueBackend(BaseQueueBackend):
             supports_notifications=self._notifications,
             notification_backend=f"{self._backend_name}-pubsub" if self._notifications else None,
             notifications_durable=False,
+            supports_batch_claim=True,
+            supports_completion_events=self._notifications,
         )
 
     async def open(self) -> "bool":
@@ -308,7 +460,10 @@ class RedisQueueBackend(BaseQueueBackend):
     ) -> "list[QueuedTaskRecord]":
         """Return due pending or scheduled tasks ordered for execution."""
         client = await self._get_client()
-        candidate_ids = await client.zrangebyscore(self._pending_key, "-inf", _utc_now().timestamp())
+        now_ms = _utc_now().timestamp() * 1000.0
+        ready_ids = await client.zrange(self._ready_key, 0, -1)
+        scheduled_ids = await client.zrangebyscore(self._scheduled_key, "-inf", now_ms)
+        candidate_ids = [*ready_ids, *scheduled_ids]
         due_records = [
             record
             for record in await self._records_from_ids(candidate_ids)
@@ -339,62 +494,90 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._save_record(record)
             return record
 
+    async def claim_many(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` due tasks in a single fenced ``EVAL``.
+
+        Returns:
+            Claimed task records in claim order.
+        """
+        if limit <= 0:
+            return []
+        client = await self._get_client()
+        now = _utc_now()
+        window = max(limit * 2, limit + 10)
+        args = [
+            self._key_prefix,
+            repr(now.timestamp() * 1000.0),
+            _serialize_datetime(now),
+            str(limit),
+            execution_backend or "",
+            str(window),
+            *queues,
+        ]
+        claimed_ids = await _eval_script(client, _CLAIM_SCRIPT, [self._ready_key, self._scheduled_key], args)
+        if not claimed_ids:
+            return []
+        return await self._records_from_ids([_decode(value) for value in claimed_ids])
+
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
-        """Mark a task as completed.
+        """Mark a task as completed via a single fenced script.
 
         Returns:
             The completed record, if it exists.
         """
-        async with self._lock(f"task:{task_id}", wait=True):
-            record = await self.get_task(task_id)
-            if record is None:
-                return None
-            if expected_retry_count is not None and (
-                record.status != "running" or record.retry_count != expected_retry_count
-            ):
-                return None
-            now = _utc_now()
-            record.status = "completed"
-            record.completed_at = now
-            record.heartbeat_at = now
-            record.result = result
-            record.error = None
-            await self._save_record(record)
-            return record
+        client = await self._get_client()
+        now = _utc_now()
+        outcome = await _eval_script(
+            client,
+            _COMPLETE_SCRIPT,
+            [self._task_key(task_id)],
+            [
+                self._key_prefix,
+                str(task_id),
+                "" if expected_retry_count is None else str(expected_retry_count),
+                _serialize_datetime(now),
+                _json_dumps(result),
+                self._completion_channel,
+            ],
+        )
+        if not outcome or int(outcome[0]) != 1:
+            return None
+        return await self.get_task(task_id)
 
     async def fail_task(
         self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
-        """Mark a task as failed or retry it.
+        """Mark a task as failed or retry it via a single fenced script.
 
         Returns:
             The updated record, if it exists.
         """
-        async with self._lock(f"task:{task_id}", wait=True):
-            record = await self.get_task(task_id)
-            if record is None:
-                return None
-            if expected_retry_count is not None and (
-                record.status != "running" or record.retry_count != expected_retry_count
-            ):
-                return None
-            record.error = error
-            if retry and record.retry_count < record.max_retries:
-                record.status = "pending"
-                record.retry_count += 1
-                record.started_at = None
-                record.heartbeat_at = None
-                await self._save_record(record)
-                await self.notify_new_task(record)
-                return record
-            now = _utc_now()
-            record.status = "failed"
-            record.completed_at = now
-            record.heartbeat_at = now
-            await self._save_record(record)
-            return record
+        client = await self._get_client()
+        now = _utc_now()
+        outcome = await _eval_script(
+            client,
+            _FAIL_SCRIPT,
+            [self._task_key(task_id), self._ready_key],
+            [
+                self._key_prefix,
+                str(task_id),
+                "" if expected_retry_count is None else str(expected_retry_count),
+                error,
+                "1" if retry else "0",
+                _serialize_datetime(now),
+                self._completion_channel,
+            ],
+        )
+        if not outcome or int(outcome[0]) != 1:
+            return None
+        record = await self.get_task(task_id)
+        if record is not None and _decode(outcome[1]) == "pending":
+            await self.notify_new_task(record)
+        return record
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         """Cancel a task.
@@ -411,6 +594,9 @@ class RedisQueueBackend(BaseQueueBackend):
             record.completed_at = _utc_now()
             record.heartbeat_at = None
             await self._save_record(record)
+            if self._notifications:
+                client = await self._get_client()
+                await client.publish(self._completion_channel, str(record.id))
             return True
 
     async def cancel_tasks(
@@ -446,6 +632,9 @@ class RedisQueueBackend(BaseQueueBackend):
                 latest.completed_at = _utc_now()
                 latest.heartbeat_at = None
                 await self._save_record(latest)
+                if self._notifications:
+                    client = await self._get_client()
+                    await client.publish(self._completion_channel, str(latest.id))
                 cancelled += 1
         return cancelled
 
@@ -682,6 +871,35 @@ class RedisQueueBackend(BaseQueueBackend):
         pubsub = await self._get_pubsub()
         return await _wait_for_pubsub_message(pubsub, timeout=timeout)
 
+    async def wait_for_completion(self, task_id: "UUID", *, timeout: "float | None" = None) -> "bool":
+        """Wait for a terminal completion message naming ``task_id``.
+
+        Returns:
+            True when a completion signal for ``task_id`` arrived before the deadline.
+        """
+        if not self._notifications:
+            return False
+        client = await self._get_client()
+        pubsub = client.pubsub()
+        subscribe = pubsub.subscribe(self._completion_channel)
+        if inspect.isawaitable(subscribe):
+            await subscribe
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout if timeout is not None else None
+            target = str(task_id)
+            while True:
+                remaining = None if deadline is None else max(0.0, deadline - loop.time())
+                if remaining is not None and remaining <= 0.0:
+                    return False
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining)
+                if message is not None and str(_decode(message.get("data"))) == target:
+                    return True
+                if deadline is None and message is None:
+                    return False
+        finally:
+            await _close_pubsub(pubsub, self._completion_channel)
+
     def _create_client(self, url: "str") -> "RedisClientLike":
         from redis import asyncio as redis_asyncio
 
@@ -783,10 +1001,15 @@ class RedisQueueBackend(BaseQueueBackend):
             for status in _STATUS_VALUES:
                 await client.srem(self._status_key(status), record_id)
             await client.sadd(self._status_key(record.status), record_id)
-            if record.status in _DUE_STATUSES:
-                await client.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
+            if record.status == "pending" and record.is_due:
+                await client.zadd(self._ready_key, {record_id: _ready_score(record)})
+                await client.zrem(self._scheduled_key, record_id)
+            elif record.status in _DUE_STATUSES:
+                await client.zadd(self._scheduled_key, {record_id: _scheduled_score(record.scheduled_at)})
+                await client.zrem(self._ready_key, record_id)
             else:
-                await client.zrem(self._pending_key, record_id)
+                await client.zrem(self._ready_key, record_id)
+                await client.zrem(self._scheduled_key, record_id)
 
     def _queue_save_record(self, pipeline: "RedisPipelineLike", record: "QueuedTaskRecord") -> "None":
         record_id = str(record.id)
@@ -795,10 +1018,20 @@ class RedisQueueBackend(BaseQueueBackend):
         for status in _STATUS_VALUES:
             pipeline.srem(self._status_key(status), record_id)
         pipeline.sadd(self._status_key(record.status), record_id)
-        if record.status in _DUE_STATUSES:
-            pipeline.zadd(self._pending_key, {record_id: _score_datetime(record.scheduled_at)})
+        self._queue_index_writes(pipeline, record, record_id)
+
+    def _queue_index_writes(
+        self, pipeline: "RedisPipelineLike", record: "QueuedTaskRecord", record_id: "str"
+    ) -> "None":
+        if record.status == "pending" and record.is_due:
+            pipeline.zadd(self._ready_key, {record_id: _ready_score(record)})
+            pipeline.zrem(self._scheduled_key, record_id)
+        elif record.status in _DUE_STATUSES:
+            pipeline.zadd(self._scheduled_key, {record_id: _scheduled_score(record.scheduled_at)})
+            pipeline.zrem(self._ready_key, record_id)
         else:
-            pipeline.zrem(self._pending_key, record_id)
+            pipeline.zrem(self._ready_key, record_id)
+            pipeline.zrem(self._scheduled_key, record_id)
 
     async def _delete_record(self, record: "QueuedTaskRecord") -> "None":
         client = await self._get_client()
@@ -807,14 +1040,16 @@ class RedisQueueBackend(BaseQueueBackend):
         if pipeline is not None:
             pipeline.delete(self._task_key(record.id))
             pipeline.srem(self._tasks_key, record_id)
-            pipeline.zrem(self._pending_key, record_id)
+            pipeline.zrem(self._ready_key, record_id)
+            pipeline.zrem(self._scheduled_key, record_id)
             for status in _STATUS_VALUES:
                 pipeline.srem(self._status_key(status), record_id)
             await _execute_pipeline(pipeline)
         else:
             await client.delete(self._task_key(record.id))
             await client.srem(self._tasks_key, record_id)
-            await client.zrem(self._pending_key, record_id)
+            await client.zrem(self._ready_key, record_id)
+            await client.zrem(self._scheduled_key, record_id)
             for status in _STATUS_VALUES:
                 await client.srem(self._status_key(status), record_id)
         if record.key is not None and str(_decode(await client.hget(self._keys_key, record.key))) == str(record.id):
@@ -870,8 +1105,16 @@ class RedisQueueBackend(BaseQueueBackend):
         return f"{self._key_prefix}:keys"
 
     @property
-    def _pending_key(self) -> "str":
-        return f"{self._key_prefix}:pending"
+    def _ready_key(self) -> "str":
+        return f"{self._key_prefix}:ready"
+
+    @property
+    def _scheduled_key(self) -> "str":
+        return f"{self._key_prefix}:scheduled"
+
+    @property
+    def _completion_channel(self) -> "str":
+        return f"{self._key_prefix}:completions"
 
     def _status_key(self, status: "str") -> "str":
         return f"{self._key_prefix}:status:{status}"
@@ -920,6 +1163,7 @@ class RedisQueueBackend(BaseQueueBackend):
             "error": record.error or "",
             "key": record.key or "",
             "metadata": _json_dumps(record.metadata),
+            "ready_score": repr(_ready_score(record)),
         }
 
     def _record_from_mapping(self, mapping: "dict[str, Any]") -> "QueuedTaskRecord":
@@ -962,6 +1206,15 @@ async def _execute_pipeline(pipeline: "RedisPipelineLike") -> "list[Any]":
     result = pipeline.execute()
     if inspect.isawaitable(result):
         return list(await result)
+    return list(cast("list[Any]", result))
+
+
+async def _eval_script(client: "RedisClientLike", script: "str", keys: "list[str]", args: "list[str]") -> "list[Any]":
+    result = client.eval(script, len(keys), *keys, *args)
+    if inspect.isawaitable(result):
+        result = await result
+    if result is None:
+        return []
     return list(cast("list[Any]", result))
 
 
@@ -1020,12 +1273,23 @@ def _deserialize_datetime(value: "Any") -> "datetime | None":
     return parsed.astimezone(timezone.utc)
 
 
-def _score_datetime(value: "datetime | None") -> "float":
-    if value is None or value <= _utc_now():
+_PRIORITY_STRIDE = 1e13
+
+
+def _ready_score(record: "QueuedTaskRecord") -> "float":
+    created = record.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    created_ms = created.astimezone(timezone.utc).timestamp() * 1000.0
+    return (-record.priority) * _PRIORITY_STRIDE + created_ms
+
+
+def _scheduled_score(value: "datetime | None") -> "float":
+    if value is None:
         return 0.0
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).timestamp()
+    return value.astimezone(timezone.utc).timestamp() * 1000.0
 
 
 def _decode(value: "Any") -> "Any":
