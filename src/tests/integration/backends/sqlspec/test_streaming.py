@@ -5,7 +5,7 @@ materializing every row, and ``get_statistics`` consumes the same stream.
 """
 
 from inspect import isasyncgen
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -38,7 +38,7 @@ async def test_iter_all_yields_every_record(sqlspec_backend: "SQLSpecQueueBacken
 async def test_iter_all_returns_async_generator(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     stream = sqlspec_backend.iter_all()
     assert isasyncgen(stream)
-    await _drain(stream)
+    await _drain(cast("AsyncIterator[QueuedTaskRecord]", stream))
 
 
 async def test_iter_all_empty_table(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
