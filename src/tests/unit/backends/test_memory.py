@@ -402,6 +402,47 @@ async def test_memory_backend_null_heartbeats_is_fenced_by_retry_count() -> "Non
     assert stored.heartbeat_at == second_heartbeat
 
 
+async def test_memory_backend_repeated_timeouts_reuse_one_notification_read() -> "None":
+    backend = InMemoryQueueBackend()
+    event = _CountingEvent()
+    backend._notification_event = cast("Any", event)
+
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+
+    assert event.waits == 1
+    assert backend._pending_read.has_pending is True
+    await backend.close()
+
+
+async def test_memory_backend_notification_after_timeout_is_consumed_once() -> "None":
+    backend = InMemoryQueueBackend()
+    event = _CountingEvent()
+    backend._notification_event = cast("Any", event)
+
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    await backend.enqueue("tasks.after_timeout")
+
+    assert await backend.wait_for_notifications(timeout=0.01) is True
+    assert event.waits == 1
+    assert backend._pending_read.has_pending is False
+    # The consumed wakeup must not linger for a second waiter.
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert event.waits == 2
+    await backend.close()
+
+
+async def test_memory_backend_close_cancels_retained_notification_read() -> "None":
+    backend = InMemoryQueueBackend()
+
+    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert backend._pending_read.has_pending is True
+
+    await backend.close()
+    assert backend._pending_read.has_pending is False
+
+
 async def test_queue_service_memory_fixture_yields_running_service(queue_service_memory: "QueueService") -> "None":
     """The unit-tier `queue_service_memory` fixture yields a running QueueService."""
     assert queue_service_memory.config.queue_backend == "memory"
@@ -429,6 +470,99 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
     assert result.result == "QUEUE"
 
 
+async def test_memory_backend_claim_many_acquires_lock_once_for_non_empty_batch() -> "None":
+    backend = InMemoryQueueBackend()
+    for index in range(3):
+        await backend.enqueue(f"tasks.batch.{index}")
+    lock = _CountingAsyncLock()
+    backend._lock = cast("Any", lock)
+
+    claimed = await backend.claim_many(limit=3)
+
+    assert lock.entries == 1
+    assert len(claimed) == 3
+    assert all(record.status == "running" for record in claimed)
+
+
+async def test_memory_backend_claim_many_matches_sequential_claim_next() -> "None":
+    specs = [
+        EnqueueSpec(task_name="tasks.batch.low", priority=1),
+        EnqueueSpec(task_name="tasks.batch.high", priority=10),
+        EnqueueSpec(task_name="tasks.batch.mid", priority=5, execution_backend="cloudrun"),
+        EnqueueSpec(task_name="tasks.batch.mid2", priority=5),
+    ]
+
+    sequential_backend = InMemoryQueueBackend()
+    await sequential_backend.enqueue_many(specs)
+    sequential: "list[Any]" = []
+    while (record := await sequential_backend.claim_next()) is not None:
+        sequential.append(record)
+
+    native_backend = InMemoryQueueBackend()
+    await native_backend.enqueue_many(specs)
+    native = await native_backend.claim_many(limit=10)
+
+    compared_fields = (
+        "task_name",
+        "queue",
+        "execution_backend",
+        "execution_profile",
+        "priority",
+        "retry_count",
+        "scheduled_at",
+        "status",
+    )
+    assert [{field: getattr(record, field) for field in compared_fields} for record in sequential] == [
+        {field: getattr(record, field) for field in compared_fields} for record in native
+    ]
+    for record in native:
+        assert record.status == "running"
+        assert record.started_at is not None
+        assert record.heartbeat_at == record.started_at
+
+
+async def test_memory_backend_claim_many_handles_limits_filters_and_scheduled() -> "None":
+    backend = InMemoryQueueBackend()
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    high = await backend.enqueue("tasks.batch.high", priority=10)
+    mid = await backend.enqueue("tasks.batch.mid", priority=5)
+    low = await backend.enqueue("tasks.batch.low", priority=1)
+    await backend.enqueue("tasks.batch.scheduled", priority=100, scheduled_at=later)
+    await backend.enqueue("tasks.batch.other_queue", priority=100, queue="reports")
+
+    empty_backend = InMemoryQueueBackend()
+    assert await empty_backend.claim_many(limit=5) == []
+
+    assert [record.id for record in await backend.claim_many(limit=1, queues=("default",))] == [high.id]
+
+    remaining = await backend.claim_many(limit=10, queues=("default",))
+    assert [record.id for record in remaining] == [mid.id, low.id]
+
+    reports = await backend.claim_many(limit=10, queues=("reports",))
+    assert [record.task_name for record in reports] == ["tasks.batch.other_queue"]
+
+
+async def test_memory_backend_claim_many_never_double_claims_under_contention() -> "None":
+    backend = InMemoryQueueBackend()
+    task_count = 40
+    enqueued = {(await backend.enqueue(f"tasks.batch.contended.{index}")).id for index in range(task_count)}
+
+    first, second = await asyncio.gather(backend.claim_many(limit=task_count), backend.claim_many(limit=task_count))
+    claimed_ids = [record.id for record in (*first, *second)]
+
+    assert len(claimed_ids) == task_count
+    assert set(claimed_ids) == enqueued
+    assert len(set(claimed_ids)) == len(claimed_ids)
+
+
+async def test_memory_backend_claim_many_rejects_non_positive_limit() -> "None":
+    backend = InMemoryQueueBackend()
+    await backend.enqueue("tasks.batch.only")
+
+    assert await backend.claim_many(limit=0) == []
+    assert await backend.claim_many(limit=-3) == []
+
+
 class _CountingAsyncLock:
     def __init__(self) -> "None":
         self.entries = 0
@@ -444,6 +578,7 @@ class _CountingEvent:
     def __init__(self) -> "None":
         self.clears = 0
         self.sets = 0
+        self.waits = 0
         self._event = asyncio.Event()
 
     def is_set(self) -> "bool":
@@ -458,4 +593,5 @@ class _CountingEvent:
         self._event.clear()
 
     async def wait(self) -> "bool":
+        self.waits += 1
         return await self._event.wait()

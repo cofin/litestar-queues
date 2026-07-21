@@ -1,5 +1,6 @@
 """SQLSpec event-channel sink for external queue event producers."""
 
+import asyncio
 import inspect
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
@@ -17,7 +18,7 @@ _POLLING_TRANSPORT = "polling"
 
 
 class SQLSpecQueueEventSink:
-    """Publish queue events through a SQLSpec ``AsyncEventChannel``."""
+    """Publish queue events through a SQLSpec sync or async event channel."""
 
     __slots__ = (
         "_backend_config",
@@ -52,9 +53,7 @@ class SQLSpecQueueEventSink:
     async def close(self) -> "None":
         """Close only SQLSpec resources owned by this sink."""
         if self._owns_channel and self._channel is not None:
-            result = self._channel.shutdown()
-            if inspect.isawaitable(result):
-                await result
+            await _invoke_channel_method(self._channel, "shutdown")
             self._channel = None
         if self._owns_sqlspec and self._sqlspec is not None:
             result = self._sqlspec.close_all_pools()
@@ -69,14 +68,15 @@ class SQLSpecQueueEventSink:
                 await self._publish_one(event_chunk, channel=channel)
 
     async def publish_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
-        """Publish a producer batch without introducing a second event envelope."""
-        grouped: "dict[tuple[str, ...], list[QueueEvent]]" = {}
+        """Publish an ordered producer batch through one SQLSpec operation."""
+        events: "list[tuple[str, dict[str, Any], dict[str, object]]]" = []
         for event, channels in batch:
-            grouped.setdefault(tuple(channels), []).extend(self._event_chunks(event))
-        for channels, events in grouped.items():
-            for event in events:
-                for channel in channels:
-                    await self._publish_one(event, channel=channel)
+            for event_chunk in self._event_chunks(event):
+                payload = event_chunk.to_dict()
+                metadata = _metadata_for(event_chunk)
+                events.extend((channel, payload, metadata) for channel in channels)
+        if events:
+            await _invoke_channel_method(self._get_event_channel(), "publish_many", events)
 
     def _event_chunks(self, event: "QueueEvent") -> "Sequence[QueueEvent]":
         if self._max_payload_bytes is None:
@@ -88,7 +88,7 @@ class SQLSpecQueueEventSink:
 
     async def _publish_one(self, event: "QueueEvent", *, channel: "str") -> "None":
         event_channel = self._get_event_channel()
-        await event_channel.publish(channel, event.to_dict(), _metadata_for(event))
+        await _invoke_channel_method(event_channel, "publish", channel, event.to_dict(), _metadata_for(event))
 
     def _get_event_channel(self) -> "Any":
         if self._channel is None:
@@ -165,3 +165,18 @@ def _event_backend_name(backend_config: "object", event_settings: "dict[str, Any
 
 def _metadata_for(event: "QueueEvent") -> "dict[str, object]":
     return {"event_type": event.type, "queue_event_id": event.id, "queue_event_scope": event.scope}
+
+
+async def _invoke_channel_method(channel: "Any", method_name: "str", *args: "Any") -> "Any":
+    """Invoke a sync or async SQLSpec channel method without blocking the event loop.
+
+    Returns:
+        The event-channel method result.
+    """
+    method = getattr(channel, method_name)
+    if inspect.iscoroutinefunction(method):
+        return await method(*args)
+    result = await asyncio.to_thread(method, *args)
+    if inspect.isawaitable(result):
+        return await result
+    return result

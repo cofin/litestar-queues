@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
@@ -31,7 +32,7 @@ __all__ = ("InMemoryQueueBackend",)
 class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
-    __slots__ = ("_event_log", "_keys", "_lock", "_notification_event", "_records")
+    __slots__ = ("_event_log", "_keys", "_lock", "_notification_event", "_pending_read", "_records")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         super().__init__(config=config)
@@ -39,6 +40,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         self._keys: "dict[str, UUID]" = {}
         self._lock = asyncio.Lock()
         self._notification_event = asyncio.Event()
+        self._pending_read = PendingNativeRead()
         self._event_log: "QueueEventLog | None" = None
 
     @property
@@ -177,6 +179,41 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.started_at = now
             record.heartbeat_at = now
             return record
+
+    async def claim_many(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` due tasks under a single lock acquisition.
+
+        Selects eligible records with the same queue/execution/due filter and
+        priority ordering as :meth:`list_pending`, then transitions them to
+        ``running`` inside one critical section using a single ``now`` snapshot.
+        The returned records carry the same owner/start/heartbeat fields a
+        sequential :meth:`claim_next` loop would produce.
+
+        Returns:
+            Claimed task records in claim order.
+        """
+        if limit <= 0:
+            return []
+        async with self._lock:
+            now = _utc_now()
+            eligible = [
+                record
+                for record in self._records.values()
+                if record.status in {"pending", "scheduled"}
+                and (record.scheduled_at is None or record.scheduled_at <= now)
+                and (not queues or record.queue in queues)
+                and (execution_backend is None or record.execution_backend == execution_backend)
+            ]
+            eligible.sort(key=lambda record: (-record.priority, record.created_at))
+            claimed: "list[QueuedTaskRecord]" = []
+            for record in eligible[:limit]:
+                record.status = "running"
+                record.started_at = now
+                record.heartbeat_at = now
+                claimed.append(record)
+            return claimed
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -389,15 +426,19 @@ class InMemoryQueueBackend(BaseQueueBackend):
             self._notification_event.set()
 
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
-        if self._notification_event.is_set():
+        if not self._pending_read.has_pending and self._notification_event.is_set():
             self._notification_event.clear()
             return True
-        try:
-            await asyncio.wait_for(self._notification_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        task = await self._pending_read.race(self._notification_event.wait, timeout)
+        if task is None:
             return False
+        task.result()
         self._notification_event.clear()
         return True
+
+    async def close(self) -> "None":
+        """Cancel any retained notification wait."""
+        await self._pending_read.aclose()
 
     async def clear(self) -> "None":
         """Clear all in-memory records."""
@@ -405,6 +446,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             self._records.clear()
             self._keys.clear()
             self._notification_event.clear()
+        await self._pending_read.aclose()
         if self._event_log is not None:
             clear = getattr(self._event_log, "clear", None)
             if clear is not None:

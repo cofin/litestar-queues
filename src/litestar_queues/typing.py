@@ -19,11 +19,11 @@ from litestar_queues._typing import (
 from litestar_queues.events._typing import (
     ChannelsLike,
     ChannelsPublishBackend,
+    ChannelsPublishManyBackend,
     ChannelsStreamBackend,
     ChannelsSubscriber,
     ChannelsSubscriptionBackend,
     ChannelsWaitPublishedBackend,
-    ChannelsWaitPublishedManyBackend,
 )
 
 __all__ = (
@@ -31,11 +31,11 @@ __all__ = (
     "PROMETHEUS_INSTALLED",
     "ChannelsLike",
     "ChannelsPublishBackend",
+    "ChannelsPublishManyBackend",
     "ChannelsStreamBackend",
     "ChannelsSubscriber",
     "ChannelsSubscriptionBackend",
     "ChannelsWaitPublishedBackend",
-    "ChannelsWaitPublishedManyBackend",
     "OtelMeter",
     "OtelSpan",
     "OtelSpanKind",

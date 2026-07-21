@@ -48,6 +48,16 @@ raises a configuration error instead of silently using generic SQL.
    These are consumer choices; litestar-queues does not require or install
    them on your behalf.
 
+
+.. warning::
+
+   The ``mssql-python`` adapter is temporarily unsupported with SQLSpec 0.55.0
+   because its transaction path can report a successful commit while discarding
+   queue writes. Litestar Queues rejects that adapter at configuration time;
+   use ``pymssql`` or ``arrow-odbc`` for SQL Server until
+   `SQLSpec issue 642 <https://github.com/litestar-org/sqlspec/issues/642>`_
+   is fixed upstream.
+
 Schema ownership
 ================
 

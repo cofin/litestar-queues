@@ -45,6 +45,21 @@ Task arguments, keyword arguments, metadata, results, and errors must be JSON
 serializable. Give each application and environment a distinct ``key_prefix``;
 do not use ``FLUSHALL`` for test cleanup on shared infrastructure.
 
+Batch claiming
+==============
+
+Redis and Valkey deliberately do not advertise native batch claiming
+(``capabilities.supports_batch_claim`` is ``False``). Workers claim tasks by
+looping the exclusive single-task ``claim_next`` primitive, which preserves both
+priority ordering and single-owner semantics.
+
+A bounded atomic ``claim_many`` is not possible on the current storage layout:
+the ready set is a sorted set keyed by due time, while claim eligibility also
+requires priority ordering. An atomic implementation would either scan every due
+task (unbounded) or inspect only a due-time prefix and thereby change fairness.
+Supporting it correctly requires a separate ready-by-priority index migration,
+which is intentionally out of scope here.
+
 Worker wakeups
 ==============
 

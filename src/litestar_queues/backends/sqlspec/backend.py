@@ -1,10 +1,9 @@
 """SQLSpec queue backend."""
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID
@@ -14,6 +13,7 @@ from sqlspec.exceptions import SerializationConflictError
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
+from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
@@ -69,12 +69,22 @@ _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 _NOTIFY_TRANSPORT_POLLING = "polling"
-_CANONICAL_NOTIFY_TRANSPORTS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
+_CANONICAL_EVENT_BACKENDS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
+_CANONICAL_NOTIFY_TRANSPORTS = _CANONICAL_EVENT_BACKENDS | {_NOTIFY_TRANSPORT_POLLING}
 # Adapter families that can push worker wakeups. Postgres-over-asyncpg ships the
-# durable LISTEN/NOTIFY hybrid; psycopg/psqlpy fall back to the durable table
-# queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
+# durable LISTEN/NOTIFY hybrid; psycopg/psqlpy and DuckDB use the durable table
+# queue. Everything else polls.
 _NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
-_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"psycopg", "psqlpy"})
+_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb", "psycopg", "psqlpy"})
+# psqlpy's ``QueryResult`` exposes no command-tag/status metadata and
+# arrow-odbc's cursor exposes no portable rowcount API, so SQLSpec's
+# rows-affected extraction can only ever report ``0`` for non-SELECT
+# statements on these adapters, regardless of whether the statement actually
+# matched a row. Every write-then-verify check in this module already treats
+# a negative rows-affected as "unknown, verify via SELECT"; normalizing these
+# adapters' unconditional ``0`` to that same sentinel reuses that existing
+# fallback instead of misreading it as a genuine zero-row result.
+_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"psqlpy", "arrow_odbc"})
 
 
 def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool":
@@ -96,8 +106,8 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
     advertise push wakeups where the driver can deliver them.
 
     Returns:
-        ``"notify_queue"`` for asyncpg, ``"poll_queue"`` for psycopg/psqlpy,
-        otherwise ``"polling"``.
+        ``"notify_queue"`` for asyncpg, ``"poll_queue"`` for DuckDB,
+        psycopg, and psqlpy, otherwise ``"polling"``.
     """
     if adapter_name in _NOTIFY_DURABLE_ADAPTERS:
         return "notify_queue"
@@ -107,18 +117,12 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
 
 
 def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
-    """Validate a SQLSpec event backend name against the queue transport vocabulary.
-
-    SQLSpec 0.55+ uses the same canonical transport names we do
-    (``notify``, ``notify_queue``, ``poll_queue``, ``aq``, ``txeventq``), so no
-    translation is required; this only guards against unrecognized values.
+    """Return a canonical SQLSpec event backend name.
 
     Returns:
-        The canonical queue transport name, or ``None`` when no backend is set.
+        The canonical queue transport name, if the backend is supported.
     """
-    if backend_name is None:
-        return None
-    return _validate_queue_notify_transport(backend_name)
+    return backend_name if backend_name in _CANONICAL_EVENT_BACKENDS else None
 
 
 def _validate_queue_notify_transport(transport: "str") -> "str":
@@ -147,6 +151,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_event_poll_interval",
         "_event_queue_table",
         "_event_settings",
+        "_event_stream",
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
@@ -160,6 +165,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_opened",
         "_owns_event_channel",
         "_owns_sqlspec",
+        "_pending_read",
         "_queue_observability",
         "_queue_table_name",
         "_sqlspec",
@@ -208,6 +214,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_log_store: "Any | None" = None
         self._event_log: "SQLSpecQueueEventLog | None" = None
         self._store: "SQLSpecQueueStore | None" = None
+        self._event_stream: "Any | None" = None
+        self._pending_read = PendingNativeRead()
         self._opened = False
 
     async def open(self) -> "bool":
@@ -230,9 +238,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Close SQLSpec resources."""
         if self._event_log is not None:
             await self._event_log.flush_events()
+        await self._close_notification_stream()
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
-            await self._event_channel.shutdown()
+            await _invoke_event_channel_method(self._event_channel, "shutdown")
             self._event_channel = None
         if self._owns_sqlspec and self._sqlspec is not None:
             await self._sqlspec.close_all_pools()
@@ -454,7 +463,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             started_at=self._serialize_datetime(now),
                         )
                     )
-                    if result.rows_affected == 0:
+                    if self._resolve_rows_affected(result) == 0:
                         await driver.rollback()
                         return None
 
@@ -575,7 +584,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             started_at=self._serialize_datetime(now),
                         )
                     )
-                    if result.rows_affected == 0:
+                    if self._resolve_rows_affected(result) == 0:
                         await driver.rollback()
                         return None
                     updated_row = await self._select_task(driver, record.id)
@@ -634,7 +643,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             expected_retry_count=expected_retry_count,
                         )
                     )
-                    rows_affected = _rows_affected(updated)
+                    rows_affected = self._resolve_rows_affected(updated)
                     row = await self._select_task(driver, task_id) if rows_affected == 1 or rows_affected < 0 else None
                     if row is not None:
                         completed_record = self._record_from_row(row)
@@ -732,7 +741,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         expected_status = "failed"
                         expected_retry_after_update = record.retry_count
 
-                    rows_affected = _rows_affected(updated)
+                    rows_affected = self._resolve_rows_affected(updated)
                     if rows_affected == 1 or rows_affected < 0:
                         updated_row = await self._select_task(driver, task_id)
                         if updated_row is not None:
@@ -768,7 +777,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         include_running=include_running,
                     )
                 )
-                rows_affected = _rows_affected(result)
+                rows_affected = self._resolve_rows_affected(result)
                 if rows_affected < 0:
                     updated_row = await self._select_task(driver, task_id)
                     cancelled = updated_row is not None and self._record_from_row(updated_row).status == "cancelled"
@@ -882,7 +891,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     metadata_json=metadata_json,
                 )
             )
-            rows_affected = int(execution_result.rows_affected)
+            rows_affected = self._resolve_rows_affected(execution_result)
             if rows_affected == 1:
                 result.touched_task_ids.add(touch.task_id)
             elif rows_affected == 0:
@@ -959,7 +968,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     priority=retry_priority,
                                 )
                             )
-                            rows_affected = _rows_affected(updated)
+                            rows_affected = self._resolve_rows_affected(updated)
                             if rows_affected == 1 or (
                                 rows_affected < 0
                                 and await self._stale_retry_updated(
@@ -985,7 +994,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     heartbeat_cutoff=serialized_cutoff,
                                 )
                             )
-                            rows_affected = _rows_affected(updated)
+                            rows_affected = self._resolve_rows_affected(updated)
                             if rows_affected == 1 or (
                                 rows_affected < 0 and await self._stale_fail_updated(driver, record.id)
                             ):
@@ -1026,7 +1035,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         execution_ref=execution_ref,
                     )
                 )
-                row = await self._select_task(driver, task_id) if result.rows_affected else None
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1045,7 +1054,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         task_id=str(task_id), execution_backend=execution_backend, execution_profile=execution_profile
                     )
                 )
-                row = await self._select_task(driver, task_id) if result.rows_affected else None
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1109,10 +1118,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                # Some drivers (e.g. psqlpy) cannot reliably report
-                # ``rows_affected`` for DELETE: they return ``-1`` as a
-                # sentinel for "unknown". Count first inside the same
-                # transaction so the cleanup count is always exact.
+                # Some drivers (e.g. psqlpy, see _UNRELIABLE_ROWCOUNT_ADAPTERS)
+                # cannot reliably report ``rows_affected`` for DELETE. Count
+                # first inside the same transaction so the cleanup count is
+                # always exact.
                 count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
                 deleted = int(count_row["terminal_count"]) if count_row is not None else 0
                 if deleted > 0:
@@ -1133,7 +1142,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             and record.is_due
         ):
             with self._observe_queue_operation("notify", queue=record.queue):
-                await self._event_channel.publish(
+                await _invoke_event_channel_method(
+                    self._event_channel,
+                    "publish",
                     self._resolve_notification_channel(),
                     {"event": "task_available"},
                     {"event_type": "litestar_queues.task_available"},
@@ -1143,27 +1154,45 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
         """Wait for a SQLSpec event when queue notifications are configured.
 
+        One ``iter_events`` stream and its pending ``anext`` read are retained
+        across worker poll timeouts; only an event, a driver failure, or
+        backend close ends them.
+
         Returns:
             True when a notification was received.
         """
         if not self._notifications_enabled or self._event_channel is None:
             return await super().wait_for_notifications(timeout=timeout)
 
-        stream = self._event_channel.iter_events(
-            self._resolve_notification_channel(), poll_interval=self._event_poll_interval
-        )
-        try:
-            if timeout is None:
-                event = await anext(stream)
-            else:
-                event = await asyncio.wait_for(anext(stream), timeout=timeout)
-        except asyncio.TimeoutError:
+        stream = self._event_stream
+        if stream is None:
+            stream = self._event_channel.iter_events(
+                self._resolve_notification_channel(), poll_interval=self._event_poll_interval
+            )
+            self._event_stream = stream
+        task = await self._pending_read.race(lambda: _next_event(stream), timeout)
+        if task is None:
             return False
-        finally:
-            await cast("Any", stream).aclose()
-
-        await self._event_channel.ack(event.event_id)
+        exc = task.exception()
+        if exc is not None:
+            await self._close_notification_stream()
+            raise exc
+        event = task.result()
+        await _invoke_event_channel_method(self._event_channel, "ack", event.event_id)
         return True
+
+    async def _close_notification_stream(self) -> "None":
+        """Cancel the retained event read and close the iterator."""
+        await self._pending_read.aclose()
+        stream = self._event_stream
+        self._event_stream = None
+        if stream is not None:
+            with suppress(Exception):
+                close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+                if close is not None:
+                    result = close()
+                    if isawaitable(result):
+                        await result
 
     @staticmethod
     def _default_sqlspec_config() -> "SQLSpecConfig":
@@ -1245,7 +1274,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
         )
         if configured_backend is not None:
-            return _canonical_notify_transport(str(configured_backend)) or _NOTIFY_TRANSPORT_POLLING
+            return _validate_queue_notify_transport(str(configured_backend))
         return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
 
     def _notifications_should_enable(
@@ -1341,6 +1370,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             else:
                 self._sqlspec_config = self._default_sqlspec_config()
         return cast("SQLSpecConfig", self._sqlspec_config)
+
+    def _resolve_rows_affected(self, result: "Any") -> "int":
+        """Return :func:`_rows_affected` normalized for this backend's configured adapter."""
+        return _rows_affected(result, resolve_adapter_name(self._get_sqlspec_config()))
 
     def _get_store(self) -> "SQLSpecQueueStore":
         if self._store is None:
@@ -1866,8 +1899,17 @@ def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
 
-def _rows_affected(result: "Any") -> "int":
-    return int(getattr(result, "rows_affected", 0) or 0)
+def _rows_affected(result: "Any", adapter_name: "str | None" = None) -> "int":
+    """Return the reported affected-row count.
+
+    Normalized to ``-1`` (the existing "unknown, verify" sentinel) when
+    ``adapter_name`` is one of :data:`_UNRELIABLE_ROWCOUNT_ADAPTERS`, whose
+    driver can report a genuine ``0`` and an unparsable result identically.
+    """
+    rows_affected = int(getattr(result, "rows_affected", 0) or 0)
+    if rows_affected == 0 and adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS:
+        return -1
+    return rows_affected
 
 
 def _is_unique_violation(exc: "BaseException") -> "bool":
@@ -1974,6 +2016,47 @@ def _events_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "
         return {}
     extension_config = sqlspec_config.extension_config or {}
     return dict(extension_config.get(_EVENT_EXTENSION_NAME, {}) or {})
+
+
+async def _invoke_event_channel_method(event_channel: "Any", method_name: "str", *args: "Any") -> "Any":
+    """Invoke a SQLSpec sync or async event-channel method without blocking the loop.
+
+    Returns:
+        The event-channel method result.
+    """
+    method = getattr(event_channel, method_name)
+    if iscoroutinefunction(method):
+        return await method(*args)
+    result = await async_(method)(*args)
+    if isawaitable(result):
+        return await result
+    return result
+
+
+async def _next_event(stream: "Any") -> "Any":
+    """Read from a SQLSpec sync or async event iterator.
+
+    Returns:
+        The next event message.
+    """
+    if hasattr(stream, "__anext__"):
+        return await anext(stream)
+    has_event, event = await async_(_next_sync_event)(stream)
+    if not has_event:
+        raise StopAsyncIteration
+    return event
+
+
+def _next_sync_event(stream: "Iterator[Any]") -> "tuple[bool, Any]":
+    """Read one sync event without leaking ``StopIteration`` through a future.
+
+    Returns:
+        A pair indicating whether an event was read and the event value.
+    """
+    try:
+        return True, next(stream)
+    except StopIteration:
+        return False, None
 
 
 def _setting(queue_settings: "dict[str, Any]", *names: "str") -> "Any":
