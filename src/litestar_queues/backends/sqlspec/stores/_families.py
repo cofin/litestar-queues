@@ -149,6 +149,8 @@ class PostgresQueueStore(SQLSpecQueueStore):
         "result_json",
     })
     supports_bulk_touch_heartbeats: "ClassVar[bool]" = True
+    supports_dml_returning: "ClassVar[bool]" = True
+    supports_returning_claim: "ClassVar[bool]" = True
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Postgres-family queue artifacts."""
@@ -215,6 +217,7 @@ class CockroachQueueStore(PostgresQueueStore):
 
     data_dictionary_dialect: "ClassVar[str | None]" = "cockroachdb"
     table_storage_parameters: "ClassVar[bool]" = False
+    supports_returning_claim: "ClassVar[bool]" = False
 
     @property
     def supports_skip_locked(self) -> "bool":

@@ -521,6 +521,94 @@ def test_postgres_and_duckdb_stores_build_bulk_heartbeat_updates() -> "None":
     ]
 
 
+def test_sqlspec_claim_batch_sql_is_cached() -> "None":
+    """Hot-path RETURNING builders are built once per store instance and reused by identity."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    claim_first = store.claim_batch_returning_sql(queue_count=1, filter_execution_backend=True)
+    claim_second = store.claim_batch_returning_sql(queue_count=1, filter_execution_backend=True)
+
+    assert claim_first is claim_second
+    assert store._cached_sql["claim_batch:1:1"] is claim_first
+    assert store.complete_returning_sql(fence_retry_count=True) is store.complete_returning_sql(fence_retry_count=True)
+    assert store.fail_returning_sql(fence_retry_count=True) is store.fail_returning_sql(fence_retry_count=True)
+    assert store.insert_returning_sql() is store.insert_returning_sql()
+    assert store.claim_batch_returning_sql(
+        queue_count=0, filter_execution_backend=False
+    ) is not store.claim_batch_returning_sql(queue_count=1, filter_execution_backend=True)
+    assert store.complete_returning_sql(fence_retry_count=False) is not store.complete_returning_sql(
+        fence_retry_count=True
+    )
+
+
+def test_sqlspec_claim_batch_returning_sql_shape() -> "None":
+    """The batched claim statement locks, orders, filters, and returns full rows."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    sql = store.claim_batch_returning_sql(queue_count=2, filter_execution_backend=True)
+
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert 'ORDER BY "priority" DESC, "created_at" ASC' in sql
+    assert "RETURNING" in sql
+    assert "\"status\" = 'running'" in sql
+    assert '"started_at" = :started_at' in sql
+    assert '"heartbeat_at" = :heartbeat_at' in sql
+    assert '"queue" IN (:queue_0, :queue_1)' in sql
+    assert '"execution_backend" = :execution_backend' in sql
+    assert "LIMIT :limit" in sql
+
+    unfiltered = store.claim_batch_returning_sql(queue_count=0, filter_execution_backend=False)
+    assert '"queue" IN' not in unfiltered
+    assert '"execution_backend" = :execution_backend' not in unfiltered
+
+
+def test_sqlspec_complete_returning_sql_clears_heartbeat_and_fences() -> "None":
+    """The completion statement clears the heartbeat and fences on running status."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    fenced = store.complete_returning_sql(fence_retry_count=True)
+
+    assert "\"status\" = 'completed'" in fenced
+    assert '"heartbeat_at" = NULL' in fenced
+    assert "\"status\" = 'running'" in fenced
+    assert '"retry_count" = :expected_retry_count' in fenced
+    assert '"error" = NULL' in fenced
+    assert ":expected_retry_count" not in store.complete_returning_sql(fence_retry_count=False)
+
+
+def test_sqlspec_fail_returning_sql_uses_case_retry_branch() -> "None":
+    """The fail statement branches retry vs terminal with a CASE and clears the heartbeat."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    sql = store.fail_returning_sql(fence_retry_count=False)
+
+    assert "CASE WHEN :retry = TRUE AND \"retry_count\" < \"max_retries\" THEN 'pending' ELSE 'failed' END" in sql
+    assert '"heartbeat_at" = NULL' in sql
+    assert '"error" = :error' in sql
+    assert (
+        '"completed_at" = CASE WHEN :retry = TRUE AND "retry_count" < "max_retries" '
+        "THEN NULL ELSE CAST(:completed_at AS TIMESTAMPTZ) END" in sql
+    )
+
+
+def test_sqlspec_returning_columns_alias_remapped_columns() -> "None":
+    """RETURNING aliases physical columns back to canonical names for record reads."""
+    store = AsyncpgQueueStore(
+        _fake_adapter_config("asyncpg", dialect="postgres"),
+        table_name="queue_tasks",
+        column_map={"task_key": "dedupe_key"},
+    )
+
+    insert_sql = store.insert_returning_sql()
+
+    assert '"result" AS "result_json"' in insert_sql
+    assert '"metadata" AS "metadata_json"' in insert_sql
+    assert '"dedupe_key" AS "task_key"' in insert_sql
+    assert 't."dedupe_key" AS "task_key"' in store.claim_batch_returning_sql(
+        queue_count=0, filter_execution_backend=False
+    )
+
+
 def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
     store = create_queue_store(
         _fake_adapter_config(
@@ -1399,6 +1487,239 @@ async def test_sqlspec_postgres_touch_heartbeats_uses_bulk_path(
         assert mismatch_stored.heartbeat_at == mismatch_claim.heartbeat_at
     finally:
         await backend.close()
+
+
+@asynccontextmanager
+async def _postgres_asyncpg_backend(
+    postgres_service: "PostgresService", request: "FixtureRequest", prefix: "str"
+) -> "AsyncIterator[SQLSpecQueueBackend]":
+    """Yield an opened asyncpg-backed SQLSpec queue backend on a per-test table.
+
+    Yields:
+        The opened backend, closed on exit.
+    """
+    pytest.importorskip("asyncpg")
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+    table_name = table_name_for_test(prefix, "asyncpg", request.node.nodeid)
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            config=AsyncpgConfig(
+                connection_config={
+                    "host": postgres_service.host,
+                    "port": postgres_service.port,
+                    "user": postgres_service.user,
+                    "password": postgres_service.password,
+                    "database": postgres_service.database,
+                }
+            ),
+            queue_table_name=table_name,
+        )
+    )
+    await backend.open()
+    await backend.create_schema()
+    try:
+        yield backend
+    finally:
+        await backend.close()
+
+
+async def test_sqlspec_postgres_claim_many_single_statement_orders_and_fences(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """The native ``claim_many`` orders, filters, and never double-claims under SKIP LOCKED."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_claim_many") as backend:
+        assert type(backend._get_store()).supports_returning_claim is True
+
+        high_first = await backend.enqueue("tasks.claim_many.high1", queue="q1", priority=10)
+        high_second = await backend.enqueue("tasks.claim_many.high2", queue="q1", priority=10)
+        mid = await backend.enqueue("tasks.claim_many.mid", queue="q1", priority=5)
+        low = await backend.enqueue("tasks.claim_many.low", queue="q1", priority=1)
+        other_queue = await backend.enqueue("tasks.claim_many.other_queue", queue="q2", priority=100)
+        other_backend = await backend.enqueue(
+            "tasks.claim_many.other_backend", queue="q1", priority=100, execution_backend="external"
+        )
+
+        claimed_order: "list[UUID]" = []
+        for _ in range(4):
+            batch = await backend.claim_many(limit=1, queues=("q1",), execution_backend="local")
+            assert len(batch) == 1
+            assert batch[0].status == "running"
+            claimed_order.append(batch[0].id)
+
+        assert claimed_order == [high_first.id, high_second.id, mid.id, low.id]
+        assert await backend.claim_many(limit=5, queues=("q1",), execution_backend="local") == []
+
+        untouched_queue = await backend.get_task(other_queue.id)
+        untouched_backend = await backend.get_task(other_backend.id)
+        assert untouched_queue is not None
+        assert untouched_queue.status == "pending"
+        assert untouched_backend is not None
+        assert untouched_backend.status == "pending"
+
+        concurrent_ids = {
+            (await backend.enqueue("tasks.claim_many.concurrent", queue="q3", priority=5)).id for _ in range(8)
+        }
+        first, second = await asyncio.gather(
+            backend.claim_many(limit=4, queues=("q3",)), backend.claim_many(limit=4, queues=("q3",))
+        )
+        claimed_ids = [record.id for record in (*first, *second)]
+        assert len(claimed_ids) == len(set(claimed_ids)), "a task was claimed by more than one worker"
+        while straggler := await backend.claim_many(limit=4, queues=("q3",)):
+            claimed_ids.extend(record.id for record in straggler)
+        assert len(claimed_ids) == len(set(claimed_ids))
+        assert set(claimed_ids) == concurrent_ids
+
+
+async def test_sqlspec_postgres_complete_clears_heartbeat_single_statement(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """The single-statement completion path clears the heartbeat and stores the result."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_complete") as backend:
+        record = await backend.enqueue("tasks.complete.single")
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert claimed.heartbeat_at is not None
+
+        completed = await backend.complete_task(claimed.id, result={"ok": True})
+
+        assert completed is not None
+        assert completed.status == "completed"
+        assert completed.heartbeat_at is None
+        assert completed.result == {"ok": True}
+        stored = await backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "completed"
+        assert stored.heartbeat_at is None
+
+
+async def test_sqlspec_postgres_fail_retry_and_terminal_single_statement(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """The CASE-based fail path branches retry then terminal, clearing the heartbeat both times."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_fail") as backend:
+        record = await backend.enqueue("tasks.fail.single", max_retries=1)
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+
+        retried = await backend.fail_task(record.id, "first failure")
+        assert retried is not None
+        assert retried.status == "pending"
+        assert retried.retry_count == 1
+        assert retried.heartbeat_at is None
+
+        reclaimed = await backend.claim_task(record.id)
+        assert reclaimed is not None
+        assert reclaimed.retry_count == 1
+
+        failed = await backend.fail_task(record.id, "second failure")
+        assert failed is not None
+        assert failed.status == "failed"
+        assert failed.error == "second failure"
+        assert failed.heartbeat_at is None
+        assert failed.completed_at is not None
+
+
+async def test_sqlspec_postgres_complete_fence_rejects_stale_retry_count(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """The completion fence rejects a stale ``expected_retry_count`` without mutating the row."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_fence") as backend:
+        record = await backend.enqueue("tasks.fence.stale", max_retries=1)
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert claimed.retry_count == 0
+
+        retried = await backend.fail_task(record.id, "requeue")
+        assert retried is not None
+        assert retried.retry_count == 1
+        reclaimed = await backend.claim_task(record.id)
+        assert reclaimed is not None
+        heartbeat = reclaimed.heartbeat_at
+
+        rejected = await backend.complete_task(record.id, result="late", expected_retry_count=0)
+
+        assert rejected is None
+        stored = await backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "running"
+        assert stored.retry_count == 1
+        assert stored.heartbeat_at == heartbeat
+        assert stored.result is None
+
+
+async def test_sqlspec_postgres_enqueue_returns_persisted_record(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """The RETURNING enqueue round-trips and keyed enqueue keeps deduplication."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_enqueue") as backend:
+        record = await backend.enqueue("tasks.enqueue.persisted", kwargs={"n": 1})
+        stored = await backend.get_task(record.id)
+
+        assert stored is not None
+        assert stored.id == record.id
+        assert stored.kwargs == {"n": 1}
+
+        first = await backend.enqueue("tasks.enqueue.keyed", kwargs={"n": 1}, key="dedupe:enqueue")
+        duplicate = await backend.enqueue("tasks.enqueue.keyed", kwargs={"n": 2}, key="dedupe:enqueue")
+
+        assert duplicate.id == first.id
+        assert duplicate.kwargs == {"n": 1}
+
+
+async def test_sqlspec_duckdb_uses_legacy_fallback_paths(
+    duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """DuckDB has no RETURNING gate, so enqueue/complete/fail route through the legacy methods."""
+    store = duckdb_backend._get_store()
+    assert type(store).supports_dml_returning is False
+    assert type(store).supports_returning_claim is False
+
+    invoked: "set[str]" = set()
+    original_enqueue = SQLSpecQueueBackend._enqueue_legacy
+    original_complete = SQLSpecQueueBackend._complete_task_legacy
+    original_fail = SQLSpecQueueBackend._fail_task_legacy
+
+    async def spy_enqueue(self: "SQLSpecQueueBackend", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        invoked.add("enqueue")
+        return await original_enqueue(self, record)
+
+    async def spy_complete(
+        self: "SQLSpecQueueBackend", task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
+        invoked.add("complete")
+        return await original_complete(self, task_id, result=result, expected_retry_count=expected_retry_count)
+
+    async def spy_fail(
+        self: "SQLSpecQueueBackend",
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        invoked.add("fail")
+        return await original_fail(self, task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_enqueue_legacy", spy_enqueue)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_complete_task_legacy", spy_complete)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_fail_task_legacy", spy_fail)
+
+    completed = await duckdb_backend.enqueue("tasks.legacy.complete")
+    claimed = await duckdb_backend.claim_task(completed.id)
+    assert claimed is not None
+    done = await duckdb_backend.complete_task(claimed.id, result={"ok": True})
+    assert done is not None
+    assert done.status == "completed"
+
+    flaky = await duckdb_backend.enqueue("tasks.legacy.fail", max_retries=1)
+    claimed_flaky = await duckdb_backend.claim_task(flaky.id)
+    assert claimed_flaky is not None
+    retried = await duckdb_backend.fail_task(flaky.id, "boom")
+    assert retried is not None
+    assert retried.status == "pending"
+
+    assert invoked == {"enqueue", "complete", "fail"}
 
 
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":

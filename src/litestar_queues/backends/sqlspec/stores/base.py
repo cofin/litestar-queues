@@ -19,7 +19,7 @@ from litestar_queues.backends.sqlspec.schema import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from sqlspec.builder import CreateIndex, CreateTable, Delete, DropIndex, DropTable, Insert, Select, Update
     from sqlspec.data_dictionary import DialectConfig
@@ -65,7 +65,7 @@ class BulkHeartbeatStatement:
 class SQLSpecQueueStore:
     """Base SQLSpec queue statement store."""
 
-    __slots__ = ("_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
+    __slots__ = ("_cached_sql", "_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
 
     data_dictionary_dialect: "ClassVar[str | None]" = None
     identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "double"
@@ -84,6 +84,8 @@ class SQLSpecQueueStore:
     auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
     bind_datetime_as_text: "ClassVar[bool]" = False
     bind_datetime_as_naive_utc: "ClassVar[bool]" = False
+    supports_dml_returning: "ClassVar[bool]" = False
+    supports_returning_claim: "ClassVar[bool]" = False
 
     def __init__(
         self,
@@ -100,6 +102,7 @@ class SQLSpecQueueStore:
         configured = validate_native_json_columns(native_json_columns or frozenset())
         self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
+        self._cached_sql: "dict[str, str]" = {}
 
     @property
     def table_name(self) -> "str":
@@ -196,6 +199,144 @@ class SQLSpecQueueStore:
         fail on another.
         """
         return [{self._col(column): row[column] for column in _TASK_COLUMNS} for row in rows]
+
+    def _cached(self, key: "str", build: "Callable[[], str]") -> "str":
+        cached = self._cached_sql.get(key)
+        if cached is None:
+            cached = build()
+            self._cached_sql[key] = cached
+        return cached
+
+    def _returning_columns_sql(self) -> "str":
+        return ", ".join(self._returning_column(canonical) for canonical in _TASK_COLUMNS)
+
+    def _returning_column(self, canonical: "str") -> "str":
+        column = self._quoted_col(canonical)
+        if self._col(canonical) == canonical:
+            return column
+        return f"{column} AS {self._quote_identifier(canonical)}"
+
+    def _prefixed_returning_columns_sql(self, alias: "str") -> "str":
+        parts: "list[str]" = []
+        for canonical in _TASK_COLUMNS:
+            column = f"{alias}.{self._quoted_col(canonical)}"
+            if self._col(canonical) == canonical:
+                parts.append(column)
+            else:
+                parts.append(f"{column} AS {self._quote_identifier(canonical)}")
+        return ", ".join(parts)
+
+    def insert_returning_sql(self) -> "str":
+        """Return a cached single-row ``INSERT ... RETURNING`` for the hot enqueue path.
+
+        Returns:
+            A parametrized ``INSERT ... VALUES (...) RETURNING`` statement.
+        """
+
+        def build() -> "str":
+            columns = [self._col(canonical) for canonical in _TASK_COLUMNS]
+            quoted = ", ".join(self._quote_identifier(column) for column in columns)
+            placeholders = ", ".join(f":{column}" for column in columns)
+            return (
+                f"INSERT INTO {self._quoted_table_name()} ({quoted}) "  # noqa: S608
+                f"VALUES ({placeholders}) RETURNING {self._returning_columns_sql()}"
+            )
+
+        return self._cached("insert_returning", build)
+
+    def claim_batch_returning_sql(self, *, queue_count: "int", filter_execution_backend: "bool") -> "str":
+        """Return a cached batched claim statement locking rows with SKIP LOCKED.
+
+        Returns:
+            An ``UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED LIMIT :limit) ... RETURNING`` statement.
+        """
+        cache_key = f"claim_batch:{queue_count}:{int(filter_execution_backend)}"
+
+        def build() -> "str":
+            table = self._quoted_table_name()
+            id_col = self._quoted_col("id")
+            status_col = self._quoted_col("status")
+            scheduled_col = self._quoted_col("scheduled_at")
+            queue_col = self._quoted_col("queue")
+            eb_col = self._quoted_col("execution_backend")
+            priority_col = self._quoted_col("priority")
+            created_col = self._quoted_col("created_at")
+            conditions = [
+                f"{status_col} IN ('pending', 'scheduled')",
+                f"({scheduled_col} IS NULL OR {scheduled_col} <= :now)",
+            ]
+            if queue_count:
+                placeholders = ", ".join(f":queue_{index}" for index in range(queue_count))
+                conditions.append(f"{queue_col} IN ({placeholders})")
+            if filter_execution_backend:
+                conditions.append(f"{eb_col} = :execution_backend")
+            where = " AND ".join(conditions)
+            return (
+                f"UPDATE {table} AS t "  # noqa: S608
+                f"SET {status_col} = 'running', {self._quoted_col('started_at')} = :started_at, "
+                f"{self._quoted_col('heartbeat_at')} = :heartbeat_at "
+                f"FROM (SELECT {id_col} FROM {table} WHERE {where} "
+                f"ORDER BY {priority_col} DESC, {created_col} ASC "
+                f"FOR UPDATE SKIP LOCKED LIMIT :limit) AS sub "
+                f"WHERE t.{id_col} = sub.{id_col} "
+                f"RETURNING {self._prefixed_returning_columns_sql('t')}"
+            )
+
+        return self._cached(cache_key, build)
+
+    def complete_returning_sql(self, *, fence_retry_count: "bool") -> "str":
+        """Return a cached fenced ``UPDATE ... RETURNING`` that completes a running task.
+
+        Returns:
+            A fenced ``UPDATE ... RETURNING`` statement.
+        """
+        cache_key = f"complete_returning:{int(fence_retry_count)}"
+
+        def build() -> "str":
+            where = f"{self._quoted_col('id')} = :id AND {self._quoted_col('status')} = 'running'"
+            if fence_retry_count:
+                where += f" AND {self._quoted_col('retry_count')} = :expected_retry_count"
+            return (
+                f"UPDATE {self._quoted_table_name()} SET "  # noqa: S608
+                f"{self._quoted_col('status')} = 'completed', "
+                f"{self._quoted_col('completed_at')} = :completed_at, "
+                f"{self._quoted_col('heartbeat_at')} = NULL, "
+                f"{self._quoted_col('result_json')} = :result_json, "
+                f"{self._quoted_col('error')} = NULL "
+                f"WHERE {where} RETURNING {self._returning_columns_sql()}"
+            )
+
+        return self._cached(cache_key, build)
+
+    def fail_returning_sql(self, *, fence_retry_count: "bool") -> "str":
+        """Return a cached fenced ``UPDATE ... RETURNING`` handling retry and terminal fail in one statement.
+
+        Returns:
+            A fenced CASE-based ``UPDATE ... RETURNING`` statement.
+        """
+        cache_key = f"fail_returning:{int(fence_retry_count)}"
+
+        def build() -> "str":
+            retry_count_col = self._quoted_col("retry_count")
+            max_retries_col = self._quoted_col("max_retries")
+            can_retry = f":retry = TRUE AND {retry_count_col} < {max_retries_col}"
+            where = f"{self._quoted_col('id')} = :id AND {self._quoted_col('status')} = 'running'"
+            if fence_retry_count:
+                where += f" AND {retry_count_col} = :expected_retry_count"
+            return (
+                f"UPDATE {self._quoted_table_name()} SET "  # noqa: S608
+                f"{self._quoted_col('error')} = :error, "
+                f"{self._quoted_col('status')} = CASE WHEN {can_retry} THEN 'pending' ELSE 'failed' END, "
+                f"{retry_count_col} = CASE WHEN {can_retry} THEN {retry_count_col} + 1 ELSE {retry_count_col} END, "
+                f"{self._quoted_col('started_at')} = CASE WHEN {can_retry} THEN NULL "
+                f"ELSE {self._quoted_col('started_at')} END, "
+                f"{self._quoted_col('completed_at')} = CASE WHEN {can_retry} THEN NULL "
+                f"ELSE CAST(:completed_at AS {self._timestamp_type()}) END, "
+                f"{self._quoted_col('heartbeat_at')} = NULL "
+                f"WHERE {where} RETURNING {self._returning_columns_sql()}"
+            )
+
+        return self._cached(cache_key, build)
 
     def select_task(self, task_id: "str") -> "Select":
         """Return a SELECT statement for one task id."""
