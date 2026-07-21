@@ -9,21 +9,23 @@ because the decorator-style command bodies need it at definition time.
 import asyncio
 import contextlib
 import json
+import os
 import signal
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import click
-from litestar.cli._utils import LitestarEnv
 
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
+    from litestar.cli._utils import LitestarEnv
+
     from litestar_queues.service import QueueService
 
-__all__ = ("queues_group", "register", "run_command", "scheduler_health_command", "status_command")
+__all__ = ("execute_command", "queues_group", "register", "run_command", "scheduler_health_command", "status_command")
 
 FORCE_STOP_SIGNAL_COUNT = 2
 
@@ -45,7 +47,6 @@ def queues_group() -> "None":
     help="Seconds to wait for in-flight tasks to drain after SIGTERM/SIGINT. "
     "Defaults to QueueConfig.worker_graceful_shutdown_timeout.",
 )
-@click.pass_context
 def run_command(
     ctx: "click.Context", queues: "tuple[str, ...]", max_concurrency: "int | None", drain_timeout: "float | None"
 ) -> "None":
@@ -72,7 +73,6 @@ def run_command(
     help="Filter by queue name. Currently advisory; backend filtering is not yet enforced.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
-@click.pass_context
 def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "bool") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
@@ -84,12 +84,23 @@ def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "b
     name="scheduler-health", help="Exit non-zero if the scheduler canary task has not completed within the window."
 )
 @click.option("--minutes", type=click.IntRange(min=1), default=5, help="Staleness threshold in minutes (default 5).")
-@click.pass_context
 def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     exit_code = asyncio.run(_scheduler_health_run(plugin, minutes))
     ctx.exit(exit_code)
+
+
+@queues_group.command(
+    name="execute",
+    help="Execute one dispatched queue record (external-executor consumer). Reads the dispatch envelope and "
+    "LITESTAR_QUEUES_CONFIG_FACTORY from the environment.",
+)
+def execute_command(ctx: "click.Context") -> "None":
+    from litestar_queues._consumer import run_config_factory_consumer
+
+    exit_code = asyncio.run(run_config_factory_consumer(env=os.environ))
+    ctx.exit(int(exit_code))
 
 
 def register(cli: "click.Group") -> "None":
@@ -255,6 +266,8 @@ async def _scheduler_health_run(plugin: "QueuePlugin", minutes: "int") -> "int":
 
 
 def _ensure_env(ctx: "click.Context") -> "LitestarEnv":
+    from litestar.cli._utils import LitestarEnv
+
     if not isinstance(ctx.obj, LitestarEnv):
         ctx.obj = ctx.obj()
     return ctx.ensure_object(LitestarEnv)

@@ -53,9 +53,6 @@ Source = "https://github.com/cofin/litestar-queues"
 [project.entry-points."litestar.commands"]
 queues = "litestar_queues._cli:queues_group"
 
-[project.scripts]
-litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint:main"
-
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]

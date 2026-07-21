@@ -12,8 +12,11 @@ import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from uuid import UUID
 
     from click.testing import Result
+
+    from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -59,6 +62,61 @@ def test_litestar_queues_help_lists_subcommands(monkeypatch: "pytest.MonkeyPatch
     assert "run" in result.stdout
     assert "status" in result.stdout
     assert "scheduler-health" in result.stdout
+    assert "execute" in result.stdout
+
+
+def test_queues_execute_consumes_record_via_config_factory(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """``litestar queues execute`` resolves CONFIG_FACTORY, claims the record, and runs it."""
+    from types import ModuleType
+
+    import anyio
+
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.backends import InMemoryQueueBackend
+    from litestar_queues.execution.envelope import DispatchEnvelope
+
+    queue_backend = InMemoryQueueBackend()
+
+    @task("tasks.cli_execute")
+    async def cli_execute(value: "int") -> "int":
+        return value + 1
+
+    envelope_json = ""
+    task_id: "UUID | None" = None
+
+    async def _seed() -> "None":
+        nonlocal envelope_json, task_id
+        async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
+            result = await service.enqueue(cli_execute.using(execution_backend="cloudrun"), 41)
+            record = await queue_backend.get_task(result.id)
+            assert record is not None
+            envelope_json = DispatchEnvelope.from_record(record).to_json().decode()
+            task_id = result.id
+
+    anyio.run(_seed)
+
+    factory_module = ModuleType("cli_execute_config_factory")
+    factory_module.create_service = lambda: QueueService(  # type: ignore[attr-defined]
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend
+    )
+    sys.modules[factory_module.__name__] = factory_module
+    monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
+    monkeypatch.setenv("LITESTAR_QUEUES_DISPATCH_ENVELOPE", envelope_json)
+    try:
+        result = _runner_invoke("tests.support.cli_app:app", ["queues", "execute"], monkeypatch)
+    finally:
+        sys.modules.pop(factory_module.__name__, None)
+
+    assert result.exit_code == 0, result.output
+
+    async def _fetch() -> "QueuedTaskRecord | None":
+        assert task_id is not None
+        return await queue_backend.get_task(task_id)
+
+    stored = anyio.run(_fetch)
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.result == 42
 
 
 def test_cli_module_exposes_public_command_callbacks() -> "None":
