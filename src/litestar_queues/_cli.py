@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from litestar_queues._consumer import run_task
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 from litestar_queues.worker import Worker
@@ -101,13 +102,8 @@ def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
 @click.option("--config-factory", default=None, help="``module:callable`` returning a QueueConfig or QueueService.")
 @click.option("--task-modules", default=None, help="Comma-separated modules to import before running the task.")
 def run_task_command(
-    ctx: "click.Context",
-    task_id: "str | None",
-    config_factory: "str | None",
-    task_modules: "str | None",
+    ctx: "click.Context", task_id: "str | None", config_factory: "str | None", task_modules: "str | None"
 ) -> "None":
-    from litestar_queues._consumer import run_task
-
     exit_code = asyncio.run(
         run_task(task_id=task_id, config_factory=config_factory, task_modules=task_modules, env=os.environ)
     )

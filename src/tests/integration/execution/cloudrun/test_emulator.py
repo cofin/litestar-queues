@@ -145,7 +145,9 @@ async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
     # The whole per-field env-map is gone: the record travels as its id alone
     # (no extra_env on this config), so no legacy per-field vars remain.
     assert set(env) == {"LITESTAR_QUEUES_TASK_ID"}
-    legacy_names = {f"LITESTAR_QUEUES_{suffix}" for suffix in ("TASK_DISPATCH", "TASK_NAME", "TASK_ARGS", "TASK_KWARGS")}
+    legacy_names = {
+        f"LITESTAR_QUEUES_{suffix}" for suffix in ("TASK_DISPATCH", "TASK_NAME", "TASK_ARGS", "TASK_KWARGS")
+    }
     assert legacy_names.isdisjoint(env)
 
 
