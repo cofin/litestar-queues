@@ -93,8 +93,9 @@ def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
 
 
 def register(cli: "click.Group") -> "None":
-    """Attach the ``queues`` subcommand group to ``cli``."""
-    cli.add_command(queues_group)
+    """Attach the ``queues`` subcommand group to ``cli`` (idempotent)."""
+    if queues_group.name not in cli.commands:
+        cli.add_command(queues_group)
 
 
 async def _run_worker(
