@@ -93,9 +93,7 @@ def _backend_config(request: AdapterRequest) -> Any:
         from litestar_queues.backends.redis import RedisBackendConfig
 
         return RedisBackendConfig(
-            url=request.dsn,
-            key_prefix=request.namespace,
-            notification_channel=f"{request.namespace}:notifications",
+            url=request.dsn, key_prefix=request.namespace, notification_channel=f"{request.namespace}:notifications"
         )
     if request.backend == "postgres":
         from sqlspec.adapters.psycopg import PsycopgAsyncConfig
