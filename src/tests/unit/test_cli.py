@@ -5,6 +5,7 @@ because ``CliRunner`` cannot deliver real signals.
 """
 
 import json
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -62,11 +63,11 @@ def test_litestar_queues_help_lists_subcommands(monkeypatch: "pytest.MonkeyPatch
     assert "run" in result.stdout
     assert "status" in result.stdout
     assert "scheduler-health" in result.stdout
-    assert "execute" in result.stdout
+    assert "run-task" in result.stdout
 
 
-def test_queues_execute_consumes_record_via_config_factory(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    """``litestar queues execute`` resolves CONFIG_FACTORY, claims the record, and runs it."""
+def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """``litestar queues run-task`` resolves CONFIG_FACTORY, claims the record, and runs it."""
     from types import ModuleType
 
     import anyio
@@ -103,7 +104,68 @@ def test_queues_execute_consumes_record_via_config_factory(monkeypatch: "pytest.
     monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
     monkeypatch.setenv("LITESTAR_QUEUES_TASK_DISPATCH", dispatch_json)
     try:
-        result = _runner_invoke("tests.support.cli_app:app", ["queues", "execute"], monkeypatch)
+        result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-task"], monkeypatch)
+    finally:
+        sys.modules.pop(factory_module.__name__, None)
+
+    assert result.exit_code == 0, result.output
+
+    async def _fetch() -> "QueuedTaskRecord | None":
+        assert task_id is not None
+        return await queue_backend.get_task(task_id)
+
+    stored = anyio.run(_fetch)
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.result == 42
+
+
+def test_run_task_by_id_flag_runs_existing_record_without_env(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """``run-task --task-id <id> --config-factory mod:call`` runs a local one-shot with NO env vars."""
+    from types import ModuleType
+
+    import anyio
+
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.backends import InMemoryQueueBackend
+
+    queue_backend = InMemoryQueueBackend()
+
+    @task("tasks.cli_by_id")
+    async def cli_by_id(value: "int") -> "int":
+        return value + 1
+
+    task_id: "UUID | None" = None
+
+    async def _seed() -> "None":
+        nonlocal task_id
+        async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
+            result = await service.enqueue(cli_by_id.using(execution_backend="cloudrun"), 41)
+            task_id = result.id
+
+    anyio.run(_seed)
+    assert task_id is not None
+
+    factory_module = ModuleType("cli_by_id_config_factory")
+    factory_module.create_service = lambda: QueueService(  # type: ignore[attr-defined]
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend
+    )
+    sys.modules[factory_module.__name__] = factory_module
+    for name in [key for key in os.environ if key.startswith("LITESTAR_QUEUES_")]:
+        monkeypatch.delenv(name, raising=False)
+    try:
+        result = _runner_invoke(
+            "tests.support.cli_app:app",
+            [
+                "queues",
+                "run-task",
+                "--task-id",
+                str(task_id),
+                "--config-factory",
+                f"{factory_module.__name__}:create_service",
+            ],
+            monkeypatch,
+        )
     finally:
         sys.modules.pop(factory_module.__name__, None)
 

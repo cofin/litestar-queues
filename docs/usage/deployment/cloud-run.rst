@@ -171,7 +171,7 @@ Cloud Run Job worker
 ====================
 
 The Cloud Run Job executes the queued task. Run it with ``litestar queues
-execute``. The command reads the task dispatch and
+run-task``. The command reads the task dispatch and
 ``LITESTAR_QUEUES_CONFIG_FACTORY`` from the container environment, resolves the
 shared queue service, claims the saved record, runs the task, and exits with a
 defined code.
@@ -208,6 +208,24 @@ prefix changes everywhere.
        container overrides. The consumer decodes it and re-fetches the live
        record by id.
 
+Run one job locally
+-------------------
+
+The ``run-task`` options override the environment so you can run a single saved
+record by hand -- useful for reproducing a failure or draining a stuck job. Pass
+the record id and a config factory that returns the same shared-DB service; no
+environment variables are required:
+
+.. code-block:: bash
+
+   litestar queues run-task \
+     --task-id 0f9c1e2a-7b34-4c56-8d90-1a2b3c4d5e6f \
+     --config-factory myapp.queues:create_config
+
+``--dispatch`` accepts a full task-dispatch JSON payload instead of ``--task-id``,
+and ``--task-modules`` imports extra modules before the task runs. The command
+exits with the same deterministic codes as the injected Cloud Run invocation.
+
 Profile-based job selection
 ---------------------------
 
@@ -229,7 +247,7 @@ Example job command:
      --image REGION-docker.pkg.dev/my-project/my-repo/my-worker:TAG \
      --region my-region \
      --command litestar \
-     --args queues,execute \
+     --args queues,run-task \
      --set-cloudsql-instances my-project:my-region:my-db \
      --set-env-vars LITESTAR_QUEUES_CONFIG_FACTORY=myapp.queues:create_config,\
      LITESTAR_QUEUES_TASK_MODULES=myapp.tasks \

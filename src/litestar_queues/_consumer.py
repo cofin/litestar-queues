@@ -87,18 +87,31 @@ async def run_dispatched_task(
     config: "QueueConfig | None" = None,
     service: "QueueService | None" = None,
     service_factory: "ServiceFactory | None" = None,
+    task_id: "str | None" = None,
+    dispatch: "str | None" = None,
+    config_factory: "str | None" = None,
+    task_modules: "str | None" = None,
     env: "Mapping[str, str] | None" = None,
 ) -> "DispatchExitCode":
-    """Resolve a service (via CONFIG_FACTORY) and consume one task dispatch from the environment.
+    """Resolve a service and run one dispatched task.
+
+    The prefix-aware environment is the default source for every input; the
+    override arguments take precedence over it. ``config_factory`` replaces the
+    ``CONFIG_FACTORY`` env var, ``dispatch`` / ``task_id`` replace the
+    ``TASK_DISPATCH`` payload, and ``task_modules`` replaces ``TASK_MODULES``.
 
     Returns:
         A deterministic dispatch exit code.
     """
     environ = env or os.environ
+    if config_factory is not None:
+        service_factory = _import_factory(config_factory)
+    has_dispatch_override = dispatch is not None or task_id is not None
+
     if _requires_config_factory(
         config=config, service=service, service_factory=service_factory
     ) and not _has_config_factory(config, environ):
-        if not environ.get(_env_name(config, _TASK_DISPATCH_ENV_SUFFIX)):
+        if not has_dispatch_override and not environ.get(_env_name(config, _TASK_DISPATCH_ENV_SUFFIX)):
             return DispatchExitCode.MISSING_DISPATCH
         logger.error("External consumer process missing CONFIG_FACTORY")
         return DispatchExitCode.MISSING_CONFIG_FACTORY
@@ -114,16 +127,38 @@ async def run_dispatched_task(
                 return DispatchExitCode.MISSING_CONFIG_FACTORY
             raise
 
-        raw = environ.get(_env_name(queue.config, _TASK_DISPATCH_ENV_SUFFIX))
-        if not raw:
-            return DispatchExitCode.MISSING_DISPATCH
+        _load_configured_task_modules(queue.config, environ, override=task_modules)
+        return await _resolve_and_consume(queue, environ, task_id=task_id, dispatch=dispatch)
+
+
+async def _resolve_and_consume(
+    queue: "QueueService", env: "Mapping[str, str]", *, task_id: "str | None", dispatch: "str | None"
+) -> "DispatchExitCode":
+    if dispatch is not None:
         try:
-            dispatch = TaskDispatch.from_json(raw)
+            resolved = TaskDispatch.from_json(dispatch)
         except (ValueError, TypeError):
             return DispatchExitCode.INVALID_DISPATCH
+        return await consume_one(queue, resolved)
 
-        _load_configured_task_modules(queue.config, environ)
-        return await consume_one(queue, dispatch)
+    if task_id is not None:
+        try:
+            record_id = UUID(task_id)
+        except ValueError:
+            return DispatchExitCode.INVALID_DISPATCH
+        record = await queue.get_task(record_id)
+        if record is None:
+            return DispatchExitCode.MISSING_RECORD
+        return await consume_one(queue, TaskDispatch.from_record(record))
+
+    raw = env.get(_env_name(queue.config, _TASK_DISPATCH_ENV_SUFFIX))
+    if not raw:
+        return DispatchExitCode.MISSING_DISPATCH
+    try:
+        resolved = TaskDispatch.from_json(raw)
+    except (ValueError, TypeError):
+        return DispatchExitCode.INVALID_DISPATCH
+    return await consume_one(queue, resolved)
 
 
 async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "DispatchExitCode":
@@ -211,10 +246,13 @@ def _has_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") 
 
 
 def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "ServiceFactory | None":
-    env_var = _env_name(config, "CONFIG_FACTORY")
-    import_path = env.get(env_var)
+    import_path = env.get(_env_name(config, "CONFIG_FACTORY"))
     if not import_path:
         return None
+    return _import_factory(import_path)
+
+
+def _import_factory(import_path: "str") -> "ServiceFactory":
     module_path, separator, attribute = import_path.partition(":")
     if not separator:
         module_path, attribute = import_path.rsplit(".", 1)
@@ -226,11 +264,13 @@ def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]")
     return cast("ServiceFactory", factory)
 
 
-def _load_configured_task_modules(config: "QueueConfig", env: "Mapping[str, str]") -> "None":
+def _load_configured_task_modules(
+    config: "QueueConfig", env: "Mapping[str, str]", *, override: "str | None" = None
+) -> "None":
     modules = list(config.task_modules)
-    env_modules = env.get(_env_name(config, "TASK_MODULES"))
-    if env_modules:
-        modules.extend(module.strip() for module in env_modules.split(",") if module.strip())
+    extra = override if override is not None else env.get(_env_name(config, "TASK_MODULES"))
+    if extra:
+        modules.extend(module.strip() for module in extra.split(",") if module.strip())
     if modules:
         load_task_modules(tuple(modules), force_reload=True)
 

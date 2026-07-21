@@ -83,8 +83,8 @@ def test_importing_consumer_core_does_not_load_click() -> "None":
     assert result.returncode == 0, result.stderr.decode()
 
 
-def test_queues_execute_is_discoverable_without_an_app(tmp_path: "Path") -> "None":
-    """The ``litestar.commands`` entry point exposes ``queues execute`` with no app present."""
+def test_queues_run_task_is_discoverable_without_an_app(tmp_path: "Path") -> "None":
+    """The ``litestar.commands`` entry point exposes ``queues run-task`` with no app present."""
     import os
     import shutil
     from pathlib import Path
@@ -96,7 +96,7 @@ def test_queues_execute_is_discoverable_without_an_app(tmp_path: "Path") -> "Non
 
     env = {key: value for key, value in os.environ.items() if key != "LITESTAR_APP"}
     result = subprocess.run(
-        [litestar_bin, "queues", "execute", "--help"],
+        [litestar_bin, "queues", "run-task", "--help"],
         cwd=tmp_path,
         capture_output=True,
         check=False,
