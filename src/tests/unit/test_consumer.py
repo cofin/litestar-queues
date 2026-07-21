@@ -45,8 +45,7 @@ class _RecordingHeartbeatBackend(InMemoryQueueBackend):
 
 async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import DispatchExitCode, consume_one
-    from litestar_queues.execution.dispatch import TaskDispatch
+    from litestar_queues._consumer import TaskExitCode, consume_one
 
     @task("tasks.consumer")
     async def consumer_task(value: "int") -> "int":
@@ -57,19 +56,18 @@ async def test_consume_one_claims_and_executes_persisted_record() -> "None":
         result = await service.enqueue(consumer_task.using(execution_backend="cloudrun"), 41)
         record = await queue_backend.get_task(result.id)
         assert record is not None
-        exit_code = await consume_one(service, TaskDispatch.from_record(record))
+        exit_code = await consume_one(service, record.id)
         await result.refresh()
 
-    assert exit_code == DispatchExitCode.SUCCESS
+    assert exit_code == TaskExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
 
 
-async def test_run_dispatched_task_loads_factory_before_prefixed_dispatch() -> "None":
+async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import DispatchExitCode, run_dispatched_task
+    from litestar_queues._consumer import TaskExitCode, run_task
     from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
-    from litestar_queues.execution.dispatch import TaskDispatch
 
     @task("tasks.consumer_prefixed")
     async def consumer_prefixed(value: "int") -> "int":
@@ -87,40 +85,33 @@ async def test_run_dispatched_task_loads_factory_before_prefixed_dispatch() -> "
             result = await service.enqueue(consumer_prefixed.using(execution_backend="cloudrun"), 41)
             record = await queue_backend.get_task(result.id)
             assert record is not None
-            dispatch = TaskDispatch.from_record(record)
 
-            exit_code = await run_dispatched_task(
+            exit_code = await run_task(
                 env={
                     "LITESTAR_QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
-                    "PREFIX_TASK_DISPATCH": dispatch.to_json().decode(),
+                    "PREFIX_TASK_ID": str(record.id),
                 }
             )
             await result.refresh()
     finally:
         sys.modules.pop(factory_module.__name__, None)
 
-    assert exit_code == DispatchExitCode.SUCCESS
+    assert exit_code == TaskExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
 
 
-async def test_run_dispatched_task_requires_config_factory() -> "None":
-    from litestar_queues._consumer import DispatchExitCode, run_dispatched_task
-    from litestar_queues.execution.dispatch import TaskDispatch
+async def test_run_task_requires_config_factory() -> "None":
+    from litestar_queues._consumer import TaskExitCode, run_task
 
-    dispatch = TaskDispatch(
-        task_id=str(uuid4()), task_name="tasks.remote", queue="default", execution_backend="cloudrun"
-    )
+    exit_code = await run_task(env={"LITESTAR_QUEUES_TASK_ID": str(uuid4())})
 
-    exit_code = await run_dispatched_task(env={"LITESTAR_QUEUES_TASK_DISPATCH": dispatch.to_json().decode()})
-
-    assert exit_code == DispatchExitCode.MISSING_CONFIG_FACTORY
+    assert exit_code == TaskExitCode.MISSING_CONFIG_FACTORY
 
 
 async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import DispatchExitCode, consume_one
-    from litestar_queues.execution.dispatch import TaskDispatch
+    from litestar_queues._consumer import TaskExitCode, consume_one
 
     heartbeat_seen = asyncio.Event()
     release_task = asyncio.Event()
@@ -147,7 +138,7 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
         task_id = result.id
         record = await queue_backend.get_task(result.id)
         assert record is not None
-        runner = asyncio.create_task(consume_one(service, TaskDispatch.from_record(record)))
+        runner = asyncio.create_task(consume_one(service, record.id))
         await asyncio.wait_for(heartbeat_seen.wait(), timeout=1)
         try:
             exit_code = await runner
@@ -155,7 +146,7 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
             release_task.set()
         stored = await queue_backend.get_task(result.id)
 
-    assert exit_code == DispatchExitCode.CLAIM_LOST
+    assert exit_code == TaskExitCode.CLAIM_LOST
     assert stored is not None
     assert stored.status == "pending"
     assert stored.retry_count == 1
@@ -164,13 +155,13 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
     assert queue_backend.touch_calls[0][0].expected_retry_count == 0
 
 
-async def test_run_dispatched_task_missing_and_invalid_dispatch() -> "None":
+async def test_run_task_missing_and_invalid_task_id() -> "None":
     from litestar_queues import QueueConfig, QueueService
-    from litestar_queues._consumer import DispatchExitCode, run_dispatched_task
+    from litestar_queues._consumer import TaskExitCode, run_task
 
     async with QueueService(QueueConfig()) as service:
-        missing = await run_dispatched_task(service=service, env={})
-        invalid = await run_dispatched_task(service=service, env={"LITESTAR_QUEUES_TASK_DISPATCH": "not-json"})
+        missing = await run_task(service=service, env={})
+        invalid = await run_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": "not-a-uuid"})
 
-    assert missing == DispatchExitCode.MISSING_DISPATCH
-    assert invalid == DispatchExitCode.INVALID_DISPATCH
+    assert missing == TaskExitCode.MISSING_TASK_ID
+    assert invalid == TaskExitCode.INVALID_TASK_ID

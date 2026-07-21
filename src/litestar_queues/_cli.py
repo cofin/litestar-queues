@@ -93,27 +93,23 @@ def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
 
 @queues_group.command(
     name="run-task",
-    help="Run one dispatched queue record (external-executor consumer). By default reads the task dispatch "
-    "and LITESTAR_QUEUES_CONFIG_FACTORY from the environment; the options below override those defaults so a "
-    "job can be run by hand.",
+    help="Run one queued record by id (external-executor consumer). By default reads the task id "
+    "(LITESTAR_QUEUES_TASK_ID) and LITESTAR_QUEUES_CONFIG_FACTORY from the environment; the options below "
+    "override those defaults so a job can be run by hand.",
 )
 @click.option("--task-id", default=None, help="Run the queued record with this id (local one-shot).")
-@click.option("--dispatch", default=None, help="Full TaskDispatch JSON to run instead of reading the environment.")
 @click.option("--config-factory", default=None, help="``module:callable`` returning a QueueConfig or QueueService.")
 @click.option("--task-modules", default=None, help="Comma-separated modules to import before running the task.")
 def run_task_command(
     ctx: "click.Context",
     task_id: "str | None",
-    dispatch: "str | None",
     config_factory: "str | None",
     task_modules: "str | None",
 ) -> "None":
-    from litestar_queues._consumer import run_dispatched_task
+    from litestar_queues._consumer import run_task
 
     exit_code = asyncio.run(
-        run_dispatched_task(
-            task_id=task_id, dispatch=dispatch, config_factory=config_factory, task_modules=task_modules, env=os.environ
-        )
+        run_task(task_id=task_id, config_factory=config_factory, task_modules=task_modules, env=os.environ)
     )
     ctx.exit(int(exit_code))
 

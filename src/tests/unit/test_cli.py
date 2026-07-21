@@ -74,7 +74,6 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
 
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.backends import InMemoryQueueBackend
-    from litestar_queues.execution.dispatch import TaskDispatch
 
     queue_backend = InMemoryQueueBackend()
 
@@ -82,19 +81,16 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
     async def cli_execute(value: "int") -> "int":
         return value + 1
 
-    dispatch_json = ""
     task_id: "UUID | None" = None
 
     async def _seed() -> "None":
-        nonlocal dispatch_json, task_id
+        nonlocal task_id
         async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
             result = await service.enqueue(cli_execute.using(execution_backend="cloudrun"), 41)
-            record = await queue_backend.get_task(result.id)
-            assert record is not None
-            dispatch_json = TaskDispatch.from_record(record).to_json().decode()
             task_id = result.id
 
     anyio.run(_seed)
+    assert task_id is not None
 
     factory_module = ModuleType("cli_execute_config_factory")
     factory_module.create_service = lambda: QueueService(  # type: ignore[attr-defined]
@@ -102,7 +98,7 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
     )
     sys.modules[factory_module.__name__] = factory_module
     monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
-    monkeypatch.setenv("LITESTAR_QUEUES_TASK_DISPATCH", dispatch_json)
+    monkeypatch.setenv("LITESTAR_QUEUES_TASK_ID", str(task_id))
     try:
         result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-task"], monkeypatch)
     finally:

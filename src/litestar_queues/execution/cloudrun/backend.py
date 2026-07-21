@@ -8,7 +8,6 @@ from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import BaseExecutionBackend
 from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, _execution_config_from_queue_config
-from litestar_queues.execution.dispatch import TaskDispatch
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -24,7 +23,7 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
-_TASK_DISPATCH_ENV_SUFFIX = "TASK_DISPATCH"
+_TASK_ID_ENV_SUFFIX = "TASK_ID"
 _HTTP_NOT_FOUND = 404
 logger = logging.getLogger(__name__)
 
@@ -243,7 +242,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         timeout = record.metadata.get("timeout", task_obj.timeout)
         timeout_seconds = int(timeout if isinstance(timeout, int | float) else config.timeout)
         job_name = config.resolve_job_name(record.execution_profile)
-        env = self.build_dispatch_env(record)
+        env = self.build_task_env(record)
         return {
             "name": f"projects/{config.project_id}/locations/{config.region}/jobs/{job_name}",
             "overrides": {
@@ -252,19 +251,18 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             },
         }
 
-    def build_dispatch_env(self, record: "QueuedTaskRecord") -> "dict[str, str]":
-        """Build the single-value task-dispatch environment for a Cloud Run task process.
+    def build_task_env(self, record: "QueuedTaskRecord") -> "dict[str, str]":
+        """Build the single-value task environment for a Cloud Run task process.
 
-        The record is serialized into one prefix-aware environment variable
-        (``LITESTAR_QUEUES_TASK_DISPATCH`` by default) carrying the
-        universal task dispatch. Adopter ``extra_env`` values are merged in.
+        The record travels as its id in one prefix-aware environment variable
+        (``LITESTAR_QUEUES_TASK_ID`` by default); the consumer re-fetches the
+        live record by that id. Adopter ``extra_env`` values are merged in.
 
         Returns:
             Environment variables for the Cloud Run task process.
         """
         config = self.execution_config
-        dispatch = TaskDispatch.from_record(record)
-        env = {config.env_name(_TASK_DISPATCH_ENV_SUFFIX): dispatch.to_json().decode()}
+        env = {config.env_name(_TASK_ID_ENV_SUFFIX): str(record.id)}
         env.update(config.extra_env)
         return env
 

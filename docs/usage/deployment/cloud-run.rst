@@ -171,13 +171,13 @@ Cloud Run Job worker
 ====================
 
 The Cloud Run Job executes the queued task. Run it with ``litestar queues
-run-task``. The command reads the task dispatch and
+run-task``. The command reads the task id and
 ``LITESTAR_QUEUES_CONFIG_FACTORY`` from the container environment, resolves the
-shared queue service, claims the saved record, runs the task, and exits with a
-defined code.
+shared queue service, re-fetches the saved record, claims it, runs the task, and
+exits with a defined code.
 
-The command resolves the config factory before decoding the prefixed task
-dispatch, so a custom ``env_prefix`` works throughout the process.
+The command resolves the config factory before reading the prefixed task id, so
+a custom ``env_prefix`` works throughout the process.
 
 Environment contract
 --------------------
@@ -201,12 +201,12 @@ prefix changes everywhere.
      - Recommended
      - Comma-separated modules to import so ``@task`` registrations exist.
        The consumer merges these with ``config.task_modules``.
-   * - ``LITESTAR_QUEUES_TASK_DISPATCH``
+   * - ``LITESTAR_QUEUES_TASK_ID``
      - Injected
-     - The versioned task dispatch (camelCase JSON: the routing subset of
-       the queue record). The dispatcher sets this automatically through
-       container overrides. The consumer decodes it and re-fetches the live
-       record by id.
+     - The id (UUID) of the queued record to run. The dispatcher sets this
+       automatically through container overrides. The consumer re-fetches the
+       live record by this id, which stays the source of truth for its args,
+       result, and retry state.
 
 Run one job locally
 -------------------
@@ -222,8 +222,7 @@ environment variables are required:
      --task-id 0f9c1e2a-7b34-4c56-8d90-1a2b3c4d5e6f \
      --config-factory myapp.queues:create_config
 
-``--dispatch`` accepts a full task-dispatch JSON payload instead of ``--task-id``,
-and ``--task-modules`` imports extra modules before the task runs. The command
+``--task-modules`` imports extra modules before the task runs. The command
 exits with the same deterministic codes as the injected Cloud Run invocation.
 
 Profile-based job selection

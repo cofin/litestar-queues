@@ -41,7 +41,6 @@ def test_public_exports() -> "None":
         ScheduleConfig,
         StaleTaskRecoveryResult,
         Task,
-        TaskDispatch,
         TaskResult,
         Worker,
         beat,
@@ -61,7 +60,6 @@ def test_public_exports() -> "None":
         "CloudRunExecutionBackend",
         "CloudRunExecutionConfig",
         "CloudRunExecutionStatus",
-        "TaskDispatch",
         "EnqueueSpec",
         "EventConfig",
         "EventLogConfig",
@@ -137,7 +135,6 @@ def test_public_exports() -> "None":
     assert CloudRunExecutionBackend is not None
     assert CloudRunExecutionConfig(project_id="example", job_name="worker").resolve_job_name() == "worker"
     assert CloudRunExecutionStatus().running is True
-    assert TaskDispatch is not None
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None

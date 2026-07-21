@@ -1,8 +1,8 @@
 """Framework-agnostic consumer core for external execution backends.
 
 Click-free on purpose: broker consumers and the ``litestar queues`` subcommands
-import ``consume_one`` / ``run_dispatched_task`` without pulling
-``click`` into the module graph (see test_plugin_lifecycle import boundary).
+import ``consume_one`` / ``run_task`` without pulling ``click`` into the module
+graph (see test_plugin_lifecycle import boundary).
 """
 
 import asyncio
@@ -16,7 +16,6 @@ from uuid import UUID
 
 from litestar_queues.config import QueueConfig
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.execution.dispatch import TaskDispatch
 from litestar_queues.models import HeartbeatTouch
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules
@@ -29,19 +28,19 @@ if TYPE_CHECKING:
 
     ServiceFactory = Callable[[], QueueConfig | QueueService | AbstractAsyncContextManager[QueueService]]
 
-__all__ = ("DispatchExitCode", "consume_one", "run_dispatched_task")
+__all__ = ("TaskExitCode", "consume_one", "run_task")
 logger = logging.getLogger(__name__)
 
-_TASK_DISPATCH_ENV_SUFFIX = "TASK_DISPATCH"
+_TASK_ID_ENV_SUFFIX = "TASK_ID"
 
 
-class DispatchExitCode(IntEnum):
+class TaskExitCode(IntEnum):
     """Deterministic external-consumer process exit codes."""
 
     SUCCESS = 0
     FAILURE = 1
-    MISSING_DISPATCH = 2
-    INVALID_DISPATCH = 3
+    MISSING_TASK_ID = 2
+    INVALID_TASK_ID = 3
     MISSING_RECORD = 4
     UNKNOWN_TASK = 5
     CLAIM_LOST = 6
@@ -49,72 +48,65 @@ class DispatchExitCode(IntEnum):
     MISSING_CONFIG_FACTORY = 8
 
 
-async def consume_one(queue: "QueueService", dispatch: "TaskDispatch") -> "DispatchExitCode":
-    """Claim, execute, and report one dispatched record identified by a task dispatch.
+async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
+    """Claim, execute, and report one queued record identified by its id.
 
-    The live record in the queue backend is authoritative; the dispatch only
-    locates it. Redelivery is fenced by the live ``expected_retry_count`` at
-    claim time.
+    The live record in the queue backend is authoritative; the id only locates
+    it. Redelivery is fenced by the live ``expected_retry_count`` at claim time.
 
     Returns:
-        A deterministic dispatch exit code.
+        A deterministic task exit code.
     """
-    try:
-        task_id = UUID(dispatch.task_id)
-    except ValueError:
-        return DispatchExitCode.INVALID_DISPATCH
-
     record = await queue.get_task(task_id)
     if record is None:
-        return DispatchExitCode.MISSING_RECORD
+        return TaskExitCode.MISSING_RECORD
 
     try:
         queue.resolve_task(record.task_name)
     except KeyError:
         await queue.get_queue_backend().fail_task(record.id, f"Unknown queue task: {record.task_name!r}", retry=False)
-        return DispatchExitCode.UNKNOWN_TASK
+        return TaskExitCode.UNKNOWN_TASK
 
     claimed = await queue.get_queue_backend().claim_task(record.id)
     if claimed is None:
         await queue.publish_claim_lost(record, phase="claim")
-        return DispatchExitCode.CLAIM_LOST
+        return TaskExitCode.CLAIM_LOST
 
     return await _execute_claimed_record(queue, claimed)
 
 
-async def run_dispatched_task(
+async def run_task(
     *,
     config: "QueueConfig | None" = None,
     service: "QueueService | None" = None,
     service_factory: "ServiceFactory | None" = None,
     task_id: "str | None" = None,
-    dispatch: "str | None" = None,
     config_factory: "str | None" = None,
     task_modules: "str | None" = None,
     env: "Mapping[str, str] | None" = None,
-) -> "DispatchExitCode":
-    """Resolve a service and run one dispatched task.
+) -> "TaskExitCode":
+    """Resolve a service and run one queued task by id.
 
     The prefix-aware environment is the default source for every input; the
     override arguments take precedence over it. ``config_factory`` replaces the
-    ``CONFIG_FACTORY`` env var, ``dispatch`` / ``task_id`` replace the
-    ``TASK_DISPATCH`` payload, and ``task_modules`` replaces ``TASK_MODULES``.
+    ``CONFIG_FACTORY`` env var, ``task_id`` replaces the ``TASK_ID`` value, and
+    ``task_modules`` replaces ``TASK_MODULES``.
 
     Returns:
-        A deterministic dispatch exit code.
+        A deterministic task exit code.
     """
     environ = env or os.environ
     if config_factory is not None:
         service_factory = _import_factory(config_factory)
-    has_dispatch_override = dispatch is not None or task_id is not None
+    has_task_id_override = task_id is not None
 
     if _requires_config_factory(
         config=config, service=service, service_factory=service_factory
     ) and not _has_config_factory(config, environ):
-        if not has_dispatch_override and not environ.get(_env_name(config, _TASK_DISPATCH_ENV_SUFFIX)):
-            return DispatchExitCode.MISSING_DISPATCH
+        if not has_task_id_override and not environ.get(_env_name(config, _TASK_ID_ENV_SUFFIX)):
+            return TaskExitCode.MISSING_TASK_ID
         logger.error("External consumer process missing CONFIG_FACTORY")
-        return DispatchExitCode.MISSING_CONFIG_FACTORY
+        return TaskExitCode.MISSING_CONFIG_FACTORY
 
     async with contextlib.AsyncExitStack() as stack:
         try:
@@ -124,44 +116,27 @@ async def run_dispatched_task(
         except Exception:
             if _requires_config_factory(config=config, service=service, service_factory=service_factory):
                 logger.exception("External consumer process could not load CONFIG_FACTORY")
-                return DispatchExitCode.MISSING_CONFIG_FACTORY
+                return TaskExitCode.MISSING_CONFIG_FACTORY
             raise
 
         _load_configured_task_modules(queue.config, environ, override=task_modules)
-        return await _resolve_and_consume(queue, environ, task_id=task_id, dispatch=dispatch)
+        return await _resolve_and_consume(queue, environ, task_id=task_id)
 
 
 async def _resolve_and_consume(
-    queue: "QueueService", env: "Mapping[str, str]", *, task_id: "str | None", dispatch: "str | None"
-) -> "DispatchExitCode":
-    if dispatch is not None:
-        try:
-            resolved = TaskDispatch.from_json(dispatch)
-        except (ValueError, TypeError):
-            return DispatchExitCode.INVALID_DISPATCH
-        return await consume_one(queue, resolved)
-
-    if task_id is not None:
-        try:
-            record_id = UUID(task_id)
-        except ValueError:
-            return DispatchExitCode.INVALID_DISPATCH
-        record = await queue.get_task(record_id)
-        if record is None:
-            return DispatchExitCode.MISSING_RECORD
-        return await consume_one(queue, TaskDispatch.from_record(record))
-
-    raw = env.get(_env_name(queue.config, _TASK_DISPATCH_ENV_SUFFIX))
+    queue: "QueueService", env: "Mapping[str, str]", *, task_id: "str | None"
+) -> "TaskExitCode":
+    raw = task_id if task_id is not None else env.get(_env_name(queue.config, _TASK_ID_ENV_SUFFIX))
     if not raw:
-        return DispatchExitCode.MISSING_DISPATCH
+        return TaskExitCode.MISSING_TASK_ID
     try:
-        resolved = TaskDispatch.from_json(raw)
-    except (ValueError, TypeError):
-        return DispatchExitCode.INVALID_DISPATCH
-    return await consume_one(queue, resolved)
+        record_id = UUID(raw)
+    except ValueError:
+        return TaskExitCode.INVALID_TASK_ID
+    return await consume_one(queue, record_id)
 
 
-async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "DispatchExitCode":
+async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "TaskExitCode":
     expected_retry_count = claimed.retry_count
     heartbeat_task = asyncio.create_task(_heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count))
     execution_task = asyncio.create_task(queue.execute_record(claimed))
@@ -172,10 +147,10 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
             with contextlib.suppress(asyncio.CancelledError):
                 await execution_task
             await queue.publish_claim_lost(claimed, phase="heartbeat", expected_retry_count=expected_retry_count)
-            return DispatchExitCode.CLAIM_LOST
+            return TaskExitCode.CLAIM_LOST
         updated = await execution_task
     except asyncio.CancelledError:
-        return DispatchExitCode.CANCELLED
+        return TaskExitCode.CANCELLED
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -183,10 +158,10 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
         await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
 
     if updated.status == "completed":
-        return DispatchExitCode.SUCCESS
+        return TaskExitCode.SUCCESS
     if updated.status == "cancelled":
-        return DispatchExitCode.CANCELLED
-    return DispatchExitCode.FAILURE
+        return TaskExitCode.CANCELLED
+    return TaskExitCode.FAILURE
 
 
 async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int") -> "bool":

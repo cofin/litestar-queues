@@ -6,7 +6,6 @@ from litestar_queues.execution.cloudrun import (
     CloudRunExecutionConfig,
     CloudRunExecutionStatus,
 )
-from litestar_queues.execution.dispatch import TaskDispatch
 from litestar_queues.execution.factory import (
     execution_backend,
     get_execution_backend,
@@ -23,7 +22,6 @@ __all__ = (
     "CloudRunExecutionStatus",
     "ImmediateExecutionBackend",
     "LocalExecutionBackend",
-    "TaskDispatch",
     "execution_backend",
     "get_execution_backend",
     "get_execution_backend_class",
