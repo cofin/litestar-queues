@@ -130,10 +130,11 @@ version = "{current_version}"
 #####################
 [dependency-groups]
 benchmarks = [
+  "hiredis",
   "psutil",
   "psycopg[binary,pool]>=3.2.0",
   "redis>=5.0.0",
-  "sqlspec>=0.52.0",
+  "sqlspec[mypyc,performance]>=0.55.0",
 ]
 build = ["bump-my-version"]
 dev = [
