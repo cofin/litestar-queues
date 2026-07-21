@@ -45,8 +45,8 @@ class _RecordingHeartbeatBackend(InMemoryQueueBackend):
 
 async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import ConsumerExitCode, consume_one
-    from litestar_queues.execution.envelope import DispatchEnvelope
+    from litestar_queues._consumer import DispatchExitCode, consume_one
+    from litestar_queues.execution.dispatch import TaskDispatch
 
     @task("tasks.consumer")
     async def consumer_task(value: "int") -> "int":
@@ -57,19 +57,19 @@ async def test_consume_one_claims_and_executes_persisted_record() -> "None":
         result = await service.enqueue(consumer_task.using(execution_backend="cloudrun"), 41)
         record = await queue_backend.get_task(result.id)
         assert record is not None
-        exit_code = await consume_one(service, DispatchEnvelope.from_record(record))
+        exit_code = await consume_one(service, TaskDispatch.from_record(record))
         await result.refresh()
 
-    assert exit_code == ConsumerExitCode.SUCCESS
+    assert exit_code == DispatchExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
 
 
-async def test_run_config_factory_consumer_loads_factory_before_prefixed_envelope() -> "None":
+async def test_run_dispatched_task_loads_factory_before_prefixed_dispatch() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import ConsumerExitCode, run_config_factory_consumer
+    from litestar_queues._consumer import DispatchExitCode, run_dispatched_task
     from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
-    from litestar_queues.execution.envelope import DispatchEnvelope
+    from litestar_queues.execution.dispatch import TaskDispatch
 
     @task("tasks.consumer_prefixed")
     async def consumer_prefixed(value: "int") -> "int":
@@ -87,42 +87,40 @@ async def test_run_config_factory_consumer_loads_factory_before_prefixed_envelop
             result = await service.enqueue(consumer_prefixed.using(execution_backend="cloudrun"), 41)
             record = await queue_backend.get_task(result.id)
             assert record is not None
-            envelope = DispatchEnvelope.from_record(record)
+            dispatch = TaskDispatch.from_record(record)
 
-            exit_code = await run_config_factory_consumer(
+            exit_code = await run_dispatched_task(
                 env={
                     "LITESTAR_QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
-                    "PREFIX_DISPATCH_ENVELOPE": envelope.to_json().decode(),
+                    "PREFIX_TASK_DISPATCH": dispatch.to_json().decode(),
                 }
             )
             await result.refresh()
     finally:
         sys.modules.pop(factory_module.__name__, None)
 
-    assert exit_code == ConsumerExitCode.SUCCESS
+    assert exit_code == DispatchExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
 
 
-async def test_run_config_factory_consumer_requires_config_factory() -> "None":
-    from litestar_queues._consumer import ConsumerExitCode, run_config_factory_consumer
-    from litestar_queues.execution.envelope import DispatchEnvelope
+async def test_run_dispatched_task_requires_config_factory() -> "None":
+    from litestar_queues._consumer import DispatchExitCode, run_dispatched_task
+    from litestar_queues.execution.dispatch import TaskDispatch
 
-    envelope = DispatchEnvelope(
+    dispatch = TaskDispatch(
         task_id=str(uuid4()), task_name="tasks.remote", queue="default", execution_backend="cloudrun"
     )
 
-    exit_code = await run_config_factory_consumer(
-        env={"LITESTAR_QUEUES_DISPATCH_ENVELOPE": envelope.to_json().decode()}
-    )
+    exit_code = await run_dispatched_task(env={"LITESTAR_QUEUES_TASK_DISPATCH": dispatch.to_json().decode()})
 
-    assert exit_code == ConsumerExitCode.MISSING_CONFIG_FACTORY
+    assert exit_code == DispatchExitCode.MISSING_CONFIG_FACTORY
 
 
 async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import ConsumerExitCode, consume_one
-    from litestar_queues.execution.envelope import DispatchEnvelope
+    from litestar_queues._consumer import DispatchExitCode, consume_one
+    from litestar_queues.execution.dispatch import TaskDispatch
 
     heartbeat_seen = asyncio.Event()
     release_task = asyncio.Event()
@@ -149,7 +147,7 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
         task_id = result.id
         record = await queue_backend.get_task(result.id)
         assert record is not None
-        runner = asyncio.create_task(consume_one(service, DispatchEnvelope.from_record(record)))
+        runner = asyncio.create_task(consume_one(service, TaskDispatch.from_record(record)))
         await asyncio.wait_for(heartbeat_seen.wait(), timeout=1)
         try:
             exit_code = await runner
@@ -157,7 +155,7 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
             release_task.set()
         stored = await queue_backend.get_task(result.id)
 
-    assert exit_code == ConsumerExitCode.CLAIM_LOST
+    assert exit_code == DispatchExitCode.CLAIM_LOST
     assert stored is not None
     assert stored.status == "pending"
     assert stored.retry_count == 1
@@ -166,15 +164,13 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
     assert queue_backend.touch_calls[0][0].expected_retry_count == 0
 
 
-async def test_run_config_factory_consumer_missing_and_invalid_envelope() -> "None":
+async def test_run_dispatched_task_missing_and_invalid_dispatch() -> "None":
     from litestar_queues import QueueConfig, QueueService
-    from litestar_queues._consumer import ConsumerExitCode, run_config_factory_consumer
+    from litestar_queues._consumer import DispatchExitCode, run_dispatched_task
 
     async with QueueService(QueueConfig()) as service:
-        missing = await run_config_factory_consumer(service=service, env={})
-        invalid = await run_config_factory_consumer(
-            service=service, env={"LITESTAR_QUEUES_DISPATCH_ENVELOPE": "not-json"}
-        )
+        missing = await run_dispatched_task(service=service, env={})
+        invalid = await run_dispatched_task(service=service, env={"LITESTAR_QUEUES_TASK_DISPATCH": "not-json"})
 
-    assert missing == ConsumerExitCode.MISSING_ENVELOPE
-    assert invalid == ConsumerExitCode.INVALID_ENVELOPE
+    assert missing == DispatchExitCode.MISSING_DISPATCH
+    assert invalid == DispatchExitCode.INVALID_DISPATCH

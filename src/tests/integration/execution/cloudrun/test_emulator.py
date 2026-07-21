@@ -16,7 +16,7 @@ from tests.integration.execution.cloudrun.helpers import (
     FakeExecutionsClient,
     FakeJobsClient,
     NotFoundError,
-    dispatch_envelope,
+    decode_dispatch,
     env_map,
 )
 
@@ -106,17 +106,17 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         await service.close()
 
     request = jobs_client.requests[0]
-    envelope = dispatch_envelope(request)
+    dispatch = decode_dispatch(request)
 
     assert execution_ref == "projects/test/locations/us-central1/jobs/worker/executions/run-1"
     assert request["name"] == "projects/test-project/locations/us-central1/jobs/heavy-worker"
     assert request["overrides"]["timeout"] == "120s"
-    assert envelope.task_id == str(record.id)
-    assert envelope.task_name == "tasks.remote"
-    assert envelope.args == (41,)
-    assert envelope.kwargs == {}
-    assert envelope.execution_backend == "cloudrun"
-    assert envelope.execution_profile == "heavy"
+    assert dispatch.task_id == str(record.id)
+    assert dispatch.task_name == "tasks.remote"
+    assert dispatch.args == (41,)
+    assert dispatch.kwargs == {}
+    assert dispatch.execution_backend == "cloudrun"
+    assert dispatch.execution_profile == "heavy"
     assert env_map(request)["EXTRA_SETTING"] == "enabled"
     assert stored is not None
     assert stored.execution_backend == "cloudrun"
@@ -148,9 +148,9 @@ async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
 
     env = env_map(jobs_client.requests[0])
 
-    # The whole per-field env-map is gone: the record travels as a single envelope var
+    # The whole per-field env-map is gone: the record travels as a single task-dispatch var
     # (no extra_env on this config), so no legacy LITESTAR_QUEUES_<field> vars remain.
-    assert set(env) == {"LITESTAR_QUEUES_DISPATCH_ENVELOPE"}
+    assert set(env) == {"LITESTAR_QUEUES_TASK_DISPATCH"}
     legacy_names = {f"LITESTAR_QUEUES_{suffix}" for suffix in ("TASK_ID", "TASK_NAME", "TASK_ARGS", "TASK_KWARGS")}
     assert legacy_names.isdisjoint(env)
 
@@ -178,8 +178,8 @@ async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
 
     env = env_map(jobs_client.requests[0])
 
-    assert "PREFIX_DISPATCH_ENVELOPE" in env
-    assert "LITESTAR_QUEUES_DISPATCH_ENVELOPE" not in env
+    assert "PREFIX_TASK_DISPATCH" in env
+    assert "LITESTAR_QUEUES_TASK_DISPATCH" not in env
 
 
 async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() -> "None":

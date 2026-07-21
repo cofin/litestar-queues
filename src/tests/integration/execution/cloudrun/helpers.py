@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from litestar_queues.execution.envelope import DispatchEnvelope
+    from litestar_queues.execution.dispatch import TaskDispatch
     from litestar_queues.service import QueueService
 
 
@@ -107,12 +107,12 @@ def env_map(request: "RunJobRequest") -> "dict[str, str]":
     return {item["name"]: item["value"] for item in env}
 
 
-def dispatch_envelope(request: "RunJobRequest") -> "DispatchEnvelope":
-    """Decode the dispatch envelope from a captured run-job request.
+def decode_dispatch(request: "RunJobRequest") -> "TaskDispatch":
+    """Decode the task dispatch from a captured run-job request.
 
     Returns:
-        The dispatch envelope carried by the request.
+        The task dispatch carried by the request.
     """
-    from litestar_queues.execution.envelope import DispatchEnvelope
+    from litestar_queues.execution.dispatch import TaskDispatch
 
-    return DispatchEnvelope.from_json(env_map(request)["LITESTAR_QUEUES_DISPATCH_ENVELOPE"])
+    return TaskDispatch.from_json(env_map(request)["LITESTAR_QUEUES_TASK_DISPATCH"])

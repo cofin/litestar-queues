@@ -93,13 +93,13 @@ def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
 
 @queues_group.command(
     name="execute",
-    help="Execute one dispatched queue record (external-executor consumer). Reads the dispatch envelope and "
+    help="Execute one dispatched queue record (external-executor consumer). Reads the task dispatch and "
     "LITESTAR_QUEUES_CONFIG_FACTORY from the environment.",
 )
 def execute_command(ctx: "click.Context") -> "None":
-    from litestar_queues._consumer import run_config_factory_consumer
+    from litestar_queues._consumer import run_dispatched_task
 
-    exit_code = asyncio.run(run_config_factory_consumer(env=os.environ))
+    exit_code = asyncio.run(run_dispatched_task(env=os.environ))
     ctx.exit(int(exit_code))
 
 

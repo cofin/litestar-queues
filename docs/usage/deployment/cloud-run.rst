@@ -171,13 +171,13 @@ Cloud Run Job worker
 ====================
 
 The Cloud Run Job executes the queued task. Run it with ``litestar queues
-execute``. The command reads the dispatch envelope and
+execute``. The command reads the task dispatch and
 ``LITESTAR_QUEUES_CONFIG_FACTORY`` from the container environment, resolves the
 shared queue service, claims the saved record, runs the task, and exits with a
 defined code.
 
-The command resolves the config factory before decoding the prefixed dispatch
-envelope, so a custom ``env_prefix`` works throughout the process.
+The command resolves the config factory before decoding the prefixed task
+dispatch, so a custom ``env_prefix`` works throughout the process.
 
 Environment contract
 --------------------
@@ -201,9 +201,9 @@ prefix changes everywhere.
      - Recommended
      - Comma-separated modules to import so ``@task`` registrations exist.
        The consumer merges these with ``config.task_modules``.
-   * - ``LITESTAR_QUEUES_DISPATCH_ENVELOPE``
+   * - ``LITESTAR_QUEUES_TASK_DISPATCH``
      - Injected
-     - The versioned dispatch envelope (camelCase JSON: the routing subset of
+     - The versioned task dispatch (camelCase JSON: the routing subset of
        the queue record). The dispatcher sets this automatically through
        container overrides. The consumer decodes it and re-fetches the live
        record by id.

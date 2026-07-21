@@ -52,13 +52,13 @@ Cloud Run
    :undoc-members:
    :show-inheritance:
 
-Dispatch Envelope
-=================
+Task Dispatch
+=============
 
 The universal, versioned routing slip carried to every external execution
 backend. External consumers decode it and re-fetch the live queue record.
 
-.. automodule:: litestar_queues.execution.envelope
+.. automodule:: litestar_queues.execution.dispatch
    :members:
    :undoc-members:
    :show-inheritance:

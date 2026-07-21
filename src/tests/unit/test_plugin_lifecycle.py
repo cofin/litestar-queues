@@ -105,7 +105,7 @@ def test_queues_execute_is_discoverable_without_an_app(tmp_path: "Path") -> "Non
     )
 
     assert result.returncode == 0, result.stderr.decode()
-    assert "dispatch envelope" in result.stdout.decode().lower()
+    assert "task dispatch" in result.stdout.decode().lower()
 
 
 class _RecordingMemoryChannelsBackend(MemoryChannelsBackend):

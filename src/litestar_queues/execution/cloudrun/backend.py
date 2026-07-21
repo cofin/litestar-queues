@@ -8,7 +8,7 @@ from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import BaseExecutionBackend
 from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, _execution_config_from_queue_config
-from litestar_queues.execution.envelope import DispatchEnvelope
+from litestar_queues.execution.dispatch import TaskDispatch
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -24,7 +24,7 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
-_DISPATCH_ENVELOPE_ENV_SUFFIX = "DISPATCH_ENVELOPE"
+_TASK_DISPATCH_ENV_SUFFIX = "TASK_DISPATCH"
 _HTTP_NOT_FOUND = 404
 logger = logging.getLogger(__name__)
 
@@ -253,18 +253,18 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         }
 
     def build_dispatch_env(self, record: "QueuedTaskRecord") -> "dict[str, str]":
-        """Build the single-envelope dispatch environment for a Cloud Run task process.
+        """Build the single-value task-dispatch environment for a Cloud Run task process.
 
         The record is serialized into one prefix-aware environment variable
-        (``LITESTAR_QUEUES_DISPATCH_ENVELOPE`` by default) carrying the
-        universal dispatch envelope. Adopter ``extra_env`` values are merged in.
+        (``LITESTAR_QUEUES_TASK_DISPATCH`` by default) carrying the
+        universal task dispatch. Adopter ``extra_env`` values are merged in.
 
         Returns:
             Environment variables for the Cloud Run task process.
         """
         config = self.execution_config
-        envelope = DispatchEnvelope.from_record(record)
-        env = {config.env_name(_DISPATCH_ENVELOPE_ENV_SUFFIX): envelope.to_json().decode()}
+        dispatch = TaskDispatch.from_record(record)
+        env = {config.env_name(_TASK_DISPATCH_ENV_SUFFIX): dispatch.to_json().decode()}
         env.update(config.extra_env)
         return env
 
