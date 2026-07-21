@@ -20,6 +20,4 @@ class ValkeyBackendConfig:
     key_prefix: "str" = "litestar_queues"
     notifications: "bool" = True
     notification_channel: "str" = DEFAULT_NOTIFICATION_CHANNEL
-    lock_timeout: "float" = 5.0
-    poll_interval: "float" = 0.1
     client: "Valkey | None" = None

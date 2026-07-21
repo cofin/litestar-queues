@@ -89,21 +89,6 @@ async def test_valkey_enqueue_many_records_remain_claimable_when_batch_marker_is
     assert {record.id for record in claimed if record is not None} == {record.id for record in records}
 
 
-async def test_valkey_backend_releases_locks_by_token_via_lua_script(valkey_backend: "ValkeyQueueBackend") -> "None":
-    """Verify the token-checked release script against real Valkey Lua semantics."""
-    client = await valkey_backend._get_client()
-    lock_key = valkey_backend._lock_key("task:test")
-
-    await client.set(lock_key, "new-owner")
-    await valkey_backend._release_lock(client, lock_key, "old-owner")
-
-    assert await client.get(lock_key) == "new-owner"
-
-    await valkey_backend._release_lock(client, lock_key, "new-owner")
-
-    assert await client.get(lock_key) is None
-
-
 async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_backend: "ValkeyQueueBackend") -> "None":
     flaky = await valkey_backend.enqueue("tasks.flaky", max_retries=1)
 
@@ -284,6 +269,23 @@ async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]
     return messages
 
 
+async def _status_memberships(backend: "ValkeyQueueBackend", task_id: "object") -> "list[str]":
+    client = await backend._get_client()
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    return [
+        status
+        for status in statuses
+        if str(task_id) in {str(member) for member in await client.smembers(backend._status_key(status))}
+    ]
+
+
+async def _zset_members(backend: "ValkeyQueueBackend") -> "tuple[set[str], set[str]]":
+    client = await backend._get_client()
+    ready = {str(member) for member in await client.zrange(backend._ready_key, 0, -1)}
+    scheduled = {str(member) for member in await client.zrange(backend._scheduled_key, 0, -1)}
+    return ready, scheduled
+
+
 async def test_valkey_backend_enqueue_places_record_in_single_status_set(
     valkey_backend: "ValkeyQueueBackend",
 ) -> "None":
@@ -349,3 +351,91 @@ async def test_valkey_backend_enqueue_many_coalesces_single_notification(
 
     assert len(records) == 5
     assert len(messages) == 1
+
+
+async def test_valkey_backend_cancel_leaves_single_status_membership(valkey_backend: "ValkeyQueueBackend") -> "None":
+    record = await valkey_backend.enqueue("tasks.cancel.membership")
+
+    assert await valkey_backend.cancel_task(record.id) is True
+
+    ready, scheduled = await _zset_members(valkey_backend)
+    assert await _status_memberships(valkey_backend, record.id) == ["cancelled"]
+    assert str(record.id) not in ready
+    assert str(record.id) not in scheduled
+
+
+async def test_valkey_backend_stale_requeue_leaves_single_membership_in_ready(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    record = await valkey_backend.enqueue("tasks.stale.requeue", max_retries=1)
+    await valkey_backend.claim_task(record.id)
+
+    result = await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+
+    assert result.requeued == 1
+    ready, scheduled = await _zset_members(valkey_backend)
+    assert await _status_memberships(valkey_backend, record.id) == ["pending"]
+    assert str(record.id) in ready
+    assert str(record.id) not in scheduled
+    requeued = await valkey_backend.get_task(record.id)
+    assert requeued is not None
+    assert requeued.status == "pending"
+    assert requeued.retry_count == 1
+    assert requeued.heartbeat_at is None
+
+
+async def test_valkey_backend_stale_failure_leaves_single_failed_membership(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    record = await valkey_backend.enqueue("tasks.stale.fail")
+    await valkey_backend.claim_task(record.id)
+
+    result = await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+
+    assert result.failed == 1
+    ready, scheduled = await _zset_members(valkey_backend)
+    assert await _status_memberships(valkey_backend, record.id) == ["failed"]
+    assert str(record.id) not in ready
+    assert str(record.id) not in scheduled
+    failed = await valkey_backend.get_task(record.id)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.heartbeat_at is None
+
+
+async def test_valkey_backend_concurrent_keyed_enqueue_yields_one_record(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    first, second = await asyncio.gather(
+        valkey_backend.enqueue("tasks.keyed.race", kwargs={"n": 1}, key="race:1"),
+        valkey_backend.enqueue("tasks.keyed.race", kwargs={"n": 2}, key="race:1"),
+    )
+
+    assert first.id == second.id
+    keyed = await valkey_backend.get_task_by_key("race:1")
+    assert keyed is not None
+    assert keyed.id == first.id
+    statistics = await valkey_backend.get_statistics()
+    assert statistics.pending == 1
+    assert await _status_memberships(valkey_backend, first.id) == ["pending"]
+
+
+async def test_valkey_backend_claim_task_honors_due_gating_and_fences(valkey_backend: "ValkeyQueueBackend") -> "None":
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scheduled = await valkey_backend.enqueue("tasks.claim.future", scheduled_at=later)
+
+    assert await valkey_backend.claim_task(scheduled.id) is None
+    stored = await valkey_backend.get_task(scheduled.id)
+    assert stored is not None
+    assert stored.status == "scheduled"
+
+    due = await valkey_backend.enqueue("tasks.claim.due")
+    claimed = await valkey_backend.claim_task(due.id)
+    assert claimed is not None
+    assert claimed.status == "running"
+    assert claimed.started_at is not None
+    assert await valkey_backend.claim_task(due.id) is None
+
+    ready, _ = await _zset_members(valkey_backend)
+    assert await _status_memberships(valkey_backend, due.id) == ["running"]
+    assert str(due.id) not in ready
