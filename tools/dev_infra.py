@@ -1,6 +1,7 @@
-"""Local Redis and Valkey container lifecycle for development."""
+"""Local PostgreSQL, Redis, and Valkey container lifecycle for development."""
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -8,14 +9,17 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-CONTAINER_PORT = 6379
+DEFAULT_POSTGRES_PORT = 15432
 DEFAULT_REDIS_PORT = 16379
 DEFAULT_VALKEY_PORT = 16380
+POSTGRES_CONTAINER_PORT = 5432
+REDIS_CONTAINER_PORT = 6379
 HEALTH_INTERVAL_SECONDS = 1.0
 HEALTH_RETRIES = 60
 RUNTIME_ENV = "LITESTAR_QUEUES_CONTAINER_RUNTIME"
@@ -25,6 +29,11 @@ INSPECT_HEALTH_INDEX = 2
 INSPECT_IMAGE_INDEX = 3
 INSPECT_ID_INDEX = 4
 SHORT_CONTAINER_ID_LENGTH = 12
+PORT_ENV_BY_SERVICE = {
+    "postgres": "LITESTAR_QUEUES_POSTGRES_PORT",
+    "redis": "LITESTAR_QUEUES_REDIS_PORT",
+    "valkey": "LITESTAR_QUEUES_VALKEY_PORT",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,16 +43,12 @@ class ServiceConfig:
     container_name: str
     image: str
     host_port: int
+    container_port: int
     volume_name: str
-    cli_name: str
-
-    @property
-    def url(self) -> str:
-        return f"redis://127.0.0.1:{self.host_port}/0"
-
-    @property
-    def health_command(self) -> str:
-        return f"{self.cli_name} -h 127.0.0.1 -p {CONTAINER_PORT} ping"
+    volume_target: str
+    url: str
+    health_command: str
+    environment: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +112,16 @@ class ContainerRuntime:
         result = self.run(["inspect", "--format", template, container_name], check=False)
         return result.stdout.strip() if result.returncode == 0 else "unknown"
 
+    def image_digest(self, image: str) -> str:
+        result = self.run(["image", "inspect", image, "--format", "{{json .RepoDigests}}"], check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        try:
+            digests = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return ""
+        return str(digests[0]) if isinstance(digests, list) and digests else ""
+
 
 class InfraManager:
     def __init__(self, runtime: ContainerRuntime, services: "Sequence[ServiceConfig]") -> None:
@@ -169,7 +184,8 @@ class InfraManager:
     def _start_service(self, service: ServiceConfig, *, pull: bool, recreate: bool) -> None:
         if self.runtime.container_running(service.container_name):
             if not recreate:
-                print(f"{service.label}: already running at {service.url}")
+                self._validate_running_service(service)
+                print(f"{service.label}: already running at {_redact_url(service.url)}")
                 return
             print(f"{service.label}: recreating running container")
             self.runtime.run(["rm", "-f", service.container_name])
@@ -182,7 +198,8 @@ class InfraManager:
                 print(f"{service.label}: starting existing container")
                 self.runtime.run(["start", service.container_name])
                 self._wait_for_health(service)
-                print(f"{service.label}: ready at {service.url}")
+                self._validate_running_service(service)
+                print(f"{service.label}: ready at {_redact_url(service.url)}")
                 return
 
         if pull:
@@ -196,7 +213,18 @@ class InfraManager:
         print(f"{service.label}: creating container {service.container_name}")
         self.runtime.run(_run_args(service), timeout=120)
         self._wait_for_health(service)
-        print(f"{service.label}: ready at {service.url}")
+        print(f"{service.label}: ready at {_redact_url(service.url)}")
+
+    def _validate_running_service(self, service: ServiceConfig) -> None:
+        status = self.runtime.status(service.container_name)
+        expected_port = f"127.0.0.1:{service.host_port}"
+        if status is not None and expected_port not in status.ports:
+            port_environment = PORT_ENV_BY_SERVICE[service.key]
+            message = (
+                f"{service.label} container is running with ports {status.ports!r}, not the configured host port "
+                f"{service.host_port}. Set {port_environment} to the running port or use --recreate."
+            )
+            raise InfraError(message)
 
     def _wait_for_health(self, service: ServiceConfig) -> None:
         for _ in range(HEALTH_RETRIES):
@@ -228,7 +256,7 @@ class ContainerCommandError(InfraError):
 
 
 def _run_args(service: ServiceConfig) -> list[str]:
-    return [
+    args = [
         "run",
         "-d",
         "--name",
@@ -236,11 +264,15 @@ def _run_args(service: ServiceConfig) -> list[str]:
         "--hostname",
         service.key,
         "-p",
-        f"127.0.0.1:{service.host_port}:{CONTAINER_PORT}",
+        f"127.0.0.1:{service.host_port}:{service.container_port}",
         "-v",
-        f"{service.volume_name}:/data",
+        f"{service.volume_name}:{service.volume_target}",
         "--restart",
         "unless-stopped",
+    ]
+    for environment in service.environment:
+        args.extend(["-e", environment])
+    args.extend([
         "--health-cmd",
         service.health_command,
         "--health-interval",
@@ -250,7 +282,8 @@ def _run_args(service: ServiceConfig) -> list[str]:
         "--health-retries",
         "20",
         service.image,
-    ]
+    ])
+    return args
 
 
 def _inspect_part(parts: "Sequence[str]", index: int, default: str) -> str:
@@ -260,22 +293,41 @@ def _inspect_part(parts: "Sequence[str]", index: int, default: str) -> str:
 def _service_configs() -> list[ServiceConfig]:
     return [
         ServiceConfig(
+            label="PostgreSQL",
+            key="postgres",
+            container_name=os.getenv("LITESTAR_QUEUES_POSTGRES_CONTAINER", "litestar-queues-postgres"),
+            image=os.getenv("LITESTAR_QUEUES_POSTGRES_IMAGE", "postgres:18"),
+            host_port=(postgres_port := _env_int("LITESTAR_QUEUES_POSTGRES_PORT", DEFAULT_POSTGRES_PORT)),
+            container_port=POSTGRES_CONTAINER_PORT,
+            volume_name=os.getenv("LITESTAR_QUEUES_POSTGRES_VOLUME", "litestar-queues-postgres-data"),
+            volume_target="/var/lib/postgresql",
+            url=f"postgresql://queue:queue@127.0.0.1:{postgres_port}/queue",
+            health_command="pg_isready -U queue -d queue",
+            environment=("POSTGRES_USER=queue", "POSTGRES_PASSWORD=queue", "POSTGRES_DB=queue"),
+        ),
+        ServiceConfig(
             label="Redis",
             key="redis",
             container_name=os.getenv("LITESTAR_QUEUES_REDIS_CONTAINER", "litestar-queues-redis"),
             image=os.getenv("LITESTAR_QUEUES_REDIS_IMAGE", "redis:7-alpine"),
-            host_port=_env_int("LITESTAR_QUEUES_REDIS_PORT", DEFAULT_REDIS_PORT),
+            host_port=(redis_port := _env_int("LITESTAR_QUEUES_REDIS_PORT", DEFAULT_REDIS_PORT)),
+            container_port=REDIS_CONTAINER_PORT,
             volume_name=os.getenv("LITESTAR_QUEUES_REDIS_VOLUME", "litestar-queues-redis-data"),
-            cli_name="redis-cli",
+            volume_target="/data",
+            url=f"redis://127.0.0.1:{redis_port}/0",
+            health_command=f"redis-cli -h 127.0.0.1 -p {REDIS_CONTAINER_PORT} ping",
         ),
         ServiceConfig(
             label="Valkey",
             key="valkey",
             container_name=os.getenv("LITESTAR_QUEUES_VALKEY_CONTAINER", "litestar-queues-valkey"),
             image=os.getenv("LITESTAR_QUEUES_VALKEY_IMAGE", "valkey/valkey:8-alpine"),
-            host_port=_env_int("LITESTAR_QUEUES_VALKEY_PORT", DEFAULT_VALKEY_PORT),
+            host_port=(valkey_port := _env_int("LITESTAR_QUEUES_VALKEY_PORT", DEFAULT_VALKEY_PORT)),
+            container_port=REDIS_CONTAINER_PORT,
             volume_name=os.getenv("LITESTAR_QUEUES_VALKEY_VOLUME", "litestar-queues-valkey-data"),
-            cli_name="valkey-cli",
+            volume_target="/data",
+            url=f"redis://127.0.0.1:{valkey_port}/0",
+            health_command=f"valkey-cli -h 127.0.0.1 -p {REDIS_CONTAINER_PORT} ping",
         ),
     ]
 
@@ -296,6 +348,17 @@ def _env_int(name: str, default: int) -> int:
     except ValueError as exc:
         message = f"{name} must be an integer, got {value!r}"
         raise InfraError(message) from exc
+
+
+def _redact_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.password is None:
+        return url
+    hostname = parsed.hostname or ""
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    username = parsed.username or ""
+    return urlunsplit((parsed.scheme, f"{username}:***@{host}{port}", parsed.path, parsed.query, parsed.fragment))
 
 
 def _detect_runtime() -> str:
@@ -339,7 +402,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    start = subparsers.add_parser("start", help="start Redis and Valkey containers")
+    start = subparsers.add_parser("start", help="start PostgreSQL, Redis, and Valkey containers")
     _add_service_arg(start)
     start.add_argument("--pull", action="store_true", help="pull images before starting")
     start.add_argument("--recreate", action="store_true", help="remove and recreate existing containers")
@@ -367,7 +430,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_service_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--service", choices=["all", "redis", "valkey"], default="all", help="service to manage")
+    parser.add_argument(
+        "--service", choices=["all", "postgres", "redis", "valkey"], default="all", help="service to manage"
+    )
 
 
 def main(argv: "Sequence[str] | None" = None) -> int:

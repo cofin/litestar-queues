@@ -33,8 +33,6 @@ Install only the integration your application uses:
      - OpenTelemetry instrumentation.
    * - ``pip install "litestar-queues[prometheus]"``
      - Prometheus metrics.
-   * - ``pip install "litestar-queues[examples]"``
-     - Dependencies used by the runnable HTMX examples.
 
 An extra installs the libraries for an integration. It does not configure that
 integration or choose where tasks run. Complete the :doc:`quickstart`, then

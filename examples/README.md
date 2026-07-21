@@ -45,8 +45,8 @@ The Redis and Valkey copies accept
 web-and-worker setup.
 
 Start with the README in the directory you want to run. Every example uses the
-optional `litestar-queues[examples]` Python extra and local frontend
-dependencies from its own `package.json`.
+`examples` dev dependency group (`uv sync --group examples --group dev`) and
+local frontend dependencies from its own `package.json`.
 
 You can provision frontend assets for all shipped examples at once with:
 

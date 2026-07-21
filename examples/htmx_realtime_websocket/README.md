@@ -14,7 +14,7 @@ process. You do not need an external service.
 From the repository root:
 
 ```bash
-uv sync --extra examples --group dev
+uv sync --group examples --group dev
 LITESTAR_APP=examples.htmx_realtime_websocket.app:app \
 uv run litestar assets install
 LITESTAR_APP=examples.htmx_realtime_websocket.app:app \

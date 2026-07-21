@@ -23,7 +23,7 @@ SQLSpec migration command and run migrations during deployment.
 From the repository root:
 
 ```bash
-uv sync --extra examples --group dev
+uv sync --group examples --group dev
 LITESTAR_APP=examples.htmx_realtime_sse_sqlspec.app:app \
 uv run litestar assets install
 LITESTAR_APP=examples.htmx_realtime_sse_sqlspec.app:app \

@@ -56,9 +56,9 @@ litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
-examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
+rabbitmq = ["aio-pika>=9.6"]
 redis = ["redis>=5.0.0"]
 sqlspec = ["sqlspec>=0.52.0"]
 valkey = ["valkey>=6.0.0"]
@@ -129,6 +129,12 @@ version = "{current_version}"
 # Environment Setup #
 #####################
 [dependency-groups]
+benchmarks = [
+  "psutil",
+  "psycopg[binary,pool]>=3.2.0",
+  "redis>=5.0.0",
+  "sqlspec>=0.52.0",
+]
 build = ["bump-my-version"]
 dev = [
   "litestar[standard,attrs,pydantic]",
@@ -156,6 +162,7 @@ docs = [
   "shibuya",
   "litestar-vite",
 ]
+examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 tests = [
   "coverage[toml]",
   "pydantic>=2.0.0",
