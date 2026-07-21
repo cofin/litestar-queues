@@ -22,6 +22,7 @@ from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 
@@ -80,6 +81,31 @@ def test_importing_consumer_core_does_not_load_click() -> "None":
     code = "import sys; import litestar_queues._consumer; assert 'click' not in sys.modules"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr.decode()
+
+
+def test_queues_execute_is_discoverable_without_an_app(tmp_path: "Path") -> "None":
+    """The ``litestar.commands`` entry point exposes ``queues execute`` with no app present."""
+    import os
+    import shutil
+    from pathlib import Path
+
+    candidate = Path(sys.executable).with_name("litestar")
+    litestar_bin = str(candidate) if candidate.exists() else (shutil.which("litestar") or "")
+    if not litestar_bin:
+        pytest.skip("litestar console entry point is not available")
+
+    env = {key: value for key, value in os.environ.items() if key != "LITESTAR_APP"}
+    result = subprocess.run(
+        [litestar_bin, "queues", "execute", "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    assert "dispatch envelope" in result.stdout.decode().lower()
 
 
 class _RecordingMemoryChannelsBackend(MemoryChannelsBackend):

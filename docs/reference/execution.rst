@@ -52,7 +52,13 @@ Cloud Run
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: litestar_queues.execution.cloudrun.entrypoint
+Dispatch Envelope
+=================
+
+The universal, versioned routing slip carried to every external execution
+backend. External consumers decode it and re-fetch the live queue record.
+
+.. automodule:: litestar_queues.execution.envelope
    :members:
    :undoc-members:
    :show-inheritance:

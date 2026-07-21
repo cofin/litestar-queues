@@ -170,14 +170,14 @@ default because web and background capacity can scale separately.
 Cloud Run Job worker
 ====================
 
-The Cloud Run Job executes the queued task. Run it with the shipped
-``litestar-queues-cloudrun-worker`` command or the equivalent module command,
-``python -m litestar_queues.execution.cloudrun.entrypoint``.
+The Cloud Run Job executes the queued task. Run it with ``litestar queues
+execute``. The command reads the dispatch envelope and
+``LITESTAR_QUEUES_CONFIG_FACTORY`` from the container environment, resolves the
+shared queue service, claims the saved record, runs the task, and exits with a
+defined code.
 
-The worker loads the shared queue config, imports task modules, claims the
-saved record, runs the task, and exits with a defined code. It resolves the
-config factory before reading ``TASK_ID``. This lets a custom ``env_prefix``
-work throughout the process.
+The command resolves the config factory before decoding the prefixed dispatch
+envelope, so a custom ``env_prefix`` works throughout the process.
 
 Environment contract
 --------------------
@@ -195,32 +195,18 @@ prefix changes everywhere.
    * - ``LITESTAR_QUEUES_CONFIG_FACTORY``
      - Yes
      - ``module:attr`` or dotted path returning the shared-DB ``QueueConfig``
-       or ``QueueService``. Without it, the worker cannot rebuild the queue
+       or ``QueueService``. Without it, the consumer cannot rebuild the queue
        service from the job container.
    * - ``LITESTAR_QUEUES_TASK_MODULES``
      - Recommended
      - Comma-separated modules to import so ``@task`` registrations exist.
-       The entrypoint merges these with ``config.task_modules``.
-   * - ``LITESTAR_QUEUES_TASK_ID``
+       The consumer merges these with ``config.task_modules``.
+   * - ``LITESTAR_QUEUES_DISPATCH_ENVELOPE``
      - Injected
-     - The queue record UUID. The dispatcher sets this automatically through
-       container overrides.
-   * - ``LITESTAR_QUEUES_TASK_NAME``
-     - Injected
-     - The task name stored on the queue record.
-   * - ``LITESTAR_QUEUES_TASK_ARGS``
-     - Injected
-     - JSON-encoded positional arguments.
-   * - ``LITESTAR_QUEUES_TASK_KWARGS``
-     - Injected
-     - JSON-encoded keyword arguments.
-   * - ``LITESTAR_QUEUES_EXECUTION_BACKEND``
-     - Injected
-     - Set to ``cloudrun`` by the dispatcher.
-   * - ``LITESTAR_QUEUES_EXECUTION_PROFILE``
-     - As applicable
-     - Present when the record uses a profile and the dispatcher selected a
-       profile-specific Cloud Run Job.
+     - The versioned dispatch envelope (camelCase JSON: the routing subset of
+       the queue record). The dispatcher sets this automatically through
+       container overrides. The consumer decodes it and re-fetches the live
+       record by id.
 
 Profile-based job selection
 ---------------------------
@@ -242,7 +228,8 @@ Example job command:
    gcloud run jobs create my-worker-job \
      --image REGION-docker.pkg.dev/my-project/my-repo/my-worker:TAG \
      --region my-region \
-     --command litestar-queues-cloudrun-worker \
+     --command litestar \
+     --args queues,execute \
      --set-cloudsql-instances my-project:my-region:my-db \
      --set-env-vars LITESTAR_QUEUES_CONFIG_FACTORY=myapp.queues:create_config,\
      LITESTAR_QUEUES_TASK_MODULES=myapp.tasks \
