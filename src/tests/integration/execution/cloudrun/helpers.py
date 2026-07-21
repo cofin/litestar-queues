@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
+    from litestar_queues.execution.envelope import DispatchEnvelope
     from litestar_queues.service import QueueService
 
 
@@ -104,3 +105,14 @@ NotFoundError = type("NotFound", (Exception,), {})
 def env_map(request: "RunJobRequest") -> "dict[str, str]":
     env = request["overrides"]["container_overrides"][0]["env"]
     return {item["name"]: item["value"] for item in env}
+
+
+def dispatch_envelope(request: "RunJobRequest") -> "DispatchEnvelope":
+    """Decode the dispatch envelope from a captured run-job request.
+
+    Returns:
+        The dispatch envelope carried by the request.
+    """
+    from litestar_queues.execution.envelope import DispatchEnvelope
+
+    return DispatchEnvelope.from_json(env_map(request)["LITESTAR_QUEUES_DISPATCH_ENVELOPE"])

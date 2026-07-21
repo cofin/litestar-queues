@@ -1,4 +1,3 @@
-import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import BaseExecutionBackend
 from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, _execution_config_from_queue_config
+from litestar_queues.execution.envelope import DispatchEnvelope
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
@@ -24,6 +24,7 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
+_DISPATCH_ENVELOPE_ENV_SUFFIX = "DISPATCH_ENVELOPE"
 _HTTP_NOT_FOUND = 404
 logger = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         timeout = record.metadata.get("timeout", task_obj.timeout)
         timeout_seconds = int(timeout if isinstance(timeout, int | float) else config.timeout)
         job_name = config.resolve_job_name(record.execution_profile)
-        env = self.build_environment(record)
+        env = self.build_dispatch_env(record)
         return {
             "name": f"projects/{config.project_id}/locations/{config.region}/jobs/{job_name}",
             "overrides": {
@@ -251,22 +252,19 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             },
         }
 
-    def build_environment(self, record: "QueuedTaskRecord") -> "dict[str, str]":
-        """Build generic environment variables for a Cloud Run task process.
+    def build_dispatch_env(self, record: "QueuedTaskRecord") -> "dict[str, str]":
+        """Build the single-envelope dispatch environment for a Cloud Run task process.
+
+        The record is serialized into one prefix-aware environment variable
+        (``LITESTAR_QUEUES_DISPATCH_ENVELOPE`` by default) carrying the
+        universal dispatch envelope. Adopter ``extra_env`` values are merged in.
 
         Returns:
             Environment variables for the Cloud Run task process.
         """
         config = self.execution_config
-        env = {
-            config.env_name("TASK_ID"): str(record.id),
-            config.env_name("TASK_NAME"): record.task_name,
-            config.env_name("TASK_ARGS"): json.dumps(list(record.args), separators=(",", ":")),
-            config.env_name("TASK_KWARGS"): json.dumps(record.kwargs, separators=(",", ":")),
-            config.env_name("EXECUTION_BACKEND"): "cloudrun",
-        }
-        if record.execution_profile is not None:
-            env[config.env_name("EXECUTION_PROFILE")] = record.execution_profile
+        envelope = DispatchEnvelope.from_record(record)
+        env = {config.env_name(_DISPATCH_ENVELOPE_ENV_SUFFIX): envelope.to_json().decode()}
         env.update(config.extra_env)
         return env
 

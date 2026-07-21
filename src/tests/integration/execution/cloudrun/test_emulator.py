@@ -19,6 +19,7 @@ from tests.integration.execution.cloudrun.helpers import (
     FakeJobsClient,
     NoopServiceContext,
     NotFoundError,
+    dispatch_envelope,
     env_map,
 )
 
@@ -112,21 +113,85 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         await service.close()
 
     request = jobs_client.requests[0]
-    env = env_map(request)
+    envelope = dispatch_envelope(request)
 
     assert execution_ref == "projects/test/locations/us-central1/jobs/worker/executions/run-1"
     assert request["name"] == "projects/test-project/locations/us-central1/jobs/heavy-worker"
     assert request["overrides"]["timeout"] == "120s"
-    assert env["LITESTAR_QUEUES_TASK_ID"] == str(record.id)
-    assert env["LITESTAR_QUEUES_TASK_NAME"] == "tasks.remote"
-    assert env["LITESTAR_QUEUES_TASK_ARGS"] == "[41]"
-    assert env["LITESTAR_QUEUES_TASK_KWARGS"] == "{}"
-    assert env["EXTRA_SETTING"] == "enabled"
+    assert envelope.task_id == str(record.id)
+    assert envelope.task_name == "tasks.remote"
+    assert envelope.args == (41,)
+    assert envelope.kwargs == {}
+    assert envelope.execution_backend == "cloudrun"
+    assert envelope.execution_profile == "heavy"
+    assert env_map(request)["EXTRA_SETTING"] == "enabled"
     assert stored is not None
     assert stored.execution_backend == "cloudrun"
     assert stored.execution_profile == "heavy"
     assert stored.execution_ref == execution_ref
     assert stored.status == "pending"
+
+
+async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.remote")
+    async def remote_task(value: "int") -> "int":
+        return value + 1
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    ) as service:
+        result = await service.enqueue(remote_task.using(execution_backend="cloudrun"), 41)
+        record = result.record
+        assert record is not None
+        await backend.dispatch(service, record)
+
+    env = env_map(jobs_client.requests[0])
+
+    assert "LITESTAR_QUEUES_DISPATCH_ENVELOPE" in env
+    for legacy in (
+        "LITESTAR_QUEUES_TASK_ARGS",
+        "LITESTAR_QUEUES_TASK_KWARGS",
+        "LITESTAR_QUEUES_TASK_NAME",
+        "LITESTAR_QUEUES_TASK_ID",
+        "LITESTAR_QUEUES_EXECUTION_BACKEND",
+        "LITESTAR_QUEUES_EXECUTION_PROFILE",
+    ):
+        assert legacy not in env
+
+
+async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.remote")
+    async def remote_task(value: "int") -> "int":
+        return value + 1
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker", env_prefix="PREFIX"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    ) as service:
+        result = await service.enqueue(remote_task.using(execution_backend="cloudrun"), 41)
+        record = result.record
+        assert record is not None
+        await backend.dispatch(service, record)
+
+    env = env_map(jobs_client.requests[0])
+
+    assert "PREFIX_DISPATCH_ENVELOPE" in env
+    assert "LITESTAR_QUEUES_DISPATCH_ENVELOPE" not in env
 
 
 async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() -> "None":
