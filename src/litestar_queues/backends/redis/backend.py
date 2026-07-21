@@ -215,6 +215,31 @@ redis.call('SADD', prefix .. ':status:failed', task_id)
 redis.call('PUBLISH', channel, task_id)
 return {1, 'failed'}
 """
+_ENQUEUE_SCRIPT = """
+local ready = KEYS[1]
+local scheduled = KEYS[2]
+local prefix = ARGV[1]
+local task_id = ARGV[2]
+local status = ARGV[3]
+local due = ARGV[4]
+local score = ARGV[5]
+local channel = ARGV[6]
+local notify_payload = ARGV[7]
+local publish = ARGV[8]
+local hkey = prefix .. ':task:' .. task_id
+redis.call('HSET', hkey, unpack(ARGV, 9))
+redis.call('SADD', prefix .. ':tasks', task_id)
+redis.call('SADD', prefix .. ':status:' .. status, task_id)
+if due == '1' then
+    redis.call('ZADD', ready, score, task_id)
+    if publish == '1' then
+        redis.call('PUBLISH', channel, notify_payload)
+    end
+else
+    redis.call('ZADD', scheduled, score, task_id)
+end
+return {1}
+"""
 
 
 class RedisQueueBackend(BaseQueueBackend):
@@ -362,24 +387,23 @@ class RedisQueueBackend(BaseQueueBackend):
                     execution_profile=execution_profile,
                     metadata=metadata,
                 )
-                await self._save_record(record)
+                await self._save_new_record(record, publish=True)
                 await self._client_hset(self._keys_key, key, str(record.id))
-        else:
-            record = self._create_record(
-                task_name,
-                args=args,
-                kwargs=kwargs,
-                queue=queue,
-                priority=priority,
-                max_retries=max_retries,
-                scheduled_at=scheduled_at,
-                key=None,
-                execution_backend=execution_backend,
-                execution_profile=execution_profile,
-                metadata=metadata,
-            )
-            await self._save_record(record)
-        await self.notify_new_task(record)
+                return record
+        record = self._create_record(
+            task_name,
+            args=args,
+            kwargs=kwargs,
+            queue=queue,
+            priority=priority,
+            max_retries=max_retries,
+            scheduled_at=scheduled_at,
+            key=None,
+            execution_backend=execution_backend,
+            execution_profile=execution_profile,
+            metadata=metadata,
+        )
+        await self._save_new_record(record, publish=True)
         return record
 
     async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
@@ -415,7 +439,7 @@ class RedisQueueBackend(BaseQueueBackend):
                         execution_profile=spec.execution_profile,
                         metadata=spec.metadata,
                     )
-                    await self._save_record(record)
+                    await self._save_new_record(record, publish=False)
                     await self._client_hset(self._keys_key, spec.key, str(record.id))
                     results.append(record)
                 continue
@@ -437,7 +461,7 @@ class RedisQueueBackend(BaseQueueBackend):
             results.append(record)
 
         if unkeyed_records:
-            await self._save_records(unkeyed_records)
+            await self._save_new_records(unkeyed_records, publish=False)
         await self.notify_new_tasks(results)
         return results
 
@@ -979,6 +1003,41 @@ class RedisQueueBackend(BaseQueueBackend):
             key=key,
             metadata=dict(metadata or {}),
         )
+
+    async def _save_new_record(self, record: "QueuedTaskRecord", *, publish: "bool") -> "None":
+        await self._save_new_records([record], publish=publish)
+
+    async def _save_new_records(self, records: "Sequence[QueuedTaskRecord]", *, publish: "bool") -> "None":
+        if not records:
+            return
+        client = await self._get_client()
+        keys = [self._ready_key, self._scheduled_key]
+        pipeline = _create_pipeline(client)
+        if pipeline is not None:
+            for record in records:
+                pipeline.eval(_ENQUEUE_SCRIPT, len(keys), *keys, *self._enqueue_args(record, publish=publish))
+            await _execute_pipeline(pipeline)
+            return
+        for record in records:
+            await _eval_script(client, _ENQUEUE_SCRIPT, keys, self._enqueue_args(record, publish=publish))
+
+    def _enqueue_args(self, record: "QueuedTaskRecord", *, publish: "bool") -> "list[str]":
+        due = record.status == "pending" and record.is_due
+        score = _ready_score(record) if due else _scheduled_score(record.scheduled_at)
+        args = [
+            self._key_prefix,
+            str(record.id),
+            record.status,
+            "1" if due else "0",
+            repr(score),
+            self._notification_channel,
+            _json_dumps({"event": "task_available"}),
+            "1" if publish and self._notifications else "0",
+        ]
+        for field, value in self._record_to_mapping(record).items():
+            args.append(field)
+            args.append(value)
+        return args
 
     async def _save_record(self, record: "QueuedTaskRecord") -> "None":
         await self._save_records([record])

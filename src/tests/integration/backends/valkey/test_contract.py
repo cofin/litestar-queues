@@ -272,3 +272,80 @@ async def test_valkey_backend_complete_clears_heartbeat_and_publishes(valkey_bac
     assert completed.heartbeat_at is None
     assert message is not None
     assert str(message["data"]) == str(record.id)
+
+
+async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]":
+    messages: "list[object]" = []
+    deadline = asyncio.get_running_loop().time() + window
+    while asyncio.get_running_loop().time() < deadline:
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)  # type: ignore[attr-defined]
+        if message is not None:
+            messages.append(message)
+    return messages
+
+
+async def test_valkey_backend_enqueue_places_record_in_single_status_set(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    record = await valkey_backend.enqueue("tasks.single")
+
+    client = await valkey_backend._get_client()
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    memberships = [
+        status
+        for status in statuses
+        if str(record.id) in {str(member) for member in await client.smembers(valkey_backend._status_key(status))}
+    ]
+
+    assert memberships == ["pending"]
+
+
+async def test_valkey_backend_enqueue_future_scheduled_indexes_without_publish(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    client = await valkey_backend._get_client()
+    pubsub = client.pubsub()
+    await pubsub.subscribe(valkey_backend._notification_channel)
+    await asyncio.sleep(0.2)
+
+    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    record = await valkey_backend.enqueue("tasks.future", scheduled_at=far)
+    messages = await _drain_messages(pubsub, window=0.3)
+    await pubsub.aclose()
+
+    scheduled_members = {str(member) for member in await client.zrange(valkey_backend._scheduled_key, 0, -1)}
+    ready_members = {str(member) for member in await client.zrange(valkey_backend._ready_key, 0, -1)}
+
+    assert record.status == "scheduled"
+    assert str(record.id) in scheduled_members
+    assert str(record.id) not in ready_members
+    assert messages == []
+
+
+async def test_valkey_backend_enqueue_due_publishes_single_notification(valkey_backend: "ValkeyQueueBackend") -> "None":
+    client = await valkey_backend._get_client()
+    pubsub = client.pubsub()
+    await pubsub.subscribe(valkey_backend._notification_channel)
+    await asyncio.sleep(0.2)
+
+    await valkey_backend.enqueue("tasks.due")
+    messages = await _drain_messages(pubsub, window=0.5)
+    await pubsub.aclose()
+
+    assert len(messages) == 1
+
+
+async def test_valkey_backend_enqueue_many_coalesces_single_notification(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    client = await valkey_backend._get_client()
+    pubsub = client.pubsub()
+    await pubsub.subscribe(valkey_backend._notification_channel)
+    await asyncio.sleep(0.2)
+
+    records = await valkey_backend.enqueue_many([EnqueueSpec(task_name=f"tasks.batch.{index}") for index in range(5)])
+    messages = await _drain_messages(pubsub, window=0.5)
+    await pubsub.aclose()
+
+    assert len(records) == 5
+    assert len(messages) == 1
