@@ -10,7 +10,7 @@ import asyncio
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -303,7 +303,7 @@ async def test_redis_backend_scheduled_zset_holds_future_tasks(redis_backend: "R
     far = datetime.now(timezone.utc) + timedelta(minutes=5)
     scheduled = await redis_backend.enqueue("tasks.future", scheduled_at=far)
 
-    client = await redis_backend._get_client()
+    client = cast("Any", await redis_backend._get_client())
     scheduled_members = {str(member) for member in await client.zrange(redis_backend._scheduled_key, 0, -1)}
     ready_members = {str(member) for member in await client.zrange(redis_backend._ready_key, 0, -1)}
 
@@ -316,7 +316,7 @@ async def test_redis_backend_complete_clears_heartbeat_and_publishes(redis_backe
     claimed = await redis_backend.claim_task(record.id)
     assert claimed is not None
 
-    client = await redis_backend._get_client()
+    client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._completion_channel)
     await asyncio.sleep(0.2)
@@ -348,7 +348,7 @@ async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]
 
 
 async def _status_memberships(backend: "RedisQueueBackend", task_id: "object") -> "list[str]":
-    client = await backend._get_client()
+    client = cast("Any", await backend._get_client())
     statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
     return [
         status
@@ -358,7 +358,7 @@ async def _status_memberships(backend: "RedisQueueBackend", task_id: "object") -
 
 
 async def _zset_members(backend: "RedisQueueBackend") -> "tuple[set[str], set[str]]":
-    client = await backend._get_client()
+    client = cast("Any", await backend._get_client())
     ready = {str(member) for member in await client.zrange(backend._ready_key, 0, -1)}
     scheduled = {str(member) for member in await client.zrange(backend._scheduled_key, 0, -1)}
     return ready, scheduled
@@ -367,7 +367,7 @@ async def _zset_members(backend: "RedisQueueBackend") -> "tuple[set[str], set[st
 async def test_redis_backend_enqueue_places_record_in_single_status_set(redis_backend: "RedisQueueBackend") -> "None":
     record = await redis_backend.enqueue("tasks.single")
 
-    client = await redis_backend._get_client()
+    client = cast("Any", await redis_backend._get_client())
     statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
     memberships = [
         status
@@ -381,7 +381,7 @@ async def test_redis_backend_enqueue_places_record_in_single_status_set(redis_ba
 async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
     redis_backend: "RedisQueueBackend",
 ) -> "None":
-    client = await redis_backend._get_client()
+    client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._notification_channel)
     await asyncio.sleep(0.2)
@@ -401,7 +401,7 @@ async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
 
 
 async def test_redis_backend_enqueue_due_publishes_single_notification(redis_backend: "RedisQueueBackend") -> "None":
-    client = await redis_backend._get_client()
+    client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._notification_channel)
     await asyncio.sleep(0.2)
@@ -414,7 +414,7 @@ async def test_redis_backend_enqueue_due_publishes_single_notification(redis_bac
 
 
 async def test_redis_backend_enqueue_many_coalesces_single_notification(redis_backend: "RedisQueueBackend") -> "None":
-    client = await redis_backend._get_client()
+    client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._notification_channel)
     await asyncio.sleep(0.2)
