@@ -41,6 +41,13 @@ the same migration command used by the rest of the application. The queue
 backend does not migrate the database when it opens. An unsupported adapter
 raises a configuration error instead of silently using generic SQL.
 
+.. note:: Performance
+
+   SQLSpec's ``sqlspec[performance]`` extra (msgspec/librt serialization) and
+   ``sqlspec[mypyc]`` extra (compiled SQL parser) speed up statement handling.
+   These are consumer choices; litestar-queues does not require or install
+   them on your behalf.
+
 Schema ownership
 ================
 
