@@ -2,11 +2,12 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from litestar_queues import (
+    QueueBackendCapabilities,
     QueueConfig,
     QueuedTaskRecord,
     QueueService,
@@ -136,6 +137,52 @@ async def test_task_result_wait_raises_when_record_disappears() -> "None":
 
     with pytest.raises(RuntimeError, match="no longer exists"):
         await asyncio.wait_for(result.wait(poll_interval=0), timeout=0.05)
+
+
+async def test_task_result_wait_pushes_to_completion_events_backend_when_supported(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    sleep_calls = 0
+
+    async def counting_sleep(delay: "float") -> "None":
+        nonlocal sleep_calls
+        del delay
+        sleep_calls += 1
+
+    monkeypatch.setattr(asyncio, "sleep", counting_sleep)
+    backend = _CompletionSpyBackend(supports=True)
+    running = QueuedTaskRecord(task_name="tasks.spy", status="running")
+    completed = QueuedTaskRecord(id=running.id, task_name="tasks.spy", status="completed")
+    service = _ScriptedTaskService(backend, [running, completed])
+    result = TaskResult(running.id, "tasks.spy", service=cast("QueueService", service), record=running)
+
+    awaited = await result.wait(timeout=1.0, poll_interval=0.01)
+
+    assert awaited.status == "completed"
+    assert backend.wait_for_completion_calls == 1
+    assert sleep_calls == 0
+
+
+async def test_task_result_wait_polls_when_completion_events_unsupported(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    sleep_calls = 0
+
+    async def counting_sleep(delay: "float") -> "None":
+        nonlocal sleep_calls
+        del delay
+        sleep_calls += 1
+
+    monkeypatch.setattr(asyncio, "sleep", counting_sleep)
+    backend = _CompletionSpyBackend(supports=False)
+    running = QueuedTaskRecord(task_name="tasks.spy", status="running")
+    completed = QueuedTaskRecord(id=running.id, task_name="tasks.spy", status="completed")
+    service = _ScriptedTaskService(backend, [running, completed])
+    result = TaskResult(running.id, "tasks.spy", service=cast("QueueService", service), record=running)
+
+    awaited = await result.wait(timeout=1.0, poll_interval=0.01)
+
+    assert awaited.status == "completed"
+    assert backend.wait_for_completion_calls == 0
+    assert sleep_calls == 1
 
 
 async def test_schedule_config_supports_interval_and_basic_cron_next_run() -> "None":
@@ -272,9 +319,40 @@ async def test_task_decorator_registers_interval_schedule() -> "None":
 
 
 class _MissingTaskService:
+    def get_queue_backend(self) -> "_CompletionSpyBackend":
+        return _CompletionSpyBackend(supports=False)
+
     async def get_task(self, task_id: "object") -> "None":
         del task_id
         return None
+
+
+class _CompletionSpyBackend:
+    def __init__(self, *, supports: "bool") -> "None":
+        self._supports = supports
+        self.wait_for_completion_calls = 0
+
+    @property
+    def capabilities(self) -> "QueueBackendCapabilities":
+        return QueueBackendCapabilities(supports_completion_events=self._supports)
+
+    async def wait_for_completion(self, task_id: "UUID", *, timeout: "float | None" = None) -> "bool":
+        del task_id, timeout
+        self.wait_for_completion_calls += 1
+        return False
+
+
+class _ScriptedTaskService:
+    def __init__(self, backend: "_CompletionSpyBackend", records: "list[QueuedTaskRecord]") -> "None":
+        self._backend = backend
+        self._records = records
+
+    def get_queue_backend(self) -> "_CompletionSpyBackend":
+        return self._backend
+
+    async def get_task(self, task_id: "object") -> "QueuedTaskRecord | None":
+        del task_id
+        return self._records.pop(0) if self._records else None
 
 
 def _build_test_context(record: "QueuedTaskRecord") -> "TaskExecutionContext":

@@ -40,7 +40,7 @@ license = { text = "MIT" }
 name = "litestar-queues"
 readme = "README.md"
 requires-python = ">=3.10"
-version = "0.3.0"
+version = "0.4.0"
 
 [project.urls]
 Changelog = "https://github.com/cofin/litestar-queues/releases/"
@@ -56,9 +56,9 @@ litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
-examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
+rabbitmq = ["aio-pika>=9.6"]
 redis = ["redis>=5.0.0"]
 sqlspec = ["sqlspec>=0.55.0"]
 valkey = ["valkey>=6.0.0"]
@@ -84,7 +84,7 @@ allow-direct-references = true
 allow_dirty = true
 commit = false
 commit_args = "--no-verify"
-current_version = "0.3.0"
+current_version = "0.4.0"
 ignore_missing_files = false
 ignore_missing_version = false
 message = "chore(release): bump to v{new_version}"
@@ -129,6 +129,13 @@ version = "{current_version}"
 # Environment Setup #
 #####################
 [dependency-groups]
+benchmarks = [
+  "hiredis",
+  "psutil",
+  "psycopg[binary,pool]>=3.2.0",
+  "redis>=5.0.0",
+  "sqlspec[mypyc,performance]>=0.55.0",
+]
 build = ["bump-my-version"]
 dev = [
   "litestar[standard,attrs,pydantic]",
@@ -156,6 +163,7 @@ docs = [
   "shibuya",
   "litestar-vite",
 ]
+examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 tests = [
   "coverage[toml]",
   "pydantic>=2.0.0",

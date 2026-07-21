@@ -33,7 +33,6 @@ async def valkey_backend(valkey_service: "ValkeyService") -> "AsyncIterator[Valk
             key_prefix=prefix,
             notifications=True,
             notification_channel=f"{prefix}:notifications",
-            lock_timeout=0.1,
         )
     )
     await backend.open()

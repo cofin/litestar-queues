@@ -30,6 +30,14 @@ Use ``ValkeyBackendConfig`` from ``litestar_queues.backends.valkey`` for
 Valkey. Both accept the same URL-shaped connection syntax, but Valkey uses the
 Valkey client and does not require Redis as an import side effect.
 
+.. note:: Performance
+
+   Install ``hiredis`` alongside ``redis`` for a compiled response parser:
+   ``pip install "redis[hiredis]"``, or add ``hiredis`` to your dependencies
+   directly. redis-py uses it automatically when it is importable; no
+   configuration change is required. The backend requires a client that
+   supports pipelines and ``EVAL``; both redis-py and valkey-py provide this.
+
 Payloads and key isolation
 ==========================
 

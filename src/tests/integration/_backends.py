@@ -204,6 +204,41 @@ async def _build_postgres_psycopg(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
+async def _build_postgres_psycopg_autocommit(ctx: "FixtureCtx") -> "BaseQueueBackend":
+    """Psycopg with the pool connection held in autocommit mode.
+
+    Autocommit removes psycopg's implicit per-statement ``BEGIN``/``COMMIT`` for
+    the single-statement RETURNING fast paths (``enqueue``, ``complete_task``,
+    ``fail_task``). SQLSpec's psycopg driver still lays a real transaction over
+    an autocommit connection for the explicit ``driver.begin()`` call sites
+    (``_enqueue_keyed``, ``enqueue_many``, ``claim_task``,
+    ``_claim_next_skip_locked``) by flipping ``connection.autocommit`` off for
+    the duration -- see ``test_postgres_psycopg_autocommit_hot_paths.py`` for
+    the exercises that pin this contract, including the known SQLSpec quirk
+    where that flip is never restored to ``True`` after commit/rollback.
+
+    Returns:
+        A constructed-but-unopened SQLSpec queue backend using autocommit psycopg.
+    """
+    from sqlspec.adapters.psycopg import PsycopgAsyncConfig
+
+    svc = cast("PostgresService", ctx.service)
+    assert svc is not None
+    return _sqlspec_backend(
+        PsycopgAsyncConfig(
+            connection_config={
+                "host": svc.host,
+                "port": svc.port,
+                "user": svc.user,
+                "password": svc.password,
+                "dbname": svc.database,
+                "autocommit": True,
+            }
+        ),
+        queue_table_name=ctx.table_name,
+    )
+
+
 async def _build_postgres_psqlpy(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.psqlpy import PsqlpyConfig
 
@@ -433,11 +468,26 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"listen-notify", "json-column"}),
     ),
     BackendCase(
+        "postgres-psycopg-autocommit",
+        frozenset({"psycopg", "sqlspec"}),
+        "postgres_service",
+        _build_postgres_psycopg_autocommit,
+        frozenset({"listen-notify", "json-column"}),
+    ),
+    BackendCase(
         "postgres-psqlpy",
         frozenset({"psqlpy", "sqlspec"}),
         "postgres_service",
         _build_postgres_psqlpy,
-        frozenset({"listen-notify", "json-column"}),
+        # ``xfail-update-rows-affected`` gates contract tests that rely on the
+        # UPDATE issued inside ``claim_task``'s ``driver.begin()`` transaction
+        # reporting an accurate ``rows_affected`` count. SQLSpec 0.55.0's
+        # psqlpy adapter reports ``rows_affected=0`` for that UPDATE even when
+        # the row was actually updated, so both the legacy per-row claim path
+        # and the SKIP LOCKED claim path (which share the same
+        # begin()/UPDATE/rows_affected check) always roll back and report no
+        # claim. Upstream defect: https://github.com/litestar-org/sqlspec/issues/645
+        frozenset({"listen-notify", "json-column", "xfail-update-rows-affected"}),
     ),
     BackendCase(
         "cockroach-asyncpg",

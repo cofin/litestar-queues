@@ -269,7 +269,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             supports_notifications=self._notifications_enabled,
             notification_backend=notification_backend,
             notifications_durable=notification_backend in _DURABLE_NOTIFICATION_BACKENDS,
-            supports_batch_claim=self._get_store().supports_batch_claim,
         )
 
     async def create_schema(self) -> "None":
@@ -313,43 +312,72 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
     ) -> "QueuedTaskRecord":
+        now = _utc_now()
+        record = QueuedTaskRecord(
+            task_name=task_name,
+            args=args,
+            kwargs=dict(kwargs or {}),
+            queue=queue,
+            execution_backend=execution_backend,
+            execution_profile=execution_profile,
+            status="scheduled" if scheduled_at is not None and scheduled_at > now else "pending",
+            priority=priority,
+            max_retries=max_retries,
+            scheduled_at=scheduled_at,
+            key=key,
+            metadata=dict(metadata or {}),
+        )
+        if key is not None:
+            return await self._enqueue_keyed(record, key)
+        store = self._get_store()
+        if not type(store).supports_dml_returning:
+            return await self._enqueue_legacy(record)
         with self._observe_queue_operation("enqueue", queue=queue, task_name=task_name):
+            async with self._session() as driver:
+                await driver.execute(store.insert_returning_sql(), self._insert_params(record))
+        self._increment_queue_metric("enqueue")
+        await self.notify_new_task(record)
+        return record
+
+    def _insert_params(self, record: "QueuedTaskRecord") -> "dict[str, Any]":
+        return self._get_store().bulk_values([self._params_from_record(record)])[0]
+
+    async def _enqueue_keyed(self, record: "QueuedTaskRecord", key: "str") -> "QueuedTaskRecord":
+        with self._observe_queue_operation("enqueue", queue=record.queue, task_name=record.task_name):
             async with self._session() as driver:
                 await driver.begin()
                 try:
-                    if key is not None:
-                        existing_row = await self._select_task_by_key(driver, key)
-                        if existing_row is not None:
-                            existing = self._record_from_row(existing_row)
-                            if not existing.is_terminal:
-                                await driver.rollback()
-                                return existing
-                            await self._clear_key(driver, existing.id)
-
-                    now = _utc_now()
-                    record = QueuedTaskRecord(
-                        task_name=task_name,
-                        args=args,
-                        kwargs=dict(kwargs or {}),
-                        queue=queue,
-                        execution_backend=execution_backend,
-                        execution_profile=execution_profile,
-                        status="scheduled" if scheduled_at is not None and scheduled_at > now else "pending",
-                        priority=priority,
-                        max_retries=max_retries,
-                        scheduled_at=scheduled_at,
-                        key=key,
-                        metadata=dict(metadata or {}),
-                    )
+                    existing_row = await self._select_task_by_key(driver, key)
+                    if existing_row is not None:
+                        existing = self._record_from_row(existing_row)
+                        if not existing.is_terminal:
+                            await driver.rollback()
+                            return existing
+                        await self._clear_key(driver, existing.id)
                     await driver.execute(self._get_store().insert_task(self._params_from_record(record)))
                     await driver.commit()
                 except Exception as exc:
                     with suppress(Exception):
                         await driver.rollback()
-                    if key is not None and _is_unique_violation(exc):
+                    if _is_unique_violation(exc):
                         winner = await self.get_task_by_key(key)
                         if winner is not None and not winner.is_terminal:
                             return winner
+                    raise
+        self._increment_queue_metric("enqueue")
+        await self.notify_new_task(record)
+        return record
+
+    async def _enqueue_legacy(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        with self._observe_queue_operation("enqueue", queue=record.queue, task_name=record.task_name):
+            async with self._session() as driver:
+                await driver.begin()
+                try:
+                    await driver.execute(self._get_store().insert_task(self._params_from_record(record)))
+                    await driver.commit()
+                except Exception:
+                    with suppress(Exception):
+                        await driver.rollback()
                     raise
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
@@ -453,12 +481,61 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._increment_queue_metric("claim")
         return claimed
 
+    async def claim_many(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Claim up to ``limit`` due tasks.
+
+        Postgres-family stores use one autocommit
+        ``UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED LIMIT $n) ... RETURNING``
+        statement. Other adapters fall back to the per-record claim loop.
+
+        Returns:
+            Claimed task records.
+        """
+        if limit <= 0:
+            return []
+        store = self._get_store()
+        if not type(store).supports_returning_claim:
+            return await super().claim_many(limit=limit, queues=queues, execution_backend=execution_backend)
+        now = _utc_now()
+        parameters: "dict[str, Any]" = {
+            "now": self._serialize_datetime(now),
+            "started_at": self._serialize_datetime(now),
+            "heartbeat_at": self._serialize_datetime(now),
+            "limit": limit,
+        }
+        for index, queue in enumerate(queues):
+            parameters[f"queue_{index}"] = queue
+        if execution_backend is not None:
+            parameters["execution_backend"] = execution_backend
+        sql_text = store.claim_batch_returning_sql(
+            queue_count=len(queues), filter_execution_backend=execution_backend is not None
+        )
+        with self._observe_queue_operation("claim", execution_backend=execution_backend):
+            async with self._session() as driver:
+                rows = await self._select_rows(driver, sql_text, parameters)
+        records = [self._record_from_row(row) for row in rows]
+        if records:
+            self._increment_queue_metric("claim", float(len(records)))
+        return records
+
     async def claim_next(
-        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
         store = self._get_store()
-        if store.supports_skip_locked:
-            return await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
+        for queue in queues or (None,):
+            if store.supports_skip_locked:
+                claimed = await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
+            else:
+                claimed = await self._claim_next_optimistic(store, queue=queue, execution_backend=execution_backend)
+            if claimed is not None:
+                return claimed
+        return None
+
+    async def _claim_next_optimistic(
+        self, store: "SQLSpecQueueStore", *, queue: "str | None", execution_backend: "str | None"
+    ) -> "QueuedTaskRecord | None":
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
             task_id = UUID(str(row["id"]))
@@ -523,81 +600,32 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._increment_queue_metric("claim")
         return claimed
 
-    async def claim_many(
-        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
-    ) -> "list[QueuedTaskRecord]":
-        """Claim up to ``limit`` due tasks.
-
-        Adapters whose store advertises ``supports_batch_claim`` use a single
-        transaction that locks a bounded ordered candidate set with ``FOR
-        UPDATE SKIP LOCKED``, transitions the candidates, and reloads the
-        winners. Other adapters fall back to the sequential base loop.
-
-        Returns:
-            Claimed task records in candidate order.
-        """
-        if limit <= 0:
-            return []
-        store = self._get_store()
-        if not store.supports_batch_claim:
-            return await super().claim_many(limit=limit, queue=queue, execution_backend=execution_backend)
-        return await self._claim_many_skip_locked(store, limit=limit, queue=queue, execution_backend=execution_backend)
-
-    async def _claim_many_skip_locked(
-        self, store: "SQLSpecQueueStore", *, limit: "int", queue: "str | None", execution_backend: "str | None"
-    ) -> "list[QueuedTaskRecord]":
-        """Claim up to ``limit`` due tasks in one ``SKIP LOCKED`` transaction.
-
-        Locks the ordered candidate set, transitions every locked candidate to
-        ``running`` with a single set-based UPDATE fenced on due status/time,
-        then reloads the rows to return only the ones this transaction owns.
-        Competing workers skip the locked candidates rather than colliding.
-
-        Returns:
-            The claimed task records in candidate order.
-        """
-        with self._observe_queue_operation("claim", queue=queue, execution_backend=execution_backend):
-            async with self._session() as driver:
-                await driver.begin()
-                try:
-                    now = _utc_now()
-                    serialized_now = self._serialize_datetime(now)
-                    statement = store.select_claimable(
-                        now=serialized_now, limit=limit, queue=queue, execution_backend=execution_backend
-                    )
-                    stream_chunk_size = cast("int | None", getattr(store, "claim_select_stream_chunk_size", None))
-                    candidate_rows = await self._select_rows(driver, statement, chunk_size=stream_chunk_size)
-                    if not candidate_rows:
-                        await driver.rollback()
-                        return []
-                    # Bound the ordered candidate set to ``limit``: dialects such as Oracle cannot
-                    # combine ``FOR UPDATE SKIP LOCKED`` with ``FETCH FIRST`` and stream the whole
-                    # ordered result instead, so the SQL-level limit is absent for them.
-                    candidate_ids = [str(UUID(str(row["id"]))) for row in candidate_rows[:limit]]
-                    await driver.execute(
-                        store.claim_tasks(
-                            task_ids=candidate_ids,
-                            due_at=serialized_now,
-                            started_at=serialized_now,
-                            heartbeat_at=serialized_now,
-                        )
-                    )
-                    reloaded_rows = await self._select_rows(driver, store.select_tasks_by_ids(candidate_ids))
-                    await driver.commit()
-                except Exception:
-                    with suppress(Exception):
-                        await driver.rollback()
-                    raise
-        claimed_by_id = {record.id: record for record in (self._record_from_row(row) for row in reloaded_rows)}
-        claimed = [
-            claimed_by_id[UUID(candidate_id)]
-            for candidate_id in candidate_ids
-            if UUID(candidate_id) in claimed_by_id and claimed_by_id[UUID(candidate_id)].status == "running"
-        ]
-        self._increment_queue_metric("claim", float(len(claimed)))
-        return claimed
-
     async def complete_task(
+        self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
+        now = _utc_now()
+        store = self._get_store()
+        if not type(store).supports_dml_returning:
+            return await self._complete_task_legacy(task_id, result=result, expected_retry_count=expected_retry_count)
+        parameters: "dict[str, Any]" = {
+            "id": str(task_id),
+            "completed_at": self._serialize_datetime(now),
+            "result_json": store.serialize_json("result_json", result),
+        }
+        if expected_retry_count is not None:
+            parameters["expected_retry_count"] = expected_retry_count
+        sql_text = store.complete_returning_sql(fence_retry_count=expected_retry_count is not None)
+        with self._observe_queue_operation("complete", task_id=str(task_id)):
+            async with self._session() as driver:
+                row = await self._select_one_row(driver, sql_text, parameters)
+        completed = self._record_from_row(row) if row is not None else None
+        if completed is not None:
+            self._increment_queue_metric("complete")
+        elif expected_retry_count is not None:
+            self._increment_queue_metric("claim_lost")
+        return completed
+
+    async def _complete_task_legacy(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
         now = _utc_now()
@@ -636,6 +664,35 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return completed
 
     async def fail_task(
+        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
+        store = self._get_store()
+        if not type(store).supports_dml_returning:
+            return await self._fail_task_legacy(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+        now = _utc_now()
+        stored_error = store.serialize_error(error)
+        parameters: "dict[str, Any]" = {
+            "id": str(task_id),
+            "error": stored_error,
+            "retry": retry,
+            "completed_at": self._serialize_datetime(now),
+        }
+        if expected_retry_count is not None:
+            parameters["expected_retry_count"] = expected_retry_count
+        sql_text = store.fail_returning_sql(fence_retry_count=expected_retry_count is not None)
+        with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):
+            async with self._session() as driver:
+                row = await self._select_one_row(driver, sql_text, parameters)
+        updated = self._record_from_row(row) if row is not None else None
+        if updated is None:
+            self._increment_queue_metric("claim_lost")
+            return None
+        self._increment_queue_metric("retry" if updated.status == "pending" else "fail")
+        if updated.status == "pending":
+            await self.notify_new_task(updated)
+        return updated
+
+    async def _fail_task_legacy(
         self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):

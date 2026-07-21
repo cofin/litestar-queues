@@ -460,7 +460,7 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
         pending_status = result.status
         assert pending_status == "pending"
 
-        record = await service.claim_next()
+        record = await service.get_queue_backend().claim_next()
         assert record is not None
         await service.execute_record(record)
         await result.refresh()
@@ -468,10 +468,6 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
     completed_status = result.status
     assert completed_status == "completed"
     assert result.result == "QUEUE"
-
-
-async def test_memory_backend_advertises_native_batch_claim() -> "None":
-    assert InMemoryQueueBackend().capabilities.supports_batch_claim is True
 
 
 async def test_memory_backend_claim_many_acquires_lock_once_for_non_empty_batch() -> "None":
@@ -537,12 +533,12 @@ async def test_memory_backend_claim_many_handles_limits_filters_and_scheduled() 
     empty_backend = InMemoryQueueBackend()
     assert await empty_backend.claim_many(limit=5) == []
 
-    assert [record.id for record in await backend.claim_many(limit=1, queue="default")] == [high.id]
+    assert [record.id for record in await backend.claim_many(limit=1, queues=("default",))] == [high.id]
 
-    remaining = await backend.claim_many(limit=10, queue="default")
+    remaining = await backend.claim_many(limit=10, queues=("default",))
     assert [record.id for record in remaining] == [mid.id, low.id]
 
-    reports = await backend.claim_many(limit=10, queue="reports")
+    reports = await backend.claim_many(limit=10, queues=("reports",))
     assert [record.task_name for record in reports] == ["tasks.batch.other_queue"]
 
 

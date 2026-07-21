@@ -327,19 +327,29 @@ class TaskResult:
 
         Raises:
             TimeoutError: If the timeout elapses before a terminal status.
+            RuntimeError: If the task no longer exists in the queue backend.
         """
+        terminal = {"cancelled", "completed", "failed"}
         start = asyncio.get_running_loop().time()
-        while self.status not in {"cancelled", "completed", "failed"}:
+        backend = self._service.get_queue_backend() if self._service is not None else None
+        push = backend is not None and backend.capabilities.supports_completion_events
+        while self.status not in terminal:
             await self.refresh()
             if self.record is None:
                 msg = f"Task {self._task_id} no longer exists in the queue backend."
                 raise RuntimeError(msg)
-            if self.status in {"cancelled", "completed", "failed"}:
+            if self.status in terminal:
                 break
             if timeout is not None and asyncio.get_running_loop().time() - start >= timeout:
                 msg = f"Task {self._task_id} did not complete within {timeout}s"
                 raise TimeoutError(msg)
-            await asyncio.sleep(poll_interval)
+            wait_for = poll_interval
+            if timeout is not None:
+                wait_for = min(poll_interval, max(0.0, timeout - (asyncio.get_running_loop().time() - start)))
+            if push and backend is not None:
+                await backend.wait_for_completion(self._task_id, timeout=wait_for)
+            else:
+                await asyncio.sleep(wait_for)
         return self
 
 

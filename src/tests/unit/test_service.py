@@ -473,7 +473,7 @@ async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "N
 
     async with QueueService(config, event_publisher=QueueEventPublisher(sink)) as service:
         result = await service.enqueue(sanitize_error_task)
-        claimed = await service.claim_next()
+        claimed = await service.get_queue_backend().claim_next()
         assert claimed is not None
         updated = await service.execute_record(claimed)
 

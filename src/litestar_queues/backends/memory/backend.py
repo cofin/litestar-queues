@@ -47,10 +47,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     def capabilities(self) -> "QueueBackendCapabilities":
         """Backend behavior capabilities."""
         return QueueBackendCapabilities(
-            supports_notifications=True,
-            notification_backend="asyncio-event",
-            notifications_durable=False,
-            supports_batch_claim=True,
+            supports_notifications=True, notification_backend="asyncio-event", notifications_durable=False
         )
 
     def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
@@ -184,7 +181,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return record
 
     async def claim_many(
-        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks under a single lock acquisition.
 
@@ -206,7 +203,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 for record in self._records.values()
                 if record.status in {"pending", "scheduled"}
                 and (record.scheduled_at is None or record.scheduled_at <= now)
-                and (queue is None or record.queue == queue)
+                and (not queues or record.queue in queues)
                 and (execution_backend is None or record.execution_backend == execution_backend)
             ]
             eligible.sort(key=lambda record: (-record.priority, record.created_at))
@@ -232,7 +229,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             now = _utc_now()
             record.status = "completed"
             record.completed_at = now
-            record.heartbeat_at = now
+            record.heartbeat_at = None
             record.result = result
             record.error = None
             return record
@@ -260,7 +257,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             now = _utc_now()
             record.status = "failed"
             record.completed_at = now
-            record.heartbeat_at = now
+            record.heartbeat_at = None
             return record
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":

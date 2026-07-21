@@ -10,7 +10,7 @@ import asyncio
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -74,7 +74,6 @@ async def test_redis_backend_keeps_claim_fallback_without_batch_capability(
     the inherited ``claim_next`` loop must preserve priority ordering and hand
     each task to exactly one caller.
     """
-    assert redis_backend.capabilities.supports_batch_claim is False
 
     high = await redis_backend.enqueue("tasks.redis.batch.high", priority=10)
     mid = await redis_backend.enqueue("tasks.redis.batch.mid", priority=5)
@@ -103,6 +102,7 @@ async def test_redis_backend_deduplicates_active_keys_and_replaces_terminal_keys
     assert duplicate.id == first.id
     assert duplicate.kwargs == {"account_id": "acct-1"}
 
+    await redis_backend.claim_task(first.id)
     await redis_backend.complete_task(first.id, result={"ok": True})
     replacement = await redis_backend.enqueue("tasks.sync", kwargs={"account_id": "acct-2"}, key="sync:acct-1")
     keyed = await redis_backend.get_task_by_key("sync:acct-1")
@@ -159,21 +159,6 @@ async def test_redis_enqueue_many_records_remain_claimable_when_batch_marker_is_
     assert {record.id for record in claimed if record is not None} == {record.id for record in records}
 
 
-async def test_redis_backend_releases_locks_by_token_via_lua_script(redis_backend: "RedisQueueBackend") -> "None":
-    """Verify the token-checked release script against real Redis Lua semantics."""
-    client = await redis_backend._get_client()
-    lock_key = redis_backend._lock_key("task:test")
-
-    await client.set(lock_key, "new-owner")
-    await redis_backend._release_lock(client, lock_key, "old-owner")
-
-    assert await client.get(lock_key) == "new-owner"
-
-    await redis_backend._release_lock(client, lock_key, "new-owner")
-
-    assert await client.get(lock_key) is None
-
-
 async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_backend: "RedisQueueBackend") -> "None":
     flaky = await redis_backend.enqueue("tasks.flaky", max_retries=1)
 
@@ -189,6 +174,7 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
     assert failed.status == "failed"
     assert failed.error == "second failure"
     assert failed.completed_at is not None
+    assert failed.heartbeat_at is None
 
     cancellable = await redis_backend.enqueue("tasks.cancel")
     assert await redis_backend.cancel_task(cancellable.id) is True
@@ -213,7 +199,9 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
 
     completed = await redis_backend.enqueue("tasks.completed")
     await redis_backend.claim_task(completed.id)
-    await redis_backend.complete_task(completed.id, result={"ok": True})
+    completed_record = await redis_backend.complete_task(completed.id, result={"ok": True})
+    assert completed_record is not None
+    assert completed_record.heartbeat_at is None
     statistics = await redis_backend.get_statistics()
     completed_records = await redis_backend.list_completed_by_task("tasks.completed")
     cleanup_count = await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
@@ -261,3 +249,265 @@ async def test_redis_backend_rejects_unserializable_results(redis_backend: "Redi
     assert stored is not None
     assert stored.status == "running"
     assert stored.result is None
+
+
+async def test_redis_backend_claim_many_orders_by_priority_then_created(redis_backend: "RedisQueueBackend") -> "None":
+    first_high = await redis_backend.enqueue("tasks.h1", priority=5)
+    await asyncio.sleep(0.005)
+    second_high = await redis_backend.enqueue("tasks.h2", priority=5)
+    await asyncio.sleep(0.005)
+    first_low = await redis_backend.enqueue("tasks.l1", priority=1)
+    await asyncio.sleep(0.005)
+    second_low = await redis_backend.enqueue("tasks.l2", priority=1)
+
+    claimed = await redis_backend.claim_many(limit=4)
+
+    assert [record.id for record in claimed] == [first_high.id, second_high.id, first_low.id, second_low.id]
+    assert all(record.status == "running" for record in claimed)
+
+
+async def test_redis_backend_claim_many_filters_queue_and_execution_backend(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    match = await redis_backend.enqueue("tasks.match", queue="a", execution_backend="local")
+    wrong_eb = await redis_backend.enqueue("tasks.wrong_eb", queue="a", execution_backend="cloudrun")
+    wrong_queue = await redis_backend.enqueue("tasks.wrong_queue", queue="b", execution_backend="local")
+    wrong_both = await redis_backend.enqueue("tasks.wrong_both", queue="b", execution_backend="cloudrun")
+
+    claimed = await redis_backend.claim_many(limit=10, queues=("a",), execution_backend="local")
+
+    assert [record.id for record in claimed] == [match.id]
+    for other in (wrong_eb, wrong_queue, wrong_both):
+        stored = await redis_backend.get_task(other.id)
+        assert stored is not None
+        assert stored.status == "pending"
+
+
+async def test_redis_backend_claim_many_promotes_due_scheduled(redis_backend: "RedisQueueBackend") -> "None":
+    soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    due_soon = await redis_backend.enqueue("tasks.soon", scheduled_at=soon)
+    scheduled_far = await redis_backend.enqueue("tasks.far", scheduled_at=far)
+    await asyncio.sleep(0.3)
+
+    claimed = await redis_backend.claim_many(limit=10)
+
+    assert [record.id for record in claimed] == [due_soon.id]
+    assert claimed[0].status == "running"
+    stored_far = await redis_backend.get_task(scheduled_far.id)
+    assert stored_far is not None
+    assert stored_far.status == "scheduled"
+
+
+async def test_redis_backend_scheduled_zset_holds_future_tasks(redis_backend: "RedisQueueBackend") -> "None":
+    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scheduled = await redis_backend.enqueue("tasks.future", scheduled_at=far)
+
+    client = cast("Any", await redis_backend._get_client())
+    scheduled_members = {str(member) for member in await client.zrange(redis_backend._scheduled_key, 0, -1)}
+    ready_members = {str(member) for member in await client.zrange(redis_backend._ready_key, 0, -1)}
+
+    assert str(scheduled.id) in scheduled_members
+    assert str(scheduled.id) not in ready_members
+
+
+async def test_redis_backend_complete_clears_heartbeat_and_publishes(redis_backend: "RedisQueueBackend") -> "None":
+    record = await redis_backend.enqueue("tasks.publish")
+    claimed = await redis_backend.claim_task(record.id)
+    assert claimed is not None
+
+    client = cast("Any", await redis_backend._get_client())
+    pubsub = client.pubsub()
+    await pubsub.subscribe(redis_backend._completion_channel)
+    await asyncio.sleep(0.2)
+
+    completed = await redis_backend.complete_task(record.id, result={"ok": True})
+
+    message = None
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while asyncio.get_running_loop().time() < deadline:
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+        if message is not None:
+            break
+    await pubsub.aclose()
+
+    assert completed is not None
+    assert completed.heartbeat_at is None
+    assert message is not None
+    assert str(message["data"]) == str(record.id)
+
+
+async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]":
+    messages: "list[object]" = []
+    deadline = asyncio.get_running_loop().time() + window
+    while asyncio.get_running_loop().time() < deadline:
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)  # type: ignore[attr-defined]
+        if message is not None:
+            messages.append(message)
+    return messages
+
+
+async def _status_memberships(backend: "RedisQueueBackend", task_id: "object") -> "list[str]":
+    client = cast("Any", await backend._get_client())
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    return [
+        status
+        for status in statuses
+        if str(task_id) in {str(member) for member in await client.smembers(backend._status_key(status))}
+    ]
+
+
+async def _zset_members(backend: "RedisQueueBackend") -> "tuple[set[str], set[str]]":
+    client = cast("Any", await backend._get_client())
+    ready = {str(member) for member in await client.zrange(backend._ready_key, 0, -1)}
+    scheduled = {str(member) for member in await client.zrange(backend._scheduled_key, 0, -1)}
+    return ready, scheduled
+
+
+async def test_redis_backend_enqueue_places_record_in_single_status_set(redis_backend: "RedisQueueBackend") -> "None":
+    record = await redis_backend.enqueue("tasks.single")
+
+    client = cast("Any", await redis_backend._get_client())
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    memberships = [
+        status
+        for status in statuses
+        if str(record.id) in {str(member) for member in await client.smembers(redis_backend._status_key(status))}
+    ]
+
+    assert memberships == ["pending"]
+
+
+async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    client = cast("Any", await redis_backend._get_client())
+    pubsub = client.pubsub()
+    await pubsub.subscribe(redis_backend._notification_channel)
+    await asyncio.sleep(0.2)
+
+    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    record = await redis_backend.enqueue("tasks.future", scheduled_at=far)
+    messages = await _drain_messages(pubsub, window=0.3)
+    await pubsub.aclose()
+
+    scheduled_members = {str(member) for member in await client.zrange(redis_backend._scheduled_key, 0, -1)}
+    ready_members = {str(member) for member in await client.zrange(redis_backend._ready_key, 0, -1)}
+
+    assert record.status == "scheduled"
+    assert str(record.id) in scheduled_members
+    assert str(record.id) not in ready_members
+    assert messages == []
+
+
+async def test_redis_backend_enqueue_due_publishes_single_notification(redis_backend: "RedisQueueBackend") -> "None":
+    client = cast("Any", await redis_backend._get_client())
+    pubsub = client.pubsub()
+    await pubsub.subscribe(redis_backend._notification_channel)
+    await asyncio.sleep(0.2)
+
+    await redis_backend.enqueue("tasks.due")
+    messages = await _drain_messages(pubsub, window=0.5)
+    await pubsub.aclose()
+
+    assert len(messages) == 1
+
+
+async def test_redis_backend_enqueue_many_coalesces_single_notification(redis_backend: "RedisQueueBackend") -> "None":
+    client = cast("Any", await redis_backend._get_client())
+    pubsub = client.pubsub()
+    await pubsub.subscribe(redis_backend._notification_channel)
+    await asyncio.sleep(0.2)
+
+    records = await redis_backend.enqueue_many([EnqueueSpec(task_name=f"tasks.batch.{index}") for index in range(5)])
+    messages = await _drain_messages(pubsub, window=0.5)
+    await pubsub.aclose()
+
+    assert len(records) == 5
+    assert len(messages) == 1
+
+
+async def test_redis_backend_cancel_leaves_single_status_membership(redis_backend: "RedisQueueBackend") -> "None":
+    record = await redis_backend.enqueue("tasks.cancel.membership")
+
+    assert await redis_backend.cancel_task(record.id) is True
+
+    ready, scheduled = await _zset_members(redis_backend)
+    assert await _status_memberships(redis_backend, record.id) == ["cancelled"]
+    assert str(record.id) not in ready
+    assert str(record.id) not in scheduled
+
+
+async def test_redis_backend_stale_requeue_leaves_single_membership_in_ready(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    record = await redis_backend.enqueue("tasks.stale.requeue", max_retries=1)
+    await redis_backend.claim_task(record.id)
+
+    result = await redis_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+
+    assert result.requeued == 1
+    ready, scheduled = await _zset_members(redis_backend)
+    assert await _status_memberships(redis_backend, record.id) == ["pending"]
+    assert str(record.id) in ready
+    assert str(record.id) not in scheduled
+    requeued = await redis_backend.get_task(record.id)
+    assert requeued is not None
+    assert requeued.status == "pending"
+    assert requeued.retry_count == 1
+    assert requeued.heartbeat_at is None
+
+
+async def test_redis_backend_stale_failure_leaves_single_failed_membership(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    record = await redis_backend.enqueue("tasks.stale.fail")
+    await redis_backend.claim_task(record.id)
+
+    result = await redis_backend.requeue_stale_running(stale_after=timedelta(seconds=0))
+
+    assert result.failed == 1
+    ready, scheduled = await _zset_members(redis_backend)
+    assert await _status_memberships(redis_backend, record.id) == ["failed"]
+    assert str(record.id) not in ready
+    assert str(record.id) not in scheduled
+    failed = await redis_backend.get_task(record.id)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.heartbeat_at is None
+
+
+async def test_redis_backend_concurrent_keyed_enqueue_yields_one_record(redis_backend: "RedisQueueBackend") -> "None":
+    first, second = await asyncio.gather(
+        redis_backend.enqueue("tasks.keyed.race", kwargs={"n": 1}, key="race:1"),
+        redis_backend.enqueue("tasks.keyed.race", kwargs={"n": 2}, key="race:1"),
+    )
+
+    assert first.id == second.id
+    keyed = await redis_backend.get_task_by_key("race:1")
+    assert keyed is not None
+    assert keyed.id == first.id
+    statistics = await redis_backend.get_statistics()
+    assert statistics.pending == 1
+    assert await _status_memberships(redis_backend, first.id) == ["pending"]
+
+
+async def test_redis_backend_claim_task_honors_due_gating_and_fences(redis_backend: "RedisQueueBackend") -> "None":
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scheduled = await redis_backend.enqueue("tasks.claim.future", scheduled_at=later)
+
+    assert await redis_backend.claim_task(scheduled.id) is None
+    stored = await redis_backend.get_task(scheduled.id)
+    assert stored is not None
+    assert stored.status == "scheduled"
+
+    due = await redis_backend.enqueue("tasks.claim.due")
+    claimed = await redis_backend.claim_task(due.id)
+    assert claimed is not None
+    assert claimed.status == "running"
+    assert claimed.started_at is not None
+    assert await redis_backend.claim_task(due.id) is None
+
+    ready, _ = await _zset_members(redis_backend)
+    assert await _status_memberships(redis_backend, due.id) == ["running"]
+    assert str(due.id) not in ready

@@ -1,4 +1,3 @@
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -326,7 +325,3 @@ def _prometheus_name(name: "str", config: "ObservabilityConfig | None") -> "str"
     prefix = config.metric_prefix if config is not None else "litestar_queues"
     base = name.removeprefix("litestar_queues.").replace(".", "_")
     return f"{prefix}_{base}"
-
-
-def _monotonic() -> "float":
-    return time.perf_counter()

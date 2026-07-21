@@ -90,10 +90,6 @@ class _ExternalProducer:
         finally:
             await _call_optional_lifecycle(resource, "close", "on_shutdown")
 
-    async def close(self) -> "None":
-        """Close the external producer transport if it is open."""
-        await self.aclose()
-
     def _build_publisher(self) -> "tuple[QueueEventSink, object | None, QueueEventPublisher]":
         event_config = self._config.event
         if event_config is None and self._transport == "sqlspec":

@@ -221,19 +221,19 @@ test-examples-e2e: install-e2e                       ## Install Chromium and run
 # -----------------------------------------------------------------------------
 
 .PHONY: start-infra
-start-infra:                                        ## Start local Redis and Valkey containers
+start-infra:                                        ## Start local PostgreSQL, Redis, and Valkey containers
 	@echo "${INFO} Starting local infrastructure..."
 	@uv run python tools/dev_infra.py start $(INFRA_ARGS)
 	@echo "${OK} Local infrastructure started"
 
 .PHONY: stop-infra
-stop-infra:                                         ## Stop local Redis and Valkey containers
+stop-infra:                                         ## Stop local PostgreSQL, Redis, and Valkey containers
 	@echo "${INFO} Stopping local infrastructure..."
 	@uv run python tools/dev_infra.py stop $(INFRA_ARGS)
 	@echo "${OK} Local infrastructure stopped"
 
 .PHONY: restart-infra
-restart-infra:                                      ## Restart local Redis and Valkey containers
+restart-infra:                                      ## Restart local PostgreSQL, Redis, and Valkey containers
 	@echo "${INFO} Restarting local infrastructure..."
 	@uv run python tools/dev_infra.py restart $(INFRA_ARGS)
 	@echo "${OK} Local infrastructure restarted"
@@ -251,6 +251,10 @@ wipe-infra:                                         ## Remove local infrastructu
 	@echo "${WARN} Removing local infrastructure containers and volumes..."
 	@uv run python tools/dev_infra.py wipe --yes $(INFRA_ARGS)
 	@echo "${OK} Local infrastructure removed"
+
+.PHONY: benchmark-queues
+benchmark-queues:                                   ## Benchmark queues against shared local services
+	@uv run --group benchmarks python tools/benchmark_queues.py run $(BENCH_ARGS)
 
 # -----------------------------------------------------------------------------
 # Type Checking

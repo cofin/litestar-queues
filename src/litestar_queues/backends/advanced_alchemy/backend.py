@@ -95,7 +95,6 @@ class SQLAlchemyBackend(BaseQueueBackend):
             supports_notifications=notifications_enabled,
             notification_backend=_POSTGRES_NOTIFY_BACKEND if notifications_enabled else None,
             notifications_durable=False,
-            supports_batch_claim=_supports_batch_claim_driver(self._driver_name()),
         )
 
     async def open(self) -> "bool":
@@ -203,23 +202,35 @@ class SQLAlchemyBackend(BaseQueueBackend):
             return await service.claim_task(task_id)
 
     async def claim_next(
-        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
-            return await service.claim_next(queue=queue, execution_backend=execution_backend)
+            for queue in queues or (None,):
+                claimed = await service.claim_next(queue=queue, execution_backend=execution_backend)
+                if claimed is not None:
+                    return claimed
+        return None
 
     async def claim_many(
-        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
-        """Claim up to ``limit`` due tasks.
+        """Claim up to ``limit`` due tasks across the requested queues.
 
         Returns:
             Claimed task records.
         """
         if limit <= 0:
             return []
+        records: "list[QueuedTaskRecord]" = []
         async with self._operation() as service:
-            records = await service.claim_many(limit=limit, queue=queue, execution_backend=execution_backend)
+            for queue in queues or (None,):
+                if len(records) >= limit:
+                    break
+                remaining = limit - len(records)
+                claimed_records = await service.claim_many(
+                    limit=remaining, queue=queue, execution_backend=execution_backend
+                )
+                records.extend(claimed_records)
         self._increment_queue_metric("claim", float(len(records)))
         return records
 
@@ -611,7 +622,3 @@ class _AsyncpgNotificationListener:
 
     def _handle_notification(self, _connection: "Any", _pid: "int", _channel: "str", _payload: "str") -> "None":
         self._event.set()
-
-
-def _supports_batch_claim_driver(driver_name: "str | None") -> "bool":
-    return driver_name == "postgresql+asyncpg"

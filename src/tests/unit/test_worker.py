@@ -20,9 +20,8 @@ from litestar_queues import (
     non_retryable,
     task,
 )
-from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
 from litestar_queues.events import EventConfig, InMemoryQueueEventSink
-from litestar_queues.models import QueueBackendCapabilities
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -151,7 +150,7 @@ async def test_worker_claims_local_records_through_claim_next() -> "None":
 
         assert await worker.run_once() == 2
 
-    assert backend.claim_next_calls == [(None, "local"), (None, "local")]
+    assert backend.claim_next_calls == [((), "local"), ((), "local")]
     assert backend.list_pending_calls == []
     assert backend.claim_task_calls == []
 
@@ -170,8 +169,19 @@ async def test_worker_uses_claim_many_when_backend_advertises_batch_claim() -> "
 
         assert await worker.run_once() == 3
 
-    assert backend.claim_many_calls == [(3, None, "local")]
+    assert backend.claim_many_calls == [(3, (), "local")]
     assert backend.claim_next_calls == []
+
+
+async def test_worker_claim_available_issues_single_batch_claim() -> "None":
+    backend = _ClaimManyRecordingInMemoryQueueBackend()
+
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, queues=("a", "b"))
+
+        await worker._claim_available(limit=5)
+
+    assert backend.claim_many_calls == [(5, ("a", "b"), "local")]
 
 
 async def test_worker_queue_filter_restricts_claimed_records() -> "None":
@@ -274,6 +284,30 @@ async def test_worker_start_wakes_from_backend_notifications() -> "None":
 
     assert result.status == "completed"
     assert result.result == 42
+
+
+async def test_worker_wakes_from_completion_event() -> "None":
+    @task("tasks.completion_wakeup")
+    async def completion_wakeup(value: "int") -> "int":
+        return value + 1
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        first = await service.enqueue(completion_wakeup, 1)
+        second = await service.enqueue(completion_wakeup, 2)
+        queue_backend = service.get_queue_backend()
+        await queue_backend.wait_for_notifications(timeout=0)
+        worker = Worker(service, max_concurrency=1, poll_interval=60)
+        worker_task = asyncio.create_task(worker.start())
+
+        await first.wait(timeout=1, poll_interval=0.01)
+        await second.wait(timeout=1, poll_interval=0.01)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert first.status == "completed"
+    assert second.status == "completed"
 
 
 async def test_worker_repeated_idle_polls_reuse_one_native_read() -> "None":
@@ -514,7 +548,7 @@ async def test_execute_claimed_registers_and_unregisters() -> "None":
         assert await worker.run_once() == 1
         await result.wait(timeout=1, poll_interval=0.01)
 
-    assert events == [("register", result.id, 0), ("unregister", result.id), ("null_heartbeats", (result.id,), 0)]
+    assert events == [("register", result.id, 0), ("unregister", result.id)]
 
 
 async def test_worker_start_stop_manages_tick() -> "None":
@@ -606,7 +640,7 @@ async def test_worker_stop_keeps_heartbeat_manager_running_until_drain_completes
     assert manager_task.done() is True
 
 
-async def test_execute_claimed_nulls_heartbeat_when_unregister_fails() -> "None":
+async def test_execute_claimed_survives_unregister_failure() -> "None":
     events: "list[tuple[object, ...]]" = []
     backend = _HeartbeatCleanupRecordingBackend(events)
 
@@ -624,7 +658,7 @@ async def test_execute_claimed_nulls_heartbeat_when_unregister_fails() -> "None"
         await _wait_for_worker_tasks_done(worker)
 
     assert result.status == "completed"
-    assert events == [("register", result.id, 0), ("unregister", result.id), ("null_heartbeats", (result.id,), 0)]
+    assert events == [("register", result.id, 0), ("unregister", result.id)]
 
 
 async def test_worker_beat_delivers_metadata_on_next_heartbeat_tick() -> "None":
@@ -875,28 +909,29 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
 
     def __init__(self) -> "None":
         super().__init__()
-        self.claim_next_calls: "list[tuple[str | None, str | None]]" = []
+        self.claim_next_calls: "list[tuple[tuple[str, ...], str | None]]" = []
         self.claim_task_calls: "list[object]" = []
         self.list_pending_calls: "list[tuple[int, str | None, str | None]]" = []
 
-    @property
-    def capabilities(self) -> "QueueBackendCapabilities":
-        # Force the worker onto the single-record claim_next path so this double
-        # can record it; the native in-memory batch path is exercised elsewhere.
-        base = super().capabilities
-        base.supports_batch_claim = False
-        return base
+    async def claim_many(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> 'list["QueuedTaskRecord"]':
+        return await BaseQueueBackend.claim_many(self, limit=limit, queues=queues, execution_backend=execution_backend)
 
     async def claim_next(
-        self, *, queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
-        self.claim_next_calls.append((queue, execution_backend))
-        records = await InMemoryQueueBackend.list_pending(
-            self, limit=1, queue=queue, execution_backend=execution_backend
-        )
-        if not records:
-            return None
-        return await InMemoryQueueBackend.claim_task(self, records[0].id)
+        self.claim_next_calls.append((queues, execution_backend))
+        for queue in queues or (None,):
+            records = await InMemoryQueueBackend.list_pending(
+                self, limit=1, queue=queue, execution_backend=execution_backend
+            )
+            if not records:
+                continue
+            claimed = await InMemoryQueueBackend.claim_task(self, records[0].id)
+            if claimed is not None:
+                return claimed
+        return None
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         self.claim_task_calls.append(task_id)
@@ -914,23 +949,22 @@ class _ClaimManyRecordingInMemoryQueueBackend(_ClaimNextRecordingInMemoryQueueBa
 
     def __init__(self) -> "None":
         super().__init__()
-        self.claim_many_calls: "list[tuple[int, str | None, str | None]]" = []
-
-    @property
-    def capabilities(self) -> "QueueBackendCapabilities":
-        return QueueBackendCapabilities(supports_batch_claim=True)
+        self.claim_many_calls: "list[tuple[int, tuple[str, ...], str | None]]" = []
 
     async def claim_many(
-        self, *, limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> 'list["QueuedTaskRecord"]':
-        self.claim_many_calls.append((limit, queue, execution_backend))
+        self.claim_many_calls.append((limit, queues, execution_backend))
         records: 'list["QueuedTaskRecord"]' = []
-        for pending in await InMemoryQueueBackend.list_pending(
-            self, limit=limit, queue=queue, execution_backend=execution_backend
-        ):
-            claimed = await InMemoryQueueBackend.claim_task(self, pending.id)
-            if claimed is not None:
-                records.append(claimed)
+        for queue in queues or (None,):
+            if len(records) >= limit:
+                break
+            for pending in await InMemoryQueueBackend.list_pending(
+                self, limit=limit - len(records), queue=queue, execution_backend=execution_backend
+            ):
+                claimed = await InMemoryQueueBackend.claim_task(self, pending.id)
+                if claimed is not None:
+                    records.append(claimed)
         return records
 
 

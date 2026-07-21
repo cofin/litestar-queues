@@ -46,13 +46,13 @@ async def test_backend_contract_claim_many_claims_owned_ordered_running_records(
         "tasks.batch.external", priority=7, queue="reports", execution_backend="cloudrun"
     )
 
-    first = await queue_backend.claim_many(limit=1, queue="default")
+    first = await queue_backend.claim_many(limit=1, queues=("default",))
     assert [record.id for record in first] == [high.id]
     assert first[0].status == "running"
     assert first[0].started_at is not None
     assert first[0].heartbeat_at is not None
 
-    remaining = await queue_backend.claim_many(limit=10, queue="default")
+    remaining = await queue_backend.claim_many(limit=10, queues=("default",))
     assert [record.id for record in remaining] == [mid.id, low.id]
     assert all(record.status == "running" for record in remaining)
 
@@ -64,7 +64,7 @@ async def test_backend_contract_claim_many_claims_owned_ordered_running_records(
     assert stored_scheduled is not None
     assert stored_scheduled.status == "scheduled"
 
-    assert await queue_backend.claim_many(limit=5, queue="default") == []
+    assert await queue_backend.claim_many(limit=5, queues=("default",)) == []
     assert await queue_backend.claim_many(limit=0) == []
 
 
@@ -262,7 +262,6 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_back
     touched = await queue_backend.get_task(record.id)
     assert touch_result.touched_task_ids == {record.id}
     assert touch_result.missed_task_ids == {record.id}
-    assert touch_result.failed_task_ids == set()
     assert touched is not None
     assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
 
