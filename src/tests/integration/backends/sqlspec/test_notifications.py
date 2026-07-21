@@ -57,7 +57,7 @@ class RecordingPollIntervalEventChannel(StubAsyncEventChannel):
 
     __slots__ = ("poll_intervals",)
 
-    def __init__(self, backend_name: "str" = "table_queue") -> "None":
+    def __init__(self, backend_name: "str" = "poll_queue") -> "None":
         super().__init__(backend_name=backend_name)
         self.poll_intervals: "list[float | None]" = []
 
@@ -335,7 +335,7 @@ async def test_sqlspec_backend_event_poll_interval_is_passed_to_event_channel(
 async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_path: "Path") -> "None":
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "derived-notifications.db")},
-        extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01, "queue_table": "queue_events"}},
+        extension_config={"events": {"backend": "poll_queue", "poll_interval": 0.01, "queue_table": "queue_events"}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
@@ -604,7 +604,7 @@ async def test_sqlspec_backend_notify_transport_polling_overrides_extension_conf
     """``queue_backend_config`` polling override beats an ``extension_config`` events default."""
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(tmp_path / "override-polling.db")},
-        extension_config={"events": {"backend": "table_queue", "poll_interval": 0.01}},
+        extension_config={"events": {"backend": "poll_queue", "poll_interval": 0.01}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(config=sqlspec_config, notify_transport="polling")

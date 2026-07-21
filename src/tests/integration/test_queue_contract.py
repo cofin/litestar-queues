@@ -190,7 +190,6 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_back
     touched = await queue_backend.get_task(record.id)
     assert touch_result.touched_task_ids == {record.id}
     assert touch_result.missed_task_ids == {record.id}
-    assert touch_result.failed_task_ids == set()
     assert touched is not None
     assert touched.metadata == {"existing": "kept", "progress_detail": "row 5"}
 

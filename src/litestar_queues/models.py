@@ -37,7 +37,6 @@ class HeartbeatTouchResult:
 
     touched_task_ids: "set[UUID]" = field(default_factory=set)
     missed_task_ids: "set[UUID]" = field(default_factory=set)
-    failed_task_ids: "set[UUID]" = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -47,12 +46,6 @@ class QueueBackendCapabilities:
     supports_notifications: "bool" = False
     notification_backend: "str | None" = None
     notifications_durable: "bool" = False
-    supports_batch_claim: "bool" = False
-    supports_heartbeats: "bool" = True
-    supports_atomic_claim: "bool" = True
-    supports_atomic_delayed_promotion: "bool" = True
-    supports_external_refs: "bool" = True
-    supports_terminal_cleanup: "bool" = True
     supports_completion_events: "bool" = False
 
 

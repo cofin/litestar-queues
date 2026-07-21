@@ -22,7 +22,6 @@ from litestar_queues import (
 )
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import EventConfig, InMemoryQueueEventSink
-from litestar_queues.models import QueueBackendCapabilities
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -790,10 +789,6 @@ class _ClaimManyRecordingInMemoryQueueBackend(_ClaimNextRecordingInMemoryQueueBa
     def __init__(self) -> "None":
         super().__init__()
         self.claim_many_calls: "list[tuple[int, tuple[str, ...], str | None]]" = []
-
-    @property
-    def capabilities(self) -> "QueueBackendCapabilities":
-        return QueueBackendCapabilities(supports_batch_claim=True)
 
     async def claim_many(
         self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None

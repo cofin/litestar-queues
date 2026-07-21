@@ -464,7 +464,15 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"psqlpy", "sqlspec"}),
         "postgres_service",
         _build_postgres_psqlpy,
-        frozenset({"listen-notify", "json-column"}),
+        # ``xfail-update-rows-affected`` gates contract tests that rely on the
+        # UPDATE issued inside ``claim_task``'s ``driver.begin()`` transaction
+        # reporting an accurate ``rows_affected`` count. SQLSpec 0.55.0's
+        # psqlpy adapter reports ``rows_affected=0`` for that UPDATE even when
+        # the row was actually updated, so both the legacy per-row claim path
+        # and the SKIP LOCKED claim path (which share the same
+        # begin()/UPDATE/rows_affected check) always roll back and report no
+        # claim. Upstream defect: https://github.com/litestar-org/sqlspec/issues/645
+        frozenset({"listen-notify", "json-column", "xfail-update-rows-affected"}),
     ),
     BackendCase(
         "cockroach-asyncpg",

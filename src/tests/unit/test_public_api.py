@@ -116,7 +116,6 @@ def test_public_exports() -> "None":
     assert heartbeat_touch.metadata_patch is None
     assert HeartbeatTouchResult().touched_task_ids == set()
     assert HeartbeatTouchResult().missed_task_ids == set()
-    assert HeartbeatTouchResult().failed_task_ids == set()
     assert get_queue_backend_class("memory") is InMemoryQueueBackend
     assert {"advanced-alchemy", "memory", "redis", "sqlspec", "valkey"}.issubset(set(list_queue_backends()))
     assert get_execution_backend_class("cloudrun") is CloudRunExecutionBackend

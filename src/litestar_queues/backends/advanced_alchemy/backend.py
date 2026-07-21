@@ -94,7 +94,6 @@ class SQLAlchemyBackend(BaseQueueBackend):
             supports_notifications=notifications_enabled,
             notification_backend=_POSTGRES_NOTIFY_BACKEND if notifications_enabled else None,
             notifications_durable=False,
-            supports_batch_claim=_supports_batch_claim_driver(self._driver_name()),
         )
 
     async def open(self) -> "bool":
@@ -620,7 +619,3 @@ class _AsyncpgNotificationListener:
 
     def _handle_notification(self, _connection: "Any", _pid: "int", _channel: "str", _payload: "str") -> "None":
         self._event.set()
-
-
-def _supports_batch_claim_driver(driver_name: "str | None") -> "bool":
-    return driver_name == "postgresql+asyncpg"

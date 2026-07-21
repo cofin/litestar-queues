@@ -70,26 +70,6 @@ _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 
 _NOTIFY_TRANSPORT_POLLING = "polling"
 _CANONICAL_NOTIFY_TRANSPORTS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
-_LEGACY_NOTIFY_TRANSPORTS = frozenset({"listen_notify", "listen_notify_durable", "table_queue"})
-_SQLSPEC_EVENT_BACKENDS = {
-    "aq": "aq",
-    "notify": "listen_notify",
-    "notify_queue": "listen_notify_durable",
-    "poll_queue": "table_queue",
-    "polling": "polling",
-    "txeventq": "txeventq",
-}
-_CANONICAL_EVENT_BACKENDS = {
-    "aq": "aq",
-    "listen_notify": "notify",
-    "listen_notify_durable": "notify_queue",
-    "notify": "notify",
-    "notify_queue": "notify_queue",
-    "poll_queue": "poll_queue",
-    "polling": "polling",
-    "table_queue": "poll_queue",
-    "txeventq": "txeventq",
-}
 # Adapter families that can push worker wakeups. Postgres-over-asyncpg ships the
 # durable LISTEN/NOTIFY hybrid; psycopg/psqlpy fall back to the durable table
 # queue until their LISTEN/NOTIFY path lands upstream. Everything else polls.
@@ -127,23 +107,18 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
 
 
 def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
-    """Map a SQLSpec event backend name to the queue transport vocabulary.
+    """Validate a SQLSpec event backend name against the queue transport vocabulary.
+
+    SQLSpec 0.55+ uses the same canonical transport names we do
+    (``notify``, ``notify_queue``, ``poll_queue``, ``aq``, ``txeventq``), so no
+    translation is required; this only guards against unrecognized values.
 
     Returns:
-        The canonical queue transport name, if one can be resolved.
+        The canonical queue transport name, or ``None`` when no backend is set.
     """
     if backend_name is None:
         return None
-    return _CANONICAL_EVENT_BACKENDS.get(backend_name, backend_name)
-
-
-def _sqlspec_event_backend(transport: "str") -> "str":
-    """Map a canonical queue transport to the SQLSpec Events backend name.
-
-    Returns:
-        The SQLSpec Events backend name.
-    """
-    return _SQLSPEC_EVENT_BACKENDS.get(transport, transport)
+    return _validate_queue_notify_transport(backend_name)
 
 
 def _validate_queue_notify_transport(transport: "str") -> "str":
@@ -155,10 +130,7 @@ def _validate_queue_notify_transport(transport: "str") -> "str":
     if transport in _CANONICAL_NOTIFY_TRANSPORTS:
         return transport
     valid = ", ".join(sorted(_CANONICAL_NOTIFY_TRANSPORTS))
-    if transport in _LEGACY_NOTIFY_TRANSPORTS:
-        msg = f"Invalid notify_transport {transport!r}; use canonical queue transport names: {valid}."
-    else:
-        msg = f"Invalid notify_transport {transport!r}; expected one of: {valid}."
+    msg = f"Invalid notify_transport {transport!r}; expected one of: {valid}."
     raise QueueConfigurationError(msg)
 
 
@@ -288,7 +260,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             supports_notifications=self._notifications_enabled,
             notification_backend=notification_backend,
             notifications_durable=notification_backend in _DURABLE_NOTIFICATION_BACKENDS,
-            supports_batch_claim=True,
         )
 
     async def create_schema(self) -> "None":
@@ -1335,7 +1306,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if isinstance(configured_events, dict):
                 merged_event_settings.update(configured_events)
         merged_event_settings.update(self._event_settings)
-        merged_event_settings["backend"] = _sqlspec_event_backend(transport)
+        merged_event_settings["backend"] = transport
 
         configured_queue_table = self._event_queue_table or _setting(queue_settings, "event_queue_table")
         if configured_queue_table is not None:

@@ -21,7 +21,6 @@ async def test_base_backend_touch_heartbeats_misses_unknown_tasks() -> "None":
 
     assert result.touched_task_ids == set()
     assert result.missed_task_ids == {task_id}
-    assert result.failed_task_ids == set()
 
 
 def test_base_backend_has_no_single_task_heartbeat_api() -> "None":

@@ -146,18 +146,6 @@ async def test_manual_aclose() -> None:
     assert backend.close_count == 1
 
 
-async def test_manual_close_alias() -> None:
-    from litestar_queues.events import create_event_producer
-
-    backend = _RecordingChannelsBackend()
-    external = create_event_producer(QueueConfig(event=EventConfig(channels_backend=backend)))
-    await external.__aenter__()
-    await external.close()
-
-    assert backend.open_count == 1
-    assert backend.close_count == 1
-
-
 class _RecordingChannelsBackend:
     def __init__(self) -> None:
         self.open_count = 0

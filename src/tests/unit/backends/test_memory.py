@@ -419,7 +419,7 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
         pending_status = result.status
         assert pending_status == "pending"
 
-        record = await service.claim_next()
+        record = await service.get_queue_backend().claim_next()
         assert record is not None
         await service.execute_record(record)
         await result.refresh()

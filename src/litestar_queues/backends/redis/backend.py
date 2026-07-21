@@ -404,7 +404,6 @@ class RedisQueueBackend(BaseQueueBackend):
             supports_notifications=self._notifications,
             notification_backend=f"{self._backend_name}-pubsub" if self._notifications else None,
             notifications_durable=False,
-            supports_batch_claim=True,
             supports_completion_events=self._notifications,
         )
 

@@ -145,10 +145,10 @@ class BaseQueueBackend:
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks across the requested queues.
 
-        An empty ``queues`` tuple claims across all queues. Backends that
-        advertise ``supports_batch_claim`` override this with a native batch
-        path. The fallback preserves :meth:`claim_next` semantics for backends
-        with only a single-record primitive.
+        An empty ``queues`` tuple claims across all queues. Backends with a
+        native batch-claim primitive override this method; the fallback here
+        preserves :meth:`claim_next` semantics for backends with only a
+        single-record primitive.
 
         Returns:
             Claimed task records.
