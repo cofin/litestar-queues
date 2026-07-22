@@ -1009,6 +1009,83 @@ async def test_worker_jitters_the_sampled_wait_without_mutating_stored_backoff_s
     assert backend.timeouts[:3] == [1.5, 3.0, 6.0]
 
 
+async def test_worker_wait_is_clamped_to_next_due_scheduled_work() -> "None":
+    """A long backoff wait must never sleep past a known scheduled/retry due time.
+
+    No backend notifies a worker the instant a record's scheduled time
+    arrives, so an already-grown backoff wait could otherwise sleep well
+    past known future work; ``time_until_next_due`` must clamp it down.
+    """
+    backend = _NextDueRecordingBackend(due_in=0.02)
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=1.0, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        # Simulate a worker that already backed off well past the known due-in bound.
+        worker._current_poll_interval = 10.0
+
+        await worker._wait_for_work()
+
+    assert backend.timeouts == [0.02]
+
+
+async def test_worker_wait_uses_backoff_when_backend_reports_no_upcoming_due_work() -> "None":
+    """When the backend cannot answer (or has no upcoming work), the backoff wait is unclamped."""
+    backend = _NextDueRecordingBackend(due_in=None)
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=1.0, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        worker._current_poll_interval = 5.0
+
+        await worker._wait_for_work()
+
+    assert backend.timeouts == [5.0]
+
+
+async def test_worker_skips_next_due_query_when_backoff_disabled() -> "None":
+    """The fixed (backoff-disabled) path never queries the backend for upcoming due work."""
+    backend = _NextDueQueryCountingBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.01)
+
+        await worker._wait_for_work()
+
+    assert backend.next_due_calls == 0
+
+
+async def test_worker_discovers_scheduled_task_without_waiting_full_backoff() -> "None":
+    """A near-due scheduled task wakes the worker well before an already-grown backoff wait would.
+
+    Exercises the real InMemoryQueueBackend's time_until_next_due
+    implementation end-to-end, not a test double: the scheduled record is
+    not yet due at enqueue time, so no notification fires for it, and only
+    the next-due clamp on the (already large) backoff wait can prevent the
+    worker from sleeping past its due time.
+    """
+
+    @task("tasks.due_soon")
+    async def due_soon() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        worker = Worker(
+            service, poll_interval=0.05, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        # Simulate a worker that already backed off to a long wait.
+        worker._current_poll_interval = 20.0
+        worker_task = asyncio.create_task(worker.start())
+
+        result = await service.enqueue(due_soon, run_after=0.05)
+        await result.wait(timeout=2, poll_interval=0.01)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert result.status == "completed"
+
+
 def test_next_backoff_interval_grows_and_clamps_to_maximum() -> "None":
     from litestar_queues.worker import _next_backoff_interval
 
@@ -1410,3 +1487,40 @@ class _RaiseOnThirdRunOnceWorker(Worker):
             msg = "transient backend failure"
             raise RuntimeError(msg)
         return 0
+
+
+class _NextDueRecordingBackend(InMemoryQueueBackend):
+    """Memory backend double with a fixed, controllable ``time_until_next_due`` answer."""
+
+    __slots__ = ("due_in", "timeouts")
+
+    def __init__(self, *, due_in: "float | None") -> "None":
+        super().__init__()
+        self.timeouts: "list[float | None]" = []
+        self.due_in = due_in
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        self.timeouts.append(timeout)
+        return False
+
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        del queues
+        return self.due_in
+
+
+class _NextDueQueryCountingBackend(InMemoryQueueBackend):
+    """Memory backend double that counts ``time_until_next_due`` calls."""
+
+    __slots__ = ("next_due_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.next_due_calls = 0
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        del timeout
+        return False
+
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        self.next_due_calls += 1
+        return await super().time_until_next_due(queues=queues)

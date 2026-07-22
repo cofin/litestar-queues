@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
@@ -22,7 +23,7 @@ from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilitie
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +43,10 @@ __all__ = ("SQLAlchemyBackend",)
 
 _POSTGRES_NOTIFY_BACKEND = "postgres-listen-notify"
 _POSTGRES_NOTIFY_PAYLOAD = "tasks"
+
+
+def _utc_now() -> "datetime":
+    return datetime.now(timezone.utc)
 
 
 class SQLAlchemyBackend(BaseQueueBackend):
@@ -196,6 +201,19 @@ class SQLAlchemyBackend(BaseQueueBackend):
     ) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
             return await service.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due pending/scheduled record.
+
+        Returns:
+            Seconds until the next due record, or ``None`` when there is no
+            upcoming scheduled work.
+        """
+        async with self._service() as service:
+            next_at = await service.next_scheduled_at(queues=queues)
+        if next_at is None:
+            return None
+        return max((next_at - _utc_now()).total_seconds(), 0.0)
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         async with self._operation() as service:

@@ -202,24 +202,39 @@ class Worker:
             multiplier=self._poll_backoff_multiplier,
         )
 
-    def _current_wait_timeout(self) -> "float":
+    async def _current_wait_timeout(self) -> "float":
         """Return the wait timeout for the next poll, with jitter applied when enabled.
 
         Jitter perturbs only the returned wait; :attr:`_current_poll_interval`
         (the stored exponential state) is never mutated by it. No random
         sampling occurs while backoff is disabled or jitter is zero.
 
+        While backoff is enabled, the wait is additionally clamped to the
+        backend's ``time_until_next_due()`` when known: no backend notifies
+        a worker the instant a scheduled or retried record's due time
+        arrives, so an uncapped backoff wait could otherwise sleep past
+        already-known future work. This clamp never applies to the fixed
+        (backoff-disabled) path, matching its exact prior behavior.
+
         Returns:
             The timeout, in seconds, to pass to ``wait_for_notifications``.
         """
-        if self._poll_backoff_max is None or self._poll_jitter <= 0.0:
+        if self._poll_backoff_max is None:
             return self._current_poll_interval
-        return _apply_jitter(
-            self._current_poll_interval,
-            base=self._poll_interval,
-            maximum=self._poll_backoff_max,
-            jitter=self._poll_jitter,
+        timeout = (
+            self._current_poll_interval
+            if self._poll_jitter <= 0.0
+            else _apply_jitter(
+                self._current_poll_interval,
+                base=self._poll_interval,
+                maximum=self._poll_backoff_max,
+                jitter=self._poll_jitter,
+            )
         )
+        due_in = await self._service.get_queue_backend().time_until_next_due(queues=self._queues)
+        if due_in is not None and due_in < timeout:
+            timeout = due_in
+        return timeout
 
     async def start(self) -> "None":
         """Run the worker loop until stopped or cancelled."""
@@ -495,7 +510,7 @@ class Worker:
             return None
         queue_backend = self._service.get_queue_backend()
         started_at = time.perf_counter()
-        timeout = self._current_wait_timeout()
+        timeout = await self._current_wait_timeout()
         notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=timeout))
         stop_task = asyncio.create_task(self._stop_event.wait())
         completion_task = asyncio.create_task(self._completion_event.wait())
