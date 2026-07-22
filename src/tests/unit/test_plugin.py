@@ -1,10 +1,10 @@
 from typing import TYPE_CHECKING
 
 import pytest
+from litestar import Litestar
+from litestar.testing import AsyncTestClient
 
 if TYPE_CHECKING:
-    from litestar import Litestar
-
     from litestar_queues import QueueConfig, QueuePlugin
 
 pytestmark = pytest.mark.anyio
@@ -117,3 +117,40 @@ def test_queue_config_get_service_requires_opened_app_state_service() -> "None":
 
     app_config.state[config.queue_service_state_key] = service
     assert config.get_service(app_config.state) is service
+
+
+async def test_plugin_worker_receives_configured_poll_backoff_settings() -> "None":
+    """Backoff settings are passed explicitly into the plugin-started worker, not read from config in the loop."""
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            execution_backend="local",
+            in_app_worker=True,
+            worker_poll_interval=0.01,
+            worker_poll_backoff_max=1.0,
+            worker_poll_backoff_multiplier=3.0,
+            worker_poll_jitter=0.25,
+        )
+    )
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        worker = app.state[plugin.config.queue_worker_state_key]
+
+    assert worker._poll_backoff_max == 1.0
+    assert worker._poll_backoff_multiplier == 3.0
+    assert worker._poll_jitter == 0.25
+
+
+async def test_plugin_worker_defaults_to_disabled_poll_backoff() -> "None":
+    """Default config produces a worker with backoff disabled (fixed polling preserved)."""
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    plugin = QueuePlugin(QueueConfig(execution_backend="local", in_app_worker=True, worker_poll_interval=0.01))
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        worker = app.state[plugin.config.queue_worker_state_key]
+
+    assert worker._poll_backoff_max is None
