@@ -643,14 +643,25 @@ RETURNING {target}.{id_col} AS id
             .where_in(self._col("id"), task_ids)
         )
 
-    def list_stale_running(self, *, cutoff: "DatetimeParam") -> "Select":
-        """Return a SELECT statement for stale running tasks."""
-        return (
+    def list_stale_running(self, *, cutoff: "DatetimeParam", limit: "int | None" = None) -> "Select":
+        """Return a SELECT statement for stale running tasks.
+
+        When ``limit`` is provided the candidates are ordered oldest-first
+        (coalescing NULL heartbeats to ``created_at`` so never-heartbeated rows
+        sort first) then by id, and capped so one maintenance batch is bounded.
+        """
+        statement = (
             self
             ._select_all()
             .where_eq(self._col("status"), "running")
             .where(f"{self._col('heartbeat_at')} IS NULL OR {self._col('heartbeat_at')} < :cutoff", cutoff=cutoff)
         )
+        if limit is not None:
+            statement = statement.order_by(
+                _raw_order(f"COALESCE({self._col('heartbeat_at')}, {self._col('created_at')}) ASC"),
+                _raw_order(f"{self._col('id')} ASC"),
+            ).limit(limit)
+        return statement
 
     def clear_key(self, *, task_id: "str") -> "Update":
         """Return an UPDATE statement that releases a terminal task key."""
@@ -749,6 +760,29 @@ RETURNING {target}.{id_col} AS id
                 terminal_before=before,
             )
         )
+
+    def select_terminal_ids(self, *, before: "DatetimeParam", limit: "int") -> "Select":
+        """Return a SELECT of the oldest bounded terminal ids before a cutoff.
+
+        Ordered by oldest ``completed_at`` then id so a bounded delete is
+        deterministic and portable (no ``DELETE ... LIMIT`` dependency).
+        """
+        return (
+            sql
+            .select(self._select_column("id"))
+            .from_(self.table_name)
+            .where_in(self._col("status"), ("completed", "failed", "cancelled"))
+            .where(
+                f"{self._col('completed_at')} IS NOT NULL AND {self._col('completed_at')} < :terminal_before",
+                terminal_before=before,
+            )
+            .order_by(_raw_order(f"{self._col('completed_at')} ASC"), _raw_order(f"{self._col('id')} ASC"))
+            .limit(limit)
+        )
+
+    def delete_by_ids(self, *, task_ids: "Sequence[str]") -> "Delete":
+        """Return a DELETE statement scoped to the given record ids."""
+        return sql.delete(self.table_name).where_in(self._col("id"), list(task_ids))
 
     def serialize_json(self, canonical: "str", value: "Any") -> "Any":
         """Serialize a JSON value for a canonical queue column.

@@ -2,9 +2,13 @@
 
 from advanced_alchemy.base import UUIDAuditBase
 
-from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy.mixins import (
+    QueueEventLogModelMixin,
+    QueueMaintenanceLeaseModelMixin,
+    QueueTaskModelMixin,
+)
 
-__all__ = ("QueueEventLogModel", "QueueTaskModel")
+__all__ = ("QueueEventLogModel", "QueueMaintenanceLeaseModel", "QueueTaskModel")
 
 
 class QueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
@@ -17,3 +21,9 @@ class QueueEventLogModel(UUIDAuditBase, QueueEventLogModelMixin):
     """Default queue event-history model for the Advanced Alchemy backend."""
 
     __tablename__ = "litestar_queue_task_event_log"
+
+
+class QueueMaintenanceLeaseModel(UUIDAuditBase, QueueMaintenanceLeaseModelMixin):
+    """Default distributed maintenance-lease model for the Advanced Alchemy backend."""
+
+    __tablename__ = "litestar_queue_maintenance_lease"

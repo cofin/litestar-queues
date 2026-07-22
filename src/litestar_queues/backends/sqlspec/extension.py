@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     event_log_table_name_for,
+    maintenance_lease_table_name_for,
     migration_directory,
     validate_table_name,
 )
@@ -30,13 +31,15 @@ def configure_queue_migration_extension(
     queue_table_name: "str" = DEFAULT_TABLE_NAME,
     event_log_enabled: "bool" = False,
     event_log_table_name: "str | None" = None,
+    maintenance_lease_table_name: "str | None" = None,
 ) -> "None":
-    """Register the packaged queue migration with SQLSpec's extension runner."""
+    """Register the packaged queue migrations with SQLSpec's extension runner."""
     queue_settings = _configure_extension_settings(
         sqlspec_config,
         queue_table_name=queue_table_name,
         event_log_enabled=event_log_enabled,
         event_log_table_name=event_log_table_name,
+        maintenance_lease_table_name=maintenance_lease_table_name,
     )
     commands = sqlspec_config.get_migration_commands()
     commands.extension_configs[QUEUE_EXTENSION_NAME] = queue_settings
@@ -55,6 +58,7 @@ def _configure_extension_settings(
     queue_table_name: "str",
     event_log_enabled: "bool" = False,
     event_log_table_name: "str | None" = None,
+    maintenance_lease_table_name: "str | None" = None,
 ) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
@@ -64,4 +68,9 @@ def _configure_extension_settings(
         queue_settings["event_log_table_name"] = validate_table_name(
             event_log_table_name or event_log_table_name_for(queue_table_name)
         )
+    # The maintenance-lease table is always provisioned (like the queue table),
+    # so its name is always recorded for the packaged 0002 migration.
+    queue_settings["maintenance_lease_table_name"] = validate_table_name(
+        maintenance_lease_table_name or maintenance_lease_table_name_for(queue_table_name)
+    )
     return queue_settings

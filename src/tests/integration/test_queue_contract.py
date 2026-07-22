@@ -284,6 +284,86 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_back
     assert stored.heartbeat_at == heartbeat
 
 
+async def test_backend_contract_cleanup_terminal_honors_bounded_limit(queue_backend: "BaseQueueBackend") -> "None":
+    """Bounded terminal cleanup removes at most ``limit`` per call and never overlaps."""
+    for index in range(5):
+        record = await queue_backend.enqueue(f"tasks.cleanup.bound.{index}")
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        await queue_backend.complete_task(claimed.id)
+
+    before = datetime.now(timezone.utc) + timedelta(seconds=1)
+    first = await queue_backend.cleanup_terminal(before, limit=2)
+    second = await queue_backend.cleanup_terminal(before, limit=2)
+    third = await queue_backend.cleanup_terminal(before, limit=2)
+    fourth = await queue_backend.cleanup_terminal(before, limit=2)
+
+    # Exact-limit batches, then continuation of the remainder, then a no-op.
+    assert first == 2
+    assert second == 2
+    assert third == 1
+    assert fourth == 0
+    statistics = await queue_backend.get_statistics()
+    assert statistics.completed == 0
+
+
+async def test_backend_contract_requeue_stale_honors_bounded_limit(queue_backend: "BaseQueueBackend") -> "None":
+    """Bounded stale recovery recovers at most ``limit`` per call with zero overlap."""
+    records = []
+    for index in range(4):
+        record = await queue_backend.enqueue(
+            f"tasks.stale.bound.{index}", max_retries=3, metadata={"requeue_on_stale": True}
+        )
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        records.append(record)
+
+    first = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=2)
+    second = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=2)
+    third = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=2)
+
+    assert first.requeued == 2
+    assert second.requeued == 2
+    assert third.requeued == 0
+    # Zero overlap: every record was requeued exactly once.
+    for record in records:
+        stored = await queue_backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.retry_count == 1
+
+
+async def test_backend_contract_maintenance_lease_fences_holders(queue_backend: "BaseQueueBackend") -> "None":
+    """A held maintenance lease denies other holders; only the matching token releases it."""
+    assert queue_backend.capabilities.supports_maintenance_lease is True
+    ttl = timedelta(seconds=60)
+
+    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-a", ttl=ttl) is True
+    # A second holder is denied while the lease is live.
+    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=ttl) is False
+    # A stale holder cannot release a lease it does not own.
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is False
+    # The owner releases and the lease becomes reacquirable.
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-a") is True
+    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=ttl) is True
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is True
+
+
+async def test_backend_contract_maintenance_lease_expires(queue_backend: "BaseQueueBackend") -> "None":
+    """An expired maintenance lease can be reacquired by a fresh holder."""
+    assert (
+        await queue_backend.acquire_maintenance_lease(
+            "queue-maintenance", "token-a", ttl=timedelta(milliseconds=50)
+        )
+        is True
+    )
+    await asyncio.sleep(0.2)
+    assert (
+        await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=timedelta(seconds=60)) is True
+    )
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is True
+
+
 async def test_memory_backend_notifications_wake_waiters() -> "None":
     backend = InMemoryQueueBackend()
     waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))

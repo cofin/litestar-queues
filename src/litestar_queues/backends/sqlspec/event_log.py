@@ -14,7 +14,7 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 from litestar_queues.events.log import EventLogConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from contextlib import AbstractAsyncContextManager
 
     from sqlspec.builder import CreateIndex, CreateTable, Delete, DropIndex, DropTable, Select
@@ -132,6 +132,25 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     def cleanup_events_before(self, *, before: "DatetimeParam") -> "Delete":
         """Return a DELETE statement for event-log cleanup."""
         return sql.delete(self.table_name).where("occurred_at < :event_log_before", event_log_before=before)
+
+    def select_event_ids_before(self, *, before: "DatetimeParam", limit: "int") -> "Select":
+        """Return a SELECT of the oldest bounded event ids before a cutoff.
+
+        Ordered by oldest ``occurred_at`` then ``event_id`` so a bounded delete
+        is deterministic and portable.
+        """
+        return (
+            sql
+            .select("event_id")
+            .from_(self.table_name)
+            .where("occurred_at < :event_log_before", event_log_before=before)
+            .order_by(_raw_order("occurred_at ASC"), _raw_order("event_id ASC"))
+            .limit(limit)
+        )
+
+    def delete_events_by_ids(self, *, event_ids: "Sequence[str]") -> "Delete":
+        """Return a DELETE statement scoped to the given event ids."""
+        return sql.delete(self.table_name).where_in("event_id", list(event_ids))
 
     def serialize_detail(self, detail: "dict[str, Any]") -> "Any":
         """Serialize event detail payloads with the SQLSpec JSON serializer.
@@ -300,8 +319,11 @@ class SQLSpecQueueEventLog:
             rows = await driver.select(statement, params)
         return [self._summary_from_row(cast("dict[str, Any]", row)) for row in rows]
 
-    async def cleanup_before(self, before: "datetime") -> "int":
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete event history older than ``before``.
+
+        ``limit`` bounds one batch, deleting the oldest matching rows first
+        (oldest ``occurred_at``, then ``event_id``).
 
         Returns:
             Number of deleted event-history rows.
@@ -311,10 +333,19 @@ class SQLSpecQueueEventLog:
         async with self._session_factory() as driver:
             await driver.begin()
             try:
-                count_row = await driver.select_one_or_none(self._store.count_events_before(before=before_value))
-                deleted = int(count_row["event_count"]) if count_row is not None else 0
-                if deleted > 0:
-                    await driver.execute(self._store.cleanup_events_before(before=before_value))
+                if limit is None:
+                    count_row = await driver.select_one_or_none(self._store.count_events_before(before=before_value))
+                    deleted = int(count_row["event_count"]) if count_row is not None else 0
+                    if deleted > 0:
+                        await driver.execute(self._store.cleanup_events_before(before=before_value))
+                else:
+                    id_rows = await driver.select(
+                        self._store.select_event_ids_before(before=before_value, limit=limit)
+                    )
+                    event_ids = [str(cast("dict[str, Any]", row)["event_id"]) for row in id_rows]
+                    deleted = len(event_ids)
+                    if event_ids:
+                        await driver.execute(self._store.delete_events_by_ids(event_ids=event_ids))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):

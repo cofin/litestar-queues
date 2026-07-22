@@ -95,17 +95,23 @@ class RedisQueueEventLog:
         del task_name
         return []
 
-    async def cleanup_before(self, before: "datetime") -> "int":
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete event history older than ``before``.
+
+        The oldest matching events (lowest score) are read first and capped at
+        ``limit`` before any deletion so one maintenance batch is bounded.
 
         Returns:
             Number of removed event-history records.
         """
         await self.flush_events()
         client = await self._backend._get_client()
-        event_ids = await client.zrangebyscore(
-            self._backend._event_log_global_key(), "-inf", f"({_score_datetime(before)}"
-        )
+        global_key = self._backend._event_log_global_key()
+        max_score = f"({_score_datetime(before)}"
+        if limit is not None:
+            event_ids = await client.zrangebyscore(global_key, "-inf", max_score, start=0, num=limit)
+        else:
+            event_ids = await client.zrangebyscore(global_key, "-inf", max_score)
         mappings = await self._mappings_from_ids(client, event_ids)
         removed = 0
         pipeline = _create_pipeline(client)

@@ -342,6 +342,14 @@ return {1}
 """
 
 
+_RELEASE_LEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return {redis.call('DEL', KEYS[1])}
+end
+return {0}
+"""
+
+
 class RedisQueueBackend(BaseQueueBackend):
     """Queue backend that stores records in a Redis-protocol key-value server.
 
@@ -408,6 +416,7 @@ class RedisQueueBackend(BaseQueueBackend):
             notification_backend=f"{self._backend_name}-pubsub" if self._notifications else None,
             notifications_durable=False,
             supports_completion_events=self._notifications,
+            supports_maintenance_lease=True,
         )
 
     async def open(self) -> "bool":
@@ -766,20 +775,28 @@ class RedisQueueBackend(BaseQueueBackend):
                 task_id, expected_status="", expected_retry_count=expected_retry_count, patch={"heartbeat_at": ""}
             )
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         """Requeue running tasks with stale heartbeats.
+
+        Candidates are ordered oldest-heartbeat-first (then by id) and capped at
+        ``limit`` before any mutation so one maintenance batch is bounded.
 
         Returns:
             Summary of recovered records.
         """
         cutoff = _utc_now() - stale_after
         result = StaleTaskRecoveryResult()
-        for record in await self._list_records_by_statuses(("running",)):
-            if record.status != "running":
-                continue
-            if record.heartbeat_at is not None and record.heartbeat_at >= cutoff:
-                result.skipped += 1
-                continue
+        candidates = [
+            record
+            for record in await self._list_records_by_statuses(("running",))
+            if record.status == "running" and (record.heartbeat_at is None or record.heartbeat_at < cutoff)
+        ]
+        candidates.sort(key=_stale_sort_key)
+        if limit is not None:
+            candidates = candidates[:limit]
+        for record in candidates:
             latest = await self.get_task(record.id)
             if latest is None or latest.status != "running":
                 result.skipped += 1
@@ -935,23 +952,55 @@ class RedisQueueBackend(BaseQueueBackend):
         records.sort(key=lambda record: record.completed_at or record.created_at, reverse=True)
         return records[:limit]
 
-    async def cleanup_terminal(self, before: "datetime") -> "int":
+    async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete terminal records completed before a cutoff.
+
+        Candidates are ordered oldest-completion-first (then by id) and capped at
+        ``limit`` before any deletion so one maintenance batch is bounded.
 
         Returns:
             Number of deleted records.
         """
         client = await self._get_client()
+        candidates = [
+            record
+            for record in await self._list_records_by_statuses(tuple(sorted(_TERMINAL_STATUSES)))
+            if record.status in _TERMINAL_STATUSES and record.completed_at is not None and record.completed_at < before
+        ]
+        candidates.sort(key=lambda record: (cast("datetime", record.completed_at), str(record.id)))
+        if limit is not None:
+            candidates = candidates[:limit]
         count = 0
-        for record in await self._list_records_by_statuses(tuple(sorted(_TERMINAL_STATUSES))):
-            if record.status not in _TERMINAL_STATUSES or record.completed_at is None or record.completed_at >= before:
-                continue
+        for record in candidates:
             outcome = await _eval_script(
                 client, _DELETE_TERMINAL_SCRIPT, [self._task_key(record.id)], [self._key_prefix, str(record.id)]
             )
             if outcome and int(outcome[0]) == 1:
                 count += 1
         return count
+
+    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire a namespaced ``SET NX PX`` maintenance lease.
+
+        Returns:
+            True when the lease was set for ``token``.
+        """
+        client = await self._get_client()
+        ttl_ms = max(1, int(ttl.total_seconds() * 1000))
+        result = client.set(self._lease_key(name), token, nx=True, px=ttl_ms)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
+    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
+        """Release a maintenance lease via a token-checked Lua compare-and-delete.
+
+        Returns:
+            True when a lease held under ``token`` was deleted.
+        """
+        client = await self._get_client()
+        outcome = await _eval_script(client, _RELEASE_LEASE_SCRIPT, [self._lease_key(name)], [token])
+        return bool(outcome and int(outcome[0]) == 1)
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a Redis-protocol pub/sub message when work is available."""
@@ -1195,6 +1244,9 @@ class RedisQueueBackend(BaseQueueBackend):
     def _task_key(self, task_id: "UUID") -> "str":
         return f"{self._key_prefix}:task:{task_id}"
 
+    def _lease_key(self, name: "str") -> "str":
+        return f"{self._key_prefix}:lease:{name}"
+
     def _event_log_global_key(self) -> "str":
         return f"{self._key_prefix}:events"
 
@@ -1314,6 +1366,14 @@ async def _pipeline_scard(client: "RedisClientLike", keys: "list[str]") -> "list
 
 def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
+
+
+_MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+
+
+def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
+    """Order stale candidates oldest-heartbeat-first, then by record id."""
+    return (record.heartbeat_at or _MIN_DATETIME, str(record.id))
 
 
 def _serialize_datetime(value: "datetime | None") -> "str":
