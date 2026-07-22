@@ -82,14 +82,47 @@ Schema-qualified names keep their schema and add the suffix to the table part.
 Wakeups
 -------
 
-Set ``notifications`` and ``notify_transport`` only for a SQLSpec transport
-supported by the selected adapter. ``notification_channel`` defaults to
-``litestar_queues_tasks``. Canonical PostgreSQL-family choices are ``notify``
-(ephemeral broadcast hint), ``notify_queue`` (durable notify-assisted queue),
-and ``poll_queue`` (durable polled queue). ``polling`` disables push wakeups;
-Oracle can use explicitly provisioned ``aq`` or ``txeventq``. Durable queue
-transports are competing-consumer queues; do not use them as multi-process
-browser fan-out. See :doc:`../worker-wakeups`.
+Native worker wakeups are **on by default whenever the adapter can push them**.
+A bare ``SQLSpecBackendConfig`` needs no notification settings: the backend
+selects each adapter's best wakeup transport from a capability gate and
+provisions everything it needs.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 25 45
+
+   * - Adapter
+     - Default transport
+     - Wakeup mechanism
+   * - asyncpg, psycopg, psqlpy
+     - ``notify_queue``
+     - Durable events queue table + PostgreSQL ``LISTEN``/``NOTIFY`` push
+   * - DuckDB
+     - ``poll_queue``
+     - Durable events queue table, polled in-process (embedded, no LISTEN/NOTIFY)
+   * - SQLite, MySQL, CockroachDB, SQL Server, Spanner, Oracle
+     - ``polling``
+     - Interval polling (no push transport available by default)
+
+The durable ``notify_queue`` and ``poll_queue`` transports ride a SQLSpec events
+queue table (``sqlspec_event_queue`` by default). It is provisioned the same way
+as the queue table: the packaged migration path registers SQLSpec's events
+migration for capable adapters automatically, and the ``create_schema()``
+bootstrap emits its DDL directly. A zero-config capable backend therefore works
+on a fresh database with no manual step. ``event_queue_table`` overrides the
+table name.
+
+To turn native wakeups off and fall back to interval polling, set
+``notifications=False``. Setting ``notifications=True`` on an adapter that has no
+push transport degrades to polling rather than forcing an unsupported one.
+
+Overrides remain available for advanced setups: ``notify_transport`` pins a
+specific SQLSpec transport, ``notification_channel`` sets the LISTEN/NOTIFY
+channel (default ``litestar_queues_tasks``), and Oracle can opt in to explicitly
+provisioned ``aq`` or ``txeventq`` queues. Oracle stays on polling by default
+because Advanced Queuing requires provisioning that the backend does not create.
+Durable queue transports are competing-consumer queues; do not use them as
+multi-process browser fan-out. See :doc:`../worker-wakeups`.
 
 Heartbeat isolation
 ===================
