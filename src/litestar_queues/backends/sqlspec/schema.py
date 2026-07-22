@@ -186,10 +186,7 @@ def maintenance_lease_table_name_for(table_name: "str") -> "str":
 def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
     directory = migration_directory()
-    return (
-        str(directory.joinpath("0001_create_queue_tasks.py")),
-        str(directory.joinpath("0002_create_queue_maintenance_lease.py")),
-    )
+    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
 
 
 def migration_directory() -> "Path":

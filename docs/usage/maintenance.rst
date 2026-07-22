@@ -145,11 +145,10 @@ Migrations
 The distributed lease needs a small table on SQL backends. Provision it once,
 before scheduling maintenance:
 
-* **SQLSpec** — the packaged migration
-  ``0002_create_queue_maintenance_lease`` creates the lease table (derived from
-  the queue table name with a ``_maintenance_lease`` suffix). It is registered
-  automatically with your SQLSpec migration runner alongside
-  ``0001_create_queue_tasks``; run your SQLSpec migrations to apply it.
+* **SQLSpec** — the packaged ``0001_create_queue_tasks`` migration creates the
+  lease table alongside the queue table (derived from the queue table name with a
+  ``_maintenance_lease`` suffix). It is registered automatically with your
+  SQLSpec migration runner; run your SQLSpec migrations to apply it.
 * **Advanced Alchemy** — you own the models and migrations. Include the
   ``QueueMaintenanceLeaseModel`` table (or compose
   :class:`~litestar_queues.backends.advanced_alchemy.QueueMaintenanceLeaseModelMixin`

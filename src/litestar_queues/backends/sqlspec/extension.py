@@ -95,7 +95,7 @@ def _configure_extension_settings(
             event_log_table_name or event_log_table_name_for(queue_table_name)
         )
     # The maintenance-lease table is always provisioned (like the queue table),
-    # so its name is always recorded for the packaged 0002 migration.
+    # so its name is always recorded for the packaged 0001 migration.
     queue_settings["maintenance_lease_table_name"] = validate_table_name(
         maintenance_lease_table_name or maintenance_lease_table_name_for(queue_table_name)
     )

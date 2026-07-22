@@ -66,18 +66,19 @@ async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> 
 
     assert "CREATE TABLE IF NOT EXISTS" in statements[0]
     assert "JSON" in statements[0]
+    # The single 0001 migration also provisions the distributed maintenance-lease table.
+    assert any("maintenance_lease" in statement for statement in statements)
 
 
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_create_queue_tasks.py", "0002_create_queue_maintenance_lease.py"]
+    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
     content = paths[0].read_text()
     assert "create_queue_store" in content
+    assert "create_maintenance_lease_store" in content
     assert "return SQLSpecQueueStore(" not in content
     assert "CREATE TABLE IF NOT EXISTS litestar_queue_task" not in content
-    lease_content = paths[1].read_text()
-    assert "create_maintenance_lease_store" in lease_content
 
 
 async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_table(
