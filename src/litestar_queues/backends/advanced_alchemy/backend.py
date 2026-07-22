@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
@@ -11,7 +12,10 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
-from litestar_queues.backends._notification_wait import PendingNativeRead
+from litestar_queues.backends.advanced_alchemy._notifications import (
+    SUPPORTED_NOTIFY_DRIVERS,
+    create_notification_listener,
+)
 from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
 from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
@@ -22,11 +26,12 @@ from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilitie
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from litestar_queues.backends.advanced_alchemy._notifications import NotificationListener
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
     from litestar_queues.models import (
@@ -42,6 +47,10 @@ __all__ = ("SQLAlchemyBackend",)
 
 _POSTGRES_NOTIFY_BACKEND = "postgres-listen-notify"
 _POSTGRES_NOTIFY_PAYLOAD = "tasks"
+
+
+def _utc_now() -> "datetime":
+    return datetime.now(timezone.utc)
 
 
 class SQLAlchemyBackend(BaseQueueBackend):
@@ -82,7 +91,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self._notifications = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
         self._event_poll_interval = backend_config.event_poll_interval
-        self._notification_listener: "Any | None" = None
+        self._notification_listener: "NotificationListener | None" = None
         self._observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None
         self._event_log: "AdvancedAlchemyQueueEventLog | None" = None
         self._opened = False
@@ -196,6 +205,19 @@ class SQLAlchemyBackend(BaseQueueBackend):
     ) -> "list[QueuedTaskRecord]":
         async with self._service() as service:
             return await service.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due pending/scheduled record.
+
+        Returns:
+            Seconds until the next due record, or ``None`` when there is no
+            upcoming scheduled work.
+        """
+        async with self._service() as service:
+            next_at = await service.next_scheduled_at(queues=queues)
+        if next_at is None:
+            return None
+        return max((next_at - _utc_now()).total_seconds(), 0.0)
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         async with self._operation() as service:
@@ -373,21 +395,20 @@ class SQLAlchemyBackend(BaseQueueBackend):
         return make_url(sqlalchemy_config.connection_string).drivername
 
     def _notifications_supported(self) -> "bool":
-        return self._notifications and self._driver_name() == "postgresql+asyncpg"
+        return self._notifications and self._driver_name() in SUPPORTED_NOTIFY_DRIVERS
 
-    def _get_notification_listener(self) -> "Any":
+    def _get_notification_listener(self) -> "NotificationListener":
         if self._notification_listener is None:
             self._notification_listener = self._create_notification_listener()
         return self._notification_listener
 
-    def _create_notification_listener(self) -> "Any":
+    def _create_notification_listener(self) -> "NotificationListener":
         sqlalchemy_config = self._sqlalchemy_config
         if sqlalchemy_config is None or sqlalchemy_config.connection_string is None:
             msg = "SQLAlchemyBackend requires sqlalchemy_config for PostgreSQL notifications."
             raise QueueConfigurationError(msg)
-        url = make_url(sqlalchemy_config.connection_string).set(drivername="postgresql")
-        return _AsyncpgNotificationListener(
-            dsn=url.render_as_string(hide_password=False), channel=self._notification_channel
+        return create_notification_listener(
+            connection_string=sqlalchemy_config.connection_string, channel=self._notification_channel
         )
 
     async def _send_notification_marker(self) -> "None":
@@ -566,59 +587,3 @@ class SQLAlchemyBackend(BaseQueueBackend):
         else:
             async with self._heartbeat_session_maker() as session, session.begin():
                 yield self._service_class(session=session)
-
-
-class _AsyncpgNotificationListener:
-    """Dedicated asyncpg LISTEN connection for Advanced Alchemy wakeups."""
-
-    __slots__ = ("_channel", "_connection", "_dsn", "_event", "_pending_read")
-
-    def __init__(self, *, dsn: "str", channel: "str") -> "None":
-        self._dsn = dsn
-        self._channel = channel
-        self._event = asyncio.Event()
-        self._connection: "Any | None" = None
-        self._pending_read = PendingNativeRead()
-
-    async def start(self) -> "None":
-        connection = self._connection
-        if connection is not None and not connection.is_closed():
-            return
-        await self.close()
-        connection = await self._connect()
-        await connection.add_listener(self._channel, self._handle_notification)
-        self._connection = connection
-
-    async def wait(self, timeout: "float | None") -> "bool":
-        await self.start()
-        if not self._pending_read.has_pending and self._event.is_set():
-            self._event.clear()
-            return True
-        task = await self._pending_read.race(self._event.wait, timeout)
-        if task is None:
-            return False
-        task.result()
-        self._event.clear()
-        return True
-
-    async def close(self) -> "None":
-        await self._pending_read.aclose()
-        connection = self._connection
-        self._connection = None
-        if connection is None:
-            return
-        with suppress(Exception):
-            await connection.remove_listener(self._channel, self._handle_notification)
-        with suppress(Exception):
-            await connection.close()
-
-    async def _connect(self) -> "Any":
-        try:
-            asyncpg = import_module("asyncpg")
-        except ImportError as exc:
-            msg = "SQLAlchemyBackendConfig.notifications=True for postgresql+asyncpg requires asyncpg."
-            raise QueueConfigurationError(msg) from exc
-        return await cast("Any", asyncpg).connect(dsn=self._dsn)
-
-    def _handle_notification(self, _connection: "Any", _pid: "int", _channel: "str", _payload: "str") -> "None":
-        self._event.set()

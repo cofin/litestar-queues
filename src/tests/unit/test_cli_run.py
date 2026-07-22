@@ -89,6 +89,31 @@ async def test_run_worker_uses_configured_heartbeat_miss_threshold(monkeypatch: 
     assert _CapturingStartWorker.instances[0].kwargs["heartbeat_miss_threshold"] == 7
 
 
+async def test_run_worker_uses_configured_poll_backoff_settings(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues import _cli as cli_module
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
+    monkeypatch.setattr(cli_module, "Worker", _CapturingStartWorker)
+    _CapturingStartWorker.instances.clear()
+    plugin = QueuePlugin(
+        QueueConfig(
+            execution_backend="local",
+            in_app_worker=False,
+            worker_poll_backoff_max=2.0,
+            worker_poll_backoff_multiplier=1.5,
+            worker_poll_jitter=0.1,
+        )
+    )
+
+    assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 0
+    kwargs = _CapturingStartWorker.instances[0].kwargs
+    assert kwargs["poll_backoff_max"] == 2.0
+    assert kwargs["poll_backoff_multiplier"] == 1.5
+    assert kwargs["poll_jitter"] == 0.1
+
+
 def test_run_subcommand_drains_on_sigterm() -> "None":
     env = os.environ.copy()
     env["LITESTAR_APP"] = "tests.support.cli_app:app"
