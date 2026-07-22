@@ -1,11 +1,12 @@
 """Advanced Alchemy distributed maintenance-lease and bounded-operation contract."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
+from typing_extensions import Self
 
 pytest.importorskip("aiosqlite")
 pytest.importorskip("advanced_alchemy")
@@ -90,8 +91,18 @@ async def test_advanced_alchemy_external_limit_uses_id_tie_breaker(
 
     class FixedDateTime(datetime):
         @classmethod
-        def now(cls, tz: "timezone | None" = None) -> "datetime":
-            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+        def now(cls, tz: "tzinfo | None" = None) -> Self:
+            value = fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+            return cls(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                tzinfo=value.tzinfo,
+            )
 
     monkeypatch.setattr(models_module, "datetime", FixedDateTime)
     monkeypatch.setattr(backend_module, "_utc_now", lambda: fixed_now)

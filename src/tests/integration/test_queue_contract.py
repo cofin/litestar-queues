@@ -1,9 +1,10 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
+from typing_extensions import Self
 
 from litestar_queues import (
     EventConfig,
@@ -142,8 +143,18 @@ async def test_backend_contract_bounds_external_reconciliation_deterministically
 
     class FixedDateTime(datetime):
         @classmethod
-        def now(cls, tz: "timezone | None" = None) -> "datetime":
-            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+        def now(cls, tz: "tzinfo | None" = None) -> Self:
+            value = fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+            return cls(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                tzinfo=value.tzinfo,
+            )
 
     monkeypatch.setattr(models_module, "datetime", FixedDateTime)
     for module in (
