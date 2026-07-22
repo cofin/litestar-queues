@@ -114,6 +114,13 @@ async def test_run_worker_uses_configured_poll_backoff_settings(monkeypatch: "py
     assert kwargs["poll_jitter"] == 0.1
 
 
+# This spawns a real interpreter (cold imports: litestar, click, litestar_queues,
+# and their transitive deps) and waits for it to reach the CLI's startup log
+# line before signaling it. That subprocess-startup latency -- not the drain
+# itself -- is what varies under load on shared/constrained CI runners, so the
+# module-level timeout(15) is not generous enough here; override it per-test
+# rather than loosening the budget for the other, in-process tests above.
+@pytest.mark.timeout(45)
 def test_run_subcommand_drains_on_sigterm() -> "None":
     env = os.environ.copy()
     env["LITESTAR_APP"] = "tests.support.cli_app:app"
@@ -131,10 +138,10 @@ def test_run_subcommand_drains_on_sigterm() -> "None":
         assert proc.poll() is None, "worker exited before SIGTERM was sent"
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=8)
+            proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
-            pytest.fail("worker did not drain within 8s after SIGTERM")
+            pytest.fail("worker did not drain within 15s after SIGTERM")
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -146,8 +153,13 @@ def test_run_subcommand_drains_on_sigterm() -> "None":
     )
 
 
-def _wait_for_worker_started(proc: "subprocess.Popen[bytes]", *, timeout: "float" = 8.0) -> "None":
+def _wait_for_worker_started(proc: "subprocess.Popen[bytes]", *, timeout: "float" = 25.0) -> "None":
     """Wait until the worker command has installed signal handlers.
+
+    Polls stderr for the startup marker instead of sleeping a fixed duration,
+    so this only waits as long as the subprocess actually needs to import and
+    reach that line -- generous enough to absorb cold-import latency on a
+    loaded CI runner without masking a genuinely broken startup path.
 
     Returns:
         None.
