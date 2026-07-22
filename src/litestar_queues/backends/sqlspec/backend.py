@@ -1187,6 +1187,25 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await _invoke_event_channel_method(self._event_channel, "ack", event.event_id)
         return True
 
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due pending/scheduled record.
+
+        Returns:
+            Seconds until the next due record, or ``None`` when there is no
+            upcoming scheduled work.
+        """
+        now = _utc_now()
+        async with self._session() as driver:
+            row = await self._select_one_row(
+                driver, self._get_store().next_scheduled_at(now=self._serialize_datetime(now), queues=queues)
+            )
+        if row is None:
+            return None
+        next_at = _deserialize_datetime(row.get("next_scheduled_at"))
+        if next_at is None:
+            return None
+        return max((next_at - _utc_now()).total_seconds(), 0.0)
+
     async def _close_notification_stream(self) -> "None":
         """Cancel the retained event read and close the iterator."""
         await self._pending_read.aclose()

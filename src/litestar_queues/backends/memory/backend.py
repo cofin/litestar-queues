@@ -436,6 +436,27 @@ class InMemoryQueueBackend(BaseQueueBackend):
         self._notification_event.clear()
         return True
 
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due pending/scheduled record.
+
+        Returns:
+            Seconds until the next due record, or ``None`` when there is no
+            upcoming scheduled work.
+        """
+        now = _utc_now()
+        async with self._lock:
+            upcoming = [
+                record.scheduled_at
+                for record in self._records.values()
+                if record.status in {"pending", "scheduled"}
+                and record.scheduled_at is not None
+                and record.scheduled_at > now
+                and (not queues or record.queue in queues)
+            ]
+        if not upcoming:
+            return None
+        return max((min(upcoming) - _utc_now()).total_seconds(), 0.0)
+
     async def close(self) -> "None":
         """Cancel any retained notification wait."""
         await self._pending_read.aclose()

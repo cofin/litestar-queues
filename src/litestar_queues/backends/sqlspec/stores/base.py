@@ -380,6 +380,23 @@ class SQLSpecQueueStore:
             _raw_order(f"{self._col('priority')} DESC"), _raw_order(f"{self._col('created_at')} ASC")
         ).limit(limit)
 
+    def next_scheduled_at(self, *, now: "DatetimeParam", queues: "Sequence[str]" = ()) -> "Select":
+        """Return a SELECT statement for the earliest not-yet-due ``scheduled_at``.
+
+        Used to bound the worker's adaptive polling wait so a scheduled or
+        retried task is never discovered later than its own due time.
+        """
+        statement = (
+            sql
+            .select(sql.raw(f"MIN({self._col('scheduled_at')}) AS next_scheduled_at"))
+            .from_(self.table_name)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('scheduled_at')} > :now", now=now)
+        )
+        if queues:
+            statement = statement.where_in(self._col("queue"), list(queues))
+        return statement
+
     def select_claimable(
         self, *, now: "DatetimeParam", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "Select":
