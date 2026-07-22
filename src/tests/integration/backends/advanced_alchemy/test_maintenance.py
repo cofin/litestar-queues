@@ -26,6 +26,27 @@ pytestmark = pytest.mark.anyio
 async def test_advanced_alchemy_backend_bounded_operations(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
     await assert_bounded_cleanup_terminal(advanced_alchemy_backend)
     await assert_bounded_stale_recovery(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_backend_maintenance_lease_expires(
+    advanced_alchemy_backend: "SQLAlchemyBackend", monkeypatch: "pytest.MonkeyPatch", request: "pytest.FixtureRequest"
+) -> "None":
+    """An expired lease is reacquirable within the database timestamp precision."""
+    sqlalchemy_config = advanced_alchemy_backend._sqlalchemy_config
+    if sqlalchemy_config is not None and sqlalchemy_config.get_engine().dialect.name == "mysql":
+        from litestar_queues.backends.advanced_alchemy import backend as backend_module
+
+        current_times = iter((
+            datetime(2026, 7, 22, 12, 0, 0, 600_000, tzinfo=timezone.utc),
+            datetime(2026, 7, 22, 12, 0, 0, 800_000, tzinfo=timezone.utc),
+        ))
+        monkeypatch.setattr(backend_module, "_utc_now", lambda: next(current_times))
+        request.node.add_marker(
+            pytest.mark.xfail(
+                reason="Advanced Alchemy has no UTC datetime type preserving MySQL fractional seconds; see AA#777",
+                strict=True,
+            )
+        )
     await assert_lease_expiry(advanced_alchemy_backend)
 
 
