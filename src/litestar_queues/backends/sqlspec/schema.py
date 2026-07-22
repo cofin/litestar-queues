@@ -1,5 +1,6 @@
 """Schema and migration helpers for the SQLSpec queue backend."""
 
+from hashlib import sha1
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -150,18 +151,36 @@ def event_log_table_name_for(table_name: "str") -> "str":
     return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
 
 
+# Smallest common identifier limit across supported dialects (PostgreSQL is 63,
+# MySQL is 64). The derived lease table is deterministically shortened to fit so
+# the same name is produced by the packaged migration and the runtime backend.
+_MAX_IDENTIFIER_LENGTH = 63
+
+
+def _bounded_table_part(table: "str", suffix: "str") -> "str":
+    candidate = f"{table}{suffix}"
+    if len(candidate) <= _MAX_IDENTIFIER_LENGTH:
+        return candidate
+    digest = sha1(table.encode()).hexdigest()[:8]  # noqa: S324 - non-cryptographic name shortening.
+    keep = _MAX_IDENTIFIER_LENGTH - len(suffix) - len(digest) - 1
+    return f"{table[:keep]}_{digest}{suffix}"
+
+
 def maintenance_lease_table_name_for(table_name: "str") -> "str":
     """Return the default maintenance-lease table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX` to the table part.
+    :data:`DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX` to the table part. When the
+    derived name would exceed the portable identifier limit it is
+    deterministically shortened (truncated table part plus a stable hash) so the
+    packaged migration and the runtime backend agree on one name.
     """
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
     if len(parts) == 1:
-        return validate_table_name(f"{validated}{DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX}")
+        return validate_table_name(_bounded_table_part(validated, DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX))
     schema, table = parts
-    return validate_table_name(f"{schema}.{table}{DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX}")
+    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX)}")
 
 
 def migration_paths() -> "tuple[str, ...]":

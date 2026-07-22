@@ -6,9 +6,10 @@ from sqlspec import sql
 
 from litestar_queues.backends.sqlspec.schema import maintenance_lease_table_name_for, validate_table_name
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type
 
 if TYPE_CHECKING:
-    from sqlspec.builder import CreateTable, Delete, DropTable, Insert, Select, Update
+    from sqlspec.builder import CreateTable, Delete, Insert, Select, Update
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
@@ -99,9 +100,25 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
 
-    def _to_sql(self, statement: "CreateTable | DropTable | Any") -> "str":
-        built = statement.build(dialect=self.dialect_name)
-        return built.sql
+
+def _lease_store_type_for(adapter_store_type: "type[SQLSpecQueueStore]") -> "type[SQLSpecMaintenanceLeaseStore]":
+    """Return a lease store class that inherits the adapter's store behavior.
+
+    Mixing the lease DDL/queries with the per-adapter queue store class gives the
+    lease table the adapter's timestamp type, identifier quoting, and datetime
+    binding (e.g. MySQL ``DATETIME(6)`` and backtick quoting) instead of the
+    generic base defaults.
+
+    Returns:
+        A lease store subclass for ``adapter_store_type``.
+    """
+    if adapter_store_type is SQLSpecQueueStore:
+        return SQLSpecMaintenanceLeaseStore
+    return type(
+        f"{adapter_store_type.__name__}MaintenanceLease",
+        (SQLSpecMaintenanceLeaseStore, adapter_store_type),
+        {"__slots__": ()},
+    )
 
 
 def create_maintenance_lease_store(
@@ -116,7 +133,8 @@ def create_maintenance_lease_store(
     Returns:
         A lease store configured for the resolved lease table.
     """
-    return SQLSpecMaintenanceLeaseStore(
+    lease_store_type = _lease_store_type_for(_adapter_store_type(config))
+    return lease_store_type(
         config,
         table_name=resolve_maintenance_lease_table_name(
             queue_table_name, maintenance_lease_table_name=maintenance_lease_table_name
