@@ -30,7 +30,6 @@ from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueB
 from litestar_queues.backends.sqlspec.backend import _adapter_notify_transport
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.exceptions import QueueConfigurationError
-from tests.integration.backends.sqlspec._schema import run_queue_migrations
 from tests.integration.backends.sqlspec.conftest import StubAsyncEventChannel
 
 if TYPE_CHECKING:
@@ -463,7 +462,6 @@ async def test_sqlspec_backend_derives_sqlspec_event_channel_from_config(tmp_pat
 
     await backend.open()
     await backend.create_schema()
-    await run_queue_migrations(sqlspec_config)
     try:
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
         await backend.enqueue("tasks.derived_notified")
@@ -532,12 +530,83 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
     assert QUEUE_EXTENSION_NAME in sqlspec_config.get_migration_commands().extension_configs
 
 
+def test_queue_plugin_registers_events_migration_for_capable_adapter() -> "None":
+    """A capability-native adapter auto-registers SQLSpec's events queue migration.
+
+    Registering the events extension makes SQLSpec provision the durable events
+    queue table on migrate-up, so a zero-config native-wakeup backend works on a
+    fresh database with no manual step. Incapable adapters register nothing.
+    """
+    from click import Group
+
+    pytest.importorskip("asyncpg")
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+    capable_config = AsyncpgConfig(
+        connection_config={"host": "localhost", "port": 5432, "user": "u", "password": "p", "database": "d"}
+    )
+    QueuePlugin(
+        QueueConfig(queue_backend=SQLSpecBackendConfig(config=capable_config), initialize_schedules=False)
+    ).on_cli_init(Group())
+    assert (capable_config.extension_config or {}).get("events") == {"backend": "notify_queue"}
+    assert "events" in capable_config.migration_config.get("include_extensions", [])
+
+    polling_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    QueuePlugin(
+        QueueConfig(queue_backend=SQLSpecBackendConfig(config=polling_config), initialize_schedules=False)
+    ).on_cli_init(Group())
+    assert "events" not in (polling_config.extension_config or {})
+
+
+async def test_sqlspec_backend_migration_path_provisions_events_table(postgres_service: "PostgresService") -> "None":
+    """The plugin's migration registration provisions the events table for native wakeups.
+
+    Runs the SQLSpec migration path only (no ``create_schema``): the plugin
+    registers both the queue and the durable events queue migration, ``migrate_up``
+    creates both tables, and a bare asyncpg backend then wakes via NOTIFY on a
+    fresh database. Uses the default table names, which the queue migration
+    provisions.
+    """
+    from click import Group
+
+    from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
+
+    pytest.importorskip("asyncpg")
+
+    # Start from a clean slate: another test or run may share this database.
+    cleanup_backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=_postgres_config("asyncpg", postgres_service))
+    )
+    await cleanup_backend.open()
+    await _drop_postgres_tables(cleanup_backend, DEFAULT_TABLE_NAME, "ddl_migrations")
+
+    sqlspec_config = _postgres_config("asyncpg", postgres_service)
+    backend_config = SQLSpecBackendConfig(config=sqlspec_config)
+    QueuePlugin(QueueConfig(queue_backend=backend_config, initialize_schedules=False)).on_cli_init(Group())
+    await sqlspec_config.migrate_up(echo=False)
+
+    backend = SQLSpecQueueBackend(backend_config=backend_config)
+    await backend.open()
+    # No create_schema: the migration path already provisioned both tables.
+    try:
+        assert backend.capabilities.notification_backend == "notify_queue"
+
+        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=5))
+        await asyncio.sleep(0.3)
+        start = time.monotonic()
+        await backend.enqueue("tasks.migrate_wake")
+        assert await waiter is True
+        assert time.monotonic() - start < 0.9
+    finally:
+        await _drop_postgres_tables(backend, DEFAULT_TABLE_NAME, "ddl_migrations")
+
+
 @pytest.mark.parametrize(
     ("adapter_name", "expected_transport"),
     [
         ("asyncpg", "notify_queue"),
-        ("psycopg", "poll_queue"),
-        ("psqlpy", "poll_queue"),
+        ("psycopg", "notify_queue"),
+        ("psqlpy", "notify_queue"),
         ("cockroach_asyncpg", "polling"),
         ("cockroach_psycopg", "polling"),
         ("aiosqlite", "polling"),
@@ -554,10 +623,36 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
 def test_adapter_notify_transport_capability_gate(adapter_name: "str | None", expected_transport: "str") -> "None":
     """The wakeup transport is gated by adapter knowledge.
 
-    Postgres-over-asyncpg gets ``notify_queue``; DuckDB, psycopg, and psqlpy
-    use ``poll_queue``; every other family reports ``polling``.
+    Every real Postgres driver (asyncpg, psycopg, psqlpy) gets the durable native
+    ``notify_queue`` LISTEN/NOTIFY hybrid; DuckDB uses the in-process durable
+    ``poll_queue``; every other family reports ``polling``.
     """
     assert _adapter_notify_transport(adapter_name) == expected_transport
+
+
+@pytest.mark.parametrize(
+    ("notifications_requested", "transport", "expected"),
+    [
+        # Default (None): on whenever the resolved transport is capability-native.
+        (None, "notify_queue", True),
+        (None, "poll_queue", True),
+        (None, "polling", False),
+        # Explicit opt-out is preserved even on a capable transport.
+        (False, "notify_queue", False),
+        (False, "polling", False),
+        # Explicit opt-in enables when capable and degrades to polling otherwise.
+        (True, "notify_queue", True),
+        (True, "polling", False),
+    ],
+)
+def test_notifications_should_enable_matrix(
+    tmp_path: "Path", notifications_requested: "bool | None", transport: "str", expected: "bool"
+) -> "None":
+    """Native wakeups are default-on when capable; ``False`` opts out; polling stays polling."""
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=AiosqliteConfig(connection_config={"database": ":memory:"}))
+    )
+    assert backend._notifications_should_enable(notifications_requested, transport) is expected
 
 
 def test_notify_transport_config_rejects_unknown_value() -> "None":
@@ -726,7 +821,6 @@ async def test_sqlspec_backend_notify_transport_override_enables_poll_queue(tmp_
 
     await backend.open()
     await backend.create_schema()
-    await run_queue_migrations(sqlspec_config)
     try:
         assert backend.capabilities.supports_notifications is True
         assert backend.capabilities.notification_backend == "poll_queue"
@@ -740,23 +834,20 @@ async def test_sqlspec_backend_notify_transport_override_enables_poll_queue(tmp_
 
 
 async def test_sqlspec_backend_duckdb_defaults_to_poll_queue(tmp_path: "Path") -> "None":
-    """DuckDB uses SQLSpec's durable table-backed event transport when requested."""
+    """A bare DuckDB config gets the durable ``poll_queue`` transport with zero config.
+
+    DuckDB is embedded with no LISTEN/NOTIFY, so its capability-native default is
+    the in-process durable table queue. ``create_schema`` alone provisions the
+    events queue table, so no manual migration is needed.
+    """
     pytest.importorskip("duckdb")
     from sqlspec.adapters.duckdb import DuckDBConfig
 
     sqlspec_config = DuckDBConfig(connection_config={"database": str(tmp_path / "duckdb-poll-queue.db")})
-    backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=sqlspec_config,
-            notifications=True,
-            notification_channel="duckdb_poll_queue",
-            event_poll_interval=0.01,
-        )
-    )
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, event_poll_interval=0.01))
 
     await backend.open()
     await backend.create_schema()
-    await run_queue_migrations(sqlspec_config)
     try:
         assert backend.capabilities.supports_notifications is True
         assert backend.capabilities.notification_backend == "poll_queue"
@@ -791,7 +882,12 @@ async def test_sqlspec_backend_notify_transport_polling_overrides_extension_conf
 async def test_sqlspec_backend_postgres_notify_queue_wakes(
     postgres_service: "PostgresService", tmp_path: "Path"
 ) -> "None":
-    """Postgres workers wake via NOTIFY with a durable fallback, no missed bursts."""
+    """A bare asyncpg config wakes via NOTIFY with a durable fallback, no missed bursts.
+
+    No notification settings and no manual migration step: ``create_schema`` alone
+    provisions the events queue table and native ``notify_queue`` wakeups are on by
+    default because asyncpg is capability-native.
+    """
     pytest.importorskip("asyncpg")
     from sqlspec.adapters.asyncpg import AsyncpgConfig
 
@@ -805,18 +901,11 @@ async def test_sqlspec_backend_postgres_notify_queue_wakes(
         }
     )
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=sqlspec_config,
-            queue_table_name="lq_notify_asyncpg",
-            notifications=True,
-            notification_channel="lq_asyncpg_wake",
-            event_poll_interval=0.05,
-        )
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_table_name="lq_notify_asyncpg")
     )
 
     await backend.open()
     await backend.create_schema()
-    await run_queue_migrations(sqlspec_config, queue_table_name="lq_notify_asyncpg")
     try:
         assert backend.capabilities.supports_notifications is True
         assert backend.capabilities.notification_backend == "notify_queue"
@@ -845,26 +934,31 @@ async def test_sqlspec_backend_postgres_notify_queue_wakes(
             async with _bridge_session(
                 cast("SQLSpecManager", backend._sqlspec), cast("SQLSpecSessionConfig", backend._sqlspec_config)
             ) as driver:
-                for ddl in (
-                    'DROP TABLE IF EXISTS "lq_notify_asyncpg"',
-                    'DROP TABLE IF EXISTS "sqlspec_async_events"',
-                    'DROP TABLE IF EXISTS "ddl_migrations"',
-                ):
+                for ddl in ('DROP TABLE IF EXISTS "lq_notify_asyncpg"', 'DROP TABLE IF EXISTS "sqlspec_event_queue"'):
                     await driver.execute_script(ddl)
             await backend.close()
 
 
-@pytest.mark.parametrize(("adapter_name", "expected_transport"), [("psycopg", "poll_queue"), ("psqlpy", "poll_queue")])
-async def test_sqlspec_backend_postgres_poll_queue_defaults_wake(
-    adapter_name: "str", expected_transport: "str", postgres_service: "PostgresService"
-) -> "None":
-    """PostgreSQL async adapters without native listeners use the canonical table queue."""
-    sqlspec_config: "Any"
+def _postgres_config(adapter_name: "str", postgres_service: "PostgresService") -> "Any":
+    """Return a bare SQLSpec config for a Postgres driver against the live service."""
+    if adapter_name == "asyncpg":
+        pytest.importorskip("asyncpg")
+        from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+        return AsyncpgConfig(
+            connection_config={
+                "host": postgres_service.host,
+                "port": postgres_service.port,
+                "user": postgres_service.user,
+                "password": postgres_service.password,
+                "database": postgres_service.database,
+            }
+        )
     if adapter_name == "psycopg":
         pytest.importorskip("psycopg")
         from sqlspec.adapters.psycopg import PsycopgAsyncConfig
 
-        sqlspec_config = PsycopgAsyncConfig(
+        return PsycopgAsyncConfig(
             connection_config={
                 "host": postgres_service.host,
                 "port": postgres_service.port,
@@ -873,49 +967,87 @@ async def test_sqlspec_backend_postgres_poll_queue_defaults_wake(
                 "dbname": postgres_service.database,
             }
         )
-    else:
-        pytest.importorskip("psqlpy")
-        from sqlspec.adapters.psqlpy import PsqlpyConfig
+    pytest.importorskip("psqlpy")
+    from sqlspec.adapters.psqlpy import PsqlpyConfig
 
-        sqlspec_config = PsqlpyConfig(
-            connection_config={
-                "host": postgres_service.host,
-                "port": postgres_service.port,
-                "username": postgres_service.user,
-                "password": postgres_service.password,
-                "db_name": postgres_service.database,
-            }
-        )
+    return PsqlpyConfig(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "username": postgres_service.user,
+            "password": postgres_service.password,
+            "db_name": postgres_service.database,
+        }
+    )
 
-    table_name = f"lq_notify_{adapter_name}"
+
+async def _drop_postgres_tables(backend: "SQLSpecQueueBackend", *table_names: "str") -> "None":
+    from litestar_queues.backends.sqlspec.backend import _bridge_session
+
+    with suppress(Exception):
+        assert backend._sqlspec is not None
+        assert backend._sqlspec_config is not None
+        async with _bridge_session(
+            cast("SQLSpecManager", backend._sqlspec), cast("SQLSpecSessionConfig", backend._sqlspec_config)
+        ) as driver:
+            for table_name in (*table_names, "sqlspec_event_queue"):
+                await driver.execute_script(f'DROP TABLE IF EXISTS "{table_name}"')
+    await backend.close()
+
+
+@pytest.mark.parametrize("adapter_name", ["asyncpg", "psycopg", "psqlpy"])
+async def test_sqlspec_backend_postgres_native_wakeup_default_on(
+    adapter_name: "str", postgres_service: "PostgresService"
+) -> "None":
+    """Every Postgres driver gets native NOTIFY wakeups from a bare, zero-config backend.
+
+    No notification settings and no manual migration: ``create_schema`` provisions
+    the events queue table, and the enqueue wakes the waiter via LISTEN/NOTIFY far
+    faster than the default one-second poll interval.
+    """
+    sqlspec_config = _postgres_config(adapter_name, postgres_service)
+    table_name = f"lq_native_{adapter_name}"
     backend = SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(
-            config=sqlspec_config,
-            queue_table_name=table_name,
-            notifications=True,
-            notification_channel=f"lq_{adapter_name}_wake",
-            event_poll_interval=0.01,
-        )
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_table_name=table_name)
     )
 
     await backend.open()
     await backend.create_schema()
-    await run_queue_migrations(sqlspec_config, queue_table_name=table_name)
     try:
-        assert backend.capabilities.notification_backend == expected_transport
+        assert backend.capabilities.supports_notifications is True
+        assert backend.capabilities.notification_backend == "notify_queue"
         assert backend.capabilities.notifications_durable is True
 
         waiter = asyncio.create_task(backend.wait_for_notifications(timeout=5))
+        await asyncio.sleep(0.3)
+        start = time.monotonic()
         await backend.enqueue(f"tasks.{adapter_name}_wake")
         assert await waiter is True
+        # A real NOTIFY wake resolves well under the 1s default poll interval.
+        assert time.monotonic() - start < 0.9
     finally:
-        from litestar_queues.backends.sqlspec.backend import _bridge_session
+        await _drop_postgres_tables(backend, table_name)
 
-        with suppress(Exception):
-            assert backend._sqlspec is not None
-            assert backend._sqlspec_config is not None
-            async with _bridge_session(
-                cast("SQLSpecManager", backend._sqlspec), cast("SQLSpecSessionConfig", backend._sqlspec_config)
-            ) as driver:
-                await driver.execute_script(f'DROP TABLE IF EXISTS "{table_name}"')
-        await backend.close()
+
+@pytest.mark.parametrize("adapter_name", ["asyncpg", "psycopg", "psqlpy"])
+async def test_sqlspec_backend_postgres_notifications_false_forces_polling(
+    adapter_name: "str", postgres_service: "PostgresService"
+) -> "None":
+    """``notifications=False`` opts a capability-native Postgres driver out to polling."""
+    sqlspec_config = _postgres_config(adapter_name, postgres_service)
+    table_name = f"lq_optout_{adapter_name}"
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_table_name=table_name, notifications=False)
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    try:
+        assert backend.capabilities.supports_notifications is False
+        assert backend.capabilities.notification_backend is None
+
+        start = time.monotonic()
+        assert await backend.wait_for_notifications(timeout=0.05) is False
+        assert time.monotonic() - start >= 0.04
+    finally:
+        await _drop_postgres_tables(backend, table_name)
