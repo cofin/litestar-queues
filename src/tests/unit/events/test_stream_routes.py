@@ -108,6 +108,32 @@ async def test_task_stream_relays_from_channels_backend() -> None:
     assert socket.sent_json == [event.to_dict()]
 
 
+@pytest.mark.anyio
+async def test_task_stream_prefers_configured_channels_backend_to_connection_plugin() -> None:
+    configured_channels = MemoryChannelsBackend(history=0)
+    connection_channels = MemoryChannelsBackend(history=0)
+    config = QueueConfig(event=EventConfig(channels_backend=configured_channels))
+    router = build_stream_router(config, EventStreamConfig(scopes={"task"}))
+    handler = _stream_handler(router, "/tasks/{task_id:str}")
+    socket = _RecordingSocket(channels_plugin=connection_channels)
+    event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
+
+    async def publish() -> None:
+        await socket.accepted.wait()
+        await asyncio.sleep(0.01)
+        await configured_channels.publish(event.to_json(), [QueueChannels.task("task-1")])
+
+    await configured_channels.on_startup()
+    await connection_channels.on_startup()
+    try:
+        await asyncio.wait_for(asyncio.gather(handler.fn(socket, task_id="task-1"), publish()), timeout=1)
+    finally:
+        await connection_channels.on_shutdown()
+        await configured_channels.on_shutdown()
+
+    assert socket.sent_json == [event.to_dict()]
+
+
 def _stream_paths(router: Any) -> "set[str]":
     app = Litestar(route_handlers=[router], openapi_config=None)
     return {route.path for route in app.routes if route.path.startswith("/queues/events")}
@@ -127,9 +153,10 @@ def _deny_guard(connection: ASGIConnection, route_handler: BaseRouteHandler) -> 
 
 
 class _RecordingSocket:
-    def __init__(self) -> None:
+    def __init__(self, channels_plugin: object | None = None) -> None:
         self.accepted = asyncio.Event()
         self.sent_json: "list[dict[str, object]]" = []
+        self.channels_plugin = channels_plugin
 
     async def accept(self) -> None:
         self.accepted.set()

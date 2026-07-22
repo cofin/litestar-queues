@@ -14,6 +14,7 @@ def test_event_stream_config_defaults() -> "None":
     assert config.path == "/queues/events"
     assert config.guards is None
     assert config.channel_authorizer is None
+    assert config.allow_unauthenticated is False
     assert config.scopes == {"task", "queue", "worker", "global", "custom"}
     assert config.heartbeat_interval == 25.0
     assert config.history == 0

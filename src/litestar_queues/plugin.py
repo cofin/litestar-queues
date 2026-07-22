@@ -167,14 +167,19 @@ class QueuePlugin(InitPlugin):
             from litestar_queues.events.streaming import build_stream_router
 
             self._verify_stream_channels_source(app_config)
-            if not stream_config.guards and stream_config.channel_authorizer is None:
+            if (
+                not app_config.guards
+                and not stream_config.guards
+                and stream_config.channel_authorizer is None
+                and not stream_config.allow_unauthenticated
+            ):
                 logger.warning(
-                    "Queue event streaming is enabled without guards or a channel_authorizer; "
-                    "task, queue, and worker metadata will be served to unauthenticated clients. "
-                    "Set EventStreamConfig(guards=..., channel_authorizer=..., scopes=...) "
-                    "to restrict access. See docs/usage/events.rst."
+                    "Queue event streams have no configured authorization. Set a guard or channel_authorizer, "
+                    "or explicitly set allow_unauthenticated=True. See docs/usage/event-streams.rst."
                 )
-            app_config.route_handlers.append(build_stream_router(self._config, stream_config))
+            app_config.route_handlers.append(
+                build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
+            )
             state[self._config.queue_event_stream_state_key] = stream_config
         app_config.state.update(state)
         # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown

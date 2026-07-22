@@ -132,7 +132,9 @@ queue_config = QueueConfig(
     event=EventConfig(channels_backend=channels, buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)),
     # The demo registers only its own transport so a stale tab from another
     # example cannot silently reconnect to this app's routes.
-    event_stream=EventStreamConfig(scopes={"task"}, sse=False, history=25, heartbeat_interval=15),
+    event_stream=EventStreamConfig(
+        scopes={"task"}, sse=False, history=25, heartbeat_interval=15, allow_unauthenticated=True
+    ),
     **standalone_worker_options(),
 )
 

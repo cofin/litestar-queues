@@ -242,7 +242,19 @@ def _resolve_stream_metrics(connection: Any, config: "QueueConfig") -> "StreamMe
     return None
 
 
-def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig") -> "Router":
+def _configured_stream_channels_backend(
+    config: "QueueConfig", channels_backend: "ChannelsLike | None"
+) -> "ChannelsLike | None":
+    if channels_backend is not None:
+        return channels_backend
+    if config.event is not None:
+        return config.event.channels_backend
+    return None
+
+
+def build_stream_router(
+    config: "QueueConfig", stream_config: "EventStreamConfig", *, channels_backend: "ChannelsLike | None" = None
+) -> "Router":
     """Build plugin-owned queue-event stream handlers for configured scopes.
 
     Returns:
@@ -256,6 +268,7 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
 
     authorizer = stream_config.channel_authorizer
     history = stream_config.history
+    configured_channels_backend = _configured_stream_channels_backend(config, channels_backend)
 
     async def _authorize(
         connection: Any,
@@ -280,9 +293,9 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
     async def _relay(socket: "WebSocket", scope: "QueueEventScope", key: str | None, channel: str) -> None:
         stream_metrics = _resolve_stream_metrics(socket, config)
         await _authorize(socket, scope, key, websocket=True, stream_metrics=stream_metrics)
-        backend = _resolve_channels_backend(socket)
-        if backend is None and config.event is not None:
-            backend = config.event.channels_backend
+        backend = configured_channels_backend
+        if backend is None:
+            backend = _resolve_channels_backend(socket)
         await stream_queue_events_hardened(
             socket,
             [channel],
@@ -296,9 +309,9 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
     async def _sse(connection: Any, scope: "QueueEventScope", key: str | None, channel: str) -> Any:
         stream_metrics = _resolve_stream_metrics(connection, config)
         await _authorize(connection, scope, key, websocket=False, stream_metrics=stream_metrics)
-        backend = _resolve_channels_backend(connection)
-        if backend is None and config.event is not None:
-            backend = config.event.channels_backend
+        backend = configured_channels_backend
+        if backend is None:
+            backend = _resolve_channels_backend(connection)
         return stream_queue_events_sse(
             connection,
             [channel],

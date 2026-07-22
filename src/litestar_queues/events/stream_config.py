@@ -36,6 +36,7 @@ class EventStreamConfig:
     path: "str" = "/queues/events"
     guards: list[Guard] | None = None
     channel_authorizer: ChannelAuthorizer | None = None
+    allow_unauthenticated: "bool" = False
     scopes: set[QueueEventScope] = field(default_factory=_default_stream_scopes)
     heartbeat_interval: "float" = 25.0
     history: "int" = 0
