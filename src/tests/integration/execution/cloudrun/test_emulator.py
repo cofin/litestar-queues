@@ -4,9 +4,7 @@ import logging
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
 
 import pytest
 
@@ -17,17 +15,13 @@ from tests.integration.execution.cloudrun.helpers import (
     FakeCloudRunExecution,
     FakeExecutionsClient,
     FakeJobsClient,
-    NoopServiceContext,
     NotFoundError,
     env_map,
+    task_id_from_request,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from uuid import UUID
-
     from litestar_queues.execution.cloudrun._typing import CloudRunJobsClient
-    from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult
 
 pytestmark = pytest.mark.anyio
 
@@ -112,21 +106,76 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         await service.close()
 
     request = jobs_client.requests[0]
-    env = env_map(request)
 
     assert execution_ref == "projects/test/locations/us-central1/jobs/worker/executions/run-1"
     assert request["name"] == "projects/test-project/locations/us-central1/jobs/heavy-worker"
     assert request["overrides"]["timeout"] == "120s"
-    assert env["LITESTAR_QUEUES_TASK_ID"] == str(record.id)
-    assert env["LITESTAR_QUEUES_TASK_NAME"] == "tasks.remote"
-    assert env["LITESTAR_QUEUES_TASK_ARGS"] == "[41]"
-    assert env["LITESTAR_QUEUES_TASK_KWARGS"] == "{}"
-    assert env["EXTRA_SETTING"] == "enabled"
+    assert task_id_from_request(request) == str(record.id)
+    assert env_map(request)["EXTRA_SETTING"] == "enabled"
     assert stored is not None
     assert stored.execution_backend == "cloudrun"
     assert stored.execution_profile == "heavy"
     assert stored.execution_ref == execution_ref
     assert stored.status == "pending"
+
+
+async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.remote")
+    async def remote_task(value: "int") -> "int":
+        return value + 1
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    ) as service:
+        result = await service.enqueue(remote_task.using(execution_backend="cloudrun"), 41)
+        record = result.record
+        assert record is not None
+        await backend.dispatch(service, record)
+
+    env = env_map(jobs_client.requests[0])
+
+    # The whole per-field env-map is gone: the record travels as its id alone
+    # (no extra_env on this config), so no legacy per-field vars remain.
+    assert set(env) == {"LITESTAR_QUEUES_TASK_ID"}
+    legacy_names = {
+        f"LITESTAR_QUEUES_{suffix}" for suffix in ("TASK_DISPATCH", "TASK_NAME", "TASK_ARGS", "TASK_KWARGS")
+    }
+    assert legacy_names.isdisjoint(env)
+
+
+async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.remote")
+    async def remote_task(value: "int") -> "int":
+        return value + 1
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker", env_prefix="PREFIX"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    ) as service:
+        result = await service.enqueue(remote_task.using(execution_backend="cloudrun"), 41)
+        record = result.record
+        assert record is not None
+        await backend.dispatch(service, record)
+
+    env = env_map(jobs_client.requests[0])
+
+    assert "PREFIX_TASK_ID" in env
+    assert "LITESTAR_QUEUES_TASK_ID" not in env
 
 
 async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() -> "None":
@@ -423,122 +472,6 @@ async def test_worker_reconciles_running_external_records() -> "None":
     assert stored.status == "failed"
 
 
-async def test_cloudrun_entrypoint_claims_and_executes_persisted_record() -> "None":
-    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
-
-    @task("tasks.entrypoint")
-    async def entrypoint_task(value: "int") -> "int":
-        return value + 1
-
-    queue_backend = InMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
-        result = await service.enqueue(entrypoint_task.using(execution_backend="cloudrun"), 41)
-        exit_code = await execute_cloudrun_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": str(result.id)})
-        await result.refresh()
-
-    assert exit_code == CloudRunExitCode.SUCCESS
-    assert result.status == "completed"
-    assert result.result == 42
-
-
-async def test_cloudrun_entrypoint_loads_config_factory_before_prefixed_task_id() -> "None":
-    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
-    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
-
-    @task("tasks.entrypoint_prefixed")
-    async def entrypoint_prefixed(value: "int") -> "int":
-        return value + 1
-
-    queue_backend = InMemoryQueueBackend()
-    config = QueueConfig(
-        execution_backend=CloudRunExecutionConfig(project_id="test-project", job_name="worker", env_prefix="PREFIX")
-    )
-    factory_module = ModuleType("cloudrun_test_config_factory")
-    sys.modules[factory_module.__name__] = factory_module
-    try:
-        async with QueueService(config, queue_backend=queue_backend) as service:
-            factory_module.create_service = lambda: NoopServiceContext(service)  # type: ignore[attr-defined]
-            result = await service.enqueue(entrypoint_prefixed.using(execution_backend="cloudrun"), 41)
-
-            exit_code = await execute_cloudrun_task(
-                env={
-                    "LITESTAR_QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
-                    "PREFIX_TASK_ID": str(result.id),
-                }
-            )
-            await result.refresh()
-    finally:
-        sys.modules.pop(factory_module.__name__, None)
-
-    assert exit_code == CloudRunExitCode.SUCCESS
-    assert result.status == "completed"
-    assert result.result == 42
-
-
-async def test_cloudrun_entrypoint_requires_config_factory_without_service_or_config() -> "None":
-    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
-
-    exit_code = await execute_cloudrun_task(env={"LITESTAR_QUEUES_TASK_ID": str(uuid4())})
-
-    assert exit_code == CloudRunExitCode.MISSING_CONFIG_FACTORY
-
-
-async def test_cloudrun_entrypoint_returns_claim_lost_when_heartbeat_loses_ownership() -> "None":
-    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
-
-    heartbeat_seen = asyncio.Event()
-    release_task = asyncio.Event()
-    task_id: "UUID | None" = None
-
-    @task("tasks.entrypoint_claim_lost")
-    async def entrypoint_claim_lost() -> "str":
-        assert task_id is not None
-        stored = await queue_backend.get_task(task_id)
-        assert stored is not None
-        stored.status = "pending"
-        stored.retry_count += 1
-        stored.started_at = None
-        stored.heartbeat_at = None
-        heartbeat_seen.set()
-        await release_task.wait()
-        return "too late"
-
-    queue_backend = _RecordingHeartbeatBackend()
-    async with QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
-    ) as service:
-        result = await service.enqueue(entrypoint_claim_lost.using(execution_backend="cloudrun"), retries=1)
-        task_id = result.id
-        runner = asyncio.create_task(
-            execute_cloudrun_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": str(result.id)})
-        )
-        await asyncio.wait_for(heartbeat_seen.wait(), timeout=1)
-        try:
-            exit_code = await runner
-        finally:
-            release_task.set()
-        stored = await queue_backend.get_task(result.id)
-
-    assert exit_code == CloudRunExitCode.CLAIM_LOST
-    assert stored is not None
-    assert stored.status == "pending"
-    assert stored.retry_count == 1
-    assert len(queue_backend.touch_calls) == 1
-    assert queue_backend.touch_calls[0][0].task_id == result.id
-    assert queue_backend.touch_calls[0][0].expected_retry_count == 0
-
-
-async def test_cloudrun_entrypoint_returns_deterministic_error_codes() -> "None":
-    from litestar_queues.execution.cloudrun.entrypoint import CloudRunExitCode, execute_cloudrun_task
-
-    async with QueueService(QueueConfig()) as service:
-        missing = await execute_cloudrun_task(service=service, env={})
-        invalid = await execute_cloudrun_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": "not-a-uuid"})
-
-    assert missing == CloudRunExitCode.MISSING_TASK_ID
-    assert invalid == CloudRunExitCode.INVALID_TASK_ID
-
-
 def test_cloudrun_factory_registration_and_import_boundary() -> "None":
     command = [
         sys.executable,
@@ -559,15 +492,3 @@ def test_cloudrun_factory_registration_and_import_boundary() -> "None":
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.strip() == "[]"
-
-
-class _RecordingHeartbeatBackend(InMemoryQueueBackend):
-    __slots__ = ("touch_calls",)
-
-    def __init__(self) -> "None":
-        super().__init__()
-        self.touch_calls: "list[tuple[HeartbeatTouch, ...]]" = []
-
-    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
-        self.touch_calls.append(tuple(touches))
-        return await super().touch_heartbeats(touches)

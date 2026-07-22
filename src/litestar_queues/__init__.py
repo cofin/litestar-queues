@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         TaskDependencyResolver,
         TaskErrorSanitizer,
     )
+    from litestar_queues.consumer import TaskExitCode, consume_one, run_task
     from litestar_queues.events import (
         EventConfig,
         EventLogConfig,
@@ -139,10 +140,12 @@ _EXPORTS = {
     "TaskDependencyResolver": "litestar_queues.config",
     "TaskErrorSanitizer": "litestar_queues.config",
     "TaskExecutionContext": "litestar_queues.events",
+    "TaskExitCode": "litestar_queues.consumer",
     "TaskResult": "litestar_queues.task",
     "TaskStatus": "litestar_queues.models",
     "Worker": "litestar_queues.worker",
     "beat": "litestar_queues.events",
+    "consume_one": "litestar_queues.consumer",
     "discover_tasks": "litestar_queues.task",
     "execution_backend": "litestar_queues.execution",
     "get_current_task_context": "litestar_queues.events",
@@ -162,6 +165,7 @@ _EXPORTS = {
     "publish_task_progress": "litestar_queues.events",
     "queue_backend": "litestar_queues.backends",
     "require_current_task_context": "litestar_queues.events",
+    "run_task": "litestar_queues.consumer",
     "task": "litestar_queues.task",
 }
 
@@ -213,10 +217,12 @@ __all__ = (
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "TaskExecutionContext",
+    "TaskExitCode",
     "TaskResult",
     "TaskStatus",
     "Worker",
     "beat",
+    "consume_one",
     "discover_tasks",
     "execution_backend",
     "get_current_task_context",
@@ -236,6 +242,7 @@ __all__ = (
     "publish_task_progress",
     "queue_backend",
     "require_current_task_context",
+    "run_task",
     "task",
 )
 

@@ -1,3 +1,13 @@
+"""Public, framework-agnostic consumer API for external execution backends.
+
+``run_task`` / ``consume_one`` / ``TaskExitCode`` are the programmatic twin of
+``litestar queues run-task``: run one queued record by id on any external
+executor (a Cloud Run Job, a serverless handler, a custom runner) and exit with
+a deterministic code. Click-free on purpose so broker consumers and in-process
+handlers can import them without pulling ``click`` into the module graph (see
+test_plugin_lifecycle import boundary).
+"""
+
 import asyncio
 import contextlib
 import logging
@@ -21,12 +31,14 @@ if TYPE_CHECKING:
 
     ServiceFactory = Callable[[], QueueConfig | QueueService | AbstractAsyncContextManager[QueueService]]
 
-__all__ = ("CloudRunExitCode", "execute_cloudrun_task", "main")
+__all__ = ("TaskExitCode", "consume_one", "run_task")
 logger = logging.getLogger(__name__)
 
+_TASK_ID_ENV_SUFFIX = "TASK_ID"
 
-class CloudRunExitCode(IntEnum):
-    """Deterministic Cloud Run task process exit codes."""
+
+class TaskExitCode(IntEnum):
+    """Deterministic external-consumer process exit codes."""
 
     SUCCESS = 0
     FAILURE = 1
@@ -39,31 +51,65 @@ class CloudRunExitCode(IntEnum):
     MISSING_CONFIG_FACTORY = 8
 
 
-async def execute_cloudrun_task(
+async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
+    """Claim, execute, and report one queued record identified by its id.
+
+    The live record in the queue backend is authoritative; the id only locates
+    it. Redelivery is fenced by the live ``expected_retry_count`` at claim time.
+
+    Returns:
+        A deterministic task exit code.
+    """
+    record = await queue.get_task(task_id)
+    if record is None:
+        return TaskExitCode.MISSING_RECORD
+
+    try:
+        queue.resolve_task(record.task_name)
+    except KeyError:
+        await queue.get_queue_backend().fail_task(record.id, f"Unknown queue task: {record.task_name!r}", retry=False)
+        return TaskExitCode.UNKNOWN_TASK
+
+    claimed = await queue.get_queue_backend().claim_task(record.id)
+    if claimed is None:
+        await queue.publish_claim_lost(record, phase="claim")
+        return TaskExitCode.CLAIM_LOST
+
+    return await _execute_claimed_record(queue, claimed)
+
+
+async def run_task(
     *,
     config: "QueueConfig | None" = None,
     service: "QueueService | None" = None,
     service_factory: "ServiceFactory | None" = None,
+    task_id: "str | None" = None,
+    config_factory: "str | None" = None,
+    task_modules: "str | None" = None,
     env: "Mapping[str, str] | None" = None,
-) -> "CloudRunExitCode":
-    """Execute one persisted queue record in a Cloud Run task process.
+) -> "TaskExitCode":
+    """Resolve a service and run one queued task by id.
+
+    The prefix-aware environment is the default source for every input; the
+    override arguments take precedence over it. ``config_factory`` replaces the
+    ``CONFIG_FACTORY`` env var, ``task_id`` replaces the ``TASK_ID`` value, and
+    ``task_modules`` replaces ``TASK_MODULES``.
 
     Returns:
-        A deterministic process exit code.
+        A deterministic task exit code.
     """
     environ = env or os.environ
+    if config_factory is not None:
+        service_factory = _import_factory(config_factory)
+    has_task_id_override = task_id is not None
+
     if _requires_config_factory(
         config=config, service=service, service_factory=service_factory
     ) and not _has_config_factory(config, environ):
-        task_id_raw = environ.get(_env_name(config, "TASK_ID"))
-        if not task_id_raw:
-            return CloudRunExitCode.MISSING_TASK_ID
-        try:
-            UUID(task_id_raw)
-        except ValueError:
-            return CloudRunExitCode.INVALID_TASK_ID
-        logger.error("Cloud Run task process missing CONFIG_FACTORY", extra={"cloudrun_task_id": task_id_raw})
-        return CloudRunExitCode.MISSING_CONFIG_FACTORY
+        if not has_task_id_override and not environ.get(_env_name(config, _TASK_ID_ENV_SUFFIX)):
+            return TaskExitCode.MISSING_TASK_ID
+        logger.error("External consumer process missing CONFIG_FACTORY")
+        return TaskExitCode.MISSING_CONFIG_FACTORY
 
     async with contextlib.AsyncExitStack() as stack:
         try:
@@ -72,49 +118,28 @@ async def execute_cloudrun_task(
             )
         except Exception:
             if _requires_config_factory(config=config, service=service, service_factory=service_factory):
-                logger.exception("Cloud Run task process could not load CONFIG_FACTORY")
-                return CloudRunExitCode.MISSING_CONFIG_FACTORY
+                logger.exception("External consumer process could not load CONFIG_FACTORY")
+                return TaskExitCode.MISSING_CONFIG_FACTORY
             raise
 
-        task_id_raw = environ.get(_env_name(queue.config, "TASK_ID"))
-        if not task_id_raw:
-            return CloudRunExitCode.MISSING_TASK_ID
-        try:
-            task_id = UUID(task_id_raw)
-        except ValueError:
-            return CloudRunExitCode.INVALID_TASK_ID
-
-        _load_configured_task_modules(queue.config, environ)
-        record = await queue.get_task(task_id)
-        if record is None:
-            return CloudRunExitCode.MISSING_RECORD
-
-        try:
-            queue.resolve_task(record.task_name)
-        except KeyError:
-            await queue.get_queue_backend().fail_task(
-                record.id, f"Unknown queue task: {record.task_name!r}", retry=False
-            )
-            return CloudRunExitCode.UNKNOWN_TASK
-
-        claimed = await queue.get_queue_backend().claim_task(record.id)
-        if claimed is None:
-            await queue.publish_claim_lost(record, phase="claim")
-            return CloudRunExitCode.CLAIM_LOST
-
-        return await _execute_claimed_record(queue, claimed)
+        _load_configured_task_modules(queue.config, environ, override=task_modules)
+        return await _resolve_and_consume(queue, environ, task_id=task_id)
 
 
-def main() -> "None":
-    """Console entry point for Cloud Run task execution.
+async def _resolve_and_consume(
+    queue: "QueueService", env: "Mapping[str, str]", *, task_id: "str | None"
+) -> "TaskExitCode":
+    raw = task_id if task_id is not None else env.get(_env_name(queue.config, _TASK_ID_ENV_SUFFIX))
+    if not raw:
+        return TaskExitCode.MISSING_TASK_ID
+    try:
+        record_id = UUID(raw)
+    except ValueError:
+        return TaskExitCode.INVALID_TASK_ID
+    return await consume_one(queue, record_id)
 
-    Raises:
-        SystemExit: Always raised with the execution exit code.
-    """
-    raise SystemExit(int(asyncio.run(execute_cloudrun_task())))
 
-
-async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "CloudRunExitCode":
+async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "TaskExitCode":
     expected_retry_count = claimed.retry_count
     heartbeat_task = asyncio.create_task(_heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count))
     execution_task = asyncio.create_task(queue.execute_record(claimed))
@@ -125,10 +150,10 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
             with contextlib.suppress(asyncio.CancelledError):
                 await execution_task
             await queue.publish_claim_lost(claimed, phase="heartbeat", expected_retry_count=expected_retry_count)
-            return CloudRunExitCode.CLAIM_LOST
+            return TaskExitCode.CLAIM_LOST
         updated = await execution_task
     except asyncio.CancelledError:
-        return CloudRunExitCode.CANCELLED
+        return TaskExitCode.CANCELLED
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -136,10 +161,10 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
         await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
 
     if updated.status == "completed":
-        return CloudRunExitCode.SUCCESS
+        return TaskExitCode.SUCCESS
     if updated.status == "cancelled":
-        return CloudRunExitCode.CANCELLED
-    return CloudRunExitCode.FAILURE
+        return TaskExitCode.CANCELLED
+    return TaskExitCode.FAILURE
 
 
 async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int") -> "bool":
@@ -181,7 +206,7 @@ async def _provide_service(
         return
 
     if config is None:
-        msg = "Cloud Run task process requires CONFIG_FACTORY when no QueueConfig or QueueService is provided."
+        msg = "External consumer process requires CONFIG_FACTORY when no QueueConfig or QueueService is provided."
         raise QueueConfigurationError(msg)
 
     async with QueueService(config) as queue:
@@ -199,26 +224,31 @@ def _has_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") 
 
 
 def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "ServiceFactory | None":
-    env_var = _env_name(config, "CONFIG_FACTORY")
-    import_path = env.get(env_var)
+    import_path = env.get(_env_name(config, "CONFIG_FACTORY"))
     if not import_path:
         return None
+    return _import_factory(import_path)
+
+
+def _import_factory(import_path: "str") -> "ServiceFactory":
     module_path, separator, attribute = import_path.partition(":")
     if not separator:
         module_path, attribute = import_path.rsplit(".", 1)
     module = import_module(module_path)
     factory = getattr(module, attribute)
     if not callable(factory):
-        msg = f"Cloud Run config factory {import_path!r} is not callable."
+        msg = f"Consumer config factory {import_path!r} is not callable."
         raise TypeError(msg)
     return cast("ServiceFactory", factory)
 
 
-def _load_configured_task_modules(config: "QueueConfig", env: "Mapping[str, str]") -> "None":
+def _load_configured_task_modules(
+    config: "QueueConfig", env: "Mapping[str, str]", *, override: "str | None" = None
+) -> "None":
     modules = list(config.task_modules)
-    env_modules = env.get(_env_name(config, "TASK_MODULES"))
-    if env_modules:
-        modules.extend(module.strip() for module in env_modules.split(",") if module.strip())
+    extra = override if override is not None else env.get(_env_name(config, "TASK_MODULES"))
+    if extra:
+        modules.extend(module.strip() for module in extra.split(",") if module.strip())
     if modules:
         load_task_modules(tuple(modules), force_reload=True)
 
@@ -229,7 +259,3 @@ def _env_name(config: "QueueConfig | None", suffix: "str") -> "str":
     if callable(env_name):
         return str(env_name(suffix))
     return f"LITESTAR_QUEUES_{suffix}"
-
-
-if __name__ == "__main__":
-    main()

@@ -1,4 +1,3 @@
-import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
+_TASK_ID_ENV_SUFFIX = "TASK_ID"
 _HTTP_NOT_FOUND = 404
 logger = logging.getLogger(__name__)
 
@@ -242,7 +242,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         timeout = record.metadata.get("timeout", task_obj.timeout)
         timeout_seconds = int(timeout if isinstance(timeout, int | float) else config.timeout)
         job_name = config.resolve_job_name(record.execution_profile)
-        env = self.build_environment(record)
+        env = self.build_task_env(record)
         return {
             "name": f"projects/{config.project_id}/locations/{config.region}/jobs/{job_name}",
             "overrides": {
@@ -251,22 +251,18 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             },
         }
 
-    def build_environment(self, record: "QueuedTaskRecord") -> "dict[str, str]":
-        """Build generic environment variables for a Cloud Run task process.
+    def build_task_env(self, record: "QueuedTaskRecord") -> "dict[str, str]":
+        """Build the single-value task environment for a Cloud Run task process.
+
+        The record travels as its id in one prefix-aware environment variable
+        (``LITESTAR_QUEUES_TASK_ID`` by default); the consumer re-fetches the
+        live record by that id. Adopter ``extra_env`` values are merged in.
 
         Returns:
             Environment variables for the Cloud Run task process.
         """
         config = self.execution_config
-        env = {
-            config.env_name("TASK_ID"): str(record.id),
-            config.env_name("TASK_NAME"): record.task_name,
-            config.env_name("TASK_ARGS"): json.dumps(list(record.args), separators=(",", ":")),
-            config.env_name("TASK_KWARGS"): json.dumps(record.kwargs, separators=(",", ":")),
-            config.env_name("EXECUTION_BACKEND"): "cloudrun",
-        }
-        if record.execution_profile is not None:
-            env[config.env_name("EXECUTION_PROFILE")] = record.execution_profile
+        env = {config.env_name(_TASK_ID_ENV_SUFFIX): str(record.id)}
         env.update(config.extra_env)
         return env
 

@@ -104,3 +104,12 @@ NotFoundError = type("NotFound", (Exception,), {})
 def env_map(request: "RunJobRequest") -> "dict[str, str]":
     env = request["overrides"]["container_overrides"][0]["env"]
     return {item["name"]: item["value"] for item in env}
+
+
+def task_id_from_request(request: "RunJobRequest") -> "str":
+    """Return the task id carried by a captured run-job request.
+
+    Returns:
+        The queued record id the request dispatches.
+    """
+    return env_map(request)["LITESTAR_QUEUES_TASK_ID"]

@@ -50,8 +50,8 @@ Homepage = "https://cofin.github.io/litestar-queues/"
 Issue = "https://github.com/cofin/litestar-queues/issues/"
 Source = "https://github.com/cofin/litestar-queues"
 
-[project.scripts]
-litestar-queues-cloudrun-worker = "litestar_queues.execution.cloudrun.entrypoint:main"
+[project.entry-points."litestar.commands"]
+queues = "litestar_queues._cli:queues_group"
 
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
