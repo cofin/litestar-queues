@@ -40,6 +40,22 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.anyio
 
+# Both async PostgreSQL drivers share the same dedicated LISTEN/NOTIFY listener
+# seam and the same durable reconciliation. Notification behavior is proven on
+# each against the SAME real PostgreSQL service.
+_PG_NOTIFY_DRIVERS = (
+    pytest.param(("postgresql+asyncpg", "asyncpg"), id="asyncpg"),
+    pytest.param(("postgresql+psycopg", "psycopg"), id="psycopg"),
+)
+
+
+def _pg_notify_config(driver: "str", service: "PostgresService") -> "SQLAlchemyAsyncConfig":
+    return SQLAlchemyAsyncConfig(
+        connection_string=(
+            f"{driver}://{service.user}:{service.password}@{service.host}:{service.port}/{service.database}"
+        )
+    )
+
 
 @pytest.fixture(autouse=True)
 def clean_task_registry() -> "None":
@@ -103,6 +119,7 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
     from litestar_queues.backends.advanced_alchemy.service import (
         _build_claim_candidate_statement,
         _build_claim_lock_statement,
+        _supports_batch_claim,
         _supports_skip_locked_claim,
     )
 
@@ -137,6 +154,13 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
     assert "FOR UPDATE SKIP LOCKED" in oracle_lock_sql
     assert not _supports_skip_locked_claim("mysql")
     assert not _supports_skip_locked_claim("mariadb")
+    # Batch claim is gated on the PostgreSQL dialect, so both async PostgreSQL
+    # drivers (asyncpg and psycopg share ``dialect.name == "postgresql"``)
+    # advertise it while other dialects do not.
+    assert _supports_batch_claim("postgresql")
+    assert not _supports_batch_claim("oracle")
+    assert not _supports_batch_claim("mysql")
+    assert not _supports_batch_claim("sqlite")
 
 
 async def test_advanced_alchemy_cas_claim_scans_past_first_failed_batch() -> "None":
@@ -320,6 +344,13 @@ async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_n
             notifications=True,
         )
     )
+    postgres_psycopg_backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+psycopg://user:pass@localhost/db"),
+            model_class=ContractQueueTask,
+            notifications=True,
+        )
+    )
     mysql_backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="mysql+asyncmy://user:pass@localhost/db"),
@@ -341,10 +372,15 @@ async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_n
     assert sqlite_backend.capabilities.notification_backend is None
     assert sqlite_backend.capabilities.notifications_durable is False
     assert mysql_backend.capabilities.supports_notifications is False
+    # Oracle stays polling: Advanced Alchemy exposes no AQ/TxEventQ transport.
     assert oracle_backend.capabilities.supports_notifications is False
-    assert postgres_backend.capabilities.supports_notifications is True
-    assert postgres_backend.capabilities.notification_backend == "postgres-listen-notify"
-    assert postgres_backend.capabilities.notifications_durable is False
+    assert oracle_backend.capabilities.notification_backend not in {"aq", "txeventq"}
+    assert oracle_backend.capabilities.notification_backend is None
+    # Both async PostgreSQL drivers advertise transient LISTEN/NOTIFY wakeups.
+    for pg_backend in (postgres_backend, postgres_psycopg_backend):
+        assert pg_backend.capabilities.supports_notifications is True
+        assert pg_backend.capabilities.notification_backend == "postgres-listen-notify"
+        assert pg_backend.capabilities.notifications_durable is False
 
 
 async def test_advanced_alchemy_wait_for_notifications_uses_dedicated_listener(tmp_path: "Path") -> "None":
@@ -372,16 +408,15 @@ async def test_advanced_alchemy_wait_for_notifications_uses_dedicated_listener(t
     assert backend.listener.closed is True
 
 
-async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_service: "PostgresService") -> "None":
-    pytest.importorskip("asyncpg")
+@pytest.mark.parametrize("pg_notify_driver", _PG_NOTIFY_DRIVERS)
+async def test_advanced_alchemy_postgres_notifications_wake_waiter(
+    postgres_service: "PostgresService", pg_notify_driver: "tuple[str, str]"
+) -> "None":
+    driver, extra = pg_notify_driver
+    pytest.importorskip(extra)
     table_name = f"aa_notify_{uuid4().hex}"
     model_class = _dynamic_queue_model(table_name)
-    sqlalchemy_config = SQLAlchemyAsyncConfig(
-        connection_string=(
-            f"postgresql+asyncpg://{postgres_service.user}:{postgres_service.password}"
-            f"@{postgres_service.host}:{postgres_service.port}/{postgres_service.database}"
-        )
-    )
+    sqlalchemy_config = _pg_notify_config(driver, postgres_service)
     await create_tables(sqlalchemy_config, model_class)
     backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
@@ -412,18 +447,15 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(postgres_serv
         await backend.close()
 
 
+@pytest.mark.parametrize("pg_notify_driver", _PG_NOTIFY_DRIVERS)
 async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_listener(
-    postgres_service: "PostgresService",
+    postgres_service: "PostgresService", pg_notify_driver: "tuple[str, str]"
 ) -> "None":
-    pytest.importorskip("asyncpg")
+    driver, extra = pg_notify_driver
+    pytest.importorskip(extra)
     table_name = f"aa_notify_reuse_{uuid4().hex}"
     model_class = _dynamic_queue_model(table_name)
-    sqlalchemy_config = SQLAlchemyAsyncConfig(
-        connection_string=(
-            f"postgresql+asyncpg://{postgres_service.user}:{postgres_service.password}"
-            f"@{postgres_service.host}:{postgres_service.port}/{postgres_service.database}"
-        )
-    )
+    sqlalchemy_config = _pg_notify_config(driver, postgres_service)
     await create_tables(sqlalchemy_config, model_class)
     backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
@@ -437,7 +469,7 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
     try:
         # A first empty wait establishes the LISTEN connection and retains its read.
         assert await backend.wait_for_notifications(timeout=0.2) is False
-        listener = backend._notification_listener
+        listener = cast("Any", backend._notification_listener)
         assert listener is not None
         connection = listener._connection
         assert connection is not None
@@ -458,6 +490,97 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
             await _drop_dynamic_queue_model(backend, model_class)
         await backend.close()
         assert backend._notification_listener is None
+
+
+@pytest.mark.parametrize("pg_notify_driver", _PG_NOTIFY_DRIVERS)
+async def test_advanced_alchemy_postgres_dropped_marker_is_reconciled_from_durable_table(
+    postgres_service: "PostgresService", pg_notify_driver: "tuple[str, str]"
+) -> "None":
+    """A committed task enqueued before anyone listens is still claimed.
+
+    The NOTIFY marker fires while no listener is subscribed (it is "dropped"),
+    proving durable reconciliation on ``start()`` closes the startup race.
+    """
+    driver, extra = pg_notify_driver
+    pytest.importorskip(extra)
+    table_name = f"aa_notify_drop_{uuid4().hex}"
+    model_class = _dynamic_queue_model(table_name)
+    sqlalchemy_config = _pg_notify_config(driver, postgres_service)
+    await create_tables(sqlalchemy_config, model_class)
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=sqlalchemy_config,
+            model_class=model_class,
+            notifications=True,
+            notification_channel=f"lq_drop_{uuid4().hex}",
+        )
+    )
+    await backend.open()
+    try:
+        # Commit + NOTIFY happen here, before any listener exists: the marker is lost.
+        record = await backend.enqueue("tasks.pg.dropped")
+
+        # The very first wait subscribes, then reconciles the durable table and
+        # discovers the committed due row without any live notification.
+        assert await backend.wait_for_notifications(timeout=1.0) is True
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert claimed.status == "running"
+    finally:
+        with suppress(Exception):
+            await _drop_dynamic_queue_model(backend, model_class)
+        await backend.close()
+
+
+@pytest.mark.parametrize("pg_notify_driver", _PG_NOTIFY_DRIVERS)
+async def test_advanced_alchemy_postgres_uncommitted_row_does_not_wake_committed_does(
+    postgres_service: "PostgresService", pg_notify_driver: "tuple[str, str]"
+) -> "None":
+    """An uncommitted enqueue produces no actionable wakeup; the commit does."""
+    driver, extra = pg_notify_driver
+    pytest.importorskip(extra)
+    table_name = f"aa_notify_commit_{uuid4().hex}"
+    model_class = _dynamic_queue_model(table_name)
+    sqlalchemy_config = _pg_notify_config(driver, postgres_service)
+    await create_tables(sqlalchemy_config, model_class)
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=sqlalchemy_config,
+            model_class=model_class,
+            notifications=True,
+            notification_channel=f"lq_commit_{uuid4().hex}",
+        )
+    )
+    await backend.open()
+    session_maker = sqlalchemy_config.create_session_maker()
+    try:
+        async with session_maker() as session, session.begin():
+            service = backend._service_class(session=session)
+            await service.enqueue(
+                "tasks.pg.uncommitted",
+                args=(),
+                kwargs={},
+                queue="default",
+                priority=0,
+                max_retries=0,
+                scheduled_at=None,
+                key=None,
+                execution_backend="local",
+                execution_profile=None,
+                metadata={},
+            )
+            await session.flush()
+            # Reconciliation runs on a separate connection under READ
+            # COMMITTED; the still-open insert is invisible and no marker
+            # was published, so the waiter must not wake.
+            assert await backend.wait_for_notifications(timeout=0.4) is False
+            # Transaction committed on block exit.
+        # The committed due row is now visible to durable reconciliation.
+        assert await backend.wait_for_notifications(timeout=1.0) is True
+    finally:
+        with suppress(Exception):
+            await _drop_dynamic_queue_model(backend, model_class)
+        await backend.close()
 
 
 async def test_advanced_alchemy_backend_claims_due_tasks_by_priority(

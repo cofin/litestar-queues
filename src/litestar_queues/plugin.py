@@ -92,8 +92,24 @@ class QueuePlugin(InitPlugin):
         if sqlspec_config is None:
             return
 
-        from litestar_queues.backends.sqlspec import configure_queue_migration_extension
+        from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
+        from litestar_queues.backends.sqlspec.extension import (
+            configure_events_migration_extension,
+            configure_queue_migration_extension,
+        )
         from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
+
+        # Register the durable events queue migration first: a capability-native
+        # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
+        # its events table provisioned on migrate-up so zero-config native wakeups
+        # work on a fresh database.
+        events_backend = resolve_events_migration_backend(backend_config, cast("SQLSpecConfig", sqlspec_config))
+        if events_backend is not None:
+            configure_events_migration_extension(
+                cast("SQLSpecConfig", sqlspec_config),
+                backend=events_backend,
+                queue_table=backend_config.event_queue_table,
+            )
 
         extension_config = sqlspec_config.extension_config or {}
         queue_settings = dict(extension_config.get("litestar_queues", {}) or {})

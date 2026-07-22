@@ -136,6 +136,16 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         assert "MISSION_CONTROL" not in app_source
         assert "publish_mission_control" not in app_source
 
+        # Heartbeat timestamps are automatic and interval-driven; the canonical
+        # task never calls ctx.beat() or duplicates progress through a generic
+        # "task.event". A single demonstrative domain event is allowed only at
+        # one real transition, and the task does not publish its own "finished"
+        # log/event -- completion is automatic (task.completed).
+        assert "ctx.beat(" not in app_source
+        assert 'ctx.event("task.event"' not in app_source
+        assert "crawl.page_discovered" in app_source
+        assert app_source.count("publish_task_log(") == 1
+
         for marker in config["backend_markers"]:
             assert marker in app_source
 

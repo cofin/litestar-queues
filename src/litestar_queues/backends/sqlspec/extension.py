@@ -14,9 +14,35 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
 
-__all__ = ("QUEUE_EXTENSION_NAME", "configure_queue_migration_extension", "queue_migration_directory")
+__all__ = (
+    "QUEUE_EXTENSION_NAME",
+    "configure_events_migration_extension",
+    "configure_queue_migration_extension",
+    "queue_migration_directory",
+)
 
 QUEUE_EXTENSION_NAME = "litestar_queues"
+_EVENTS_EXTENSION_NAME = "events"
+
+
+def configure_events_migration_extension(
+    sqlspec_config: "SQLSpecConfig", *, backend: "str", queue_table: "str | None" = None
+) -> "None":
+    """Register SQLSpec's events queue migration for native wakeup provisioning.
+
+    Writing the events extension settings makes SQLSpec auto-include its bundled
+    events queue migration on migrate-up, so a capability-native backend gets its
+    durable events queue table with no manual step. Existing events settings are
+    preserved; only unset keys are filled in.
+    """
+    extension_config = dict(sqlspec_config.extension_config or {})
+    events_settings = dict(extension_config.get(_EVENTS_EXTENSION_NAME, {}) or {})
+    events_settings.setdefault("backend", backend)
+    if queue_table is not None:
+        events_settings.setdefault("queue_table", queue_table)
+    extension_config[_EVENTS_EXTENSION_NAME] = events_settings
+    sqlspec_config.extension_config = extension_config
+    sqlspec_config.set_migration_config(dict(sqlspec_config.migration_config or {}))
 
 
 def queue_migration_directory() -> "Path":

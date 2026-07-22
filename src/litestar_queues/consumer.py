@@ -17,7 +17,9 @@ from importlib import import_module
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
+from litestar_queues._heartbeat import SingleTaskBeatSink
 from litestar_queues.config import QueueConfig
+from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch
 from litestar_queues.service import QueueService
@@ -141,7 +143,11 @@ async def _resolve_and_consume(
 
 async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "TaskExitCode":
     expected_retry_count = claimed.retry_count
-    heartbeat_task = asyncio.create_task(_heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count))
+    beat_sink = SingleTaskBeatSink(claimed.id)
+    beat_token = _bind_beat_sink(beat_sink)
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count, beat_sink=beat_sink)
+    )
     execution_task = asyncio.create_task(queue.execute_record(claimed))
     try:
         done, _pending = await asyncio.wait({heartbeat_task, execution_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -158,6 +164,7 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
+        _reset_beat_sink(beat_token)
         await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
 
     if updated.status == "completed":
@@ -167,15 +174,23 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
     return TaskExitCode.FAILURE
 
 
-async def _heartbeat_loop(queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int") -> "bool":
+async def _heartbeat_loop(
+    queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int", beat_sink: "SingleTaskBeatSink"
+) -> "bool":
     interval = queue.config.worker_heartbeat_interval
     while True:
         await asyncio.sleep(interval)
+        detail = beat_sink.peek_detail()
         result = await queue.get_queue_backend().touch_heartbeats([
-            HeartbeatTouch(task_id=task_id, expected_retry_count=expected_retry_count)
+            HeartbeatTouch(
+                task_id=task_id,
+                expected_retry_count=expected_retry_count,
+                metadata_patch={"progress_detail": detail} if detail else None,
+            )
         ])
         if task_id not in result.touched_task_ids:
             return False
+        beat_sink.clear_detail()
 
 
 @contextlib.asynccontextmanager
