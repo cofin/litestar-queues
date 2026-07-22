@@ -32,7 +32,15 @@ __all__ = ("InMemoryQueueBackend",)
 class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
-    __slots__ = ("_event_log", "_keys", "_lock", "_maintenance_leases", "_notification_event", "_pending_read", "_records")
+    __slots__ = (
+        "_event_log",
+        "_keys",
+        "_lock",
+        "_maintenance_leases",
+        "_notification_event",
+        "_pending_read",
+        "_records",
+    )
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         super().__init__(config=config)
@@ -502,6 +510,9 @@ def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
     """Order stale candidates oldest-heartbeat-first, then by record id.
 
     Records that never heartbeated sort first (most stale).
+
+    Returns:
+        A sort key of (effective heartbeat, record id).
     """
     return (record.heartbeat_at or _MIN_DATETIME, str(record.id))
 

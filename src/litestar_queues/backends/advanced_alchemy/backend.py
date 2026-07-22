@@ -7,9 +7,8 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
 from advanced_alchemy.exceptions import DuplicateKeyError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, text, update
 from sqlalchemy import inspect as sqlalchemy_inspect
-from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 

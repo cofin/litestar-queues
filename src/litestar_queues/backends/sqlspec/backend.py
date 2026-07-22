@@ -1191,7 +1191,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.execute(store.insert_lease(name=name, token=token, expires_at=expiry_param))
                 await driver.commit()
                 committed = True
-                return True
+                return True  # noqa: TRY300 - the insert must stay inside the try to catch a uniqueness race.
             except Exception as exc:
                 if not committed:
                     with suppress(Exception):

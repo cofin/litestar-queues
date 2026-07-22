@@ -1372,7 +1372,11 @@ _MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
 
 
 def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
-    """Order stale candidates oldest-heartbeat-first, then by record id."""
+    """Order stale candidates oldest-heartbeat-first, then by record id.
+
+    Returns:
+        A sort key of (effective heartbeat, record id).
+    """
     return (record.heartbeat_at or _MIN_DATETIME, str(record.id))
 
 

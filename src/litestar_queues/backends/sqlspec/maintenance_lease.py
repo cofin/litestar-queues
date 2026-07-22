@@ -12,11 +12,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
-__all__ = (
-    "SQLSpecMaintenanceLeaseStore",
-    "create_maintenance_lease_store",
-    "resolve_maintenance_lease_table_name",
-)
+__all__ = ("SQLSpecMaintenanceLeaseStore", "create_maintenance_lease_store", "resolve_maintenance_lease_table_name")
 
 
 class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
@@ -46,7 +42,9 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
             return []
         return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
 
-    def acquire_update(self, *, name: "str", token: "str", expires_at: "DatetimeParam", now: "DatetimeParam") -> "Update":
+    def acquire_update(
+        self, *, name: "str", token: "str", expires_at: "DatetimeParam", now: "DatetimeParam"
+    ) -> "Update":
         """Return an UPDATE that claims the named lease when the stored row is expired."""
         return (
             sql
@@ -58,8 +56,11 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
 
     def insert_lease(self, *, name: "str", token: "str", expires_at: "DatetimeParam") -> "Insert":
         """Return an INSERT for a new lease row."""
-        return sql.insert(self.table_name).columns("name", "token", "expires_at").values(
-            name=name, token=token, expires_at=expires_at
+        return (
+            sql
+            .insert(self.table_name)
+            .columns("name", "token", "expires_at")
+            .values(name=name, token=token, expires_at=expires_at)
         )
 
     def select_lease_token(self, *, name: "str") -> "Select":

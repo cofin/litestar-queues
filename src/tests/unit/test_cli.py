@@ -328,15 +328,14 @@ def _maintenance_config(**kwargs: "object") -> "object":
     return QueueConfig(queue_backend="redis", maintenance=QueueMaintenanceConfig(**kwargs))  # type: ignore[arg-type]
 
 
-def _summary(outcome: "str", phases: "list[object] | None" = None) -> "object":
+def _summary(outcome: "str") -> "object":
     from litestar_queues.maintenance import QueueMaintenancePhaseResult, QueueMaintenanceSummary
 
     return QueueMaintenanceSummary(
         outcome=outcome,  # type: ignore[arg-type]
         lease_acquired=outcome != "lease_held",
         duration_ms=12.5,
-        phases=phases
-        or [QueueMaintenancePhaseResult(phase="terminal", status="completed", changed=3, duration_ms=4.0)],
+        phases=[QueueMaintenancePhaseResult(phase="terminal", status="completed", changed=3, duration_ms=4.0)],
     )
 
 

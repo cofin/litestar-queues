@@ -40,7 +40,9 @@ async def assert_lease_expiry(backend: "BaseQueueBackend") -> "None":
     assert await backend.release_maintenance_lease(LEASE_NAME, "token-b") is True
 
 
-async def assert_bounded_cleanup_terminal(backend: "BaseQueueBackend", *, prefix: "str" = "tasks.cleanup.bound") -> "None":
+async def assert_bounded_cleanup_terminal(
+    backend: "BaseQueueBackend", *, prefix: "str" = "tasks.cleanup.bound"
+) -> "None":
     """Terminal cleanup removes at most ``limit`` per call and never double-deletes."""
     for index in range(5):
         record = await backend.enqueue(f"{prefix}.{index}")

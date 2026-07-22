@@ -339,9 +339,7 @@ class SQLSpecQueueEventLog:
                     if deleted > 0:
                         await driver.execute(self._store.cleanup_events_before(before=before_value))
                 else:
-                    id_rows = await driver.select(
-                        self._store.select_event_ids_before(before=before_value, limit=limit)
-                    )
+                    id_rows = await driver.select(self._store.select_event_ids_before(before=before_value, limit=limit))
                     event_ids = [str(cast("dict[str, Any]", row)["event_id"]) for row in id_rows]
                     deleted = len(event_ids)
                     if event_ids:

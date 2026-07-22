@@ -81,10 +81,7 @@ class QueueMaintenanceConfig:
             QueueConfigurationError: If a duration, retention threshold, or limit
                 is not positive, or ``lease_ttl`` does not exceed ``time_budget``.
         """
-        for name, value in (
-            ("time_budget", self.time_budget),
-            ("lease_ttl", self.lease_ttl),
-        ):
+        for name, value in (("time_budget", self.time_budget), ("lease_ttl", self.lease_ttl)):
             if value <= 0:
                 msg = f"QueueMaintenanceConfig.{name} must be greater than 0."
                 raise QueueConfigurationError(msg)
@@ -296,8 +293,7 @@ class QueueMaintenanceService:
             return await self._service.reconcile_external(limit=self._config.external_limit)
         if phase == "stale":
             result = await self._service.recover_stale_tasks(
-                stale_after=timedelta(seconds=cast("float", self._config.stale_after)),
-                limit=self._config.stale_limit,
+                stale_after=timedelta(seconds=cast("float", self._config.stale_after)), limit=self._config.stale_limit
             )
             return result.requeued + result.failed
         if phase == "terminal":

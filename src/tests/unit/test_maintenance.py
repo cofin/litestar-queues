@@ -18,7 +18,6 @@ from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryRe
 
 if TYPE_CHECKING:
     from collections.abc import Collection
-    from datetime import timedelta as _TimeDelta
 
     from litestar_queues.maintenance import MaintenancePhase
     from litestar_queues.service import QueueService
@@ -71,7 +70,7 @@ class _StubBackend:
     def capabilities(self) -> "QueueBackendCapabilities":
         return self._capabilities
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "_TimeDelta") -> "bool":
+    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
         self.acquire_calls.append((name, token))
         return self.lease_granted
 
@@ -101,17 +100,13 @@ class _StubService:
     """Queue-service double exposing exactly the maintenance dependencies."""
 
     def __init__(
-        self,
-        *,
-        backend: "_StubBackend",
-        is_external: "bool" = False,
-        event_log: "_StubEventLog | None" = None,
+        self, *, backend: "_StubBackend", is_external: "bool" = False, event_log: "_StubEventLog | None" = None
     ) -> "None":
         self._backend = backend
         self._execution_backend = _StubExecutionBackend(is_external=is_external)
         self._event_log = event_log
         self.reconcile_calls: "list[int | None]" = []
-        self.recover_calls: "list[tuple[_TimeDelta, int | None]]" = []
+        self.recover_calls: "list[tuple[timedelta, int | None]]" = []
         self.reconcile_result = 0
         self.reconcile_error: "Exception | None" = None
         self.recover_result = StaleTaskRecoveryResult()
@@ -138,7 +133,7 @@ class _StubService:
         return self.reconcile_result
 
     async def recover_stale_tasks(
-        self, *, stale_after: "_TimeDelta", worker_id: "str | None" = None, limit: "int | None" = None
+        self, *, stale_after: "timedelta", worker_id: "str | None" = None, limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
         self.recover_calls.append((stale_after, limit))
         if self.clock is not None:
@@ -252,10 +247,7 @@ async def test_all_enabled_phases_run_once_in_fixed_order() -> "None":
     stub = _StubService(backend=backend, is_external=True, event_log=event_log)
     stub.reconcile_result = 2
     stub.recover_result = StaleTaskRecoveryResult(requeued=1, failed=1)
-    summary = await _run(
-        stub,
-        QueueMaintenanceConfig(stale_after=60, terminal_retention=3600, event_retention=7200),
-    )
+    summary = await _run(stub, QueueMaintenanceConfig(stale_after=60, terminal_retention=3600, event_retention=7200))
 
     assert [phase.phase for phase in summary.phases] == list(PHASE_ORDER)
     assert [phase.status for phase in summary.phases] == ["completed", "completed", "completed", "completed"]
@@ -360,9 +352,7 @@ async def test_budget_exhaustion_marks_later_phases_partial_without_running_them
     backend.clock = clock
 
     summary = await _run(
-        stub,
-        QueueMaintenanceConfig(stale_after=60, terminal_retention=60, event_retention=60),
-        monotonic=clock,
+        stub, QueueMaintenanceConfig(stale_after=60, terminal_retention=60, event_retention=60), monotonic=clock
     )
 
     statuses = {phase.phase: phase.status for phase in summary.phases}
@@ -397,11 +387,7 @@ async def test_phase_filter_narrows_selected_phases() -> "None":
     backend = _StubBackend()
     backend.cleanup_deleted = 9
     stub = _StubService(backend=backend, is_external=True)
-    summary = await _run(
-        stub,
-        QueueMaintenanceConfig(stale_after=60, terminal_retention=60),
-        phases=["terminal"],
-    )
+    summary = await _run(stub, QueueMaintenanceConfig(stale_after=60, terminal_retention=60), phases=["terminal"])
     assert [phase.phase for phase in summary.phases] == ["terminal"]
     assert stub.reconcile_calls == []
     assert stub.recover_calls == []

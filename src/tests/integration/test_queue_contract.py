@@ -352,9 +352,7 @@ async def test_backend_contract_maintenance_lease_fences_holders(queue_backend: 
 async def test_backend_contract_maintenance_lease_expires(queue_backend: "BaseQueueBackend") -> "None":
     """An expired maintenance lease can be reacquired by a fresh holder."""
     assert (
-        await queue_backend.acquire_maintenance_lease(
-            "queue-maintenance", "token-a", ttl=timedelta(milliseconds=50)
-        )
+        await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-a", ttl=timedelta(milliseconds=50))
         is True
     )
     await asyncio.sleep(0.2)

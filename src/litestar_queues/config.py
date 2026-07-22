@@ -201,12 +201,6 @@ class QueueConfig:
             TaskExecutionContext,
         )
         from litestar_queues.exceptions import JobCancelledError, NonRetryableError, job_cancelled, non_retryable
-        from litestar_queues.maintenance import (
-            QueueMaintenanceConfig,
-            QueueMaintenancePhaseResult,
-            QueueMaintenanceService,
-            QueueMaintenanceSummary,
-        )
         from litestar_queues.execution import (
             BaseExecutionBackend,
             CloudRunExecutionBackend,
@@ -214,6 +208,12 @@ class QueueConfig:
             CloudRunExecutionStatus,
             ImmediateExecutionBackend,
             LocalExecutionBackend,
+        )
+        from litestar_queues.maintenance import (
+            QueueMaintenanceConfig,
+            QueueMaintenancePhaseResult,
+            QueueMaintenanceService,
+            QueueMaintenanceSummary,
         )
         from litestar_queues.models import (
             QueueBackendCapabilities,

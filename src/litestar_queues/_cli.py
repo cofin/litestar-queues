@@ -170,13 +170,13 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
     service = _open_service(plugin)
     try:
         await service.open()
-    except Exception as exc:  # noqa: BLE001 - lifecycle failures surface as exit code 1.
+    except Exception as exc:
         click.echo(f"error: {exc}", err=True)
         with contextlib.suppress(Exception):
             await service.close()
         return 1
 
-    selected = tuple(cast("MaintenancePhase", phase) for phase in phases) or None
+    selected = cast("tuple[MaintenancePhase, ...] | None", tuple(phases) or None)
     try:
         backend = service.get_queue_backend()
         if not backend.capabilities.supports_maintenance_lease:
@@ -187,7 +187,7 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
             )
             return 1
         summary = await QueueMaintenanceService(service, maintenance_config).run(selected)
-    except Exception as exc:  # noqa: BLE001 - configuration/lifecycle failures surface as exit code 1.
+    except Exception as exc:
         click.echo(f"error: {exc}", err=True)
         return 1
     finally:

@@ -162,7 +162,7 @@ An install that is missing the lease table fails closed with a migration error
 rather than falling back to an unsafe process-local lock.
 
 Scheduling recipe
-================
+=================
 
 Run maintenance from **one** external scheduler on an infrequent cadence.
 Cloud Run is only one way to launch the finite command — the same repair and

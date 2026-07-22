@@ -10,7 +10,12 @@ try:
 except ModuleNotFoundError:
     SAWarning = None
 else:
-    for declarative_class in ("QueueTaskModelMixin", "QueueEventLogModelMixin", "UUIDAuditBase"):
+    for declarative_class in (
+        "QueueTaskModelMixin",
+        "QueueEventLogModelMixin",
+        "QueueMaintenanceLeaseModelMixin",
+        "UUIDAuditBase",
+    ):
         warnings.filterwarnings(
             "ignore",
             message=f"Unmanaged access of declarative attribute .* from non-mapped class {declarative_class}",
