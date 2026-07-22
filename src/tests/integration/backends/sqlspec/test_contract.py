@@ -1847,7 +1847,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     with sqlite3.connect(db_path) as connection:
         versions = [row[0] for row in connection.execute("SELECT version_num FROM ddl_migrations")]
 
-    assert versions == ["ext_litestar_queues_0001", "ext_litestar_queues_0002"]
+    assert versions == ["ext_litestar_queues_0001"]
 
 
 async def test_sqlspec_backend_packaged_migrations_do_not_mutate_adopter_config(

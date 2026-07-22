@@ -167,10 +167,7 @@ def uniqueness_table_name_for(table_name: "str") -> "str":
 def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
     directory = migration_directory()
-    return (
-        str(directory.joinpath("0001_create_queue_tasks.py")),
-        str(directory.joinpath("0002_create_uniqueness_tombstones.py")),
-    )
+    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
 
 
 def migration_directory() -> "Path":
