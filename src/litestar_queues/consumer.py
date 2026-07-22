@@ -1,8 +1,11 @@
-"""Framework-agnostic consumer core for external execution backends.
+"""Public, framework-agnostic consumer API for external execution backends.
 
-Click-free on purpose: broker consumers and the ``litestar queues`` subcommands
-import ``consume_one`` / ``run_task`` without pulling ``click`` into the module
-graph (see test_plugin_lifecycle import boundary).
+``run_task`` / ``consume_one`` / ``TaskExitCode`` are the programmatic twin of
+``litestar queues run-task``: run one queued record by id on any external
+executor (a Cloud Run Job, a serverless handler, a custom runner) and exit with
+a deterministic code. Click-free on purpose so broker consumers and in-process
+handlers can import them without pulling ``click`` into the module graph (see
+test_plugin_lifecycle import boundary).
 """
 
 import asyncio

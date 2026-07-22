@@ -78,7 +78,7 @@ def test_importing_litestar_queues_does_not_load_click() -> "None":
 
 
 def test_importing_consumer_core_does_not_load_click() -> "None":
-    code = "import sys; import litestar_queues._consumer; assert 'click' not in sys.modules"
+    code = "import sys; import litestar_queues.consumer; assert 'click' not in sys.modules"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr.decode()
 

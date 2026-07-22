@@ -51,3 +51,17 @@ Cloud Run
    :members:
    :undoc-members:
    :show-inheritance:
+
+Consumer
+========
+
+The programmatic entry point for an external executor: run one queued record by
+id and exit with a deterministic code. This is the in-process twin of
+``litestar queues run-task`` -- use it from a serverless handler or a custom
+runner that cannot shell out. The live queue record stays authoritative; the
+consumer re-fetches it by id and fences on the retry count at claim time.
+
+.. automodule:: litestar_queues.consumer
+   :members:
+   :undoc-members:
+   :show-inheritance:

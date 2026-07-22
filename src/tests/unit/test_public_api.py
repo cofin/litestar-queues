@@ -41,15 +41,18 @@ def test_public_exports() -> "None":
         ScheduleConfig,
         StaleTaskRecoveryResult,
         Task,
+        TaskExitCode,
         TaskResult,
         Worker,
         beat,
+        consume_one,
         get_execution_backend_class,
         get_queue_backend_class,
         get_scheduled_tasks,
         get_task_registry,
         list_execution_backends,
         list_queue_backends,
+        run_task,
         task,
     )
 
@@ -81,9 +84,11 @@ def test_public_exports() -> "None":
         "ScheduleConfig",
         "StaleTaskRecoveryResult",
         "Task",
+        "TaskExitCode",
         "TaskResult",
         "Worker",
         "beat",
+        "consume_one",
         "discover_tasks",
         "get_execution_backend_class",
         "get_queue_backend_class",
@@ -91,6 +96,7 @@ def test_public_exports() -> "None":
         "get_task_registry",
         "list_execution_backends",
         "list_queue_backends",
+        "run_task",
         "task",
     }
     forbidden_exports = {
@@ -138,6 +144,9 @@ def test_public_exports() -> "None":
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None
+    assert TaskExitCode.SUCCESS == 0
+    assert callable(consume_one)
+    assert callable(run_task)
     assert callable(beat)
     assert get_task_registry() == {}
     assert get_scheduled_tasks() == {}

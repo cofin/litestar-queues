@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from litestar_queues._consumer import run_task
+from litestar_queues.consumer import run_task
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 from litestar_queues.worker import Worker

@@ -45,7 +45,7 @@ class _RecordingHeartbeatBackend(InMemoryQueueBackend):
 
 async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import TaskExitCode, consume_one
+    from litestar_queues.consumer import TaskExitCode, consume_one
 
     @task("tasks.consumer")
     async def consumer_task(value: "int") -> "int":
@@ -66,7 +66,7 @@ async def test_consume_one_claims_and_executes_persisted_record() -> "None":
 
 async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import TaskExitCode, run_task
+    from litestar_queues.consumer import TaskExitCode, run_task
     from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
     @task("tasks.consumer_prefixed")
@@ -102,7 +102,7 @@ async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":
 
 
 async def test_run_task_requires_config_factory() -> "None":
-    from litestar_queues._consumer import TaskExitCode, run_task
+    from litestar_queues.consumer import TaskExitCode, run_task
 
     exit_code = await run_task(env={"LITESTAR_QUEUES_TASK_ID": str(uuid4())})
 
@@ -111,7 +111,7 @@ async def test_run_task_requires_config_factory() -> "None":
 
 async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
-    from litestar_queues._consumer import TaskExitCode, consume_one
+    from litestar_queues.consumer import TaskExitCode, consume_one
 
     heartbeat_seen = asyncio.Event()
     release_task = asyncio.Event()
@@ -157,7 +157,7 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
 
 async def test_run_task_missing_and_invalid_task_id() -> "None":
     from litestar_queues import QueueConfig, QueueService
-    from litestar_queues._consumer import TaskExitCode, run_task
+    from litestar_queues.consumer import TaskExitCode, run_task
 
     async with QueueService(QueueConfig()) as service:
         missing = await run_task(service=service, env={})
