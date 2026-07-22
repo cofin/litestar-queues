@@ -965,9 +965,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 count += 1
         return count
 
-    async def reserve_identity(
-        self, key: "str", *, task_id: "UUID", task_name: "str"
-    ) -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
         """Reserve a forever identity via an atomic HGET-or-HSET script.
 
         The uniqueness hash is separate from ``:task:``/``:keys`` and is never

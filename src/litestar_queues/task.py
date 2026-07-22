@@ -364,6 +364,9 @@ class TaskResult:
 class Task(Generic[P, T]):
     """Registered task wrapper with direct call and enqueue APIs."""
 
+    _unique_by: "TaskUniqueBy | None"
+    _unique_until: "TaskUniqueUntil"
+
     __slots__ = (
         "__dict__",
         "_description",

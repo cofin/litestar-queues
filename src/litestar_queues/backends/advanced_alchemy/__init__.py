@@ -7,11 +7,7 @@ from litestar_queues.backends.advanced_alchemy.mixins import (
     QueueTaskModelMixin,
     QueueUniquenessModelMixin,
 )
-from litestar_queues.backends.advanced_alchemy.models import (
-    QueueEventLogModel,
-    QueueTaskModel,
-    QueueUniquenessModel,
-)
+from litestar_queues.backends.advanced_alchemy.models import QueueEventLogModel, QueueTaskModel, QueueUniquenessModel
 
 __all__ = (
     "QueueEventLogModel",

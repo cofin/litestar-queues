@@ -57,10 +57,10 @@ def test_forever_without_identity_is_rejected() -> "None":
 
 
 def test_invalid_unique_by_is_rejected() -> "None":
-    with pytest.raises(ValueError, match="unique_by"):
+    async def bad() -> "None": ...
 
-        @task("bad.mode", unique_by="everything")  # type: ignore[arg-type]
-        async def bad() -> "None": ...
+    with pytest.raises(ValueError, match="unique_by"):
+        task("bad.mode", unique_by="everything")(bad)  # type: ignore[call-overload]
 
 
 def test_using_propagates_and_revalidates() -> "None":

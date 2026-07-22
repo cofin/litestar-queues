@@ -16,7 +16,7 @@ global argument-to-digest cache is kept.
 import hashlib
 import json
 from inspect import Parameter
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from litestar_queues.exceptions import TaskIdentityError, TaskPayloadTooLargeError
 
@@ -26,13 +26,13 @@ if TYPE_CHECKING:
 
 __all__ = ("IDENTITY_NAMESPACE", "IDENTITY_VERSION", "ArgumentsIdentity", "arguments_identity", "task_identity")
 
-IDENTITY_NAMESPACE: "Final[str]" = "lq:u"
+IDENTITY_NAMESPACE = "lq:u"
 """Stable namespace prefix for every derived uniqueness key."""
 
-IDENTITY_VERSION: "Final[str]" = "v1"
+IDENTITY_VERSION = "v1"
 """Canonical identity format version embedded in every derived key."""
 
-_TASK_CONTEXT_KEY: "Final[str]" = "_task_context"
+_TASK_CONTEXT_KEY = "_task_context"
 
 
 class ArgumentsIdentity(NamedTuple):

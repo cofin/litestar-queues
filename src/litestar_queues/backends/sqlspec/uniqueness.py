@@ -17,7 +17,7 @@ from litestar_queues.backends.sqlspec.stores._families import _NVARCHAR_MAX_THRE
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 
 if TYPE_CHECKING:
-    from sqlspec.builder import CreateTable, Delete, DropTable, Insert, Select
+    from sqlspec.builder import CreateTable, Delete, Insert, Select
 
     from litestar_queues.backends.sqlspec._typing import SQLSpecStoreConfig
 
@@ -122,7 +122,11 @@ class SpannerQueueTombstoneStore(SQLSpecQueueTombstoneStore):
         return [f"DROP TABLE {self._quoted_table_name()}"]
 
     def create_schema_for_config(self, config: "Any") -> "None":
-        """Create the Spanner tombstone table through the native DDL operation API."""
+        """Create the Spanner tombstone table through the native DDL operation API.
+
+        Returns:
+            None.
+        """
         if not self._manage_schema:
             return
         from litestar_queues.backends.sqlspec.stores.spanner.store import _execute_spanner_ddl

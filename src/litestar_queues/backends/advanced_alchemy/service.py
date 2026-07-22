@@ -40,7 +40,7 @@ if TYPE_CHECKING:
         QueueUniquenessModelMixin,
     )
     from litestar_queues.events import QueueEventLogRecord
-    from litestar_queues.models import EnqueueSpec, HeartbeatTouch, UniquenessTombstone
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
 
 __all__ = ("QueueEventLogService", "QueueTaskService", "QueueUniquenessService")
 

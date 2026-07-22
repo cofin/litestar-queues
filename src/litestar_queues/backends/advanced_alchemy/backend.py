@@ -1,9 +1,7 @@
 """Advanced Alchemy queue backend."""
 
-import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -574,9 +572,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             raise QueueConfigurationError(msg)
         return typed_model, QueueUniquenessService.for_model(typed_model)
 
-    async def reserve_identity(
-        self, key: "str", *, task_id: "UUID", task_name: "str"
-    ) -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
         """Reserve a forever identity via select-then-insert with an integrity fallback.
 
         The tombstone table's unique ``identity_key`` column is the atomicity
@@ -593,12 +589,13 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 existing = await service.reserve(key, task_id=task_id, task_name=task_name)
                 if existing is not None:
                     return self._tombstone_from_model(existing)
-            return None
         except (DuplicateKeyError, SQLAlchemyIntegrityError):
             owner = await self.has_identity(key)
             if owner is not None:
                 return owner
             raise
+        else:
+            return None
 
     async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
         """Return the tombstone owning a reserved forever identity, if any."""

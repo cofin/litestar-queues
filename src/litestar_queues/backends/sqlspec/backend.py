@@ -470,9 +470,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             row = await self._select_task_by_key(driver, key)
         return self._record_from_row(row) if row is not None else None
 
-    async def reserve_identity(
-        self, key: "str", *, task_id: "UUID", task_name: "str"
-    ) -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
         """Reserve a forever identity via an optimistic insert with a unique-violation fallback.
 
         The tombstone table's identity-key PRIMARY KEY is the atomicity arbiter:

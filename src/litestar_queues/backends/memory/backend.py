@@ -426,9 +426,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     del self._keys[record.key]
         return removed
 
-    async def reserve_identity(
-        self, key: "str", *, task_id: "UUID", task_name: "str"
-    ) -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
         """Reserve a forever identity under the shared lock beside key ownership.
 
         Returns:

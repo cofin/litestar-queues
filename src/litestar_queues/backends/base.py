@@ -323,9 +323,7 @@ class BaseQueueBackend:
         """
         return 0
 
-    async def reserve_identity(
-        self, key: "str", *, task_id: "UUID", task_name: "str"
-    ) -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
         """Atomically reserve a ``unique_until="forever"`` identity.
 
         Reservation is atomic: exactly one concurrent caller wins a given key.
