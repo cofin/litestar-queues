@@ -181,8 +181,8 @@ def test_cli_module_exposes_public_command_callbacks() -> "None":
     from litestar_queues import _cli
 
     expected_callbacks = {
-        "maintain": "maintain_command",
         "run": "run_command",
+        "run-maintenance": "run_maintenance_command",
         "scheduler-health": "scheduler_health_command",
         "status": "status_command",
     }
@@ -235,15 +235,15 @@ def test_scheduler_health_returns_3_when_canary_not_registered(monkeypatch: "pyt
     assert "canary" in result.stderr.lower()
 
 
-def test_litestar_queues_help_lists_maintain(monkeypatch: "pytest.MonkeyPatch") -> "None":
+def test_litestar_queues_help_lists_run_maintenance(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke("tests.support.cli_app:app", ["queues", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
-    assert "maintain" in result.stdout
+    assert "run-maintenance" in result.stdout
 
 
-def test_maintain_help_exposes_only_phase_and_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "maintain", "--help"], monkeypatch)
+def test_run_maintenance_help_exposes_only_phase_and_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-maintenance", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "--phase" in result.stdout
@@ -253,8 +253,8 @@ def test_maintain_help_exposes_only_phase_and_json(monkeypatch: "pytest.MonkeyPa
         assert forbidden not in result.stdout
 
 
-def test_maintain_reports_missing_maintenance_config(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "maintain"], monkeypatch)
+def test_run_maintenance_reports_missing_maintenance_config(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-maintenance"], monkeypatch)
 
     assert result.exit_code == 1
     assert "not configured" in result.stderr.lower()

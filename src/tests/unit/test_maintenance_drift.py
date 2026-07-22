@@ -34,7 +34,7 @@ def test_no_hidden_recurring_maintenance_task() -> None:
     assert "initialize_schedules" not in _MAINTENANCE_SOURCE
     assert "enqueue" not in _MAINTENANCE_SOURCE
     # The CLI command is finite: it never starts a worker or a scheduler loop.
-    assert "Worker(" not in _CLI_SOURCE.split("def maintain_command")[1].split("def register")[0]
+    assert "Worker(" not in _CLI_SOURCE.split("def run_maintenance_command")[1].split("def register")[0]
 
 
 def test_maintenance_does_not_auto_provision_infrastructure() -> None:

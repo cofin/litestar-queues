@@ -2,7 +2,7 @@
 Queue maintenance
 =================
 
-``litestar queues maintain`` performs a small, predictable amount of repair and
+``litestar queues run-maintenance`` performs a small, predictable amount of repair and
 retention work and then exits. It is designed for an **infrequent external
 schedule** — a six-hour or daily cron — and is deliberately finite: it never
 starts a worker, never executes queued work, and never loops to drain a
@@ -103,7 +103,7 @@ Command and exit codes
 
 .. code-block:: console
 
-   $ litestar queues maintain
+   $ litestar queues run-maintenance
    outcome: completed
    lease_acquired: True
    duration_ms: 41.2
@@ -133,7 +133,7 @@ Persistent backends only
 ========================
 
 Maintenance is meant for persistent backends. A separately launched
-``litestar queues maintain`` process **rejects the in-memory backend** with a
+``litestar queues run-maintenance`` process **rejects the in-memory backend** with a
 configuration error (exit ``1``), because in-memory state is process-local and
 is not shared with the CLI process. The underlying
 :class:`~litestar_queues.QueueMaintenanceService` remains usable with the memory
@@ -193,7 +193,7 @@ Kubernetes CronJob
              containers:
                - name: maintain
                  image: your-app-image
-                 command: ["litestar", "queues", "maintain"]
+                 command: ["litestar", "queues", "run-maintenance"]
                  env:
                    - name: LITESTAR_APP
                      value: app.asgi:app
@@ -212,7 +212,7 @@ systemd timer
    [Service]
    Type=oneshot
    Environment=LITESTAR_APP=app.asgi:app
-   ExecStart=/usr/local/bin/litestar queues maintain
+   ExecStart=/usr/local/bin/litestar queues run-maintenance
 
 Cloud Run Job invoked by Cloud Scheduler
 ----------------------------------------
@@ -227,7 +227,7 @@ ordinary queued work.
 
    $ gcloud run jobs create queue-maintenance \
        --image your-app-image \
-       --command litestar --args queues,maintain \
+       --command litestar --args queues,run-maintenance \
        --set-env-vars LITESTAR_APP=app.asgi:app
 
    $ gcloud scheduler jobs create http queue-maintenance \

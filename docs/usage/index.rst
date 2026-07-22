@@ -81,7 +81,7 @@ Run and operate workers
       :link: maintenance
       :link-type: doc
 
-      Schedule bounded repair and retention with ``litestar queues maintain``.
+      Schedule bounded repair and retention with ``litestar queues run-maintenance``.
 
    .. grid-item-card:: Observe queues
       :link: observability

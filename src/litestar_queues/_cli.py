@@ -30,10 +30,10 @@ if TYPE_CHECKING:
     from litestar_queues.service import QueueService
 
 __all__ = (
-    "maintain_command",
     "queues_group",
     "register",
     "run_command",
+    "run_maintenance_command",
     "run_task_command",
     "scheduler_health_command",
     "status_command",
@@ -122,7 +122,7 @@ def run_task_command(
 
 
 @queues_group.command(
-    name="maintain",
+    name="run-maintenance",
     help="Run one bounded maintenance pass (external reconcile, stale recovery, and retention) and exit. "
     "Thresholds and limits come from QueueConfig.maintenance; this command never starts a worker or runs due work.",
 )
@@ -134,7 +134,7 @@ def run_task_command(
     help="Maintenance phase to run. Repeatable; defaults to every configured phase. Only narrows configuration.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
-def maintain_command(ctx: "click.Context", phases: "tuple[str, ...]", as_json: "bool") -> "None":
+def run_maintenance_command(ctx: "click.Context", phases: "tuple[str, ...]", as_json: "bool") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     exit_code = asyncio.run(_maintain_run(plugin, phases, as_json))
@@ -153,7 +153,7 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
     if maintenance_config is None:
         click.echo(
             "error: QueueConfig.maintenance is not configured; set "
-            "QueueConfig(maintenance=QueueMaintenanceConfig(...)) to enable 'litestar queues maintain'.",
+            "QueueConfig(maintenance=QueueMaintenanceConfig(...)) to enable 'litestar queues run-maintenance'.",
             err=True,
         )
         return 1
@@ -182,7 +182,7 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
         if not backend.capabilities.supports_maintenance_lease:
             click.echo(
                 f"error: {type(backend).__name__} does not support the distributed maintenance lease required by "
-                "'litestar queues maintain'.",
+                "'litestar queues run-maintenance'.",
                 err=True,
             )
             return 1

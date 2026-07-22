@@ -4,7 +4,7 @@ Command-Line Interface
 
 ``QueuePlugin`` implements Litestar's :class:`~litestar.plugins.CLIPluginProtocol`
 and adds a ``queues`` group to the ``litestar`` CLI. It provides ``run``,
-``status``, ``scheduler-health``, and ``maintain``. The ``discover_tasks``
+``status``, ``scheduler-health``, and ``run-maintenance``. The ``discover_tasks``
 helper supports applications that keep tasks under ``app.domain.<x>.jobs/``.
 
 Pre-requisites
@@ -130,8 +130,8 @@ Code          Meaning
 ``--minutes`` defaults to 5. ``--json`` is not in scope for this
 subcommand.
 
-``litestar queues maintain``
-============================
+``litestar queues run-maintenance``
+===================================
 
 Runs one bounded maintenance pass — external-execution reconciliation, stale
 recovery, terminal-task retention, and durable-event retention — under a
@@ -141,7 +141,7 @@ schedule. It never starts a worker or executes queued work. See
 
 .. code-block:: console
 
-   $ litestar queues maintain --json
+   $ litestar queues run-maintenance --json
    {"outcome":"completed","lease_acquired":true,"duration_ms":41.2,"phases":[...]}
 
 Options:
