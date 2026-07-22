@@ -155,9 +155,9 @@ class QueueConfig:
     quiet_success: "bool" = True
     worker_batch_size: "int" = 10
     worker_poll_interval: "float" = 0.1
-    worker_poll_backoff_max: "float | None" = None
+    worker_poll_backoff_max: "float | None" = 30.0
     worker_poll_backoff_multiplier: "float" = 2.0
-    worker_poll_jitter: "float" = 0.0
+    worker_poll_jitter: "float" = 0.15
     worker_max_concurrency: "int" = 1
     worker_heartbeat_interval: "float" = 30
     worker_heartbeat_miss_threshold: "int" = 2

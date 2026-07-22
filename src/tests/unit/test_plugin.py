@@ -143,11 +143,30 @@ async def test_plugin_worker_receives_configured_poll_backoff_settings() -> "Non
     assert worker._poll_jitter == 0.25
 
 
-async def test_plugin_worker_defaults_to_disabled_poll_backoff() -> "None":
-    """Default config produces a worker with backoff disabled (fixed polling preserved)."""
+async def test_plugin_worker_defaults_to_enabled_poll_backoff() -> "None":
+    """Default config produces a worker with adaptive polling backoff enabled."""
     from litestar_queues import QueueConfig, QueuePlugin
 
     plugin = QueuePlugin(QueueConfig(execution_backend="local", in_app_worker=True, worker_poll_interval=0.01))
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        worker = app.state[plugin.config.queue_worker_state_key]
+
+    assert worker._poll_backoff_max == 30.0
+    assert worker._poll_backoff_multiplier == 2.0
+    assert worker._poll_jitter == 0.15
+
+
+async def test_plugin_worker_explicit_backoff_max_none_opts_out_to_fixed_polling() -> "None":
+    """worker_poll_backoff_max=None threads through the plugin as the explicit fixed-polling opt-out."""
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            execution_backend="local", in_app_worker=True, worker_poll_interval=0.01, worker_poll_backoff_max=None
+        )
+    )
     app = Litestar(plugins=[plugin])
 
     async with AsyncTestClient(app=app):

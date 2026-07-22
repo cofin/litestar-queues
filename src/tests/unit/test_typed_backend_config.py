@@ -77,13 +77,20 @@ def test_cloudrun_execution_config_selects_cloudrun_backend() -> "None":
     assert backend.execution_config is execution_config
 
 
-def test_queue_config_poll_backoff_defaults_preserve_fixed_polling() -> "None":
-    """Omitted backoff fields must exactly preserve current fixed-polling behavior."""
+def test_queue_config_poll_backoff_is_enabled_by_default() -> "None":
+    """Adaptive polling backoff is the default; a bare QueueConfig() opts in automatically."""
     config = QueueConfig()
 
-    assert config.worker_poll_backoff_max is None
+    assert config.worker_poll_backoff_max == 30.0
     assert config.worker_poll_backoff_multiplier == 2.0
-    assert config.worker_poll_jitter == 0.0
+    assert config.worker_poll_jitter == 0.15
+
+
+def test_queue_config_poll_backoff_max_none_opts_out_to_fixed_polling() -> "None":
+    """worker_poll_backoff_max=None is the explicit, still-supported opt-out to fixed polling."""
+    config = QueueConfig(worker_poll_backoff_max=None)
+
+    assert config.worker_poll_backoff_max is None
 
 
 def test_queue_config_poll_backoff_accepts_boundary_values() -> "None":
