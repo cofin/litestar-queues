@@ -9,7 +9,7 @@ import pytest
 from .server_manager import ExampleServer, QueueWorker
 from .test_realtime_browser import (
     _assert_clean_browser,
-    _assert_task_event,
+    _assert_custom_event,
     _events,
     _frames,
     _install_event_collector,
@@ -88,7 +88,7 @@ def test_shared_channels_deliver_from_a_standalone_worker(
                 f"queue keys: {list(client.scan_iter(match=f'{queue_prefix}*'))}"
             )
             raise AssertionError(message) from exc
-        _assert_task_event(_frames(page))
+        _assert_custom_event(_frames(page))
         assert "htmx:sseError" not in _events(page)
         assert "htmx:wsError" not in _events(page)
         _assert_clean_browser(browser_diagnostics, server_mode="production")

@@ -379,6 +379,26 @@ class BaseQueueBackend:
             await asyncio.sleep(timeout)
         return False
 
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due pending/scheduled record.
+
+        Bounds the worker's adaptive polling wait so a scheduled or retried
+        task is never discovered later than its own due time: no backend has
+        a push notification for "a record's scheduled time arrived," so a
+        worker asleep on a long backoff wait would otherwise only notice
+        after that wait elapses. The default reports ``None`` (unknown);
+        concrete backends that can answer this cheaply override it. An
+        unfiltered or slightly-early answer is always safe here (it can only
+        wake the worker sooner than strictly necessary, never later).
+
+        Returns:
+            Seconds until the next due record across ``queues`` (all queues
+            when empty), or ``None`` when there is no upcoming scheduled work
+            or the backend does not support this query.
+        """
+        del queues
+        return None
+
     async def wait_for_completion(self, task_id: "UUID", *, timeout: "float | None" = None) -> "bool":
         """Wait for a terminal-completion signal for one task.
 

@@ -18,10 +18,12 @@ support simply implement the timeout as polling.
 Hints, not state
 ================
 
-Redis and Valkey use pub/sub hints. SQLSpec can use a configured SQLSpec event
-transport. Advanced Alchemy can use PostgreSQL notification hints when enabled.
-The message only tells the worker to check. The saved task record has the real
-state.
+Redis and Valkey use pub/sub hints. SQLSpec turns on its best native wakeup
+transport automatically for any capable adapter (PostgreSQL ``LISTEN``/``NOTIFY``
+for asyncpg, psycopg, and psqlpy; a durable in-process queue for DuckDB) and
+falls back to polling elsewhere. Advanced Alchemy can use PostgreSQL
+notification hints when enabled. The message only tells the worker to check. The
+saved task record has the real state.
 
 Notifications may arrive late or not at all. The worker stays correct by
 checking the saved task state. Do not set the poll interval higher than the

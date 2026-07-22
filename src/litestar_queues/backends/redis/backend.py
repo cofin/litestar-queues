@@ -1039,6 +1039,29 @@ class RedisQueueBackend(BaseQueueBackend):
             raise exc
         return bool(task.result())
 
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due scheduled record.
+
+        Reads the lowest-scored member of the global ``scheduled`` sorted set
+        (scored by ``scheduled_at``): an O(1) lookup independent of queue
+        size. ``queues`` is not applied because the sorted set is not
+        queue-scoped; an unfiltered bound is always safe here (it can only
+        wake the worker sooner than strictly necessary, never later).
+
+        Returns:
+            Seconds until the next due record, or ``None`` when there is no
+            upcoming scheduled work.
+        """
+        del queues
+        client = await self._get_client()
+        member_ids = await client.zrange(self._scheduled_key, 0, 0)
+        if not member_ids:
+            return None
+        records = await self._records_from_ids(member_ids)
+        if not records or records[0].scheduled_at is None:
+            return None
+        return max((records[0].scheduled_at - _utc_now()).total_seconds(), 0.0)
+
     async def _reset_pubsub(self) -> "None":
         """Drop the pub/sub subscription so the next wait re-establishes it."""
         await self._pending_read.aclose()

@@ -21,7 +21,10 @@ from tests.integration.execution.cloudrun.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from litestar_queues.execution.cloudrun._typing import CloudRunJobsClient
+    from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult
 
 pytestmark = pytest.mark.anyio
 
@@ -29,6 +32,24 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture(autouse=True)
 def clean_task_registry() -> "None":
     clear_task_registry()
+
+
+class _BeatDetailRecordingBackend(InMemoryQueueBackend):
+    """Records every heartbeat touch and signals once one carries beat detail."""
+
+    __slots__ = ("beat_delivered", "touch_calls")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.touch_calls: "list[tuple[HeartbeatTouch, ...]]" = []
+        self.beat_delivered = asyncio.Event()
+
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        self.touch_calls.append(tuple(touches))
+        result = await super().touch_heartbeats(touches)
+        if any(touch.metadata_patch for touch in touches):
+            self.beat_delivered.set()
+        return result
 
 
 def test_load_task_modules_force_reload_imports_never_imported_module(tmp_path: "Any", monkeypatch: "Any") -> "None":
@@ -149,6 +170,44 @@ async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
         f"LITESTAR_QUEUES_{suffix}" for suffix in ("TASK_DISPATCH", "TASK_NAME", "TASK_ARGS", "TASK_KWARGS")
     }
     assert legacy_names.isdisjoint(env)
+
+
+async def test_cloudrun_dispatch_env_excludes_large_and_sensitive_task_args() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    secret = "super-secret-token-do-not-leak"
+    large_payload = "x" * 10_000
+
+    @task("tasks.remote_sensitive_args")
+    async def remote_sensitive_args(payload: str, token: str) -> str:
+        return f"{payload[:1]}{token[:1]}"
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+    ) as service:
+        result = await service.enqueue(remote_sensitive_args.using(execution_backend="cloudrun"), large_payload, secret)
+        record = result.record
+        assert record is not None
+        await backend.dispatch(service, record)
+
+    request = jobs_client.requests[0]
+    env = env_map(request)
+
+    # Only the record id travels; the live record (fetched by id) stays the
+    # source of truth for args, so neither the task name nor its arguments --
+    # however large or sensitive -- ever reach the Cloud Run Jobs API request.
+    assert set(env) == {"LITESTAR_QUEUES_TASK_ID"}
+    assert task_id_from_request(request) == str(record.id)
+    serialized_request = repr(request)
+    assert secret not in serialized_request
+    assert large_payload not in serialized_request
+    assert remote_sensitive_args.name not in serialized_request
 
 
 async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
@@ -470,6 +529,64 @@ async def test_worker_reconciles_running_external_records() -> "None":
     assert reconciled == 1
     assert stored is not None
     assert stored.status == "failed"
+
+
+async def test_cloudrun_dispatched_task_delivers_beat_detail_through_consumer() -> "None":
+    """A Cloud Run Job container runs the dispatched record through ``consume_one``.
+
+    This exercises the same code path ``litestar queues run-task`` uses inside
+    the job container, proving beat-detail parity with the local worker: a
+    ``beat()`` call made from task code lands in the next heartbeat touch's
+    ``metadata_patch`` without the task ever writing to the backend itself.
+    """
+    from litestar_queues import beat
+    from litestar_queues.consumer import TaskExitCode, consume_one
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    @task("tasks.cloudrun_beat_parity")
+    async def cloudrun_beat_parity() -> "str":
+        beat("phase one")
+        ready.set()
+        await release.wait()
+        return "ok"
+
+    queue_backend = _BeatDetailRecordingBackend()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
+    )
+    service = QueueService(
+        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    )
+    await service.open()
+    try:
+        result = await service.enqueue(cloudrun_beat_parity.using(execution_backend="cloudrun"))
+        record = result.record
+        assert record is not None
+        await backend.dispatch(service, record)
+
+        # The Cloud Run Job container re-fetches the persisted record by id and
+        # runs it through the generic external-executor consumer.
+        runner = asyncio.create_task(consume_one(service, record.id))
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        await asyncio.wait_for(queue_backend.beat_delivered.wait(), timeout=1)
+        release.set()
+        exit_code = await runner
+        stored = await queue_backend.get_task(record.id)
+    finally:
+        await service.close()
+
+    delivered = [touch.metadata_patch for calls in queue_backend.touch_calls for touch in calls if touch.metadata_patch]
+    assert exit_code == TaskExitCode.SUCCESS
+    assert delivered == [{"progress_detail": "phase one"}]
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.metadata["progress_detail"] == "phase one"
 
 
 def test_cloudrun_factory_registration_and_import_boundary() -> "None":

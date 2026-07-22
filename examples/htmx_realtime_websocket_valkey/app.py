@@ -44,12 +44,14 @@ SHARED_CHANNELS = os.getenv("LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS", "0") == "
 
 CRAWL_LINES = (
     "The task started.",
-    "The task sent an event from the backend.",
-    "The task is sleeping before the next event.",
-    "The task sent another event.",
-    "The page received the event.",
-    "The task finished.",
+    "The task is visiting the next page.",
+    "The task is sleeping before the next page.",
+    "The task is visiting another page.",
+    "The task is almost done.",
+    "The task finished the crawl.",
 )
+DISCOVERED_PAGE_STEP = DEMO_STEPS // 2
+DISCOVERED_PAGE_URL = "https://example.invalid/articles/queues-101"
 
 
 # -- docs-task-start --
@@ -61,17 +63,17 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     for step in range(1, DEMO_STEPS + 1):
         line = CRAWL_LINES[(step - 1) % len(CRAWL_LINES)]
         message = f"{step}/{DEMO_STEPS} - {line}"
-        ctx.beat(message)
         await ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={"line": message})
-        await ctx.event(
-            "task.event",
-            message=message,
-            payload={"task_id": ctx.task_id, "line": message, "step": step},
-            immediate=step == DEMO_STEPS,
-        )
+        if step == DISCOVERED_PAGE_STEP:
+            # One meaningful domain event at a real transition, with a payload
+            # distinct from the generic per-step progress text above.
+            await ctx.event(
+                "crawl.page_discovered",
+                message=f"Discovered {DISCOVERED_PAGE_URL}",
+                payload={"url": DISCOVERED_PAGE_URL},
+            )
         await asyncio.sleep(DEMO_STEP_DELAY)
 
-    await publish_task_log("The task finished", payload={"task_id": ctx.task_id}, immediate=True)
     return {"task_id": ctx.task_id, "status": "complete"}
 
 
