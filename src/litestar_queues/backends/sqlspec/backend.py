@@ -75,11 +75,15 @@ _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
 _NOTIFY_TRANSPORT_POLLING = "polling"
 _CANONICAL_EVENT_BACKENDS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
 _CANONICAL_NOTIFY_TRANSPORTS = _CANONICAL_EVENT_BACKENDS | {_NOTIFY_TRANSPORT_POLLING}
-# Adapter families that can push worker wakeups. Postgres-over-asyncpg ships the
-# durable LISTEN/NOTIFY hybrid; psycopg/psqlpy and DuckDB use the durable table
-# queue. Everything else polls.
-_NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg"})
-_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb", "psycopg", "psqlpy"})
+# Adapter families that can push worker wakeups. Every real Postgres driver
+# (asyncpg, psycopg, psqlpy) ships SQLSpec's durable LISTEN/NOTIFY hybrid, so all
+# three advertise ``notify_queue``. DuckDB is embedded with no LISTEN/NOTIFY, so
+# it uses the durable table queue polled in-process. Everything else polls.
+_NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg", "psycopg", "psqlpy"})
+_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
+# Durable event transports that ride the SQLSpec events queue table and must have
+# it provisioned before a worker can publish or consume wakeups.
+_EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
 # psqlpy's ``QueryResult`` exposes no command-tag/status metadata and
 # arrow-odbc's cursor exposes no portable rowcount API, so SQLSpec's
 # rows-affected extraction can only ever report ``0`` for non-SELECT
@@ -110,8 +114,8 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
     advertise push wakeups where the driver can deliver them.
 
     Returns:
-        ``"notify_queue"`` for asyncpg, ``"poll_queue"`` for DuckDB,
-        psycopg, and psqlpy, otherwise ``"polling"``.
+        ``"notify_queue"`` for the Postgres drivers (asyncpg, psycopg, psqlpy),
+        ``"poll_queue"`` for DuckDB, otherwise ``"polling"``.
     """
     if adapter_name in _NOTIFY_DURABLE_ADAPTERS:
         return "notify_queue"
@@ -306,6 +310,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 event_log_store = self._get_event_log_store_if_enabled()
                 if event_log_store is not None:
                     statements.extend(event_log_store.create_statements())
+                if self._should_provision_events_queue():
+                    statements.extend(_events_queue_create_statements(self._get_sqlspec_config()))
                 statements.extend(self._get_maintenance_lease_store().create_statements())
                 for statement in statements:
                     await driver.execute_script(statement)
@@ -1269,6 +1275,25 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await _invoke_event_channel_method(self._event_channel, "ack", event.event_id)
         return True
 
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        """Return seconds until the earliest not-yet-due pending/scheduled record.
+
+        Returns:
+            Seconds until the next due record, or ``None`` when there is no
+            upcoming scheduled work.
+        """
+        now = _utc_now()
+        async with self._session() as driver:
+            row = await self._select_one_row(
+                driver, self._get_store().next_scheduled_at(now=self._serialize_datetime(now), queues=queues)
+            )
+        if row is None:
+            return None
+        next_at = _deserialize_datetime(row.get("next_scheduled_at"))
+        if next_at is None:
+            return None
+        return max((next_at - _utc_now()).total_seconds(), 0.0)
+
     async def _close_notification_stream(self) -> "None":
         """Cancel the retained event read and close the iterator."""
         await self._pending_read.aclose()
@@ -1312,9 +1337,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         notifications_requested = self._resolve_notifications_requested(queue_settings)
         transport = self._select_notify_transport(sqlspec_config, queue_settings, events_settings)
 
-        if not self._notifications_should_enable(
-            notifications_requested, transport, sqlspec_config, queue_settings, events_settings
-        ):
+        if not self._notifications_should_enable(notifications_requested, transport):
             self._notifications_enabled = False
             self._notification_backend = None
             return
@@ -1331,6 +1354,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._resolve_event_poll_interval(queue_settings, events_settings)
         self._notification_backend = _canonical_notify_transport(
             cast("str | None", getattr(self._event_channel, "_backend_name", None))
+        )
+
+    def _should_provision_events_queue(self) -> "bool":
+        """Return whether ``create_schema`` should provision the events queue table.
+
+        Only the durable table-backed transports (``notify_queue`` / ``poll_queue``)
+        that this backend owns ride the SQLSpec events queue table. An injected
+        event channel owns its own storage, and the transient/native-only or
+        Oracle AQ transports never use this table.
+        """
+        return (
+            self._notifications_enabled
+            and self._owns_event_channel
+            and self._notification_backend in _EVENTS_TABLE_BACKENDS
         )
 
     def _resolve_notifications_requested(self, queue_settings: "dict[str, Any]") -> "bool | None":
@@ -1352,33 +1389,24 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             A canonical wakeup transport name (``notify``, ``notify_queue``,
             ``poll_queue``, ``polling``, ``aq``, or ``txeventq``).
         """
-        explicit = self._notify_transport
-        if explicit is not None:
-            return explicit
-        configured_transport = _setting(queue_settings, "notify_transport")
-        if configured_transport is not None:
-            return _validate_queue_notify_transport(str(configured_transport))
-        configured_backend = (
-            self._event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
+        return _resolve_notify_transport(
+            explicit_transport=self._notify_transport,
+            event_backend=self._event_backend,
+            sqlspec_config=sqlspec_config,
+            queue_settings=queue_settings,
+            events_settings=events_settings,
         )
-        if configured_backend is not None:
-            return _validate_queue_notify_transport(str(configured_backend))
-        return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
 
-    def _notifications_should_enable(
-        self,
-        notifications_requested: "bool | None",
-        transport: "str",
-        sqlspec_config: "SQLSpecConfig",
-        queue_settings: "dict[str, Any]",
-        events_settings: "dict[str, Any]",
-    ) -> "bool":
+    def _notifications_should_enable(self, notifications_requested: "bool | None", transport: "str") -> "bool":
         """Decide whether push wakeups are active for the resolved transport.
 
-        Notifications stay opt-in: a bare backend config never auto-enables an
-        events channel (which keeps the frozen claim/lease contract and the
-        zero-config polling default intact). When a signal is present but the
-        adapter is gated to ``polling``, wakeups degrade to interval polling.
+        Native wakeups are default-on: whenever the resolved transport is
+        capability-native (anything other than ``polling``) an events channel
+        backs worker wakeups with no configuration. ``notifications=False`` is
+        the explicit opt-out, and a capability-gated ``polling`` transport (an
+        adapter that cannot push, with no explicit override) stays on interval
+        polling. Notifications only add wakeups; the frozen claim/lease contract
+        is unaffected.
 
         Returns:
             True when an events channel should back worker wakeups.
@@ -1387,17 +1415,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return False
         if self._event_channel is not None:
             return True
-        events_present = _EVENT_EXTENSION_NAME in (sqlspec_config.extension_config or {})
-        explicit_signal = (
-            self._notify_transport is not None
-            or "notify_transport" in queue_settings
-            or self._event_backend is not None
-            or "event_backend" in queue_settings
-            or bool(events_settings)
-            or events_present
-            or notifications_requested is True
-        )
-        return explicit_signal and transport != _NOTIFY_TRANSPORT_POLLING
+        return transport != _NOTIFY_TRANSPORT_POLLING
 
     def _resolve_event_poll_interval(
         self, queue_settings: "dict[str, Any]", events_settings: "dict[str, Any]"
@@ -2109,6 +2127,88 @@ async def _create_schema_statements(store: "SQLSpecQueueStore", driver: "SQLSpec
             return cast("list[str]", await result)
         return cast("list[str]", result)
     return store.create_statements()
+
+
+def _resolve_notify_transport(
+    *,
+    explicit_transport: "str | None",
+    event_backend: "str | None",
+    sqlspec_config: "SQLSpecConfig",
+    queue_settings: "dict[str, Any]",
+    events_settings: "dict[str, Any]",
+) -> "str":
+    """Resolve the effective wakeup transport from config precedence.
+
+    Explicit ``queue_backend_config`` selections win over ``extension_config``
+    defaults, which in turn win over the per-adapter capability gate.
+
+    Returns:
+        A canonical wakeup transport name.
+    """
+    if explicit_transport is not None:
+        return explicit_transport
+    configured_transport = _setting(queue_settings, "notify_transport")
+    if configured_transport is not None:
+        return _validate_queue_notify_transport(str(configured_transport))
+    configured_backend = event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
+    if configured_backend is not None:
+        return _validate_queue_notify_transport(str(configured_backend))
+    return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
+
+
+def resolve_events_migration_backend(
+    backend_config: "SQLSpecBackendConfig", sqlspec_config: "SQLSpecConfig"
+) -> "str | None":
+    """Return the durable events-table transport to register for migrations.
+
+    Mirrors the runtime notification decision so a capability-native adapter
+    provisions its events queue table through SQLSpec migrations with zero
+    configuration. Returns the transport name (``notify_queue`` / ``poll_queue``)
+    when the events queue table must exist, or ``None`` when notifications are
+    opted out, transient (``notify``), Oracle AQ (provisioned separately), or the
+    adapter polls.
+
+    Returns:
+        The durable events-table transport name, or ``None``.
+    """
+    if backend_config.notifications is False or backend_config.event_channel is not None:
+        return None
+    queue_settings = _queue_extension_settings(sqlspec_config)
+    if (
+        backend_config.notifications is None
+        and "notifications" in queue_settings
+        and not queue_settings["notifications"]
+    ):
+        return None
+    transport = _resolve_notify_transport(
+        explicit_transport=backend_config.notify_transport,
+        event_backend=backend_config.event_backend,
+        sqlspec_config=sqlspec_config,
+        queue_settings=queue_settings,
+        events_settings=_events_extension_settings(sqlspec_config),
+    )
+    return transport if transport in _EVENTS_TABLE_BACKENDS else None
+
+
+def _events_queue_create_statements(sqlspec_config: "SQLSpecConfig") -> "list[str]":
+    """Return the DDL provisioning the durable events queue table for this adapter.
+
+    Resolves the adapter's :class:`~sqlspec.extensions.events.BaseEventQueueStore`
+    the same way SQLSpec's events extension migration does and returns its
+    dialect-correct ``CREATE TABLE``/``CREATE INDEX`` statements. Emitting these
+    alongside the queue table makes the durable ``notify_queue`` / ``poll_queue``
+    wakeup transports work on a fresh database with no separate migration step.
+
+    Returns:
+        The ``CREATE`` statements for the events queue table and its index.
+    """
+    from sqlspec.utils.module_loader import import_string
+
+    config_class = type(sqlspec_config)
+    adapter_name = config_class.__module__.split(".")[2]
+    store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
+    store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
+    return cast("list[str]", store_class(sqlspec_config).create_statements())
 
 
 def _events_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "dict[str, Any]":

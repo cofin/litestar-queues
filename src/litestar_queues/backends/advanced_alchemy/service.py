@@ -261,6 +261,25 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
+    async def next_scheduled_at(self, *, queues: "Sequence[str]" = ()) -> "datetime | None":
+        """Return the earliest not-yet-due ``scheduled_at`` among pending/scheduled records.
+
+        Used to bound the worker's adaptive polling wait so a scheduled or
+        retried task is never discovered later than its own due time.
+
+        Returns:
+            The earliest future ``scheduled_at``, or ``None`` when there is
+            no upcoming scheduled work.
+        """
+        model_type = self.model_type
+        now = _utc_now()
+        criteria = [model_type.status.in_(_DUE_STATUSES), model_type.scheduled_at > now]
+        if queues:
+            criteria.append(model_type.queue.in_(list(queues)))
+        statement = select(func.min(model_type.scheduled_at)).where(*criteria)
+        result = await self.repository.session.execute(statement)
+        return _coerce_datetime(result.scalar())
+
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         now = _utc_now()
         model_type = self.model_type

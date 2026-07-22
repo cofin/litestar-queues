@@ -156,6 +156,9 @@ class QueueConfig:
     quiet_success: "bool" = True
     worker_batch_size: "int" = 10
     worker_poll_interval: "float" = 0.1
+    worker_poll_backoff_max: "float | None" = 30.0
+    worker_poll_backoff_multiplier: "float" = 2.0
+    worker_poll_jitter: "float" = 0.15
     worker_max_concurrency: "int" = 1
     worker_heartbeat_interval: "float" = 30
     worker_heartbeat_miss_threshold: "int" = 2
@@ -170,6 +173,28 @@ class QueueConfig:
     scheduler_canary_task: "str" = "scheduler.heartbeat"
     event_log: "EventLogConfig | None" = None
     maintenance: "QueueMaintenanceConfig | None" = None
+
+    def __post_init__(self) -> "None":
+        """Validate adaptive polling backoff settings before backend/worker startup.
+
+        Raises:
+            QueueConfigurationError: If a backoff field is set to an invalid value.
+        """
+        from litestar_queues.exceptions import QueueConfigurationError
+
+        if self.worker_poll_backoff_max is not None:
+            if self.worker_poll_backoff_max <= 0:
+                msg = "QueueConfig.worker_poll_backoff_max must be greater than 0."
+                raise QueueConfigurationError(msg)
+            if self.worker_poll_backoff_max < self.worker_poll_interval:
+                msg = "QueueConfig.worker_poll_backoff_max must be greater than or equal to worker_poll_interval."
+                raise QueueConfigurationError(msg)
+        if self.worker_poll_backoff_multiplier < 1.0:
+            msg = "QueueConfig.worker_poll_backoff_multiplier must be greater than or equal to 1.0."
+            raise QueueConfigurationError(msg)
+        if not 0.0 <= self.worker_poll_jitter <= 1.0:
+            msg = "QueueConfig.worker_poll_jitter must be between 0.0 and 1.0, inclusive."
+            raise QueueConfigurationError(msg)
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":

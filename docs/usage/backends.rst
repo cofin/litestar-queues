@@ -25,7 +25,7 @@ events to users.
    * - SQLSpec application
      - ``SQLSpecBackendConfig``
      - ``local`` or Cloud Run
-     - SQLSpec transport when supported, otherwise polling
+     - Native transport by default when supported, otherwise polling
      - Configure Channels separately
      - :doc:`backends/sqlspec`
    * - SQLAlchemy application

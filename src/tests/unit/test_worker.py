@@ -809,6 +809,331 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
     assert str(result.result["thread_name"]).startswith("lq")
 
 
+async def test_worker_empty_cycles_grow_and_clamp_to_configured_maximum() -> "None":
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=1.0, poll_backoff_max=4.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await _wait_for_timeouts(backend, count=5)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert backend.timeouts[:5] == [1.0, 2.0, 4.0, 4.0, 4.0]
+
+
+async def test_worker_fixed_polling_unaffected_when_backoff_disabled() -> "None":
+    """Omitting the maximum preserves the exact current fixed-interval sequence."""
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.25, reconcile_interval=3600.0)
+        worker_task = asyncio.create_task(worker.start())
+        await _wait_for_timeouts(backend, count=4)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert backend.timeouts[:4] == [0.25, 0.25, 0.25, 0.25]
+
+
+async def test_worker_resets_backoff_after_claimed_work() -> "None":
+    @task("tasks.backoff_reset_claim")
+    async def backoff_reset_claim(value: "int") -> "int":
+        return value
+
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=0.5, poll_backoff_max=8.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await _wait_for_timeouts(backend, count=3)
+
+        result = await service.enqueue(backoff_reset_claim, 7)
+        await result.wait(timeout=1, poll_interval=0.01)
+        await _wait_for_timeouts(backend, count=4)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert backend.timeouts[:3] == [0.5, 1.0, 2.0]
+    assert backend.timeouts[3] == 0.5
+
+
+async def test_worker_resets_backoff_when_native_wait_returns_true() -> "None":
+    backend = _NotifyOnCallInMemoryQueueBackend(notify_on_call=3)
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=1.0, poll_backoff_max=8.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await _wait_for_timeouts(backend, count=4)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert backend.timeouts[:4] == [1.0, 2.0, 4.0, 1.0]
+
+
+async def test_worker_resets_backoff_after_recoverable_loop_error(caplog: "pytest.LogCaptureFixture") -> "None":
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = _RaiseOnThirdRunOnceWorker(
+            service, poll_interval=0.05, poll_backoff_max=1.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        with caplog.at_level(logging.ERROR, logger="litestar_queues.worker"):
+            worker_task = asyncio.create_task(worker.start())
+            await _wait_for_timeouts(backend, count=3)
+
+            await worker.stop()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(worker_task, timeout=1)
+
+    assert backend.timeouts[:3] == [0.05, 0.1, 0.05]
+    assert "Queue worker loop iteration failed" in caplog.text
+
+
+async def test_worker_start_resets_backoff_state_on_each_call() -> "None":
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=0.05, poll_backoff_max=1.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        # Simulate a worker instance that had backed off before a prior stop.
+        worker._current_poll_interval = 0.8
+
+        worker_task = asyncio.create_task(worker.start())
+        await _wait_for_timeouts(backend, count=1)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert backend.timeouts[0] == 0.05
+
+
+async def test_worker_stop_interrupts_backoff_wait_without_extra_sleep() -> "None":
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        backend = cast("InMemoryQueueBackend", service.get_queue_backend())
+        # Large bounds ensure a prompt stop cannot be attributed to a short poll tick.
+        worker = Worker(
+            service, poll_interval=60, poll_backoff_max=120, poll_backoff_multiplier=2.0, reconcile_interval=3600
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.sleep(0.05)
+        assert backend._pending_read.has_pending is True
+
+        started = asyncio.get_running_loop().time()
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+        elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.0
+    assert bool(backend._pending_read.has_pending) is False
+
+
+async def test_worker_native_wait_consumes_backoff_timeout_without_additional_sleep(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    """A native (event-based) wait must not be followed by a redundant ``asyncio.sleep``."""
+    sleep_calls: "list[float]" = []
+    real_sleep = asyncio.sleep
+
+    async def recording_sleep(delay: "float", result: "object" = None) -> "object":
+        sleep_calls.append(delay)
+        return await real_sleep(0, result)
+
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+
+    backend = InMemoryQueueBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=0.01, poll_backoff_max=1.0, poll_backoff_multiplier=2.0, reconcile_interval=3600
+        )
+        await worker._wait_for_work()
+
+    assert sleep_calls == []
+
+
+async def test_worker_skips_jitter_sampling_when_backoff_disabled(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Backoff disabled (maximum unset) preserves the fixed path without extra random calls."""
+    from litestar_queues import worker as worker_module
+
+    def _boom() -> "float":
+        msg = "jitter must not be sampled when backoff is disabled"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", _boom)
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.05, poll_jitter=1.0)
+
+        await worker._wait_for_work()
+
+    assert backend.timeouts == [0.05]
+
+
+async def test_worker_jitters_the_sampled_wait_without_mutating_stored_backoff_state(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    """Jitter perturbs only the sampled wait; the stored exponential state stays deterministic."""
+    from litestar_queues import worker as worker_module
+
+    monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", lambda: 1.0)
+    backend = _RecordingTimeoutBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service,
+            poll_interval=1.0,
+            poll_backoff_max=8.0,
+            poll_backoff_multiplier=2.0,
+            poll_jitter=0.5,
+            reconcile_interval=3600.0,
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await _wait_for_timeouts(backend, count=3)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    # Deterministic state grows 1 -> 2 -> 4; a +1.0 jitter sample with jitter=0.5 adds
+    # current * 0.5 to each sampled wait only, never to the stored state.
+    assert backend.timeouts[:3] == [1.5, 3.0, 6.0]
+
+
+async def test_worker_wait_is_clamped_to_next_due_scheduled_work() -> "None":
+    """A long backoff wait must never sleep past a known scheduled/retry due time.
+
+    No backend notifies a worker the instant a record's scheduled time
+    arrives, so an already-grown backoff wait could otherwise sleep well
+    past known future work; ``time_until_next_due`` must clamp it down.
+    """
+    backend = _NextDueRecordingBackend(due_in=0.02)
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=1.0, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        # Simulate a worker that already backed off well past the known due-in bound.
+        worker._current_poll_interval = 10.0
+
+        await worker._wait_for_work()
+
+    assert backend.timeouts == [0.02]
+
+
+async def test_worker_wait_uses_backoff_when_backend_reports_no_upcoming_due_work() -> "None":
+    """When the backend cannot answer (or has no upcoming work), the backoff wait is unclamped."""
+    backend = _NextDueRecordingBackend(due_in=None)
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(
+            service, poll_interval=1.0, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        worker._current_poll_interval = 5.0
+
+        await worker._wait_for_work()
+
+    assert backend.timeouts == [5.0]
+
+
+async def test_worker_skips_next_due_query_when_backoff_disabled() -> "None":
+    """The fixed (backoff-disabled) path never queries the backend for upcoming due work."""
+    backend = _NextDueQueryCountingBackend()
+    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+        worker = Worker(service, poll_interval=0.01)
+
+        await worker._wait_for_work()
+
+    assert backend.next_due_calls == 0
+
+
+async def test_worker_discovers_scheduled_task_without_waiting_full_backoff() -> "None":
+    """A near-due scheduled task wakes the worker well before an already-grown backoff wait would.
+
+    Exercises the real InMemoryQueueBackend's time_until_next_due
+    implementation end-to-end, not a test double: the scheduled record is
+    not yet due at enqueue time, so no notification fires for it, and only
+    the next-due clamp on the (already large) backoff wait can prevent the
+    worker from sleeping past its due time.
+    """
+
+    @task("tasks.due_soon")
+    async def due_soon() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local")) as service:
+        worker = Worker(
+            service, poll_interval=0.05, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
+        )
+        # Simulate a worker that already backed off to a long wait.
+        worker._current_poll_interval = 20.0
+        worker_task = asyncio.create_task(worker.start())
+
+        result = await service.enqueue(due_soon, run_after=0.05)
+        await result.wait(timeout=2, poll_interval=0.01)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+
+    assert result.status == "completed"
+
+
+def test_next_backoff_interval_grows_and_clamps_to_maximum() -> "None":
+    from litestar_queues.worker import _next_backoff_interval
+
+    assert _next_backoff_interval(1.0, base=1.0, maximum=4.0, multiplier=2.0) == 2.0
+    assert _next_backoff_interval(2.0, base=1.0, maximum=4.0, multiplier=2.0) == 4.0
+    assert _next_backoff_interval(4.0, base=1.0, maximum=4.0, multiplier=2.0) == 4.0
+
+
+def test_next_backoff_interval_never_drops_below_base() -> "None":
+    from litestar_queues.worker import _next_backoff_interval
+
+    assert _next_backoff_interval(0.1, base=1.0, maximum=4.0, multiplier=1.0) == 1.0
+
+
+def test_apply_jitter_clamps_deterministic_endpoints(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues import worker as worker_module
+
+    monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", lambda: 1.0)
+    assert worker_module._apply_jitter(2.0, base=1.0, maximum=4.0, jitter=0.5) == 3.0
+
+    monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", lambda: -1.0)
+    assert worker_module._apply_jitter(2.0, base=1.0, maximum=4.0, jitter=0.5) == 1.0
+
+    monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", lambda: 1.0)
+    assert worker_module._apply_jitter(4.0, base=1.0, maximum=4.0, jitter=1.0) == 4.0
+
+
+def test_apply_jitter_is_a_noop_when_jitter_is_zero(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues import worker as worker_module
+
+    def _boom() -> "float":
+        msg = "jitter must not be sampled when the ratio is zero"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", _boom)
+    assert worker_module._apply_jitter(2.0, base=1.0, maximum=4.0, jitter=0.0) == 2.0
+
+
+async def _wait_for_timeouts(
+    backend: "_RecordingTimeoutBackend | _NotifyOnCallInMemoryQueueBackend", *, count: "int", timeout: "float" = 1.0
+) -> "None":
+    deadline = asyncio.get_running_loop().time() + timeout
+    while len(backend.timeouts) < count:
+        if asyncio.get_running_loop().time() > deadline:
+            pytest.fail(f"backend did not observe {count} wait_for_notifications calls; got {backend.timeouts!r}")
+        await asyncio.sleep(0)
+
+
 async def _wait_for_record_status(result: "TaskResult", expected_status: "str", *, timeout: "float" = 1.0) -> "None":
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -1113,3 +1438,91 @@ class _TransientRunOnceWorker(Worker):
         self.recovered.set()
         await self.stop()
         return 0
+
+
+class _RecordingTimeoutBackend(InMemoryQueueBackend):
+    """Memory backend double that records requested wait timeouts without sleeping.
+
+    Acts as a fake clock for adaptive-backoff assertions: no real time passes,
+    so the sequence of ``timeout`` values requested by the worker is the only
+    signal under test.
+    """
+
+    __slots__ = ("timeouts",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.timeouts: "list[float | None]" = []
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        self.timeouts.append(timeout)
+        return False
+
+
+class _NotifyOnCallInMemoryQueueBackend(InMemoryQueueBackend):
+    """Memory backend double whose native wait reports a notification on one call."""
+
+    __slots__ = ("notify_on_call", "timeouts")
+
+    def __init__(self, *, notify_on_call: "int") -> "None":
+        super().__init__()
+        self.timeouts: "list[float | None]" = []
+        self.notify_on_call = notify_on_call
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        self.timeouts.append(timeout)
+        return len(self.timeouts) == self.notify_on_call
+
+
+class _RaiseOnThirdRunOnceWorker(Worker):
+    """Worker double whose third ``run_once`` call raises to exercise loop-error recovery."""
+
+    __slots__ = ("run_once_calls",)
+
+    def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
+        super().__init__(*args, **kwargs)
+        self.run_once_calls = 0
+
+    async def run_once(self) -> "int":
+        self.run_once_calls += 1
+        if self.run_once_calls == 3:
+            msg = "transient backend failure"
+            raise RuntimeError(msg)
+        return 0
+
+
+class _NextDueRecordingBackend(InMemoryQueueBackend):
+    """Memory backend double with a fixed, controllable ``time_until_next_due`` answer."""
+
+    __slots__ = ("due_in", "timeouts")
+
+    def __init__(self, *, due_in: "float | None") -> "None":
+        super().__init__()
+        self.timeouts: "list[float | None]" = []
+        self.due_in = due_in
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        self.timeouts.append(timeout)
+        return False
+
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        del queues
+        return self.due_in
+
+
+class _NextDueQueryCountingBackend(InMemoryQueueBackend):
+    """Memory backend double that counts ``time_until_next_due`` calls."""
+
+    __slots__ = ("next_due_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.next_due_calls = 0
+
+    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+        del timeout
+        return False
+
+    async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
+        self.next_due_calls += 1
+        return await super().time_until_next_due(queues=queues)

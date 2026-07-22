@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import random
 import time
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -19,12 +20,55 @@ __all__ = ("Worker",)
 logger = logging.getLogger(__name__)
 
 
+def _clamp(value: "float", *, low: "float", high: "float") -> "float":
+    """Clamp a value between inclusive bounds.
+
+    Returns:
+        ``value`` restricted to ``[low, high]``.
+    """
+    return max(low, min(high, value))
+
+
+def _next_backoff_interval(current: "float", *, base: "float", maximum: "float", multiplier: "float") -> "float":
+    """Compute the next deterministic adaptive-polling interval after an empty cycle.
+
+    The stored exponential state itself is never jittered; only the sampled
+    wait derived from it is (see :func:`_apply_jitter`).
+
+    Returns:
+        ``current * multiplier`` clamped to ``[base, maximum]``.
+    """
+    return _clamp(current * multiplier, low=base, high=maximum)
+
+
+def _sample_symmetric_jitter() -> "float":
+    """Return a uniform random value in ``[-1.0, 1.0]`` for jitter sampling.
+
+    Returns:
+        A pseudo-random value used only to perturb a sampled wait.
+    """
+    return random.uniform(-1.0, 1.0)  # noqa: S311 - jitter is not security sensitive.
+
+
+def _apply_jitter(interval: "float", *, base: "float", maximum: "float", jitter: "float") -> "float":
+    """Apply bounded symmetric jitter to a sampled wait, without mutating stored state.
+
+    Returns:
+        ``interval`` offset by up to ``interval * jitter``, clamped to ``[base, maximum]``.
+    """
+    if jitter <= 0.0:
+        return interval
+    offset = interval * jitter * _sample_symmetric_jitter()
+    return _clamp(interval + offset, low=base, high=maximum)
+
+
 class Worker:
     """Local in-process queue worker."""
 
     __slots__ = (
         "_batch_size",
         "_completion_event",
+        "_current_poll_interval",
         "_final_cancel_timeout",
         "_graceful_shutdown_timeout",
         "_heartbeat_manager",
@@ -32,7 +76,10 @@ class Worker:
         "_last_reconcile_at",
         "_last_stale_check_at",
         "_max_concurrency",
+        "_poll_backoff_max",
+        "_poll_backoff_multiplier",
         "_poll_interval",
+        "_poll_jitter",
         "_queues",
         "_reconcile_interval",
         "_running_tasks",
@@ -49,6 +96,9 @@ class Worker:
         *,
         batch_size: "int" = 10,
         poll_interval: "float" = 0.1,
+        poll_backoff_max: "float | None" = None,
+        poll_backoff_multiplier: "float" = 2.0,
+        poll_jitter: "float" = 0.0,
         max_concurrency: "int" = 1,
         heartbeat_interval: "float" = 30,
         heartbeat_miss_threshold: "int" = 2,
@@ -60,10 +110,43 @@ class Worker:
         worker_id: "str | None" = None,
         queues: "tuple[str, ...]" = (),
     ) -> "None":
-        """Initialize the worker."""
+        """Initialize the worker.
+
+        Args:
+            service: Queue service used to reach the configured backends.
+            batch_size: Maximum records claimed per poll cycle.
+            poll_interval: Base (initial) polling wait, in seconds.
+            poll_backoff_max: Maximum adaptive polling wait, in seconds. ``None``
+                (the default) disables adaptive backoff and preserves fixed
+                polling at ``poll_interval``.
+            poll_backoff_multiplier: Growth factor applied to the current wait
+                after each empty poll/reconciliation cycle when backoff is
+                enabled.
+            poll_jitter: Bounded symmetric jitter ratio in ``[0.0, 1.0]``
+                applied to the sampled wait only; the stored backoff state
+                stays deterministic.
+            max_concurrency: Maximum number of concurrently executing tasks.
+            heartbeat_interval: Seconds between heartbeat touches.
+            heartbeat_miss_threshold: Missed heartbeats before a task is
+                considered stalled.
+            reconcile_interval: Seconds between external-execution
+                reconciliation passes.
+            stale_after: Age after which a running task is recovered as stale.
+            stale_check_interval: Seconds between stale-recovery passes.
+            graceful_shutdown_timeout: Seconds to wait for in-flight tasks to
+                drain on stop.
+            final_cancel_timeout: Seconds to wait for cancellation to take
+                effect after an escalated stop.
+            worker_id: Explicit worker identity; defaults to a pid-derived id.
+            queues: Queue names this worker claims from; empty claims all.
+        """
         self._service = service
         self._batch_size = batch_size
         self._poll_interval = poll_interval
+        self._poll_backoff_max = poll_backoff_max
+        self._poll_backoff_multiplier = poll_backoff_multiplier
+        self._poll_jitter = poll_jitter
+        self._current_poll_interval = poll_interval
         self._max_concurrency = max(1, max_concurrency)
         self._reconcile_interval = reconcile_interval
         self._stale_after = stale_after
@@ -92,10 +175,71 @@ class Worker:
         """Worker identity used for events and logs."""
         return self._worker_id
 
+    def _reset_poll_backoff(self) -> "None":
+        """Reset the adaptive polling wait to the base interval.
+
+        Called on worker start, any claimed record, a native notification,
+        and a recoverable backend/listener exception.
+        """
+        self._current_poll_interval = self._poll_interval
+
+    def _advance_poll_backoff(self) -> "None":
+        """Grow the adaptive polling wait after a fully empty poll/reconciliation cycle.
+
+        A no-op while backoff is disabled (``poll_backoff_max`` is ``None``),
+        preserving the fixed-interval path exactly.
+
+        Returns:
+            None.
+        """
+        if self._poll_backoff_max is None:
+            return
+        self._current_poll_interval = _next_backoff_interval(
+            self._current_poll_interval,
+            base=self._poll_interval,
+            maximum=self._poll_backoff_max,
+            multiplier=self._poll_backoff_multiplier,
+        )
+
+    async def _current_wait_timeout(self) -> "float":
+        """Return the wait timeout for the next poll, with jitter applied when enabled.
+
+        Jitter perturbs only the returned wait; :attr:`_current_poll_interval`
+        (the stored exponential state) is never mutated by it. No random
+        sampling occurs while backoff is disabled or jitter is zero.
+
+        While backoff is enabled, the wait is additionally clamped to the
+        backend's ``time_until_next_due()`` when known: no backend notifies
+        a worker the instant a scheduled or retried record's due time
+        arrives, so an uncapped backoff wait could otherwise sleep past
+        already-known future work. This clamp never applies to the fixed
+        (backoff-disabled) path, matching its exact prior behavior.
+
+        Returns:
+            The timeout, in seconds, to pass to ``wait_for_notifications``.
+        """
+        if self._poll_backoff_max is None:
+            return self._current_poll_interval
+        timeout = (
+            self._current_poll_interval
+            if self._poll_jitter <= 0.0
+            else _apply_jitter(
+                self._current_poll_interval,
+                base=self._poll_interval,
+                maximum=self._poll_backoff_max,
+                jitter=self._poll_jitter,
+            )
+        )
+        due_in = await self._service.get_queue_backend().time_until_next_due(queues=self._queues)
+        if due_in is not None and due_in < timeout:
+            timeout = due_in
+        return timeout
+
     async def start(self) -> "None":
         """Run the worker loop until stopped or cancelled."""
         self._is_running = True
         self._stop_event.clear()
+        self._reset_poll_backoff()
         try:
             await self._heartbeat_manager.start()
             while not self._stop_event.is_set():
@@ -110,10 +254,17 @@ class Worker:
                         "litestar_queues.worker.loop.error.count", {"worker.error.type": type(exc).__name__}
                     )
                     logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
+                    self._reset_poll_backoff()
                     await self._backoff_after_loop_error()
                     continue
-                if processed == 0:
-                    await self._wait_for_work()
+                if processed:
+                    self._reset_poll_backoff()
+                    continue
+                outcome = await self._wait_for_work()
+                if outcome:
+                    self._reset_poll_backoff()
+                elif outcome is False:
+                    self._advance_poll_backoff()
         finally:
             self._stop_event.set()
             try:
@@ -317,13 +468,27 @@ class Worker:
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=self._final_cancel_timeout)
 
-    async def _wait_for_work(self) -> "None":
+    async def _wait_for_work(self) -> "bool | None":
+        """Wait for new work, a backend notification, or a stop signal.
+
+        The adaptive polling wait (when enabled) is passed directly as the
+        backend's wait timeout; no additional sleep follows a native wait.
+
+        Returns:
+            ``True`` when a native backend notification was observed (the
+            caller resets the adaptive backoff to the base interval).
+            ``False`` when the wait fully elapsed with no notification (the
+            caller advances the backoff). ``None`` when the wait was
+            interrupted by stop or a pending completion signal, in which case
+            backoff state is left unchanged.
+        """
         if self._completion_event.is_set():
             self._completion_event.clear()
-            return
+            return None
         queue_backend = self._service.get_queue_backend()
         started_at = time.perf_counter()
-        notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=self._poll_interval))
+        timeout = await self._current_wait_timeout()
+        notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=timeout))
         stop_task = asyncio.create_task(self._stop_event.wait())
         completion_task = asyncio.create_task(self._completion_event.wait())
         done, pending = await asyncio.wait(
@@ -334,28 +499,34 @@ class Worker:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        for task in done:
-            await self._consume_wait_task(task)
+        outcome: "bool | None" = None
+        if notification_task in done:
+            outcome = await self._consume_wait_task(notification_task)
         self._service.observability_runtime.record_duration(
             "litestar_queues.worker.idle.duration",
             time.perf_counter() - started_at,
             attributes={**self._worker_metric_base_attributes(), "worker.wakeup": str(notification_task in done)},
         )
+        return outcome
 
-    async def _consume_wait_task(self, task: "asyncio.Task[bool]") -> "None":
+    async def _consume_wait_task(self, task: "asyncio.Task[bool]") -> "bool | None":
         try:
-            task.result()
+            result = task.result()
         except asyncio.TimeoutError:
-            return
+            return False
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             # A native read failure must not kill the run loop; durable polling
             # (run_once) still discovers work, and the next wait re-establishes
-            # the listener from a clean state.
+            # the listener from a clean state. The backoff resets so a stale
+            # listener does not compound into a longer discovery delay.
             self._record_counter("litestar_queues.worker.loop.error.count", {"worker.error.type": type(exc).__name__})
             logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
+            self._reset_poll_backoff()
             await self._backoff_after_loop_error()
+            return None
+        return result
 
     async def _backoff_after_loop_error(self) -> "None":
         timeout = min(max(self._poll_interval, 0.01), 1.0)
