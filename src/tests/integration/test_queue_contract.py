@@ -1,8 +1,10 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
+from typing_extensions import Self
 
 from litestar_queues import (
     EventConfig,
@@ -124,6 +126,52 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert running_external[0].execution_ref == "jobs/abc-123"
     assert stored_local is not None
     assert stored_local.status == "pending"
+
+
+async def test_backend_contract_bounds_external_reconciliation_deterministically(
+    queue_backend: "BaseQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Equal-age external records use the record id as the stable limit tie-breaker."""
+    from litestar_queues import models as models_module
+    from litestar_queues.backends.advanced_alchemy import backend as advanced_alchemy_backend_module
+    from litestar_queues.backends.advanced_alchemy import service as advanced_alchemy_service_module
+    from litestar_queues.backends.memory import backend as memory_backend_module
+    from litestar_queues.backends.redis import backend as redis_backend_module
+    from litestar_queues.backends.sqlspec import backend as sqlspec_backend_module
+
+    fixed_now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: "tzinfo | None" = None) -> Self:
+            value = fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+            return cls(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                tzinfo=value.tzinfo,
+            )
+
+    monkeypatch.setattr(models_module, "datetime", FixedDateTime)
+    for module in (
+        advanced_alchemy_backend_module,
+        advanced_alchemy_service_module,
+        memory_backend_module,
+        redis_backend_module,
+        sqlspec_backend_module,
+    ):
+        monkeypatch.setattr(module, "_utc_now", lambda: fixed_now)
+
+    high = await queue_backend.enqueue("tasks.external.high", execution_backend="cloudrun", id=UUID(int=2))
+    low = await queue_backend.enqueue("tasks.external.low", execution_backend="cloudrun", id=UUID(int=1))
+    await queue_backend.set_execution_ref(high.id, "cloudrun", "jobs/high")
+    await queue_backend.set_execution_ref(low.id, "cloudrun", "jobs/low")
+
+    assert [record.id for record in await queue_backend.list_running_external(limit=1)] == [low.id]
 
 
 async def test_backend_contract_bulk_cancels_matching_domain_predicate(queue_backend: "BaseQueueBackend") -> "None":
@@ -282,6 +330,84 @@ async def test_backend_contract_fences_heartbeat_and_terminal_updates(queue_back
     assert stored.status == "running"
     assert stored.retry_count == 1
     assert stored.heartbeat_at == heartbeat
+
+
+async def test_backend_contract_cleanup_terminal_honors_bounded_limit(queue_backend: "BaseQueueBackend") -> "None":
+    """Bounded terminal cleanup removes at most ``limit`` per call and never overlaps."""
+    for index in range(5):
+        record = await queue_backend.enqueue(f"tasks.cleanup.bound.{index}")
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        await queue_backend.complete_task(claimed.id)
+
+    before = datetime.now(timezone.utc) + timedelta(seconds=1)
+    first = await queue_backend.cleanup_terminal(before, limit=2)
+    second = await queue_backend.cleanup_terminal(before, limit=2)
+    third = await queue_backend.cleanup_terminal(before, limit=2)
+    fourth = await queue_backend.cleanup_terminal(before, limit=2)
+
+    # Exact-limit batches, then continuation of the remainder, then a no-op.
+    assert first == 2
+    assert second == 2
+    assert third == 1
+    assert fourth == 0
+    statistics = await queue_backend.get_statistics()
+    assert statistics.completed == 0
+
+
+async def test_backend_contract_requeue_stale_honors_bounded_limit(queue_backend: "BaseQueueBackend") -> "None":
+    """Bounded stale recovery recovers at most ``limit`` per call with zero overlap."""
+    records = []
+    for index in range(4):
+        record = await queue_backend.enqueue(
+            f"tasks.stale.bound.{index}", max_retries=3, metadata={"requeue_on_stale": True}
+        )
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        records.append(record)
+
+    first = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=2)
+    second = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=2)
+    third = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=2)
+
+    assert first.requeued == 2
+    assert second.requeued == 2
+    assert third.requeued == 0
+    # Zero overlap: every record was requeued exactly once.
+    for record in records:
+        stored = await queue_backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.retry_count == 1
+
+
+async def test_backend_contract_maintenance_lease_fences_holders(queue_backend: "BaseQueueBackend") -> "None":
+    """A held maintenance lease denies other holders; only the matching token releases it."""
+    assert queue_backend.capabilities.supports_maintenance_lease is True
+    ttl = timedelta(seconds=60)
+
+    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-a", ttl=ttl) is True
+    # A second holder is denied while the lease is live.
+    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=ttl) is False
+    # A stale holder cannot release a lease it does not own.
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is False
+    # The owner releases and the lease becomes reacquirable.
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-a") is True
+    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=ttl) is True
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is True
+
+
+async def test_backend_contract_maintenance_lease_expires(queue_backend: "BaseQueueBackend") -> "None":
+    """An expired maintenance lease can be reacquired by a fresh holder."""
+    assert (
+        await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-a", ttl=timedelta(milliseconds=50))
+        is True
+    )
+    await asyncio.sleep(0.2)
+    assert (
+        await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=timedelta(seconds=60)) is True
+    )
+    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is True
 
 
 async def test_memory_backend_notifications_wake_waiters() -> "None":

@@ -87,14 +87,30 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
-    async def cleanup_before(self, before: "datetime") -> "int":
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete event-history records older than ``before``.
+
+        ``limit`` bounds one batch, deleting the oldest matching rows first
+        (oldest ``occurred_at``, then id).
 
         Returns:
             Number of deleted event-history rows.
         """
+        model_type = self.model_type
+        if limit is None:
+            result = await self.repository.session.execute(delete(model_type).where(model_type.occurred_at < before))
+            return int(result.rowcount or 0)
+        id_statement = (
+            select(model_type.id)
+            .where(model_type.occurred_at < before)
+            .order_by(model_type.occurred_at, model_type.id)
+            .limit(limit)
+        )
+        ids = (await self.repository.session.execute(id_statement)).scalars().all()
+        if not ids:
+            return 0
         result = await self.repository.session.execute(
-            delete(self.model_type).where(self.model_type.occurred_at < before)
+            delete(model_type).where(model_type.id.in_(ids)).execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0)
 
@@ -190,14 +206,21 @@ class QueueUniquenessService(SQLAlchemyAsyncRepositoryService[Any]):
         """Return the tombstone model owning ``key``, if any."""
         return await self.repository.get_one_or_none(identity_key=key)
 
-    async def delete_by_key(self, key: "str") -> "bool":
-        """Delete the tombstone for ``key``.
+    async def delete_by_key(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
+        """Delete the tombstone for ``key`` with optional owner fencing.
+
+        Args:
+            key: The exact effective identity key.
+            expected_task_id: Optional task owner required for deletion.
 
         Returns:
             ``True`` when a tombstone row was removed.
         """
         model_type = self.repository.model_type
-        result = await self.repository.session.execute(delete(model_type).where(model_type.identity_key == key))
+        predicates = [model_type.identity_key == key]
+        if expected_task_id is not None:
+            predicates.append(model_type.task_id == str(expected_task_id))
+        result = await self.repository.session.execute(delete(model_type).where(*predicates))
         return int(result.rowcount or 0) > 0
 
 
@@ -700,7 +723,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             update(model_type).where(*criteria).values(_update_values(model_type, {"heartbeat_at": None}))
         )
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         model_type = self.model_type
         stale_heartbeat = or_(model_type.heartbeat_at.is_(None), model_type.heartbeat_at <= cutoff)
@@ -708,7 +733,16 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         use_heartbeat_cutoff = stale_after.total_seconds() > 0
         if use_heartbeat_cutoff:
             select_criteria.append(stale_heartbeat)
-        models = (await self.repository.session.execute(select(model_type).where(*select_criteria))).scalars().all()
+        # Order oldest-heartbeat-first (coalescing NULL heartbeats to created_at
+        # so never-heartbeated rows sort first) then by id for a stable bound.
+        statement = (
+            select(model_type)
+            .where(*select_criteria)
+            .order_by(func.coalesce(model_type.heartbeat_at, model_type.created_at), model_type.id)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        models = (await self.repository.session.execute(statement)).scalars().all()
         result = StaleTaskRecoveryResult()
         for model in models:
             metadata = _deserialize_json(model.metadata_json)
@@ -824,7 +858,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         statement = (
             select(model_type)
             .where(model_type.status.in_(("pending", "scheduled", "running")), model_type.execution_ref.is_not(None))
-            .order_by(model_type.started_at, model_type.created_at)
+            .order_by(func.coalesce(model_type.started_at, model_type.created_at), model_type.id)
         )
         if limit is not None:
             statement = statement.limit(limit)
@@ -853,14 +887,29 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
-    async def cleanup_terminal(self, before: "datetime") -> "int":
+    async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         model_type = self.model_type
+        terminal_criteria = (
+            model_type.status.in_(_TERMINAL_STATUSES),
+            model_type.completed_at.is_not(None),
+            model_type.completed_at < before,
+        )
+        if limit is None:
+            result = await self.repository.session.execute(delete(model_type).where(*terminal_criteria))
+            return int(result.rowcount or 0)
+        # DELETE ... LIMIT is not portable, so select the oldest bounded id set
+        # (oldest completed_at, then id) and delete exactly those rows.
+        id_statement = (
+            select(model_type.id)
+            .where(*terminal_criteria)
+            .order_by(model_type.completed_at, model_type.id)
+            .limit(limit)
+        )
+        ids = (await self.repository.session.execute(id_statement)).scalars().all()
+        if not ids:
+            return 0
         result = await self.repository.session.execute(
-            delete(model_type).where(
-                model_type.status.in_(_TERMINAL_STATUSES),
-                model_type.completed_at.is_not(None),
-                model_type.completed_at < before,
-            )
+            delete(model_type).where(model_type.id.in_(ids)).execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0)
 

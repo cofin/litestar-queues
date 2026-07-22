@@ -95,17 +95,23 @@ class RedisQueueEventLog:
         del task_name
         return []
 
-    async def cleanup_before(self, before: "datetime") -> "int":
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete event history older than ``before``.
+
+        The oldest matching events (lowest score) are read first and capped at
+        ``limit`` before any deletion so one maintenance batch is bounded.
 
         Returns:
             Number of removed event-history records.
         """
         await self.flush_events()
         client = await self._backend._get_client()
-        event_ids = await client.zrangebyscore(
-            self._backend._event_log_global_key(), "-inf", f"({_score_datetime(before)}"
-        )
+        global_key = self._backend._event_log_global_key()
+        max_score = f"({_score_datetime(before)}"
+        if limit is not None:
+            event_ids = await client.zrangebyscore(global_key, "-inf", max_score, start=0, num=limit)
+        else:
+            event_ids = await client.zrangebyscore(global_key, "-inf", max_score)
         mappings = await self._mappings_from_ids(client, event_ids)
         removed = 0
         pipeline = _create_pipeline(client)
@@ -124,12 +130,16 @@ class RedisQueueEventLog:
             event_key = self._backend._event_log_event_key(record.event_id)
             if pipeline is not None:
                 pipeline.delete(event_key)
+                pipeline.zrem(global_key, record.event_id)
                 for index_key in index_keys:
-                    pipeline.zrem(str(index_key), record.event_id)
+                    if str(index_key) != global_key:
+                        pipeline.zrem(str(index_key), record.event_id)
             else:
                 await client.delete(event_key)
+                await client.zrem(global_key, record.event_id)
                 for index_key in index_keys:
-                    await client.zrem(str(index_key), record.event_id)
+                    if str(index_key) != global_key:
+                        await client.zrem(str(index_key), record.event_id)
             removed += 1
         if pipeline is not None:
             await _execute_pipeline(pipeline)

@@ -29,6 +29,10 @@ from litestar_queues.backends.sqlspec.event_log import (
     resolve_event_log_table_name,
 )
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
+from litestar_queues.backends.sqlspec.maintenance_lease import (
+    SQLSpecMaintenanceLeaseStore,
+    create_maintenance_lease_store,
+)
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
@@ -165,6 +169,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
+        "_maintenance_lease_store",
+        "_maintenance_lease_table_name",
         "_manage_schema",
         "_native_json_columns",
         "_notification_backend",
@@ -214,6 +220,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if backend_config.event_log_table_name is not None
             else None
         )
+        self._maintenance_lease_table_name = (
+            validate_table_name(backend_config.maintenance_lease_table_name)
+            if backend_config.maintenance_lease_table_name is not None
+            else None
+        )
         self._event_backend = backend_config.event_backend
         self._event_queue_table = backend_config.event_queue_table
         self._event_poll_interval = backend_config.event_poll_interval
@@ -225,6 +236,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._notifications_enabled = self._event_channel is not None
         self._event_log_store: "Any | None" = None
         self._event_log: "SQLSpecQueueEventLog | None" = None
+        self._maintenance_lease_store: "SQLSpecMaintenanceLeaseStore | None" = None
         self._store: "SQLSpecQueueStore | None" = None
         self._uniqueness_store: "SQLSpecQueueTombstoneStore | None" = None
         self._uniqueness_table_name = (
@@ -287,6 +299,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             supports_notifications=self._notifications_enabled,
             notification_backend=notification_backend,
             notifications_durable=notification_backend in _DURABLE_NOTIFICATION_BACKENDS,
+            supports_maintenance_lease=True,
         )
 
     async def create_schema(self) -> "None":
@@ -295,39 +308,36 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Returns:
             None.
         """
-        if self._manage_schema:
-            store = self._get_store()
+        if not self._manage_schema:
+            return
+        config = self._get_sqlspec_config()
+        queue_store = self._get_store()
+        stores = [queue_store, self._get_maintenance_lease_store(), self._get_uniqueness_store()]
+        event_log_store = self._get_event_log_store_if_enabled()
+        if event_log_store is not None:
+            stores.append(event_log_store)
+        driver_stores: "list[SQLSpecQueueStore]" = []
+        for store in stores:
             create_for_config = getattr(store, "create_schema_for_config", None)
             if callable(create_for_config):
-                result = create_for_config(self._get_sqlspec_config())
+                result = create_for_config(config)
                 if isawaitable(result):
                     await result
-            await self._create_uniqueness_schema()
-            if callable(create_for_config) and not self._event_log_enabled():
-                return
-            async with self._session() as driver:
-                statements: "list[str]" = []
-                if not callable(create_for_config):
-                    statements.extend(await _create_schema_statements(self._get_store(), driver))
-                event_log_store = self._get_event_log_store_if_enabled()
-                if event_log_store is not None:
-                    statements.extend(event_log_store.create_statements())
-                if self._should_provision_events_queue():
-                    statements.extend(_events_queue_create_statements(self._get_sqlspec_config()))
-                for statement in statements:
-                    await driver.execute_script(statement)
-                await driver.commit()
-
-    async def _create_uniqueness_schema(self) -> "None":
-        store = self._get_uniqueness_store()
-        create_for_config = getattr(store, "create_schema_for_config", None)
-        if callable(create_for_config):
-            result = create_for_config(self._get_sqlspec_config())
-            if isawaitable(result):
-                await result
+            else:
+                driver_stores.append(store)
+        provision_events_queue = self._should_provision_events_queue()
+        if not driver_stores and not provision_events_queue:
             return
         async with self._session() as driver:
-            for statement in store.create_statements():
+            statements: "list[str]" = []
+            for store in driver_stores:
+                if store is queue_store:
+                    statements.extend(await _create_schema_statements(store, driver))
+                else:
+                    statements.extend(store.create_statements())
+            if provision_events_queue:
+                statements.extend(_events_queue_create_statements(config))
+            for statement in statements:
                 await driver.execute_script(statement)
             await driver.commit()
 
@@ -536,20 +546,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             row = await self._select_one_row(driver, store.select_owner(key))
         return _tombstone_from_row(row) if row is not None else None
 
-    async def reset_identity(self, key: "str") -> "bool":
+    async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
         """Delete a forever identity tombstone via count-then-delete.
 
         Returns:
             ``True`` when a tombstone was removed.
         """
         store = self._get_uniqueness_store()
+        serialized_task_id = str(expected_task_id) if expected_task_id is not None else None
         async with self._session() as driver:
             await driver.begin()
             try:
-                count_row = await self._select_one_row(driver, store.count_by_key(key))
+                count_row = await self._select_one_row(
+                    driver, store.count_by_key(key, expected_task_id=serialized_task_id)
+                )
                 removed = int(count_row["tombstone_count"]) if count_row is not None else 0
                 if removed > 0:
-                    await driver.execute(store.delete_by_key(key))
+                    await driver.execute(store.delete_by_key(key, expected_task_id=serialized_task_id))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1059,22 +1072,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     await driver.rollback()
                 raise
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         store = self._get_store()
         result = StaleTaskRecoveryResult()
         serialized_cutoff = self._serialize_datetime(cutoff)
         with self._observe_queue_operation("stale_recovered"):
             async with self._session() as driver:
-                rows = await self._select_rows(driver, store.list_stale_running(cutoff=serialized_cutoff))
-                if not rows:
-                    return result
-                # Reset any implicit read transaction the SELECT may have opened so
-                # stale-recovery writes run in a fresh transaction.
-                with suppress(Exception):
-                    await driver.rollback()
                 await driver.begin()
                 try:
+                    rows = await self._select_rows(
+                        driver, store.list_stale_running(cutoff=serialized_cutoff, limit=limit)
+                    )
+                    if not rows:
+                        await driver.commit()
+                        return result
                     failed_handler_needed: "list[UUID]" = []
                     for row in rows:
                         record = self._record_from_row(row)
@@ -1236,26 +1250,102 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             rows = await self._select_rows(driver, built.sql, built.parameters)
         return [self._record_from_row(row) for row in rows]
 
-    async def cleanup_terminal(self, before: "datetime") -> "int":
+    async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         store = self._get_store()
         before_str = self._serialize_datetime(before)
         async with self._session() as driver:
             await driver.begin()
             try:
-                # Some drivers (e.g. psqlpy, see _UNRELIABLE_ROWCOUNT_ADAPTERS)
-                # cannot reliably report ``rows_affected`` for DELETE. Count
-                # first inside the same transaction so the cleanup count is
-                # always exact.
-                count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
-                deleted = int(count_row["terminal_count"]) if count_row is not None else 0
-                if deleted > 0:
-                    await driver.execute(store.cleanup_terminal(before=before_str))
+                if limit is None:
+                    # Some drivers (e.g. psqlpy, see _UNRELIABLE_ROWCOUNT_ADAPTERS)
+                    # cannot reliably report ``rows_affected`` for DELETE. Count
+                    # first inside the same transaction so the cleanup count is
+                    # always exact.
+                    count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
+                    deleted = int(count_row["terminal_count"]) if count_row is not None else 0
+                    if deleted > 0:
+                        await driver.execute(store.cleanup_terminal(before=before_str))
+                else:
+                    # DELETE ... LIMIT is not portable; select the oldest bounded
+                    # id set and delete exactly those rows in the same transaction.
+                    id_rows = await self._select_rows(driver, store.select_terminal_ids(before=before_str, limit=limit))
+                    task_ids = [str(row["id"]) for row in id_rows]
+                    deleted = len(task_ids)
+                    if task_ids:
+                        await driver.execute(store.delete_by_ids(task_ids=task_ids))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
                     await driver.rollback()
                 raise
         return deleted
+
+    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire a maintenance lease via an adapter-portable compare-and-set.
+
+        Updates the named row to this token when its stored lease has expired;
+        if a live row is present the update matches nothing and the row's token
+        differs, so the lease is denied. When no row exists a fresh one is
+        inserted, and a uniqueness race is treated as lease denial. The
+        select-after-update read makes correctness independent of the adapter's
+        ``rows_affected`` reliability.
+
+        Returns:
+            True when the lease is now held under ``token``.
+        """
+        store = self._get_maintenance_lease_store()
+        now = _utc_now()
+        now_param = self._serialize_datetime(now)
+        expiry_param = self._serialize_datetime(now + ttl)
+        async with self._session() as driver:
+            await driver.begin()
+            committed = False
+            try:
+                await driver.execute(
+                    store.acquire_update(name=name, token=token, expires_at=expiry_param, now=now_param)
+                )
+                row = await self._select_one_row(driver, store.select_lease_token(name=name))
+                if row is not None:
+                    acquired = str(row["token"]) == token
+                    await driver.commit()
+                    committed = True
+                    return acquired
+                await driver.execute(store.insert_lease(name=name, token=token, expires_at=expiry_param))
+                await driver.commit()
+                committed = True
+                return True  # noqa: TRY300 - the insert must stay inside the try to catch a uniqueness race.
+            except Exception as exc:
+                if not committed:
+                    with suppress(Exception):
+                        await driver.rollback()
+                if _is_unique_violation(exc):
+                    return False
+                raise
+
+    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
+        """Release a maintenance lease only when the stored token matches.
+
+        Returns:
+            True when a lease held under ``token`` was deleted and no successor
+            lease replaced it before the transaction's postcondition check.
+        """
+        store = self._get_maintenance_lease_store()
+        released = False
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                count_row = await self._select_one_row(driver, store.count_lease(name=name, token=token))
+                matched = int(count_row["lease_count"]) if count_row is not None else 0
+                if matched:
+                    await driver.execute(store.release_delete(name=name, token=token))
+                    remaining = await self._select_one_row(driver, store.select_lease_token(name=name))
+                    released = remaining is None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return released
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a SQLSpec event when configured queue work becomes available."""
@@ -1536,6 +1626,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _get_event_log_store_if_enabled(self) -> "Any | None":
         return self._get_event_log_store() if self._event_log_enabled() else None
+
+    def _get_maintenance_lease_store(self) -> "SQLSpecMaintenanceLeaseStore":
+        if self._maintenance_lease_store is None:
+            store = create_maintenance_lease_store(
+                self._get_sqlspec_config(),
+                queue_table_name=self._resolve_queue_table_name(),
+                maintenance_lease_table_name=self._maintenance_lease_table_name,
+                manage_schema=self._manage_schema,
+            )
+            self._maintenance_lease_table_name = store.table_name
+            self._maintenance_lease_store = store
+        return self._maintenance_lease_store
 
     def _get_uniqueness_store(self) -> "SQLSpecQueueTombstoneStore":
         if self._uniqueness_store is None:

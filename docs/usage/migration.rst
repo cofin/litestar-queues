@@ -49,10 +49,12 @@ originating task id/name and creation time) in a table separate from the queue
 task table so ordinary terminal and event maintenance never removes it. See
 :doc:`task-options` for the identity model.
 
-* **SQLSpec**: the packaged initial extension migration
-  (``0001_create_queue_tasks``) provisions the ``<queue_table>_uniqueness`` table
-  alongside the queue table for every supported adapter. ``manage_schema``
-  backends create it automatically. Override the table with
+* **SQLSpec**: packaged forward migration
+  ``0002_create_queue_auxiliary_tables`` provisions the
+  ``<queue_table>_uniqueness`` table for upgraded and fresh databases; released
+  migration ``0001`` remains unchanged. The explicit ``create_schema()``
+  development fallback also includes it when ``manage_schema=True``. Override it
+  with
   ``SQLSpecBackendConfig.uniqueness_table_name``.
 * **Advanced Alchemy**: schema ownership stays with the adopter. Compose the new
   :class:`~litestar_queues.backends.advanced_alchemy.QueueUniquenessModelMixin`

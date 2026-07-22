@@ -41,12 +41,17 @@ async def assert_reserve_returns_owner_on_conflict(backend: "BaseQueueBackend") 
 
 
 async def assert_reset_is_only_deletion_path(backend: "BaseQueueBackend") -> None:
-    """Reset removes a tombstone and permits exactly one fresh reservation."""
+    """Reset is owner-fenced when requested and permits a fresh reservation."""
     key = _unique_key("reset")
     original = uuid.uuid4()
     await backend.reserve_identity(key, task_id=original, task_name="uniq.reset")
 
-    assert await backend.reset_identity(key) is True
+    assert await backend.reset_identity(key, expected_task_id=uuid.uuid4()) is False
+    owner = await backend.has_identity(key)
+    assert owner is not None
+    assert owner.task_id == original
+
+    assert await backend.reset_identity(key, expected_task_id=original) is True
     assert await backend.has_identity(key) is None
     assert await backend.reset_identity(key) is False
 

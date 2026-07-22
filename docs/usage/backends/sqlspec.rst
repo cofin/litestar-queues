@@ -77,7 +77,14 @@ The default queue table is ``litestar_queue_task``. When event history is
 enabled, SQLSpec derives its table by adding ``_event_log`` to the queue table,
 so the default is ``litestar_queue_task_event_log``. Set
 ``event_log_table_name`` only when the application needs a different name.
-Schema-qualified names keep their schema and add the suffix to the table part.
+The packaged forward migration ``0002_create_queue_auxiliary_tables`` adds the
+distributed maintenance-lease and forever-uniqueness tables with
+``_maintenance_lease`` and ``_uniqueness`` suffixes. This separate migration
+upgrades databases that already applied the released ``0001``. Override the
+names with ``maintenance_lease_table_name`` and ``uniqueness_table_name``.
+Schema-qualified names keep their schema and add each suffix to the table part.
+See :doc:`../maintenance` before scheduling maintenance and
+:doc:`../migration` before using forever uniqueness.
 
 Wakeups
 -------

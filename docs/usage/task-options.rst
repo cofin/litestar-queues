@@ -65,15 +65,13 @@ Task uniqueness
 Opt into identity without hand-building keys with ``unique_by`` and, only when
 you need it, ``unique_until``.
 
-- ``unique_by="task"`` derives the identity from the registered task name, so
-  every enqueue of the task shares one active record. Arguments are never
-  inspected.
+- ``unique_by="task"`` derives the identity from the registered task name.
+  Calls share one active record unless an explicit or configured key wins.
 - ``unique_by="arguments"`` derives the identity from the registered task name
-  plus the normalized call: positional and keyword forms of the same call, and
-  applied defaults, produce the same identity. Arguments are bound against the
-  callable signature, defaults are applied, the injected ``_task_context`` is
-  excluded, and a versioned canonical JSON payload is hashed with SHA-256. It
-  never uses ``pickle`` or ``repr()``.
+  plus the normalized call. Positional and keyword forms of the same call, and
+  applied defaults, produce the same identity. The injected ``_task_context``
+  is excluded, and a versioned canonical JSON payload is hashed with SHA-256.
+  It never uses ``pickle`` or ``repr()``.
 
 .. code-block:: python
 
@@ -90,8 +88,8 @@ you need it, ``unique_until``.
 Identity precedence and lifetime
 --------------------------------
 
-Identity is selected by strict precedence. The first row that applies wins, and
-the explicit, configured, and task-only rows never bind, serialize, or hash
+Identity is selected by strict precedence. The first applicable row wins. The
+explicit, configured, and task-only paths never bind, serialize, or hash
 arguments.
 
 .. list-table::
@@ -100,26 +98,32 @@ arguments.
 
    * - Configuration
      - Identity
-     - Conflict window
+     - Argument handling
+   * - explicit enqueue ``key``
+     - the exact enqueue-time key
+     - not inspected
+   * - configured task ``key``
+     - the exact decorator key
+     - not inspected
+   * - ``unique_by="task"``
+     - a versioned hash of the registered task name
+     - not inspected
+   * - ``unique_by="arguments"``
+     - a versioned hash of the task name plus normalized call
+     - bound, normalized, JSON-encoded, and hashed
    * - no ``key``, no ``unique_by``
      - none; every enqueue is a new record
-     - none; executions may overlap up to worker capacity
-   * - explicit or configured ``key``
-     - the exact caller-supplied key
-     - until terminal
-   * - ``unique_by="task"``
-     - the registered task name
-     - until terminal
-   * - ``unique_by="arguments"``
-     - the registered task name plus the normalized call
-     - until terminal
-   * - ``unique_until="forever"``
-     - the selected identity above
-     - retained by a tombstone until reset
+     - not inspected
 
-``unique_until`` defaults to ``"terminal"`` and is omitted from ordinary
-configuration. Spell out ``unique_until="forever"`` only when you want a retained
-tombstone that ordinary cleanup never removes:
+``unique_until`` defaults to ``"terminal"``. It sets the lifetime of whichever
+identity wins the precedence above, including an explicit enqueue key:
+
+- ``"terminal"`` allows a new record after the current one reaches a final
+  state.
+- ``"forever"`` retains a tombstone until an administrator resets it.
+
+Spell out ``unique_until="forever"`` only when that retained identity is
+required:
 
 .. code-block:: python
 

@@ -57,16 +57,25 @@ class InMemoryQueueEventLog:
         del task_name
         return []
 
-    async def cleanup_before(self, before: "datetime") -> "int":
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete records older than ``before``.
+
+        ``limit`` bounds one batch, deleting the oldest matching records first
+        (oldest ``occurred_at``, then event id).
 
         Returns:
             Number of deleted records.
         """
         async with self._lock:
-            original_count = len(self._records)
-            self._records = [record for record in self._records if record.occurred_at >= before]
-            return original_count - len(self._records)
+            stale = [record for record in self._records if record.occurred_at < before]
+            if limit is not None:
+                stale.sort(key=lambda record: (record.occurred_at, record.event_id))
+                stale = stale[:limit]
+            if not stale:
+                return 0
+            doomed = {id(record) for record in stale}
+            self._records = [record for record in self._records if id(record) not in doomed]
+            return len(stale)
 
     async def clear(self) -> "None":
         """Clear all memory event-history records."""

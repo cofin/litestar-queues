@@ -71,6 +71,7 @@ def test_required_documentation_pages_exist() -> None:
         "usage/failures-and-cancellation.rst",
         "usage/worker-wakeups.rst",
         "usage/worker-recovery.rst",
+        "usage/maintenance.rst",
         "usage/backends/sqlspec.rst",
         "usage/backends/advanced-alchemy.rst",
         "usage/backends/redis-valkey.rst",

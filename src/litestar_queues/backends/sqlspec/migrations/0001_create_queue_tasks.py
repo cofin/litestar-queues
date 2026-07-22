@@ -8,36 +8,31 @@ from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
-from litestar_queues.backends.sqlspec.uniqueness import create_tombstone_store
 
 if TYPE_CHECKING:
     from sqlspec.migrations.context import MigrationContext
 
     from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLogStore
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
-    from litestar_queues.backends.sqlspec.uniqueness import SQLSpecQueueTombstoneStore
 
 __all__ = ("down", "up")
 
 
 async def up(context: "MigrationContext | None" = None) -> "list[str]":
-    """Return SQL statements that provision the queue table, indexes, and tombstones."""
+    """Return SQL statements that provision the queue table and indexes."""
     queue_store = _load_queue_store(context)
     event_log_store = _load_event_log_store(context)
     statements = queue_store.create_statements()
     if event_log_store is not None:
         statements.extend(event_log_store.create_statements())
-    statements.extend(_load_tombstone_store(context).create_statements())
     return statements
 
 
 async def down(context: "MigrationContext | None" = None) -> "list[str]":
-    """Return SQL statements that drop the queue table and tombstones."""
+    """Return SQL statements that drop the queue table."""
     queue_store = _load_queue_store(context)
     event_log_store = _load_event_log_store(context)
-    statements = _load_tombstone_store(context).drop_statements()
-    if event_log_store is not None:
-        statements.extend(event_log_store.drop_statements())
+    statements = event_log_store.drop_statements() if event_log_store is not None else []
     statements.extend(queue_store.drop_statements())
     return statements
 
@@ -48,24 +43,6 @@ def _load_queue_store(context: "MigrationContext | None") -> "SQLSpecQueueStore"
         raise SQLSpecError(msg)
     config = cast("Any", context.config)
     return create_queue_store(config, manage_schema=bool(getattr(config, "manage_schema", True)))
-
-
-def _load_tombstone_store(context: "MigrationContext | None") -> "SQLSpecQueueTombstoneStore":
-    if context is None or context.config is None:
-        msg = "Migration context with SQLSpec adapter configuration is required"
-        raise SQLSpecError(msg)
-    config = cast("Any", context.config)
-    extension_config = config.extension_config or {}
-    queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    queue_table_name = validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
-    configured = queue_settings.get("uniqueness_table_name")
-    uniqueness_table_name = str(configured) if configured is not None else None
-    return create_tombstone_store(
-        config,
-        queue_table_name=queue_table_name,
-        uniqueness_table_name=uniqueness_table_name,
-        manage_schema=bool(getattr(config, "manage_schema", True)),
-    )
 
 
 def _load_event_log_store(context: "MigrationContext | None") -> "SQLSpecQueueEventLogStore | None":

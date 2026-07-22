@@ -12,11 +12,13 @@ import json
 import os
 import signal
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import click
 
+from litestar_queues.config import queue_backend_name
 from litestar_queues.consumer import run_task
+from litestar_queues.maintenance import QueueMaintenanceService
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 from litestar_queues.worker import Worker
@@ -24,9 +26,18 @@ from litestar_queues.worker import Worker
 if TYPE_CHECKING:
     from litestar.cli._utils import LitestarEnv
 
+    from litestar_queues.maintenance import MaintenancePhase, QueueMaintenanceSummary
     from litestar_queues.service import QueueService
 
-__all__ = ("queues_group", "register", "run_command", "run_task_command", "scheduler_health_command", "status_command")
+__all__ = (
+    "queues_group",
+    "register",
+    "run_command",
+    "run_maintenance_command",
+    "run_task_command",
+    "scheduler_health_command",
+    "status_command",
+)
 
 FORCE_STOP_SIGNAL_COUNT = 2
 
@@ -110,10 +121,124 @@ def run_task_command(
     ctx.exit(int(exit_code))
 
 
+@queues_group.command(
+    name="run-maintenance",
+    help="Run one bounded maintenance pass (external reconcile, stale recovery, and retention) and exit. "
+    "Thresholds and limits come from QueueConfig.maintenance; this command never starts a worker or runs due work.",
+)
+@click.option(
+    "--phase",
+    "phases",
+    multiple=True,
+    type=click.Choice(["external", "stale", "terminal", "events"]),
+    help="Maintenance phase to run. Repeatable; defaults to every configured phase. Only narrows configuration.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def run_maintenance_command(ctx: "click.Context", phases: "tuple[str, ...]", as_json: "bool") -> "None":
+    env = _ensure_env(ctx)
+    plugin = _resolve_plugin(env)
+    exit_code = asyncio.run(_maintain_run(plugin, phases, as_json))
+    ctx.exit(exit_code)
+
+
 def register(cli: "click.Group") -> "None":
     """Attach the ``queues`` subcommand group to ``cli`` (idempotent)."""
     if queues_group.name not in cli.commands:
         cli.add_command(queues_group)
+
+
+async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_json: "bool") -> "int":
+    config = plugin.config
+    maintenance_config = config.maintenance
+    if maintenance_config is None:
+        click.echo(
+            "error: QueueConfig.maintenance is not configured; set "
+            "QueueConfig(maintenance=QueueMaintenanceConfig(...)) to enable 'litestar queues run-maintenance'.",
+            err=True,
+        )
+        return 1
+    if queue_backend_name(config.queue_backend) == "memory":
+        click.echo(
+            "error: the in-memory queue backend is process-local and cannot be maintained from a separate "
+            "CLI process; run maintenance against a persistent backend (Redis/Valkey, SQLSpec, or Advanced Alchemy).",
+            err=True,
+        )
+        return 1
+    if config.task_modules:
+        load_task_modules(config.task_modules)
+
+    service = _open_service(plugin)
+    try:
+        await service.open()
+    except Exception as exc:
+        _emit_maintenance_lifecycle_error("open", exc)
+        await _close_maintenance_service(service)
+        return 1
+
+    selected = cast("tuple[MaintenancePhase, ...] | None", tuple(phases) or None)
+    summary: "QueueMaintenanceSummary | None" = None
+    run_failed = False
+    try:
+        backend = service.get_queue_backend()
+        if not backend.capabilities.supports_maintenance_lease:
+            click.echo(
+                f"error: {type(backend).__name__} does not support the distributed maintenance lease required by "
+                "'litestar queues run-maintenance'.",
+                err=True,
+            )
+            return 1
+        summary = await QueueMaintenanceService(service, maintenance_config).run(selected)
+    except Exception as exc:
+        _emit_maintenance_lifecycle_error("run", exc)
+        run_failed = True
+    finally:
+        closed = await _close_maintenance_service(service)
+
+    if run_failed or not closed or summary is None:
+        return 1
+    _emit_maintenance_summary(summary, as_json)
+    return _maintenance_exit_code(summary)
+
+
+def _emit_maintenance_lifecycle_error(stage: "str", exc: "Exception") -> "None":
+    click.echo(
+        f"error: maintenance_{stage}_failed:{type(exc).__name__}. "
+        "Apply the current queue backend migrations and verify backend connectivity; "
+        "the underlying exception message was suppressed because it may contain credentials.",
+        err=True,
+    )
+
+
+async def _close_maintenance_service(service: "QueueService") -> "bool":
+    try:
+        await service.close()
+    except Exception as exc:
+        _emit_maintenance_lifecycle_error("close", exc)
+        return False
+    return True
+
+
+def _emit_maintenance_summary(summary: "QueueMaintenanceSummary", as_json: "bool") -> "None":
+    if as_json:
+        click.echo(json.dumps(summary.to_payload(), separators=(",", ":")))
+        return
+    click.echo(f"outcome: {summary.outcome}")
+    click.echo(f"lease_acquired: {summary.lease_acquired}")
+    click.echo(f"duration_ms: {summary.duration_ms:.1f}")
+    click.echo(f"{'Phase':<10}{'Status':<12}{'Changed':>9}{'Duration(ms)':>14}  Error")
+    click.echo(f"{'-' * 10}{'-' * 12}{'-' * 9:>9}{'-' * 12:>14}  {'-' * 5}")
+    for phase in summary.phases:
+        click.echo(
+            f"{phase.phase:<10}{phase.status:<12}{phase.changed:>9}{phase.duration_ms:>14.1f}  {phase.error or '-'}"
+        )
+
+
+def _maintenance_exit_code(summary: "QueueMaintenanceSummary") -> "int":
+    if summary.outcome == "failed":
+        return 1
+    if summary.outcome == "partial":
+        return 2
+    return 0
 
 
 async def _run_worker(

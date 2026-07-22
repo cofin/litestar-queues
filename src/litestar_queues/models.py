@@ -48,6 +48,7 @@ class QueueBackendCapabilities:
     notification_backend: "str | None" = None
     notifications_durable: "bool" = False
     supports_completion_events: "bool" = False
+    supports_maintenance_lease: "bool" = False
 
 
 @dataclass(slots=True)

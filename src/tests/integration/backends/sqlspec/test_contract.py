@@ -11,6 +11,7 @@ Two flavours of tests live here:
 """
 
 import asyncio
+import importlib
 import logging
 import sqlite3
 import sys
@@ -29,7 +30,7 @@ pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues import EventLogConfig, HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
@@ -248,6 +249,21 @@ async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridg
         assert [record.id for record in streamed] == [stored.id]
     finally:
         await backend.close()
+
+
+async def test_sqlspec_identity_reset_only_removes_expected_owner(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
+    key = "identity:expected-owner"
+    owner_task_id = uuid4()
+    successor_task_id = uuid4()
+
+    assert await sqlspec_backend.reserve_identity(key, task_id=owner_task_id, task_name="tasks.identity.owner") is None
+    assert await sqlspec_backend.reset_identity(key, expected_task_id=successor_task_id) is False
+    owner = await sqlspec_backend.has_identity(key)
+    assert owner is not None
+    assert owner.task_id == owner_task_id
+
+    assert await sqlspec_backend.reset_identity(key, expected_task_id=owner_task_id) is True
+    assert await sqlspec_backend.has_identity(key) is None
 
 
 async def test_adbc_sqlite_completed_query_survives_prior_aiosqlite_query(tmp_path: "Path") -> "None":
@@ -907,17 +923,98 @@ async def test_sqlspec_backend_uses_spanner_update_ddl_for_schema_bootstrap() ->
     await backend.create_schema()
     await backend.close()
 
+    from litestar_queues.backends.sqlspec.maintenance_lease import create_maintenance_lease_store
     from litestar_queues.backends.sqlspec.uniqueness import create_tombstone_store
 
     assert database.statement_batches
     assert all(len(batch) == 1 for batch in database.statement_batches)
     statements = [statement for batch in database.statement_batches for statement in batch]
     expected = create_queue_store(config, table_name="queue_tasks").create_statements()
+    expected += create_maintenance_lease_store(config, queue_table_name="queue_tasks").create_statements()
     expected += create_tombstone_store(config, queue_table_name="queue_tasks").create_statements()
     assert statements == expected
     assert "PRIMARY KEY (`id`)" in statements[0]
+    assert any("queue_tasks_maintenance_lease" in statement for statement in statements)
     assert any("queue_tasks_uniqueness" in statement for statement in statements)
     assert all("IF NOT EXISTS" not in statement for statement in statements)
+
+
+async def test_sqlspec_backend_uses_spanner_update_ddl_for_event_log_schema_bootstrap() -> "None":
+    class FakeOperation:
+        def result(self) -> "None":
+            return None
+
+    class FakeDatabase:
+        def __init__(self) -> "None":
+            self.statement_batches: "list[tuple[str, ...]]" = []
+
+        def update_ddl(self, ddl_statements: "list[str]") -> "FakeOperation":
+            self.statement_batches.append(tuple(ddl_statements))
+            return FakeOperation()
+
+    database = FakeDatabase()
+    config = _fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerSyncConfig")
+    config.get_database = lambda: database
+    backend = SQLSpecQueueBackend(
+        config=QueueConfig(event_log=EventLogConfig(enabled=True)),
+        backend_config=SQLSpecBackendConfig(config=config, queue_table_name="queue_tasks", notifications=False),
+    )
+
+    await backend.open()
+    await backend.create_schema()
+    await backend.close()
+
+    statements = [statement for batch in database.statement_batches for statement in batch]
+    assert any("queue_tasks_event_log" in statement for statement in statements)
+    assert any("queue_tasks_maintenance_lease" in statement for statement in statements)
+    assert any("queue_tasks_uniqueness" in statement for statement in statements)
+    assert all("IF NOT EXISTS" not in statement for statement in statements)
+    assert all("DATETIME" not in statement for statement in statements)
+    assert not any("PRIMARY KEY" in statement and "PRIMARY KEY (`" not in statement for statement in statements)
+
+
+@pytest.mark.parametrize("config_type_name", ("OracleSyncConfig", "OracleAsyncConfig"))
+async def test_sqlspec_oracle_auxiliary_schema_uses_retry_safe_version_compatible_ddl(
+    config_type_name: "str",
+) -> "None":
+    migration = importlib.import_module(
+        "litestar_queues.backends.sqlspec.migrations.0002_create_queue_auxiliary_tables"
+    )
+    from litestar_queues.backends.sqlspec.uniqueness import create_tombstone_store
+
+    config = _fake_adapter_config(
+        "oracledb",
+        dialect="oracle",
+        config_type_name=config_type_name,
+        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "queue_tasks"}},
+    )
+    store = create_tombstone_store(config, queue_table_name="queue_tasks")
+
+    assert type(store).__name__ == "OracleQueueTombstoneStore"
+    runtime_insert = (
+        store
+        .insert_reservation({
+            "identity_key": "identity",
+            "task_id": "task-id",
+            "task_name": "tasks.example",
+            "created_at": datetime.now(timezone.utc),
+        })
+        .build(dialect=store.dialect_name)
+        .sql
+    )
+    create_statements = await migration.up(SimpleNamespace(config=config))
+    drop_statements = await migration.down(SimpleNamespace(config=config))
+    assert len(create_statements) == 2
+    assert len(drop_statements) == 2
+    assert all("EXECUTE IMMEDIATE 'CREATE TABLE " in statement for statement in create_statements)
+    assert all("SQLCODE != -955" in statement for statement in create_statements)
+    assert all("IF NOT EXISTS" not in statement for statement in create_statements)
+    assert all("EXECUTE IMMEDIATE 'DROP TABLE " in statement for statement in drop_statements)
+    assert all("SQLCODE != -942" in statement for statement in drop_statements)
+    assert all("IF EXISTS" not in statement for statement in drop_statements)
+    assert "CREATE TABLE queue_tasks_uniqueness" in create_statements[1]
+    assert "INTO queue_tasks_uniqueness" in runtime_insert
+    assert "DROP TABLE queue_tasks_uniqueness" in drop_statements[0]
 
 
 @pytest.mark.parametrize(
@@ -1847,7 +1944,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     with sqlite3.connect(db_path) as connection:
         versions = [row[0] for row in connection.execute("SELECT version_num FROM ddl_migrations")]
 
-    assert versions == ["ext_litestar_queues_0001"]
+    assert versions == ["ext_litestar_queues_0001", "ext_litestar_queues_0002"]
 
 
 async def test_sqlspec_backend_packaged_migrations_do_not_mutate_adopter_config(

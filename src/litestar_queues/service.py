@@ -42,6 +42,29 @@ _LOG_LEVELS = {
     "info": logging.INFO,
     "debug": logging.DEBUG,
 }
+_UNVERIFIED_PERSISTENCE = object()
+
+
+async def _release_failed_forever_reservation(backend: "BaseQueueBackend", key: "str", reserved_id: "UUID") -> "None":
+    """Release a confirmed-unpersisted reservation without deleting a successor."""
+    persisted: "object | QueuedTaskRecord | None" = _UNVERIFIED_PERSISTENCE
+    with contextlib.suppress(Exception):
+        persisted = await backend.get_task(reserved_id)
+    if persisted is None:
+        with contextlib.suppress(Exception):
+            await backend.reset_identity(key, expected_task_id=reserved_id)
+
+
+async def _raise_forever_identity_collision(backend: "BaseQueueBackend", key: "str", reserved_id: "UUID") -> "None":
+    """Release this reservation and reject a cross-policy active-key collision."""
+    with contextlib.suppress(Exception):
+        await backend.reset_identity(key, expected_task_id=reserved_id)
+    msg = (
+        "A unique_until='forever' enqueue collided with an active task under the same effective key, "
+        "but the backend returned a different task ID. The existing task was preserved and this "
+        "reservation was released. Do not reuse a deduplication key across uniqueness policies."
+    )
+    raise QueueConfigurationError(msg)
 
 
 class QueueService:
@@ -103,6 +126,15 @@ class QueueService:
         from litestar_queues.events import QueueEventProducer
 
         return QueueEventProducer(self.get_event_publisher())
+
+    def get_event_log(self) -> "QueueEventLog | None":
+        """Return the backend-owned durable event log, if one is configured.
+
+        The event log is wired during :meth:`open` only when ``event_log`` is
+        enabled; otherwise this returns ``None`` and durable-event maintenance
+        is a no-op.
+        """
+        return self._event_log
 
     @property
     def observability_runtime(self) -> "QueueObservabilityRuntimeProtocol":
@@ -265,14 +297,16 @@ class QueueService:
                 metadata=effective_metadata,
                 id=reserved_id,
             )
+            if reserved_id is not None and record.id != reserved_id and effective_key is not None:
+                await _raise_forever_identity_collision(self.get_queue_backend(), effective_key, reserved_id)
         except BaseException as exc:
             runtime.record_exception(span, exc)
             if reserved_id is not None and effective_key is not None:
-                # Release only this failed pre-persistence forever reservation so a
-                # committed task can never lack its tombstone and a failed one never
-                # strands the identity.
-                with contextlib.suppress(Exception):
-                    await self.get_queue_backend().reset_identity(effective_key)
+                # Enqueue may have committed before a later notification failed.
+                # Release only when the reserved record is confirmed absent; an
+                # inconclusive read retains the tombstone fail-closed. The owner
+                # predicate prevents recovery from deleting a successor reservation.
+                await _release_failed_forever_reservation(self.get_queue_backend(), effective_key, reserved_id)
             raise
         else:
             runtime.set_attribute(span, "messaging.message.id", str(record.id))
@@ -536,15 +570,69 @@ class QueueService:
         _finish_execution_observability(runtime, span, started_at, metric_base_attributes, "claim_lost")
         return current
 
+    async def reconcile_external(self, limit: "int | None" = None) -> "int":
+        """Reconcile externally dispatched records against their executor.
+
+        Lists running external records (bounded by ``limit`` when provided),
+        reconciles each against its execution backend, and records a metric for
+        every record that reached a terminal queue status. Records that name an
+        unknown execution backend are skipped with a warning.
+
+        Args:
+            limit: When provided, reconcile at most this many external records.
+                ``None`` reconciles every outstanding external record.
+
+        Returns:
+            Number of records that reached a terminal queue status.
+        """
+        queue_backend = self.get_queue_backend()
+        records = await queue_backend.list_running_external(limit=limit)
+        reconciled = 0
+        current_backend = self.get_execution_backend()
+        default_backend_name = execution_backend_name(self._config.execution_backend)
+        runtime = self.observability_runtime
+        for record in records:
+            if record.execution_ref is None:
+                continue
+            try:
+                execution_backend = (
+                    current_backend
+                    if record.execution_backend == default_backend_name
+                    else get_execution_backend(record.execution_backend, config=self._config)
+                )
+            except ValueError:
+                logger.warning(
+                    "Skipping external queue record with unknown execution backend",
+                    extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
+                )
+                continue
+            updated = await execution_backend.reconcile(self, record)
+            if updated is not None and updated.is_terminal:
+                reconciled += 1
+                runtime.record_counter(
+                    "litestar_queues.execution.reconcile.count",
+                    attributes={
+                        "queue.execution.backend": record.execution_backend,
+                        "queue.task.status": updated.status,
+                    },
+                )
+        return reconciled
+
     async def recover_stale_tasks(
-        self, *, stale_after: "timedelta", worker_id: "str | None" = None
+        self, *, stale_after: "timedelta", worker_id: "str | None" = None, limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
         """Recover stale running tasks and publish a worker summary event.
+
+        Args:
+            stale_after: Heartbeat age past which a running task is stale.
+            worker_id: Identity attached to published recovery events.
+            limit: When provided, recover at most this many records in one
+                bounded batch. ``None`` preserves the unbounded worker behavior.
 
         Returns:
             Summary of recovered, failed, skipped, and handler-needed tasks.
         """
-        result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after)
+        result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after, limit=limit)
         if result.requeued or result.failed or result.skipped or result.handler_needed:
             await self._publish_stale_failed_events(result, worker_id=worker_id)
             await self.get_event_publisher().publish(

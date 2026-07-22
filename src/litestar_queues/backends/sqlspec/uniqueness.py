@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     "MssqlQueueTombstoneStore",
+    "OracleQueueTombstoneStore",
     "SQLSpecQueueTombstoneStore",
     "SpannerQueueTombstoneStore",
     "create_tombstone_store",
@@ -62,19 +63,28 @@ class SQLSpecQueueTombstoneStore(SQLSpecQueueStore):
         """Return an INSERT that reserves an identity key."""
         return sql.insert(self.table_name).columns(*values.keys()).values(**values)
 
-    def count_by_key(self, key: "str") -> "Select":
+    def count_by_key(self, key: "str", *, expected_task_id: "str | None" = None) -> "Select":
         """Return a COUNT for a tombstone key (reset uses count-then-delete)."""
-        return sql.select(sql.raw("COUNT(*) AS tombstone_count")).from_(self.table_name).where_eq("identity_key", key)
+        statement = (
+            sql.select(sql.raw("COUNT(*) AS tombstone_count")).from_(self.table_name).where_eq("identity_key", key)
+        )
+        if expected_task_id is not None:
+            statement = statement.where_eq("task_id", expected_task_id)
+        return statement
 
-    def delete_by_key(self, key: "str") -> "Delete":
+    def delete_by_key(self, key: "str", *, expected_task_id: "str | None" = None) -> "Delete":
         """Return a DELETE removing the tombstone for ``key``."""
-        return sql.delete(self.table_name).where_eq("identity_key", key)
+        statement = sql.delete(self.table_name).where_eq("identity_key", key)
+        if expected_task_id is not None:
+            statement = statement.where_eq("task_id", expected_task_id)
+        return statement
 
-    def _create_tombstone_table_statement(self) -> "CreateTable":
+    def _create_tombstone_table_statement(self, *, if_not_exists: "bool" = True) -> "CreateTable":
+        statement = sql.create_table(self.table_name)
+        if if_not_exists:
+            statement = statement.if_not_exists()
         return (
-            sql
-            .create_table(self.table_name)
-            .if_not_exists()
+            statement
             .column("identity_key", self._indexed_text_type(), primary_key=True)
             .column("task_id", self._id_type(), not_null=True)
             .column("task_name", self._indexed_text_type(), not_null=True)
@@ -88,6 +98,32 @@ class SQLSpecQueueTombstoneStore(SQLSpecQueueStore):
         if unsplit_target != split_target:
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
+
+
+class OracleQueueTombstoneStore(SQLSpecQueueTombstoneStore):
+    """Oracle tombstone store using version-compatible plain CREATE/DROP DDL."""
+
+    __slots__ = ()
+
+    data_dictionary_dialect = "oracle"
+    identifier_quote_style = "none"
+
+    def create_statements(self) -> "list[str]":
+        """Return a retry-safe CREATE TABLE block supported before Oracle 23c."""
+        if not self._manage_schema:
+            return []
+        rendered = self._to_sql(self._create_tombstone_table_statement(if_not_exists=False))
+        unsplit_target = self._quote_unsplit_identifier(self.table_name)
+        split_target = self._quoted_table_name()
+        if unsplit_target != split_target:
+            rendered = rendered.replace(unsplit_target, split_target, 1)
+        return [_oracle_ddl_block(rendered, ignored_code=-955)]
+
+    def drop_statements(self) -> "list[str]":
+        """Return a retry-safe DROP TABLE block supported before Oracle 23c."""
+        if not self._manage_schema:
+            return []
+        return [_oracle_ddl_block(f"DROP TABLE {self._quoted_table_name()}", ignored_code=-942)]
 
 
 class SpannerQueueTombstoneStore(SQLSpecQueueTombstoneStore):
@@ -231,8 +267,24 @@ def create_tombstone_store(
     adapter = _adapter_name(config)
     if adapter == "spanner":
         store_type: "type[SQLSpecQueueTombstoneStore]" = SpannerQueueTombstoneStore
+    elif adapter == "oracledb":
+        store_type = OracleQueueTombstoneStore
     elif adapter in _MSSQL_ADAPTERS:
         store_type = MssqlQueueTombstoneStore
     else:
         store_type = SQLSpecQueueTombstoneStore
     return store_type(config, table_name=table_name, manage_schema=manage_schema)
+
+
+def _oracle_ddl_block(statement: "str", *, ignored_code: "int") -> "str":
+    escaped = statement.replace("'", "''")
+    return f"""
+    BEGIN
+        EXECUTE IMMEDIATE '{escaped}';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != {ignored_code} THEN
+                RAISE;
+            END IF;
+    END;
+    """

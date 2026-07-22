@@ -22,6 +22,12 @@ def _default_event_log_model_class() -> "type[object]":
     return QueueEventLogModel
 
 
+def _default_maintenance_lease_model_class() -> "type[object]":
+    from litestar_queues.backends.advanced_alchemy.models import QueueMaintenanceLeaseModel
+
+    return QueueMaintenanceLeaseModel
+
+
 def _default_uniqueness_model_class() -> "type[object]":
     from litestar_queues.backends.advanced_alchemy.models import QueueUniquenessModel
 
@@ -37,6 +43,7 @@ class SQLAlchemyBackendConfig:
     heartbeat_session_maker: "async_sessionmaker[AsyncSession] | None" = None
     model_class: "type[object] | None" = field(default_factory=_default_model_class)
     event_log_model_class: "type[object] | None" = field(default_factory=_default_event_log_model_class)
+    maintenance_lease_model_class: "type[object] | None" = field(default_factory=_default_maintenance_lease_model_class)
     uniqueness_model_class: "type[object] | None" = field(default_factory=_default_uniqueness_model_class)
     notifications: "bool" = False
     notification_channel: "str" = "litestar_queues_tasks"

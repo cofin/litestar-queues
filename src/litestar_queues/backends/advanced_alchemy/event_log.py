@@ -82,7 +82,7 @@ class AdvancedAlchemyQueueEventLog:
         del task_name
         return []
 
-    async def cleanup_before(self, before: "datetime") -> "int":
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete event history older than ``before``.
 
         Returns:
@@ -90,7 +90,7 @@ class AdvancedAlchemyQueueEventLog:
         """
         await self.flush_events()
         async with self._transaction_factory() as service:
-            return await service.cleanup_before(before)
+            return await service.cleanup_before(before, limit=limit)
 
     def _flush_interval_elapsed(self) -> "bool":
         return self._config.flush_interval <= 0 or time.monotonic() - self._last_flush >= self._config.flush_interval

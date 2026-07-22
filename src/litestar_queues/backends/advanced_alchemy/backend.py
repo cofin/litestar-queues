@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from advanced_alchemy.exceptions import DuplicateKeyError
+from sqlalchemy import delete, text, update
 from sqlalchemy import inspect as sqlalchemy_inspect
-from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
@@ -19,6 +19,7 @@ from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendCo
 from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
 from litestar_queues.backends.advanced_alchemy.mixins import (
     QueueEventLogModelMixin,
+    QueueMaintenanceLeaseModelMixin,
     QueueTaskModelMixin,
     QueueUniquenessModelMixin,
 )
@@ -66,6 +67,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     _service_class: 'type["QueueTaskService"]'
     _event_log_model_class: "type[QueueEventLogModelMixin]"
     _event_log_service_class: 'type["QueueEventLogService"]'
+    _maintenance_lease_model_class: "type[QueueMaintenanceLeaseModelMixin]"
     _uniqueness_model_class: "type[QueueUniquenessModelMixin]"
     _uniqueness_service_class: 'type["QueueUniquenessService"]'
 
@@ -75,6 +77,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         "_event_log_service_class",
         "_event_poll_interval",
         "_heartbeat_session_maker",
+        "_maintenance_lease_model_class",
         "_model_class",
         "_notification_channel",
         "_notification_listener",
@@ -98,6 +101,9 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self._event_log_model_class, self._event_log_service_class = self._resolve_event_log_model_classes(
             backend_config.event_log_model_class
         )
+        self._maintenance_lease_model_class = self._resolve_maintenance_lease_model_class(
+            backend_config.maintenance_lease_model_class
+        )
         self._uniqueness_model_class, self._uniqueness_service_class = self._resolve_uniqueness_model_classes(
             backend_config.uniqueness_model_class
         )
@@ -117,6 +123,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             supports_notifications=notifications_enabled,
             notification_backend=_POSTGRES_NOTIFY_BACKEND if notifications_enabled else None,
             notifications_durable=False,
+            supports_maintenance_lease=True,
         )
 
     async def open(self) -> "bool":
@@ -311,9 +318,11 @@ class SQLAlchemyBackend(BaseQueueBackend):
         async with self._heartbeat_operation() as service:
             await service.null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         async with self._operation() as service:
-            return await service.requeue_stale_running(stale_after=stale_after)
+            return await service.requeue_stale_running(stale_after=stale_after, limit=limit)
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -389,9 +398,60 @@ class SQLAlchemyBackend(BaseQueueBackend):
         async with self._service() as service:
             return await service.list_completed_by_task(task_name, since=since, limit=limit)
 
-    async def cleanup_terminal(self, before: "datetime") -> "int":
+    async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         async with self._operation() as service:
-            return await service.cleanup_terminal(before)
+            return await service.cleanup_terminal(before, limit=limit)
+
+    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire a maintenance lease via a portable compare-and-set.
+
+        Updates an existing expired row for ``name`` to this token; if no row
+        was expired, inserts a fresh one inside a savepoint so a uniqueness race
+        (a live lease held elsewhere) is treated as lease denial.
+
+        Returns:
+            True when the lease is now held under ``token``.
+        """
+        model = cast("Any", self._maintenance_lease_model_class)
+        now = _utc_now()
+        new_expiry = now + ttl
+        async with self._session() as session, session.begin():
+            result = cast(
+                "Any",
+                await session.execute(
+                    update(model)
+                    .where(model.name == name, model.expires_at <= now)
+                    .values(token=token, expires_at=new_expiry)
+                    .execution_options(synchronize_session=False)
+                ),
+            )
+            if result.rowcount == 1:
+                return True
+            try:
+                async with session.begin_nested():
+                    session.add(model(name=name, token=token, expires_at=new_expiry))
+                    await session.flush()
+            except SQLAlchemyIntegrityError:
+                return False
+            return True
+
+    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
+        """Release a maintenance lease only when ``token`` matches the holder.
+
+        Returns:
+            True when a lease held under ``token`` was deleted.
+        """
+        model = cast("Any", self._maintenance_lease_model_class)
+        async with self._session() as session, session.begin():
+            result = cast(
+                "Any",
+                await session.execute(
+                    delete(model)
+                    .where(model.name == name, model.token == token)
+                    .execution_options(synchronize_session=False)
+                ),
+            )
+            return bool(result.rowcount == 1)
 
     def _ensure_configured(self) -> "None":
         if self._sqlalchemy_config is None:
@@ -545,6 +605,31 @@ class SQLAlchemyBackend(BaseQueueBackend):
             raise QueueConfigurationError(msg)
         return typed_model, QueueEventLogService.for_model(typed_model)
 
+    def _resolve_maintenance_lease_model_class(
+        self, model_class: "type[object] | None"
+    ) -> "type[QueueMaintenanceLeaseModelMixin]":
+        if model_class is None:
+            msg = "SQLAlchemyBackendConfig.maintenance_lease_model_class must inherit QueueMaintenanceLeaseModelMixin."
+            raise QueueConfigurationError(msg)
+        try:
+            valid_model = issubclass(model_class, QueueMaintenanceLeaseModelMixin)
+        except TypeError:
+            valid_model = False
+        if not valid_model:
+            msg = "SQLAlchemyBackendConfig.maintenance_lease_model_class must inherit QueueMaintenanceLeaseModelMixin."
+            raise QueueConfigurationError(msg)
+        if "__tablename__" not in model_class.__dict__:
+            msg = "SQLAlchemyBackendConfig.maintenance_lease_model_class must declare __tablename__."
+            raise QueueConfigurationError(msg)
+        typed_model = cast("type[QueueMaintenanceLeaseModelMixin]", model_class)
+        mapper = cast("Any", sqlalchemy_inspect(typed_model))
+        missing_columns = {"name", "token", "expires_at"} - {property_.key for property_ in mapper.column_attrs}
+        if missing_columns:
+            columns = ", ".join(sorted(missing_columns))
+            msg = f"SQLAlchemyBackendConfig.maintenance_lease_model_class is missing lease columns: {columns}."
+            raise QueueConfigurationError(msg)
+        return typed_model
+
     def _resolve_uniqueness_model_classes(
         self, model_class: "type[object] | None"
     ) -> 'tuple[type[QueueUniquenessModelMixin], type["QueueUniquenessService"]]':
@@ -603,14 +688,18 @@ class SQLAlchemyBackend(BaseQueueBackend):
             model = await service.get_owner(key)
             return self._tombstone_from_model(model) if model is not None else None
 
-    async def reset_identity(self, key: "str") -> "bool":
-        """Delete a forever identity tombstone in an operation-scoped session.
+    async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
+        """Delete a forever identity tombstone via atomic compare-and-delete.
+
+        Args:
+            key: The exact effective identity key.
+            expected_task_id: Optional task owner required for deletion.
 
         Returns:
             ``True`` when a tombstone was removed.
         """
         async with self._uniqueness_operation() as service:
-            return await service.delete_by_key(key)
+            return await service.delete_by_key(key, expected_task_id=expected_task_id)
 
     def _tombstone_from_model(self, model: "Any") -> "UniquenessTombstone":
         created_at = model.created_at

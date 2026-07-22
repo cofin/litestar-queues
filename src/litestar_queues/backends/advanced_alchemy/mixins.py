@@ -7,7 +7,12 @@ from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
-__all__ = ("QueueEventLogModelMixin", "QueueTaskModelMixin", "QueueUniquenessModelMixin")
+__all__ = (
+    "QueueEventLogModelMixin",
+    "QueueMaintenanceLeaseModelMixin",
+    "QueueTaskModelMixin",
+    "QueueUniquenessModelMixin",
+)
 
 JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
@@ -186,6 +191,31 @@ class QueueEventLogModelMixin:
 
     @declared_attr
     def occurred_at(cls) -> "Mapped[datetime]":
+        return mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@declarative_mixin
+class QueueMaintenanceLeaseModelMixin:
+    """Declarative mixin carrying the distributed maintenance-lease columns.
+
+    Compose this with an application-owned Advanced Alchemy base that provides
+    a compatible ``id`` primary key. Adopter-owned model and migration setups
+    must include the resulting table; the queue backend never calls
+    ``metadata.create_all``.
+    """
+
+    __abstract__ = True
+
+    @declared_attr
+    def name(cls) -> "Mapped[str]":
+        return mapped_column(String(length=255), unique=True, nullable=False)
+
+    @declared_attr
+    def token(cls) -> "Mapped[str]":
+        return mapped_column(String(length=255), nullable=False)
+
+    @declared_attr
+    def expires_at(cls) -> "Mapped[datetime]":
         return mapped_column(DateTime(timezone=True), nullable=False)
 
 

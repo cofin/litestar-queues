@@ -120,6 +120,8 @@ class QueuePlugin(InitPlugin):
             queue_table_name=str(queue_table_name),
             event_log_enabled=event_log_config is not None and event_log_config.enabled,
             event_log_table_name=backend_config.event_log_table_name,
+            maintenance_lease_table_name=backend_config.maintenance_lease_table_name,
+            uniqueness_table_name=backend_config.uniqueness_table_name,
         )
 
     def on_app_init(self, app_config: "AppConfig") -> "AppConfig":

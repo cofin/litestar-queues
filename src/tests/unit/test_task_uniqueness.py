@@ -3,15 +3,18 @@
 import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import QueueConfig, QueueConfigurationError, QueueService, task
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -82,6 +85,24 @@ def test_using_propagates_and_revalidates() -> "None":
 
 def _service(backend: "InMemoryQueueBackend") -> "QueueService":
     return QueueService(QueueConfig(), queue_backend=backend)
+
+
+class _PostPersistenceFailureBackend(InMemoryQueueBackend):
+    __slots__ = ("fail_verification",)
+
+    def __init__(self, *, fail_verification: "bool" = False) -> "None":
+        super().__init__()
+        self.fail_verification = fail_verification
+
+    async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        if self.fail_verification:
+            msg = "verification failed"
+            raise RuntimeError(msg)
+        return await super().get_task(task_id)
+
+    async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
+        msg = "notification failed after persistence"
+        raise RuntimeError(msg)
 
 
 async def _enqueue(
@@ -172,6 +193,82 @@ async def test_forever_lifetime_is_recorded_in_metadata() -> "None":
     async with _service(backend) as service:
         record = await _enqueue(service, keyed, "a")
     assert record.metadata["unique_until"] == "forever"
+
+
+async def test_forever_retains_tombstone_when_enqueue_raises_after_persistence() -> "None":
+    @task("once.post-persistence", key="once:post-persistence", unique_until="forever")
+    async def once() -> "None": ...
+
+    backend = _PostPersistenceFailureBackend()
+    service = _service(backend)
+
+    with pytest.raises(RuntimeError, match="notification failed after persistence"):
+        await service.enqueue(once)
+
+    tombstone = await backend.has_identity("once:post-persistence")
+    assert tombstone is not None
+    assert await backend.get_task(tombstone.task_id) is not None
+
+
+async def test_forever_retains_tombstone_when_persistence_verification_fails() -> "None":
+    @task("once.verification-failure", key="once:verification-failure", unique_until="forever")
+    async def once() -> "None": ...
+
+    backend = _PostPersistenceFailureBackend(fail_verification=True)
+    service = _service(backend)
+
+    with pytest.raises(RuntimeError, match="notification failed after persistence"):
+        await service.enqueue(once)
+
+    backend.fail_verification = False
+    tombstone = await backend.has_identity("once:verification-failure")
+    assert tombstone is not None
+    assert await backend.get_task(tombstone.task_id) is not None
+
+
+async def test_forever_releases_tombstone_when_enqueue_fails_before_persistence() -> "None":
+    @task("once.pre-persistence", key="once:pre-persistence", unique_until="forever")
+    async def once() -> "None": ...
+
+    backend = InMemoryQueueBackend()
+    service = _service(backend)
+
+    with (
+        patch.object(InMemoryQueueBackend, "enqueue", side_effect=RuntimeError("persistence failed")),
+        pytest.raises(RuntimeError, match="persistence failed"),
+    ):
+        await service.enqueue(once)
+
+    assert await backend.has_identity("once:pre-persistence") is None
+
+
+async def test_forever_dedup_collision_does_not_leave_reserved_id_tombstone() -> "None":
+    @task("once.cross-policy", key="shared:cross-policy", unique_until="forever")
+    async def once() -> "None": ...
+
+    backend = InMemoryQueueBackend()
+    existing = await backend.enqueue("existing.terminal-policy", key="shared:cross-policy")
+    service = _service(backend)
+
+    with pytest.raises(QueueConfigurationError, match=r"unique_until='forever'.*active task"):
+        await service.enqueue(once)
+
+    assert await backend.get_task(existing.id) == existing
+    assert await backend.has_identity("shared:cross-policy") is None
+
+
+async def test_fenced_reset_never_deletes_a_successor_reservation() -> "None":
+    backend = InMemoryQueueBackend()
+    key = "once:fenced-reset"
+    first_task_id = uuid4()
+    successor_task_id = uuid4()
+    assert await backend.reserve_identity(key, task_id=successor_task_id, task_name="successor") is None
+
+    assert await backend.reset_identity(key, expected_task_id=first_task_id) is False
+
+    owner = await backend.has_identity(key)
+    assert owner is not None
+    assert owner.task_id == successor_task_id
 
 
 async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":

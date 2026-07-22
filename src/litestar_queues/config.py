@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events import QueueEventPublisher, TaskExecutionContext
     from litestar_queues.execution import BaseExecutionBackend
+    from litestar_queues.maintenance import QueueMaintenanceConfig
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.observability import ObservabilityConfig
     from litestar_queues.service import QueueService
@@ -171,6 +172,7 @@ class QueueConfig:
     sync_executor_thread_name_prefix: "str" = "litestar-queues"
     scheduler_canary_task: "str" = "scheduler.heartbeat"
     event_log: "EventLogConfig | None" = None
+    maintenance: "QueueMaintenanceConfig | None" = None
     max_task_payload_bytes: "int | None" = None
     """Optional upper bound on the canonical ``unique_by="arguments"`` identity payload.
 
@@ -243,6 +245,12 @@ class QueueConfig:
             ImmediateExecutionBackend,
             LocalExecutionBackend,
         )
+        from litestar_queues.maintenance import (
+            QueueMaintenanceConfig,
+            QueueMaintenancePhaseResult,
+            QueueMaintenanceService,
+            QueueMaintenanceSummary,
+        )
         from litestar_queues.models import (
             QueueBackendCapabilities,
             QueuedTaskRecord,
@@ -287,6 +295,10 @@ class QueueConfig:
             "QueueEventProducer": QueueEventProducer,
             "QueueEventPublisher": QueueEventPublisher,
             "QueueEventStageSummary": QueueEventStageSummary,
+            "QueueMaintenanceConfig": QueueMaintenanceConfig,
+            "QueueMaintenancePhaseResult": QueueMaintenancePhaseResult,
+            "QueueMaintenanceService": QueueMaintenanceService,
+            "QueueMaintenanceSummary": QueueMaintenanceSummary,
             "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
             "QueueStatistics": QueueStatistics,

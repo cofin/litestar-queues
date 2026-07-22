@@ -506,8 +506,8 @@ class _RecordingEventLog:
         del task_name
         return []
 
-    async def cleanup_before(self, before: "datetime") -> "int":
-        del before
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        del before, limit
         return 0
 
 

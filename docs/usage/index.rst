@@ -77,6 +77,12 @@ Run and operate workers
 
       Configure heartbeats, recovery, identity, and diagnosis.
 
+   .. grid-item-card:: Run maintenance
+      :link: maintenance
+      :link-type: doc
+
+      Schedule bounded repair and retention with ``litestar queues run-maintenance``.
+
    .. grid-item-card:: Observe queues
       :link: observability
       :link-type: doc
@@ -124,6 +130,7 @@ Choose production options
    worker-recovery
    configuration
    cli
+   maintenance
    testing
    backends
    backends/sqlspec

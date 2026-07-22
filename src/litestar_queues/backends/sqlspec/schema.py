@@ -1,5 +1,6 @@
 """Schema and migration helpers for the SQLSpec queue backend."""
 
+from hashlib import sha1
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,9 +15,11 @@ if TYPE_CHECKING:
 __all__ = (
     "DEFAULT_COLUMN_MAP",
     "DEFAULT_EVENT_LOG_TABLE_SUFFIX",
+    "DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX",
     "DEFAULT_TABLE_NAME",
     "DEFAULT_UNIQUENESS_TABLE_SUFFIX",
     "event_log_table_name_for",
+    "maintenance_lease_table_name_for",
     "migration_directory",
     "migration_paths",
     "resolve_column_map",
@@ -28,6 +31,7 @@ __all__ = (
 
 DEFAULT_TABLE_NAME = "litestar_queue_task"
 DEFAULT_EVENT_LOG_TABLE_SUFFIX = "_event_log"
+DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX = "_maintenance_lease"
 DEFAULT_UNIQUENESS_TABLE_SUFFIX = "_uniqueness"
 DEFAULT_COLUMN_MAP = {
     "args_json": "task_args",
@@ -150,24 +154,60 @@ def event_log_table_name_for(table_name: "str") -> "str":
     return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
 
 
-def uniqueness_table_name_for(table_name: "str") -> "str":
-    """Return the default forever-uniqueness tombstone table for a queue table.
+# Smallest common identifier limit across supported dialects (PostgreSQL is 63,
+# MySQL is 64). The derived lease table is deterministically shortened to fit so
+# the same name is produced by the packaged migration and the runtime backend.
+_MAX_IDENTIFIER_LENGTH = 63
+
+
+def _bounded_table_part(table: "str", suffix: "str") -> "str":
+    candidate = f"{table}{suffix}"
+    if len(candidate) <= _MAX_IDENTIFIER_LENGTH:
+        return candidate
+    digest = sha1(table.encode()).hexdigest()[:8]  # noqa: S324 - non-cryptographic name shortening.
+    keep = _MAX_IDENTIFIER_LENGTH - len(suffix) - len(digest) - 1
+    return f"{table[:keep]}_{digest}{suffix}"
+
+
+def maintenance_lease_table_name_for(table_name: "str") -> "str":
+    """Return the default maintenance-lease table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_UNIQUENESS_TABLE_SUFFIX` to the table part.
+    :data:`DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX` to the table part. When the
+    derived name would exceed the portable identifier limit it is
+    deterministically shortened (truncated table part plus a stable hash) so the
+    packaged migration and the runtime backend agree on one name.
     """
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
     if len(parts) == 1:
-        return validate_table_name(f"{validated}{DEFAULT_UNIQUENESS_TABLE_SUFFIX}")
+        return validate_table_name(_bounded_table_part(validated, DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX))
     schema, table = parts
-    return validate_table_name(f"{schema}.{table}{DEFAULT_UNIQUENESS_TABLE_SUFFIX}")
+    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX)}")
+
+
+def uniqueness_table_name_for(table_name: "str") -> "str":
+    """Return the default forever-uniqueness tombstone table for a queue table.
+
+    Schema-qualified names keep their schema and append
+    :data:`DEFAULT_UNIQUENESS_TABLE_SUFFIX` to the table part. Long derived
+    names use the same portable deterministic shortening as lease tables.
+    """
+    validated = validate_table_name(table_name)
+    parts = validated.rsplit(".", maxsplit=1)
+    if len(parts) == 1:
+        return validate_table_name(_bounded_table_part(validated, DEFAULT_UNIQUENESS_TABLE_SUFFIX))
+    schema, table = parts
+    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_UNIQUENESS_TABLE_SUFFIX)}")
 
 
 def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
     directory = migration_directory()
-    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
+    return (
+        str(directory.joinpath("0001_create_queue_tasks.py")),
+        str(directory.joinpath("0002_create_queue_auxiliary_tables.py")),
+    )
 
 
 def migration_directory() -> "Path":

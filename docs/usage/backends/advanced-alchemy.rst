@@ -73,6 +73,13 @@ custom models:
 The ``_event_log`` suffix keeps the two table names together. The queue
 backend checks the model shape, but it does not create either table.
 
+If the application uses forever uniqueness or bounded maintenance, its metadata
+and migrations must also include ``QueueUniquenessModel`` and
+``QueueMaintenanceLeaseModel`` respectively, or application models composed
+from the corresponding mixins. Pass custom models through
+``uniqueness_model_class`` and ``maintenance_lease_model_class``. See
+:doc:`../migration` and :doc:`../maintenance` for their lifecycle contracts.
+
 Event history uses a separate concrete model. Compose
 ``QueueEventLogModelMixin`` with the same application base and pass it as
 ``event_log_model_class``. Enable recording with
