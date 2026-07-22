@@ -511,3 +511,27 @@ async def test_redis_backend_claim_task_honors_due_gating_and_fences(redis_backe
     ready, _ = await _zset_members(redis_backend)
     assert await _status_memberships(redis_backend, due.id) == ["running"]
     assert str(due.id) not in ready
+
+
+async def test_redis_forever_reservation_returns_owner_on_conflict(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reserve_returns_owner_on_conflict
+
+    await assert_reserve_returns_owner_on_conflict(redis_backend)
+
+
+async def test_redis_forever_reset_is_only_deletion_path(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reset_is_only_deletion_path
+
+    await assert_reset_is_only_deletion_path(redis_backend)
+
+
+async def test_redis_forever_tombstone_survives_terminal_cleanup(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+
+    await assert_tombstone_survives_terminal_cleanup(redis_backend)
+
+
+async def test_redis_forever_concurrent_reservation_single_winner(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
+
+    await assert_concurrent_reservation_has_single_winner(redis_backend)

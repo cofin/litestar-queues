@@ -31,6 +31,7 @@ from litestar_queues.models import (
     QueueStatistics,
     StaleTaskRecoveryResult,
     TaskStatus,
+    UniquenessTombstone,
 )
 
 if TYPE_CHECKING:
@@ -340,6 +341,14 @@ if dedup_key and dedup_key ~= '' then
 end
 return {1}
 """
+_RESERVE_IDENTITY_SCRIPT = """
+local existing = redis.call('HGET', KEYS[1], ARGV[1])
+if existing then
+    return existing
+end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+return false
+"""
 
 
 class RedisQueueBackend(BaseQueueBackend):
@@ -459,6 +468,7 @@ class RedisQueueBackend(BaseQueueBackend):
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         """Persist a queued task.
 
@@ -478,6 +488,8 @@ class RedisQueueBackend(BaseQueueBackend):
             execution_profile=execution_profile,
             metadata=metadata,
         )
+        if id is not None:
+            record.id = id
         if key is not None:
             return await self._enqueue_keyed(record, key, publish=True)
         await self._save_new_record(record, publish=True)
@@ -953,6 +965,50 @@ class RedisQueueBackend(BaseQueueBackend):
                 count += 1
         return count
 
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+        """Reserve a forever identity via an atomic HGET-or-HSET script.
+
+        The uniqueness hash is separate from ``:task:``/``:keys`` and is never
+        touched by terminal cleanup.
+
+        Returns:
+            ``None`` when this caller won the reservation; otherwise the existing
+            owner tombstone.
+        """
+        client = await self._get_client()
+        created_at = _utc_now()
+        payload = _json_dumps({
+            "key": key,
+            "task_id": str(task_id),
+            "task_name": task_name,
+            "created_at": _serialize_datetime(created_at),
+        })
+        result = client.eval(_RESERVE_IDENTITY_SCRIPT, 1, self._uniqueness_key, key, payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if result is None or result is False:
+            return None
+        return _tombstone_from_payload(_decode(result))
+
+    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the tombstone owning a reserved forever identity, if any."""
+        raw = await self._client_hget(self._uniqueness_key, key)
+        if raw is None:
+            return None
+        return _tombstone_from_payload(_decode(raw))
+
+    async def reset_identity(self, key: "str") -> "bool":
+        """Delete a forever identity tombstone from the uniqueness hash.
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        client = await self._get_client()
+        removed = client.hdel(self._uniqueness_key, key)
+        if inspect.isawaitable(removed):
+            removed = await removed
+        return int(removed) > 0
+
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a Redis-protocol pub/sub message when work is available."""
         if self._notifications and record.status in _DUE_STATUSES and record.is_due:
@@ -1201,6 +1257,10 @@ class RedisQueueBackend(BaseQueueBackend):
         return f"{self._key_prefix}:keys"
 
     @property
+    def _uniqueness_key(self) -> "str":
+        return f"{self._key_prefix}:uniqueness"
+
+    @property
     def _ready_key(self) -> "str":
         return f"{self._key_prefix}:ready"
 
@@ -1402,6 +1462,16 @@ def _json_loads(value: "Any", default: "Any") -> "Any":
     if value in {None, ""}:
         return default
     return json.loads(str(value))
+
+
+def _tombstone_from_payload(raw: "Any") -> "UniquenessTombstone":
+    data = json.loads(str(raw))
+    return UniquenessTombstone(
+        key=str(data["key"]),
+        task_id=UUID(str(data["task_id"])),
+        task_name=str(data["task_name"]),
+        created_at=_deserialize_datetime(data.get("created_at")) or _utc_now(),
+    )
 
 
 def _coerce_status(value: "Any") -> "TaskStatus":

@@ -7,7 +7,7 @@ from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
-__all__ = ("QueueEventLogModelMixin", "QueueTaskModelMixin")
+__all__ = ("QueueEventLogModelMixin", "QueueTaskModelMixin", "QueueUniquenessModelMixin")
 
 JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
@@ -187,6 +187,32 @@ class QueueEventLogModelMixin:
     @declared_attr
     def occurred_at(cls) -> "Mapped[datetime]":
         return mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@declarative_mixin
+class QueueUniquenessModelMixin:
+    """Declarative mixin carrying forever-uniqueness tombstone columns.
+
+    Compose this with an application-owned Advanced Alchemy base that provides
+    compatible ``id`` and ``created_at`` columns. The unique ``identity_key``
+    column is the atomicity arbiter for forever reservations; the table is
+    separate from the queue task table so routine terminal cleanup never touches
+    it. It stores only the identity key and the originating task id/name.
+    """
+
+    __abstract__ = True
+
+    @declared_attr
+    def identity_key(cls) -> "Mapped[str]":
+        return mapped_column(String(length=500), unique=True, nullable=False)
+
+    @declared_attr
+    def task_id(cls) -> "Mapped[str]":
+        return mapped_column(String(length=64), nullable=False)
+
+    @declared_attr
+    def task_name(cls) -> "Mapped[str]":
+        return mapped_column(String(length=500), nullable=False)
 
 
 class _NamedTable(Protocol):

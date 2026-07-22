@@ -15,10 +15,12 @@ __all__ = (
     "DEFAULT_COLUMN_MAP",
     "DEFAULT_EVENT_LOG_TABLE_SUFFIX",
     "DEFAULT_TABLE_NAME",
+    "DEFAULT_UNIQUENESS_TABLE_SUFFIX",
     "event_log_table_name_for",
     "migration_directory",
     "migration_paths",
     "resolve_column_map",
+    "uniqueness_table_name_for",
     "validate_column_map",
     "validate_native_json_columns",
     "validate_table_name",
@@ -26,6 +28,7 @@ __all__ = (
 
 DEFAULT_TABLE_NAME = "litestar_queue_task"
 DEFAULT_EVENT_LOG_TABLE_SUFFIX = "_event_log"
+DEFAULT_UNIQUENESS_TABLE_SUFFIX = "_uniqueness"
 DEFAULT_COLUMN_MAP = {
     "args_json": "task_args",
     "kwargs_json": "task_kwargs",
@@ -145,6 +148,20 @@ def event_log_table_name_for(table_name: "str") -> "str":
         return validate_table_name(f"{validated}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
     schema, table = parts
     return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
+
+
+def uniqueness_table_name_for(table_name: "str") -> "str":
+    """Return the default forever-uniqueness tombstone table for a queue table.
+
+    Schema-qualified names keep their schema and append
+    :data:`DEFAULT_UNIQUENESS_TABLE_SUFFIX` to the table part.
+    """
+    validated = validate_table_name(table_name)
+    parts = validated.rsplit(".", maxsplit=1)
+    if len(parts) == 1:
+        return validate_table_name(f"{validated}{DEFAULT_UNIQUENESS_TABLE_SUFFIX}")
+    schema, table = parts
+    return validate_table_name(f"{schema}.{table}{DEFAULT_UNIQUENESS_TABLE_SUFFIX}")
 
 
 def migration_paths() -> "tuple[str, ...]":

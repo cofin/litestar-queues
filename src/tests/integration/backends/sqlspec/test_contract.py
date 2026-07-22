@@ -907,11 +907,16 @@ async def test_sqlspec_backend_uses_spanner_update_ddl_for_schema_bootstrap() ->
     await backend.create_schema()
     await backend.close()
 
+    from litestar_queues.backends.sqlspec.uniqueness import create_tombstone_store
+
     assert database.statement_batches
     assert all(len(batch) == 1 for batch in database.statement_batches)
     statements = [statement for batch in database.statement_batches for statement in batch]
-    assert statements == create_queue_store(config, table_name="queue_tasks").create_statements()
+    expected = create_queue_store(config, table_name="queue_tasks").create_statements()
+    expected += create_tombstone_store(config, queue_table_name="queue_tasks").create_statements()
+    assert statements == expected
     assert "PRIMARY KEY (`id`)" in statements[0]
+    assert any("queue_tasks_uniqueness" in statement for statement in statements)
     assert all("IF NOT EXISTS" not in statement for statement in statements)
 
 

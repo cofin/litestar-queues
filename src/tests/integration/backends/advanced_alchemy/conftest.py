@@ -45,6 +45,20 @@ def _queue_model(table_name: "str") -> "type[object]":
     )
 
 
+def _uniqueness_model(table_name: "str") -> "type[object]":
+    """Return the app-owned forever-uniqueness tombstone model used by integration tests."""
+    from advanced_alchemy.base import UUIDAuditBase
+
+    from litestar_queues.backends.advanced_alchemy import QueueUniquenessModelMixin
+
+    suffix = table_name.rsplit("_", 1)[-1]
+    return type(
+        f"IntegrationQueueUniqueness{suffix}",
+        (UUIDAuditBase, QueueUniquenessModelMixin),
+        {"__module__": __name__, "__tablename__": table_name},
+    )
+
+
 @pytest.fixture
 async def advanced_alchemy_backend(
     request: "pytest.FixtureRequest", tmp_path: "Path"
@@ -74,10 +88,14 @@ async def advanced_alchemy_backend(
     ctx = FixtureCtx(tmp_path=tmp_path, service=service)
     config = case.build_config(ctx)
     table_name = table_name_for_test("aa_queue_task", case.name, request.node.nodeid)
+    uniqueness_table_name = table_name_for_test("aa_uniqueness", case.name, request.node.nodeid)
     model_class = _queue_model(table_name)
-    await create_tables(config, model_class)
+    uniqueness_model_class = _uniqueness_model(uniqueness_table_name)
+    await create_tables(config, model_class, uniqueness_model_class)
     backend = SQLAlchemyBackend(
-        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=model_class)
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=config, model_class=model_class, uniqueness_model_class=uniqueness_model_class
+        )
     )
     await backend.open()
     try:
@@ -100,8 +118,11 @@ async def _drop_queue_tables(backend: "SQLAlchemyBackend") -> "None":
     sqlalchemy_config = backend._sqlalchemy_config
     if sqlalchemy_config is not None:
         model_class = cast("MappedQueueModel", backend._model_class)
+        uniqueness_model_class = cast("MappedQueueModel", backend._uniqueness_model_class)
         engine = sqlalchemy_config.get_engine()
         async with engine.begin() as connection:
+            with suppress(Exception):
+                await connection.run_sync(uniqueness_model_class.__table__.drop, checkfirst=True)
             with suppress(Exception):
                 await connection.run_sync(model_class.__table__.drop, checkfirst=True)
 

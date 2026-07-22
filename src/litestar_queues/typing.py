@@ -25,6 +25,7 @@ from litestar_queues.events._typing import (
     ChannelsSubscriptionBackend,
     ChannelsWaitPublishedBackend,
 )
+from litestar_queues.task import TaskUniqueBy, TaskUniqueUntil
 
 __all__ = (
     "OPENTELEMETRY_INSTALLED",
@@ -45,6 +46,8 @@ __all__ = (
     "PrometheusCounter",
     "PrometheusGauge",
     "PrometheusHistogram",
+    "TaskUniqueBy",
+    "TaskUniqueUntil",
     "otel_metrics",
     "otel_propagate",
     "otel_trace",

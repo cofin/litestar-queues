@@ -40,3 +40,28 @@ SQLSpec 0.55 removed the old ``listen_notify``, ``listen_notify_durable``, and
 release rather than retaining aliases. Update configuration to ``notify``,
 ``notify_queue``, or ``poll_queue`` respectively. Oracle ``aq`` and
 ``txeventq`` names are unchanged.
+
+Forever-uniqueness tombstones
+=============================
+
+``unique_until="forever"`` stores a compact tombstone (identity key plus the
+originating task id/name and creation time) in a table separate from the queue
+task table so ordinary terminal and event maintenance never removes it. See
+:doc:`task-options` for the identity model.
+
+* **SQLSpec**: the packaged initial extension migration
+  (``0001_create_queue_tasks``) provisions the ``<queue_table>_uniqueness`` table
+  alongside the queue table for every supported adapter. ``manage_schema``
+  backends create it automatically. Override the table with
+  ``SQLSpecBackendConfig.uniqueness_table_name``.
+* **Advanced Alchemy**: schema ownership stays with the adopter. Compose the new
+  :class:`~litestar_queues.backends.advanced_alchemy.QueueUniquenessModelMixin`
+  into an application-owned model (the default is ``QueueUniquenessModel``) and
+  create or migrate its table with your own Alembic or ``create_all``. Provide a
+  custom model through ``SQLAlchemyBackendConfig.uniqueness_model_class``.
+* **Redis / Valkey**: a namespaced ``{prefix}:uniqueness`` hash is created on
+  demand; no schema step is required.
+
+Tombstones are removed only by an explicit
+:meth:`~litestar_queues.QueueService.reset_task_identity` call with the exact
+effective key.

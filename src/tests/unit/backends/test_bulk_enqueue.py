@@ -7,7 +7,7 @@ integration suite.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -15,6 +15,9 @@ from litestar_queues import EnqueueSpec
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.models import QueuedTaskRecord
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 pytestmark = pytest.mark.anyio
 
@@ -123,6 +126,7 @@ class _BatchNotifyingBackend(BaseQueueBackend):
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         record = QueuedTaskRecord(
             task_name=task_name,
@@ -138,6 +142,8 @@ class _BatchNotifyingBackend(BaseQueueBackend):
             metadata=dict(metadata or {}),
             status="scheduled" if scheduled_at is not None and scheduled_at > datetime.now(timezone.utc) else "pending",
         )
+        if id is not None:
+            record.id = id
         self.records.append(record)
         return record
 
