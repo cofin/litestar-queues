@@ -4,8 +4,8 @@ Command-Line Interface
 
 ``QueuePlugin`` implements Litestar's :class:`~litestar.plugins.CLIPluginProtocol`
 and adds a ``queues`` group to the ``litestar`` CLI. It provides ``run``,
-``status``, and ``scheduler-health``. The ``discover_tasks`` helper supports
-applications that keep tasks under ``app.domain.<x>.jobs/``.
+``status``, ``scheduler-health``, and ``maintain``. The ``discover_tasks``
+helper supports applications that keep tasks under ``app.domain.<x>.jobs/``.
 
 Pre-requisites
 ==============
@@ -129,6 +129,44 @@ Code          Meaning
 
 ``--minutes`` defaults to 5. ``--json`` is not in scope for this
 subcommand.
+
+``litestar queues maintain``
+============================
+
+Runs one bounded maintenance pass — external-execution reconciliation, stale
+recovery, terminal-task retention, and durable-event retention — under a
+distributed lease, then exits. It is safe on a six-hour or daily external
+schedule. It never starts a worker or executes queued work. See
+:doc:`maintenance` for the full operator guide.
+
+.. code-block:: console
+
+   $ litestar queues maintain --json
+   {"outcome":"completed","lease_acquired":true,"duration_ms":41.2,"phases":[...]}
+
+Options:
+
+* ``--phase [external|stale|terminal|events]`` (repeatable) — narrow the run to
+  selected phases. Filtering only narrows configuration; it never enables a
+  disabled retention threshold. When omitted, every configured phase runs.
+* ``--json`` — emit one compact JSON object matching
+  :class:`~litestar_queues.QueueMaintenanceSummary`.
+
+All thresholds, limits, and retention windows come from
+:attr:`QueueConfig.maintenance`; the CLI exposes no flags that could introduce a
+destructive cutoff. The command rejects a missing ``QueueConfig.maintenance``, a
+backend without distributed-lease support, and the process-local in-memory
+backend before any mutation.
+
+Exit codes:
+
+============  ==================================================================
+Code          Meaning
+============  ==================================================================
+``0``         Completed, a clean no-op, or the lease was held elsewhere.
+``1``         Configuration error, lifecycle failure, or a phase failed.
+``2``         The time budget was exhausted and later phases were skipped.
+============  ==================================================================
 
 ``discover_tasks``
 ==================
