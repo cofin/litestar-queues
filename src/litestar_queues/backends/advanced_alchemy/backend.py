@@ -1,9 +1,7 @@
 """Advanced Alchemy queue backend."""
 
-import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
 from advanced_alchemy.exceptions import DuplicateKeyError
