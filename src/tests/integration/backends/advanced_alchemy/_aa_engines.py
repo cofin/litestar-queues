@@ -51,6 +51,16 @@ def _config_postgres_asyncpg(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     )
 
 
+def _config_postgres_psycopg(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
+    from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
+    svc = cast("PostgresService", ctx.service)
+    assert svc is not None
+    return SQLAlchemyAsyncConfig(
+        connection_string=f"postgresql+psycopg://{svc.user}:{svc.password}@{svc.host}:{svc.port}/{svc.database}"
+    )
+
+
 def _config_mysql_asyncmy(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
@@ -86,7 +96,14 @@ AA_ENGINES: "tuple[AAEngineCase, ...]" = (
         frozenset({"asyncpg", "sqlalchemy", "advanced_alchemy"}),
         "postgres_service",
         _config_postgres_asyncpg,
-        frozenset({"json-column"}),
+        frozenset({"json-column", "listen-notify"}),
+    ),
+    AAEngineCase(
+        "aa-postgres-psycopg",
+        frozenset({"psycopg", "sqlalchemy", "advanced_alchemy"}),
+        "postgres_service",
+        _config_postgres_psycopg,
+        frozenset({"json-column", "listen-notify"}),
     ),
     AAEngineCase(
         "aa-mysql-asyncmy",
