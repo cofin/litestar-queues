@@ -43,6 +43,42 @@ class _RecordingHeartbeatBackend(InMemoryQueueBackend):
         return await super().touch_heartbeats(touches)
 
 
+class _BeatDetailRecordingBackend(InMemoryQueueBackend):
+    """Records every heartbeat touch and signals once one carries beat detail."""
+
+    __slots__ = ("beat_delivered", "touch_calls")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.touch_calls: "list[tuple[HeartbeatTouch, ...]]" = []
+        self.beat_delivered = asyncio.Event()
+
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        self.touch_calls.append(tuple(touches))
+        result = await super().touch_heartbeats(touches)
+        if any(touch.metadata_patch for touch in touches):
+            self.beat_delivered.set()
+        return result
+
+
+class _MultiTouchRecordingBackend(InMemoryQueueBackend):
+    """Records heartbeat touches and signals once at least ``required`` occurred."""
+
+    __slots__ = ("_required", "enough_touches", "touch_calls")
+
+    def __init__(self, *, required: "int") -> "None":
+        super().__init__()
+        self.touch_calls: "list[tuple[HeartbeatTouch, ...]]" = []
+        self.enough_touches = asyncio.Event()
+        self._required = required
+
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        self.touch_calls.append(tuple(touches))
+        if len(self.touch_calls) >= self._required:
+            self.enough_touches.set()
+        return await super().touch_heartbeats(touches)
+
+
 async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.consumer import TaskExitCode, consume_one
@@ -165,3 +201,137 @@ async def test_run_task_missing_and_invalid_task_id() -> "None":
 
     assert missing == TaskExitCode.MISSING_TASK_ID
     assert invalid == TaskExitCode.INVALID_TASK_ID
+
+
+async def test_consume_one_delivers_beat_detail_on_next_heartbeat_touch() -> "None":
+    from litestar_queues import QueueConfig, QueueService, beat, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    @task("tasks.consumer_beat_detail")
+    async def consumer_beat_detail() -> "str":
+        beat("phase one")
+        ready.set()
+        await release.wait()
+        return "ok"
+
+    queue_backend = _BeatDetailRecordingBackend()
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+    ) as service:
+        result = await service.enqueue(consumer_beat_detail.using(execution_backend="cloudrun"))
+        record = await queue_backend.get_task(result.id)
+        assert record is not None
+        runner = asyncio.create_task(consume_one(service, record.id))
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        await asyncio.wait_for(queue_backend.beat_delivered.wait(), timeout=1)
+        release.set()
+        exit_code = await runner
+        stored = await queue_backend.get_task(result.id)
+
+    delivered = [touch.metadata_patch for calls in queue_backend.touch_calls for touch in calls if touch.metadata_patch]
+    assert exit_code == TaskExitCode.SUCCESS
+    assert delivered == [{"progress_detail": "phase one"}]
+    assert stored is not None
+    assert stored.status == "completed"
+
+
+async def test_consume_one_beat_detail_is_last_value_wins_and_capped_at_256() -> "None":
+    from litestar_queues import QueueConfig, QueueService, beat, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    @task("tasks.consumer_beat_overwrite")
+    async def consumer_beat_overwrite() -> "str":
+        beat("row 1")
+        beat("x" * 500)
+        ready.set()
+        await release.wait()
+        return "ok"
+
+    queue_backend = _BeatDetailRecordingBackend()
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+    ) as service:
+        result = await service.enqueue(consumer_beat_overwrite.using(execution_backend="cloudrun"))
+        record = await queue_backend.get_task(result.id)
+        assert record is not None
+        runner = asyncio.create_task(consume_one(service, record.id))
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        await asyncio.wait_for(queue_backend.beat_delivered.wait(), timeout=1)
+        release.set()
+        exit_code = await runner
+
+    delivered = [touch.metadata_patch for calls in queue_backend.touch_calls for touch in calls if touch.metadata_patch]
+    assert exit_code == TaskExitCode.SUCCESS
+    assert delivered == [{"progress_detail": "x" * 256}]
+
+
+async def test_consume_one_clears_beat_detail_after_successful_touch() -> "None":
+    from litestar_queues import QueueConfig, QueueService, beat, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    @task("tasks.consumer_beat_clear")
+    async def consumer_beat_clear() -> "str":
+        beat("only once")
+        ready.set()
+        await release.wait()
+        return "ok"
+
+    queue_backend = _MultiTouchRecordingBackend(required=2)
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+    ) as service:
+        result = await service.enqueue(consumer_beat_clear.using(execution_backend="cloudrun"))
+        record = await queue_backend.get_task(result.id)
+        assert record is not None
+        runner = asyncio.create_task(consume_one(service, record.id))
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        await asyncio.wait_for(queue_backend.enough_touches.wait(), timeout=1)
+        release.set()
+        exit_code = await runner
+
+    assert exit_code == TaskExitCode.SUCCESS
+    assert queue_backend.touch_calls[0][0].metadata_patch == {"progress_detail": "only once"}
+    assert queue_backend.touch_calls[1][0].metadata_patch is None
+
+
+async def test_consume_one_without_beat_calls_stays_healthy_across_intervals() -> "None":
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @task("tasks.consumer_no_beat")
+    async def consumer_no_beat() -> "str":
+        started.set()
+        await release.wait()
+        return "ok"
+
+    queue_backend = _MultiTouchRecordingBackend(required=3)
+    async with QueueService(
+        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+    ) as service:
+        result = await service.enqueue(consumer_no_beat.using(execution_backend="cloudrun"))
+        record = await queue_backend.get_task(result.id)
+        assert record is not None
+        runner = asyncio.create_task(consume_one(service, record.id))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.wait_for(queue_backend.enough_touches.wait(), timeout=1)
+        release.set()
+        exit_code = await runner
+        stored = await queue_backend.get_task(result.id)
+
+    assert exit_code == TaskExitCode.SUCCESS
+    assert len(queue_backend.touch_calls) >= 3
+    assert all(touch.metadata_patch is None for calls in queue_backend.touch_calls for touch in calls)
+    assert stored is not None
+    assert stored.status == "completed"

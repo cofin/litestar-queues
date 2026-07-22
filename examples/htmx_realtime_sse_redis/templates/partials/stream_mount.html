@@ -12,7 +12,7 @@
   aria-hidden="true"
   hx-ext="sse"
   sse-connect="{{ task_sse_url }}"
-  sse-swap="task.started,task.progress,task.log,task.event,task.completed,task.failed"
+  sse-swap="task.started,task.progress,task.log,crawl.page_discovered,task.completed,task.failed"
   hx-swap="none"
   data-task-id="{{ task_id }}"
 ></div>

@@ -72,10 +72,9 @@ function markBackendMessage(event: QueueEvent): void {
 }
 
 // The one adapter the extensions cannot replace: queue frames are JSON, so they
-// cannot be swapped as HTML. Parse each frame, ignore ping heartbeats, drop
-// back-to-back duplicates (progress and custom events share a message), and
-// append the event line. The terminal event only flips the readout — the task's
-// own closing log line is the on-screen finale.
+// cannot be swapped as HTML. Parse each frame, ignore ping heartbeats, and
+// append the event line. The terminal event only flips the readout — the last
+// progress line is already the on-screen finale.
 function handleQueueEvent(raw: string): void {
   const event = parseQueueEvent(raw)
   if (!event || event.type === "ping") return
