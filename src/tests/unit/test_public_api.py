@@ -144,7 +144,7 @@ def test_public_exports() -> "None":
     assert Task is not None
     assert TaskResult is not None
     assert Worker is not None
-    assert TaskExitCode.SUCCESS == 0
+    assert TaskExitCode.SUCCESS.value == 0
     assert callable(consume_one)
     assert callable(run_task)
     assert callable(beat)
