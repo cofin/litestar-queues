@@ -5,6 +5,8 @@ __all__ = (
     "QueueConfigurationError",
     "QueueError",
     "QueueEventBufferFull",
+    "TaskIdentityError",
+    "TaskPayloadTooLargeError",
     "job_cancelled",
     "non_retryable",
 )
@@ -16,6 +18,36 @@ class QueueError(Exception):
 
 class QueueConfigurationError(QueueError):
     """Raised when queue backend configuration is invalid."""
+
+
+class TaskIdentityError(QueueError):
+    """Raised when task uniqueness identity cannot be derived.
+
+    Signals that ``unique_by="arguments"`` was requested for a call whose bound
+    arguments cannot be represented by the package's canonical JSON identity
+    contract (for example non-finite floats or non-JSON objects). Uniqueness
+    identity never falls back to pickle or ``repr()``; the caller must supply an
+    explicit key or pass identity-friendly arguments instead.
+    """
+
+
+class TaskPayloadTooLargeError(QueueError):
+    """Raised when a canonical argument-identity payload exceeds the configured limit."""
+
+    def __init__(self, *, actual_bytes: "int", max_bytes: "int") -> "None":
+        """Initialize the payload-size error.
+
+        Args:
+            actual_bytes: Measured size of the canonical identity payload.
+            max_bytes: Configured ``QueueConfig.max_task_payload_bytes`` limit.
+        """
+        self.actual_bytes = actual_bytes
+        self.max_bytes = max_bytes
+        super().__init__(
+            f"Task argument-identity payload is {actual_bytes} bytes, which exceeds the configured "
+            f"max_task_payload_bytes of {max_bytes} bytes. Externalize large payloads to object or "
+            "database storage and pass a stable identifier, or raise max_task_payload_bytes."
+        )
 
 
 class QueueEventBufferFull(QueueError):  # noqa: N818

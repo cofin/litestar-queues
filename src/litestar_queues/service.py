@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
+from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
@@ -201,7 +202,7 @@ class QueueService:
             A result handle for the queued record.
         """
         task_obj = self.resolve_task(task)
-        effective_key = key if key is not None else task_obj.key
+        effective_key, identity_metadata = self._resolve_identity(task_obj, key, args, kwargs)
         coerced_run_after = _coerce_timedelta(run_after)
         effective_run_after = coerced_run_after if run_after is not None else task_obj.run_after
         effective_scheduled_at = scheduled_at
@@ -223,6 +224,7 @@ class QueueService:
             timeout=timeout,
         )
         self._apply_quiet_success_default(effective_metadata)
+        effective_metadata.update(identity_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
         runtime = self.observability_runtime
         span_attributes = _base_observability_attributes(
@@ -271,6 +273,42 @@ class QueueService:
                 if claimed is not None:
                     await execution_backend_impl.execute(self, claimed)
         return result
+
+    def _resolve_identity(
+        self, task_obj: "Task[Any, Any]", key: "str | None", args: "tuple[Any, ...]", kwargs: "dict[str, Any]"
+    ) -> "tuple[str | None, dict[str, Any]]":
+        """Select the effective uniqueness key by strict precedence, with diagnostic metadata.
+
+        Precedence: explicit enqueue ``key`` -> configured task ``key`` ->
+        ``unique_by="task"`` -> ``unique_by="arguments"`` -> no identity. The
+        explicit, configured, and task-only paths never bind, serialize, or hash
+        arguments; only ``unique_by="arguments"`` inspects the call.
+
+        Returns:
+            The effective key (or ``None``) and JSON-safe diagnostic metadata that
+            never contains raw argument material.
+        """
+        if key is not None:
+            return key, self._identity_lifetime_metadata(task_obj, {})
+        if task_obj.key is not None:
+            return task_obj.key, self._identity_lifetime_metadata(task_obj, {})
+        unique_by = task_obj.unique_by
+        if unique_by is None:
+            return None, {}
+        if unique_by == "task":
+            derived = task_identity(task_obj.name)
+        else:
+            derived = arguments_identity(
+                task_obj.name, task_obj.signature, args, kwargs, max_payload_bytes=self._config.max_task_payload_bytes
+            ).key
+        metadata = {"unique_by": unique_by, "unique_version": IDENTITY_VERSION}
+        return derived, self._identity_lifetime_metadata(task_obj, metadata)
+
+    @staticmethod
+    def _identity_lifetime_metadata(task_obj: "Task[Any, Any]", metadata: "dict[str, Any]") -> "dict[str, Any]":
+        if task_obj.unique_until != "terminal":
+            metadata["unique_until"] = task_obj.unique_until
+        return metadata
 
     def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
         if name == execution_backend_name(self._config.execution_backend):

@@ -8,9 +8,9 @@ import zoneinfo
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from functools import partial
+from functools import cached_property, partial
 from importlib import import_module, reload
-from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast, overload
 
 from typing_extensions import ParamSpec, Self
 
@@ -27,6 +27,8 @@ __all__ = (
     "ScheduleConfig",
     "Task",
     "TaskResult",
+    "TaskUniqueBy",
+    "TaskUniqueUntil",
     "clear_task_registry",
     "discover_tasks",
     "get_default_service",
@@ -42,6 +44,12 @@ T = TypeVar("T")
 TaskCallable = Callable[P, T | Awaitable[T]]
 AnyTaskCallable = Callable[..., Any]
 StaleFailureHandler = Callable[["QueuedTaskRecord"], object | Awaitable[object]]
+
+TaskUniqueBy = Literal["task", "arguments"]
+"""Identity source for task uniqueness: the registered task name or the normalized call arguments."""
+
+TaskUniqueUntil = Literal["terminal", "forever"]
+"""Identity lifetime for task uniqueness: released at terminal (the default) or retained by a tombstone."""
 
 CRON_FIELD_COUNT = 5
 CRON_SEARCH_YEARS = 8
@@ -373,6 +381,8 @@ class Task(Generic[P, T]):
         "_retries",
         "_run_after",
         "_timeout",
+        "_unique_by",
+        "_unique_until",
     )
 
     def __init__(
@@ -387,6 +397,8 @@ class Task(Generic[P, T]):
         execution_backend: "str | None" = None,
         execution_profile: "str | None" = None,
         key: "str | None" = None,
+        unique_by: "TaskUniqueBy | None" = None,
+        unique_until: "TaskUniqueUntil" = "terminal",
         run_after: "float | timedelta | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
@@ -394,6 +406,7 @@ class Task(Generic[P, T]):
         requeue_on_stale: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
     ) -> "None":
+        _validate_uniqueness(name=name, key=key, unique_by=unique_by, unique_until=unique_until)
         self._func = func
         self._name = name
         self._queue = queue
@@ -403,6 +416,8 @@ class Task(Generic[P, T]):
         self._execution_backend = execution_backend
         self._execution_profile = execution_profile
         self._key = key
+        self._unique_by = unique_by
+        self._unique_until = unique_until
         self._run_after = _coerce_interval(run_after)
         self._description = description
         self._log_level = log_level
@@ -449,6 +464,21 @@ class Task(Generic[P, T]):
     def key(self) -> "str | None":
         """Default deduplication key."""
         return self._key
+
+    @property
+    def unique_by(self) -> "TaskUniqueBy | None":
+        """Identity source when no explicit or configured key is supplied."""
+        return self._unique_by
+
+    @property
+    def unique_until(self) -> "TaskUniqueUntil":
+        """Identity lifetime: ``terminal`` (default) or ``forever``."""
+        return self._unique_until
+
+    @cached_property
+    def signature(self) -> "inspect.Signature":
+        """Cached call signature of the wrapped callable, computed once per task."""
+        return inspect.signature(self._func)
 
     @property
     def run_after(self) -> "timedelta | None":
@@ -543,6 +573,8 @@ class Task(Generic[P, T]):
         execution_backend: "str | None" = None,
         execution_profile: "str | None" = None,
         key: "str | None" = None,
+        unique_by: "TaskUniqueBy | None" = None,
+        unique_until: "TaskUniqueUntil | None" = None,
         run_after: "float | timedelta | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
@@ -561,6 +593,8 @@ class Task(Generic[P, T]):
             execution_backend=execution_backend if execution_backend is not None else self._execution_backend,
             execution_profile=execution_profile if execution_profile is not None else self._execution_profile,
             key=key if key is not None else self._key,
+            unique_by=unique_by if unique_by is not None else self._unique_by,
+            unique_until=unique_until if unique_until is not None else self._unique_until,
             run_after=run_after if run_after is not None else self._run_after,
             description=description if description is not None else self._description,
             log_level=log_level if log_level is not None else self._log_level,
@@ -587,8 +621,7 @@ class Task(Generic[P, T]):
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
     def _accepts_task_context(self) -> "bool":
-        signature = inspect.signature(self._func)
-        parameters = signature.parameters
+        parameters = self.signature.parameters
         return "_task_context" in parameters or any(
             param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         )
@@ -711,6 +744,8 @@ def task(
     execution_backend: "str | None" = None,
     execution_profile: "str | None" = None,
     key: "str | None" = None,
+    unique_by: "TaskUniqueBy | None" = None,
+    unique_until: "TaskUniqueUntil" = "terminal",
     run_after: "float | timedelta | None" = None,
     description: "str | None" = None,
     log_level: "str | None" = None,
@@ -737,6 +772,8 @@ def task(
     execution_backend: "str | None" = None,
     execution_profile: "str | None" = None,
     key: "str | None" = None,
+    unique_by: "TaskUniqueBy | None" = None,
+    unique_until: "TaskUniqueUntil" = "terminal",
     run_after: "float | timedelta | None" = None,
     description: "str | None" = None,
     log_level: "str | None" = None,
@@ -790,6 +827,8 @@ def task(
             execution_backend=execution_backend,
             execution_profile=execution_profile,
             key=key,
+            unique_by=unique_by,
+            unique_until=unique_until,
             run_after=run_after,
             description=description,
             log_level=log_level,
@@ -805,6 +844,29 @@ def task(
     if callable(func_or_name) and not isinstance(func_or_name, str):
         return decorator(func_or_name)
     return decorator
+
+
+def _validate_uniqueness(
+    *, name: "str", key: "str | None", unique_by: "TaskUniqueBy | None", unique_until: "TaskUniqueUntil"
+) -> "None":
+    if unique_by is not None and unique_by not in {"task", "arguments"}:
+        msg = f"Task {name!r} has invalid unique_by={unique_by!r}; expected 'task' or 'arguments'."
+        raise ValueError(msg)
+    if unique_until not in {"terminal", "forever"}:
+        msg = f"Task {name!r} has invalid unique_until={unique_until!r}; expected 'terminal' or 'forever'."
+        raise ValueError(msg)
+    if key is not None and unique_by is not None:
+        msg = (
+            f"Task {name!r} configures both a key and unique_by={unique_by!r}; a configured key is already an "
+            "identity, so combining it with unique_by is ambiguous. Choose exactly one."
+        )
+        raise ValueError(msg)
+    if unique_until == "forever" and unique_by is None and key is None:
+        msg = (
+            f"Task {name!r} sets unique_until='forever' without any identity; forever needs a configured key or "
+            "unique_by so there is an identity to retain."
+        )
+        raise ValueError(msg)
 
 
 def _ensure_utc(value: "datetime") -> "datetime":
