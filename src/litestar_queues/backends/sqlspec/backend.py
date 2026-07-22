@@ -513,7 +513,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             try:
                 existing = await self._select_one_row(driver, store.select_owner(key))
                 if existing is not None:
-                    await driver.rollback()
+                    # Commit the read-only transaction rather than rolling back so
+                    # single-connection engines (Spanner) do not double-finalize.
+                    await driver.commit()
                     return _tombstone_from_row(existing)
                 await driver.execute(store.insert_reservation(values))
                 await driver.commit()
