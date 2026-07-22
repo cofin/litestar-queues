@@ -171,3 +171,41 @@ async def test_forever_lifetime_is_recorded_in_metadata() -> "None":
     async with _service(backend) as service:
         record = await _enqueue(service, keyed, "a")
     assert record.metadata["unique_until"] == "forever"
+
+
+async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
+    from datetime import datetime, timedelta, timezone
+
+    @task("once.forever", unique_by="arguments", unique_until="forever")
+    async def once(object_key: "str") -> "None": ...
+
+    backend = InMemoryQueueBackend()
+    async with _service(backend) as service:
+        first = await _enqueue(service, once, "obj-1")
+        key = arguments_identity("once.forever", once.signature, ("obj-1",), {}).key
+
+        # A tombstone exists carrying only key/id/name/time.
+        tombstone = await service.get_task_identity(key)
+        assert tombstone is not None
+        assert tombstone.key == key
+        assert tombstone.task_id == first.id
+        assert tombstone.task_name == "once.forever"
+
+        # Drive the record terminal, then run cleanup: the tombstone must survive.
+        claimed = await backend.claim_task(first.id)
+        assert claimed is not None
+        await backend.complete_task(first.id, expected_retry_count=claimed.retry_count)
+        removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+        assert removed == 1
+        assert await backend.get_task(first.id) is None
+        assert await service.get_task_identity(key) is not None
+
+        # Re-enqueue is still blocked and returns the original owner id.
+        blocked = await service.enqueue(once, "obj-1")
+        assert blocked.id == first.id
+
+        # Reset is the only way to allow a new enqueue.
+        assert await service.reset_task_identity(key) is True
+        assert await service.get_task_identity(key) is None
+        reopened = await _enqueue(service, once, "obj-1")
+        assert reopened.id != first.id

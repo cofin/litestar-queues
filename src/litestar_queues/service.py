@@ -1,10 +1,12 @@
 import asyncio
+import contextlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from typing_extensions import Self
 
@@ -25,7 +27,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import QueueEventLog, QueueEventProducer, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
-    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
+    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult, UniquenessTombstone
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("QueueService",)
@@ -226,6 +228,16 @@ class QueueService:
         self._apply_quiet_success_default(effective_metadata)
         effective_metadata.update(identity_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
+
+        reserved_id: "UUID | None" = None
+        if task_obj.unique_until == "forever" and effective_key is not None:
+            reserved_id = uuid4()
+            owner = await self.get_queue_backend().reserve_identity(
+                effective_key, task_id=reserved_id, task_name=task_obj.name
+            )
+            if owner is not None:
+                return TaskResult(owner.task_id, owner.task_name, service=self)
+
         runtime = self.observability_runtime
         span_attributes = _base_observability_attributes(
             operation="publish",
@@ -251,9 +263,16 @@ class QueueService:
                 execution_backend=effective_execution_backend,
                 execution_profile=effective_execution_profile,
                 metadata=effective_metadata,
+                id=reserved_id,
             )
         except BaseException as exc:
             runtime.record_exception(span, exc)
+            if reserved_id is not None and effective_key is not None:
+                # Release only this failed pre-persistence forever reservation so a
+                # committed task can never lack its tombstone and a failed one never
+                # strands the identity.
+                with contextlib.suppress(Exception):
+                    await self.get_queue_backend().reset_identity(effective_key)
             raise
         else:
             runtime.set_attribute(span, "messaging.message.id", str(record.id))
@@ -336,6 +355,23 @@ class QueueService:
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         """Return a queued task record by ID."""
         return await self.get_queue_backend().get_task(task_id)
+
+    async def reset_task_identity(self, key: "str") -> "bool":
+        """Delete a ``unique_until="forever"`` tombstone by its exact effective key.
+
+        This is the only supported way to allow a forever identity to be enqueued
+        again. It never infers or resets an identity from raw arguments; the caller
+        must pass the exact effective key (for example the ``lq:u:v1:...`` value or
+        the configured/explicit key).
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        return await self.get_queue_backend().reset_identity(key)
+
+    async def get_task_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the forever tombstone owning an identity key, if any."""
+        return await self.get_queue_backend().has_identity(key)
 
     async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: "str | None" = None) -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.

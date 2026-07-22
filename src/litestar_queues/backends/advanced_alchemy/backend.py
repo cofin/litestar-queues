@@ -2,8 +2,10 @@
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from datetime import timezone
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from advanced_alchemy.exceptions import DuplicateKeyError
 from sqlalchemy import inspect as sqlalchemy_inspect
@@ -14,16 +16,23 @@ from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
-from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
-from litestar_queues.backends.advanced_alchemy.service import QueueEventLogService, QueueTaskService
+from litestar_queues.backends.advanced_alchemy.mixins import (
+    QueueEventLogModelMixin,
+    QueueTaskModelMixin,
+    QueueUniquenessModelMixin,
+)
+from litestar_queues.backends.advanced_alchemy.service import (
+    QueueEventLogService,
+    QueueTaskService,
+    QueueUniquenessService,
+)
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities
+from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, UniquenessTombstone
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
     from datetime import datetime, timedelta
-    from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +60,8 @@ class SQLAlchemyBackend(BaseQueueBackend):
     _service_class: 'type["QueueTaskService"]'
     _event_log_model_class: "type[QueueEventLogModelMixin]"
     _event_log_service_class: 'type["QueueEventLogService"]'
+    _uniqueness_model_class: "type[QueueUniquenessModelMixin]"
+    _uniqueness_service_class: 'type["QueueUniquenessService"]'
 
     __slots__ = (
         "_event_log",
@@ -66,6 +77,8 @@ class SQLAlchemyBackend(BaseQueueBackend):
         "_opened",
         "_service_class",
         "_sqlalchemy_config",
+        "_uniqueness_model_class",
+        "_uniqueness_service_class",
     )
 
     def __init__(
@@ -78,6 +91,9 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self._model_class, self._service_class = self._resolve_model_classes(backend_config.model_class)
         self._event_log_model_class, self._event_log_service_class = self._resolve_event_log_model_classes(
             backend_config.event_log_model_class
+        )
+        self._uniqueness_model_class, self._uniqueness_service_class = self._resolve_uniqueness_model_classes(
+            backend_config.uniqueness_model_class
         )
         self._notifications = backend_config.notifications
         self._notification_channel = backend_config.notification_channel
@@ -142,6 +158,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         try:
             async with self._operation() as service:
@@ -157,6 +174,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
                     execution_backend=execution_backend,
                     execution_profile=execution_profile,
                     metadata=dict(metadata or {}),
+                    id=id,
                 )
         except (DuplicateKeyError, SQLAlchemyIntegrityError):
             if key is None:
@@ -509,6 +527,85 @@ class SQLAlchemyBackend(BaseQueueBackend):
             raise QueueConfigurationError(msg)
         return typed_model, QueueEventLogService.for_model(typed_model)
 
+    def _resolve_uniqueness_model_classes(
+        self, model_class: "type[object] | None"
+    ) -> 'tuple[type[QueueUniquenessModelMixin], type["QueueUniquenessService"]]':
+        if model_class is None:
+            msg = "SQLAlchemyBackendConfig.uniqueness_model_class must inherit QueueUniquenessModelMixin."
+            raise QueueConfigurationError(msg)
+        try:
+            valid_model = issubclass(model_class, QueueUniquenessModelMixin)
+        except TypeError:
+            valid_model = False
+        if not valid_model:
+            msg = "SQLAlchemyBackendConfig.uniqueness_model_class must inherit QueueUniquenessModelMixin."
+            raise QueueConfigurationError(msg)
+        if "__tablename__" not in model_class.__dict__:
+            msg = "SQLAlchemyBackendConfig.uniqueness_model_class must declare __tablename__."
+            raise QueueConfigurationError(msg)
+        typed_model = cast("type[QueueUniquenessModelMixin]", model_class)
+        mapper = cast("Any", sqlalchemy_inspect(typed_model))
+        missing_columns = {"id", "created_at", "identity_key", "task_id", "task_name"} - {
+            property_.key for property_ in mapper.column_attrs
+        }
+        if missing_columns:
+            columns = ", ".join(sorted(missing_columns))
+            msg = f"SQLAlchemyBackendConfig.uniqueness_model_class is missing tombstone columns: {columns}."
+            raise QueueConfigurationError(msg)
+        return typed_model, QueueUniquenessService.for_model(typed_model)
+
+    async def reserve_identity(
+        self, key: "str", *, task_id: "UUID", task_name: "str"
+    ) -> "UniquenessTombstone | None":
+        """Reserve a forever identity via select-then-insert with an integrity fallback.
+
+        The tombstone table's unique ``identity_key`` column is the atomicity
+        arbiter: a losing concurrent insert surfaces an integrity error and the
+        loser re-reads the winning owner. The tombstone table is separate from
+        the task table and terminal cleanup never touches it.
+
+        Returns:
+            ``None`` when this caller won the reservation; otherwise the existing
+            owner tombstone.
+        """
+        try:
+            async with self._uniqueness_operation() as service:
+                existing = await service.reserve(key, task_id=task_id, task_name=task_name)
+                if existing is not None:
+                    return self._tombstone_from_model(existing)
+            return None
+        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+            owner = await self.has_identity(key)
+            if owner is not None:
+                return owner
+            raise
+
+    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the tombstone owning a reserved forever identity, if any."""
+        async with self._uniqueness_service() as service:
+            model = await service.get_owner(key)
+            return self._tombstone_from_model(model) if model is not None else None
+
+    async def reset_identity(self, key: "str") -> "bool":
+        """Delete a forever identity tombstone in an operation-scoped session.
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        async with self._uniqueness_operation() as service:
+            return await service.delete_by_key(key)
+
+    def _tombstone_from_model(self, model: "Any") -> "UniquenessTombstone":
+        created_at = model.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return UniquenessTombstone(
+            key=str(model.identity_key),
+            task_id=UUID(str(model.task_id)),
+            task_name=str(model.task_name),
+            created_at=created_at.astimezone(timezone.utc),
+        )
+
     def _event_log_enabled(self) -> "bool":
         event_log_config = self.config.event_log if self.config is not None else None
         return event_log_config is not None and event_log_config.enabled
@@ -547,6 +644,18 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self._ensure_opened()
         async with self._session() as session, session.begin():
             yield self._event_log_service_class(session=session)
+
+    @asynccontextmanager
+    async def _uniqueness_service(self) -> 'AsyncIterator["QueueUniquenessService"]':
+        self._ensure_opened()
+        async with self._session() as session:
+            yield self._uniqueness_service_class(session=session)
+
+    @asynccontextmanager
+    async def _uniqueness_operation(self) -> 'AsyncIterator["QueueUniquenessService"]':
+        self._ensure_opened()
+        async with self._session() as session, session.begin():
+            yield self._uniqueness_service_class(session=session)
 
     @asynccontextmanager
     async def _heartbeat_operation(self) -> 'AsyncIterator["QueueTaskService"]':

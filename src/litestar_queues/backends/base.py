@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import EnqueueSpec, HeartbeatTouch, QueuedTaskRecord
+    from litestar_queues.models import EnqueueSpec, HeartbeatTouch, QueuedTaskRecord, UniquenessTombstone
 
 __all__ = ("BaseQueueBackend",)
 
@@ -69,8 +69,15 @@ class BaseQueueBackend:
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
-        """Persist a queued task."""
+        """Persist a queued task.
+
+        When ``id`` is provided the persisted record uses it instead of a freshly
+        generated identifier; the service pre-generates it for
+        ``unique_until="forever"`` enqueues so the identity tombstone and the
+        executable record share one id.
+        """
         raise NotImplementedError
 
     async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
@@ -308,10 +315,50 @@ class BaseQueueBackend:
     async def cleanup_terminal(self, before: "datetime") -> "int":
         """Delete terminal records completed before a cutoff.
 
+        Routine terminal cleanup never touches ``unique_until="forever"``
+        tombstones; only :meth:`reset_identity` removes them.
+
         Returns:
             The number of deleted records.
         """
         return 0
+
+    async def reserve_identity(
+        self, key: "str", *, task_id: "UUID", task_name: "str"
+    ) -> "UniquenessTombstone | None":
+        """Atomically reserve a ``unique_until="forever"`` identity.
+
+        Reservation is atomic: exactly one concurrent caller wins a given key.
+        The winner receives ``None`` and owns the durable tombstone; every other
+        caller receives the existing owner tombstone. Reservation is the only
+        way a tombstone is created and must run before the executable record is
+        persisted so a committed forever task can never lack its tombstone.
+
+        Args:
+            key: The effective identity key to reserve.
+            task_id: The originating task id (shared with the executable record).
+            task_name: The originating registered task name.
+
+        Returns:
+            ``None`` when this caller won the reservation; otherwise the existing
+            owner tombstone.
+        """
+        raise NotImplementedError
+
+    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the tombstone owning a reserved forever identity, if any."""
+        raise NotImplementedError
+
+    async def reset_identity(self, key: "str") -> "bool":
+        """Delete a forever identity tombstone.
+
+        This is the only tombstone deletion path; routine terminal and event
+        maintenance never remove tombstones.
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        raise NotImplementedError
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Notify waiters that a new task is available."""

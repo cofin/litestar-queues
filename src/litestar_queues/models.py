@@ -13,6 +13,7 @@ __all__ = (
     "QueuedTaskRecord",
     "StaleTaskRecoveryResult",
     "TaskStatus",
+    "UniquenessTombstone",
 )
 
 TaskStatus = Literal["pending", "scheduled", "running", "completed", "failed", "cancelled"]
@@ -85,6 +86,22 @@ class StaleTaskRecoveryResult:
             "skipped": self.skipped,
             "handler_needed": self.handler_needed,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class UniquenessTombstone:
+    """A durable ``unique_until="forever"`` identity reservation.
+
+    Records only the identity key, the originating task id/name, and the
+    reservation time. It never carries args, kwargs, result, or error material.
+    Routine terminal and event maintenance never delete it; an explicit
+    administrative reset is the only removal path.
+    """
+
+    key: "str"
+    task_id: "UUID"
+    task_name: "str"
+    created_at: "datetime"
 
 
 @dataclass(slots=True)

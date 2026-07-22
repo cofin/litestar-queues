@@ -1,5 +1,6 @@
 """SQLSpec queue backend."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_table_name,
 )
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
+from litestar_queues.backends.sqlspec.uniqueness import create_tombstone_store
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     EnqueueSpec,
@@ -44,6 +46,7 @@ from litestar_queues.models import (
     QueueStatistics,
     StaleTaskRecoveryResult,
     TaskStatus,
+    UniquenessTombstone,
 )
 
 if TYPE_CHECKING:
@@ -57,6 +60,7 @@ if TYPE_CHECKING:
         SQLSpecStoreConfig,
     )
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+    from litestar_queues.backends.sqlspec.uniqueness import SQLSpecQueueTombstoneStore
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventLogConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch
@@ -64,6 +68,8 @@ if TYPE_CHECKING:
 __all__ = ("SQLSpecQueueBackend",)
 
 _DUE_STATUSES = ("pending", "scheduled")
+_RESERVE_MAX_ATTEMPTS = 12
+_RESERVE_BACKOFF_SECONDS = 0.02
 _DURABLE_NOTIFICATION_BACKENDS = frozenset({"aq", "notify_queue", "poll_queue", "txeventq"})
 _EVENT_EXTENSION_NAME = "events"
 _QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
@@ -171,6 +177,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_sqlspec",
         "_sqlspec_config",
         "_store",
+        "_uniqueness_store",
+        "_uniqueness_table_name",
     )
 
     def __init__(
@@ -214,6 +222,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_log_store: "Any | None" = None
         self._event_log: "SQLSpecQueueEventLog | None" = None
         self._store: "SQLSpecQueueStore | None" = None
+        self._uniqueness_store: "SQLSpecQueueTombstoneStore | None" = None
+        self._uniqueness_table_name = (
+            validate_table_name(backend_config.uniqueness_table_name)
+            if backend_config.uniqueness_table_name is not None
+            else None
+        )
         self._event_stream: "Any | None" = None
         self._pending_read = PendingNativeRead()
         self._opened = False
@@ -284,8 +298,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 result = create_for_config(self._get_sqlspec_config())
                 if isawaitable(result):
                     await result
-                if not self._event_log_enabled():
-                    return
+            await self._create_uniqueness_schema()
+            if callable(create_for_config) and not self._event_log_enabled():
+                return
             async with self._session() as driver:
                 statements: "list[str]" = []
                 if not callable(create_for_config):
@@ -296,6 +311,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 for statement in statements:
                     await driver.execute_script(statement)
                 await driver.commit()
+
+    async def _create_uniqueness_schema(self) -> "None":
+        store = self._get_uniqueness_store()
+        create_for_config = getattr(store, "create_schema_for_config", None)
+        if callable(create_for_config):
+            result = create_for_config(self._get_sqlspec_config())
+            if isawaitable(result):
+                await result
+            return
+        async with self._session() as driver:
+            for statement in store.create_statements():
+                await driver.execute_script(statement)
+            await driver.commit()
 
     async def enqueue(
         self,
@@ -311,6 +339,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         now = _utc_now()
         record = QueuedTaskRecord(
@@ -327,6 +356,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             key=key,
             metadata=dict(metadata or {}),
         )
+        if id is not None:
+            record.id = id
         if key is not None:
             return await self._enqueue_keyed(record, key)
         store = self._get_store()
@@ -432,6 +463,93 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             row = await self._select_task_by_key(driver, key)
         return self._record_from_row(row) if row is not None else None
+
+    async def reserve_identity(
+        self, key: "str", *, task_id: "UUID", task_name: "str"
+    ) -> "UniquenessTombstone | None":
+        """Reserve a forever identity via an optimistic insert with a unique-violation fallback.
+
+        The tombstone table's identity-key PRIMARY KEY is the atomicity arbiter:
+        exactly one concurrent insert wins; a loser catches the unique violation
+        and reads the winning owner. Serializable engines (CockroachDB) may abort
+        a losing transaction with a serialization/retry error before the unique
+        violation surfaces, so those are retried with bounded backoff. The
+        tombstone table is separate from the queue table and terminal cleanup
+        never touches it.
+
+        Returns:
+            ``None`` when this caller won the reservation; otherwise the existing
+            owner tombstone.
+        """
+        store = self._get_uniqueness_store()
+        values = {
+            "identity_key": key,
+            "task_id": str(task_id),
+            "task_name": task_name,
+            "created_at": self._serialize_datetime(_utc_now()),
+        }
+        last_exc: "Exception | None" = None
+        for attempt in range(_RESERVE_MAX_ATTEMPTS):
+            try:
+                return await self._reserve_identity_once(store, key, values)
+            except Exception as exc:
+                if _is_unique_violation(exc):
+                    owner = await self.has_identity(key)
+                    if owner is not None:
+                        return owner
+                elif not _is_serialization_conflict(exc):
+                    raise
+                last_exc = exc
+            await asyncio.sleep(_RESERVE_BACKOFF_SECONDS * (attempt + 1))
+        if last_exc is not None:
+            raise last_exc
+        return None
+
+    async def _reserve_identity_once(
+        self, store: "SQLSpecQueueTombstoneStore", key: "str", values: "dict[str, Any]"
+    ) -> "UniquenessTombstone | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                existing = await self._select_one_row(driver, store.select_owner(key))
+                if existing is not None:
+                    await driver.rollback()
+                    return _tombstone_from_row(existing)
+                await driver.execute(store.insert_reservation(values))
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return None
+
+    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the tombstone owning a reserved forever identity, if any."""
+        store = self._get_uniqueness_store()
+        async with self._session() as driver:
+            row = await self._select_one_row(driver, store.select_owner(key))
+        return _tombstone_from_row(row) if row is not None else None
+
+    async def reset_identity(self, key: "str") -> "bool":
+        """Delete a forever identity tombstone via count-then-delete.
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        store = self._get_uniqueness_store()
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                count_row = await self._select_one_row(driver, store.count_by_key(key))
+                removed = int(count_row["tombstone_count"]) if count_row is not None else 0
+                if removed > 0:
+                    await driver.execute(store.delete_by_key(key))
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return removed > 0
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
@@ -1401,6 +1519,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     def _get_event_log_store_if_enabled(self) -> "Any | None":
         return self._get_event_log_store() if self._event_log_enabled() else None
 
+    def _get_uniqueness_store(self) -> "SQLSpecQueueTombstoneStore":
+        if self._uniqueness_store is None:
+            store = create_tombstone_store(
+                self._get_sqlspec_config(),
+                queue_table_name=self._resolve_queue_table_name(),
+                uniqueness_table_name=self._uniqueness_table_name,
+                manage_schema=self._manage_schema,
+            )
+            self._uniqueness_table_name = store.table_name
+            self._uniqueness_store = store
+        return self._uniqueness_store
+
     def _event_log_enabled(self) -> "bool":
         return bool(self.config is not None and self.config.event_log is not None and self.config.event_log.enabled)
 
@@ -1992,6 +2122,15 @@ def _coerce_status(value: "Any") -> "TaskStatus":
         msg = f"Unknown queued task status from SQLSpec queue backend: {status!r}"
         raise ValueError(msg)
     return cast("TaskStatus", status)
+
+
+def _tombstone_from_row(row: "dict[str, Any]") -> "UniquenessTombstone":
+    return UniquenessTombstone(
+        key=str(row["identity_key"]),
+        task_id=UUID(str(row["task_id"])),
+        task_name=str(row["task_name"]),
+        created_at=_deserialize_datetime(row["created_at"]) or _utc_now(),
+    )
 
 
 def _queue_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "dict[str, Any]":

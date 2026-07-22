@@ -461,3 +461,35 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
     assert result.record.metadata["quiet_success"] is True
     assert result.record.scheduled_at is not None
     assert result.record.scheduled_at > datetime.now(timezone.utc) + timedelta(minutes=4)
+
+
+async def test_backend_contract_forever_reservation_returns_owner_on_conflict(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_reserve_returns_owner_on_conflict
+
+    await assert_reserve_returns_owner_on_conflict(queue_backend)
+
+
+async def test_backend_contract_forever_reset_is_only_deletion_path(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reset_is_only_deletion_path
+
+    await assert_reset_is_only_deletion_path(queue_backend)
+
+
+async def test_backend_contract_forever_tombstone_survives_terminal_cleanup(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+
+    await assert_tombstone_survives_terminal_cleanup(queue_backend)
+
+
+async def test_backend_contract_forever_concurrent_reservation_single_winner(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "sync-driver" in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: single-writer sync driver cannot reserve concurrently")
+    from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
+
+    await assert_concurrent_reservation_has_single_winner(queue_backend)

@@ -16,6 +16,7 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    UniquenessTombstone,
 )
 
 if TYPE_CHECKING:
@@ -32,12 +33,13 @@ __all__ = ("InMemoryQueueBackend",)
 class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
-    __slots__ = ("_event_log", "_keys", "_lock", "_notification_event", "_pending_read", "_records")
+    __slots__ = ("_event_log", "_keys", "_lock", "_notification_event", "_pending_read", "_records", "_tombstones")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         super().__init__(config=config)
         self._records: "dict[UUID, QueuedTaskRecord]" = {}
         self._keys: "dict[str, UUID]" = {}
+        self._tombstones: "dict[str, UniquenessTombstone]" = {}
         self._lock = asyncio.Lock()
         self._notification_event = asyncio.Event()
         self._pending_read = PendingNativeRead()
@@ -74,6 +76,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         async with self._lock:
             if key is not None:
@@ -97,6 +100,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 key=key,
                 metadata=dict(metadata or {}),
             )
+            if id is not None:
+                record.id = id
             self._records[record.id] = record
             if key is not None:
                 self._keys[key] = record.id
@@ -421,6 +426,36 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     del self._keys[record.key]
         return removed
 
+    async def reserve_identity(
+        self, key: "str", *, task_id: "UUID", task_name: "str"
+    ) -> "UniquenessTombstone | None":
+        """Reserve a forever identity under the shared lock beside key ownership.
+
+        Returns:
+            ``None`` when this caller won the reservation; otherwise the existing
+            owner tombstone.
+        """
+        async with self._lock:
+            existing = self._tombstones.get(key)
+            if existing is not None:
+                return existing
+            tombstone = UniquenessTombstone(key=key, task_id=task_id, task_name=task_name, created_at=_utc_now())
+            self._tombstones[key] = tombstone
+            return None
+
+    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the tombstone owning a reserved forever identity, if any."""
+        return self._tombstones.get(key)
+
+    async def reset_identity(self, key: "str") -> "bool":
+        """Delete a forever identity tombstone under the shared lock.
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        async with self._lock:
+            return self._tombstones.pop(key, None) is not None
+
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         if record.status in {"pending", "scheduled"} and record.is_due:
             self._notification_event.set()
@@ -445,6 +480,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         async with self._lock:
             self._records.clear()
             self._keys.clear()
+            self._tombstones.clear()
             self._notification_event.clear()
         await self._pending_read.aclose()
         if self._event_log is not None:
