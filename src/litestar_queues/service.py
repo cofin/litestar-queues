@@ -101,6 +101,15 @@ class QueueService:
 
         return QueueEventProducer(self.get_event_publisher())
 
+    def get_event_log(self) -> "QueueEventLog | None":
+        """Return the backend-owned durable event log, if one is configured.
+
+        The event log is wired during :meth:`open` only when ``event_log`` is
+        enabled; otherwise this returns ``None`` and durable-event maintenance
+        is a no-op.
+        """
+        return self._event_log
+
     @property
     def observability_runtime(self) -> "QueueObservabilityRuntimeProtocol":
         """Return the configured observability runtime."""
@@ -462,15 +471,69 @@ class QueueService:
         _finish_execution_observability(runtime, span, started_at, metric_base_attributes, "claim_lost")
         return current
 
+    async def reconcile_external(self, limit: "int | None" = None) -> "int":
+        """Reconcile externally dispatched records against their executor.
+
+        Lists running external records (bounded by ``limit`` when provided),
+        reconciles each against its execution backend, and records a metric for
+        every record that reached a terminal queue status. Records that name an
+        unknown execution backend are skipped with a warning.
+
+        Args:
+            limit: When provided, reconcile at most this many external records.
+                ``None`` reconciles every outstanding external record.
+
+        Returns:
+            Number of records that reached a terminal queue status.
+        """
+        queue_backend = self.get_queue_backend()
+        records = await queue_backend.list_running_external(limit=limit)
+        reconciled = 0
+        current_backend = self.get_execution_backend()
+        default_backend_name = execution_backend_name(self._config.execution_backend)
+        runtime = self.observability_runtime
+        for record in records:
+            if record.execution_ref is None:
+                continue
+            try:
+                execution_backend = (
+                    current_backend
+                    if record.execution_backend == default_backend_name
+                    else get_execution_backend(record.execution_backend, config=self._config)
+                )
+            except ValueError:
+                logger.warning(
+                    "Skipping external queue record with unknown execution backend",
+                    extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
+                )
+                continue
+            updated = await execution_backend.reconcile(self, record)
+            if updated is not None and updated.is_terminal:
+                reconciled += 1
+                runtime.record_counter(
+                    "litestar_queues.execution.reconcile.count",
+                    attributes={
+                        "queue.execution.backend": record.execution_backend,
+                        "queue.task.status": updated.status,
+                    },
+                )
+        return reconciled
+
     async def recover_stale_tasks(
-        self, *, stale_after: "timedelta", worker_id: "str | None" = None
+        self, *, stale_after: "timedelta", worker_id: "str | None" = None, limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
         """Recover stale running tasks and publish a worker summary event.
+
+        Args:
+            stale_after: Heartbeat age past which a running task is stale.
+            worker_id: Identity attached to published recovery events.
+            limit: When provided, recover at most this many records in one
+                bounded batch. ``None`` preserves the unbounded worker behavior.
 
         Returns:
             Summary of recovered, failed, skipped, and handler-needed tasks.
         """
-        result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after)
+        result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after, limit=limit)
         if result.requeued or result.failed or result.skipped or result.handler_needed:
             await self._publish_stale_failed_events(result, worker_id=worker_id)
             await self.get_event_publisher().publish(

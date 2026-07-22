@@ -240,8 +240,17 @@ class BaseQueueBackend:
                 match this retry count.
         """
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         """Recover running tasks with stale heartbeats.
+
+        Args:
+            stale_after: Heartbeat age past which a running task is stale.
+            limit: When provided, recover at most this many records ordered
+                oldest-first (oldest heartbeat, then record id). ``None``
+                preserves the historical unbounded behavior; bounded
+                maintenance always supplies a positive limit.
 
         Returns:
             Summary of requeued, failed, skipped, and handler-needed records.
@@ -258,6 +267,33 @@ class BaseQueueBackend:
             True when the caller should run the coordinated worker action.
         """
         return True
+
+    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire a token-fenced distributed maintenance lease.
+
+        Only backends advertising ``supports_maintenance_lease`` implement a
+        real lease. The base raises so the maintenance service fails closed
+        rather than silently running unfenced on a backend that cannot prevent
+        overlapping runs.
+
+        Raises:
+            NotImplementedError: Always, on backends without lease support.
+        """
+        raise NotImplementedError
+
+    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
+        """Release a maintenance lease held under ``token``.
+
+        Releases only when the persisted token matches ``token``, so a stale
+        holder that already lost the lease can never delete a successor's lease.
+
+        Returns:
+            True when a lease held under ``token`` was released.
+
+        Raises:
+            NotImplementedError: Always, on backends without lease support.
+        """
+        raise NotImplementedError
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -305,8 +341,16 @@ class BaseQueueBackend:
         """Return recent completed records for a task name."""
         return []
 
-    async def cleanup_terminal(self, before: "datetime") -> "int":
+    async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete terminal records completed before a cutoff.
+
+        Args:
+            before: Delete terminal records completed strictly before this UTC
+                cutoff.
+            limit: When provided, delete at most this many records ordered
+                oldest-first (oldest ``completed_at``, then record id). ``None``
+                preserves the historical unbounded behavior; bounded maintenance
+                always supplies a positive limit.
 
         Returns:
             The number of deleted records.

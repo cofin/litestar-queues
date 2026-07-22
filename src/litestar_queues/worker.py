@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from litestar_queues._heartbeat import WorkerHeartbeatManager
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
-from litestar_queues.execution import get_execution_backend
 
 if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
@@ -201,38 +200,16 @@ class Worker:
         self._completion_event.set()
 
     async def reconcile_external(self, *, limit: "int | None" = None) -> "int":
-        """Reconcile externally dispatched records.
+        """Reconcile externally dispatched records by delegating to the service.
+
+        The reconciliation contract (state transitions, unknown-backend
+        skipping, and metrics) lives on :meth:`QueueService.reconcile_external`;
+        the worker keeps only the periodic cadence and fleet lock.
 
         Returns:
             Number of records that reached a terminal queue status.
         """
-        queue_backend = self._service.get_queue_backend()
-        records = await queue_backend.list_running_external(limit=limit)
-        reconciled = 0
-        current_backend = self._service.get_execution_backend()
-        for record in records:
-            if record.execution_ref is None:
-                continue
-            try:
-                execution_backend = (
-                    current_backend
-                    if record.execution_backend == execution_backend_name(self._service.config.execution_backend)
-                    else get_execution_backend(record.execution_backend, config=self._service.config)
-                )
-            except ValueError:
-                logger.warning(
-                    "Skipping external queue record with unknown execution backend",
-                    extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
-                )
-                continue
-            updated = await execution_backend.reconcile(self._service, record)
-            if updated is not None and updated.is_terminal:
-                reconciled += 1
-                self._record_counter(
-                    "litestar_queues.execution.reconcile.count",
-                    {"queue.task.status": updated.status, "queue.execution.backend": record.execution_backend},
-                )
-        return reconciled
+        return await self._service.reconcile_external(limit=limit)
 
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> "None":
         await self._heartbeat_manager.start()

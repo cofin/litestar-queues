@@ -85,6 +85,10 @@ class QueueEventLog(Protocol):
         """Return per-stage event history aggregates."""
         ...
 
-    async def cleanup_before(self, before: "datetime") -> "int":
-        """Delete event history older than ``before``."""
+    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        """Delete event history older than ``before``.
+
+        ``limit`` bounds one bounded maintenance batch (oldest ``occurred_at``,
+        then record id); ``None`` preserves the historical unbounded behavior.
+        """
         ...

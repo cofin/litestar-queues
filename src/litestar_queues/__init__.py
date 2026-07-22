@@ -69,6 +69,12 @@ if TYPE_CHECKING:
         get_execution_backend_class,
         list_execution_backends,
     )
+    from litestar_queues.maintenance import (
+        QueueMaintenanceConfig,
+        QueueMaintenancePhaseResult,
+        QueueMaintenanceService,
+        QueueMaintenanceSummary,
+    )
     from litestar_queues.models import (
         EnqueueSpec,
         HeartbeatTouch,
@@ -129,6 +135,10 @@ _EXPORTS = {
     "QueueEventLogRecord": "litestar_queues.events",
     "QueueEventPublisher": "litestar_queues.events",
     "QueueEventStageSummary": "litestar_queues.events",
+    "QueueMaintenanceConfig": "litestar_queues.maintenance",
+    "QueueMaintenancePhaseResult": "litestar_queues.maintenance",
+    "QueueMaintenanceService": "litestar_queues.maintenance",
+    "QueueMaintenanceSummary": "litestar_queues.maintenance",
     "QueuePlugin": "litestar_queues.plugin",
     "QueueService": "litestar_queues.service",
     "QueueStatistics": "litestar_queues.models",
@@ -206,6 +216,10 @@ __all__ = (
     "QueueEventLogRecord",
     "QueueEventPublisher",
     "QueueEventStageSummary",
+    "QueueMaintenanceConfig",
+    "QueueMaintenancePhaseResult",
+    "QueueMaintenanceService",
+    "QueueMaintenanceSummary",
     "QueuePlugin",
     "QueueService",
     "QueueStatistics",

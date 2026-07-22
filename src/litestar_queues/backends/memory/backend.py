@@ -32,7 +32,7 @@ __all__ = ("InMemoryQueueBackend",)
 class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
-    __slots__ = ("_event_log", "_keys", "_lock", "_notification_event", "_pending_read", "_records")
+    __slots__ = ("_event_log", "_keys", "_lock", "_maintenance_leases", "_notification_event", "_pending_read", "_records")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         super().__init__(config=config)
@@ -42,12 +42,16 @@ class InMemoryQueueBackend(BaseQueueBackend):
         self._notification_event = asyncio.Event()
         self._pending_read = PendingNativeRead()
         self._event_log: "QueueEventLog | None" = None
+        self._maintenance_leases: "dict[str, tuple[str, datetime]]" = {}
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
         """Backend behavior capabilities."""
         return QueueBackendCapabilities(
-            supports_notifications=True, notification_backend="asyncio-event", notifications_durable=False
+            supports_notifications=True,
+            notification_backend="asyncio-event",
+            notifications_durable=False,
+            supports_maintenance_lease=True,
         )
 
     def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
@@ -326,16 +330,21 @@ class InMemoryQueueBackend(BaseQueueBackend):
                         continue
                     record.heartbeat_at = None
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         result = StaleTaskRecoveryResult()
         async with self._lock:
-            for record in self._records.values():
-                if record.status != "running":
-                    continue
-                if record.heartbeat_at is not None and record.heartbeat_at >= cutoff:
-                    result.skipped += 1
-                    continue
+            candidates = [
+                record
+                for record in self._records.values()
+                if record.status == "running" and (record.heartbeat_at is None or record.heartbeat_at < cutoff)
+            ]
+            candidates.sort(key=_stale_sort_key)
+            if limit is not None:
+                candidates = candidates[:limit]
+            for record in candidates:
                 requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                 if requeue_on_stale and record.retry_count < record.max_retries:
                     record.status = "pending"
@@ -409,17 +418,50 @@ class InMemoryQueueBackend(BaseQueueBackend):
         records.sort(key=lambda record: record.completed_at or record.created_at, reverse=True)
         return records[:limit]
 
-    async def cleanup_terminal(self, before: "datetime") -> "int":
+    async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         removed = 0
         async with self._lock:
-            for task_id, record in list(self._records.items()):
-                if not record.is_terminal or record.completed_at is None or record.completed_at >= before:
-                    continue
+            candidates = [
+                record
+                for record in self._records.values()
+                if record.is_terminal and record.completed_at is not None and record.completed_at < before
+            ]
+            candidates.sort(key=lambda record: (record.completed_at, str(record.id)))
+            if limit is not None:
+                candidates = candidates[:limit]
+            for record in candidates:
                 removed += 1
-                del self._records[task_id]
-                if record.key is not None and self._keys.get(record.key) == task_id:
+                del self._records[record.id]
+                if record.key is not None and self._keys.get(record.key) == record.id:
                     del self._keys[record.key]
         return removed
+
+    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire an expiring, token-fenced maintenance lease under the async lock.
+
+        Returns:
+            True when the lease was granted to ``token``.
+        """
+        async with self._lock:
+            now = _utc_now()
+            existing = self._maintenance_leases.get(name)
+            if existing is not None and existing[1] > now and existing[0] != token:
+                return False
+            self._maintenance_leases[name] = (token, now + ttl)
+            return True
+
+    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
+        """Release a maintenance lease only when ``token`` matches the holder.
+
+        Returns:
+            True when a lease held under ``token`` was released.
+        """
+        async with self._lock:
+            existing = self._maintenance_leases.get(name)
+            if existing is None or existing[0] != token:
+                return False
+            del self._maintenance_leases[name]
+            return True
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         if record.status in {"pending", "scheduled"} and record.is_due:
@@ -451,6 +493,17 @@ class InMemoryQueueBackend(BaseQueueBackend):
             clear = getattr(self._event_log, "clear", None)
             if clear is not None:
                 await clear()
+
+
+_MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+
+
+def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
+    """Order stale candidates oldest-heartbeat-first, then by record id.
+
+    Records that never heartbeated sort first (most stale).
+    """
+    return (record.heartbeat_at or _MIN_DATETIME, str(record.id))
 
 
 def _utc_now() -> "datetime":

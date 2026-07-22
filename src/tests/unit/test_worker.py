@@ -1022,9 +1022,11 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
         self.list_running_external_calls += 1
         return await super().list_running_external(limit=limit)
 
-    async def requeue_stale_running(self, *, stale_after: "timedelta") -> "StaleTaskRecoveryResult":
+    async def requeue_stale_running(
+        self, *, stale_after: "timedelta", limit: "int | None" = None
+    ) -> "StaleTaskRecoveryResult":
         self.requeue_calls.append(stale_after)
-        return await super().requeue_stale_running(stale_after=stale_after)
+        return await super().requeue_stale_running(stale_after=stale_after, limit=limit)
 
 
 class _LockingCountingInMemoryQueueBackend(_CountingInMemoryQueueBackend):
