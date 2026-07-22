@@ -708,6 +708,38 @@ async def _drop_dynamic_queue_model(backend: "SQLAlchemyBackend", model_class: "
         await connection.run_sync(cast("Any", model_class).__table__.drop, checkfirst=True)
 
 
+async def test_advanced_alchemy_forever_reservation_returns_owner_on_conflict(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_reserve_returns_owner_on_conflict
+
+    await assert_reserve_returns_owner_on_conflict(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_forever_reset_is_only_deletion_path(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_reset_is_only_deletion_path
+
+    await assert_reset_is_only_deletion_path(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_forever_tombstone_survives_terminal_cleanup(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+
+    await assert_tombstone_survives_terminal_cleanup(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_forever_concurrent_reservation_single_winner(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
+
+    await assert_concurrent_reservation_has_single_winner(advanced_alchemy_backend)
+
+
 class _CasClaimService:
     def __init__(self, records: "list[QueuedTaskRecord]", target: "QueuedTaskRecord") -> "None":
         self.records = records
