@@ -68,14 +68,35 @@ async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> 
     assert "JSON" in statements[0]
 
 
+async def test_sqlspec_backend_migration_creates_uniqueness_tombstone_table() -> "None":
+    migration = importlib.import_module(
+        "litestar_queues.backends.sqlspec.migrations.0002_create_uniqueness_tombstones"
+    )
+    context = SimpleNamespace(config=_fake_adapter_config("duckdb", dialect="duckdb"))
+
+    statements = await migration.up(context)
+
+    assert "CREATE TABLE IF NOT EXISTS" in statements[0]
+    assert "litestar_queue_task_uniqueness" in statements[0]
+    assert "identity_key" in statements[0]
+
+    down_statements = await migration.down(context)
+    assert any("litestar_queue_task_uniqueness" in statement for statement in down_statements)
+
+
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
+    assert [path.name for path in paths] == [
+        "0001_create_queue_tasks.py",
+        "0002_create_uniqueness_tombstones.py",
+    ]
     content = paths[0].read_text()
     assert "create_queue_store" in content
     assert "return SQLSpecQueueStore(" not in content
     assert "CREATE TABLE IF NOT EXISTS litestar_queue_task" not in content
+    tombstone_content = paths[1].read_text()
+    assert "create_tombstone_store" in tombstone_content
 
 
 async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_table(

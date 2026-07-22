@@ -58,3 +58,95 @@ record already has that key, enqueueing returns that record. A task in a final
 state does not reserve the key forever, so the next enqueue can create a new
 record. Omit the key, or generate a different one, when concurrent
 invocations are wanted.
+
+Task uniqueness
+===============
+
+Opt into identity without hand-building keys with ``unique_by`` and, only when
+you need it, ``unique_until``.
+
+- ``unique_by="task"`` derives the identity from the registered task name, so
+  every enqueue of the task shares one active record. Arguments are never
+  inspected.
+- ``unique_by="arguments"`` derives the identity from the registered task name
+  plus the normalized call: positional and keyword forms of the same call, and
+  applied defaults, produce the same identity. Arguments are bound against the
+  callable signature, defaults are applied, the injected ``_task_context`` is
+  excluded, and a versioned canonical JSON payload is hashed with SHA-256. It
+  never uses ``pickle`` or ``repr()``.
+
+.. code-block:: python
+
+   from litestar_queues import task
+
+
+   @task("reports.refresh", unique_by="task")
+   async def refresh_report(report_id: str) -> None: ...
+
+
+   @task("reports.render", unique_by="arguments")
+   async def render_report(report_id: str, *, fmt: str = "pdf") -> None: ...
+
+Identity precedence and lifetime
+--------------------------------
+
+Identity is selected by strict precedence. The first row that applies wins, and
+the explicit, configured, and task-only rows never bind, serialize, or hash
+arguments.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 35 35
+
+   * - Configuration
+     - Identity
+     - Conflict window
+   * - no ``key``, no ``unique_by``
+     - none; every enqueue is a new record
+     - none; executions may overlap up to worker capacity
+   * - explicit or configured ``key``
+     - the exact caller-supplied key
+     - until terminal
+   * - ``unique_by="task"``
+     - the registered task name
+     - until terminal
+   * - ``unique_by="arguments"``
+     - the registered task name plus the normalized call
+     - until terminal
+   * - ``unique_until="forever"``
+     - the selected identity above
+     - retained by a tombstone until reset
+
+``unique_until`` defaults to ``"terminal"`` and is omitted from ordinary
+configuration. Spell out ``unique_until="forever"`` only when you want a retained
+tombstone that ordinary cleanup never removes:
+
+.. code-block:: python
+
+   @task("imports.once", unique_by="arguments", unique_until="forever")
+   async def import_once(object_key: str) -> None: ...
+
+A ``forever`` identity blocks every later enqueue of that identity -- even after
+the original record completes and is cleaned up. The only way to allow a new
+enqueue is an explicit administrative reset with the exact effective key:
+
+.. code-block:: python
+
+   await queue_service.reset_task_identity(effective_key)
+
+Rules and validation
+--------------------
+
+- A configured ``key`` is already an identity, so combining a configured ``key``
+  with ``unique_by`` is rejected at decoration.
+- ``unique_until="forever"`` requires an identity; setting it with neither a
+  configured ``key`` nor ``unique_by`` is rejected.
+- With no ``key`` and no ``unique_by``, uniqueness is disabled: every call is a
+  separate, independently claimable record.
+- Schedules keep their internal ``scheduled:{task_name}`` identity and are never
+  rehashed or given uniqueness tombstones.
+- Hashing keeps only the identity key small. Large task payloads still belong in
+  object or database storage; pass a stable id. Set
+  ``QueueConfig.max_task_payload_bytes`` to reject oversized
+  ``unique_by="arguments"`` payloads with
+  :class:`~litestar_queues.exceptions.TaskPayloadTooLargeError`.

@@ -1,5 +1,6 @@
 """Task uniqueness policy: decorator/``using`` validation and enqueue precedence."""
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -209,3 +210,44 @@ async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
         assert await service.get_task_identity(key) is None
         reopened = await _enqueue(service, once, "obj-1")
         assert reopened.id != first.id
+
+
+async def test_unkeyed_enqueues_are_distinct_and_concurrently_claimable() -> "None":
+    @task("plain.parallel")
+    async def plain(value: "str") -> "None": ...
+
+    backend = InMemoryQueueBackend()
+    async with _service(backend) as service:
+        results = await asyncio.gather(*(service.enqueue(plain, "same") for _ in range(5)))
+        ids = {result.id for result in results}
+        assert len(ids) == 5
+        claimed = await backend.claim_many(limit=5)
+    assert {record.id for record in claimed} == ids
+    assert all(record.status == "running" for record in claimed)
+
+
+async def test_forever_concurrent_enqueue_produces_one_winner() -> "None":
+    @task("once.parallel", unique_by="arguments", unique_until="forever")
+    async def once(object_key: "str") -> "None": ...
+
+    backend = InMemoryQueueBackend()
+    async with _service(backend) as service:
+        results = await asyncio.gather(*(service.enqueue(once, "obj") for _ in range(6)))
+    assert len({result.id for result in results}) == 1
+
+
+async def test_schedules_keep_scheduled_key_regardless_of_uniqueness() -> "None":
+    @task("sched.job", interval=60, unique_by="task", unique_until="forever")
+    async def job() -> "None": ...
+
+    backend = InMemoryQueueBackend()
+    async with _service(backend) as service:
+        first = await service.initialize_schedules()
+        second = await service.initialize_schedules()
+
+    assert len(first) == 1
+    assert first[0].key == "scheduled:sched.job"
+    # Re-initialization reuses the schedule record; the key is never rehashed.
+    assert second[0].id == first[0].id
+    # The forever policy never created a tombstone for the schedule identity.
+    assert await backend.has_identity("scheduled:sched.job") is None
