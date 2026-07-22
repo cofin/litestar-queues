@@ -9,7 +9,7 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type
 
 if TYPE_CHECKING:
-    from sqlspec.builder import CreateTable, Delete, Insert, Select, Update
+    from sqlspec.builder import Delete, Insert, Select, Update
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
@@ -41,7 +41,7 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
         """Return statements that drop the maintenance-lease table."""
         if not self._manage_schema:
             return []
-        return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
+        return [self._drop_lease_table_sql()]
 
     def acquire_update(
         self, *, name: "str", token: "str", expires_at: "DatetimeParam", now: "DatetimeParam"
@@ -82,23 +82,44 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
         """Return a DELETE that releases a lease held under ``token``."""
         return sql.delete(self.table_name).where_eq("name", name).where_eq("token", token)
 
-    def _create_lease_table_statement(self) -> "CreateTable":
+    def _lease_columns_sql(self, *, quoted: "bool") -> "str":
+        column = self._quoted_col if quoted else self._col
         return (
-            sql
-            .create_table(self.table_name)
-            .if_not_exists()
-            .column("name", self._indexed_text_type(), primary_key=True)
-            .column("token", self._indexed_text_type(), not_null=True)
-            .column("expires_at", self._timestamp_type(), not_null=True)
+            f"{column('name')} {self._indexed_text_type()} PRIMARY KEY, "
+            f"{column('token')} {self._indexed_text_type()} NOT NULL, "
+            f"{column('expires_at')} {self._timestamp_type()} NOT NULL"
         )
 
+    def _is_oracle(self) -> "bool":
+        return "oracle" in (self._data_dictionary_dialect_name() or "").lower()
+
     def _create_lease_table_sql(self) -> "str":
-        rendered = self._to_sql(self._create_lease_table_statement())
-        unsplit_target = self._quote_unsplit_identifier(self.table_name)
-        split_target = self._quoted_table_name()
-        if unsplit_target != split_target:
-            rendered = rendered.replace(unsplit_target, split_target, 1)
-        return rendered
+        # Build raw DDL rather than the SQL builder so adapter-specific column
+        # types (e.g. SQL Server ``DATETIME2(6)``) that sqlglot cannot render in
+        # a CREATE TABLE are emitted verbatim, mirroring the queue store DDL.
+        table = self._quoted_table_name()
+        if type(self).identifier_quote_style == "none":  # SQL Server
+            columns = self._lease_columns_sql(quoted=True)
+            return f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NULL BEGIN CREATE TABLE {table} ({columns}) END"
+        if self._is_oracle():
+            columns = self._lease_columns_sql(quoted=False)
+            return (
+                f"BEGIN EXECUTE IMMEDIATE 'CREATE TABLE {self.table_name} ({columns})'; "
+                "EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;"
+            )
+        columns = self._lease_columns_sql(quoted=True)
+        return f"CREATE TABLE IF NOT EXISTS {table} ({columns})"
+
+    def _drop_lease_table_sql(self) -> "str":
+        table = self._quoted_table_name()
+        if type(self).identifier_quote_style == "none":  # SQL Server
+            return f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {table};"
+        if self._is_oracle():
+            return (
+                f"BEGIN EXECUTE IMMEDIATE 'DROP TABLE {self.table_name}'; "
+                "EXCEPTION WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF; END;"
+            )
+        return f"DROP TABLE IF EXISTS {table}"
 
 
 def _lease_store_type_for(adapter_store_type: "type[SQLSpecQueueStore]") -> "type[SQLSpecMaintenanceLeaseStore]":
