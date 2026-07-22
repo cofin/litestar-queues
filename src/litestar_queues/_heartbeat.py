@@ -38,7 +38,7 @@ if TYPE_CHECKING:
         ) -> "object": ...
 
 
-__all__ = ("WorkerHeartbeatManager",)
+__all__ = ("SingleTaskBeatSink", "WorkerHeartbeatManager")
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,45 @@ logger = logging.getLogger(__name__)
 class _HeartbeatRegistration:
     expected_retry_count: "int | None"
     consecutive_misses: "int" = 0
+
+
+class SingleTaskBeatSink:
+    """Beat-detail sink for one externally executed task.
+
+    Shares ``record_beat()``'s truncation and last-value-wins semantics with
+    ``WorkerHeartbeatManager`` but never touches the backend itself. The owning
+    heartbeat loop peeks the pending detail before each touch and clears it
+    only once that touch succeeds, so a missed touch keeps the detail for the
+    next attempt instead of losing it.
+    """
+
+    __slots__ = ("_detail", "_task_id")
+
+    def __init__(self, task_id: "UUID") -> "None":
+        self._task_id = task_id
+        self._detail: "str | None" = None
+
+    def record_beat(self, task_id: "str", detail: "str | None") -> "None":
+        """Store the latest progress detail for the bound task.
+
+        Returns:
+            None.
+        """
+        with contextlib.suppress(ValueError):
+            if UUID(task_id) == self._task_id:
+                self._detail = detail[:256] if isinstance(detail, str) else None
+
+    def peek_detail(self) -> "str | None":
+        """Return the currently pending detail without clearing it."""
+        return self._detail
+
+    def clear_detail(self) -> "None":
+        """Clear the pending detail after a successful heartbeat touch.
+
+        Returns:
+            None.
+        """
+        self._detail = None
 
 
 class WorkerHeartbeatManager:
