@@ -18,6 +18,51 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
+async def test_sqlspec_stale_recovery_opens_transaction_before_bounded_select(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    calls: "list[str]" = []
+
+    class Store:
+        bind_datetime_as_naive_utc = False
+        bind_datetime_as_text = False
+
+        @staticmethod
+        def list_stale_running(*, cutoff: "object", limit: "int | None") -> "str":
+            assert cutoff is not None
+            assert limit == 7
+            return "bounded-select"
+
+    class Driver:
+        async def begin(self) -> "None":
+            calls.append("begin")
+
+        async def commit(self) -> "None":
+            calls.append("commit")
+
+        async def rollback(self) -> "None":
+            calls.append("rollback")
+
+    @contextlib.asynccontextmanager
+    async def session(_backend: "SQLSpecQueueBackend") -> "AsyncIterator[Driver]":
+        yield Driver()
+
+    async def select_rows(_backend: "SQLSpecQueueBackend", _driver: "Driver", statement: "str") -> "list[object]":
+        assert calls == ["begin"]
+        assert statement == "bounded-select"
+        calls.append("select")
+        return []
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", session)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_rows", select_rows)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _backend: Store())
+
+    result = await SQLSpecQueueBackend().requeue_stale_running(stale_after=timedelta(seconds=1), limit=7)
+
+    assert result.requeued == 0
+    assert calls == ["begin", "select", "commit"]
+
+
 async def test_sqlspec_stale_recovery_does_not_requeue_task_completed_after_stale_select(
     sqlspec_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":

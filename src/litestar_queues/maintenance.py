@@ -10,6 +10,7 @@ durable-event retention.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 from time import perf_counter
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
@@ -82,8 +83,8 @@ class QueueMaintenanceConfig:
                 is not positive, or ``lease_ttl`` does not exceed ``time_budget``.
         """
         for name, value in (("time_budget", self.time_budget), ("lease_ttl", self.lease_ttl)):
-            if value <= 0:
-                msg = f"QueueMaintenanceConfig.{name} must be greater than 0."
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
+                msg = f"QueueMaintenanceConfig.{name} must be a finite number greater than 0."
                 raise QueueConfigurationError(msg)
         for name, limit in (
             ("external_limit", self.external_limit),
@@ -91,16 +92,21 @@ class QueueMaintenanceConfig:
             ("terminal_limit", self.terminal_limit),
             ("event_limit", self.event_limit),
         ):
-            if limit <= 0:
-                msg = f"QueueMaintenanceConfig.{name} must be greater than 0."
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+                msg = f"QueueMaintenanceConfig.{name} must be a positive integer."
                 raise QueueConfigurationError(msg)
         for name, retention in (
             ("stale_after", self.stale_after),
             ("terminal_retention", self.terminal_retention),
             ("event_retention", self.event_retention),
         ):
-            if retention is not None and retention <= 0:
-                msg = f"QueueMaintenanceConfig.{name} must be greater than 0 when set."
+            if retention is not None and (
+                isinstance(retention, bool)
+                or not isinstance(retention, (int, float))
+                or not isfinite(retention)
+                or retention <= 0
+            ):
+                msg = f"QueueMaintenanceConfig.{name} must be a finite number greater than 0 when set."
                 raise QueueConfigurationError(msg)
         if self.lease_ttl <= self.time_budget:
             msg = "QueueMaintenanceConfig.lease_ttl must be greater than time_budget so the lease outlives the run."

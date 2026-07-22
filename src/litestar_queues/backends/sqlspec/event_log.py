@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlspec import sql
 
 from litestar_queues.backends.sqlspec.schema import event_log_table_name_for, validate_table_name
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events.log import EventLogConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 __all__ = (
     "SQLSpecQueueEventLog",
     "SQLSpecQueueEventLogStore",
+    "SpannerQueueEventLogStore",
     "create_event_log_store",
     "resolve_event_log_table_name",
 )
@@ -236,6 +238,72 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return built.sql
 
 
+class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
+    """Spanner event-log store using native DDL operations."""
+
+    __slots__ = ()
+
+    auto_native_json_columns = frozenset({"detail"})
+
+    def create_statements(self) -> "list[str]":
+        """Return Spanner-compatible event-log table and index statements."""
+        if not self._manage_schema:
+            return []
+        columns = (
+            f"{self._quote_identifier('event_id')} {self._id_type()} NOT NULL",
+            f"{self._quote_identifier('event_type')} {self._indexed_text_type()} NOT NULL",
+            f"{self._quote_identifier('task_id')} {self._id_type()}",
+            f"{self._quote_identifier('task_name')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('queue')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('worker_id')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('execution_backend')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('execution_profile')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('stage')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('level')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('message')} {self._text_type()}",
+            f"{self._quote_identifier('detail')} {self._json_type()} NOT NULL",
+            f"{self._quote_identifier('progress_current')} {self._float_type()}",
+            f"{self._quote_identifier('progress_total')} {self._float_type()}",
+            f"{self._quote_identifier('progress_percent')} {self._float_type()}",
+            f"{self._quote_identifier('duration_ms')} {self._float_type()}",
+            f"{self._quote_identifier('sequence')} {self._integer_type()}",
+            f"{self._quote_identifier('occurred_at')} {self._timestamp_type()} NOT NULL",
+            f"{self._quote_identifier('created_at')} {self._timestamp_type()} NOT NULL",
+        )
+        column_sql = ",\n  ".join(columns)
+        return [
+            (
+                f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+                f"PRIMARY KEY ({self._quote_identifier('event_id')})"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('task_id')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('task_id')}, {self._quote_identifier('sequence')}, "
+                f"{self._quote_identifier('occurred_at')})"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('task_name')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('task_name')}, {self._quote_identifier('stage')}, "
+                f"{self._quote_identifier('occurred_at')})"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('occurred_at')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('occurred_at')})"
+            ),
+        ]
+
+    def drop_statements(self) -> "list[str]":
+        """Return Spanner-compatible event-log DROP statements."""
+        if not self._manage_schema:
+            return []
+        return [
+            f"DROP INDEX {self._quoted_index_name('occurred_at')}",
+            f"DROP INDEX {self._quoted_index_name('task_name')}",
+            f"DROP INDEX {self._quoted_index_name('task_id')}",
+            f"DROP TABLE {self._quoted_table_name()}",
+        ]
+
+
 class SQLSpecQueueEventLog:
     """Buffered SQLSpec event-history writer and query interface."""
 
@@ -423,7 +491,8 @@ def create_event_log_store(
     Returns:
         SQLSpec event-log store configured for the resolved event-log table.
     """
-    return SQLSpecQueueEventLogStore(
+    store_type = SpannerQueueEventLogStore if _adapter_name(config) == "spanner" else SQLSpecQueueEventLogStore
+    return store_type(
         config,
         table_name=resolve_event_log_table_name(queue_table_name, event_log_table_name=event_log_table_name),
         manage_schema=manage_schema,

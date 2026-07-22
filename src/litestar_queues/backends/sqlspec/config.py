@@ -47,6 +47,7 @@ class SQLSpecBackendConfig:
     notify_transport: "str | None" = None
     event_log_table_name: "str | None" = None
     maintenance_lease_table_name: "str | None" = None
+    uniqueness_table_name: "str | None" = None
     event_backend: "str | None" = None
     event_queue_table: "str | None" = None
     event_poll_interval: "float | None" = None
@@ -64,6 +65,8 @@ class SQLSpecBackendConfig:
             self.event_log_table_name = validate_table_name(self.event_log_table_name)
         if self.maintenance_lease_table_name is not None:
             self.maintenance_lease_table_name = validate_table_name(self.maintenance_lease_table_name)
+        if self.uniqueness_table_name is not None:
+            self.uniqueness_table_name = validate_table_name(self.uniqueness_table_name)
         self.column_map = resolve_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
         if self.notify_transport is not None and self.notify_transport not in NOTIFY_TRANSPORTS:

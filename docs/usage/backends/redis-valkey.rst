@@ -45,6 +45,28 @@ Task arguments, keyword arguments, metadata, results, and errors must be JSON
 serializable. Give each application and environment a distinct ``key_prefix``;
 do not use ``FLUSHALL`` for test cleanup on shared infrastructure.
 
+.. _redis-maintenance-index-upgrade:
+
+Maintenance index upgrade
+=========================
+
+Positive maintenance limits use versioned indexes so each run examines only
+the requested number of records. A new or empty ``key_prefix`` initializes
+these indexes automatically.
+
+When upgrading a populated prefix created before this release, bounded
+maintenance fails closed until the indexes are rebuilt. Stop every Redis or
+Valkey queue writer using that prefix, then run this once with the configured
+backend:
+
+.. code-block:: python
+
+   rebuilt = await backend.rebuild_maintenance_indexes()
+
+The return value is the number of queue records examined. The rebuild is
+explicit, unbounded, and idempotent, so an interrupted call is safe to repeat.
+Restart the writers only after it completes.
+
 Batch claiming
 ==============
 

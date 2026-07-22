@@ -730,7 +730,10 @@ RETURNING {target}.{id_col} AS id
             ._select_all()
             .where(f"{self._col('status')} IN ('pending', 'scheduled', 'running')")
             .where(f"{self._col('execution_ref')} IS NOT NULL")
-            .order_by(_raw_order(f"{self._col('started_at')} ASC"), _raw_order(f"{self._col('created_at')} ASC"))
+            .order_by(
+                _raw_order(f"COALESCE({self._col('started_at')}, {self._col('created_at')}) ASC"),
+                _raw_order(f"{self._col('id')} ASC"),
+            )
         )
         return statement.limit(limit) if limit is not None else statement
 

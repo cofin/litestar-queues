@@ -277,16 +277,28 @@ class _FakeLeaseBackend:
 
 
 class _FakeMaintenanceServiceHost:
-    def __init__(self, backend: "_FakeLeaseBackend") -> "None":
+    def __init__(
+        self,
+        backend: "_FakeLeaseBackend",
+        *,
+        open_error: "Exception | None" = None,
+        close_error: "Exception | None" = None,
+    ) -> "None":
         self._backend = backend
+        self._close_error = close_error
+        self._open_error = open_error
         self.open_calls = 0
         self.close_calls = 0
 
     async def open(self) -> "None":
         self.open_calls += 1
+        if self._open_error is not None:
+            raise self._open_error
 
     async def close(self) -> "None":
         self.close_calls += 1
+        if self._close_error is not None:
+            raise self._close_error
 
     def get_queue_backend(self) -> "_FakeLeaseBackend":
         return self._backend
@@ -322,20 +334,41 @@ def _install_fake_maintenance(monkeypatch: "pytest.MonkeyPatch", summary: "objec
     return captured
 
 
+def _install_failing_maintenance(monkeypatch: "pytest.MonkeyPatch", error: "Exception") -> "None":
+    from litestar_queues import _cli
+
+    class _FailingMaintenanceService:
+        def __init__(self, service: "object", config: "object") -> "None":
+            pass
+
+        async def run(self, phases: "object" = None) -> "object":
+            raise error
+
+    monkeypatch.setattr(_cli, "QueueMaintenanceService", _FailingMaintenanceService)
+
+
 def _maintenance_config(**kwargs: "object") -> "object":
     from litestar_queues import QueueConfig, QueueMaintenanceConfig
 
     return QueueConfig(queue_backend="redis", maintenance=QueueMaintenanceConfig(**kwargs))  # type: ignore[arg-type]
 
 
-def _summary(outcome: "str") -> "object":
+def _summary(outcome: "str", *, error: "str | None" = None) -> "object":
     from litestar_queues.maintenance import QueueMaintenancePhaseResult, QueueMaintenanceSummary
 
     return QueueMaintenanceSummary(
         outcome=outcome,  # type: ignore[arg-type]
         lease_acquired=outcome != "lease_held",
         duration_ms=12.5,
-        phases=[QueueMaintenancePhaseResult(phase="terminal", status="completed", changed=3, duration_ms=4.0)],
+        phases=[
+            QueueMaintenancePhaseResult(
+                phase="terminal",
+                status="failed" if error is not None else "completed",
+                changed=3,
+                duration_ms=4.0,
+                error=error,
+            )
+        ],
     )
 
 
@@ -375,6 +408,22 @@ async def test_maintain_human_output_is_one_summary_table(
     assert code == 0
     assert "outcome: completed" in out
     assert "terminal" in out
+
+
+async def test_maintain_human_output_includes_sanitized_phase_error(
+    monkeypatch: "pytest.MonkeyPatch", capsys: "pytest.CaptureFixture[str]"
+) -> "None":
+    from litestar_queues import _cli
+
+    service = _FakeMaintenanceServiceHost(_FakeLeaseBackend())
+    plugin = _FakePlugin(_maintenance_config(terminal_retention=60), service)
+    _install_fake_maintenance(monkeypatch, _summary("failed", error="maintenance_phase_failed:RuntimeError"))
+
+    code = await _cli._maintain_run(cast("Any", plugin), (), False)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "maintenance_phase_failed:RuntimeError" in out
 
 
 async def test_maintain_narrows_selected_phases(monkeypatch: "pytest.MonkeyPatch") -> "None":
@@ -450,6 +499,44 @@ async def test_maintain_rejects_backend_without_lease_capability(monkeypatch: "p
     # The service is opened for the capability check, then cleanly shut down.
     assert service.open_calls == 1
     assert service.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_code"),
+    [
+        ("open", "maintenance_open_failed:RuntimeError"),
+        ("run", "maintenance_run_failed:RuntimeError"),
+        ("close", "maintenance_close_failed:RuntimeError"),
+    ],
+)
+async def test_maintain_sanitizes_lifecycle_errors_and_closes_once(
+    monkeypatch: "pytest.MonkeyPatch", capsys: "pytest.CaptureFixture[str]", failure_stage: "str", expected_code: "str"
+) -> "None":
+    from litestar_queues import _cli
+
+    secret = "postgresql://admin:super-secret@example.invalid/queues"
+    error = RuntimeError(secret)
+    service = _FakeMaintenanceServiceHost(
+        _FakeLeaseBackend(),
+        open_error=error if failure_stage == "open" else None,
+        close_error=error if failure_stage == "close" else None,
+    )
+    plugin = _FakePlugin(_maintenance_config(terminal_retention=60), service)
+    if failure_stage == "run":
+        _install_failing_maintenance(monkeypatch, error)
+    else:
+        _install_fake_maintenance(monkeypatch, _summary("completed"))
+
+    code = await _cli._maintain_run(cast("Any", plugin), (), False)
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert service.open_calls == 1
+    assert service.close_calls == 1
+    assert expected_code in captured.err
+    assert secret not in captured.err
+    assert secret not in captured.out
+    assert "Apply the current queue backend migrations" in captured.err
 
 
 def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: "pytest.MonkeyPatch") -> "None":

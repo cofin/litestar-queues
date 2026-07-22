@@ -14,6 +14,7 @@ else:
         "QueueTaskModelMixin",
         "QueueEventLogModelMixin",
         "QueueMaintenanceLeaseModelMixin",
+        "QueueUniquenessModelMixin",
         "UUIDAuditBase",
     ):
         warnings.filterwarnings(

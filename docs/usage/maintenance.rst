@@ -2,12 +2,12 @@
 Queue maintenance
 =================
 
-``litestar queues run-maintenance`` performs a small, predictable amount of repair and
-retention work and then exits. It is designed for an **infrequent external
-schedule** — a six-hour or daily cron — and is deliberately finite: it never
-starts a worker, never executes queued work, and never loops to drain a
-backlog. One external scheduler owns cadence; the package does not create cron
-records, enqueue a hidden maintenance task, or persist a separate due-state.
+``litestar queues run-maintenance`` performs a small, predictable amount of
+repair and retention work and then exits. It is designed for an **infrequent
+external schedule** — a six-hour or daily cron — and is deliberately finite:
+it never starts a worker, never executes queued work, and never loops to drain
+a backlog. The package does not create cron records, enqueue a hidden
+maintenance task, or persist a due-state.
 
 Maintenance is not a worker or a scheduler
 ==========================================
@@ -15,10 +15,8 @@ Maintenance is not a worker or a scheduler
 * A :doc:`worker <workers>` claims and executes due tasks continuously.
 * The :doc:`scheduler <schedules>` promotes recurring task definitions into due
   records.
-* **Maintenance** repairs and prunes existing records once per invocation and
-  exits. It does not dispatch ordinary queued work.
-
-Run maintenance on its own schedule, separate from your worker fleet.
+* **Maintenance** repairs and prunes existing records once and exits. It does
+  not dispatch ordinary queued work.
 
 Phases
 ======
@@ -39,6 +37,11 @@ Every invocation runs the configured phases once, in this fixed order:
 Each phase performs **at most one bounded batch** per invocation. Retention
 cutoffs are computed once, at the start of the run, so every phase in a single
 invocation uses a stable boundary.
+
+If a phase fails, its result contains a package-owned error code and exception
+type, later phases still run while time remains, and the whole invocation exits
+``1``. Exception messages, connection strings, credentials, and task payloads
+are not included in the summary.
 
 Configuration
 =============
@@ -66,9 +69,9 @@ until you supply their thresholds.
        ),
    )
 
-Every limit and duration must be positive, and ``lease_ttl`` must be greater
-than ``time_budget`` so the lease outlives the whole budget (there is no
-lease-renewal path). Durations and retention windows are seconds. Leaving
+Durations and retention windows are seconds; every limit and duration must be
+positive. ``lease_ttl`` must be greater than ``time_budget`` because there is
+no lease-renewal path. Leaving
 ``stale_after``, ``terminal_retention``, or ``event_retention`` as ``None``
 disables that phase.
 
@@ -79,9 +82,9 @@ Each phase mutates at most its configured limit of rows (``external_limit``,
 ``stale_limit``, ``terminal_limit``, ``event_limit``) ordered oldest-first, and
 the service checks the wall-clock ``time_budget`` between phases. When the budget
 is exhausted, the remaining enabled phases are reported ``partial`` and no
-further backend operation is started. Because each invocation only drains one
-bounded batch per phase, keep your schedule frequent enough that new work does
-not outpace a single run — or raise the per-phase limits.
+further backend operation starts. The budget does not interrupt a phase already
+in progress. Keep the schedule frequent enough that new work does not outpace
+one batch, or raise the limits.
 
 Distributed lease
 =================
@@ -91,12 +94,13 @@ Before running, the service acquires a token-fenced distributed lease named
 lease, this invocation is a **successful no-op** (outcome ``lease_held``, exit
 ``0``) so an overlapping scheduled run does not retry into the active one. The
 lease is released in a ``finally`` block. A stale holder that has lost the lease
-cannot mutate or release a successor's lease, because both release and the
-bounded mutations are token-fenced or compare-and-set.
+cannot release a successor's lease because release checks the holder token.
 
 A backend call that hangs past ``lease_ttl`` is outside the guarantee, but every
-mutation is idempotent/CAS-fenced, so the next scheduled invocation resumes
-safely from persisted queue state.
+bounded mutation is idempotent or conditionally updates current persisted state.
+The next scheduled invocation can therefore resume any remaining work. Keep
+``lease_ttl`` comfortably above the expected runtime as well as above the
+configured budget.
 
 Command and exit codes
 ======================
@@ -107,12 +111,12 @@ Command and exit codes
    outcome: completed
    lease_acquired: True
    duration_ms: 41.2
-   Phase     Status      Changed  Duration(ms)
-   --------------------------------------------
-   external  skipped           0           0.0
-   stale     completed         4           9.1
-   terminal  completed        18          21.4
-   events    skipped           0           0.0
+   Phase     Status        Changed  Duration(ms)  Error
+   ---------------------------------------------------
+   external  skipped             0           0.0  -
+   stale     completed           4           9.1  -
+   terminal  completed          18          21.4  -
+   events    skipped             0           0.0  -
 
 ``--phase [external|stale|terminal|events]`` (repeatable) narrows the run;
 filtering only narrows configuration and never enables a disabled retention
@@ -129,51 +133,69 @@ Code          Meaning
 ``2``         The time budget was exhausted and later phases were skipped.
 ============  ==================================================================
 
-Persistent backends only
-========================
+Backend support and schema ownership
+====================================
 
-Maintenance is meant for persistent backends. A separately launched
-``litestar queues run-maintenance`` process **rejects the in-memory backend** with a
-configuration error (exit ``1``), because in-memory state is process-local and
-is not shared with the CLI process. The underlying
-:class:`~litestar_queues.QueueMaintenanceService` remains usable with the memory
-backend inside the same process for tests and embedded applications.
+.. list-table::
+   :header-rows: 1
+   :widths: 18 20 24 38
 
-Migrations
-==========
+   * - Queue backend
+     - Separate CLI process
+     - Embedded service
+     - Lease storage and setup
+   * - In-memory
+     - Rejected (exit ``1``)
+     - Supported in the same process
+     - Process-local memory; no schema
+   * - Redis / Valkey
+     - Supported
+     - Supported
+     - Namespaced ``SET NX PX`` lease key; populated pre-release prefixes need
+       the one-time :ref:`maintenance index rebuild <redis-maintenance-index-upgrade>`
+   * - SQLSpec (shared database)
+     - Supported
+     - Supported
+     - Lease table from ``0002_create_queue_auxiliary_tables``
+   * - Advanced Alchemy (shared database)
+     - Supported
+     - Supported
+     - Application-owned maintenance-lease model and migration
 
-The distributed lease needs a small table on SQL backends. Provision it once,
-before scheduling maintenance:
+A separate CLI process cannot see in-memory records.
+:class:`~litestar_queues.QueueMaintenanceService` still supports memory for
+tests and same-process applications.
 
-* **SQLSpec** — the packaged ``0001_create_queue_tasks`` migration creates the
-  lease table alongside the queue table (derived from the queue table name with a
-  ``_maintenance_lease`` suffix). It is registered automatically with your
-  SQLSpec migration runner; run your SQLSpec migrations to apply it.
-* **Advanced Alchemy** — you own the models and migrations. Include the
-  ``QueueMaintenanceLeaseModel`` table (or compose
+Provision SQL lease tables before scheduling the command:
+
+* **SQLSpec** — run the application's normal migrations, including the packaged
+  forward migration ``0002_create_queue_auxiliary_tables``. It adds the lease
+  table to upgraded and fresh schemas; ``0001`` remains unchanged. Override the
+  name with ``SQLSpecBackendConfig.maintenance_lease_table_name``.
+* **Advanced Alchemy** — include ``QueueMaintenanceLeaseModel`` in application
+  metadata, or compose
   :class:`~litestar_queues.backends.advanced_alchemy.QueueMaintenanceLeaseModelMixin`
-  into your own base) in your metadata and Alembic migrations. The backend never
-  calls ``metadata.create_all``.
-* **Redis / Valkey** — no migration is required; the lease is a namespaced
-  ``SET NX PX`` key.
+  into an application model and pass it as
+  ``SQLAlchemyBackendConfig.maintenance_lease_model_class``. Create the table
+  with the same Alembic or ``create_all`` workflow that owns the queue model;
+  the queue backend never creates it.
 
-An install that is missing the lease table fails closed with a migration error
-rather than falling back to an unsafe process-local lock.
+A missing lease table fails closed instead of falling back to a process-local
+lock.
 
 Scheduling recipe
 =================
 
 Run maintenance from **one** external scheduler on an infrequent cadence.
-Cloud Run is only one way to launch the finite command — the same repair and
-retention behavior applies to a Kubernetes ``CronJob``, a ``systemd`` timer, or
-a plain shell. Do **not** create four per-phase schedules and do **not** run
+The same finite command runs from Cloud Run, a Kubernetes ``CronJob``, a
+``systemd`` timer, or a shell. Do **not** create four per-phase schedules or run
 maintenance at minute-level cadence.
 
 Recommended: one six-hour cron (``0 */6 * * *``, roughly 120 invocations over 30
 days). A low-volume alternative is once daily (``0 3 * * *``).
 
-Kubernetes CronJob
-------------------
+Kubernetes cron job
+-------------------
 
 .. code-block:: yaml
 
@@ -213,7 +235,7 @@ systemd timer
    Environment=LITESTAR_APP=app.asgi:app
    ExecStart=/usr/local/bin/litestar queues run-maintenance
 
-Cloud Run Job invoked by Cloud Scheduler
+Cloud Run job invoked by Cloud Scheduler
 ----------------------------------------
 
 Deploy the command as a Cloud Run **Job** and trigger it from Cloud Scheduler on
@@ -226,9 +248,17 @@ ordinary queued work.
 
    $ gcloud run jobs create queue-maintenance \
        --image your-app-image \
+       --region CLOUD_RUN_REGION \
        --command litestar --args queues,run-maintenance \
        --set-env-vars LITESTAR_APP=app.asgi:app
 
    $ gcloud scheduler jobs create http queue-maintenance \
+       --location SCHEDULER_REGION \
        --schedule "0 */6 * * *" \
-       --uri "https://<region>-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/<project>/jobs/queue-maintenance:run"
+       --uri "https://run.googleapis.com/v2/projects/PROJECT_ID/locations/CLOUD_RUN_REGION/jobs/queue-maintenance:run" \
+       --http-method POST \
+       --oauth-service-account-email SCHEDULER_SERVICE_ACCOUNT
+
+Grant the scheduler service account the Cloud Run Invoker role on the job.
+Google's `scheduled jobs guide <https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule>`_
+lists the required roles and current command shape.

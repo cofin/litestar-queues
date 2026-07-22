@@ -438,13 +438,13 @@ class Worker:
         ):
             return
         if self._reconcile_interval <= 0:
-            await self.reconcile_external()
+            await self.reconcile_external(limit=self._batch_size)
             return
         now = asyncio.get_running_loop().time()
         if now - self._last_reconcile_at < self._reconcile_interval:
             return
         self._last_reconcile_at = now
-        await self.reconcile_external()
+        await self.reconcile_external(limit=self._batch_size)
 
     async def _drain_running(self) -> "bool":
         if not self._running_tasks:

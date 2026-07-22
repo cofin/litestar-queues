@@ -24,6 +24,7 @@ from litestar_queues.backends.base import (
 )
 from litestar_queues.backends.redis.config import RedisBackendConfig as _RedisBackendConfig
 from litestar_queues.backends.redis.event_log import RedisQueueEventLog, hashed_index_value
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
@@ -31,6 +32,7 @@ from litestar_queues.models import (
     QueueStatistics,
     StaleTaskRecoveryResult,
     TaskStatus,
+    UniquenessTombstone,
 )
 
 if TYPE_CHECKING:
@@ -46,6 +48,7 @@ __all__ = ("RedisQueueBackend",)
 _DUE_STATUSES = {"pending", "scheduled"}
 _STATUS_VALUES = {"cancelled", "completed", "failed", "pending", "running", "scheduled"}
 _TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
+_MAINTENANCE_INDEX_VERSION = "1"
 _TOUCH_HEARTBEAT_SCRIPT = """
 local status = redis.call('HGET', KEYS[1], 'status')
 if status ~= 'running' then
@@ -62,6 +65,9 @@ end
 
 local heartbeat_at = ARGV[2]
 local metadata_patch_json = ARGV[3]
+local heartbeat_score = ARGV[4]
+local prefix = ARGV[5]
+local task_id = ARGV[6]
 if metadata_patch_json ~= '' then
     local metadata_json = redis.call('HGET', KEYS[1], 'metadata')
     local metadata = {}
@@ -78,10 +84,12 @@ if metadata_patch_json ~= '' then
             metadata[key] = value
         end
     end
-    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at, 'metadata', cjson.encode(metadata))
+    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at, 'heartbeat_score', heartbeat_score,
+        'metadata', cjson.encode(metadata))
 else
-    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at)
+    redis.call('HSET', KEYS[1], 'heartbeat_at', heartbeat_at, 'heartbeat_score', heartbeat_score)
 end
+redis.call('ZADD', prefix .. ':maintenance:running', heartbeat_score, task_id)
 
 return 1
 """
@@ -134,10 +142,19 @@ for _, id in ipairs(candidates) do
         local eb_ok = (eb_filter == '' or eb == eb_filter)
         local q_ok = (not has_queue_filter or queue_filter[q] == true)
         if eb_ok and q_ok then
-            redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso)
+            redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
+                'started_score', now_ms, 'heartbeat_score', now_ms)
             redis.call('SREM', prefix .. ':status:pending', id)
             redis.call('SADD', prefix .. ':status:running', id)
             redis.call('ZREM', ready, id)
+            redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
+            redis.call('ZREM', prefix .. ':maintenance:terminal', id)
+            local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+            if execution_ref and execution_ref ~= '' then
+                redis.call('ZADD', prefix .. ':maintenance:external', now_ms, id)
+            else
+                redis.call('ZREM', prefix .. ':maintenance:external', id)
+            end
             claimed[#claimed + 1] = id
         end
     end
@@ -152,6 +169,7 @@ local expected = ARGV[3]
 local completed_at = ARGV[4]
 local result_json = ARGV[5]
 local channel = ARGV[6]
+local completed_score = ARGV[7]
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'running' then
@@ -164,9 +182,13 @@ if expected ~= '' then
     end
 end
 redis.call('HSET', hkey, 'status', 'completed', 'completed_at', completed_at,
-    'heartbeat_at', '', 'result', result_json, 'error', '')
+    'completed_score', completed_score, 'heartbeat_at', '', 'heartbeat_score', '0',
+    'result', result_json, 'error', '')
 redis.call('SREM', prefix .. ':status:running', task_id)
 redis.call('SADD', prefix .. ':status:completed', task_id)
+redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
 redis.call('PUBLISH', channel, task_id)
 return {1}
 """
@@ -180,6 +202,7 @@ local error = ARGV[4]
 local retry = ARGV[5]
 local completed_at = ARGV[6]
 local channel = ARGV[7]
+local completed_score = ARGV[8]
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'running' then
@@ -194,18 +217,31 @@ local max_retries = tonumber(redis.call('HGET', hkey, 'max_retries')) or 0
 if retry == '1' and retry_count < max_retries then
     local new_retry_count = retry_count + 1
     redis.call('HSET', hkey, 'status', 'pending', 'retry_count', new_retry_count,
-        'started_at', '', 'heartbeat_at', '')
+        'started_at', '', 'started_score', '0', 'heartbeat_at', '', 'heartbeat_score', '0')
     redis.call('SREM', prefix .. ':status:running', task_id)
     redis.call('SADD', prefix .. ':status:pending', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+    local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+    if execution_ref and execution_ref ~= '' then
+        local created_score = redis.call('HGET', hkey, 'created_score') or '0'
+        redis.call('ZADD', prefix .. ':maintenance:external', created_score, task_id)
+    else
+        redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+    end
     local ready_score = redis.call('HGET', hkey, 'ready_score')
     if ready_score then
         redis.call('ZADD', ready, ready_score, task_id)
     end
     return {1, 'pending'}
 end
-redis.call('HSET', hkey, 'status', 'failed', 'completed_at', completed_at, 'heartbeat_at', '')
+redis.call('HSET', hkey, 'status', 'failed', 'completed_at', completed_at,
+    'completed_score', completed_score, 'heartbeat_at', '', 'heartbeat_score', '0')
 redis.call('SREM', prefix .. ':status:running', task_id)
 redis.call('SADD', prefix .. ':status:failed', task_id)
+redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
 redis.call('PUBLISH', channel, task_id)
 return {1, 'failed'}
 """
@@ -220,8 +256,13 @@ local score = ARGV[5]
 local channel = ARGV[6]
 local notify_payload = ARGV[7]
 local publish = ARGV[8]
+local maintenance_version = ARGV[9]
 local hkey = prefix .. ':task:' .. task_id
-redis.call('HSET', hkey, unpack(ARGV, 9))
+local maintenance_version_key = prefix .. ':maintenance:index-version'
+if not redis.call('GET', maintenance_version_key) and redis.call('SCARD', prefix .. ':tasks') == 0 then
+    redis.call('SET', maintenance_version_key, maintenance_version)
+end
+redis.call('HSET', hkey, unpack(ARGV, 10))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
 if due == '1' then
@@ -246,6 +287,7 @@ local channel = ARGV[6]
 local notify_payload = ARGV[7]
 local publish = ARGV[8]
 local dedup_key = ARGV[9]
+local maintenance_version = ARGV[10]
 local keys_hash = prefix .. ':keys'
 local existing_id = redis.call('HGET', keys_hash, dedup_key)
 if existing_id then
@@ -256,7 +298,11 @@ if existing_id then
 end
 redis.call('HSET', keys_hash, dedup_key, task_id)
 local hkey = prefix .. ':task:' .. task_id
-redis.call('HSET', hkey, unpack(ARGV, 10))
+local maintenance_version_key = prefix .. ':maintenance:index-version'
+if not redis.call('GET', maintenance_version_key) and redis.call('SCARD', prefix .. ':tasks') == 0 then
+    redis.call('SET', maintenance_version_key, maintenance_version)
+end
+redis.call('HSET', hkey, unpack(ARGV, 11))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
 if due == '1' then
@@ -317,6 +363,33 @@ end
 if channel ~= '' then
     redis.call('PUBLISH', channel, payload)
 end
+local final_status = new_status ~= '' and new_status or status
+if final_status == 'running' then
+    local heartbeat_score = redis.call('HGET', hkey, 'heartbeat_score')
+        or redis.call('HGET', hkey, 'started_score') or '0'
+    redis.call('ZADD', prefix .. ':maintenance:running', heartbeat_score, task_id)
+else
+    redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+end
+if final_status == 'completed' or final_status == 'failed' or final_status == 'cancelled' then
+    local completed_score = redis.call('HGET', hkey, 'completed_score') or '0'
+    redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
+else
+    redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+end
+local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+if execution_ref and execution_ref ~= ''
+        and (final_status == 'pending' or final_status == 'scheduled' or final_status == 'running') then
+    local external_score
+    if final_status == 'running' then
+        external_score = redis.call('HGET', hkey, 'started_score') or redis.call('HGET', hkey, 'created_score') or '0'
+    else
+        external_score = redis.call('HGET', hkey, 'created_score') or '0'
+    end
+    redis.call('ZADD', prefix .. ':maintenance:external', external_score, task_id)
+else
+    redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+end
 return {1}
 """
 _DELETE_TERMINAL_SCRIPT = """
@@ -333,12 +406,38 @@ redis.call('SREM', prefix .. ':tasks', task_id)
 redis.call('ZREM', prefix .. ':ready', task_id)
 redis.call('ZREM', prefix .. ':scheduled', task_id)
 redis.call('SREM', prefix .. ':status:' .. status, task_id)
+redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
 if dedup_key and dedup_key ~= '' then
     if redis.call('HGET', prefix .. ':keys', dedup_key) == task_id then
         redis.call('HDEL', prefix .. ':keys', dedup_key)
     end
 end
 return {1}
+"""
+_RESERVE_IDENTITY_SCRIPT = """
+local existing = redis.call('HGET', KEYS[1], ARGV[1])
+if existing then
+    return existing
+end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+return false
+"""
+
+
+_RESET_IDENTITY_SCRIPT = """
+local existing = redis.call('HGET', KEYS[1], ARGV[1])
+if not existing then
+    return {0}
+end
+if ARGV[2] ~= '' then
+    local ok, owner = pcall(cjson.decode, existing)
+    if not ok or tostring(owner.task_id) ~= ARGV[2] then
+        return {0}
+    end
+end
+return {redis.call('HDEL', KEYS[1], ARGV[1])}
 """
 
 
@@ -347,6 +446,19 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
     return {redis.call('DEL', KEYS[1])}
 end
 return {0}
+"""
+
+
+_CHECK_MAINTENANCE_INDEX_SCRIPT = """
+local current = redis.call('GET', KEYS[1])
+if current then
+    return {current}
+end
+if redis.call('SCARD', KEYS[2]) == 0 then
+    redis.call('SET', KEYS[1], ARGV[1])
+    return {ARGV[1]}
+end
+return {''}
 """
 
 
@@ -468,6 +580,7 @@ class RedisQueueBackend(BaseQueueBackend):
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
         metadata: "dict[str, Any] | None" = None,
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         """Persist a queued task.
 
@@ -487,6 +600,8 @@ class RedisQueueBackend(BaseQueueBackend):
             execution_profile=execution_profile,
             metadata=metadata,
         )
+        if id is not None:
+            record.id = id
         if key is not None:
             return await self._enqueue_keyed(record, key, publish=True)
         await self._save_new_record(record, publish=True)
@@ -586,11 +701,17 @@ class RedisQueueBackend(BaseQueueBackend):
         if record is None or record.status not in _DUE_STATUSES or not record.is_due:
             return None
         now = _utc_now()
+        maintenance_score = repr(_maintenance_score(now))
         committed = await self._commit_transition(
             task_id,
             expected_status=record.status,
             new_status="running",
-            patch={"started_at": _serialize_datetime(now), "heartbeat_at": _serialize_datetime(now)},
+            patch={
+                "started_at": _serialize_datetime(now),
+                "started_score": maintenance_score,
+                "heartbeat_at": _serialize_datetime(now),
+                "heartbeat_score": maintenance_score,
+            },
             zset_action="remove",
         )
         if not committed:
@@ -648,6 +769,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 _serialize_datetime(now),
                 _json_dumps(result),
                 self._completion_channel,
+                repr(_maintenance_score(now)),
             ],
         )
         if not outcome or int(outcome[0]) != 1:
@@ -676,6 +798,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 "1" if retry else "0",
                 _serialize_datetime(now),
                 self._completion_channel,
+                repr(_maintenance_score(now)),
             ],
         )
         if not outcome or int(outcome[0]) != 1:
@@ -731,7 +854,12 @@ class RedisQueueBackend(BaseQueueBackend):
             record.id,
             expected_status=record.status,
             new_status="cancelled",
-            patch={"completed_at": _serialize_datetime(now), "heartbeat_at": ""},
+            patch={
+                "completed_at": _serialize_datetime(now),
+                "completed_score": repr(_maintenance_score(now)),
+                "heartbeat_at": "",
+                "heartbeat_score": "0",
+            },
             zset_action="remove",
             publish_channel=self._completion_channel if self._notifications else "",
             publish_payload=str(record.id),
@@ -748,7 +876,9 @@ class RedisQueueBackend(BaseQueueBackend):
             return result
         client = await self._get_client()
         pipeline = _create_pipeline(client)
-        heartbeat_at = _serialize_datetime(_utc_now())
+        now = _utc_now()
+        heartbeat_at = _serialize_datetime(now)
+        heartbeat_score = repr(_maintenance_score(now))
         for touch in touches:
             expected_retry_count = "" if touch.expected_retry_count is None else str(touch.expected_retry_count)
             metadata_patch = _json_dumps(touch.metadata_patch) if touch.metadata_patch else ""
@@ -759,6 +889,9 @@ class RedisQueueBackend(BaseQueueBackend):
                 expected_retry_count,
                 heartbeat_at,
                 metadata_patch,
+                heartbeat_score,
+                self._key_prefix,
+                str(touch.task_id),
             )
         outcomes = await _execute_pipeline(pipeline)
         for touch, outcome in zip(touches, outcomes, strict=True):
@@ -772,7 +905,10 @@ class RedisQueueBackend(BaseQueueBackend):
         """Clear heartbeat timestamps for task IDs via a fenced script."""
         for task_id in task_ids:
             await self._commit_transition(
-                task_id, expected_status="", expected_retry_count=expected_retry_count, patch={"heartbeat_at": ""}
+                task_id,
+                expected_status="",
+                expected_retry_count=expected_retry_count,
+                patch={"heartbeat_at": "", "heartbeat_score": "0"},
             )
 
     async def requeue_stale_running(
@@ -788,9 +924,20 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         cutoff = _utc_now() - stale_after
         result = StaleTaskRecoveryResult()
+        if limit is not None and limit <= 0:
+            return result
+        if limit is None:
+            records = await self._list_records_by_statuses(("running",))
+        else:
+            await self._require_maintenance_indexes()
+            client = await self._get_client()
+            task_ids = await client.zrangebyscore(
+                self._maintenance_running_key, "-inf", f"({_maintenance_score(cutoff)}", start=0, num=limit
+            )
+            records = await self._records_from_ids(task_ids)
         candidates = [
             record
-            for record in await self._list_records_by_statuses(("running",))
+            for record in records
             if record.status == "running" and (record.heartbeat_at is None or record.heartbeat_at < cutoff)
         ]
         candidates.sort(key=_stale_sort_key)
@@ -837,7 +984,9 @@ class RedisQueueBackend(BaseQueueBackend):
             patch={
                 "priority": str(record.priority),
                 "started_at": "",
+                "started_score": "0",
                 "heartbeat_at": "",
+                "heartbeat_score": "0",
                 "error": record.error or "",
                 "retry_count": str(record.retry_count),
                 "ready_score": repr(_ready_score(record)),
@@ -858,7 +1007,13 @@ class RedisQueueBackend(BaseQueueBackend):
             record.id,
             expected_status="running",
             new_status="failed",
-            patch={"completed_at": _serialize_datetime(now), "heartbeat_at": "", "error": STALE_HEARTBEAT_ERROR},
+            patch={
+                "completed_at": _serialize_datetime(now),
+                "completed_score": repr(_maintenance_score(now)),
+                "heartbeat_at": "",
+                "heartbeat_score": "0",
+                "error": STALE_HEARTBEAT_ERROR,
+            },
             zset_action="remove",
         )
 
@@ -919,12 +1074,21 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         """Return externally dispatched tasks with references to reconcile."""
+        if limit is not None and limit <= 0:
+            return []
+        if limit is None:
+            candidate_records = await self._list_records_by_statuses(("pending", "scheduled", "running"))
+        else:
+            await self._require_maintenance_indexes()
+            client = await self._get_client()
+            task_ids = await client.zrange(self._maintenance_external_key, 0, limit - 1)
+            candidate_records = await self._records_from_ids(task_ids)
         records = [
             record
-            for record in await self._list_records_by_statuses(("pending", "scheduled", "running"))
+            for record in candidate_records
             if record.status in {"pending", "scheduled", "running"} and record.execution_ref is not None
         ]
-        records.sort(key=lambda record: (record.started_at or record.created_at, record.created_at))
+        records.sort(key=lambda record: (record.started_at or record.created_at, str(record.id)))
         return records[:limit] if limit is not None else records
 
     async def get_statistics(self) -> "QueueStatistics":
@@ -962,9 +1126,19 @@ class RedisQueueBackend(BaseQueueBackend):
             Number of deleted records.
         """
         client = await self._get_client()
+        if limit is not None and limit <= 0:
+            return 0
+        if limit is None:
+            records = await self._list_records_by_statuses(tuple(sorted(_TERMINAL_STATUSES)))
+        else:
+            await self._require_maintenance_indexes()
+            task_ids = await client.zrangebyscore(
+                self._maintenance_terminal_key, "-inf", f"({_maintenance_score(before)}", start=0, num=limit
+            )
+            records = await self._records_from_ids(task_ids)
         candidates = [
             record
-            for record in await self._list_records_by_statuses(tuple(sorted(_TERMINAL_STATUSES)))
+            for record in records
             if record.status in _TERMINAL_STATUSES and record.completed_at is not None and record.completed_at < before
         ]
         candidates.sort(key=lambda record: (cast("datetime", record.completed_at), str(record.id)))
@@ -978,6 +1152,45 @@ class RedisQueueBackend(BaseQueueBackend):
             if outcome and int(outcome[0]) == 1:
                 count += 1
         return count
+
+    async def rebuild_maintenance_indexes(self) -> "int":
+        """Rebuild ordered maintenance indexes for a populated pre-index namespace.
+
+        This is an intentionally unbounded, one-time upgrade operation. Stop all
+        queue writers using this Redis/Valkey namespace before calling it. Interrupted calls are safe
+        to retry because the version marker is written only after every task has
+        been reindexed.
+
+        Returns:
+            Number of queue records indexed.
+        """
+        client = await self._get_client()
+        records = await self._list_records_by_statuses(tuple(sorted(_STATUS_VALUES)))
+        pipeline = _create_pipeline(client)
+        pipeline.delete(self._maintenance_running_key, self._maintenance_external_key, self._maintenance_terminal_key)
+        for record in records:
+            task_id = str(record.id)
+            timestamp_scores = {
+                "created_score": repr(_maintenance_score(record.created_at)),
+                "started_score": repr(_maintenance_score(record.started_at)),
+                "completed_score": repr(_maintenance_score(record.completed_at)),
+                "heartbeat_score": repr(_maintenance_score(record.heartbeat_at)),
+            }
+            pipeline.hset(self._task_key(record.id), mapping=timestamp_scores)
+            if record.status == "running":
+                pipeline.zadd(self._maintenance_running_key, {task_id: _maintenance_score(record.heartbeat_at)})
+            if record.execution_ref is not None and record.status in {"pending", "scheduled", "running"}:
+                pipeline.zadd(
+                    self._maintenance_external_key,
+                    {task_id: _maintenance_score(record.started_at or record.created_at)},
+                )
+            if record.status in _TERMINAL_STATUSES and record.completed_at is not None:
+                pipeline.zadd(self._maintenance_terminal_key, {task_id: _maintenance_score(record.completed_at)})
+        await _execute_pipeline(pipeline)
+        marked = client.set(self._maintenance_index_version_key, _MAINTENANCE_INDEX_VERSION)
+        if inspect.isawaitable(marked):
+            await marked
+        return len(records)
 
     async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
         """Acquire a namespaced ``SET NX PX`` maintenance lease.
@@ -1000,6 +1213,57 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         client = await self._get_client()
         outcome = await _eval_script(client, _RELEASE_LEASE_SCRIPT, [self._lease_key(name)], [token])
+        return bool(outcome and int(outcome[0]) == 1)
+
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+        """Reserve a forever identity via an atomic HGET-or-HSET script.
+
+        The uniqueness hash is separate from ``:task:``/``:keys`` and is never
+        touched by terminal cleanup.
+
+        Returns:
+            ``None`` when this caller won the reservation; otherwise the existing
+            owner tombstone.
+        """
+        client = await self._get_client()
+        created_at = _utc_now()
+        payload = _json_dumps({
+            "key": key,
+            "task_id": str(task_id),
+            "task_name": task_name,
+            "created_at": _serialize_datetime(created_at),
+        })
+        result = client.eval(_RESERVE_IDENTITY_SCRIPT, 1, self._uniqueness_key, key, payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if result is None or result is False:
+            return None
+        return _tombstone_from_payload(_decode(result))
+
+    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the tombstone owning a reserved forever identity, if any."""
+        raw = await self._client_hget(self._uniqueness_key, key)
+        if raw is None:
+            return None
+        return _tombstone_from_payload(_decode(raw))
+
+    async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
+        """Delete a forever identity tombstone via atomic compare-and-delete.
+
+        Args:
+            key: The exact effective identity key.
+            expected_task_id: Optional task owner required for deletion.
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        client = await self._get_client()
+        outcome = await _eval_script(
+            client,
+            _RESET_IDENTITY_SCRIPT,
+            [self._uniqueness_key],
+            [key, str(expected_task_id) if expected_task_id is not None else ""],
+        )
         return bool(outcome and int(outcome[0]) == 1)
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
@@ -1215,6 +1479,7 @@ class RedisQueueBackend(BaseQueueBackend):
             self._notification_channel,
             _json_dumps({"event": "task_available"}),
             "1" if publish and self._notifications else "0",
+            _MAINTENANCE_INDEX_VERSION,
         ]
         for field, value in self._record_to_mapping(record).items():
             args.append(field)
@@ -1226,6 +1491,24 @@ class RedisQueueBackend(BaseQueueBackend):
         member_sets = await _pipeline_smembers(client, [self._status_key(status) for status in statuses])
         task_ids = {value for member_set in member_sets for value in member_set}
         return await self._records_from_ids(tuple(task_ids))
+
+    async def _require_maintenance_indexes(self) -> "None":
+        client = await self._get_client()
+        outcome = await _eval_script(
+            client,
+            _CHECK_MAINTENANCE_INDEX_SCRIPT,
+            [self._maintenance_index_version_key, f"{self._key_prefix}:tasks"],
+            [_MAINTENANCE_INDEX_VERSION],
+        )
+        version = str(_decode(outcome[0])) if outcome else ""
+        if version == _MAINTENANCE_INDEX_VERSION:
+            return
+        msg = (
+            f"{self._backend_name} maintenance indexes are missing for populated key prefix "
+            f"{self._key_prefix!r}. Stop all queue writers using this namespace and run "
+            "`await backend.rebuild_maintenance_indexes()` once before bounded maintenance."
+        )
+        raise QueueConfigurationError(msg)
 
     async def _records_from_ids(self, task_ids: "Iterable[Any]") -> "list[QueuedTaskRecord]":
         task_keys = [self._task_key(UUID(str(_decode(value)))) for value in task_ids]
@@ -1250,12 +1533,32 @@ class RedisQueueBackend(BaseQueueBackend):
         return f"{self._key_prefix}:keys"
 
     @property
+    def _uniqueness_key(self) -> "str":
+        return f"{self._key_prefix}:uniqueness"
+
+    @property
     def _ready_key(self) -> "str":
         return f"{self._key_prefix}:ready"
 
     @property
     def _scheduled_key(self) -> "str":
         return f"{self._key_prefix}:scheduled"
+
+    @property
+    def _maintenance_running_key(self) -> "str":
+        return f"{self._key_prefix}:maintenance:running"
+
+    @property
+    def _maintenance_index_version_key(self) -> "str":
+        return f"{self._key_prefix}:maintenance:index-version"
+
+    @property
+    def _maintenance_external_key(self) -> "str":
+        return f"{self._key_prefix}:maintenance:external"
+
+    @property
+    def _maintenance_terminal_key(self) -> "str":
+        return f"{self._key_prefix}:maintenance:terminal"
 
     @property
     def _completion_channel(self) -> "str":
@@ -1301,9 +1604,13 @@ class RedisQueueBackend(BaseQueueBackend):
             "retry_count": str(record.retry_count),
             "scheduled_at": _serialize_datetime(record.scheduled_at),
             "created_at": _serialize_datetime(record.created_at),
+            "created_score": repr(_maintenance_score(record.created_at)),
             "started_at": _serialize_datetime(record.started_at),
+            "started_score": repr(_maintenance_score(record.started_at)),
             "completed_at": _serialize_datetime(record.completed_at),
+            "completed_score": repr(_maintenance_score(record.completed_at)),
             "heartbeat_at": _serialize_datetime(record.heartbeat_at),
+            "heartbeat_score": repr(_maintenance_score(record.heartbeat_at)),
             "result": _json_dumps(record.result),
             "error": record.error or "",
             "key": record.key or "",
@@ -1440,6 +1747,11 @@ def _scheduled_score(value: "datetime | None") -> "float":
     return value.astimezone(timezone.utc).timestamp() * 1000.0
 
 
+def _maintenance_score(value: "datetime | None") -> "float":
+    """Return an ordered-set score for a maintenance timestamp."""
+    return _scheduled_score(value)
+
+
 def _decode(value: "Any") -> "Any":
     if isinstance(value, bytes):
         return value.decode()
@@ -1466,6 +1778,16 @@ def _json_loads(value: "Any", default: "Any") -> "Any":
     if value in {None, ""}:
         return default
     return json.loads(str(value))
+
+
+def _tombstone_from_payload(raw: "Any") -> "UniquenessTombstone":
+    data = json.loads(str(raw))
+    return UniquenessTombstone(
+        key=str(data["key"]),
+        task_id=UUID(str(data["task_id"])),
+        task_name=str(data["task_name"]),
+        created_at=_deserialize_datetime(data.get("created_at")) or _utc_now(),
+    )
 
 
 def _coerce_status(value: "Any") -> "TaskStatus":

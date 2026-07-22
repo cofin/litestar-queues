@@ -49,9 +49,15 @@ Use this page as a map; each linked guide owns the detailed behavior.
    * - Task discovery
      - ``task_modules``
      - :doc:`tasks`
+   * - Argument identity size guard
+     - ``max_task_payload_bytes``
+     - :doc:`task-options`
    * - Schedules
      - ``initialize_schedules``, ``scheduler_canary_task``
      - :doc:`schedules`
+   * - Bounded maintenance
+     - ``maintenance``
+     - :doc:`maintenance`
    * - Events
      - ``event``, ``event_log``, ``event_stream``
      - :doc:`events`, :doc:`event-history`, :doc:`event-streams`

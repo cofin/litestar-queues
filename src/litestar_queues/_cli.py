@@ -171,12 +171,13 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
     try:
         await service.open()
     except Exception as exc:
-        click.echo(f"error: {exc}", err=True)
-        with contextlib.suppress(Exception):
-            await service.close()
+        _emit_maintenance_lifecycle_error("open", exc)
+        await _close_maintenance_service(service)
         return 1
 
     selected = cast("tuple[MaintenancePhase, ...] | None", tuple(phases) or None)
+    summary: "QueueMaintenanceSummary | None" = None
+    run_failed = False
     try:
         backend = service.get_queue_backend()
         if not backend.capabilities.supports_maintenance_lease:
@@ -188,13 +189,33 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
             return 1
         summary = await QueueMaintenanceService(service, maintenance_config).run(selected)
     except Exception as exc:
-        click.echo(f"error: {exc}", err=True)
-        return 1
+        _emit_maintenance_lifecycle_error("run", exc)
+        run_failed = True
     finally:
-        await service.close()
+        closed = await _close_maintenance_service(service)
 
+    if run_failed or not closed or summary is None:
+        return 1
     _emit_maintenance_summary(summary, as_json)
     return _maintenance_exit_code(summary)
+
+
+def _emit_maintenance_lifecycle_error(stage: "str", exc: "Exception") -> "None":
+    click.echo(
+        f"error: maintenance_{stage}_failed:{type(exc).__name__}. "
+        "Apply the current queue backend migrations and verify backend connectivity; "
+        "the underlying exception message was suppressed because it may contain credentials.",
+        err=True,
+    )
+
+
+async def _close_maintenance_service(service: "QueueService") -> "bool":
+    try:
+        await service.close()
+    except Exception as exc:
+        _emit_maintenance_lifecycle_error("close", exc)
+        return False
+    return True
 
 
 def _emit_maintenance_summary(summary: "QueueMaintenanceSummary", as_json: "bool") -> "None":
@@ -204,10 +225,12 @@ def _emit_maintenance_summary(summary: "QueueMaintenanceSummary", as_json: "bool
     click.echo(f"outcome: {summary.outcome}")
     click.echo(f"lease_acquired: {summary.lease_acquired}")
     click.echo(f"duration_ms: {summary.duration_ms:.1f}")
-    click.echo(f"{'Phase':<10}{'Status':<12}{'Changed':>9}{'Duration(ms)':>14}")
-    click.echo(f"{'-' * 10}{'-' * 12}{'-' * 9:>9}{'-' * 12:>14}")
+    click.echo(f"{'Phase':<10}{'Status':<12}{'Changed':>9}{'Duration(ms)':>14}  Error")
+    click.echo(f"{'-' * 10}{'-' * 12}{'-' * 9:>9}{'-' * 12:>14}  {'-' * 5}")
     for phase in summary.phases:
-        click.echo(f"{phase.phase:<10}{phase.status:<12}{phase.changed:>9}{phase.duration_ms:>14.1f}")
+        click.echo(
+            f"{phase.phase:<10}{phase.status:<12}{phase.changed:>9}{phase.duration_ms:>14.1f}  {phase.error or '-'}"
+        )
 
 
 def _maintenance_exit_code(summary: "QueueMaintenanceSummary") -> "int":

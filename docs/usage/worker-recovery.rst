@@ -6,16 +6,16 @@ Workers heartbeat running tasks and can recover records whose worker stopped:
 
 .. code-block:: python
 
-   from datetime import timedelta
    from litestar_queues import QueueConfig
 
    queue_config = QueueConfig(
        worker_heartbeat_interval=15,
-       worker_stale_after=timedelta(minutes=2),
+       worker_stale_after=120,
        worker_stale_check_interval=30,
    )
 
-Leaving ``worker_stale_after=None`` disables automatic stale recovery.
+These settings are seconds. Leaving ``worker_stale_after=None`` disables
+automatic stale recovery.
 
 Heartbeats and stale records
 ============================
@@ -48,3 +48,7 @@ If work remains ``running`` after a crash, check heartbeat timestamps, stale
 thresholds, backend connectivity, and whether at least one worker has stale
 recovery enabled. Use ``litestar queues status`` for counts and inspect task
 errors after :meth:`~litestar_queues.TaskResult.refresh`.
+
+Worker recovery checks continuously while a worker runs. For an infrequent,
+finite recovery pass that also applies retention, use
+:doc:`maintenance` instead.

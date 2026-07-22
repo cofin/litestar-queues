@@ -12,7 +12,11 @@ from sqlalchemy import and_, case, delete, desc, func, literal, or_, select, upd
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.exc import UnmappedColumnError
 
-from litestar_queues.backends.advanced_alchemy.repository import QueueEventLogRepository, QueueTaskRepository
+from litestar_queues.backends.advanced_alchemy.repository import (
+    QueueEventLogRepository,
+    QueueTaskRepository,
+    QueueUniquenessRepository,
+)
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     record_matches_filters,
@@ -30,11 +34,15 @@ from litestar_queues.models import (
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
+    from litestar_queues.backends.advanced_alchemy.mixins import (
+        QueueEventLogModelMixin,
+        QueueTaskModelMixin,
+        QueueUniquenessModelMixin,
+    )
     from litestar_queues.events import QueueEventLogRecord
     from litestar_queues.models import EnqueueSpec, HeartbeatTouch
 
-__all__ = ("QueueEventLogService", "QueueTaskService")
+__all__ = ("QueueEventLogService", "QueueTaskService", "QueueUniquenessService")
 
 _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -168,6 +176,54 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         )
 
 
+class QueueUniquenessService(SQLAlchemyAsyncRepositoryService[Any]):
+    """Persistence operations for forever-uniqueness tombstones."""
+
+    @classmethod
+    def for_model(cls, model_class: "type[QueueUniquenessModelMixin]") -> 'type["QueueUniquenessService"]':
+        """Return a service subclass bound to ``model_class``."""
+        repository_type = QueueUniquenessRepository.for_model(model_class)
+        return cast(
+            "type[QueueUniquenessService]",
+            type(f"QueueUniquenessServiceFor{model_class.__name__}", (cls,), {"repository_type": repository_type}),
+        )
+
+    async def reserve(self, key: "str", *, task_id: "UUID", task_name: "str") -> "Any | None":
+        """Reserve ``key`` by select-then-insert within the caller's transaction.
+
+        Returns:
+            ``None`` when the reservation was inserted; otherwise the existing
+            owner model.
+        """
+        existing = await self.repository.get_one_or_none(identity_key=key)
+        if existing is not None:
+            return existing
+        model = self.repository.model_type(identity_key=key, task_id=str(task_id), task_name=task_name)
+        await self.repository.add(model, auto_commit=False, auto_refresh=False)
+        return None
+
+    async def get_owner(self, key: "str") -> "Any | None":
+        """Return the tombstone model owning ``key``, if any."""
+        return await self.repository.get_one_or_none(identity_key=key)
+
+    async def delete_by_key(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
+        """Delete the tombstone for ``key`` with optional owner fencing.
+
+        Args:
+            key: The exact effective identity key.
+            expected_task_id: Optional task owner required for deletion.
+
+        Returns:
+            ``True`` when a tombstone row was removed.
+        """
+        model_type = self.repository.model_type
+        predicates = [model_type.identity_key == key]
+        if expected_task_id is not None:
+            predicates.append(model_type.task_id == str(expected_task_id))
+        result = await self.repository.session.execute(delete(model_type).where(*predicates))
+        return int(result.rowcount or 0) > 0
+
+
 class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     """Persistence operations for Advanced Alchemy queue records."""
 
@@ -194,6 +250,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         execution_backend: "str",
         execution_profile: "str | None",
         metadata: "dict[str, Any]",
+        id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
         if key is not None:
             existing = await self._select_task_by_key(key)
@@ -219,6 +276,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             key=key,
             metadata=dict(metadata),
         )
+        if id is not None:
+            record.id = id
         return await self._insert_task_record(record, key=key)
 
     async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
@@ -799,7 +858,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         statement = (
             select(model_type)
             .where(model_type.status.in_(("pending", "scheduled", "running")), model_type.execution_ref.is_not(None))
-            .order_by(model_type.started_at, model_type.created_at)
+            .order_by(func.coalesce(model_type.started_at, model_type.created_at), model_type.id)
         )
         if limit is not None:
             statement = statement.limit(limit)

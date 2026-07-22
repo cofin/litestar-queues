@@ -64,8 +64,15 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
         records = await event_log.list_events(task_id=str(result.id))
         task_name_records = await event_log.list_events(task_name=event_history_task.name, limit=2)
         summaries = await event_log.summarize_stages(task_name=event_history_task.name)
-        deleted = await event_log.cleanup_before(datetime.now(timezone.utc) + timedelta(seconds=1))
-        remaining = await event_log.list_events(task_id=str(result.id))
+        cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
+        first_deleted = await event_log.cleanup_before(cutoff, limit=2)
+        after_first = await event_log.list_events(task_id=str(result.id))
+        second_deleted = await event_log.cleanup_before(cutoff, limit=2)
+        after_second = await event_log.list_events(task_id=str(result.id))
+        third_deleted = await event_log.cleanup_before(cutoff, limit=2)
+        after_third = await event_log.list_events(task_id=str(result.id))
+        final_deleted = await event_log.cleanup_before(cutoff, limit=2)
+        after_final = await event_log.list_events(task_id=str(result.id))
 
     assert [record.event_type for record in records] == [
         "task.started",
@@ -89,8 +96,13 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
     assert stage_summaries["store"].event_count == 1
     assert stage_summaries["store"].total_duration_ms == 11
 
-    assert deleted == len(records)
-    assert remaining == []
+    assert first_deleted == 2
+    assert [record.event_id for record in after_first] == [record.event_id for record in records[2:]]
+    assert second_deleted == 2
+    assert [record.event_id for record in after_second] == [record.event_id for record in records[4:]]
+    assert third_deleted == 1
+    assert after_third == []
+    assert (final_deleted, after_final) == (0, [])
 
 
 async def test_sqlspec_event_log_table_follows_event_log_enabled_lifecycle(

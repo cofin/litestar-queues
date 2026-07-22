@@ -4,8 +4,10 @@ Command-Line Interface
 
 ``QueuePlugin`` implements Litestar's :class:`~litestar.plugins.CLIPluginProtocol`
 and adds a ``queues`` group to the ``litestar`` CLI. It provides ``run``,
-``status``, ``scheduler-health``, and ``run-maintenance``. The ``discover_tasks``
-helper supports applications that keep tasks under ``app.domain.<x>.jobs/``.
+``status``, ``scheduler-health``, ``run-task``, and ``run-maintenance``.
+``run-task`` is the one-record external-executor command described in
+:doc:`deployment/cloud-run`. The ``discover_tasks`` helper supports applications
+that keep tasks under ``app.domain.<x>.jobs/``.
 
 Pre-requisites
 ==============

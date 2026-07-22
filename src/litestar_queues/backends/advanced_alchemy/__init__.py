@@ -6,11 +6,13 @@ from litestar_queues.backends.advanced_alchemy.mixins import (
     QueueEventLogModelMixin,
     QueueMaintenanceLeaseModelMixin,
     QueueTaskModelMixin,
+    QueueUniquenessModelMixin,
 )
 from litestar_queues.backends.advanced_alchemy.models import (
     QueueEventLogModel,
     QueueMaintenanceLeaseModel,
     QueueTaskModel,
+    QueueUniquenessModel,
 )
 
 __all__ = (
@@ -20,6 +22,8 @@ __all__ = (
     "QueueMaintenanceLeaseModelMixin",
     "QueueTaskModel",
     "QueueTaskModelMixin",
+    "QueueUniquenessModel",
+    "QueueUniquenessModelMixin",
     "SQLAlchemyBackend",
     "SQLAlchemyBackendConfig",
 )

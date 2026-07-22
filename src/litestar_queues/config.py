@@ -173,6 +173,17 @@ class QueueConfig:
     scheduler_canary_task: "str" = "scheduler.heartbeat"
     event_log: "EventLogConfig | None" = None
     maintenance: "QueueMaintenanceConfig | None" = None
+    max_task_payload_bytes: "int | None" = None
+    """Optional upper bound on the canonical ``unique_by="arguments"`` identity payload.
+
+    Measured with the same canonical JSON encoder used to derive argument
+    identity, immediately before backend enqueue, and enforced only when argument
+    identity is computed (fast paths never serialize arguments). ``None`` disables
+    the guard. Exceeding it raises
+    :class:`~litestar_queues.exceptions.TaskPayloadTooLargeError`; identity
+    material is never truncated. Externalize large payloads and pass a stable
+    identifier instead.
+    """
 
     def __post_init__(self) -> "None":
         """Validate adaptive polling backoff settings before backend/worker startup.

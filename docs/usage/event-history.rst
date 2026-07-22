@@ -50,32 +50,30 @@ flush pending writes, and delete old records. Choose retention rules that fit
 your audit and privacy needs. Deleting finished task records does not delete
 event history, and vice versa.
 
-Run cleanup from an application-owned scheduler, cron job, or maintenance
-worker. The library does not create a hidden cleanup task, because retention
-and the number of maintenance workers are deployment decisions:
+Configure a bounded event-history phase and run it from one external schedule:
 
 .. code-block:: python
 
-   from datetime import datetime, timedelta, timezone
-
-   from litestar_queues import QueueService
+   from litestar_queues import QueueConfig, QueueMaintenanceConfig
    from litestar_queues.events import EventLogConfig
 
-   async def prune_queue_history(service: QueueService) -> None:
-       cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-       backend = service.get_queue_backend()
+   queue_config = QueueConfig(
+       queue_backend=...,
+       event_log=EventLogConfig(enabled=True),
+       maintenance=QueueMaintenanceConfig(
+           event_retention=30 * 24 * 60 * 60,
+           event_limit=1000,
+       ),
+   )
 
-       # These are separate policies. Use different cutoffs when needed.
-       await backend.cleanup_terminal(cutoff)
-       event_log = backend.get_event_log(EventLogConfig(enabled=True))
-       if event_log is not None:
-           await event_log.flush_events()
-           await event_log.cleanup_before(cutoff)
+Then schedule ``litestar queues run-maintenance``. It deletes at most
+``event_limit`` oldest matching rows in one invocation. Terminal-task retention
+is a separate setting, so the two policies can use different cutoffs. See
+:doc:`maintenance` for lease, cadence, backend, and migration requirements.
 
 Memory history is bounded by ``max_records`` and disappears with the process.
 SQLSpec, Advanced Alchemy, Redis, and Valkey history is durable or shared, so
-those deployments should schedule cleanup and include it in their backup and
-privacy policies.
+those deployments should include cleanup in their backup and privacy policies.
 
 History versus live delivery
 ============================

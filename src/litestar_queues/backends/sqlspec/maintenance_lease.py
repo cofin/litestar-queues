@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from sqlspec import sql
 
 from litestar_queues.backends.sqlspec.schema import maintenance_lease_table_name_for, validate_table_name
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type
 
 if TYPE_CHECKING:
@@ -13,7 +13,12 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
-__all__ = ("SQLSpecMaintenanceLeaseStore", "create_maintenance_lease_store", "resolve_maintenance_lease_table_name")
+__all__ = (
+    "SQLSpecMaintenanceLeaseStore",
+    "SpannerMaintenanceLeaseStore",
+    "create_maintenance_lease_store",
+    "resolve_maintenance_lease_table_name",
+)
 
 
 class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
@@ -110,10 +115,7 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
         # dialect EXCEPT SQL Server, whose DATETIME2 column type it cannot parse,
         # so SQL Server is the only hand-rolled path (mirroring the queue store).
         if self._is_oracle():
-            # Oracle has no CREATE TABLE IF NOT EXISTS before 23c; the lease table
-            # is provisioned once (migration / create_schema), so a plain CREATE
-            # is safe and version-independent.
-            return self._rendered_create(if_not_exists=False)
+            return _oracle_ddl_block(self._rendered_create(if_not_exists=False), ignored_code=-955)
         if type(self).identifier_quote_style == "none":  # SQL Server
             columns = (
                 f"{self._quoted_col('name')} {self._indexed_text_type()} PRIMARY KEY, "
@@ -128,10 +130,65 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
 
     def _drop_lease_table_sql(self) -> "str":
         if self._is_oracle():
-            return f"DROP TABLE {self._quoted_table_name()}"
+            return _oracle_ddl_block(f"DROP TABLE {self._quoted_table_name()}", ignored_code=-942)
         if type(self).identifier_quote_style == "none":  # SQL Server
             return f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};"
         return self._to_sql(sql.drop_table(self.table_name).if_exists())
+
+
+class SpannerMaintenanceLeaseStore(SQLSpecMaintenanceLeaseStore):
+    """Spanner maintenance-lease store with native-compatible DDL."""
+
+    __slots__ = ()
+
+    data_dictionary_dialect = "spanner"
+    identifier_quote_style = "backtick"
+    skip_cleanup_rollback = True
+
+    def create_statements(self) -> "list[str]":
+        """Return the Spanner maintenance-lease CREATE TABLE statement."""
+        if not self._manage_schema:
+            return []
+        columns = (
+            f"{self._quote_identifier('name')} {self._indexed_text_type()} NOT NULL",
+            f"{self._quote_identifier('token')} {self._indexed_text_type()} NOT NULL",
+            f"{self._quote_identifier('expires_at')} {self._timestamp_type()} NOT NULL",
+        )
+        column_sql = ",\n  ".join(columns)
+        return [
+            f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+            f"PRIMARY KEY ({self._quote_identifier('name')})"
+        ]
+
+    def drop_statements(self) -> "list[str]":
+        """Return the Spanner maintenance-lease DROP TABLE statement."""
+        if not self._manage_schema:
+            return []
+        return [f"DROP TABLE {self._quoted_table_name()}"]
+
+    def create_schema_for_config(self, config: "Any") -> "None":
+        """Create the lease table through Spanner's native DDL operation API.
+
+        Returns:
+            None.
+        """
+        if not self._manage_schema:
+            return
+        from litestar_queues.backends.sqlspec.stores.spanner.store import _execute_spanner_ddl
+
+        get_database = getattr(config, "get_database", None)
+        if not callable(get_database):
+            msg = "Spanner maintenance-lease schema creation requires a SQLSpec SpannerSyncConfig."
+            raise TypeError(msg)
+        database = get_database()
+        for statement in self.create_statements():
+            _execute_spanner_ddl(database, statement)
+
+    def _string_type(self, length: "int | None" = None) -> "str":
+        return "STRING(MAX)" if length is None else f"STRING({length})"
+
+    def _timestamp_type(self) -> "str":
+        return "TIMESTAMP"
 
 
 def _lease_store_type_for(adapter_store_type: "type[SQLSpecQueueStore]") -> "type[SQLSpecMaintenanceLeaseStore]":
@@ -166,7 +223,11 @@ def create_maintenance_lease_store(
     Returns:
         A lease store configured for the resolved lease table.
     """
-    lease_store_type = _lease_store_type_for(_adapter_store_type(config))
+    lease_store_type = (
+        SpannerMaintenanceLeaseStore
+        if _adapter_name(config) == "spanner"
+        else _lease_store_type_for(_adapter_store_type(config))
+    )
     return lease_store_type(
         config,
         table_name=resolve_maintenance_lease_table_name(
@@ -187,3 +248,17 @@ def resolve_maintenance_lease_table_name(
     if maintenance_lease_table_name is not None:
         return validate_table_name(maintenance_lease_table_name)
     return maintenance_lease_table_name_for(queue_table_name)
+
+
+def _oracle_ddl_block(statement: "str", *, ignored_code: "int") -> "str":
+    escaped = statement.replace("'", "''")
+    return f"""
+    BEGIN
+        EXECUTE IMMEDIATE '{escaped}';
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE != {ignored_code} THEN
+                RAISE;
+            END IF;
+    END;
+    """

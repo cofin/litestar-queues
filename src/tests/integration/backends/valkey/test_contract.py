@@ -467,3 +467,27 @@ async def test_valkey_backend_claim_task_honors_due_gating_and_fences(valkey_bac
     ready, _ = await _zset_members(valkey_backend)
     assert await _status_memberships(valkey_backend, due.id) == ["running"]
     assert str(due.id) not in ready
+
+
+async def test_valkey_forever_reservation_returns_owner_on_conflict(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reserve_returns_owner_on_conflict
+
+    await assert_reserve_returns_owner_on_conflict(valkey_backend)
+
+
+async def test_valkey_forever_reset_is_only_deletion_path(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reset_is_only_deletion_path
+
+    await assert_reset_is_only_deletion_path(valkey_backend)
+
+
+async def test_valkey_forever_tombstone_survives_terminal_cleanup(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+
+    await assert_tombstone_survives_terminal_cleanup(valkey_backend)
+
+
+async def test_valkey_forever_concurrent_reservation_single_winner(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
+
+    await assert_concurrent_reservation_has_single_winner(valkey_backend)

@@ -454,13 +454,14 @@ async def test_worker_periodic_requeue_uses_backend_fleet_lock() -> "None":
 async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> "None":
     backend = _CountingInMemoryQueueBackend()
     async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
-        worker = Worker(service, reconcile_interval=3600.0)
+        worker = Worker(service, batch_size=7, reconcile_interval=3600.0)
 
         await worker._maybe_reconcile_external()
         await worker._maybe_reconcile_external()
         await worker._maybe_reconcile_external()
 
     assert backend.list_running_external_calls == 1
+    assert backend.list_running_external_limits == [7]
 
 
 async def test_worker_periodic_reconcile_uses_backend_fleet_lock() -> "None":
@@ -1336,15 +1337,17 @@ class _BeatMetadataRecordingBackend(InMemoryQueueBackend):
 
 
 class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
-    __slots__ = ("list_running_external_calls", "requeue_calls")
+    __slots__ = ("list_running_external_calls", "list_running_external_limits", "requeue_calls")
 
     def __init__(self) -> "None":
         super().__init__()
         self.requeue_calls: "list[timedelta]" = []
         self.list_running_external_calls = 0
+        self.list_running_external_limits: "list[int | None]" = []
 
     async def list_running_external(self, *, limit: "int | None" = None) -> 'list["QueuedTaskRecord"]':
         self.list_running_external_calls += 1
+        self.list_running_external_limits.append(limit)
         return await super().list_running_external(limit=limit)
 
     async def requeue_stale_running(

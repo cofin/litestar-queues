@@ -80,6 +80,16 @@ async def _run_spanner_contract(connection_config: "dict[str, object]", *, table
         assert stored.kwargs == {"ok": True}
         assert stored.metadata == {"source": "live"}
         assert stored.result == {"done": True}
+
+        from tests.integration._uniqueness_contract import (
+            assert_reserve_returns_owner_on_conflict,
+            assert_reset_is_only_deletion_path,
+            assert_tombstone_survives_terminal_cleanup,
+        )
+
+        await assert_reserve_returns_owner_on_conflict(backend)
+        await assert_reset_is_only_deletion_path(backend)
+        await assert_tombstone_survives_terminal_cleanup(backend)
     finally:
         await backend.close()
 

@@ -1,5 +1,7 @@
 """SQLSpec distributed maintenance-lease and bounded-operation contract."""
 
+import asyncio
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -50,6 +52,17 @@ async def test_sqlspec_backend_lease_is_not_process_local(tmp_path: "Path") -> "
     await first.create_schema()
     await second.open()
     try:
+        tokens = ("race-token-a", "race-token-b")
+        outcomes = await asyncio.gather(
+            first.acquire_maintenance_lease("queue-maintenance-race", tokens[0], ttl=timedelta(seconds=60)),
+            second.acquire_maintenance_lease("queue-maintenance-race", tokens[1], ttl=timedelta(seconds=60)),
+        )
+        assert outcomes.count(True) == 1
+        winner = outcomes.index(True)
+        loser = 1 - winner
+        backends = (first, second)
+        assert await backends[loser].release_maintenance_lease("queue-maintenance-race", tokens[loser]) is False
+        assert await backends[winner].release_maintenance_lease("queue-maintenance-race", tokens[winner]) is True
         await assert_cross_instance_lease(first, second)
     finally:
         await first.close()

@@ -82,12 +82,21 @@ async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() ->
         )
 
     records = await event_log.list_events(task_name="tasks.bounded")
-    deleted = await event_log.cleanup_before(datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc))
-    remaining = await event_log.list_events(task_name="tasks.bounded")
+    cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
+    first_deleted = await event_log.cleanup_before(cutoff, limit=1)
+    after_first = await event_log.list_events(task_name="tasks.bounded")
+    second_deleted = await event_log.cleanup_before(cutoff, limit=1)
+    after_second = await event_log.list_events(task_name="tasks.bounded")
+    final_deleted = await event_log.cleanup_before(cutoff, limit=1)
+    after_final = await event_log.list_events(task_name="tasks.bounded")
 
     assert [record.detail["index"] for record in records] == [2, 3, 4]
-    assert deleted == 2
-    assert [record.detail["index"] for record in remaining] == [4]
+    assert first_deleted == 1
+    assert [record.detail["index"] for record in after_first] == [3, 4]
+    assert second_deleted == 1
+    assert [record.detail["index"] for record in after_second] == [4]
+    assert final_deleted == 0
+    assert [record.detail["index"] for record in after_final] == [4]
 
 
 async def test_memory_backend_clear_clears_event_log() -> "None":

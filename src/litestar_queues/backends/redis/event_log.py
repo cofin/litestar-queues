@@ -130,12 +130,16 @@ class RedisQueueEventLog:
             event_key = self._backend._event_log_event_key(record.event_id)
             if pipeline is not None:
                 pipeline.delete(event_key)
+                pipeline.zrem(global_key, record.event_id)
                 for index_key in index_keys:
-                    pipeline.zrem(str(index_key), record.event_id)
+                    if str(index_key) != global_key:
+                        pipeline.zrem(str(index_key), record.event_id)
             else:
                 await client.delete(event_key)
+                await client.zrem(global_key, record.event_id)
                 for index_key in index_keys:
-                    await client.zrem(str(index_key), record.event_id)
+                    if str(index_key) != global_key:
+                        await client.zrem(str(index_key), record.event_id)
             removed += 1
         if pipeline is not None:
             await _execute_pipeline(pipeline)

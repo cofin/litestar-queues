@@ -186,9 +186,22 @@ def test_config_defaults_disable_retention_phases() -> "None":
         {"event_retention": 0},
         {"lease_ttl": 300.0, "time_budget": 300.0},
         {"lease_ttl": 100.0, "time_budget": 300.0},
+        {"time_budget": float("nan")},
+        {"time_budget": float("inf")},
+        {"lease_ttl": float("nan")},
+        {"lease_ttl": float("inf")},
+        {"stale_after": float("nan")},
+        {"terminal_retention": float("inf")},
+        {"event_retention": float("nan")},
+        {"time_budget": True},
+        {"stale_after": True},
+        {"external_limit": 1.5},
+        {"stale_limit": True},
+        {"terminal_limit": 2.5},
+        {"event_limit": False},
     ],
 )
-def test_config_rejects_invalid_values(kwargs: "dict[str, float]") -> "None":
+def test_config_rejects_invalid_values(kwargs: "dict[str, object]") -> "None":
     with pytest.raises(QueueConfigurationError):
         QueueMaintenanceConfig(**kwargs)  # type: ignore[arg-type]
 

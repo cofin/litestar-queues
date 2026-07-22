@@ -18,6 +18,14 @@ Service
    :undoc-members:
    :show-inheritance:
 
+Maintenance
+===========
+
+.. automodule:: litestar_queues.maintenance
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Tasks
 =====
 

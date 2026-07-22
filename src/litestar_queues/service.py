@@ -1,13 +1,16 @@
 import asyncio
+import contextlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from typing_extensions import Self
 
+from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
@@ -24,7 +27,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import QueueEventLog, QueueEventProducer, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
-    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult
+    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult, UniquenessTombstone
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("QueueService",)
@@ -39,6 +42,29 @@ _LOG_LEVELS = {
     "info": logging.INFO,
     "debug": logging.DEBUG,
 }
+_UNVERIFIED_PERSISTENCE = object()
+
+
+async def _release_failed_forever_reservation(backend: "BaseQueueBackend", key: "str", reserved_id: "UUID") -> "None":
+    """Release a confirmed-unpersisted reservation without deleting a successor."""
+    persisted: "object | QueuedTaskRecord | None" = _UNVERIFIED_PERSISTENCE
+    with contextlib.suppress(Exception):
+        persisted = await backend.get_task(reserved_id)
+    if persisted is None:
+        with contextlib.suppress(Exception):
+            await backend.reset_identity(key, expected_task_id=reserved_id)
+
+
+async def _raise_forever_identity_collision(backend: "BaseQueueBackend", key: "str", reserved_id: "UUID") -> "None":
+    """Release this reservation and reject a cross-policy active-key collision."""
+    with contextlib.suppress(Exception):
+        await backend.reset_identity(key, expected_task_id=reserved_id)
+    msg = (
+        "A unique_until='forever' enqueue collided with an active task under the same effective key, "
+        "but the backend returned a different task ID. The existing task was preserved and this "
+        "reservation was released. Do not reuse a deduplication key across uniqueness policies."
+    )
+    raise QueueConfigurationError(msg)
 
 
 class QueueService:
@@ -210,7 +236,7 @@ class QueueService:
             A result handle for the queued record.
         """
         task_obj = self.resolve_task(task)
-        effective_key = key if key is not None else task_obj.key
+        effective_key, identity_metadata = self._resolve_identity(task_obj, key, args, kwargs)
         coerced_run_after = _coerce_timedelta(run_after)
         effective_run_after = coerced_run_after if run_after is not None else task_obj.run_after
         effective_scheduled_at = scheduled_at
@@ -232,7 +258,18 @@ class QueueService:
             timeout=timeout,
         )
         self._apply_quiet_success_default(effective_metadata)
+        effective_metadata.update(identity_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
+
+        reserved_id: "UUID | None" = None
+        if task_obj.unique_until == "forever" and effective_key is not None:
+            reserved_id = uuid4()
+            owner = await self.get_queue_backend().reserve_identity(
+                effective_key, task_id=reserved_id, task_name=task_obj.name
+            )
+            if owner is not None:
+                return TaskResult(owner.task_id, owner.task_name, service=self)
+
         runtime = self.observability_runtime
         span_attributes = _base_observability_attributes(
             operation="publish",
@@ -258,9 +295,18 @@ class QueueService:
                 execution_backend=effective_execution_backend,
                 execution_profile=effective_execution_profile,
                 metadata=effective_metadata,
+                id=reserved_id,
             )
+            if reserved_id is not None and record.id != reserved_id and effective_key is not None:
+                await _raise_forever_identity_collision(self.get_queue_backend(), effective_key, reserved_id)
         except BaseException as exc:
             runtime.record_exception(span, exc)
+            if reserved_id is not None and effective_key is not None:
+                # Enqueue may have committed before a later notification failed.
+                # Release only when the reserved record is confirmed absent; an
+                # inconclusive read retains the tombstone fail-closed. The owner
+                # predicate prevents recovery from deleting a successor reservation.
+                await _release_failed_forever_reservation(self.get_queue_backend(), effective_key, reserved_id)
             raise
         else:
             runtime.set_attribute(span, "messaging.message.id", str(record.id))
@@ -280,6 +326,42 @@ class QueueService:
                 if claimed is not None:
                     await execution_backend_impl.execute(self, claimed)
         return result
+
+    def _resolve_identity(
+        self, task_obj: "Task[Any, Any]", key: "str | None", args: "tuple[Any, ...]", kwargs: "dict[str, Any]"
+    ) -> "tuple[str | None, dict[str, Any]]":
+        """Select the effective uniqueness key by strict precedence, with diagnostic metadata.
+
+        Precedence: explicit enqueue ``key`` -> configured task ``key`` ->
+        ``unique_by="task"`` -> ``unique_by="arguments"`` -> no identity. The
+        explicit, configured, and task-only paths never bind, serialize, or hash
+        arguments; only ``unique_by="arguments"`` inspects the call.
+
+        Returns:
+            The effective key (or ``None``) and JSON-safe diagnostic metadata that
+            never contains raw argument material.
+        """
+        if key is not None:
+            return key, self._identity_lifetime_metadata(task_obj, {})
+        if task_obj.key is not None:
+            return task_obj.key, self._identity_lifetime_metadata(task_obj, {})
+        unique_by = task_obj.unique_by
+        if unique_by is None:
+            return None, {}
+        if unique_by == "task":
+            derived = task_identity(task_obj.name)
+        else:
+            derived = arguments_identity(
+                task_obj.name, task_obj.signature, args, kwargs, max_payload_bytes=self._config.max_task_payload_bytes
+            ).key
+        metadata = {"unique_by": unique_by, "unique_version": IDENTITY_VERSION}
+        return derived, self._identity_lifetime_metadata(task_obj, metadata)
+
+    @staticmethod
+    def _identity_lifetime_metadata(task_obj: "Task[Any, Any]", metadata: "dict[str, Any]") -> "dict[str, Any]":
+        if task_obj.unique_until != "terminal":
+            metadata["unique_until"] = task_obj.unique_until
+        return metadata
 
     def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
         if name == execution_backend_name(self._config.execution_backend):
@@ -307,6 +389,23 @@ class QueueService:
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
         """Return a queued task record by ID."""
         return await self.get_queue_backend().get_task(task_id)
+
+    async def reset_task_identity(self, key: "str") -> "bool":
+        """Delete a ``unique_until="forever"`` tombstone by its exact effective key.
+
+        This is the only supported way to allow a forever identity to be enqueued
+        again. It never infers or resets an identity from raw arguments; the caller
+        must pass the exact effective key (for example the ``lq:u:v1:...`` value or
+        the configured/explicit key).
+
+        Returns:
+            ``True`` when a tombstone was removed.
+        """
+        return await self.get_queue_backend().reset_identity(key)
+
+    async def get_task_identity(self, key: "str") -> "UniquenessTombstone | None":
+        """Return the forever tombstone owning an identity key, if any."""
+        return await self.get_queue_backend().has_identity(key)
 
     async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: "str | None" = None) -> "QueuedTaskRecord":
         """Execute a claimed queue record and persist the lifecycle result.

@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 
@@ -124,6 +125,42 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert running_external[0].execution_ref == "jobs/abc-123"
     assert stored_local is not None
     assert stored_local.status == "pending"
+
+
+async def test_backend_contract_bounds_external_reconciliation_deterministically(
+    queue_backend: "BaseQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Equal-age external records use the record id as the stable limit tie-breaker."""
+    from litestar_queues import models as models_module
+    from litestar_queues.backends.advanced_alchemy import backend as advanced_alchemy_backend_module
+    from litestar_queues.backends.advanced_alchemy import service as advanced_alchemy_service_module
+    from litestar_queues.backends.memory import backend as memory_backend_module
+    from litestar_queues.backends.redis import backend as redis_backend_module
+    from litestar_queues.backends.sqlspec import backend as sqlspec_backend_module
+
+    fixed_now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: "timezone | None" = None) -> "datetime":
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(models_module, "datetime", FixedDateTime)
+    for module in (
+        advanced_alchemy_backend_module,
+        advanced_alchemy_service_module,
+        memory_backend_module,
+        redis_backend_module,
+        sqlspec_backend_module,
+    ):
+        monkeypatch.setattr(module, "_utc_now", lambda: fixed_now)
+
+    high = await queue_backend.enqueue("tasks.external.high", execution_backend="cloudrun", id=UUID(int=2))
+    low = await queue_backend.enqueue("tasks.external.low", execution_backend="cloudrun", id=UUID(int=1))
+    await queue_backend.set_execution_ref(high.id, "cloudrun", "jobs/high")
+    await queue_backend.set_execution_ref(low.id, "cloudrun", "jobs/low")
+
+    assert [record.id for record in await queue_backend.list_running_external(limit=1)] == [low.id]
 
 
 async def test_backend_contract_bulk_cancels_matching_domain_predicate(queue_backend: "BaseQueueBackend") -> "None":
@@ -539,3 +576,35 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
     assert result.record.metadata["quiet_success"] is True
     assert result.record.scheduled_at is not None
     assert result.record.scheduled_at > datetime.now(timezone.utc) + timedelta(minutes=4)
+
+
+async def test_backend_contract_forever_reservation_returns_owner_on_conflict(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_reserve_returns_owner_on_conflict
+
+    await assert_reserve_returns_owner_on_conflict(queue_backend)
+
+
+async def test_backend_contract_forever_reset_is_only_deletion_path(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reset_is_only_deletion_path
+
+    await assert_reset_is_only_deletion_path(queue_backend)
+
+
+async def test_backend_contract_forever_tombstone_survives_terminal_cleanup(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+
+    await assert_tombstone_survives_terminal_cleanup(queue_backend)
+
+
+async def test_backend_contract_forever_concurrent_reservation_single_winner(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "sync-driver" in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: single-writer sync driver cannot reserve concurrently")
+    from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
+
+    await assert_concurrent_reservation_has_single_winner(queue_backend)
