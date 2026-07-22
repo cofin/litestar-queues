@@ -15,9 +15,7 @@ def test_derives_suffixed_name_for_short_table() -> None:
 
 
 def test_preserves_schema_qualifier() -> None:
-    assert (
-        maintenance_lease_table_name_for("app.litestar_queue_task") == "app.litestar_queue_task_maintenance_lease"
-    )
+    assert maintenance_lease_table_name_for("app.litestar_queue_task") == "app.litestar_queue_task_maintenance_lease"
 
 
 def test_long_table_name_is_bounded_and_deterministic() -> None:
