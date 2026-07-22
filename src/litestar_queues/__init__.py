@@ -80,6 +80,7 @@ if TYPE_CHECKING:
         QueueStatistics,
         StaleTaskRecoveryResult,
         TaskStatus,
+        UniquenessTombstone,
     )
     from litestar_queues.plugin import QueuePlugin
     from litestar_queues.service import QueueService
@@ -151,6 +152,7 @@ _EXPORTS = {
     "TaskStatus": "litestar_queues.models",
     "TaskUniqueBy": "litestar_queues.task",
     "TaskUniqueUntil": "litestar_queues.task",
+    "UniquenessTombstone": "litestar_queues.models",
     "Worker": "litestar_queues.worker",
     "beat": "litestar_queues.events",
     "consume_one": "litestar_queues.consumer",
@@ -232,6 +234,7 @@ __all__ = (
     "TaskStatus",
     "TaskUniqueBy",
     "TaskUniqueUntil",
+    "UniquenessTombstone",
     "Worker",
     "beat",
     "consume_one",
