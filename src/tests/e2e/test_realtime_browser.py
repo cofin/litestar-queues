@@ -48,9 +48,9 @@ def _frames(page: Any) -> list[str]:
     return [frame for frame in page.evaluate("() => window.__queueE2EFrames ?? []") if isinstance(frame, str)]
 
 
-def _assert_task_event(frames: list[str]) -> None:
+def _assert_custom_event(frames: list[str]) -> None:
     payloads = [json.loads(frame) for frame in frames]
-    assert any(payload.get("type") == "task.event" for payload in payloads), frames
+    assert any(payload.get("type") == "crawl.page_discovered" for payload in payloads), frames
 
 
 def _assert_clean_browser(
@@ -126,7 +126,7 @@ def test_sse_browser_contract(example_server: Any, browser_page: Any, browser_di
     events = _events(page)
     assert "htmx:sseOpen" in events
     assert "htmx:sseBeforeMessage" in events
-    _assert_task_event(_frames(page))
+    _assert_custom_event(_frames(page))
     assert not _ERROR_EVENTS.intersection(events), events
     _assert_clean_browser(browser_diagnostics, server_mode=example_server.mode)
 
@@ -154,7 +154,7 @@ def test_websocket_browser_contract(
     events = _events(page)
     assert "htmx:wsOpen" in events
     assert "htmx:wsBeforeMessage" in events
-    _assert_task_event(_frames(page))
+    _assert_custom_event(_frames(page))
     assert not _ERROR_EVENTS.intersection(events), events
     _assert_clean_browser(browser_diagnostics, server_mode=example_server.mode)
 
@@ -190,7 +190,7 @@ def test_replacing_stream_mount_reconnects_cleanly(
     mount = page.locator("#stream-mount")
     assert mount.get_attribute("data-task-id") == second_task_id
     _wait_for_completion(page)
-    _assert_task_event(_frames(page))
+    _assert_custom_event(_frames(page))
 
     events = _events(page)
     close_event = f"htmx:{event_prefix}Close"
