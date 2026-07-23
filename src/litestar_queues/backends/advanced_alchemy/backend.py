@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from advanced_alchemy.exceptions import DuplicateKeyError
+from advanced_alchemy.exceptions import IntegrityError as AdvancedAlchemyIntegrityError
 from sqlalchemy import delete, text, update
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.engine import make_url
@@ -186,7 +186,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
                     metadata=dict(metadata or {}),
                     id=id,
                 )
-        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+        except (AdvancedAlchemyIntegrityError, SQLAlchemyIntegrityError):
             if key is None:
                 raise
             async with self._service() as service:
@@ -661,7 +661,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 existing = await service.reserve(key, task_id=task_id, task_name=task_name)
                 if existing is not None:
                     return self._reservation_from_model(existing)
-        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+        except (AdvancedAlchemyIntegrityError, SQLAlchemyIntegrityError):
             owner = await self.has_identity(key)
             if owner is not None:
                 return owner
