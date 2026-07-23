@@ -86,21 +86,20 @@ async def test_queue_event_publisher_failure_semantics() -> "None":
         await QueueEventPublisher(FailingSink(), strict=True).publish(event)
 
 
-async def test_enabled_false_matches_today_immediate_path() -> "None":
+async def test_absent_buffer_uses_immediate_path() -> "None":
     event_types = ["task.progress", "task.log"]
-    for buffer_config in (None, EventBufferConfig(enabled=False)):
-        sink = InMemoryQueueEventSink()
-        publisher = QueueEventPublisher(sink, buffer_config=buffer_config)
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink, buffer_config=None)
 
-        for event_type in event_types:
-            await publisher.publish(QueueEvent(type=event_type, scope="task", task_id="task-a"))
+    for event_type in event_types:
+        await publisher.publish(QueueEvent(type=event_type, scope="task", task_id="task-a"))
 
-        assert [event.type for event in sink.events] == event_types
+    assert [event.type for event in sink.events] == event_types
 
 
 async def test_buffered_progress_not_delivered_until_flush() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10))
 
     await publisher.publish(QueueEvent(type="task.progress", scope="task", task_id="task-a"))
     await publisher.publish(QueueEvent(type="task.log", scope="task", task_id="task-a"))
@@ -114,7 +113,7 @@ async def test_buffered_progress_not_delivered_until_flush() -> "None":
 
 async def test_immediate_flushes_task_events_first_in_order() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10))
 
     await publisher.publish(QueueEvent(type="task.progress.1", scope="task", task_id="task-a"))
     await publisher.publish(QueueEvent(type="task.progress.2", scope="task", task_id="task-a"))
@@ -125,7 +124,7 @@ async def test_immediate_flushes_task_events_first_in_order() -> "None":
 
 async def test_terminal_event_flushes_buffered_first() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10))
 
     await publisher.publish(QueueEvent(type="task.progress", scope="task", task_id="task-a"))
     await publisher.publish(QueueEvent(type="task.completed", scope="task", task_id="task-a"))
@@ -135,7 +134,7 @@ async def test_terminal_event_flushes_buffered_first() -> "None":
 
 async def test_terminal_direct_publish_also_flushes() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10))
 
     await publisher.publish(QueueEvent(type="task.progress", scope="task", task_id="task-a"))
     await publisher.publish(QueueEvent(type="task.stale_failed", scope="task", task_id="task-a"))
@@ -146,7 +145,7 @@ async def test_terminal_direct_publish_also_flushes() -> "None":
 async def test_strict_event_log_failure_prevents_buffering() -> "None":
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(
-        sink, event_log=FailingEventLog(), event_log_strict=True, buffer_config=EventBufferConfig(buffer_size=10)
+        sink, event_log=FailingEventLog(), event_log_strict=True, buffer_config=EventBufferConfig(batch_size=10)
     )
 
     with pytest.raises(RuntimeError, match="history failed"):

@@ -1,6 +1,6 @@
 """Unit tests for the backend-neutral bulk enqueue API.
 
-These exercise ``EnqueueSpec`` and the ``BaseQueueBackend.enqueue_many`` default
+These exercise ``TaskRequest`` and the ``BaseQueueBackend.enqueue_many`` default
 implementation through the in-memory backend, which inherits the naive
 per-item loop. Adapter-specific fast paths are covered in the SQLSpec
 integration suite.
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from litestar_queues import EnqueueSpec
+from litestar_queues import TaskRequest
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.models import QueuedTaskRecord
@@ -26,9 +26,9 @@ async def test_enqueue_many_persists_all_specs_in_order() -> "None":
     backend = InMemoryQueueBackend()
 
     records = await backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.a", args=(1,), metadata={"i": 0}),
-        EnqueueSpec(task_name="tasks.b", kwargs={"x": 2}, priority=5),
-        EnqueueSpec(task_name="tasks.c", queue="reports"),
+        TaskRequest(task_name="tasks.a", args=(1,), metadata={"i": 0}),
+        TaskRequest(task_name="tasks.b", kwargs={"x": 2}, priority=5),
+        TaskRequest(task_name="tasks.c", queue="reports"),
     ])
 
     assert [record.task_name for record in records] == ["tasks.a", "tasks.b", "tasks.c"]
@@ -51,7 +51,7 @@ async def test_enqueue_many_honors_scheduled_status() -> "None":
     backend = InMemoryQueueBackend()
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
-    (record,) = await backend.enqueue_many([EnqueueSpec(task_name="tasks.later", scheduled_at=later)])
+    (record,) = await backend.enqueue_many([TaskRequest(task_name="tasks.later", scheduled_at=later)])
 
     assert record.status == "scheduled"
 
@@ -60,7 +60,7 @@ async def test_enqueue_many_normalizes_naive_scheduled_at_to_utc() -> "None":
     backend = InMemoryQueueBackend()
     naive_later = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None)
 
-    (record,) = await backend.enqueue_many([EnqueueSpec(task_name="tasks.later", scheduled_at=naive_later)])
+    (record,) = await backend.enqueue_many([TaskRequest(task_name="tasks.later", scheduled_at=naive_later)])
 
     assert record.status == "scheduled"
     assert record.scheduled_at == naive_later.replace(tzinfo=timezone.utc)
@@ -71,8 +71,8 @@ async def test_enqueue_many_deduplicates_active_keys() -> "None":
     first = await backend.enqueue("tasks.sync", key="sync:1", kwargs={"v": 1})
 
     records = await backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.sync", key="sync:1", kwargs={"v": 2}),
-        EnqueueSpec(task_name="tasks.other"),
+        TaskRequest(task_name="tasks.sync", key="sync:1", kwargs={"v": 2}),
+        TaskRequest(task_name="tasks.other"),
     ])
 
     assert records[0].id == first.id
@@ -85,9 +85,9 @@ async def test_base_enqueue_many_calls_batch_notification_once_for_due_records()
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     records = await backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.one"),
-        EnqueueSpec(task_name="tasks.two", scheduled_at=later),
-        EnqueueSpec(task_name="tasks.three"),
+        TaskRequest(task_name="tasks.one"),
+        TaskRequest(task_name="tasks.two", scheduled_at=later),
+        TaskRequest(task_name="tasks.three"),
     ])
 
     assert [record.task_name for record in records] == ["tasks.one", "tasks.two", "tasks.three"]
@@ -98,7 +98,7 @@ async def test_base_enqueue_many_skips_batch_notification_when_no_records_are_du
     backend = _BatchNotifyingBackend()
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
-    records = await backend.enqueue_many([EnqueueSpec(task_name="tasks.later", scheduled_at=later)])
+    records = await backend.enqueue_many([TaskRequest(task_name="tasks.later", scheduled_at=later)])
 
     assert [record.status for record in records] == ["scheduled"]
     assert backend.notified_records == []

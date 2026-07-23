@@ -124,7 +124,7 @@ def _sqlspec_backend(
     from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
     return SQLSpecQueueBackend(
-        backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_table_name=queue_table_name)
+        backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, queue_table_name=queue_table_name)
     )
 
 
@@ -208,14 +208,9 @@ async def _build_postgres_psycopg_autocommit(ctx: "FixtureCtx") -> "BaseQueueBac
     """Psycopg with the pool connection held in autocommit mode.
 
     Autocommit removes psycopg's implicit per-statement ``BEGIN``/``COMMIT`` for
-    the single-statement RETURNING fast paths (``enqueue``, ``complete_task``,
-    ``fail_task``). SQLSpec's psycopg driver still lays a real transaction over
-    an autocommit connection for the explicit ``driver.begin()`` call sites
-    (``_enqueue_keyed``, ``enqueue_many``, ``claim_task``,
-    ``_claim_next_skip_locked``) by flipping ``connection.autocommit`` off for
-    the duration -- see ``test_postgres_psycopg_autocommit_hot_paths.py`` for
-    the exercises that pin this contract, including the known SQLSpec quirk
-    where that flip is never restored to ``True`` after commit/rollback.
+    single-statement fast paths. SQLSpec temporarily leaves autocommit mode for
+    explicit transactions and restores the connection's original setting after
+    commit or rollback.
 
     Returns:
         A constructed-but-unopened SQLSpec queue backend using autocommit psycopg.
@@ -409,6 +404,31 @@ async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     )
 
 
+async def _build_mssql_python(ctx: "FixtureCtx") -> "BaseQueueBackend":
+    from sqlspec.adapters.mssql_python import MssqlPythonConfig
+
+    class MssqlPythonConfigNoMigrations(_NoMigrationComponentsMixin, MssqlPythonConfig):
+        """mssql-python config wrapper without migration bootstrap."""
+
+        __module__ = "sqlspec.adapters.mssql_python.config"
+        __slots__ = ()
+
+    svc = cast("MSSQLService", ctx.service)
+    assert svc is not None
+    return _sqlspec_backend(
+        MssqlPythonConfigNoMigrations(
+            connection_config={
+                "server": svc.host,
+                "port": svc.port,
+                "user": svc.user,
+                "password": svc.password,
+                "database": svc.database,
+            }
+        ),
+        queue_table_name=ctx.table_name,
+    )
+
+
 async def _build_arrow_odbc_mssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.arrow_odbc import ArrowOdbcConfig
 
@@ -479,15 +499,7 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"psqlpy", "sqlspec"}),
         "postgres_service",
         _build_postgres_psqlpy,
-        # ``xfail-update-rows-affected`` gates contract tests that rely on the
-        # UPDATE issued inside ``claim_task``'s ``driver.begin()`` transaction
-        # reporting an accurate ``rows_affected`` count. SQLSpec 0.55.0's
-        # psqlpy adapter reports ``rows_affected=0`` for that UPDATE even when
-        # the row was actually updated, so both the legacy per-row claim path
-        # and the SKIP LOCKED claim path (which share the same
-        # begin()/UPDATE/rows_affected check) always roll back and report no
-        # claim. Upstream defect: https://github.com/litestar-org/sqlspec/issues/645
-        frozenset({"listen-notify", "json-column", "xfail-update-rows-affected"}),
+        frozenset({"listen-notify", "json-column"}),
     ),
     BackendCase(
         "cockroach-asyncpg",
@@ -536,6 +548,13 @@ QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
         frozenset({"pymssql", "sqlspec"}),
         "mssql_service",
         _build_mssql_pymssql,
+        frozenset({"polling-only", "json-text", "sync-driver"}),
+    ),
+    BackendCase(
+        "mssql-python",
+        frozenset({"mssql_python", "sqlspec"}),
+        "mssql_service",
+        _build_mssql_python,
         frozenset({"polling-only", "json-text", "sync-driver"}),
     ),
     BackendCase(

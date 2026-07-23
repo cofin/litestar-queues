@@ -21,7 +21,7 @@ import time
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues import EnqueueSpec
+from litestar_queues import TaskRequest
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
 if TYPE_CHECKING:
@@ -81,10 +81,12 @@ async def _run(adapter: "str", dsn: "str | None", rows: "int") -> "None":
         bulk_backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=config))
         await bulk_backend.open()
         try:
-            specs = [EnqueueSpec(task_name="bench.task", args=(index,), kwargs={"n": index}) for index in range(rows)]
+            requests = [
+                TaskRequest(task_name="bench.task", args=(index,), kwargs={"n": index}) for index in range(rows)
+            ]
 
             async def bulk() -> "None":
-                await bulk_backend.enqueue_many(specs)
+                await bulk_backend.enqueue_many(requests)
 
             bulk_elapsed = await _time_path("enqueue_many", rows, bulk)
         finally:

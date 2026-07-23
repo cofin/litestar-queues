@@ -6,9 +6,9 @@ The default configuration starts a local worker inside the Litestar process:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, WorkerConfig
 
-   queue_config = QueueConfig(in_app_worker=True)
+   queue_config = QueueConfig(worker=WorkerConfig(run_in_app=True))
 
 This is the shortest path for development, tests, and small single-process
 deployments.
@@ -21,7 +21,7 @@ process and run the same Litestar application as a worker service:
 
 .. code-block:: python
 
-   queue_config = QueueConfig(in_app_worker=False)
+   queue_config = QueueConfig(worker=WorkerConfig(run_in_app=False))
 
 .. code-block:: bash
 

@@ -1,12 +1,18 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
-from litestar_queues.events import EventConfig, EventLogConfig, EventStreamConfig, QueueEventProducer
+from litestar_queues.exceptions import QueueConfigurationError
 
 logger = getLogger(__name__)
+
+_SERVICE_STATE_KEY = "queue_service"
+_WORKER_STATE_KEY = "queue_worker"
+_EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
+_EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
+_OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -14,7 +20,7 @@ if TYPE_CHECKING:
     from litestar.datastructures import State
 
     from litestar_queues.backends import BaseQueueBackend
-    from litestar_queues.events import QueueEventPublisher, TaskExecutionContext
+    from litestar_queues.events import QueueEventProducer, QueueEventPublisher, QueueEventsConfig, TaskExecutionContext
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.maintenance import QueueMaintenanceConfig
     from litestar_queues.models import QueuedTaskRecord
@@ -25,9 +31,6 @@ if TYPE_CHECKING:
 
 __all__ = (
     "AsyncServiceProvider",
-    "EventConfig",
-    "EventLogConfig",
-    "EventStreamConfig",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
     "QueueBackendConfig",
@@ -35,6 +38,7 @@ __all__ = (
     "QueueConfig",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
+    "WorkerConfig",
     "execution_backend_name",
     "queue_backend_name",
 )
@@ -132,80 +136,142 @@ class AsyncServiceProvider:
 
 
 @dataclass(slots=True)
+class WorkerConfig:
+    """Configuration shared by in-app and standalone workers."""
+
+    run_in_app: "bool" = True
+    """Whether QueuePlugin starts a worker inside the application lifespan."""
+
+    id: "str | None" = None
+    """Explicit worker identity; ``None`` uses a process-derived identifier."""
+
+    batch_size: "int" = 10
+    """Maximum task records claimed in one worker iteration."""
+
+    poll_interval: "float" = 0.1
+    """Base worker polling interval in seconds."""
+
+    poll_backoff_max: "float | None" = 30.0
+    """Maximum adaptive polling interval in seconds; ``None`` disables backoff."""
+
+    poll_backoff_multiplier: "float" = 2.0
+    """Multiplier applied after an empty polling iteration."""
+
+    poll_jitter: "float" = 0.15
+    """Symmetric polling jitter ratio from zero through one."""
+
+    max_concurrency: "int" = 1
+    """Maximum number of tasks executed concurrently."""
+
+    heartbeat_interval: "float" = 30
+    """Interval between bulk heartbeat writes in seconds."""
+
+    heartbeat_miss_threshold: "int" = 2
+    """Consecutive heartbeat misses tolerated before claim loss."""
+
+    reconcile_interval: "float" = 30
+    """Interval between external-execution reconciliation passes in seconds."""
+
+    stale_after: "float | None" = None
+    """Running-task age threshold in seconds; ``None`` disables stale recovery."""
+
+    stale_check_interval: "float" = 60.0
+    """Interval between stale-task recovery passes in seconds."""
+
+    graceful_shutdown_timeout: "float" = 30
+    """Maximum graceful drain time in seconds."""
+
+    final_cancel_timeout: "float" = 5
+    """Maximum post-cancellation drain time in seconds."""
+
+    queues: "tuple[str, ...]" = ()
+    """Queue names claimed by this worker; empty claims every queue."""
+
+    def __post_init__(self) -> "None":
+        """Validate worker concurrency, intervals, and adaptive polling."""
+        positive = {
+            "batch_size": self.batch_size,
+            "poll_interval": self.poll_interval,
+            "max_concurrency": self.max_concurrency,
+            "heartbeat_interval": self.heartbeat_interval,
+            "heartbeat_miss_threshold": self.heartbeat_miss_threshold,
+            "reconcile_interval": self.reconcile_interval,
+            "stale_check_interval": self.stale_check_interval,
+            "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
+            "final_cancel_timeout": self.final_cancel_timeout,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                msg = f"WorkerConfig.{name} must be greater than 0."
+                raise QueueConfigurationError(msg)
+        if self.poll_backoff_max is not None and self.poll_backoff_max < self.poll_interval:
+            msg = "WorkerConfig.poll_backoff_max must be greater than or equal to poll_interval."
+            raise QueueConfigurationError(msg)
+        if self.poll_backoff_multiplier < 1.0:
+            msg = "WorkerConfig.poll_backoff_multiplier must be greater than or equal to 1.0."
+            raise QueueConfigurationError(msg)
+        if not 0.0 <= self.poll_jitter <= 1.0:
+            msg = "WorkerConfig.poll_jitter must be between 0.0 and 1.0, inclusive."
+            raise QueueConfigurationError(msg)
+        if self.stale_after is not None and self.stale_after <= 0:
+            msg = "WorkerConfig.stale_after must be greater than 0 when set."
+            raise QueueConfigurationError(msg)
+
+
+@dataclass(slots=True)
 class QueueConfig:
     """Configuration for QueuePlugin."""
 
     queue_backend: "QueueBackendConfig" = "memory"
+    """Queue-record persistence backend selector or typed backend configuration."""
+
     execution_backend: "ExecutionBackendConfig" = "local"
+    """Default placement backend used to execute claimed tasks."""
+
     task_dependency_resolver: "TaskDependencyResolver | None" = None
+    """Per-attempt dependency resolver; ``None`` injects no additional task keyword arguments."""
+
     error_sanitizer: "TaskErrorSanitizer | None" = None
-    in_app_worker: "bool" = True
-    queue_service_dependency_key: "str" = "queue_service"
-    queue_events_dependency_key: "str" = "queue_events"
-    queue_service_state_key: "str" = "queue_service"
-    queue_worker_state_key: "str" = "queue_worker"
-    queue_event_publisher_state_key: "str" = "queue_event_publisher"
-    queue_event_channels_backend_state_key: "str" = "queue_event_channels_backend"
-    queue_event_stream_state_key: "str" = "queue_event_stream"
-    queue_observability_runtime_state_key: "str" = "queue_observability_runtime"
-    event: "EventConfig | None" = None
-    event_stream: "EventStreamConfig | None" = None
+    """Persisted task-error formatter; ``None`` stores the default exception representation."""
+
+    worker: "WorkerConfig" = field(default_factory=WorkerConfig)
+    """Shared configuration for in-app and standalone workers."""
+
+    service_dependency_key: "str" = "queue_service"
+    """Litestar dependency key for the injected queue service."""
+
+    events_dependency_key: "str" = "queue_events"
+    """Litestar dependency key for the injected queue event producer."""
+
+    events: "QueueEventsConfig | None" = None
+    """Task-event capabilities; ``None`` disables delivery, streams, and history."""
+
     observability: "ObservabilityConfig | None" = None
+    """Package telemetry configuration; ``None`` disables the observability runtime."""
+
     task_modules: "tuple[str, ...]" = ()
+    """Module names imported during startup to register decorated tasks."""
+
     initialize_schedules: "bool" = True
-    quiet_success: "bool" = True
-    worker_batch_size: "int" = 10
-    worker_poll_interval: "float" = 0.1
-    worker_poll_backoff_max: "float | None" = 30.0
-    worker_poll_backoff_multiplier: "float" = 2.0
-    worker_poll_jitter: "float" = 0.15
-    worker_max_concurrency: "int" = 1
-    worker_heartbeat_interval: "float" = 30
-    worker_heartbeat_miss_threshold: "int" = 2
-    worker_reconcile_interval: "float" = 30
-    worker_stale_after: "float | None" = None
-    worker_stale_check_interval: "float" = 60.0
-    worker_graceful_shutdown_timeout: "float" = 30
-    worker_final_cancel_timeout: "float" = 5
-    worker_queues: "tuple[str, ...]" = ()
+    """Whether application startup synchronizes registered recurring schedules."""
+
+    log_success: "bool" = False
+    """Whether successful task completion emits an informational log by default."""
+
     sync_executor_max_workers: "int | None" = None
+    """Maximum synchronous task executor threads; ``None`` uses the executor default."""
+
     sync_executor_thread_name_prefix: "str" = "litestar-queues"
+    """Thread-name prefix for the synchronous task executor."""
+
     scheduler_canary_task: "str" = "scheduler.heartbeat"
-    event_log: "EventLogConfig | None" = None
+    """Registered task name used by the scheduler-health command."""
+
     maintenance: "QueueMaintenanceConfig | None" = None
-    max_task_payload_bytes: "int | None" = None
-    """Optional upper bound on the canonical ``unique_by="arguments"`` identity payload.
+    """Automatic maintenance policy; ``None`` disables the maintenance loop."""
 
-    Measured with the same canonical JSON encoder used to derive argument
-    identity, immediately before backend enqueue, and enforced only when argument
-    identity is computed (fast paths never serialize arguments). ``None`` disables
-    the guard. Exceeding it raises
-    :class:`~litestar_queues.exceptions.TaskPayloadTooLargeError`; identity
-    material is never truncated. Externalize large payloads and pass a stable
-    identifier instead.
-    """
-
-    def __post_init__(self) -> "None":
-        """Validate adaptive polling backoff settings before backend/worker startup.
-
-        Raises:
-            QueueConfigurationError: If a backoff field is set to an invalid value.
-        """
-        from litestar_queues.exceptions import QueueConfigurationError
-
-        if self.worker_poll_backoff_max is not None:
-            if self.worker_poll_backoff_max <= 0:
-                msg = "QueueConfig.worker_poll_backoff_max must be greater than 0."
-                raise QueueConfigurationError(msg)
-            if self.worker_poll_backoff_max < self.worker_poll_interval:
-                msg = "QueueConfig.worker_poll_backoff_max must be greater than or equal to worker_poll_interval."
-                raise QueueConfigurationError(msg)
-        if self.worker_poll_backoff_multiplier < 1.0:
-            msg = "QueueConfig.worker_poll_backoff_multiplier must be greater than or equal to 1.0."
-            raise QueueConfigurationError(msg)
-        if not 0.0 <= self.worker_poll_jitter <= 1.0:
-            msg = "QueueConfig.worker_poll_jitter must be between 0.0 and 1.0, inclusive."
-            raise QueueConfigurationError(msg)
+    max_argument_identity_bytes: "int | None" = None
+    """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":
@@ -219,10 +285,13 @@ class QueueConfig:
 
         from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
         from litestar_queues.events import (
+            ChannelAuthorizer,
+            CompositeQueueEventSink,
             EventBufferConfig,
-            EventConfig,
-            EventLogConfig,
+            EventDeliveryConfig,
+            EventHistoryConfig,
             EventStreamConfig,
+            EventStreamTransport,
             InMemoryQueueEventSink,
             NoopQueueEventSink,
             QueueChannels,
@@ -233,10 +302,22 @@ class QueueConfig:
             QueueEventLogRecord,
             QueueEventProducer,
             QueueEventPublisher,
+            QueueEventsConfig,
+            QueueEventScope,
+            QueueEventSink,
             QueueEventStageSummary,
+            QueueEventType,
             TaskExecutionContext,
+            UnauthenticatedAccess,
         )
-        from litestar_queues.exceptions import JobCancelledError, NonRetryableError, job_cancelled, non_retryable
+        from litestar_queues.exceptions import (
+            JobCancelledError,
+            NonRetryableError,
+            TaskIdentityError,
+            TaskIdentityTooLargeError,
+            job_cancelled,
+            non_retryable,
+        )
         from litestar_queues.execution import (
             BaseExecutionBackend,
             CloudRunExecutionBackend,
@@ -252,10 +333,15 @@ class QueueConfig:
             QueueMaintenanceSummary,
         )
         from litestar_queues.models import (
+            HeartbeatTouch,
+            HeartbeatTouchResult,
             QueueBackendCapabilities,
             QueuedTaskRecord,
             QueueStatistics,
             StaleTaskRecoveryResult,
+            TaskRequest,
+            TaskReservation,
+            TaskStatus,
         )
         from litestar_queues.observability import ObservabilityConfig
         from litestar_queues.service import QueueService
@@ -268,10 +354,15 @@ class QueueConfig:
             "CloudRunExecutionBackend": CloudRunExecutionBackend,
             "CloudRunExecutionConfig": CloudRunExecutionConfig,
             "CloudRunExecutionStatus": CloudRunExecutionStatus,
-            "EventConfig": EventConfig,
+            "ChannelAuthorizer": ChannelAuthorizer,
+            "CompositeQueueEventSink": CompositeQueueEventSink,
+            "EventDeliveryConfig": EventDeliveryConfig,
             "EventBufferConfig": EventBufferConfig,
-            "EventLogConfig": EventLogConfig,
+            "EventHistoryConfig": EventHistoryConfig,
             "EventStreamConfig": EventStreamConfig,
+            "EventStreamTransport": EventStreamTransport,
+            "HeartbeatTouch": HeartbeatTouch,
+            "HeartbeatTouchResult": HeartbeatTouchResult,
             "ImmediateExecutionBackend": ImmediateExecutionBackend,
             "InMemoryQueueBackend": InMemoryQueueBackend,
             "LocalExecutionBackend": LocalExecutionBackend,
@@ -294,7 +385,11 @@ class QueueConfig:
             "QueueEventLogRecord": QueueEventLogRecord,
             "QueueEventProducer": QueueEventProducer,
             "QueueEventPublisher": QueueEventPublisher,
+            "QueueEventScope": QueueEventScope,
+            "QueueEventSink": QueueEventSink,
             "QueueEventStageSummary": QueueEventStageSummary,
+            "QueueEventType": QueueEventType,
+            "QueueEventsConfig": QueueEventsConfig,
             "QueueMaintenanceConfig": QueueMaintenanceConfig,
             "QueueMaintenancePhaseResult": QueueMaintenancePhaseResult,
             "QueueMaintenanceService": QueueMaintenanceService,
@@ -305,23 +400,37 @@ class QueueConfig:
             "ScheduleConfig": ScheduleConfig,
             "StaleTaskRecoveryResult": StaleTaskRecoveryResult,
             "Task": Task,
+            "TaskIdentityError": TaskIdentityError,
+            "TaskIdentityTooLargeError": TaskIdentityTooLargeError,
+            "TaskRequest": TaskRequest,
+            "TaskReservation": TaskReservation,
+            "TaskStatus": TaskStatus,
             "TaskDependencyResolver": TaskDependencyResolver,
             "TaskErrorSanitizer": TaskErrorSanitizer,
             "ExecutionBackendConfigProtocol": ExecutionBackendConfigProtocol,
             "TaskExecutionContext": TaskExecutionContext,
             "TaskResult": TaskResult,
             "Worker": Worker,
+            "WorkerConfig": WorkerConfig,
+            "UnauthenticatedAccess": UnauthenticatedAccess,
             "job_cancelled": job_cancelled,
             "non_retryable": non_retryable,
         }
         with suppress(ImportError):
-            from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend
+            from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
 
             namespace["SQLAlchemyBackend"] = SQLAlchemyBackend
+            namespace["SQLAlchemyBackendConfig"] = SQLAlchemyBackendConfig
         with suppress(ImportError):
-            from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+            from litestar_queues.backends.sqlspec import (
+                SQLSpecBackendConfig,
+                SQLSpecQueueBackend,
+                SQLSpecWorkerWakeupConfig,
+            )
 
+            namespace["SQLSpecBackendConfig"] = SQLSpecBackendConfig
             namespace["SQLSpecQueueBackend"] = SQLSpecQueueBackend
+            namespace["SQLSpecWorkerWakeupConfig"] = SQLSpecWorkerWakeupConfig
         with suppress(ImportError):
             from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 
@@ -340,8 +449,8 @@ class QueueConfig:
         from litestar.di import Provide
 
         return {
-            self.queue_service_dependency_key: Provide(self.provide_service_dependency),
-            self.queue_events_dependency_key: Provide(self.provide_event_producer_dependency),
+            self.service_dependency_key: Provide(self.provide_service_dependency),
+            self.events_dependency_key: Provide(self.provide_event_producer_dependency),
         }
 
     def get_service(self, state: "State | None" = None) -> "QueueService":
@@ -351,19 +460,19 @@ class QueueConfig:
         if state is None:
             return QueueService(self)
 
-        if self.queue_service_state_key not in state:
+        if _SERVICE_STATE_KEY not in state:
             msg = (
-                f"QueueService is not available in app state under {self.queue_service_state_key!r}; "
+                f"QueueService is not available in app state under {_SERVICE_STATE_KEY!r}; "
                 "ensure QueuePlugin startup has completed before resolving the queue service."
             )
             raise RuntimeError(msg)
 
-        cached = state[self.queue_service_state_key]
+        cached = state[_SERVICE_STATE_KEY]
         if isinstance(cached, QueueService):
             return cached
 
         msg = (
-            f"QueueService has not been opened in app state under {self.queue_service_state_key!r}; "
+            f"QueueService has not been opened in app state under {_SERVICE_STATE_KEY!r}; "
             f"found {type(cached).__name__}."
         )
         raise RuntimeError(msg)
@@ -385,50 +494,45 @@ class QueueConfig:
 
         Args:
             channels_backend: Fallback live sink target used only when
-                ``EventConfig.channels_backend`` is unset. ``QueuePlugin`` passes the
-                app's registered ``ChannelsPlugin`` here so ``EventConfig(enabled=True)``
+                ``QueueEventsConfig.channels`` is unset. ``QueuePlugin`` passes the
+                app's registered ``ChannelsPlugin`` here so event delivery
                 needs no manual channel wiring.
         """
         from litestar_queues.events import (
             ChannelsQueueEventSink,
+            CompositeQueueEventSink,
             NoopQueueEventSink,
             QueueEventPublisher,
             QueueEventSink,
         )
 
-        event_config = self.event
-        sink: "QueueEventSink"
-        if event_config is None:
-            sink = NoopQueueEventSink()
+        events_config = self.events
+        if events_config is None or events_config.delivery is None:
+            sink: "QueueEventSink" = NoopQueueEventSink()
             return QueueEventPublisher(sink)
-        if not event_config.enabled:
-            if event_config.sink is not None or event_config.channels_backend is not None:
-                logger.warning(
-                    "Queue event sink configured while event publishing is explicitly disabled; "
-                    "omit enabled=False to publish queue events."
-                )
-            sink = NoopQueueEventSink()
-        elif event_config.sink is not None:
-            sink = event_config.sink
-        else:
-            live_backend = event_config.channels_backend
-            if live_backend is None:
-                live_backend = channels_backend
-            if live_backend is not None:
-                sink = ChannelsQueueEventSink(
+        delivery = events_config.delivery
+        sinks: "list[QueueEventSink]" = []
+        live_backend = events_config.channels if events_config.channels is not None else channels_backend
+        if live_backend is not None:
+            sinks.append(
+                ChannelsQueueEventSink(
                     live_backend,
-                    max_payload_bytes=event_config.max_payload_bytes,
-                    payload_size_estimator=event_config.payload_size_estimator,
+                    max_payload_bytes=delivery.max_payload_bytes,
+                    payload_size_estimator=delivery.payload_size_estimator,
                 )
-            else:
-                sink = NoopQueueEventSink()
+            )
+        sinks.extend(delivery.sinks)
+        if not sinks:
+            msg = "EventDeliveryConfig requires events.channels, an app ChannelsPlugin, or at least one custom sink."
+            raise QueueConfigurationError(msg)
+        sink = sinks[0] if len(sinks) == 1 else CompositeQueueEventSink(sinks, strict=delivery.strict)
         return QueueEventPublisher(
             sink,
-            buffer_config=event_config.buffer,
-            strict=event_config.strict,
-            publish_task_channel=event_config.publish_task_channel,
-            publish_queue_channel=event_config.publish_queue_channel,
-            publish_global_lifecycle=event_config.publish_global_lifecycle,
+            buffer_config=delivery.buffer,
+            strict=delivery.strict,
+            publish_task_channel=delivery.publish_task_channel,
+            publish_queue_channel=delivery.publish_queue_channel,
+            publish_global_lifecycle=delivery.publish_global_lifecycle,
         )
 
     def provide_service(self) -> "AsyncServiceProvider":
@@ -447,11 +551,11 @@ class QueueConfig:
         """Yield the application-scoped QueueEventProducer for Litestar dependency injection."""
         from litestar_queues.events import QueueEventProducer
 
-        if self.queue_event_publisher_state_key not in state:
+        if _EVENT_PUBLISHER_STATE_KEY not in state:
             msg = (
                 "Queue event publisher is not available in app state under "
-                f"{self.queue_event_publisher_state_key!r}; ensure QueuePlugin startup has completed before "
+                f"{_EVENT_PUBLISHER_STATE_KEY!r}; ensure QueuePlugin startup has completed before "
                 "resolving queue events."
             )
             raise RuntimeError(msg)
-        yield QueueEventProducer(state[self.queue_event_publisher_state_key])
+        yield QueueEventProducer(state[_EVENT_PUBLISHER_STATE_KEY])

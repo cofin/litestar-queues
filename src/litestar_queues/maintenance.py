@@ -1,7 +1,7 @@
 """Bounded, backend-neutral queue maintenance.
 
 The maintenance service runs a small, predictable amount of repair and
-retention work under a token-fenced distributed lease and a wall-clock time
+retention work under token-fenced distributed coordination and a wall-clock time
 budget, then returns. It never starts a worker, executes due work, or loops to
 drain a backlog. Phases always run in the fixed order external-execution
 reconciliation, stale-running recovery, terminal-task retention, and
@@ -37,14 +37,14 @@ MaintenancePhase = Literal["external", "stale", "terminal", "events"]
 MaintenancePhaseStatus = Literal["completed", "skipped", "failed", "partial"]
 """Outcome of a single maintenance phase."""
 
-MaintenanceOutcome = Literal["completed", "failed", "partial", "lease_held"]
+MaintenanceOutcome = Literal["completed", "failed", "partial", "already_running"]
 """Outcome of a whole maintenance run."""
 
 PHASE_ORDER: "tuple[MaintenancePhase, ...]" = ("external", "stale", "terminal", "events")
 """Stable phase order. Never reordered; drift gates depend on this."""
 
-LEASE_NAME = "queue-maintenance"
-"""Distributed maintenance lease name shared by every process."""
+MAINTENANCE_NAME = "queue-maintenance"
+"""Distributed maintenance coordination name shared by every process."""
 
 PHASE_ERROR_CODE = "maintenance_phase_failed"
 """Package-owned error code prefix for a failed phase.
@@ -59,30 +59,47 @@ class QueueMaintenanceConfig:
     """Bounded maintenance thresholds and limits.
 
     Durations and retention values are seconds. Every limit and duration must be
-    positive and ``lease_ttl`` must exceed ``time_budget`` so the lease outlives
-    the whole budget (there is no lease-renewal path). ``stale_after``,
+    positive and ``coordination_timeout`` must exceed ``time_budget`` so ownership outlives
+    the whole run. ``stale_after``,
     ``terminal_retention``, and ``event_retention`` default to ``None`` which
     disables their phase; there are no destructive defaults.
     """
 
     time_budget: "float" = 300.0
-    lease_ttl: "float" = 360.0
+    """Maximum wall-clock duration of one maintenance run in seconds."""
+
+    coordination_timeout: "float" = 360.0
+    """Distributed ownership duration in seconds; must exceed ``time_budget``."""
+
     external_limit: "int" = 100
+    """Maximum external executions reconciled in one run."""
+
     stale_after: "float | None" = None
+    """Running-task age threshold in seconds; ``None`` disables stale recovery."""
+
     stale_limit: "int" = 100
+    """Maximum stale running tasks recovered in one run."""
+
     terminal_retention: "float | None" = None
+    """Terminal-task retention age in seconds; ``None`` disables deletion."""
+
     terminal_limit: "int" = 1000
+    """Maximum expired terminal tasks deleted in one run."""
+
     event_retention: "float | None" = None
+    """Task-event history retention age in seconds; ``None`` disables deletion."""
+
     event_limit: "int" = 1000
+    """Maximum expired task-event records deleted in one run."""
 
     def __post_init__(self) -> "None":
         """Validate durations, retention thresholds, and limits.
 
         Raises:
             QueueConfigurationError: If a duration, retention threshold, or limit
-                is not positive, or ``lease_ttl`` does not exceed ``time_budget``.
+                is not positive, or ``coordination_timeout`` does not exceed ``time_budget``.
         """
-        for name, value in (("time_budget", self.time_budget), ("lease_ttl", self.lease_ttl)):
+        for name, value in (("time_budget", self.time_budget), ("coordination_timeout", self.coordination_timeout)):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
                 msg = f"QueueMaintenanceConfig.{name} must be a finite number greater than 0."
                 raise QueueConfigurationError(msg)
@@ -108,8 +125,11 @@ class QueueMaintenanceConfig:
             ):
                 msg = f"QueueMaintenanceConfig.{name} must be a finite number greater than 0 when set."
                 raise QueueConfigurationError(msg)
-        if self.lease_ttl <= self.time_budget:
-            msg = "QueueMaintenanceConfig.lease_ttl must be greater than time_budget so the lease outlives the run."
+        if self.coordination_timeout <= self.time_budget:
+            msg = (
+                "QueueMaintenanceConfig.coordination_timeout must be greater than time_budget "
+                "so ownership outlives the run."
+            )
             raise QueueConfigurationError(msg)
 
 
@@ -139,7 +159,7 @@ class QueueMaintenanceSummary:
     """Result of a whole maintenance run."""
 
     outcome: "MaintenanceOutcome"
-    lease_acquired: "bool"
+    acquired: "bool"
     duration_ms: "float"
     phases: "list[QueueMaintenancePhaseResult]" = field(default_factory=list)
 
@@ -147,7 +167,7 @@ class QueueMaintenanceSummary:
         """Return a JSON-native mapping of the whole summary."""
         return {
             "outcome": self.outcome,
-            "lease_acquired": self.lease_acquired,
+            "acquired": self.acquired,
             "duration_ms": self.duration_ms,
             "phases": [phase.to_payload() for phase in self.phases],
         }
@@ -158,7 +178,7 @@ def _default_utcnow() -> "datetime":
 
 
 class QueueMaintenanceService:
-    """Run bounded maintenance phases under a token-fenced lease and time budget."""
+    """Run bounded maintenance phases under token-fenced coordination and a time budget."""
 
     __slots__ = ("_config", "_monotonic", "_service", "_utcnow")
 
@@ -174,7 +194,7 @@ class QueueMaintenanceService:
 
         Args:
             service: An opened queue service whose backend advertises
-                ``supports_maintenance_lease``.
+                ``supports_maintenance``.
             config: Bounded maintenance thresholds and limits.
             monotonic: Injected monotonic clock for budget/duration accounting.
             utcnow: Injected UTC clock used to compute stable retention cutoffs.
@@ -185,7 +205,7 @@ class QueueMaintenanceService:
         self._utcnow = utcnow
 
     async def run(self, phases: "Collection[MaintenancePhase] | None" = None) -> "QueueMaintenanceSummary":
-        """Acquire the maintenance lease and run each selected phase once.
+        """Claim maintenance ownership and run each selected phase once.
 
         Args:
             phases: Optional narrowing of the phases to run. Filtering only
@@ -193,34 +213,34 @@ class QueueMaintenanceService:
                 threshold. ``None`` considers every phase in the fixed order.
 
         Returns:
-            A summary whose outcome is ``lease_held`` when the lease is denied,
+            A summary whose outcome is ``already_running`` when ownership is denied,
             ``failed`` when any phase failed, ``partial`` when the budget skipped
             an enabled phase, else ``completed``.
 
         Raises:
             QueueConfigurationError: If a requested phase name is unknown or the
-                backend does not support the maintenance lease.
+                backend does not support distributed maintenance coordination.
         """
         selected = self._select_phases(phases)
         started_monotonic = self._monotonic()
         started_at = self._utcnow()
         backend = self._service.get_queue_backend()
-        if not backend.capabilities.supports_maintenance_lease:
+        if not backend.capabilities.supports_maintenance:
             msg = (
-                f"{type(backend).__name__} does not support the distributed maintenance lease; "
+                f"{type(backend).__name__} does not support distributed maintenance coordination; "
                 "use a persistent backend (Redis/Valkey, SQLSpec, or Advanced Alchemy) for cross-process maintenance."
             )
             raise QueueConfigurationError(msg)
 
         token = uuid4().hex
-        acquired = await backend.acquire_maintenance_lease(
-            LEASE_NAME, token, ttl=timedelta(seconds=self._config.lease_ttl)
+        acquired = await backend.acquire_maintenance(
+            MAINTENANCE_NAME, token, ttl=timedelta(seconds=self._config.coordination_timeout)
         )
         if not acquired:
             results = [QueueMaintenancePhaseResult(phase=phase, status="skipped") for phase in selected]
             return QueueMaintenanceSummary(
-                outcome="lease_held",
-                lease_acquired=False,
+                outcome="already_running",
+                acquired=False,
                 duration_ms=self._elapsed_ms(started_monotonic),
                 phases=results,
             )
@@ -239,11 +259,11 @@ class QueueMaintenanceService:
                     continue
                 results.append(await self._run_phase(phase, cutoffs))
         finally:
-            await backend.release_maintenance_lease(LEASE_NAME, token)
+            await backend.release_maintenance(MAINTENANCE_NAME, token)
 
         return QueueMaintenanceSummary(
             outcome=self._final_outcome(results),
-            lease_acquired=True,
+            acquired=True,
             duration_ms=self._elapsed_ms(started_monotonic),
             phases=results,
         )

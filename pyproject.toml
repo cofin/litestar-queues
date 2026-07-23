@@ -60,7 +60,7 @@ otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 rabbitmq = ["aio-pika>=9.6"]
 redis = ["redis>=5.0.0"]
-sqlspec = ["sqlspec>=0.55.0"]
+sqlspec = ["sqlspec>=0.56.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -134,7 +134,7 @@ benchmarks = [
   "psutil",
   "psycopg[binary,pool]>=3.2.0",
   "redis>=5.0.0",
-  "sqlspec[mypyc,performance]>=0.55.0",
+  "sqlspec[mypyc,performance]>=0.56.0",
 ]
 build = ["bump-my-version"]
 dev = [
@@ -187,7 +187,7 @@ tests = [
   "numpy",
   "advanced-alchemy>=1.10.0",
   # SQLSpec adapters covered by the default integration matrix
-  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql]>=0.55.0",
+  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.56.0",
 ]
 e2e = [
   "playwright>=1.50.0",
@@ -203,9 +203,6 @@ filterwarnings = [
   "ignore::DeprecationWarning:pkg_resources.*",
   "ignore::DeprecationWarning:xdist.*",
   "ignore::DeprecationWarning:importlib._bootstrap",
-  # Temporary upstream SQLSpec filters: https://github.com/litestar-org/sqlspec/issues/623
-  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:litestar_queues\\.backends\\.sqlspec\\.backend",
-  "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:sqlspec\\.adapters\\.psycopg\\.driver",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
 ]
@@ -264,7 +261,7 @@ skip-magic-trailing-comma = true
 [tool.ruff.lint]
 explicit-preview-rules = true
 extend-safe-fixes = ["TC"]
-extend-select = ["ASYNC119", "DOC201", "DOC402"]
+extend-select = ["ASYNC119", "DOC402"]
 fixable = ["ALL"]
 ignore = [
   "A003",
@@ -286,6 +283,7 @@ ignore = [
   "D202",
   "D205",
   "D415",
+  "DOC201",
   "E501",
   "FA100",
   "FBT001",

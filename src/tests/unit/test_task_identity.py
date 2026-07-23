@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
-from litestar_queues.exceptions import TaskIdentityError, TaskPayloadTooLargeError
+from litestar_queues.exceptions import TaskIdentityError, TaskIdentityTooLargeError
 
 
 def _sig(func: "Any") -> "inspect.Signature":
@@ -104,7 +104,7 @@ def test_non_json_arguments_are_rejected() -> "None":
 
 def test_payload_size_guard_reports_actual_and_max() -> "None":
     _, size = arguments_identity("t", _sig(collect), ("x" * 1024,), {})
-    with pytest.raises(TaskPayloadTooLargeError) as excinfo:
+    with pytest.raises(TaskIdentityTooLargeError) as excinfo:
         arguments_identity("t", _sig(collect), ("x" * 1024,), {}, max_payload_bytes=size - 1)
     assert excinfo.value.actual_bytes == size
     assert excinfo.value.max_bytes == size - 1

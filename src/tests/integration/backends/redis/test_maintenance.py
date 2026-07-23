@@ -1,4 +1,4 @@
-"""Redis distributed maintenance-lease and bounded-operation contract."""
+"""Redis distributed maintenance coordination and bounded-operation contract."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -13,8 +13,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration.backends._maintenance_asserts import (
     assert_bounded_cleanup_terminal,
     assert_bounded_stale_recovery,
-    assert_cross_instance_lease,
-    assert_lease_expiry,
+    assert_coordination_expiry,
+    assert_cross_instance_coordination,
 )
 
 if TYPE_CHECKING:
@@ -161,22 +161,22 @@ async def test_redis_bounded_maintenance_fails_closed_until_legacy_indexes_are_r
     assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
 
 
-async def test_redis_backend_lease_expiry(redis_backend: "RedisQueueBackend") -> "None":
-    await assert_lease_expiry(redis_backend)
+async def test_redis_backend_coordination_expiry(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_coordination_expiry(redis_backend)
 
 
-async def test_redis_backend_lease_is_not_process_local(redis_service: "RedisService") -> "None":
-    """Two independently opened Redis backends share the namespaced lease key."""
+async def test_redis_backend_coordination_is_not_process_local(redis_service: "RedisService") -> "None":
+    """Two independently opened Redis backends share the namespaced ownership key."""
     from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 
-    prefix = f"litestar_queues:test:lease:{uuid.uuid4().hex}"
+    prefix = f"litestar_queues:test:ownership:{uuid.uuid4().hex}"
     url = f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}"
-    first = RedisQueueBackend(backend_config=RedisBackendConfig(url=url, key_prefix=prefix, notifications=False))
-    second = RedisQueueBackend(backend_config=RedisBackendConfig(url=url, key_prefix=prefix, notifications=False))
+    first = RedisQueueBackend(backend_config=RedisBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False))
+    second = RedisQueueBackend(backend_config=RedisBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False))
     await first.open()
     await second.open()
     try:
-        await assert_cross_instance_lease(first, second)
+        await assert_cross_instance_coordination(first, second)
     finally:
         await first.close()
         await second.close()

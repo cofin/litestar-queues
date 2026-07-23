@@ -6,12 +6,12 @@ from advanced_alchemy.repository import SQLAlchemyAsyncRepository
 
 if TYPE_CHECKING:
     from litestar_queues.backends.advanced_alchemy.mixins import (
-        QueueEventLogModelMixin,
+        QueueEventHistoryModelMixin,
         QueueTaskModelMixin,
-        QueueUniquenessModelMixin,
+        QueueTaskReservationModelMixin,
     )
 
-__all__ = ("QueueEventLogRepository", "QueueTaskRepository", "QueueUniquenessRepository")
+__all__ = ("QueueEventLogRepository", "QueueTaskRepository", "QueueTaskReservationRepository")
 
 
 class QueueTaskRepository(SQLAlchemyAsyncRepository[Any]):
@@ -30,7 +30,7 @@ class QueueEventLogRepository(SQLAlchemyAsyncRepository[Any]):
     """Repository for queue event-history records."""
 
     @classmethod
-    def for_model(cls, model_class: "type[QueueEventLogModelMixin]") -> 'type["QueueEventLogRepository"]':
+    def for_model(cls, model_class: "type[QueueEventHistoryModelMixin]") -> 'type["QueueEventLogRepository"]':
         """Return a repository subclass bound to ``model_class``."""
         return cast(
             "type[QueueEventLogRepository]",
@@ -38,13 +38,13 @@ class QueueEventLogRepository(SQLAlchemyAsyncRepository[Any]):
         )
 
 
-class QueueUniquenessRepository(SQLAlchemyAsyncRepository[Any]):
-    """Repository for forever-uniqueness tombstones."""
+class QueueTaskReservationRepository(SQLAlchemyAsyncRepository[Any]):
+    """Repository for forever-uniqueness reservations."""
 
     @classmethod
-    def for_model(cls, model_class: "type[QueueUniquenessModelMixin]") -> 'type["QueueUniquenessRepository"]':
+    def for_model(cls, model_class: "type[QueueTaskReservationModelMixin]") -> 'type["QueueTaskReservationRepository"]':
         """Return a repository subclass bound to ``model_class``."""
         return cast(
-            "type[QueueUniquenessRepository]",
-            type(f"QueueUniquenessRepositoryFor{model_class.__name__}", (cls,), {"model_type": model_class}),
+            "type[QueueTaskReservationRepository]",
+            type(f"QueueTaskReservationRepositoryFor{model_class.__name__}", (cls,), {"model_type": model_class}),
         )

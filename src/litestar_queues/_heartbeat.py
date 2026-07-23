@@ -66,11 +66,7 @@ class SingleTaskBeatSink:
         self._detail: "str | None" = None
 
     def record_beat(self, task_id: "str", detail: "str | None") -> "None":
-        """Store the latest progress detail for the bound task.
-
-        Returns:
-            None.
-        """
+        """Store the latest progress detail for the bound task."""
         with contextlib.suppress(ValueError):
             if UUID(task_id) == self._task_id:
                 self._detail = detail[:256] if isinstance(detail, str) else None
@@ -80,11 +76,7 @@ class SingleTaskBeatSink:
         return self._detail
 
     def clear_detail(self) -> "None":
-        """Clear the pending detail after a successful heartbeat touch.
-
-        Returns:
-            None.
-        """
+        """Clear the pending detail after a successful heartbeat touch."""
         self._detail = None
 
 
@@ -135,11 +127,7 @@ class WorkerHeartbeatManager:
             self._record_gauge_delta("litestar_queues.heartbeat.active", 1)
 
     def unregister(self, task_id: "UUID") -> "None":
-        """Remove a task from heartbeat ticks.
-
-        Returns:
-            None.
-        """
+        """Remove a task from heartbeat ticks."""
         if task_id not in self._registrations:
             return
         del self._registrations[task_id]
@@ -147,22 +135,14 @@ class WorkerHeartbeatManager:
         self._record_gauge_delta("litestar_queues.heartbeat.active", -1)
 
     def record_beat(self, task_id: "str", detail: "str | None") -> "None":
-        """Store the latest progress detail for a registered task.
-
-        Returns:
-            None.
-        """
+        """Store the latest progress detail for a registered task."""
         with contextlib.suppress(ValueError):
             parsed_task_id = UUID(task_id)
             if parsed_task_id in self._registrations:
                 self._beats[parsed_task_id] = detail[:256] if isinstance(detail, str) else None
 
     async def start(self) -> "None":
-        """Start the background heartbeat loop once.
-
-        Returns:
-            None.
-        """
+        """Start the background heartbeat loop once."""
         if self._task is not None and not self._task.done():
             return
         self._stop_event.clear()

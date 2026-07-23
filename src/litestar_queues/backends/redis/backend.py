@@ -31,8 +31,8 @@ from litestar_queues.models import (
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskReservation,
     TaskStatus,
-    UniquenessTombstone,
 )
 
 if TYPE_CHECKING:
@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
+    from litestar_queues.events import EventHistoryConfig, QueueEventLog
+    from litestar_queues.models import HeartbeatTouch, TaskRequest
 
 __all__ = ("RedisQueueBackend",)
 
@@ -441,7 +441,7 @@ return {redis.call('HDEL', KEYS[1], ARGV[1])}
 """
 
 
-_RELEASE_LEASE_SCRIPT = """
+_RELEASE_MAINTENANCE_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return {redis.call('DEL', KEYS[1])}
 end
@@ -497,12 +497,12 @@ class RedisQueueBackend(BaseQueueBackend):
         "_client",
         "_event_log",
         "_key_prefix",
-        "_notification_channel",
         "_notifications",
         "_owns_client",
         "_pending_read",
         "_pubsub",
         "_url",
+        "_wakeup_channel",
     )
 
     def __init__(
@@ -514,8 +514,8 @@ class RedisQueueBackend(BaseQueueBackend):
         self._owns_client = self._client is None
         self._url = backend_config.url
         self._key_prefix = backend_config.key_prefix.rstrip(":")
-        self._notifications = backend_config.notifications
-        self._notification_channel = backend_config.notification_channel
+        self._notifications = backend_config.worker_wakeups
+        self._wakeup_channel = backend_config.wakeup_channel
         self._pubsub: "RedisPubSubLike | None" = None
         self._pending_read = PendingNativeRead()
         self._event_log: "RedisQueueEventLog | None" = None
@@ -524,11 +524,11 @@ class RedisQueueBackend(BaseQueueBackend):
     def capabilities(self) -> "QueueBackendCapabilities":
         """Backend behavior capabilities."""
         return QueueBackendCapabilities(
-            supports_notifications=self._notifications,
-            notification_backend=f"{self._backend_name}-pubsub" if self._notifications else None,
-            notifications_durable=False,
+            supports_worker_wakeups=self._notifications,
+            wakeup_backend=f"{self._backend_name}-pubsub" if self._notifications else None,
+            wakeups_durable=False,
             supports_completion_events=self._notifications,
-            supports_maintenance_lease=True,
+            supports_maintenance=True,
         )
 
     async def open(self) -> "bool":
@@ -548,7 +548,7 @@ class RedisQueueBackend(BaseQueueBackend):
             await self._event_log.flush_events()
         await self._pending_read.aclose()
         if self._pubsub is not None:
-            await _close_pubsub(self._pubsub, self._notification_channel)
+            await _close_pubsub(self._pubsub, self._wakeup_channel)
             self._pubsub = None
         if self._owns_client and self._client is not None:
             close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
@@ -558,10 +558,8 @@ class RedisQueueBackend(BaseQueueBackend):
                     await result
             self._client = None
 
-    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return Redis-protocol queue event history when enabled."""
-        if not config.enabled:
-            return None
         if self._event_log is None:
             self._event_log = RedisQueueEventLog(backend=self, config=config)
         return self._event_log
@@ -607,47 +605,47 @@ class RedisQueueBackend(BaseQueueBackend):
         await self._save_new_record(record, publish=True)
         return record
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+    async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
         """Persist a batch of Redis-backed tasks and coalesce worker wakeups.
 
         Returns:
-            Queue task records in the same order as ``specs``.
+            Queue task records in the same order as ``requests``.
         """
-        if not specs:
+        if not requests:
             return []
 
         results: "list[QueuedTaskRecord]" = []
         unkeyed_records: "list[QueuedTaskRecord]" = []
-        for spec in specs:
-            if spec.key is not None:
+        for request in requests:
+            if request.key is not None:
                 record = self._create_record(
-                    spec.task_name,
-                    args=spec.args,
-                    kwargs=spec.kwargs,
-                    queue=spec.queue,
-                    priority=spec.priority,
-                    max_retries=spec.max_retries,
-                    scheduled_at=spec.scheduled_at,
-                    key=spec.key,
-                    execution_backend=spec.execution_backend,
-                    execution_profile=spec.execution_profile,
-                    metadata=spec.metadata,
+                    request.task_name,
+                    args=request.args,
+                    kwargs=request.kwargs,
+                    queue=request.queue,
+                    priority=request.priority,
+                    max_retries=request.max_retries,
+                    scheduled_at=request.scheduled_at,
+                    key=request.key,
+                    execution_backend=request.execution_backend,
+                    execution_profile=request.execution_profile,
+                    metadata=request.metadata,
                 )
-                results.append(await self._enqueue_keyed(record, spec.key, publish=False))
+                results.append(await self._enqueue_keyed(record, request.key, publish=False))
                 continue
 
             record = self._create_record(
-                spec.task_name,
-                args=spec.args,
-                kwargs=spec.kwargs,
-                queue=spec.queue,
-                priority=spec.priority,
-                max_retries=spec.max_retries,
-                scheduled_at=spec.scheduled_at,
+                request.task_name,
+                args=request.args,
+                kwargs=request.kwargs,
+                queue=request.queue,
+                priority=request.priority,
+                max_retries=request.max_retries,
+                scheduled_at=request.scheduled_at,
                 key=None,
-                execution_backend=spec.execution_backend,
-                execution_profile=spec.execution_profile,
-                metadata=spec.metadata,
+                execution_backend=request.execution_backend,
+                execution_profile=request.execution_profile,
+                metadata=request.metadata,
             )
             unkeyed_records.append(record)
             results.append(record)
@@ -993,7 +991,7 @@ class RedisQueueBackend(BaseQueueBackend):
             },
             zset_action=zset_action,
             score=score,
-            publish_channel=self._notification_channel if (self._notifications and zset_action == "ready") else "",
+            publish_channel=self._wakeup_channel if (self._notifications and zset_action == "ready") else "",
             publish_payload=_json_dumps({"event": "task_available"}),
         )
 
@@ -1067,7 +1065,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 "execution_profile": execution_profile or "",
                 "execution_ref": "",
             },
-            publish_channel=self._notification_channel if (self._notifications and due) else "",
+            publish_channel=self._wakeup_channel if (self._notifications and due) else "",
             publish_payload=_json_dumps({"event": "task_available"}),
         )
         return record
@@ -1192,38 +1190,38 @@ class RedisQueueBackend(BaseQueueBackend):
             await marked
         return len(records)
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
-        """Acquire a namespaced ``SET NX PX`` maintenance lease.
+    async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire namespaced ``SET NX PX`` maintenance ownership.
 
         Returns:
-            True when the lease was set for ``token``.
+            True when ownership was set for ``token``.
         """
         client = await self._get_client()
         ttl_ms = max(1, int(ttl.total_seconds() * 1000))
-        result = client.set(self._lease_key(name), token, nx=True, px=ttl_ms)
+        result = client.set(self._maintenance_key(name), token, nx=True, px=ttl_ms)
         if inspect.isawaitable(result):
             result = await result
         return bool(result)
 
-    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
-        """Release a maintenance lease via a token-checked Lua compare-and-delete.
+    async def release_maintenance(self, name: "str", token: "str") -> "bool":
+        """Release maintenance ownership via token-checked Lua compare-and-delete.
 
         Returns:
-            True when a lease held under ``token`` was deleted.
+            True when ownership held under ``token`` was deleted.
         """
         client = await self._get_client()
-        outcome = await _eval_script(client, _RELEASE_LEASE_SCRIPT, [self._lease_key(name)], [token])
+        outcome = await _eval_script(client, _RELEASE_MAINTENANCE_SCRIPT, [self._maintenance_key(name)], [token])
         return bool(outcome and int(outcome[0]) == 1)
 
-    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "TaskReservation | None":
         """Reserve a forever identity via an atomic HGET-or-HSET script.
 
-        The uniqueness hash is separate from ``:task:``/``:keys`` and is never
+        The task-reservation hash is separate from ``:task:``/``:keys`` and is never
         touched by terminal cleanup.
 
         Returns:
             ``None`` when this caller won the reservation; otherwise the existing
-            owner tombstone.
+            owner reservation.
         """
         client = await self._get_client()
         created_at = _utc_now()
@@ -1233,35 +1231,35 @@ class RedisQueueBackend(BaseQueueBackend):
             "task_name": task_name,
             "created_at": _serialize_datetime(created_at),
         })
-        result = client.eval(_RESERVE_IDENTITY_SCRIPT, 1, self._uniqueness_key, key, payload)
+        result = client.eval(_RESERVE_IDENTITY_SCRIPT, 1, self._task_reservation_key, key, payload)
         if inspect.isawaitable(result):
             result = await result
         if result is None or result is False:
             return None
-        return _tombstone_from_payload(_decode(result))
+        return _reservation_from_payload(_decode(result))
 
-    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
-        """Return the tombstone owning a reserved forever identity, if any."""
-        raw = await self._client_hget(self._uniqueness_key, key)
+    async def has_identity(self, key: "str") -> "TaskReservation | None":
+        """Return the reservation owning a reserved forever identity, if any."""
+        raw = await self._client_hget(self._task_reservation_key, key)
         if raw is None:
             return None
-        return _tombstone_from_payload(_decode(raw))
+        return _reservation_from_payload(_decode(raw))
 
     async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
-        """Delete a forever identity tombstone via atomic compare-and-delete.
+        """Delete a forever identity reservation via atomic compare-and-delete.
 
         Args:
             key: The exact effective identity key.
             expected_task_id: Optional task owner required for deletion.
 
         Returns:
-            ``True`` when a tombstone was removed.
+            ``True`` when a reservation was removed.
         """
         client = await self._get_client()
         outcome = await _eval_script(
             client,
             _RESET_IDENTITY_SCRIPT,
-            [self._uniqueness_key],
+            [self._task_reservation_key],
             [key, str(expected_task_id) if expected_task_id is not None else ""],
         )
         return bool(outcome and int(outcome[0]) == 1)
@@ -1271,9 +1269,9 @@ class RedisQueueBackend(BaseQueueBackend):
         if self._notifications and record.status in _DUE_STATUSES and record.is_due:
             payload = _json_dumps({"event": "task_available"})
             client = await self._get_client()
-            await client.publish(self._notification_channel, payload)
+            await client.publish(self._wakeup_channel, payload)
 
-    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+    async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for a Redis-protocol pub/sub message when notifications are enabled.
 
         A single pub/sub receive is retained across worker poll timeouts; only
@@ -1283,7 +1281,7 @@ class RedisQueueBackend(BaseQueueBackend):
             True when a notification was observed.
         """
         if not self._notifications:
-            return await super().wait_for_notifications(timeout=timeout)
+            return await super().wait_for_wakeups(timeout=timeout)
         pubsub = await self._get_pubsub()
         task = await self._pending_read.race(lambda: _receive_pubsub_message(pubsub), timeout)
         if task is None:
@@ -1323,7 +1321,7 @@ class RedisQueueBackend(BaseQueueBackend):
         pubsub = self._pubsub
         self._pubsub = None
         if pubsub is not None:
-            await _close_pubsub(pubsub, self._notification_channel)
+            await _close_pubsub(pubsub, self._wakeup_channel)
 
     async def wait_for_completion(self, task_id: "UUID", *, timeout: "float | None" = None) -> "bool":
         """Wait for a terminal completion message naming ``task_id``.
@@ -1368,7 +1366,7 @@ class RedisQueueBackend(BaseQueueBackend):
         if self._pubsub is None:
             client = await self._get_client()
             self._pubsub = client.pubsub()
-            subscribe = self._pubsub.subscribe(self._notification_channel)
+            subscribe = self._pubsub.subscribe(self._wakeup_channel)
             if inspect.isawaitable(subscribe):
                 await subscribe
         return self._pubsub
@@ -1476,7 +1474,7 @@ class RedisQueueBackend(BaseQueueBackend):
             record.status,
             "1" if due else "0",
             repr(score),
-            self._notification_channel,
+            self._wakeup_channel,
             _json_dumps({"event": "task_available"}),
             "1" if publish and self._notifications else "0",
             _MAINTENANCE_INDEX_VERSION,
@@ -1533,8 +1531,8 @@ class RedisQueueBackend(BaseQueueBackend):
         return f"{self._key_prefix}:keys"
 
     @property
-    def _uniqueness_key(self) -> "str":
-        return f"{self._key_prefix}:uniqueness"
+    def _task_reservation_key(self) -> "str":
+        return f"{self._key_prefix}:task_reservations"
 
     @property
     def _ready_key(self) -> "str":
@@ -1570,8 +1568,8 @@ class RedisQueueBackend(BaseQueueBackend):
     def _task_key(self, task_id: "UUID") -> "str":
         return f"{self._key_prefix}:task:{task_id}"
 
-    def _lease_key(self, name: "str") -> "str":
-        return f"{self._key_prefix}:lease:{name}"
+    def _maintenance_key(self, name: "str") -> "str":
+        return f"{self._key_prefix}:maintenance:{name}"
 
     def _event_log_global_key(self) -> "str":
         return f"{self._key_prefix}:events"
@@ -1780,9 +1778,9 @@ def _json_loads(value: "Any", default: "Any") -> "Any":
     return json.loads(str(value))
 
 
-def _tombstone_from_payload(raw: "Any") -> "UniquenessTombstone":
+def _reservation_from_payload(raw: "Any") -> "TaskReservation":
     data = json.loads(str(raw))
-    return UniquenessTombstone(
+    return TaskReservation(
         key=str(data["key"]),
         task_id=UUID(str(data["task_id"])),
         task_name=str(data["task_name"]),

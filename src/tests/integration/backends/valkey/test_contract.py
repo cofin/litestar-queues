@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("valkey")
 
-from litestar_queues import EnqueueSpec
+from litestar_queues import TaskRequest
 from litestar_queues.models import HeartbeatTouch
 
 if TYPE_CHECKING:
@@ -107,7 +107,7 @@ async def test_valkey_enqueue_many_records_remain_claimable_when_batch_marker_is
     monkeypatch.setattr(type(valkey_backend), "notify_new_tasks", drop_marker)
 
     records = await valkey_backend.enqueue_many([
-        EnqueueSpec(task_name=f"tasks.batch.{index}", kwargs={"index": index}) for index in range(25)
+        TaskRequest(task_name=f"tasks.batch.{index}", kwargs={"index": index}) for index in range(25)
     ])
     pending = await valkey_backend.list_pending(limit=30)
     claimed = [await valkey_backend.claim_task(record.id) for record in pending]
@@ -335,7 +335,7 @@ async def test_valkey_backend_enqueue_future_scheduled_indexes_without_publish(
 ) -> "None":
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
-    await pubsub.subscribe(valkey_backend._notification_channel)
+    await pubsub.subscribe(valkey_backend._wakeup_channel)
     await asyncio.sleep(0.2)
 
     far = datetime.now(timezone.utc) + timedelta(minutes=5)
@@ -355,7 +355,7 @@ async def test_valkey_backend_enqueue_future_scheduled_indexes_without_publish(
 async def test_valkey_backend_enqueue_due_publishes_single_notification(valkey_backend: "ValkeyQueueBackend") -> "None":
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
-    await pubsub.subscribe(valkey_backend._notification_channel)
+    await pubsub.subscribe(valkey_backend._wakeup_channel)
     await asyncio.sleep(0.2)
 
     await valkey_backend.enqueue("tasks.due")
@@ -370,10 +370,10 @@ async def test_valkey_backend_enqueue_many_coalesces_single_notification(
 ) -> "None":
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
-    await pubsub.subscribe(valkey_backend._notification_channel)
+    await pubsub.subscribe(valkey_backend._wakeup_channel)
     await asyncio.sleep(0.2)
 
-    records = await valkey_backend.enqueue_many([EnqueueSpec(task_name=f"tasks.batch.{index}") for index in range(5)])
+    records = await valkey_backend.enqueue_many([TaskRequest(task_name=f"tasks.batch.{index}") for index in range(5)])
     messages = await _drain_messages(pubsub, window=0.5)
     await pubsub.aclose()
 
@@ -481,10 +481,10 @@ async def test_valkey_forever_reset_is_only_deletion_path(valkey_backend: "Valke
     await assert_reset_is_only_deletion_path(valkey_backend)
 
 
-async def test_valkey_forever_tombstone_survives_terminal_cleanup(valkey_backend: "ValkeyQueueBackend") -> "None":
-    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+async def test_valkey_forever_reservation_survives_terminal_cleanup(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reservation_survives_terminal_cleanup
 
-    await assert_tombstone_survives_terminal_cleanup(valkey_backend)
+    await assert_reservation_survives_terminal_cleanup(valkey_backend)
 
 
 async def test_valkey_forever_concurrent_reservation_single_winner(valkey_backend: "ValkeyQueueBackend") -> "None":

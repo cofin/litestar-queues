@@ -43,7 +43,9 @@ def sqlite_config_factory() -> "SqliteConfigFactory":
 @pytest.fixture
 async def sqlspec_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend]":
     """Yield an opened aiosqlite-backed SQLSpec queue backend."""
-    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=_sqlite_config(tmp_path / "queue.db")))
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=_sqlite_config(tmp_path / "queue.db"))
+    )
     await backend.open()
     await backend.create_schema()
     try:
@@ -60,7 +62,7 @@ async def duckdb_backend(tmp_path: "Path") -> "AsyncIterator[SQLSpecQueueBackend
 
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
+            sqlspec_config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
         )
     )
     await backend.open()

@@ -1,4 +1,4 @@
-"""Advanced Alchemy distributed maintenance-lease and bounded-operation contract."""
+"""Advanced Alchemy distributed maintenance coordination and bounded-operation contract."""
 
 import asyncio
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -14,7 +14,7 @@ pytest.importorskip("advanced_alchemy")
 from tests.integration.backends._maintenance_asserts import (
     assert_bounded_cleanup_terminal,
     assert_bounded_stale_recovery,
-    assert_lease_expiry,
+    assert_coordination_expiry,
 )
 
 if TYPE_CHECKING:
@@ -28,10 +28,10 @@ async def test_advanced_alchemy_backend_bounded_operations(advanced_alchemy_back
     await assert_bounded_stale_recovery(advanced_alchemy_backend)
 
 
-async def test_advanced_alchemy_backend_maintenance_lease_expires(
+async def test_advanced_alchemy_backend_maintenance_expires(
     advanced_alchemy_backend: "SQLAlchemyBackend", monkeypatch: "pytest.MonkeyPatch", request: "pytest.FixtureRequest"
 ) -> "None":
-    """An expired lease is reacquirable within the database timestamp precision."""
+    """An expired ownership is reacquirable within the database timestamp precision."""
     sqlalchemy_config = advanced_alchemy_backend._sqlalchemy_config
     if sqlalchemy_config is not None and sqlalchemy_config.get_engine().dialect.name == "mysql":
         from litestar_queues.backends.advanced_alchemy import backend as backend_module
@@ -47,13 +47,13 @@ async def test_advanced_alchemy_backend_maintenance_lease_expires(
                 strict=True,
             )
         )
-    await assert_lease_expiry(advanced_alchemy_backend)
+    await assert_coordination_expiry(advanced_alchemy_backend)
 
 
-async def test_advanced_alchemy_backend_concurrent_lease_has_one_token_fenced_winner(
+async def test_advanced_alchemy_backend_concurrent_coordination_has_one_token_fenced_winner(
     advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
-    """Two independently opened backends race for one persisted lease."""
+    """Two independently opened backends race for one persisted ownership."""
     from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
 
     first = advanced_alchemy_backend
@@ -61,9 +61,9 @@ async def test_advanced_alchemy_backend_concurrent_lease_has_one_token_fenced_wi
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=first._sqlalchemy_config,
             model_class=first._model_class,
-            event_log_model_class=first._event_log_model_class,
-            maintenance_lease_model_class=first._maintenance_lease_model_class,
-            uniqueness_model_class=first._uniqueness_model_class,
+            event_history_model_class=first._event_history_model_class,
+            maintenance_model_class=first._maintenance_model_class,
+            task_reservation_model_class=first._task_reservation_model_class,
         )
     )
     await second.open()
@@ -71,31 +71,21 @@ async def test_advanced_alchemy_backend_concurrent_lease_has_one_token_fenced_wi
         ttl = timedelta(seconds=60)
         tokens = ("token-a", "token-b")
         outcomes = await asyncio.gather(
-            first.acquire_maintenance_lease("queue-maintenance-race", tokens[0], ttl=ttl),
-            second.acquire_maintenance_lease("queue-maintenance-race", tokens[1], ttl=ttl),
+            first.acquire_maintenance("queue-maintenance-race", tokens[0], ttl=ttl),
+            second.acquire_maintenance("queue-maintenance-race", tokens[1], ttl=ttl),
         )
 
         assert outcomes.count(True) == 1
         winner_index = outcomes.index(True)
         loser_index = 1 - winner_index
         backends = (first, second)
+        assert await backends[loser_index].release_maintenance("queue-maintenance-race", tokens[loser_index]) is False
+        assert await backends[winner_index].release_maintenance("queue-maintenance-race", tokens[winner_index]) is True
         assert (
-            await backends[loser_index].release_maintenance_lease("queue-maintenance-race", tokens[loser_index])
-            is False
-        )
-        assert (
-            await backends[winner_index].release_maintenance_lease("queue-maintenance-race", tokens[winner_index])
+            await backends[loser_index].acquire_maintenance("queue-maintenance-race", tokens[loser_index], ttl=ttl)
             is True
         )
-        assert (
-            await backends[loser_index].acquire_maintenance_lease(
-                "queue-maintenance-race", tokens[loser_index], ttl=ttl
-            )
-            is True
-        )
-        assert (
-            await backends[loser_index].release_maintenance_lease("queue-maintenance-race", tokens[loser_index]) is True
-        )
+        assert await backends[loser_index].release_maintenance("queue-maintenance-race", tokens[loser_index]) is True
     finally:
         await second.close()
 

@@ -8,7 +8,7 @@ from litestar_queues.events._log_records import event_log_record_from_event, eve
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from litestar_queues.events import EventLogConfig, QueueEvent, QueueEventLogRecord, QueueEventStageSummary
+    from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventLogRecord, QueueEventStageSummary
 
 __all__ = ("InMemoryQueueEventLog",)
 
@@ -18,7 +18,7 @@ class InMemoryQueueEventLog:
 
     __slots__ = ("_config", "_lock", "_records")
 
-    def __init__(self, config: "EventLogConfig") -> "None":
+    def __init__(self, config: "EventHistoryConfig") -> "None":
         self._config = config
         self._records: "list[QueueEventLogRecord]" = []
         self._lock = asyncio.Lock()
@@ -28,7 +28,7 @@ class InMemoryQueueEventLog:
         record = event_log_record_from_event(event)
         async with self._lock:
             self._records.append(record)
-            overflow = len(self._records) - self._config.max_records
+            overflow = len(self._records) - self._config.memory_capacity
             if overflow > 0:
                 del self._records[:overflow]
 

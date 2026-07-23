@@ -19,12 +19,12 @@ from litestar_queues.events._log_records import (
     optional_str,
     parse_datetime,
 )
-from litestar_queues.events.log import QueueEventLogRecord
+from litestar_queues.events.history import QueueEventLogRecord
 
 if TYPE_CHECKING:
     from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike
     from litestar_queues.backends.redis.backend import RedisQueueBackend
-    from litestar_queues.events import EventLogConfig, QueueEvent, QueueEventStageSummary
+    from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventStageSummary
 
 __all__ = ("RedisQueueEventLog",)
 
@@ -36,7 +36,7 @@ class RedisQueueEventLog:
 
     __slots__ = ("_backend", "_config", "_flush_lock", "_last_flush", "_pending")
 
-    def __init__(self, *, backend: "RedisQueueBackend", config: "EventLogConfig") -> "None":
+    def __init__(self, *, backend: "RedisQueueBackend", config: "EventHistoryConfig") -> "None":
         self._backend = backend
         self._config = config
         self._pending: "list[dict[str, str]]" = []
@@ -48,16 +48,12 @@ class RedisQueueEventLog:
         should_flush = False
         async with self._flush_lock:
             self._pending.append(self._mapping_from_record(event_log_record_from_event(event)))
-            should_flush = len(self._pending) >= max(1, self._config.buffer_size) or self._flush_interval_elapsed()
+            should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
         if should_flush:
             await self.flush_events()
 
     async def flush_events(self) -> "None":
-        """Flush buffered queue events through a Redis pipeline.
-
-        Returns:
-            None.
-        """
+        """Flush buffered queue events through a Redis pipeline."""
         async with self._flush_lock:
             if not self._pending:
                 return

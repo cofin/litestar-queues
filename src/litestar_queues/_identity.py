@@ -18,7 +18,7 @@ import json
 from inspect import Parameter
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from litestar_queues.exceptions import TaskIdentityError, TaskPayloadTooLargeError
+from litestar_queues.exceptions import TaskIdentityError, TaskIdentityTooLargeError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -99,14 +99,14 @@ def arguments_identity(
         canonical payload size in bytes.
 
     Raises:
-        TaskPayloadTooLargeError: If ``max_payload_bytes`` is set and the canonical
+        TaskIdentityTooLargeError: If ``max_payload_bytes`` is set and the canonical
             payload exceeds it.
     """
     arguments = _bound_arguments(signature, args, kwargs)
     encoded = _encode({"arguments": arguments, "task": task_name, "version": IDENTITY_VERSION})
     payload_bytes = len(encoded)
     if max_payload_bytes is not None and payload_bytes > max_payload_bytes:
-        raise TaskPayloadTooLargeError(actual_bytes=payload_bytes, max_bytes=max_payload_bytes)
+        raise TaskIdentityTooLargeError(actual_bytes=payload_bytes, max_bytes=max_payload_bytes)
     digest = hashlib.sha256(encoded).hexdigest()
     return ArgumentsIdentity(_identity_key("arguments", digest), payload_bytes)
 

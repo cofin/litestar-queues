@@ -29,7 +29,7 @@ import pytest
 pytest.importorskip("psycopg")
 pytest.importorskip("sqlspec")
 
-from litestar_queues import EnqueueSpec
+from litestar_queues import TaskRequest
 from tests.integration._backends import QUEUE_BACKENDS, FixtureCtx
 from tests.integration._names import table_name_for_test
 
@@ -110,9 +110,9 @@ async def test_enqueue_many_bulk_insert_dedupes_active_and_replaces_terminal_key
     await psycopg_backend.complete_task(claimed_terminal.id, result={"ok": True})
 
     records = await psycopg_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.bulk", key="bulk:active", kwargs={"v": 2}),
-        EnqueueSpec(task_name="tasks.bulk", key="bulk:terminal", kwargs={"v": 2}),
-        EnqueueSpec(task_name="tasks.bulk", kwargs={"v": 3}),
+        TaskRequest(task_name="tasks.bulk", key="bulk:active", kwargs={"v": 2}),
+        TaskRequest(task_name="tasks.bulk", key="bulk:terminal", kwargs={"v": 2}),
+        TaskRequest(task_name="tasks.bulk", kwargs={"v": 3}),
     ])
 
     assert records[0].id == active.id
@@ -197,30 +197,15 @@ async def test_complete_and_fail_task_legacy_direct_invocation_commit_under_the_
     assert stored_fail.error is not None
 
 
-async def test_fast_path_enqueue_still_commits_after_claim_task_taints_pooled_autocommit_connection(
+async def test_explicit_transaction_restores_pooled_connection_autocommit(
     postgres_service: "PostgresService", tmp_path: "Path", request: "pytest.FixtureRequest"
 ) -> "None":
-    """Pin the correctness half of a real SQLSpec/psycopg quirk found while certifying autocommit.
-
-    SQLSpec's psycopg driver ``begin()`` flips ``connection.autocommit`` off for the duration of an
-    explicit transaction (see ``sqlspec/adapters/psycopg/driver.py``) but never restores it to
-    ``True`` afterward -- that only happens once, in ``_configure_async_connection``, when a
-    physical connection is first created by the pool. So once any ``driver.begin()``-using call
-    (``claim_task``, keyed enqueue, ``enqueue_many``, the SKIP LOCKED claim) lands on a pooled
-    connection, later fast-path calls that reuse that *same* physical connection revert to an
-    implicit ``BEGIN`` plus a real trailing ``COMMIT`` sent by SQLSpec's ``pool.connection()``
-    wrapper on session release -- i.e. the wire-traffic reduction this Bead measured erodes for
-    that connection, but every write still commits (SQLSpec's session wrapper always resolves the
-    connection's transaction on checkout release, autocommit or not). This test pins that
-    correctness guarantee: reads never observe a lost or stale write after the taint. A
-    ``min_size=1, max_size=1`` pool forces exactly one physical connection so the taint is
-    deterministic instead of depending on which pool member a later call happens to draw.
-    """
+    """SQLSpec restores a pooled psycopg connection's original autocommit setting."""
     from sqlspec.adapters.psycopg import PsycopgAsyncConfig
 
     from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
-    table_name = table_name_for_test("lq_psycopg_taint", "postgres-psycopg-autocommit", request.node.nodeid)
+    table_name = table_name_for_test("lq_psycopg_restore", "postgres-psycopg-autocommit", request.node.nodeid)
     config = PsycopgAsyncConfig(
         connection_config={
             "host": postgres_service.host,
@@ -233,7 +218,9 @@ async def test_fast_path_enqueue_still_commits_after_claim_task_taints_pooled_au
             "max_size": 1,
         }
     )
-    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=config, queue_table_name=table_name))
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name=table_name)
+    )
     await backend.open()
     await backend.create_schema()
     try:
@@ -242,17 +229,15 @@ async def test_fast_path_enqueue_still_commits_after_claim_task_taints_pooled_au
         async with pool.connection() as conn:
             assert conn.autocommit is True
 
-        # claim_task's driver.begin() taints the sole pooled connection.
-        record = await backend.enqueue("tasks.taint.trigger")
+        record = await backend.enqueue("tasks.autocommit.transaction")
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
         await backend.complete_task(claimed.id, result={"ok": True})
 
         async with pool.connection() as conn:
-            assert conn.autocommit is False  # pins the known SQLSpec quirk described above
+            assert conn.autocommit is True
 
-        # A fast-path enqueue reusing the now-tainted connection must still commit.
-        fast_path_record = await backend.enqueue("tasks.taint.fast_path")
+        fast_path_record = await backend.enqueue("tasks.autocommit.fast_path")
         reread = await backend.get_task(fast_path_record.id)
         assert reread is not None
         assert reread.status == "pending"

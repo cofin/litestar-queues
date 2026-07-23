@@ -70,7 +70,7 @@ CLI workers should load a config factory that returns the same settings:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, WorkerConfig
    from litestar_queues.observability import ObservabilityConfig
 
 
@@ -80,7 +80,7 @@ CLI workers should load a config factory that returns the same settings:
                enable_otel=True,
                enable_prometheus=True,
            ),
-           in_app_worker=False,
+           worker=WorkerConfig(run_in_app=False),
        )
 
 .. code-block:: bash
@@ -129,7 +129,7 @@ metric labels.
 Stream Metrics
 ==============
 
-When ``QueueConfig.event_stream`` and observability are enabled, plugin-owned
+When ``QueueConfig.events.stream`` and observability are enabled, plugin-owned
 WebSocket and SSE streams report metrics through the same runtime. Stream
 labels use only ``scope`` and, for denied access, ``reason``. They never include
 task IDs, queue names, tenant IDs, user IDs, exception messages, or payload
@@ -200,7 +200,7 @@ Flush and publish failures are also logged without payload data:
    Queue event publish failed
 
 By default, these failures do not fail the task. Set
-``EventConfig(strict=True)`` when the caller must receive the exception.
+``EventDeliveryConfig(strict=True)`` when the caller must receive the exception.
 
 SQLSpec Coexistence
 ===================

@@ -15,12 +15,13 @@ from litestar_vite import PathConfig, ViteConfig, VitePlugin
 from valkey import asyncio as valkey_asyncio
 
 from examples.htmx_realtime_common import standalone_worker_options
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, WorkerConfig, task
 from litestar_queues.backends.valkey import ValkeyBackendConfig
 from litestar_queues.events import (
     EventBufferConfig,
-    EventConfig,
+    EventDeliveryConfig,
     EventStreamConfig,
+    QueueEventsConfig,
     TaskExecutionContext,
     publish_task_log,
 )
@@ -126,19 +127,19 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
-    # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
-    worker_graceful_shutdown_timeout=5,
+    worker=WorkerConfig(graceful_shutdown_timeout=5),
     queue_backend=ValkeyBackendConfig(url=VALKEY_URL, key_prefix=VALKEY_KEY_PREFIX),
-    event=EventConfig(channels_backend=channels, buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)),
-    # The demo registers only its own transport so a stale tab from another
-    # example cannot silently reconnect to this app's routes.
-    event_stream=EventStreamConfig(
-        scopes={"task"}, websocket=False, history=25, heartbeat_interval=15, allow_unauthenticated=True
+    events=QueueEventsConfig(
+        channels=channels,
+        delivery=EventDeliveryConfig(buffer=EventBufferConfig(batch_size=8, flush_interval=0.2)),
+        stream=EventStreamConfig(
+            scopes={"task"}, replay_limit=25, heartbeat_interval=15, unauthenticated_access="allow", transports={"sse"}
+        ),
     ),
     **standalone_worker_options(),
 )
 
-vite_config = ViteConfig(mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
+vite_config = ViteConfig(enabled=True, mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
 
 
 async def close_shared_channels() -> None:

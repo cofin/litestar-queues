@@ -49,7 +49,7 @@ TaskUniqueBy = Literal["task", "arguments"]
 """Identity source for task uniqueness: the registered task name or the normalized call arguments."""
 
 TaskUniqueUntil = Literal["terminal", "forever"]
-"""Identity lifetime for task uniqueness: released at terminal (the default) or retained by a tombstone."""
+"""Identity lifetime for task uniqueness: released at terminal (the default) or retained by a reservation."""
 
 CRON_FIELD_COUNT = 5
 CRON_SEARCH_YEARS = 8
@@ -78,13 +78,22 @@ class ScheduleConfig:
     """Configuration for a recurring task schedule."""
 
     task_name: "str"
+    """Registered task name invoked by the schedule."""
+
     cron: "str | None" = None
+    """Five-field cron expression; ``None`` uses ``interval`` scheduling."""
+
     interval: "timedelta | int | float | None" = None
+    """Fixed interval as a duration or seconds; ``None`` uses ``cron`` scheduling."""
+
     timezone: "str" = "UTC"
+    """IANA timezone used to evaluate the cron expression."""
+
     initial_delay: "timedelta | int | float" = 0
+    """Delay before the first interval run as a duration or seconds."""
+
     jitter: "timedelta | int | float" = 0
-    max_instances: "int" = 1
-    timeout: "float | None" = None
+    """Maximum random scheduling offset as a duration or seconds."""
 
     def __post_init__(self) -> "None":
         if self.cron is not None and self.interval is not None:
@@ -138,9 +147,7 @@ class ScheduleConfig:
             "initial_delay": self._initial_delay_value.total_seconds(),
             "interval": self._interval_value.total_seconds() if self._interval_value is not None else None,
             "jitter": self._jitter_value.total_seconds(),
-            "max_instances": self.max_instances,
             "task_name": self.task_name,
-            "timeout": self.timeout,
             "timezone": self.timezone,
         }
 
@@ -152,8 +159,6 @@ class ScheduleConfig:
             initial_delay=self._initial_delay_value,
             interval=self._interval_value,
             jitter=self._jitter_value,
-            max_instances=self.max_instances,
-            timeout=self.timeout,
             timezone=self.timezone,
         )
 
@@ -375,11 +380,11 @@ class Task(Generic[P, T]):
         "_func",
         "_key",
         "_log_level",
+        "_log_success",
         "_name",
         "_on_stale_failure",
         "_priority",
         "_queue",
-        "_quiet_success",
         "_requeue_on_stale",
         "_retries",
         "_run_after",
@@ -405,7 +410,7 @@ class Task(Generic[P, T]):
         run_after: "float | timedelta | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
-        quiet_success: "bool | None" = None,
+        log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
     ) -> "None":
@@ -424,7 +429,7 @@ class Task(Generic[P, T]):
         self._run_after = _coerce_interval(run_after)
         self._description = description
         self._log_level = log_level
-        self._quiet_success = quiet_success
+        self._log_success = log_success
         self._requeue_on_stale = requeue_on_stale
         self._on_stale_failure = on_stale_failure
 
@@ -499,9 +504,9 @@ class Task(Generic[P, T]):
         return self._log_level
 
     @property
-    def quiet_success(self) -> "bool | None":
+    def log_success(self) -> "bool | None":
         """Whether successful completion logging should be quiet."""
-        return self._quiet_success
+        return self._log_success
 
     @property
     def requeue_on_stale(self) -> "bool":
@@ -560,8 +565,8 @@ class Task(Generic[P, T]):
             metadata["description"] = self._description
         if self._log_level is not None:
             metadata["log_level"] = self._log_level
-        if self._quiet_success is not None:
-            metadata["quiet_success"] = self._quiet_success
+        if self._log_success is not None:
+            metadata["log_success"] = self._log_success
         if self._requeue_on_stale is not None:
             metadata["requeue_on_stale"] = self._requeue_on_stale
         return metadata
@@ -581,7 +586,7 @@ class Task(Generic[P, T]):
         run_after: "float | timedelta | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
-        quiet_success: "bool | None" = None,
+        log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
     ) -> "Task[P, T]":
@@ -601,7 +606,7 @@ class Task(Generic[P, T]):
             run_after=run_after if run_after is not None else self._run_after,
             description=description if description is not None else self._description,
             log_level=log_level if log_level is not None else self._log_level,
-            quiet_success=quiet_success if quiet_success is not None else self._quiet_success,
+            log_success=log_success if log_success is not None else self._log_success,
             requeue_on_stale=requeue_on_stale if requeue_on_stale is not None else self._requeue_on_stale,
             on_stale_failure=on_stale_failure if on_stale_failure is not None else self._on_stale_failure,
         )
@@ -752,7 +757,7 @@ def task(
     run_after: "float | timedelta | None" = None,
     description: "str | None" = None,
     log_level: "str | None" = None,
-    quiet_success: "bool | None" = None,
+    log_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
     cron: "str | None" = None,
@@ -760,7 +765,6 @@ def task(
     timezone: "str" = "UTC",
     initial_delay: "float | timedelta" = 0,
     jitter: "float | timedelta" = 0,
-    max_instances: "int" = 1,
 ) -> "Callable[[AnyTaskCallable], Task[Any, Any]]": ...
 
 
@@ -780,7 +784,7 @@ def task(
     run_after: "float | timedelta | None" = None,
     description: "str | None" = None,
     log_level: "str | None" = None,
-    quiet_success: "bool | None" = None,
+    log_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
     cron: "str | None" = None,
@@ -788,7 +792,6 @@ def task(
     timezone: "str" = "UTC",
     initial_delay: "float | timedelta" = 0,
     jitter: "float | timedelta" = 0,
-    max_instances: "int" = 1,
 ) -> "Task[Any, Any] | Callable[[AnyTaskCallable], Task[Any, Any]]":
     """Register a callable as a queue task.
 
@@ -810,8 +813,6 @@ def task(
             initial_delay=initial_delay,
             interval=interval,
             jitter=jitter,
-            max_instances=max_instances,
-            timeout=timeout,
             timezone=timezone,
         )
         if cron is not None or interval is not None
@@ -835,7 +836,7 @@ def task(
             run_after=run_after,
             description=description,
             log_level=log_level,
-            quiet_success=quiet_success,
+            log_success=log_success,
             requeue_on_stale=requeue_on_stale,
             on_stale_failure=on_stale_failure,
         )

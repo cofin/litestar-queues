@@ -11,11 +11,12 @@ from litestar.response import Template
 from litestar.template.config import TemplateConfig
 from litestar_vite import PathConfig, ViteConfig, VitePlugin
 
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, WorkerConfig, task
 from litestar_queues.events import (
     EventBufferConfig,
-    EventConfig,
+    EventDeliveryConfig,
     EventStreamConfig,
+    QueueEventsConfig,
     TaskExecutionContext,
     publish_task_log,
 )
@@ -107,17 +108,17 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
-    # Demo apps exit fast on Ctrl+C instead of draining the minute-long job.
-    worker_graceful_shutdown_timeout=5,
-    event=EventConfig(channels_backend=channels, buffer=EventBufferConfig(buffer_size=8, flush_interval=0.2)),
-    # The demo registers only its own transport so a stale tab from another
-    # example cannot silently reconnect to this app's routes.
-    event_stream=EventStreamConfig(
-        scopes={"task"}, websocket=False, history=25, heartbeat_interval=15, allow_unauthenticated=True
+    worker=WorkerConfig(graceful_shutdown_timeout=5),
+    events=QueueEventsConfig(
+        channels=channels,
+        delivery=EventDeliveryConfig(buffer=EventBufferConfig(batch_size=8, flush_interval=0.2)),
+        stream=EventStreamConfig(
+            scopes={"task"}, replay_limit=25, heartbeat_interval=15, unauthenticated_access="allow", transports={"sse"}
+        ),
     ),
 )
 
-vite_config = ViteConfig(mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
+vite_config = ViteConfig(enabled=True, mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
 
 app = Litestar(
     route_handlers=[index, status_json, restart_demo],

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from litestar_queues import WorkerConfig
 from litestar_queues.backends import InMemoryQueueBackend
 
 if TYPE_CHECKING:
@@ -168,7 +169,8 @@ async def test_consume_one_returns_claim_lost_when_heartbeat_loses_ownership() -
 
     queue_backend = _RecordingHeartbeatBackend()
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
+        queue_backend=queue_backend,
     ) as service:
         result = await service.enqueue(consumer_claim_lost.using(execution_backend="cloudrun"), retries=1)
         task_id = result.id
@@ -219,7 +221,8 @@ async def test_consume_one_delivers_beat_detail_on_next_heartbeat_touch() -> "No
 
     queue_backend = _BeatDetailRecordingBackend()
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
+        queue_backend=queue_backend,
     ) as service:
         result = await service.enqueue(consumer_beat_detail.using(execution_backend="cloudrun"))
         record = await queue_backend.get_task(result.id)
@@ -255,7 +258,8 @@ async def test_consume_one_beat_detail_is_last_value_wins_and_capped_at_256() ->
 
     queue_backend = _BeatDetailRecordingBackend()
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
+        queue_backend=queue_backend,
     ) as service:
         result = await service.enqueue(consumer_beat_overwrite.using(execution_backend="cloudrun"))
         record = await queue_backend.get_task(result.id)
@@ -287,7 +291,8 @@ async def test_consume_one_clears_beat_detail_after_successful_touch() -> "None"
 
     queue_backend = _MultiTouchRecordingBackend(required=2)
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
+        queue_backend=queue_backend,
     ) as service:
         result = await service.enqueue(consumer_beat_clear.using(execution_backend="cloudrun"))
         record = await queue_backend.get_task(result.id)
@@ -318,7 +323,8 @@ async def test_consume_one_without_beat_calls_stays_healthy_across_intervals() -
 
     queue_backend = _MultiTouchRecordingBackend(required=3)
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01), queue_backend=queue_backend
+        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
+        queue_backend=queue_backend,
     ) as service:
         result = await service.enqueue(consumer_no_beat.using(execution_backend="cloudrun"))
         record = await queue_backend.get_task(result.id)

@@ -2,12 +2,20 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 
+from litestar.channels import ChannelsPlugin
 from litestar.plugins import InitPlugin
 
-from litestar_queues.config import QueueConfig
+from litestar_queues.config import (
+    _EVENT_CHANNELS_STATE_KEY,
+    _EVENT_PUBLISHER_STATE_KEY,
+    _OBSERVABILITY_RUNTIME_STATE_KEY,
+    _SERVICE_STATE_KEY,
+    _WORKER_STATE_KEY,
+    QueueConfig,
+)
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules, set_default_service
 from litestar_queues.worker import Worker
@@ -33,8 +41,6 @@ _UNKNOWN = object()
 
 
 def _find_registered_channels_plugin(plugins: "Iterable[object]") -> "ChannelsLike | None":
-    from litestar.channels import ChannelsPlugin
-
     return next((plugin for plugin in plugins if isinstance(plugin, ChannelsPlugin)), None)
 
 
@@ -73,18 +79,14 @@ class QueuePlugin(InitPlugin):
         return QueueService(self._config, queue_backend=self._queue_backend, event_publisher=self._event_publisher)
 
     def _configure_sqlspec_migrations(self) -> "None":
-        """Register queue migrations with the application's SQLSpec config.
-
-        Returns:
-            None.
-        """
+        """Register queue migrations with the application's SQLSpec config."""
         from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
         backend_config = self._config.queue_backend
         if not isinstance(backend_config, SQLSpecBackendConfig):
             return
 
-        sqlspec_config = backend_config.config
+        sqlspec_config = backend_config.sqlspec_config
         if sqlspec_config is None and backend_config.sqlspec is not None:
             registered_configs = tuple(backend_config.sqlspec.configs.values())
             if len(registered_configs) == 1:
@@ -108,20 +110,24 @@ class QueuePlugin(InitPlugin):
             configure_events_migration_extension(
                 cast("SQLSpecConfig", sqlspec_config),
                 backend=events_backend,
-                queue_table=backend_config.event_queue_table,
+                queue_table=(
+                    backend_config.worker_wakeups.queue_table_name
+                    if backend_config.worker_wakeups is not None
+                    else None
+                ),
             )
 
         extension_config = sqlspec_config.extension_config or {}
         queue_settings = dict(extension_config.get("litestar_queues", {}) or {})
         queue_table_name = backend_config.queue_table_name or queue_settings.get("table_name") or DEFAULT_TABLE_NAME
-        event_log_config = self._config.event_log
+        event_log_config = self._config.events.history if self._config.events is not None else None
         configure_queue_migration_extension(
             cast("SQLSpecConfig", sqlspec_config),
             queue_table_name=str(queue_table_name),
-            event_log_enabled=event_log_config is not None and event_log_config.enabled,
-            event_log_table_name=backend_config.event_log_table_name,
-            maintenance_lease_table_name=backend_config.maintenance_lease_table_name,
-            uniqueness_table_name=backend_config.uniqueness_table_name,
+            event_history_enabled=event_log_config is not None,
+            event_history_table_name=backend_config.event_history_table_name,
+            maintenance_table_name=backend_config.maintenance_table_name,
+            task_reservation_table_name=backend_config.task_reservation_table_name,
         )
 
     def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
@@ -132,38 +138,25 @@ class QueuePlugin(InitPlugin):
         """
         self._configure_sqlspec_migrations()
         self._queue_backend = self._config.get_queue_backend()
-        event_config = self._config.event
+        event_config = self._config.events
         if (
             event_config is not None
-            and event_config.enabled
-            and event_config.sink is None
-            and event_config.channels_backend is None
+            and (event_config.delivery is not None or event_config.stream is not None)
+            and event_config.channels is None
         ):
-            # Zero-wiring live delivery: EventConfig(enabled=True) without an explicit
-            # channels_backend resolves the app's registered ChannelsPlugin. The config
+            # Zero-wiring live delivery or streaming without explicit channels resolves
+            # the app's registered ChannelsPlugin. The config
             # object is never mutated so a QueueConfig shared across apps cannot leak
             # one app's ChannelsPlugin into another's publisher.
             self._auto_channels_backend = _find_registered_channels_plugin(app_config.plugins)
         self._event_publisher = self._config.get_event_publisher(channels_backend=self._auto_channels_backend)
         app_config.dependencies.update(self._config.dependencies)
         app_config.signature_namespace.update(self._config.signature_namespace)
-        state = {
-            self._config.queue_service_state_key: self._config,
-            self._config.queue_event_publisher_state_key: self._event_publisher,
-        }
-        if self._config.event is not None and self._effective_channels_backend() is not None:
-            state[self._config.queue_event_channels_backend_state_key] = self._effective_channels_backend()
-        stream_config = self._config.event_stream
-        if stream_config is not None and stream_config.enabled:
-            if not stream_config.websocket and not stream_config.sse:
-                from litestar_queues.exceptions import QueueConfigurationError
-
-                msg = (
-                    "EventStreamConfig is enabled but both transports are disabled; "
-                    "set websocket=True and/or sse=True, or set enabled=False to turn "
-                    "queue event streaming off."
-                )
-                raise QueueConfigurationError(msg)
+        state = {_SERVICE_STATE_KEY: self._config, _EVENT_PUBLISHER_STATE_KEY: self._event_publisher}
+        if self._config.events is not None and self._effective_channels_backend() is not None:
+            state[_EVENT_CHANNELS_STATE_KEY] = self._effective_channels_backend()
+        stream_config = self._config.events.stream if self._config.events is not None else None
+        if stream_config is not None:
             from litestar_queues.events.streaming import build_stream_router
 
             self._verify_stream_channels_source(app_config)
@@ -171,16 +164,18 @@ class QueuePlugin(InitPlugin):
                 not app_config.guards
                 and not stream_config.guards
                 and stream_config.channel_authorizer is None
-                and not stream_config.allow_unauthenticated
+                and stream_config.unauthenticated_access != "allow"
             ):
-                logger.warning(
+                message = (
                     "Queue event streams have no configured authorization. Set a guard or channel_authorizer, "
-                    "or explicitly set allow_unauthenticated=True. See docs/usage/event-streams.rst."
+                    "or explicitly set unauthenticated_access='allow'. See docs/usage/event-streams.rst."
                 )
+                if stream_config.unauthenticated_access == "error":
+                    raise QueueConfigurationError(message)
+                logger.warning(message)
             app_config.route_handlers.append(
                 build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
-            state[self._config.queue_event_stream_state_key] = stream_config
         app_config.state.update(state)
         # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
         # hooks): Litestar runs on_shutdown hooks AFTER exiting every lifespan manager,
@@ -191,8 +186,8 @@ class QueuePlugin(InitPlugin):
         return app_config
 
     def _effective_channels_backend(self) -> "ChannelsLike | None":
-        if self._config.event is not None and self._config.event.channels_backend is not None:
-            return self._config.event.channels_backend
+        if self._config.events is not None and self._config.events.channels is not None:
+            return self._config.events.channels
         return self._auto_channels_backend
 
     def _validate_channels_shutdown_order(self, app: "Litestar") -> "None":
@@ -204,21 +199,16 @@ class QueuePlugin(InitPlugin):
         order cannot be fixed from ``on_app_init`` (a later ChannelsPlugin has not
         appended its lifespan manager yet), so misordering is rejected here instead.
 
-        Returns:
-            None.
-
         Raises:
             QueueConfigurationError: If the ChannelsPlugin targeted by the live event
                 sink is registered after this plugin.
         """
-        event_config = self._config.event
-        if event_config is None or not event_config.enabled or event_config.sink is not None:
+        event_config = self._config.events
+        if event_config is None or event_config.delivery is None or event_config.delivery.sinks:
             return
         target = self._effective_channels_backend()
         if target is None:
             return
-        from litestar.channels import ChannelsPlugin
-
         try:
             registered: "object | None" = app.plugins.get(ChannelsPlugin)
         except KeyError:
@@ -232,8 +222,6 @@ class QueuePlugin(InitPlugin):
         if getattr(registered, "_pub_queue", _UNKNOWN) is not None:
             return
 
-        from litestar_queues.exceptions import QueueConfigurationError
-
         msg = (
             "ChannelsPlugin must be registered before QueuePlugin so the queue worker "
             "drains before the channels backend closes on shutdown: "
@@ -243,16 +231,14 @@ class QueuePlugin(InitPlugin):
 
     def _verify_stream_channels_source(self, app_config: "AppConfig") -> "None":
         source: "object | None" = None
-        if self._config.event is not None:
-            source = self._config.event.channels_backend
+        if self._config.events is not None:
+            source = self._config.events.channels
         if source is None:
             source = next((plugin for plugin in app_config.plugins if type(plugin).__name__ == "ChannelsPlugin"), None)
         if source is None or type(source).__name__ != "ChannelsPlugin":
             return
         if getattr(source, "_arbitrary_channels_allowed", False):
             return
-
-        from litestar_queues.exceptions import QueueConfigurationError
 
         msg = (
             "Queue event streaming requires a ChannelsPlugin created with "
@@ -287,7 +273,7 @@ class QueuePlugin(InitPlugin):
 
             observability_runtime = create_observability_runtime(observability_config, app=app)
         if observability_runtime is not None:
-            app.state[self._config.queue_observability_runtime_state_key] = observability_runtime
+            app.state[_OBSERVABILITY_RUNTIME_STATE_KEY] = observability_runtime
 
         self._service = QueueService(
             self._config,
@@ -297,41 +283,21 @@ class QueuePlugin(InitPlugin):
         )
         await self._service.open()
         set_default_service(self._service)
-        app.state[self._config.queue_service_state_key] = self._service
-        app.state[self._config.queue_event_publisher_state_key] = self._service.get_event_publisher()
+        app.state[_SERVICE_STATE_KEY] = self._service
+        app.state[_EVENT_PUBLISHER_STATE_KEY] = self._service.get_event_publisher()
         effective_channels = self._effective_channels_backend()
-        if self._config.event is not None and effective_channels is not None:
-            app.state[self._config.queue_event_channels_backend_state_key] = effective_channels
+        if self._config.events is not None and effective_channels is not None:
+            app.state[_EVENT_CHANNELS_STATE_KEY] = effective_channels
 
         if self._config.initialize_schedules:
             await self._service.initialize_schedules()
 
-        if self._config.in_app_worker:
-            self._worker = Worker(
-                self._service,
-                batch_size=self._config.worker_batch_size,
-                poll_interval=self._config.worker_poll_interval,
-                poll_backoff_max=self._config.worker_poll_backoff_max,
-                poll_backoff_multiplier=self._config.worker_poll_backoff_multiplier,
-                poll_jitter=self._config.worker_poll_jitter,
-                max_concurrency=self._config.worker_max_concurrency,
-                heartbeat_interval=self._config.worker_heartbeat_interval,
-                heartbeat_miss_threshold=self._config.worker_heartbeat_miss_threshold,
-                reconcile_interval=self._config.worker_reconcile_interval,
-                stale_after=(
-                    timedelta(seconds=self._config.worker_stale_after)
-                    if self._config.worker_stale_after is not None
-                    else None
-                ),
-                stale_check_interval=self._config.worker_stale_check_interval,
-                graceful_shutdown_timeout=self._config.worker_graceful_shutdown_timeout,
-                final_cancel_timeout=self._config.worker_final_cancel_timeout,
-                queues=self._config.worker_queues,
-            )
+        if self._config.worker.run_in_app:
+            self._worker = Worker(self._service, self._config.worker)
             self._worker_task = asyncio.create_task(self._worker.start())
             self._worker_task.add_done_callback(self._log_worker_task_result)
             await asyncio.sleep(0)
-            app.state[self._config.queue_worker_state_key] = self._worker
+            app.state[_WORKER_STATE_KEY] = self._worker
 
         try:
             yield

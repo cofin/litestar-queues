@@ -3,8 +3,8 @@ from litestar import post
 from litestar.di import NamedDependency
 from litestar.testing import create_test_client
 
-from litestar_queues import EventConfig, QueueConfig, QueuePlugin
-from litestar_queues.events import InMemoryQueueEventSink, QueueChannels, QueueEventProducer
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueuePlugin
+from litestar_queues.events import InMemoryQueueEventSink, QueueChannels, QueueEventProducer, QueueEventsConfig
 
 pytestmark = pytest.mark.anyio
 
@@ -19,7 +19,9 @@ def test_queue_events_injects_producer() -> None:
         return {"status": "ok"}
 
     with create_test_client(
-        route_handlers=[publish], plugins=[QueuePlugin(QueueConfig(event=EventConfig(sink=sink)))], openapi_config=None
+        route_handlers=[publish],
+        plugins=[QueuePlugin(QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)))))],
+        openapi_config=None,
     ) as client:
         response = client.post("/events")
 
@@ -35,7 +37,7 @@ def test_signature_namespace_has_producer() -> None:
 def test_dependency_key_default() -> None:
     config = QueueConfig()
 
-    assert config.queue_events_dependency_key == "queue_events"
+    assert config.events_dependency_key == "queue_events"
     assert "queue_events" in config.dependencies
 
 

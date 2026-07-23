@@ -3,13 +3,13 @@ Worker wakeups
 ==============
 
 When no work is available, a worker asks the queue backend to wait for a
-notification with ``worker_poll_interval`` as the timeout:
+notification with ``WorkerConfig.poll_interval`` as the timeout:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, WorkerConfig
 
-   queue_config = QueueConfig(worker_poll_interval=0.25)
+   queue_config = QueueConfig(worker=WorkerConfig(poll_interval=0.25))
 
 The effective wait ends when a backend notification arrives, the timeout
 expires, or worker shutdown is requested. Backends without notification

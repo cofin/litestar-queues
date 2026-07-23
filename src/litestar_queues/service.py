@@ -14,6 +14,7 @@ from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
+from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
@@ -25,9 +26,9 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import QueueEventLog, QueueEventProducer, QueueEventPublisher
+    from litestar_queues.events import QueueEventLog, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
-    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult, UniquenessTombstone
+    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult, TaskReservation
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("QueueService",)
@@ -97,6 +98,8 @@ class QueueService:
         self._event_publisher = event_publisher
         self._observability_runtime = observability_runtime
         self._sync_executor: "ThreadPoolExecutor | None" = None
+        if queue_backend is not None:
+            self._configure_backend_observability(queue_backend)
 
     @property
     def config(self) -> "QueueConfig":
@@ -107,7 +110,13 @@ class QueueService:
         """Return the configured queue backend."""
         if self._queue_backend is None:
             self._queue_backend = self._config.get_queue_backend()
+            self._configure_backend_observability(self._queue_backend)
         return self._queue_backend
+
+    def _configure_backend_observability(self, backend: "BaseQueueBackend") -> "None":
+        configure = getattr(backend, "_set_package_observability_enabled", None)
+        if configure is not None:
+            configure(bool(self._observability_runtime is not None and self._observability_runtime.enabled))
 
     def get_execution_backend(self) -> "BaseExecutionBackend":
         """Return the configured execution backend."""
@@ -123,16 +132,14 @@ class QueueService:
 
     def get_event_producer(self) -> "QueueEventProducer":
         """Return a producer over this service's event publisher."""
-        from litestar_queues.events import QueueEventProducer
-
         return QueueEventProducer(self.get_event_publisher())
 
     def get_event_log(self) -> "QueueEventLog | None":
-        """Return the backend-owned durable event log, if one is configured.
+        """Return the backend-owned durable event history, if configured.
 
-        The event log is wired during :meth:`open` only when ``event_log`` is
-        enabled; otherwise this returns ``None`` and durable-event maintenance
-        is a no-op.
+        History is wired during :meth:`open` only when ``events.history`` is
+        present; otherwise this returns ``None`` and history maintenance is a
+        no-op.
         """
         return self._event_log
 
@@ -185,14 +192,14 @@ class QueueService:
             self._sync_executor = None
 
     def _configure_event_log(self, queue_backend: "BaseQueueBackend") -> "None":
-        event_log_config = self._config.event_log
-        if event_log_config is None or not event_log_config.enabled:
+        event_log_config = self._config.events.history if self._config.events is not None else None
+        if event_log_config is None:
             return
         event_log = queue_backend.get_event_log(event_log_config)
         if event_log is None:
             msg = (
                 f"{type(queue_backend).__name__} does not support backend-managed queue event history; "
-                "disable EventLogConfig or use a backend that supports durable event history."
+                "disable EventHistoryConfig or use a backend that supports durable event history."
             )
             raise QueueConfigurationError(msg)
         self._event_log = event_log
@@ -225,7 +232,7 @@ class QueueService:
         execution_profile: "str | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
-        quiet_success: "bool | None" = None,
+        log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
         metadata: "dict[str, Any] | None" = None,
         **kwargs: "Any",
@@ -253,11 +260,11 @@ class QueueService:
             metadata=metadata,
             description=description,
             log_level=log_level,
-            quiet_success=quiet_success,
+            log_success=log_success,
             requeue_on_stale=requeue_on_stale,
             timeout=timeout,
         )
-        self._apply_quiet_success_default(effective_metadata)
+        self._apply_log_success_default(effective_metadata)
         effective_metadata.update(identity_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
 
@@ -304,7 +311,7 @@ class QueueService:
             if reserved_id is not None and effective_key is not None:
                 # Enqueue may have committed before a later notification failed.
                 # Release only when the reserved record is confirmed absent; an
-                # inconclusive read retains the tombstone fail-closed. The owner
+                # inconclusive read retains the reservation fail-closed. The owner
                 # predicate prevents recovery from deleting a successor reservation.
                 await _release_failed_forever_reservation(self.get_queue_backend(), effective_key, reserved_id)
             raise
@@ -352,7 +359,11 @@ class QueueService:
             derived = task_identity(task_obj.name)
         else:
             derived = arguments_identity(
-                task_obj.name, task_obj.signature, args, kwargs, max_payload_bytes=self._config.max_task_payload_bytes
+                task_obj.name,
+                task_obj.signature,
+                args,
+                kwargs,
+                max_payload_bytes=self._config.max_argument_identity_bytes,
             ).key
         metadata = {"unique_by": unique_by, "unique_version": IDENTITY_VERSION}
         return derived, self._identity_lifetime_metadata(task_obj, metadata)
@@ -391,7 +402,7 @@ class QueueService:
         return await self.get_queue_backend().get_task(task_id)
 
     async def reset_task_identity(self, key: "str") -> "bool":
-        """Delete a ``unique_until="forever"`` tombstone by its exact effective key.
+        """Delete a ``unique_until="forever"`` reservation by its exact effective key.
 
         This is the only supported way to allow a forever identity to be enqueued
         again. It never infers or resets an identity from raw arguments; the caller
@@ -399,12 +410,12 @@ class QueueService:
         the configured/explicit key).
 
         Returns:
-            ``True`` when a tombstone was removed.
+            ``True`` when a reservation was removed.
         """
         return await self.get_queue_backend().reset_identity(key)
 
-    async def get_task_identity(self, key: "str") -> "UniquenessTombstone | None":
-        """Return the forever tombstone owning an identity key, if any."""
+    async def get_task_identity(self, key: "str") -> "TaskReservation | None":
+        """Return the forever reservation owning an identity key, if any."""
         return await self.get_queue_backend().has_identity(key)
 
     async def execute_record(self, record: "QueuedTaskRecord", *, worker_id: "str | None" = None) -> "QueuedTaskRecord":
@@ -684,12 +695,12 @@ class QueueService:
         self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]"
     ) -> "dict[str, Any]":
         metadata = task_obj.metadata({"schedule": schedule_metadata})
-        self._apply_quiet_success_default(metadata)
+        self._apply_log_success_default(metadata)
         return metadata
 
-    def _apply_quiet_success_default(self, metadata: "dict[str, Any]") -> "None":
-        if "quiet_success" not in metadata:
-            metadata["quiet_success"] = self._config.quiet_success
+    def _apply_log_success_default(self, metadata: "dict[str, Any]") -> "None":
+        if "log_success" not in metadata:
+            metadata["log_success"] = self._config.log_success
 
     async def _resolve_task_dependencies(
         self, task: "Task[..., object]", record: "QueuedTaskRecord", task_context: "TaskExecutionContext"
@@ -714,8 +725,6 @@ class QueueService:
             initial_delay=schedule_data.get("initial_delay", 0),
             interval=schedule_data.get("interval"),
             jitter=schedule_data.get("jitter", 0),
-            max_instances=int(schedule_data.get("max_instances", 1)),
-            timeout=schedule_data.get("timeout"),
             timezone=str(schedule_data.get("timezone", "UTC")),
         )
         await self.get_queue_backend().enqueue(
@@ -814,7 +823,7 @@ class QueueService:
             await self._invoke_stale_failure_hook(record)
 
     def _log_task_completed(self, record: "QueuedTaskRecord") -> "None":
-        if record.metadata.get("quiet_success") is True:
+        if record.metadata.get("log_success") is False:
             return
         self._log_task_event("Queue task completed", record, level=_coerce_log_level(record.metadata.get("log_level")))
 
@@ -884,7 +893,7 @@ def _task_metadata(
     metadata: "dict[str, Any] | None",
     description: "str | None",
     log_level: "str | None",
-    quiet_success: "bool | None",
+    log_success: "bool | None",
     requeue_on_stale: "bool | None",
     timeout: "float | None",
 ) -> "dict[str, Any]":
@@ -892,7 +901,7 @@ def _task_metadata(
     for key, value in (
         ("description", description),
         ("log_level", log_level),
-        ("quiet_success", quiet_success),
+        ("log_success", log_success),
         ("requeue_on_stale", requeue_on_stale),
         ("timeout", timeout),
     ):

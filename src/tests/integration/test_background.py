@@ -5,7 +5,7 @@ from litestar import Litestar, Response, post
 from litestar.background_tasks import BackgroundTask
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, QueueService, task
+from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, QueueService, WorkerConfig, task
 from litestar_queues.task import get_default_service
 
 if TYPE_CHECKING:
@@ -24,7 +24,10 @@ def _records(service: "QueueService") -> "dict[str, QueuedTaskRecord]":
 def _build_plugin() -> "QueuePlugin":
     return QueuePlugin(
         QueueConfig(
-            queue_backend="memory", execution_backend="immediate", in_app_worker=False, initialize_schedules=False
+            queue_backend="memory",
+            execution_backend="immediate",
+            worker=WorkerConfig(run_in_app=False),
+            initialize_schedules=False,
         )
     )
 

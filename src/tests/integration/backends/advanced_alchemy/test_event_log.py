@@ -12,10 +12,10 @@ from typing import TYPE_CHECKING
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 
-from litestar_queues import EventLogConfig, QueueConfig, QueueService, task
+from litestar_queues import EventHistoryConfig, QueueConfig, QueueService, task
 from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackendConfig
-from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
-from litestar_queues.events import publish_task_event, publish_task_log, publish_task_progress
+from litestar_queues.backends.advanced_alchemy.mixins import QueueEventHistoryModelMixin, QueueTaskModelMixin
+from litestar_queues.events import QueueEventsConfig, publish_task_event, publish_task_log, publish_task_progress
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
@@ -29,7 +29,7 @@ class AAEventQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "aa_event_queue_task"
 
 
-class AAEventQueueEvent(UUIDAuditBase, QueueEventLogModelMixin):
+class AAEventQueueEvent(UUIDAuditBase, QueueEventHistoryModelMixin):
     __tablename__ = "aa_event_queue_task_event_log"
 
 
@@ -46,11 +46,13 @@ async def test_advanced_alchemy_event_log_records_queries_and_cleans_up(tmp_path
     db_path = tmp_path / "aa-event-history.db"
     sqlalchemy_config = _sqlite_config(db_path)
     await create_tables(sqlalchemy_config, AAEventQueueTask, AAEventQueueEvent)
-    event_log_config = EventLogConfig(buffer_size=100, flush_interval=60)
+    event_log_config = EventHistoryConfig(batch_size=100, flush_interval=60)
     backend_config = SQLAlchemyBackendConfig(
-        sqlalchemy_config=sqlalchemy_config, model_class=AAEventQueueTask, event_log_model_class=AAEventQueueEvent
+        sqlalchemy_config=sqlalchemy_config, model_class=AAEventQueueTask, event_history_model_class=AAEventQueueEvent
     )
-    config = QueueConfig(queue_backend=backend_config, execution_backend="immediate", event_log=event_log_config)
+    config = QueueConfig(
+        queue_backend=backend_config, execution_backend="immediate", events=QueueEventsConfig(history=event_log_config)
+    )
 
     async with QueueService(config) as service:
         result = await service.enqueue(aa_event_history_task)
@@ -59,9 +61,9 @@ async def test_advanced_alchemy_event_log_records_queries_and_cleans_up(tmp_path
         queue_backend=SQLAlchemyBackendConfig(
             sqlalchemy_config=_sqlite_config(db_path),
             model_class=AAEventQueueTask,
-            event_log_model_class=AAEventQueueEvent,
+            event_history_model_class=AAEventQueueEvent,
         ),
-        event_log=event_log_config,
+        events=QueueEventsConfig(history=event_log_config),
     )
     async with QueueService(reader_config) as reader:
         event_log = reader.get_queue_backend().get_event_log(event_log_config)

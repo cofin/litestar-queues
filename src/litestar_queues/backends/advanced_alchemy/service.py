@@ -15,7 +15,7 @@ from sqlalchemy.orm.exc import UnmappedColumnError
 from litestar_queues.backends.advanced_alchemy.repository import (
     QueueEventLogRepository,
     QueueTaskRepository,
-    QueueUniquenessRepository,
+    QueueTaskReservationRepository,
 )
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
@@ -23,6 +23,8 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
+from litestar_queues.events._log_records import optional_float, optional_str
+from litestar_queues.events.history import QueueEventLogRecord
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueuedTaskRecord,
@@ -35,14 +37,13 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from litestar_queues.backends.advanced_alchemy.mixins import (
-        QueueEventLogModelMixin,
+        QueueEventHistoryModelMixin,
         QueueTaskModelMixin,
-        QueueUniquenessModelMixin,
+        QueueTaskReservationModelMixin,
     )
-    from litestar_queues.events import QueueEventLogRecord
-    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
+    from litestar_queues.models import HeartbeatTouch, TaskRequest
 
-__all__ = ("QueueEventLogService", "QueueTaskService", "QueueUniquenessService")
+__all__ = ("QueueEventLogService", "QueueTaskReservationService", "QueueTaskService")
 
 _DUE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -56,7 +57,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
     """Persistence operations for Advanced Alchemy queue event-history records."""
 
     @classmethod
-    def for_model(cls, model_class: "type[QueueEventLogModelMixin]") -> 'type["QueueEventLogService"]':
+    def for_model(cls, model_class: "type[QueueEventHistoryModelMixin]") -> 'type["QueueEventLogService"]':
         """Return a service subclass bound to ``model_class``."""
         repository_type = QueueEventLogRepository.for_model(model_class)
         return cast(
@@ -147,9 +148,6 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         Returns:
             Backend-neutral event-history record.
         """
-        from litestar_queues.events._log_records import optional_float, optional_str
-        from litestar_queues.events.log import QueueEventLogRecord
-
         detail = _deserialize_json(model.detail_json)
         if not isinstance(detail, dict):
             detail = {}
@@ -176,16 +174,16 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         )
 
 
-class QueueUniquenessService(SQLAlchemyAsyncRepositoryService[Any]):
-    """Persistence operations for forever-uniqueness tombstones."""
+class QueueTaskReservationService(SQLAlchemyAsyncRepositoryService[Any]):
+    """Persistence operations for forever-uniqueness reservations."""
 
     @classmethod
-    def for_model(cls, model_class: "type[QueueUniquenessModelMixin]") -> 'type["QueueUniquenessService"]':
+    def for_model(cls, model_class: "type[QueueTaskReservationModelMixin]") -> 'type["QueueTaskReservationService"]':
         """Return a service subclass bound to ``model_class``."""
-        repository_type = QueueUniquenessRepository.for_model(model_class)
+        repository_type = QueueTaskReservationRepository.for_model(model_class)
         return cast(
-            "type[QueueUniquenessService]",
-            type(f"QueueUniquenessServiceFor{model_class.__name__}", (cls,), {"repository_type": repository_type}),
+            "type[QueueTaskReservationService]",
+            type(f"QueueTaskReservationServiceFor{model_class.__name__}", (cls,), {"repository_type": repository_type}),
         )
 
     async def reserve(self, key: "str", *, task_id: "UUID", task_name: "str") -> "Any | None":
@@ -203,18 +201,18 @@ class QueueUniquenessService(SQLAlchemyAsyncRepositoryService[Any]):
         return None
 
     async def get_owner(self, key: "str") -> "Any | None":
-        """Return the tombstone model owning ``key``, if any."""
+        """Return the reservation model owning ``key``, if any."""
         return await self.repository.get_one_or_none(identity_key=key)
 
     async def delete_by_key(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
-        """Delete the tombstone for ``key`` with optional owner fencing.
+        """Delete the reservation for ``key`` with optional owner fencing.
 
         Args:
             key: The exact effective identity key.
             expected_task_id: Optional task owner required for deletion.
 
         Returns:
-            ``True`` when a tombstone row was removed.
+            ``True`` when a reservation row was removed.
         """
         model_type = self.repository.model_type
         predicates = [model_type.identity_key == key]
@@ -280,27 +278,27 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             record.id = id
         return await self._insert_task_record(record, key=key)
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
-        """Persist many enqueue specs in the current repository transaction.
+    async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
+        """Persist many task requests in the current repository transaction.
 
         Returns:
             Queue task records in input order.
         """
         records: "list[QueuedTaskRecord]" = []
-        for spec in specs:
+        for request in requests:
             records.append(
                 await self.enqueue(
-                    spec.task_name,
-                    args=spec.args,
-                    kwargs=dict(spec.kwargs or {}),
-                    queue=spec.queue,
-                    priority=spec.priority,
-                    max_retries=spec.max_retries,
-                    scheduled_at=spec.scheduled_at,
-                    key=spec.key,
-                    execution_backend=spec.execution_backend,
-                    execution_profile=spec.execution_profile,
-                    metadata=dict(spec.metadata or {}),
+                    request.task_name,
+                    args=request.args,
+                    kwargs=dict(request.kwargs or {}),
+                    queue=request.queue,
+                    priority=request.priority,
+                    max_retries=request.max_retries,
+                    scheduled_at=request.scheduled_at,
+                    key=request.key,
+                    execution_backend=request.execution_backend,
+                    execution_profile=request.execution_profile,
+                    metadata=dict(request.metadata or {}),
                 )
             )
         return records

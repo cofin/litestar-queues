@@ -7,9 +7,9 @@ from litestar import Litestar
 from litestar.exceptions import WebSocketException
 from litestar.routes import WebSocketRoute
 
-from litestar_queues import QueuePlugin
+from litestar_queues import QueuePlugin, WorkerConfig
 from litestar_queues.config import QueueConfig
-from litestar_queues.events import EventConfig, EventStreamConfig, QueueChannels, QueueEvent
+from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
 from litestar_queues.events.streaming import build_stream_router
 from litestar_queues.observability import ObservabilityConfig
 
@@ -32,11 +32,13 @@ async def test_plugin_startup_publishes_observability_runtime_on_state(monkeypat
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
-    plugin = QueuePlugin(QueueConfig(observability=ObservabilityConfig(enable_otel=False), in_app_worker=False))
+    plugin = QueuePlugin(
+        QueueConfig(observability=ObservabilityConfig(enable_otel=False), worker=WorkerConfig(run_in_app=False))
+    )
     app = Litestar(plugins=[plugin])
 
     async with plugin._lifespan(app):
-        assert app.state[plugin.config.queue_observability_runtime_state_key] is runtime
+        assert app.state["queue_observability_runtime"] is runtime
 
 
 async def test_websocket_stream_metrics_recorded_with_bounded_labels() -> None:
@@ -51,7 +53,10 @@ async def test_websocket_stream_metrics_recorded_with_bounded_labels() -> None:
     channels = _FakeChannelsPlugin([event.to_json(), event.to_json()])
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)),
+        QueueConfig(
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+            observability=ObservabilityConfig(enable_otel=False),
+        ),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
     )
 
@@ -73,7 +78,10 @@ async def test_websocket_stream_metrics_record_heartbeats() -> None:
     channels = _FakeChannelsPlugin([], delay_before_close=0.01)
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)),
+        QueueConfig(
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+            observability=ObservabilityConfig(enable_otel=False),
+        ),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0.001),
     )
 
@@ -89,7 +97,7 @@ async def test_stream_metrics_noop_without_observability_runtime() -> None:
     channels = _FakeChannelsPlugin([event.to_json()])
     socket = _RecordingSocket()
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
     )
 
@@ -103,7 +111,10 @@ async def test_authorizer_denial_records_authz_reason() -> None:
     channels = _FakeChannelsPlugin([])
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels), observability=ObservabilityConfig(enable_otel=False)),
+        QueueConfig(
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+            observability=ObservabilityConfig(enable_otel=False),
+        ),
         EventStreamConfig(scopes={"task"}, channel_authorizer=lambda *_: False, heartbeat_interval=0),
     )
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from litestar_queues import EnqueueSpec
+from litestar_queues import TaskRequest
 from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
 if TYPE_CHECKING:
@@ -41,9 +41,9 @@ def bulk_tier(
 
 async def test_enqueue_many_persists_and_roundtrips(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     specs = [
-        EnqueueSpec(task_name="tasks.a", args=(1, "x"), kwargs={"k": 1}, metadata={"m": [1]}, priority=3),
-        EnqueueSpec(task_name="tasks.b", kwargs={"k": 2}, queue="reports"),
-        EnqueueSpec(task_name="tasks.c", metadata={"nested": {"deep": True}}),
+        TaskRequest(task_name="tasks.a", args=(1, "x"), kwargs={"k": 1}, metadata={"m": [1]}, priority=3),
+        TaskRequest(task_name="tasks.b", kwargs={"k": 2}, queue="reports"),
+        TaskRequest(task_name="tasks.c", metadata={"nested": {"deep": True}}),
     ]
 
     records = await sqlspec_backend.enqueue_many(specs)
@@ -68,7 +68,7 @@ async def test_enqueue_many_persists_and_roundtrips(sqlspec_backend: "SQLSpecQue
 async def test_enqueue_many_matches_single_enqueue(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
     single = await sqlspec_backend.enqueue("tasks.parity", args=(7,), kwargs={"a": "b"}, metadata={"z": 9}, priority=4)
     (bulk,) = await sqlspec_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.parity", args=(7,), kwargs={"a": "b"}, metadata={"z": 9}, priority=4)
+        TaskRequest(task_name="tasks.parity", args=(7,), kwargs={"a": "b"}, metadata={"z": 9}, priority=4)
     ])
 
     single_fetched = await sqlspec_backend.get_task(single.id)
@@ -86,8 +86,8 @@ async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQue
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     records = await sqlspec_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.now"),
-        EnqueueSpec(task_name="tasks.later", scheduled_at=later),
+        TaskRequest(task_name="tasks.now"),
+        TaskRequest(task_name="tasks.later", scheduled_at=later),
     ])
 
     assert records[0].status == "pending"
@@ -110,8 +110,8 @@ async def test_enqueue_many_notifies_once_after_persistence(
     monkeypatch.setattr(SQLSpecQueueBackend, "notify_new_tasks", notify)
 
     records = await sqlspec_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.now"),
-        EnqueueSpec(task_name="tasks.later", scheduled_at=later),
+        TaskRequest(task_name="tasks.now"),
+        TaskRequest(task_name="tasks.later", scheduled_at=later),
     ])
 
     assert [[record.id for record in batch] for batch in notified_batches] == [[record.id for record in records]]
@@ -123,8 +123,8 @@ async def test_enqueue_many_deduplicates_active_keys(
     first = await sqlspec_backend.enqueue("tasks.sync", key="sync:1", kwargs={"v": 1})
 
     records = await sqlspec_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.sync", key="sync:1", kwargs={"v": 2}),
-        EnqueueSpec(task_name="tasks.fresh", key="sync:2"),
+        TaskRequest(task_name="tasks.sync", key="sync:1", kwargs={"v": 2}),
+        TaskRequest(task_name="tasks.fresh", key="sync:2"),
     ])
 
     assert records[0].id == first.id
@@ -140,7 +140,7 @@ async def test_enqueue_many_replaces_terminal_keys(sqlspec_backend: "SQLSpecQueu
     await sqlspec_backend.complete_task(first.id, result={"ok": True})
 
     (replacement,) = await sqlspec_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.sync", key="sync:term", kwargs={"v": 2})
+        TaskRequest(task_name="tasks.sync", key="sync:term", kwargs={"v": 2})
     ])
 
     assert replacement.id != first.id
@@ -193,8 +193,8 @@ async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpec
 
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
     records = await duckdb_backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.a", args=(1, "x"), kwargs={"n": 0}, metadata={"m": [1]}, priority=7),
-        EnqueueSpec(task_name="tasks.later", scheduled_at=later, priority=2),
+        TaskRequest(task_name="tasks.a", args=(1, "x"), kwargs={"n": 0}, metadata={"m": [1]}, priority=7),
+        TaskRequest(task_name="tasks.later", scheduled_at=later, priority=2),
     ])
 
     assert [r.task_name for r in records] == ["tasks.a", "tasks.later"]

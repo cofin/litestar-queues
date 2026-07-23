@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues._heartbeat import WorkerHeartbeatManager
-from litestar_queues.config import execution_backend_name
+from litestar_queues.config import WorkerConfig, execution_backend_name
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
 
 if TYPE_CHECKING:
@@ -90,74 +90,37 @@ class Worker:
         "_worker_id",
     )
 
-    def __init__(
-        self,
-        service: "QueueService",
-        *,
-        batch_size: "int" = 10,
-        poll_interval: "float" = 0.1,
-        poll_backoff_max: "float | None" = None,
-        poll_backoff_multiplier: "float" = 2.0,
-        poll_jitter: "float" = 0.0,
-        max_concurrency: "int" = 1,
-        heartbeat_interval: "float" = 30,
-        heartbeat_miss_threshold: "int" = 2,
-        reconcile_interval: "float" = 30,
-        stale_after: "timedelta | None" = None,
-        stale_check_interval: "float" = 60.0,
-        graceful_shutdown_timeout: "float" = 30,
-        final_cancel_timeout: "float" = 5,
-        worker_id: "str | None" = None,
-        queues: "tuple[str, ...]" = (),
-    ) -> "None":
+    def __init__(self, service: "QueueService", config: "WorkerConfig | None" = None) -> "None":
         """Initialize the worker.
 
         Args:
             service: Queue service used to reach the configured backends.
-            batch_size: Maximum records claimed per poll cycle.
-            poll_interval: Base (initial) polling wait, in seconds.
-            poll_backoff_max: Maximum adaptive polling wait, in seconds. ``None``
-                (the default) disables adaptive backoff and preserves fixed
-                polling at ``poll_interval``.
-            poll_backoff_multiplier: Growth factor applied to the current wait
-                after each empty poll/reconciliation cycle when backoff is
-                enabled.
-            poll_jitter: Bounded symmetric jitter ratio in ``[0.0, 1.0]``
-                applied to the sampled wait only; the stored backoff state
-                stays deterministic.
-            max_concurrency: Maximum number of concurrently executing tasks.
-            heartbeat_interval: Seconds between heartbeat touches.
-            heartbeat_miss_threshold: Missed heartbeats before a task is
-                considered stalled.
-            reconcile_interval: Seconds between external-execution
-                reconciliation passes.
-            stale_after: Age after which a running task is recovered as stale.
-            stale_check_interval: Seconds between stale-recovery passes.
-            graceful_shutdown_timeout: Seconds to wait for in-flight tasks to
-                drain on stop.
-            final_cancel_timeout: Seconds to wait for cancellation to take
-                effect after an escalated stop.
-            worker_id: Explicit worker identity; defaults to a pid-derived id.
-            queues: Queue names this worker claims from; empty claims all.
+            config: Worker runtime configuration; ``None`` uses defaults.
         """
+        worker_config = config or WorkerConfig()
         self._service = service
-        self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._poll_backoff_max = poll_backoff_max
-        self._poll_backoff_multiplier = poll_backoff_multiplier
-        self._poll_jitter = poll_jitter
-        self._current_poll_interval = poll_interval
-        self._max_concurrency = max(1, max_concurrency)
-        self._reconcile_interval = reconcile_interval
-        self._stale_after = stale_after
-        self._stale_check_interval = stale_check_interval
-        self._graceful_shutdown_timeout = graceful_shutdown_timeout
-        self._final_cancel_timeout = final_cancel_timeout
-        self._worker_id = worker_id if worker_id is not None else f"worker-{os.getpid()}"
-        self._heartbeat_manager = WorkerHeartbeatManager(
-            service, interval=heartbeat_interval, miss_threshold=heartbeat_miss_threshold, worker_id=self._worker_id
+        self._batch_size = worker_config.batch_size
+        self._poll_interval = worker_config.poll_interval
+        self._poll_backoff_max = worker_config.poll_backoff_max
+        self._poll_backoff_multiplier = worker_config.poll_backoff_multiplier
+        self._poll_jitter = worker_config.poll_jitter
+        self._current_poll_interval = worker_config.poll_interval
+        self._max_concurrency = worker_config.max_concurrency
+        self._reconcile_interval = worker_config.reconcile_interval
+        self._stale_after = (
+            timedelta(seconds=worker_config.stale_after) if worker_config.stale_after is not None else None
         )
-        self._queues = queues
+        self._stale_check_interval = worker_config.stale_check_interval
+        self._graceful_shutdown_timeout = worker_config.graceful_shutdown_timeout
+        self._final_cancel_timeout = worker_config.final_cancel_timeout
+        self._worker_id = worker_config.id if worker_config.id is not None else f"worker-{os.getpid()}"
+        self._heartbeat_manager = WorkerHeartbeatManager(
+            service,
+            interval=worker_config.heartbeat_interval,
+            miss_threshold=worker_config.heartbeat_miss_threshold,
+            worker_id=self._worker_id,
+        )
+        self._queues = worker_config.queues
         self._running_tasks: "set[asyncio.Task[None]]" = set()
         self._stop_event = asyncio.Event()
         self._completion_event = asyncio.Event()
@@ -188,9 +151,6 @@ class Worker:
 
         A no-op while backoff is disabled (``poll_backoff_max`` is ``None``),
         preserving the fixed-interval path exactly.
-
-        Returns:
-            None.
         """
         if self._poll_backoff_max is None:
             return
@@ -216,7 +176,7 @@ class Worker:
         (backoff-disabled) path, matching its exact prior behavior.
 
         Returns:
-            The timeout, in seconds, to pass to ``wait_for_notifications``.
+            The timeout, in seconds, to pass to ``wait_for_wakeups``.
         """
         if self._poll_backoff_max is None:
             return self._current_poll_interval
@@ -488,7 +448,7 @@ class Worker:
         queue_backend = self._service.get_queue_backend()
         started_at = time.perf_counter()
         timeout = await self._current_wait_timeout()
-        notification_task = asyncio.create_task(queue_backend.wait_for_notifications(timeout=timeout))
+        notification_task = asyncio.create_task(queue_backend.wait_for_wakeups(timeout=timeout))
         stop_task = asyncio.create_task(self._stop_event.wait())
         completion_task = asyncio.create_task(self._completion_event.wait())
         done, pending = await asyncio.wait(

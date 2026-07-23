@@ -45,7 +45,7 @@ async def test_duckdb_roundtrips_aware_utc_datetimes_on_non_utc_host(
     _set_process_timezone(monkeypatch, "America/Chicago")
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
+            sqlspec_config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
         )
     )
     await backend.open()

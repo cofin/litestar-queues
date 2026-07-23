@@ -19,7 +19,7 @@ def test_quickstart_is_complete_and_beginner_focused() -> None:
 
     for marker in ("@task(", "QueuePlugin", "QueueConfig", "QueueService", ".enqueue(", "Litestar("):
         assert marker in block
-    for advanced_topic in ("SQLSpec", "Redis", "Valkey", "CloudRun", "EventConfig", "task_modules"):
+    for advanced_topic in ("SQLSpec", "Redis", "Valkey", "CloudRun", "EventDeliveryConfig", "task_modules"):
         assert advanced_topic not in block
 
 
@@ -83,3 +83,14 @@ def test_required_documentation_pages_exist() -> None:
 
     for page in pages:
         assert (DOCS / page).is_file(), page
+
+
+def test_event_config_modules_have_one_canonical_reference_location() -> None:
+    """Each event configuration module is exposed by one Sphinx automodule directive."""
+    reference_source = "\n".join(path.read_text() for path in sorted((DOCS / "reference").glob("*.rst")))
+    for module in (
+        "litestar_queues.events.config",
+        "litestar_queues.events.history",
+        "litestar_queues.events.stream_config",
+    ):
+        assert reference_source.count(f".. automodule:: {module}\n") == 1

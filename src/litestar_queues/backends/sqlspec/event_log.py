@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec import sql
 
-from litestar_queues.backends.sqlspec.schema import event_log_table_name_for, validate_table_name
+from litestar_queues.backends.sqlspec.schema import event_history_table_name_for, validate_table_name
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
-from litestar_queues.events.log import EventLogConfig, QueueEventLogRecord, QueueEventStageSummary
+from litestar_queues.events.history import EventHistoryConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -28,7 +28,7 @@ __all__ = (
     "SQLSpecQueueEventLogStore",
     "SpannerQueueEventLogStore",
     "create_event_log_store",
-    "resolve_event_log_table_name",
+    "resolve_event_history_table_name",
 )
 
 logger = logging.getLogger(__name__)
@@ -322,7 +322,7 @@ class SQLSpecQueueEventLog:
         *,
         session_factory: "Callable[[], AbstractAsyncContextManager[SQLSpecDriver]]",
         datetime_serializer: "Callable[[datetime], datetime | str]",
-        config: "EventLogConfig",
+        config: "EventHistoryConfig",
         store: "SQLSpecQueueEventLogStore",
     ) -> "None":
         self._session_factory = session_factory
@@ -338,16 +338,12 @@ class SQLSpecQueueEventLog:
         should_flush = False
         async with self._flush_lock:
             self._pending.append(self._params_from_event(event))
-            should_flush = len(self._pending) >= max(1, self._config.buffer_size) or self._flush_interval_elapsed()
+            should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
         if should_flush:
             await self.flush_events()
 
     async def flush_events(self) -> "None":
-        """Flush buffered queue events through a SQLSpec session.
-
-        Returns:
-            None.
-        """
+        """Flush buffered queue events through a SQLSpec session."""
         async with self._flush_lock:
             if not self._pending:
                 return
@@ -483,7 +479,7 @@ def create_event_log_store(
     config: "SQLSpecStoreConfig",
     *,
     queue_table_name: "str",
-    event_log_table_name: "str | None" = None,
+    event_history_table_name: "str | None" = None,
     manage_schema: "bool" = True,
 ) -> "SQLSpecQueueEventLogStore":
     """Create an event-log store for a SQLSpec adapter configuration.
@@ -494,20 +490,24 @@ def create_event_log_store(
     store_type = SpannerQueueEventLogStore if _adapter_name(config) == "spanner" else SQLSpecQueueEventLogStore
     return store_type(
         config,
-        table_name=resolve_event_log_table_name(queue_table_name, event_log_table_name=event_log_table_name),
+        table_name=resolve_event_history_table_name(
+            queue_table_name, event_history_table_name=event_history_table_name
+        ),
         manage_schema=manage_schema,
     )
 
 
-def resolve_event_log_table_name(queue_table_name: "str", *, event_log_table_name: "str | None" = None) -> "str":
+def resolve_event_history_table_name(
+    queue_table_name: "str", *, event_history_table_name: "str | None" = None
+) -> "str":
     """Resolve the SQLSpec event-log table name for a queue table.
 
     Returns:
         The explicit event-log table name, or the derived queue-table event log name.
     """
-    if event_log_table_name is not None:
-        return validate_table_name(event_log_table_name)
-    return event_log_table_name_for(queue_table_name)
+    if event_history_table_name is not None:
+        return validate_table_name(event_history_table_name)
+    return event_history_table_name_for(queue_table_name)
 
 
 def _deserialize_datetime(value: "Any") -> "datetime":

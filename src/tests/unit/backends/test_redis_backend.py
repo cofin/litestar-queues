@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from litestar_queues import EnqueueSpec, HeartbeatTouch
+from litestar_queues import HeartbeatTouch, TaskRequest
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.models import QueuedTaskRecord
 
@@ -46,12 +46,12 @@ async def test_redis_statistics_use_status_indexes_without_task_scan() -> "None"
     assert client.smembers_calls == 0
 
 
-async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "None":
+async def test_redis_wait_for_wakeups_reuses_pubsub_subscription() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
 
-    assert await backend.wait_for_notifications(timeout=0.001) is False
-    assert await backend.wait_for_notifications(timeout=0.001) is False
+    assert await backend.wait_for_wakeups(timeout=0.001) is False
+    assert await backend.wait_for_wakeups(timeout=0.001) is False
     await backend.close()
 
     assert client.pubsub_calls == 1
@@ -62,34 +62,34 @@ async def test_redis_wait_for_notifications_reuses_pubsub_subscription() -> "Non
     assert client.pubsubs[0].close_calls == 1
 
 
-async def test_redis_wait_for_notifications_wakes_after_prior_timeout() -> "None":
+async def test_redis_wait_for_wakeups_wakes_after_prior_timeout() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
 
-    assert await backend.wait_for_notifications(timeout=0.001) is False
+    assert await backend.wait_for_wakeups(timeout=0.001) is False
     pubsub = client.pubsubs[0]
     pubsub.deliver()
 
     # The retained receive resumes on the same subscription without re-subscribing.
-    assert await backend.wait_for_notifications(timeout=1.0) is True
+    assert await backend.wait_for_wakeups(timeout=1.0) is True
     assert pubsub.subscribe_calls == 1
     assert pubsub.get_message_calls == 1
     assert backend._pending_read.has_pending is False
 
     # The consumed message does not linger for the next waiter.
-    assert await backend.wait_for_notifications(timeout=0.001) is False
+    assert await backend.wait_for_wakeups(timeout=0.001) is False
     assert pubsub.get_message_calls == 2
     await backend.close()
 
 
 async def test_redis_enqueue_many_persists_unkeyed_batch_with_one_pipeline_and_one_notification() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
 
     records = await backend.enqueue_many([
-        EnqueueSpec(task_name="tasks.redis.batch", kwargs={"index": 0}),
-        EnqueueSpec(task_name="tasks.redis.batch", kwargs={"index": 1}),
-        EnqueueSpec(task_name="tasks.redis.batch", kwargs={"index": 2}),
+        TaskRequest(task_name="tasks.redis.batch", kwargs={"index": 0}),
+        TaskRequest(task_name="tasks.redis.batch", kwargs={"index": 1}),
+        TaskRequest(task_name="tasks.redis.batch", kwargs={"index": 2}),
     ])
 
     assert [record.kwargs["index"] for record in records] == [0, 1, 2]
@@ -101,10 +101,10 @@ async def test_redis_enqueue_many_persists_unkeyed_batch_with_one_pipeline_and_o
 
 async def test_redis_enqueue_many_future_batch_does_not_publish_notification() -> "None":
     client = _CountingRedisClient()
-    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), notifications=True))
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
-    records = await backend.enqueue_many([EnqueueSpec(task_name="tasks.redis.later", scheduled_at=later)])
+    records = await backend.enqueue_many([TaskRequest(task_name="tasks.redis.later", scheduled_at=later)])
 
     assert records[0].status == "scheduled"
     assert client.publish_calls == 0

@@ -2,13 +2,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import EventConfig, QueueConfig, QueueService
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService
 from litestar_queues.events import (
     EventBufferConfig,
     InMemoryQueueEventSink,
     QueueChannels,
     QueueEvent,
     QueueEventPublisher,
+    QueueEventsConfig,
 )
 
 if TYPE_CHECKING:
@@ -98,7 +99,7 @@ async def test_producer_handle_immediate_flushes_prior() -> None:
     from litestar_queues.events import QueueEventProducer
 
     sink = InMemoryQueueEventSink()
-    producer = QueueEventProducer(QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10)))
+    producer = QueueEventProducer(QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10)))
 
     await producer.task("t1").log("buffered")
 
@@ -140,7 +141,9 @@ async def test_producer_does_not_open_or_close_sink() -> None:
 
 async def test_service_get_event_producer_wraps_same_publisher() -> None:
     sink = InMemoryQueueEventSink()
-    service = QueueService(QueueConfig(event=EventConfig(sink=sink, buffer=EventBufferConfig(enabled=False))))
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,), buffer=None)))
+    )
 
     await service.get_event_producer().task("t1").log("from service")
 

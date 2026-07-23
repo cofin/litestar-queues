@@ -13,17 +13,17 @@ operates.
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, WorkerConfig
    from litestar_queues.backends.redis import RedisBackendConfig
 
    queue_config = QueueConfig(
        queue_backend=RedisBackendConfig(
            url="redis://localhost:6379/0",
            key_prefix="myapp:queues",
-           notifications=True,
+           worker_wakeups=True,
        ),
        execution_backend="local",
-       in_app_worker=False,
+       worker=WorkerConfig(run_in_app=False),
    )
 
 Use ``ValkeyBackendConfig`` from ``litestar_queues.backends.valkey`` for
@@ -85,8 +85,8 @@ which is intentionally out of scope here.
 Worker wakeups
 ==============
 
-``notifications=True`` publishes non-durable worker hints. Workers still poll
-the stored queue state. ``notification_channel`` and queue key prefixes belong
+``worker_wakeups=True`` publishes non-durable worker hints. Workers still poll
+the stored queue state. ``wakeup_channel`` and queue key prefixes belong
 to queue operations, not browser Channels.
 
 Event history and live delivery

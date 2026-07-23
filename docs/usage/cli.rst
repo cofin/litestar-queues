@@ -35,13 +35,13 @@ for sidecar worker containers, ``systemd`` units, or Cloud Run jobs.
 Options:
 
 * ``--queue NAME`` (repeatable) — only claims records from the named queues.
-  When omitted, the worker uses :attr:`QueueConfig.worker_queues`; when both
+  When omitted, the worker uses :attr:`~litestar_queues.WorkerConfig.queues`; when both
   are empty, it claims from every queue.
 * ``--max-concurrency N`` — overrides
-  :attr:`QueueConfig.worker_max_concurrency` for this run.
+  :attr:`~litestar_queues.WorkerConfig.max_concurrency` for this run.
 * ``--drain-timeout SECONDS`` — wait time after ``SIGTERM``/``SIGINT``
   before escalating to cancellation. Defaults to
-  :attr:`QueueConfig.worker_graceful_shutdown_timeout` (30s).
+  :attr:`~litestar_queues.WorkerConfig.graceful_shutdown_timeout` (30s).
 
 Signal handling
 ---------------
@@ -136,15 +136,15 @@ subcommand.
 ===================================
 
 Runs one bounded maintenance pass — external-execution reconciliation, stale
-recovery, terminal-task retention, and durable-event retention — under a
-distributed lease, then exits. It is safe on a six-hour or daily external
+recovery, terminal-task retention, and durable-event retention — under
+distributed maintenance coordination, then exits. It is safe on a six-hour or daily external
 schedule. It never starts a worker or executes queued work. See
 :doc:`maintenance` for the full operator guide.
 
 .. code-block:: console
 
    $ litestar queues run-maintenance --json
-   {"outcome":"completed","lease_acquired":true,"duration_ms":41.2,"phases":[...]}
+   {"outcome":"completed","acquired":true,"duration_ms":41.2,"phases":[...]}
 
 Options:
 
@@ -157,7 +157,7 @@ Options:
 All thresholds, limits, and retention windows come from
 :attr:`QueueConfig.maintenance`; the CLI exposes no flags that could introduce a
 destructive cutoff. The command rejects a missing ``QueueConfig.maintenance``, a
-backend without distributed-lease support, and the process-local in-memory
+backend without distributed maintenance support, and the process-local in-memory
 backend before any mutation.
 
 Exit codes:
@@ -165,7 +165,7 @@ Exit codes:
 ============  ==================================================================
 Code          Meaning
 ============  ==================================================================
-``0``         Completed, a clean no-op, or the lease was held elsewhere.
+``0``         Completed, a clean no-op, or maintenance was already running.
 ``1``         Configuration error, lifecycle failure, or a phase failed.
 ``2``         The time budget was exhausted and later phases were skipped.
 ============  ==================================================================

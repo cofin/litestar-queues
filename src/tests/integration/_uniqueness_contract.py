@@ -1,4 +1,4 @@
-"""Backend-neutral forever-uniqueness tombstone contract.
+"""Backend-neutral forever-uniqueness reservation contract.
 
 Every queue backend family (memory, Redis, Valkey, SQLSpec, Advanced Alchemy)
 runs the same reservation / survival / reset / concurrency assertions so
@@ -62,8 +62,8 @@ async def assert_reset_is_only_deletion_path(backend: "BaseQueueBackend") -> Non
     assert owner.task_id == fresh
 
 
-async def assert_tombstone_survives_terminal_cleanup(backend: "BaseQueueBackend") -> None:
-    """A tombstone survives its record going terminal and being cleaned up."""
+async def assert_reservation_survives_terminal_cleanup(backend: "BaseQueueBackend") -> None:
+    """A reservation survives its record going terminal and being cleaned up."""
     key = _unique_key("survive")
     record = await backend.enqueue("uniq.survive", key=key)
     await backend.reserve_identity(key, task_id=record.id, task_name="uniq.survive")

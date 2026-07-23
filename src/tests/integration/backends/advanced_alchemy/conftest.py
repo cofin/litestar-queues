@@ -45,30 +45,30 @@ def _queue_model(table_name: "str") -> "type[object]":
     )
 
 
-def _uniqueness_model(table_name: "str") -> "type[object]":
-    """Return the app-owned forever-uniqueness tombstone model used by integration tests."""
+def _task_reservation_model(table_name: "str") -> "type[object]":
+    """Return the app-owned forever-uniqueness reservation model used by integration tests."""
     from advanced_alchemy.base import UUIDAuditBase
 
-    from litestar_queues.backends.advanced_alchemy import QueueUniquenessModelMixin
+    from litestar_queues.backends.advanced_alchemy import QueueTaskReservationModelMixin
 
     suffix = table_name.rsplit("_", 1)[-1]
     return type(
-        f"IntegrationQueueUniqueness{suffix}",
-        (UUIDAuditBase, QueueUniquenessModelMixin),
+        f"IntegrationQueueTaskReservation{suffix}",
+        (UUIDAuditBase, QueueTaskReservationModelMixin),
         {"__module__": __name__, "__tablename__": table_name},
     )
 
 
-def _maintenance_lease_model(table_name: "str") -> "type[object]":
+def _maintenance_model(table_name: "str") -> "type[object]":
     """Return the app-owned maintenance lease model used by integration tests."""
     from advanced_alchemy.base import UUIDAuditBase
 
-    from litestar_queues.backends.advanced_alchemy import QueueMaintenanceLeaseModelMixin
+    from litestar_queues.backends.advanced_alchemy import QueueMaintenanceModelMixin
 
     suffix = table_name.rsplit("_", 1)[-1]
     return type(
-        f"IntegrationQueueMaintenanceLease{suffix}",
-        (UUIDAuditBase, QueueMaintenanceLeaseModelMixin),
+        f"IntegrationQueueMaintenance{suffix}",
+        (UUIDAuditBase, QueueMaintenanceModelMixin),
         {"__module__": __name__, "__tablename__": table_name},
     )
 
@@ -102,18 +102,18 @@ async def advanced_alchemy_backend(
     ctx = FixtureCtx(tmp_path=tmp_path, service=service)
     config = case.build_config(ctx)
     table_name = table_name_for_test("aa_queue_task", case.name, request.node.nodeid)
-    maintenance_lease_table_name = table_name_for_test("aa_maintenance_lease", case.name, request.node.nodeid)
-    uniqueness_table_name = table_name_for_test("aa_uniqueness", case.name, request.node.nodeid)
+    maintenance_table_name = table_name_for_test("aa_maintenance", case.name, request.node.nodeid)
+    task_reservation_table_name = table_name_for_test("aa_reservation", case.name, request.node.nodeid)
     model_class = _queue_model(table_name)
-    maintenance_lease_model_class = _maintenance_lease_model(maintenance_lease_table_name)
-    uniqueness_model_class = _uniqueness_model(uniqueness_table_name)
-    await create_tables(config, model_class, maintenance_lease_model_class, uniqueness_model_class)
+    maintenance_model_class = _maintenance_model(maintenance_table_name)
+    task_reservation_model_class = _task_reservation_model(task_reservation_table_name)
+    await create_tables(config, model_class, maintenance_model_class, task_reservation_model_class)
     backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=config,
             model_class=model_class,
-            maintenance_lease_model_class=maintenance_lease_model_class,
-            uniqueness_model_class=uniqueness_model_class,
+            maintenance_model_class=maintenance_model_class,
+            task_reservation_model_class=task_reservation_model_class,
         )
     )
     await backend.open()
@@ -137,14 +137,14 @@ async def _drop_queue_tables(backend: "SQLAlchemyBackend") -> "None":
     sqlalchemy_config = backend._sqlalchemy_config
     if sqlalchemy_config is not None:
         model_class = cast("MappedQueueModel", backend._model_class)
-        maintenance_lease_model_class = cast("MappedQueueModel", backend._maintenance_lease_model_class)
-        uniqueness_model_class = cast("MappedQueueModel", backend._uniqueness_model_class)
+        maintenance_model_class = cast("MappedQueueModel", backend._maintenance_model_class)
+        task_reservation_model_class = cast("MappedQueueModel", backend._task_reservation_model_class)
         engine = sqlalchemy_config.get_engine()
         async with engine.begin() as connection:
             with suppress(Exception):
-                await connection.run_sync(uniqueness_model_class.__table__.drop, checkfirst=True)
+                await connection.run_sync(task_reservation_model_class.__table__.drop, checkfirst=True)
             with suppress(Exception):
-                await connection.run_sync(maintenance_lease_model_class.__table__.drop, checkfirst=True)
+                await connection.run_sync(maintenance_model_class.__table__.drop, checkfirst=True)
             with suppress(Exception):
                 await connection.run_sync(model_class.__table__.drop, checkfirst=True)
 

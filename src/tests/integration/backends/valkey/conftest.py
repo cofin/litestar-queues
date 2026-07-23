@@ -31,8 +31,8 @@ async def valkey_backend(valkey_service: "ValkeyService") -> "AsyncIterator[Valk
         backend_config=ValkeyBackendConfig(
             url=f"redis://{valkey_service.host}:{valkey_service.port}/{valkey_service.db}",
             key_prefix=prefix,
-            notifications=True,
-            notification_channel=f"{prefix}:notifications",
+            worker_wakeups=True,
+            wakeup_channel=f"{prefix}:notifications",
         )
     )
     await backend.open()

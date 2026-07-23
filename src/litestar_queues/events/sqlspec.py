@@ -1,9 +1,12 @@
-"""SQLSpec event-channel sink for external queue event producers."""
+"""Explicit SQLSpec event-channel sink for queue event delivery."""
 
 import asyncio
 import inspect
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
+
+from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -14,36 +17,38 @@ if TYPE_CHECKING:
 __all__ = ("SQLSpecQueueEventSink",)
 
 _EVENT_EXTENSION_NAME = "events"
-_POLLING_TRANSPORT = "polling"
 
 
 class SQLSpecQueueEventSink:
     """Publish queue events through a SQLSpec sync or async event channel."""
 
     __slots__ = (
-        "_backend_config",
         "_channel",
         "_max_payload_bytes",
         "_owns_channel",
         "_owns_sqlspec",
         "_payload_size_estimator",
+        "_settings",
         "_sqlspec",
         "_sqlspec_config",
     )
 
     def __init__(
         self,
-        backend_config: "object",
+        channel: "object | None" = None,
         *,
+        sqlspec: "object | None" = None,
+        sqlspec_config: "object | None" = None,
+        settings: "dict[str, Any] | None" = None,
         max_payload_bytes: "int | None" = None,
         payload_size_estimator: "QueueEventSizeEstimator | None" = None,
     ) -> "None":
-        self._backend_config = backend_config
-        self._channel = getattr(backend_config, "event_channel", None)
-        self._owns_channel = self._channel is None
-        self._sqlspec = getattr(backend_config, "sqlspec", None)
-        self._owns_sqlspec = self._sqlspec is None
-        self._sqlspec_config = getattr(backend_config, "config", None)
+        self._channel: "Any | None" = channel
+        self._owns_channel = channel is None
+        self._sqlspec: "Any | None" = sqlspec
+        self._owns_sqlspec = sqlspec is None
+        self._sqlspec_config = sqlspec_config
+        self._settings = dict(settings or {})
         self._max_payload_bytes = max_payload_bytes
         self._payload_size_estimator = payload_size_estimator
 
@@ -81,8 +86,6 @@ class SQLSpecQueueEventSink:
     def _event_chunks(self, event: "QueueEvent") -> "Sequence[QueueEvent]":
         if self._max_payload_bytes is None:
             return (event,)
-        from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
-
         estimator = self._payload_size_estimator or estimate_event_payload_bytes
         return split_event_batch_by_size(event, max_bytes=self._max_payload_bytes, size_estimator=estimator)
 
@@ -113,8 +116,6 @@ class SQLSpecQueueEventSink:
             self._sqlspec_config = registered_configs[0]
             return self._sqlspec_config
         if len(registered_configs) > 1:
-            from litestar_queues.exceptions import QueueConfigurationError
-
             msg = (
                 "SQLSpec event producer received a SQLSpec manager with multiple configs; "
                 "pass config to select the event database."
@@ -128,18 +129,7 @@ class SQLSpecQueueEventSink:
     def _apply_event_settings(self, sqlspec_config: "Any") -> "None":
         extension_config = deepcopy(getattr(sqlspec_config, "extension_config", None) or {})
         event_settings = dict(extension_config.get(_EVENT_EXTENSION_NAME, {}))
-        configured_settings = getattr(self._backend_config, "event_settings", None)
-        if isinstance(configured_settings, dict):
-            event_settings.update(configured_settings)
-        backend_name = _event_backend_name(self._backend_config, event_settings)
-        if backend_name is not None:
-            event_settings["backend"] = backend_name
-        queue_table = getattr(self._backend_config, "event_queue_table", None)
-        if queue_table is not None:
-            event_settings["queue_table"] = str(queue_table)
-        poll_interval = getattr(self._backend_config, "event_poll_interval", None)
-        if poll_interval is not None:
-            event_settings["poll_interval"] = float(poll_interval)
+        event_settings.update(self._settings)
         extension_config[_EVENT_EXTENSION_NAME] = event_settings
         sqlspec_config.extension_config = extension_config
         migration_config = dict(getattr(sqlspec_config, "migration_config", None) or {})
@@ -148,19 +138,6 @@ class SQLSpecQueueEventSink:
             set_migration_config(migration_config)
         else:
             sqlspec_config.migration_config = migration_config
-
-
-def _event_backend_name(backend_config: "object", event_settings: "dict[str, Any]") -> "str | None":
-    configured = getattr(backend_config, "event_backend", None)
-    if configured is not None:
-        return str(configured)
-    configured = event_settings.get("backend")
-    if configured is not None:
-        return str(configured)
-    transport = getattr(backend_config, "notify_transport", None)
-    if transport is not None and transport != _POLLING_TRANSPORT:
-        return str(transport)
-    return None
 
 
 def _metadata_for(event: "QueueEvent") -> "dict[str, object]":

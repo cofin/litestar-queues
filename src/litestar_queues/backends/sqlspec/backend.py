@@ -22,17 +22,15 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
-from litestar_queues.backends.sqlspec.config import DEFAULT_NOTIFICATION_CHANNEL, SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.config import DEFAULT_WAKEUP_CHANNEL, SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import (
     SQLSpecQueueEventLog,
     create_event_log_store,
-    resolve_event_log_table_name,
+    resolve_event_history_table_name,
 )
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.maintenance_lease import (
-    SQLSpecMaintenanceLeaseStore,
-    create_maintenance_lease_store,
-)
+from litestar_queues.backends.sqlspec.maintenance import SQLSpecMaintenanceStore, create_maintenance_store
+from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
@@ -40,17 +38,16 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_table_name,
 )
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
-from litestar_queues.backends.sqlspec.uniqueness import create_tombstone_store
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
-    EnqueueSpec,
     HeartbeatTouchResult,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
+    TaskRequest,
+    TaskReservation,
     TaskStatus,
-    UniquenessTombstone,
 )
 
 if TYPE_CHECKING:
@@ -63,10 +60,10 @@ if TYPE_CHECKING:
         SQLSpecSessionConfig,
         SQLSpecStoreConfig,
     )
+    from litestar_queues.backends.sqlspec.reservation import SQLSpecTaskReservationStore
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
-    from litestar_queues.backends.sqlspec.uniqueness import SQLSpecQueueTombstoneStore
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventLogConfig, QueueEventLog
+    from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("SQLSpecQueueBackend",)
@@ -74,46 +71,26 @@ __all__ = ("SQLSpecQueueBackend",)
 _DUE_STATUSES = ("pending", "scheduled")
 _RESERVE_MAX_ATTEMPTS = 12
 _RESERVE_BACKOFF_SECONDS = 0.02
-_DURABLE_NOTIFICATION_BACKENDS = frozenset({"aq", "notify_queue", "poll_queue", "txeventq"})
+_DURABLE_WAKEUP_BACKENDS = frozenset({"aq", "notify_queue", "poll_queue", "txeventq"})
 _EVENT_EXTENSION_NAME = "events"
-_QUEUE_SETTING_EVENT_SETTINGS = ("event_settings", "events")
-
-_NOTIFY_TRANSPORT_POLLING = "polling"
+_WAKEUP_TRANSPORT_POLLING = "polling"
 _CANONICAL_EVENT_BACKENDS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
-_CANONICAL_NOTIFY_TRANSPORTS = _CANONICAL_EVENT_BACKENDS | {_NOTIFY_TRANSPORT_POLLING}
 # Adapter families that can push worker wakeups. Every real Postgres driver
 # (asyncpg, psycopg, psqlpy) ships SQLSpec's durable LISTEN/NOTIFY hybrid, so all
 # three advertise ``notify_queue``. DuckDB is embedded with no LISTEN/NOTIFY, so
 # it uses the durable table queue polled in-process. Everything else polls.
-_NOTIFY_DURABLE_ADAPTERS = frozenset({"asyncpg", "psycopg", "psqlpy"})
-_NOTIFY_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
+_WAKEUP_DURABLE_ADAPTERS = frozenset({"asyncpg", "psycopg", "psqlpy"})
+_WAKEUP_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
 # Durable event transports that ride the SQLSpec events queue table and must have
 # it provisioned before a worker can publish or consume wakeups.
 _EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
-# psqlpy's ``QueryResult`` exposes no command-tag/status metadata and
-# arrow-odbc's cursor exposes no portable rowcount API, so SQLSpec's
-# rows-affected extraction can only ever report ``0`` for non-SELECT
-# statements on these adapters, regardless of whether the statement actually
-# matched a row. Every write-then-verify check in this module already treats
-# a negative rows-affected as "unknown, verify via SELECT"; normalizing these
-# adapters' unconditional ``0`` to that same sentinel reuses that existing
-# fallback instead of misreading it as a genuine zero-row result.
-_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"psqlpy", "arrow_odbc"})
+# arrow-odbc exposes no portable rowcount API, so a reported zero can mean
+# either no match or unavailable metadata. SQLSpec 0.56 made psqlpy row counts
+# exact, leaving only arrow-odbc on the verify-after-write fallback.
+_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"arrow_odbc"})
 
 
-def _package_queue_observability_enabled(config: "QueueConfig | None") -> "bool":
-    """Return whether package-level queue observability should own queue-domain metrics."""
-    if config is None:
-        return False
-    observability_config = config.observability
-    if observability_config is None:
-        return False
-    if not observability_config.disable_sqlspec_queue_observability:
-        return False
-    return observability_config.enable_prometheus or observability_config.enable_otel is not False
-
-
-def _adapter_notify_transport(adapter_name: "str | None") -> "str":
+def _adapter_wakeup_transport(adapter_name: "str | None") -> "str":
     """Return the default wakeup transport for a SQLSpec adapter.
 
     The wakeup transport is gated purely by adapter knowledge so backends only
@@ -123,14 +100,14 @@ def _adapter_notify_transport(adapter_name: "str | None") -> "str":
         ``"notify_queue"`` for the Postgres drivers (asyncpg, psycopg, psqlpy),
         ``"poll_queue"`` for DuckDB, otherwise ``"polling"``.
     """
-    if adapter_name in _NOTIFY_DURABLE_ADAPTERS:
+    if adapter_name in _WAKEUP_DURABLE_ADAPTERS:
         return "notify_queue"
-    if adapter_name in _NOTIFY_TABLE_QUEUE_ADAPTERS:
+    if adapter_name in _WAKEUP_TABLE_QUEUE_ADAPTERS:
         return "poll_queue"
-    return _NOTIFY_TRANSPORT_POLLING
+    return _WAKEUP_TRANSPORT_POLLING
 
 
-def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
+def _canonical_wakeup_transport(backend_name: "str | None") -> "str | None":
     """Return a canonical SQLSpec event backend name.
 
     Returns:
@@ -139,56 +116,42 @@ def _canonical_notify_transport(backend_name: "str | None") -> "str | None":
     return backend_name if backend_name in _CANONICAL_EVENT_BACKENDS else None
 
 
-def _validate_queue_notify_transport(transport: "str") -> "str":
-    """Validate explicit queue transport configuration from extension settings.
-
-    Returns:
-        The validated canonical queue transport name.
-    """
-    if transport in _CANONICAL_NOTIFY_TRANSPORTS:
-        return transport
-    valid = ", ".join(sorted(_CANONICAL_NOTIFY_TRANSPORTS))
-    msg = f"Invalid notify_transport {transport!r}; expected one of: {valid}."
-    raise QueueConfigurationError(msg)
-
-
 class SQLSpecQueueBackend(BaseQueueBackend):
     """SQLSpec-backed queue backend."""
 
     __slots__ = (
         "_column_map",
-        "_event_backend",
         "_event_channel",
+        "_event_history_table_name",
         "_event_log",
         "_event_log_store",
-        "_event_log_table_name",
-        "_event_poll_interval",
-        "_event_queue_table",
-        "_event_settings",
         "_event_stream",
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
-        "_maintenance_lease_store",
-        "_maintenance_lease_table_name",
+        "_maintenance_store",
+        "_maintenance_table_name",
         "_manage_schema",
         "_native_json_columns",
-        "_notification_backend",
-        "_notification_channel",
-        "_notifications_enabled",
-        "_notifications_requested",
-        "_notify_transport",
+        "_native_observability_enabled",
         "_opened",
         "_owns_event_channel",
         "_owns_sqlspec",
         "_pending_read",
-        "_queue_observability",
         "_queue_table_name",
         "_sqlspec",
         "_sqlspec_config",
         "_store",
-        "_uniqueness_store",
-        "_uniqueness_table_name",
+        "_task_reservation_store",
+        "_task_reservation_table_name",
+        "_wakeup_backend",
+        "_wakeup_channel",
+        "_wakeup_poll_interval",
+        "_wakeup_queue_table",
+        "_wakeup_settings",
+        "_wakeup_transport",
+        "_worker_wakeups_configured",
+        "_worker_wakeups_enabled",
     )
 
     def __init__(
@@ -200,7 +163,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
         self._sqlspec = backend_config.sqlspec
-        self._sqlspec_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.config
+        self._sqlspec_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.sqlspec_config
         self._heartbeat_pool_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.heartbeat_pool_config
         self._heartbeat_pool_enabled = self._heartbeat_pool_config is not None
         self._heartbeat_pool_registered = False
@@ -210,38 +173,36 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if backend_config.queue_table_name is not None
             else None
         )
-        self._event_channel = backend_config.event_channel
+        worker_wakeups = backend_config.worker_wakeups
+        self._worker_wakeups_configured = worker_wakeups is not None
+        self._event_channel = worker_wakeups.channel if worker_wakeups is not None else None
         self._owns_event_channel = self._event_channel is None
-        self._notifications_requested = backend_config.notifications
-        self._notification_channel = backend_config.notification_channel
-        self._notify_transport = backend_config.notify_transport
-        self._event_log_table_name = (
-            validate_table_name(backend_config.event_log_table_name)
-            if backend_config.event_log_table_name is not None
+        self._wakeup_channel = worker_wakeups.channel_name if worker_wakeups is not None else None
+        self._wakeup_transport = worker_wakeups.transport if worker_wakeups is not None else None
+        self._event_history_table_name = (
+            validate_table_name(backend_config.event_history_table_name)
+            if backend_config.event_history_table_name is not None
             else None
         )
-        self._maintenance_lease_table_name = (
-            validate_table_name(backend_config.maintenance_lease_table_name)
-            if backend_config.maintenance_lease_table_name is not None
+        self._maintenance_table_name = (
+            validate_table_name(backend_config.maintenance_table_name)
+            if backend_config.maintenance_table_name is not None
             else None
         )
-        self._event_backend = backend_config.event_backend
-        self._event_queue_table = backend_config.event_queue_table
-        self._event_poll_interval = backend_config.event_poll_interval
-        self._event_settings = dict(backend_config.event_settings)
-        self._queue_observability = backend_config.queue_observability and not _package_queue_observability_enabled(
-            config
-        )
-        self._notification_backend = _canonical_notify_transport(getattr(self._event_channel, "_backend_name", None))
-        self._notifications_enabled = self._event_channel is not None
+        self._wakeup_queue_table = worker_wakeups.queue_table_name if worker_wakeups is not None else None
+        self._wakeup_poll_interval = worker_wakeups.poll_interval if worker_wakeups is not None else None
+        self._wakeup_settings = dict(worker_wakeups.settings) if worker_wakeups is not None else {}
+        self._native_observability_enabled = True
+        self._wakeup_backend = _canonical_wakeup_transport(getattr(self._event_channel, "_backend_name", None))
+        self._worker_wakeups_enabled = self._event_channel is not None
         self._event_log_store: "Any | None" = None
         self._event_log: "SQLSpecQueueEventLog | None" = None
-        self._maintenance_lease_store: "SQLSpecMaintenanceLeaseStore | None" = None
+        self._maintenance_store: "SQLSpecMaintenanceStore | None" = None
         self._store: "SQLSpecQueueStore | None" = None
-        self._uniqueness_store: "SQLSpecQueueTombstoneStore | None" = None
-        self._uniqueness_table_name = (
-            validate_table_name(backend_config.uniqueness_table_name)
-            if backend_config.uniqueness_table_name is not None
+        self._task_reservation_store: "SQLSpecTaskReservationStore | None" = None
+        self._task_reservation_table_name = (
+            validate_table_name(backend_config.task_reservation_table_name)
+            if backend_config.task_reservation_table_name is not None
             else None
         )
         self._event_stream: "Any | None" = None
@@ -259,7 +220,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         self._get_or_create_sqlspec()
         self._resolve_queue_table_name()
-        self._configure_notifications()
+        self._configure_worker_wakeups()
         self._register_heartbeat_pool()
         self._opened = True
         return True
@@ -278,10 +239,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._sqlspec = None
         self._opened = False
 
-    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return SQLSpec-managed durable queue event history when enabled."""
-        if not config.enabled:
-            return None
         if self._event_log is None:
             self._event_log = SQLSpecQueueEventLog(
                 session_factory=self._session,
@@ -294,25 +253,25 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
         """Backend behavior capabilities."""
-        notification_backend = self._notification_backend
+        wakeup_backend = self._wakeup_backend
         return QueueBackendCapabilities(
-            supports_notifications=self._notifications_enabled,
-            notification_backend=notification_backend,
-            notifications_durable=notification_backend in _DURABLE_NOTIFICATION_BACKENDS,
-            supports_maintenance_lease=True,
+            supports_worker_wakeups=self._worker_wakeups_enabled,
+            wakeup_backend=wakeup_backend,
+            wakeups_durable=wakeup_backend in _DURABLE_WAKEUP_BACKENDS,
+            supports_maintenance=True,
         )
 
-    async def create_schema(self) -> "None":
-        """Create the SQLSpec queue table and indexes.
+    def _set_package_observability_enabled(self, enabled: "bool") -> "None":
+        """Suppress SQLSpec queue-domain telemetry when package telemetry is active."""
+        self._native_observability_enabled = not enabled
 
-        Returns:
-            None.
-        """
+    async def create_schema(self) -> "None":
+        """Create the SQLSpec queue table and indexes."""
         if not self._manage_schema:
             return
         config = self._get_sqlspec_config()
         queue_store = self._get_store()
-        stores = [queue_store, self._get_maintenance_lease_store(), self._get_uniqueness_store()]
+        stores = [queue_store, self._get_maintenance_store(), self._get_task_reservation_store()]
         event_log_store = self._get_event_log_store_if_enabled()
         if event_log_store is not None:
             stores.append(event_log_store)
@@ -430,7 +389,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+    async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
         """Persist many tasks via the adapter's fastest bulk path.
 
         Resolves existing deduplication keys in one round trip, then inserts the
@@ -441,21 +400,21 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         the semantics of :meth:`enqueue`.
 
         Returns:
-            Queue task records in the same order as ``specs``.
+            Queue task records in the same order as ``requests``.
         """
-        if not specs:
+        if not requests:
             return []
 
         store = self._get_store()
         now = _utc_now()
-        keyed = [spec.key for spec in specs if spec.key is not None]
+        keyed = [request.key for request in requests if request.key is not None]
 
-        with self._observe_queue_operation("enqueue", task_count=len(specs)):
+        with self._observe_queue_operation("enqueue", task_count=len(requests)):
             async with self._session() as driver:
                 await driver.begin()
                 try:
                     existing_by_key = await self._existing_records_by_key(driver, store, keyed)
-                    results, to_insert, terminal_keys = self._plan_bulk_enqueue(specs, existing_by_key, now)
+                    results, to_insert, terminal_keys = self._plan_bulk_enqueue(requests, existing_by_key, now)
                     for task_id in terminal_keys:
                         await driver.execute(store.clear_key(task_id=str(task_id)))
                     if to_insert:
@@ -480,22 +439,22 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             row = await self._select_task_by_key(driver, key)
         return self._record_from_row(row) if row is not None else None
 
-    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "TaskReservation | None":
         """Reserve a forever identity via an optimistic insert with a unique-violation fallback.
 
-        The tombstone table's identity-key PRIMARY KEY is the atomicity arbiter:
+        The reservation table's identity-key PRIMARY KEY is the atomicity arbiter:
         exactly one concurrent insert wins; a loser catches the unique violation
         and reads the winning owner. Serializable engines (CockroachDB) may abort
         a losing transaction with a serialization/retry error before the unique
         violation surfaces, so those are retried with bounded backoff. The
-        tombstone table is separate from the queue table and terminal cleanup
+        reservation table is separate from the queue table and terminal cleanup
         never touches it.
 
         Returns:
             ``None`` when this caller won the reservation; otherwise the existing
-            owner tombstone.
+            owner reservation.
         """
-        store = self._get_uniqueness_store()
+        store = self._get_task_reservation_store()
         values = {
             "identity_key": key,
             "task_id": str(task_id),
@@ -520,8 +479,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return None
 
     async def _reserve_identity_once(
-        self, store: "SQLSpecQueueTombstoneStore", key: "str", values: "dict[str, Any]"
-    ) -> "UniquenessTombstone | None":
+        self, store: "SQLSpecTaskReservationStore", key: "str", values: "dict[str, Any]"
+    ) -> "TaskReservation | None":
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -530,7 +489,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     # Commit the read-only transaction rather than rolling back so
                     # single-connection engines (Spanner) do not double-finalize.
                     await driver.commit()
-                    return _tombstone_from_row(existing)
+                    return _reservation_from_row(existing)
                 await driver.execute(store.insert_reservation(values))
                 await driver.commit()
             except Exception:
@@ -539,20 +498,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return None
 
-    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
-        """Return the tombstone owning a reserved forever identity, if any."""
-        store = self._get_uniqueness_store()
+    async def has_identity(self, key: "str") -> "TaskReservation | None":
+        """Return the reservation owning a reserved forever identity, if any."""
+        store = self._get_task_reservation_store()
         async with self._session() as driver:
             row = await self._select_one_row(driver, store.select_owner(key))
-        return _tombstone_from_row(row) if row is not None else None
+        return _reservation_from_row(row) if row is not None else None
 
     async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
-        """Delete a forever identity tombstone via count-then-delete.
+        """Delete a forever identity reservation via count-then-delete.
 
         Returns:
-            ``True`` when a tombstone was removed.
+            ``True`` when a reservation was removed.
         """
-        store = self._get_uniqueness_store()
+        store = self._get_task_reservation_store()
         serialized_task_id = str(expected_task_id) if expected_task_id is not None else None
         async with self._session() as driver:
             await driver.begin()
@@ -560,7 +519,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 count_row = await self._select_one_row(
                     driver, store.count_by_key(key, expected_task_id=serialized_task_id)
                 )
-                removed = int(count_row["tombstone_count"]) if count_row is not None else 0
+                removed = int(count_row["reservation_count"]) if count_row is not None else 0
                 if removed > 0:
                     await driver.execute(store.delete_by_key(key, expected_task_id=serialized_task_id))
                 await driver.commit()
@@ -1257,8 +1216,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 if limit is None:
-                    # Some drivers (e.g. psqlpy, see _UNRELIABLE_ROWCOUNT_ADAPTERS)
-                    # cannot reliably report ``rows_affected`` for DELETE. Count
+                    # Some drivers (see _UNRELIABLE_ROWCOUNT_ADAPTERS) cannot
+                    # reliably report ``rows_affected`` for DELETE. Count
                     # first inside the same transaction so the cleanup count is
                     # always exact.
                     count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
@@ -1280,20 +1239,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return deleted
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
-        """Acquire a maintenance lease via an adapter-portable compare-and-set.
+    async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire maintenance ownership via an adapter-portable compare-and-set.
 
-        Updates the named row to this token when its stored lease has expired;
+        Updates the named row to this token when its stored ownership has expired;
         if a live row is present the update matches nothing and the row's token
-        differs, so the lease is denied. When no row exists a fresh one is
-        inserted, and a uniqueness race is treated as lease denial. The
+        differs, so ownership is denied. When no row exists a fresh one is
+        inserted, and a uniqueness race is treated as ownership denial. The
         select-after-update read makes correctness independent of the adapter's
         ``rows_affected`` reliability.
 
         Returns:
-            True when the lease is now held under ``token``.
+            True when maintenance ownership is held under ``token``.
         """
-        store = self._get_maintenance_lease_store()
+        store = self._get_maintenance_store()
         now = _utc_now()
         now_param = self._serialize_datetime(now)
         expiry_param = self._serialize_datetime(now + ttl)
@@ -1304,13 +1263,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.execute(
                     store.acquire_update(name=name, token=token, expires_at=expiry_param, now=now_param)
                 )
-                row = await self._select_one_row(driver, store.select_lease_token(name=name))
+                row = await self._select_one_row(driver, store.select_coordination_token(name=name))
                 if row is not None:
                     acquired = str(row["token"]) == token
                     await driver.commit()
                     committed = True
                     return acquired
-                await driver.execute(store.insert_lease(name=name, token=token, expires_at=expiry_param))
+                await driver.execute(store.insert_coordination(name=name, token=token, expires_at=expiry_param))
                 await driver.commit()
                 committed = True
                 return True  # noqa: TRY300 - the insert must stay inside the try to catch a uniqueness race.
@@ -1322,23 +1281,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     return False
                 raise
 
-    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
-        """Release a maintenance lease only when the stored token matches.
+    async def release_maintenance(self, name: "str", token: "str") -> "bool":
+        """Release maintenance ownership only when the stored token matches.
 
         Returns:
-            True when a lease held under ``token`` was deleted and no successor
-            lease replaced it before the transaction's postcondition check.
+            True when ownership held under ``token`` was deleted and no successor
+            replaced it before the transaction's postcondition check.
         """
-        store = self._get_maintenance_lease_store()
+        store = self._get_maintenance_store()
         released = False
         async with self._session() as driver:
             await driver.begin()
             try:
-                count_row = await self._select_one_row(driver, store.count_lease(name=name, token=token))
-                matched = int(count_row["lease_count"]) if count_row is not None else 0
+                count_row = await self._select_one_row(driver, store.count_coordination(name=name, token=token))
+                matched = int(count_row["coordination_count"]) if count_row is not None else 0
                 if matched:
-                    await driver.execute(store.release_delete(name=name, token=token))
-                    remaining = await self._select_one_row(driver, store.select_lease_token(name=name))
+                    await driver.execute(store.delete_coordination(name=name, token=token))
+                    remaining = await self._select_one_row(driver, store.select_coordination_token(name=name))
                     released = remaining is None
                 await driver.commit()
             except Exception:
@@ -1350,7 +1309,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Publish a SQLSpec event when configured queue work becomes available."""
         if (
-            self._notifications_enabled
+            self._worker_wakeups_enabled
             and self._event_channel is not None
             and record.status in _DUE_STATUSES
             and record.is_due
@@ -1359,13 +1318,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await _invoke_event_channel_method(
                     self._event_channel,
                     "publish",
-                    self._resolve_notification_channel(),
+                    self._resolve_wakeup_channel(),
                     {"event": "task_available"},
                     {"event_type": "litestar_queues.task_available"},
                 )
             self._increment_queue_metric("notify")
 
-    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+    async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for a SQLSpec event when queue notifications are configured.
 
         One ``iter_events`` stream and its pending ``anext`` read are retained
@@ -1375,13 +1334,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Returns:
             True when a notification was received.
         """
-        if not self._notifications_enabled or self._event_channel is None:
-            return await super().wait_for_notifications(timeout=timeout)
+        if not self._worker_wakeups_enabled or self._event_channel is None:
+            return await super().wait_for_wakeups(timeout=timeout)
 
         stream = self._event_stream
         if stream is None:
             stream = self._event_channel.iter_events(
-                self._resolve_notification_channel(), poll_interval=self._event_poll_interval
+                self._resolve_wakeup_channel(), poll_interval=self._wakeup_poll_interval
             )
             self._event_stream = stream
         task = await self._pending_read.race(lambda: _next_event(stream), timeout)
@@ -1440,39 +1399,34 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._queue_table_name = validate_table_name(str(configured_table_name))
         return self._queue_table_name
 
-    def _resolve_notification_channel(self) -> "str":
-        if self._notification_channel is not None:
-            self._notification_channel = _normalize_notification_channel(str(self._notification_channel))
+    def _resolve_wakeup_channel(self) -> "str":
+        if self._wakeup_channel is not None:
+            self._wakeup_channel = _normalize_wakeup_channel(str(self._wakeup_channel))
         else:
-            queue_settings = _queue_extension_settings(self._sqlspec_config)
-            configured_channel = _setting(queue_settings, "notification_channel") or DEFAULT_NOTIFICATION_CHANNEL
-            self._notification_channel = _normalize_notification_channel(str(configured_channel))
-        return self._notification_channel
+            self._wakeup_channel = DEFAULT_WAKEUP_CHANNEL
+        return self._wakeup_channel
 
-    def _configure_notifications(self) -> "None":
+    def _configure_worker_wakeups(self) -> "None":
         sqlspec_config = self._get_sqlspec_config()
-        queue_settings = _queue_extension_settings(sqlspec_config)
         events_settings = _events_extension_settings(sqlspec_config)
+        transport = self._select_wakeup_transport(sqlspec_config)
 
-        notifications_requested = self._resolve_notifications_requested(queue_settings)
-        transport = self._select_notify_transport(sqlspec_config, queue_settings, events_settings)
-
-        if not self._notifications_should_enable(notifications_requested, transport):
-            self._notifications_enabled = False
-            self._notification_backend = None
+        if not self._worker_wakeups_should_enable(transport):
+            self._worker_wakeups_enabled = False
+            self._wakeup_backend = None
             return
 
-        self._notifications_enabled = True
-        self._resolve_notification_channel()
+        self._worker_wakeups_enabled = True
+        self._resolve_wakeup_channel()
         if self._event_channel is None:
-            self._apply_event_settings(sqlspec_config, queue_settings, events_settings, transport)
+            self._apply_wakeup_settings(sqlspec_config, events_settings, transport)
             self._event_channel = cast("Any", self._get_or_create_sqlspec()).event_channel(sqlspec_config)
             self._owns_event_channel = True
         else:
             # An injected channel already owns its backend; still resolve the
-            # configured poll interval so wait_for_notifications honors it.
-            self._resolve_event_poll_interval(queue_settings, events_settings)
-        self._notification_backend = _canonical_notify_transport(
+            # configured poll interval so wait_for_wakeups honors it.
+            self._resolve_wakeup_poll_interval()
+        self._wakeup_backend = _canonical_wakeup_transport(
             cast("str | None", getattr(self._event_channel, "_backend_name", None))
         )
 
@@ -1485,94 +1439,59 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Oracle AQ transports never use this table.
         """
         return (
-            self._notifications_enabled
-            and self._owns_event_channel
-            and self._notification_backend in _EVENTS_TABLE_BACKENDS
+            self._worker_wakeups_enabled and self._owns_event_channel and self._wakeup_backend in _EVENTS_TABLE_BACKENDS
         )
 
-    def _resolve_notifications_requested(self, queue_settings: "dict[str, Any]") -> "bool | None":
-        notifications_requested = self._notifications_requested
-        if notifications_requested is None and "notifications" in queue_settings:
-            notifications_requested = bool(queue_settings["notifications"])
-        return notifications_requested
-
-    def _select_notify_transport(
-        self, sqlspec_config: "SQLSpecConfig", queue_settings: "dict[str, Any]", events_settings: "dict[str, Any]"
-    ) -> "str":
+    def _select_wakeup_transport(self, sqlspec_config: "SQLSpecConfig") -> "str":
         """Resolve the effective wakeup transport.
 
-        Explicit ``queue_backend_config`` selections win over
-        ``extension_config`` defaults, which in turn win over the per-adapter
-        capability gate.
+        The typed worker-wakeup config wins over the per-adapter capability gate.
 
         Returns:
             A canonical wakeup transport name (``notify``, ``notify_queue``,
             ``poll_queue``, ``polling``, ``aq``, or ``txeventq``).
         """
-        return _resolve_notify_transport(
-            explicit_transport=self._notify_transport,
-            event_backend=self._event_backend,
-            sqlspec_config=sqlspec_config,
-            queue_settings=queue_settings,
-            events_settings=events_settings,
-        )
+        return _resolve_wakeup_transport(explicit_transport=self._wakeup_transport, sqlspec_config=sqlspec_config)
 
-    def _notifications_should_enable(self, notifications_requested: "bool | None", transport: "str") -> "bool":
+    def _worker_wakeups_should_enable(self, transport: "str") -> "bool":
         """Decide whether push wakeups are active for the resolved transport.
 
         Native wakeups are default-on: whenever the resolved transport is
         capability-native (anything other than ``polling``) an events channel
-        backs worker wakeups with no configuration. ``notifications=False`` is
+        backs worker wakeups with no configuration. ``worker_wakeups=None`` is
         the explicit opt-out, and a capability-gated ``polling`` transport (an
         adapter that cannot push, with no explicit override) stays on interval
-        polling. Notifications only add wakeups; the frozen claim/lease contract
-        is unaffected.
+        polling. Wakeups do not change task-claim ownership semantics.
 
         Returns:
             True when an events channel should back worker wakeups.
         """
-        if notifications_requested is False:
+        if not self._worker_wakeups_configured:
             return False
         if self._event_channel is not None:
             return True
-        return transport != _NOTIFY_TRANSPORT_POLLING
+        return transport != _WAKEUP_TRANSPORT_POLLING
 
-    def _resolve_event_poll_interval(
-        self, queue_settings: "dict[str, Any]", events_settings: "dict[str, Any]"
+    def _resolve_wakeup_poll_interval(self) -> "None":
+        if self._wakeup_poll_interval is None and "poll_interval" in self._wakeup_settings:
+            self._wakeup_poll_interval = float(self._wakeup_settings["poll_interval"])
+
+    def _apply_wakeup_settings(
+        self, sqlspec_config: "SQLSpecConfig", events_settings: "dict[str, Any]", transport: "str"
     ) -> "None":
-        configured_poll_interval = self._event_poll_interval
-        if configured_poll_interval is None:
-            configured_poll_interval = _setting(queue_settings, "event_poll_interval")
-        if configured_poll_interval is None and "poll_interval" in events_settings:
-            configured_poll_interval = events_settings["poll_interval"]
-        if configured_poll_interval is not None:
-            self._event_poll_interval = float(configured_poll_interval)
+        merged_wakeup_settings = dict(events_settings)
+        merged_wakeup_settings.update(self._wakeup_settings)
+        merged_wakeup_settings["backend"] = transport
 
-    def _apply_event_settings(
-        self,
-        sqlspec_config: "SQLSpecConfig",
-        queue_settings: "dict[str, Any]",
-        events_settings: "dict[str, Any]",
-        transport: "str",
-    ) -> "None":
-        merged_event_settings = dict(events_settings)
-        for name in _QUEUE_SETTING_EVENT_SETTINGS:
-            configured_events = queue_settings.get(name)
-            if isinstance(configured_events, dict):
-                merged_event_settings.update(configured_events)
-        merged_event_settings.update(self._event_settings)
-        merged_event_settings["backend"] = transport
+        if self._wakeup_queue_table is not None:
+            merged_wakeup_settings["queue_table"] = str(self._wakeup_queue_table)
 
-        configured_queue_table = self._event_queue_table or _setting(queue_settings, "event_queue_table")
-        if configured_queue_table is not None:
-            merged_event_settings["queue_table"] = str(configured_queue_table)
-
-        self._resolve_event_poll_interval(queue_settings, merged_event_settings)
-        if self._event_poll_interval is not None:
-            merged_event_settings["poll_interval"] = self._event_poll_interval
+        self._resolve_wakeup_poll_interval()
+        if self._wakeup_poll_interval is not None:
+            merged_wakeup_settings["poll_interval"] = self._wakeup_poll_interval
 
         extension_config = dict(sqlspec_config.extension_config or {})
-        extension_config[_EVENT_EXTENSION_NAME] = merged_event_settings
+        extension_config[_EVENT_EXTENSION_NAME] = merged_wakeup_settings
         sqlspec_config.extension_config = extension_config
         migration_config = dict(sqlspec_config.migration_config or {})
         sqlspec_config.set_migration_config(migration_config)
@@ -1617,47 +1536,49 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             store = create_event_log_store(
                 self._get_sqlspec_config(),
                 queue_table_name=self._resolve_queue_table_name(),
-                event_log_table_name=self._event_log_table_name,
+                event_history_table_name=self._event_history_table_name,
                 manage_schema=self._manage_schema,
             )
-            self._event_log_table_name = store.table_name
+            self._event_history_table_name = store.table_name
             self._event_log_store = store
         return self._event_log_store
 
     def _get_event_log_store_if_enabled(self) -> "Any | None":
-        return self._get_event_log_store() if self._event_log_enabled() else None
+        return self._get_event_log_store() if self._event_history_enabled() else None
 
-    def _get_maintenance_lease_store(self) -> "SQLSpecMaintenanceLeaseStore":
-        if self._maintenance_lease_store is None:
-            store = create_maintenance_lease_store(
+    def _get_maintenance_store(self) -> "SQLSpecMaintenanceStore":
+        if self._maintenance_store is None:
+            store = create_maintenance_store(
                 self._get_sqlspec_config(),
                 queue_table_name=self._resolve_queue_table_name(),
-                maintenance_lease_table_name=self._maintenance_lease_table_name,
+                maintenance_table_name=self._maintenance_table_name,
                 manage_schema=self._manage_schema,
             )
-            self._maintenance_lease_table_name = store.table_name
-            self._maintenance_lease_store = store
-        return self._maintenance_lease_store
+            self._maintenance_table_name = store.table_name
+            self._maintenance_store = store
+        return self._maintenance_store
 
-    def _get_uniqueness_store(self) -> "SQLSpecQueueTombstoneStore":
-        if self._uniqueness_store is None:
-            store = create_tombstone_store(
+    def _get_task_reservation_store(self) -> "SQLSpecTaskReservationStore":
+        if self._task_reservation_store is None:
+            store = create_task_reservation_store(
                 self._get_sqlspec_config(),
                 queue_table_name=self._resolve_queue_table_name(),
-                uniqueness_table_name=self._uniqueness_table_name,
+                task_reservation_table_name=self._task_reservation_table_name,
                 manage_schema=self._manage_schema,
             )
-            self._uniqueness_table_name = store.table_name
-            self._uniqueness_store = store
-        return self._uniqueness_store
+            self._task_reservation_table_name = store.table_name
+            self._task_reservation_store = store
+        return self._task_reservation_store
 
-    def _event_log_enabled(self) -> "bool":
-        return bool(self.config is not None and self.config.event_log is not None and self.config.event_log.enabled)
+    def _event_history_enabled(self) -> "bool":
+        return bool(
+            self.config is not None and self.config.events is not None and self.config.events.history is not None
+        )
 
-    def _resolve_event_log_table_name(self) -> "str":
-        if self._event_log_table_name is None:
-            self._event_log_table_name = resolve_event_log_table_name(self._resolve_queue_table_name())
-        return self._event_log_table_name
+    def _resolve_event_history_table_name(self) -> "str":
+        if self._event_history_table_name is None:
+            self._event_history_table_name = resolve_event_history_table_name(self._resolve_queue_table_name())
+        return self._event_history_table_name
 
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[SQLSpecDriver]":
@@ -1806,7 +1727,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return record.status == "failed" and record.error == STALE_HEARTBEAT_ERROR
 
     def _get_observability_runtime(self) -> "Any | None":
-        if not self._queue_observability:
+        if not self._native_observability_enabled:
             return None
         return self._get_sqlspec_config().get_observability_runtime()
 
@@ -1851,7 +1772,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return existing
 
     def _plan_bulk_enqueue(
-        self, specs: "Sequence[EnqueueSpec]", existing_by_key: "dict[str, QueuedTaskRecord]", now: "datetime"
+        self, requests: "Sequence[TaskRequest]", existing_by_key: "dict[str, QueuedTaskRecord]", now: "datetime"
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord], list[UUID]]":
         """Resolve deduplication keys and build records, preserving input order.
 
@@ -1867,14 +1788,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         to_insert: "list[QueuedTaskRecord]" = []
         terminal_keys_to_clear: "list[UUID]" = []
         batch_new_by_key: "dict[str, QueuedTaskRecord]" = {}
-        for spec in specs:
-            key = spec.key
+        for request in requests:
+            key = request.key
             if key is not None:
                 reused = self._reuse_for_key(key, existing_by_key, batch_new_by_key, terminal_keys_to_clear)
                 if reused is not None:
                     results.append(reused)
                     continue
-            record = self._record_from_spec(spec, now)
+            record = self._record_from_request(request, now)
             results.append(record)
             to_insert.append(record)
             if key is not None:
@@ -1904,20 +1825,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return None
 
     @staticmethod
-    def _record_from_spec(spec: "EnqueueSpec", now: "datetime") -> "QueuedTaskRecord":
+    def _record_from_request(request: "TaskRequest", now: "datetime") -> "QueuedTaskRecord":
         return QueuedTaskRecord(
-            task_name=spec.task_name,
-            args=spec.args,
-            kwargs=dict(spec.kwargs or {}),
-            queue=spec.queue,
-            execution_backend=spec.execution_backend,
-            execution_profile=spec.execution_profile,
-            status="scheduled" if spec.scheduled_at is not None and spec.scheduled_at > now else "pending",
-            priority=spec.priority,
-            max_retries=spec.max_retries,
-            scheduled_at=spec.scheduled_at,
-            key=spec.key,
-            metadata=dict(spec.metadata or {}),
+            task_name=request.task_name,
+            args=request.args,
+            kwargs=dict(request.kwargs or {}),
+            queue=request.queue,
+            execution_backend=request.execution_backend,
+            execution_profile=request.execution_profile,
+            status=("scheduled" if request.scheduled_at is not None and request.scheduled_at > now else "pending"),
+            priority=request.priority,
+            max_retries=request.max_retries,
+            scheduled_at=request.scheduled_at,
+            key=request.key,
+            metadata=dict(request.metadata or {}),
         )
 
     async def _bulk_insert(
@@ -2244,8 +2165,8 @@ def _coerce_status(value: "Any") -> "TaskStatus":
     return cast("TaskStatus", status)
 
 
-def _tombstone_from_row(row: "dict[str, Any]") -> "UniquenessTombstone":
-    return UniquenessTombstone(
+def _reservation_from_row(row: "dict[str, Any]") -> "TaskReservation":
+    return TaskReservation(
         key=str(row["identity_key"]),
         task_id=UUID(str(row["task_id"])),
         task_name=str(row["task_name"]),
@@ -2270,31 +2191,17 @@ async def _create_schema_statements(store: "SQLSpecQueueStore", driver: "SQLSpec
     return store.create_statements()
 
 
-def _resolve_notify_transport(
-    *,
-    explicit_transport: "str | None",
-    event_backend: "str | None",
-    sqlspec_config: "SQLSpecConfig",
-    queue_settings: "dict[str, Any]",
-    events_settings: "dict[str, Any]",
-) -> "str":
-    """Resolve the effective wakeup transport from config precedence.
+def _resolve_wakeup_transport(*, explicit_transport: "str | None", sqlspec_config: "SQLSpecConfig") -> "str":
+    """Resolve the effective wakeup transport from typed config and adapter capabilities.
 
-    Explicit ``queue_backend_config`` selections win over ``extension_config``
-    defaults, which in turn win over the per-adapter capability gate.
+    Explicit worker-wakeup configuration wins over the per-adapter capability gate.
 
     Returns:
         A canonical wakeup transport name.
     """
     if explicit_transport is not None:
         return explicit_transport
-    configured_transport = _setting(queue_settings, "notify_transport")
-    if configured_transport is not None:
-        return _validate_queue_notify_transport(str(configured_transport))
-    configured_backend = event_backend or _setting(queue_settings, "event_backend") or events_settings.get("backend")
-    if configured_backend is not None:
-        return _validate_queue_notify_transport(str(configured_backend))
-    return _adapter_notify_transport(resolve_adapter_name(sqlspec_config))
+    return _adapter_wakeup_transport(resolve_adapter_name(sqlspec_config))
 
 
 def resolve_events_migration_backend(
@@ -2312,21 +2219,10 @@ def resolve_events_migration_backend(
     Returns:
         The durable events-table transport name, or ``None``.
     """
-    if backend_config.notifications is False or backend_config.event_channel is not None:
+    if backend_config.worker_wakeups is None or backend_config.worker_wakeups.channel is not None:
         return None
-    queue_settings = _queue_extension_settings(sqlspec_config)
-    if (
-        backend_config.notifications is None
-        and "notifications" in queue_settings
-        and not queue_settings["notifications"]
-    ):
-        return None
-    transport = _resolve_notify_transport(
-        explicit_transport=backend_config.notify_transport,
-        event_backend=backend_config.event_backend,
-        sqlspec_config=sqlspec_config,
-        queue_settings=queue_settings,
-        events_settings=_events_extension_settings(sqlspec_config),
+    transport = _resolve_wakeup_transport(
+        explicit_transport=backend_config.worker_wakeups.transport, sqlspec_config=sqlspec_config
     )
     return transport if transport in _EVENTS_TABLE_BACKENDS else None
 
@@ -2407,7 +2303,7 @@ def _setting(queue_settings: "dict[str, Any]", *names: "str") -> "Any":
     return None
 
 
-def _normalize_notification_channel(channel: "str") -> "str":
+def _normalize_wakeup_channel(channel: "str") -> "str":
     try:
         return str(normalize_event_channel_name(channel))
     except Exception as exc:

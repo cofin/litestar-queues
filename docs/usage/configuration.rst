@@ -6,13 +6,13 @@ Pass one :class:`~litestar_queues.QueueConfig` to the plugin:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, QueuePlugin
+   from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 
    queue_plugin = QueuePlugin(
        config=QueueConfig(
            queue_backend="memory",
            execution_backend="local",
-           in_app_worker=True,
+           worker=WorkerConfig(run_in_app=True),
        )
    )
 
@@ -31,26 +31,26 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``execution_backend``
      - :doc:`backends`
    * - Worker placement
-     - ``in_app_worker``
+     - ``worker.run_in_app``
      - :doc:`workers`
    * - Claiming and concurrency
-     - ``worker_batch_size``, ``worker_max_concurrency``
+     - ``worker.batch_size``, ``worker.max_concurrency``
      - :doc:`workers`
    * - Idle waiting
-     - ``worker_poll_interval``
+     - ``worker.poll_interval``
      - :doc:`worker-wakeups`
    * - Heartbeats and recovery
-     - ``worker_heartbeat_interval``, ``worker_heartbeat_miss_threshold``,
-       ``worker_stale_after``, ``worker_stale_check_interval``
+     - ``worker.heartbeat_interval``, ``worker.heartbeat_miss_threshold``,
+       ``worker.stale_after``, ``worker.stale_check_interval``
      - :doc:`worker-recovery`
    * - Shutdown
-     - ``worker_graceful_shutdown_timeout``, ``worker_final_cancel_timeout``
+     - ``worker.graceful_shutdown_timeout``, ``worker.final_cancel_timeout``
      - :doc:`workers`
    * - Task discovery
      - ``task_modules``
      - :doc:`tasks`
    * - Argument identity size guard
-     - ``max_task_payload_bytes``
+     - ``max_argument_identity_bytes``
      - :doc:`task-options`
    * - Schedules
      - ``initialize_schedules``, ``scheduler_canary_task``
@@ -59,7 +59,7 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``maintenance``
      - :doc:`maintenance`
    * - Events
-     - ``event``, ``event_log``, ``event_stream``
+     - ``events.delivery``, ``events.history``, ``events.stream``
      - :doc:`events`, :doc:`event-history`, :doc:`event-streams`
    * - Observability
      - ``observability``

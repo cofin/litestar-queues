@@ -23,7 +23,7 @@ async def run(request: AdapterRequest) -> AdapterResult:
 
 
 async def _run(request: AdapterRequest) -> AdapterResult:
-    from litestar_queues import QueueConfig, QueueService, Worker, task
+    from litestar_queues import QueueConfig, QueueService, Worker, WorkerConfig, task
 
     @task(f"queue_bench_noop_{request.namespace}", queue=request.namespace)
     async def noop(payload: str) -> int:
@@ -34,11 +34,13 @@ async def _run(request: AdapterRequest) -> AdapterResult:
         queue_backend=backend_config,
         execution_backend="local",
         initialize_schedules=False,
-        quiet_success=False,
-        worker_batch_size=max(10, request.concurrency),
-        worker_max_concurrency=request.concurrency,
-        worker_poll_interval=0.01,
-        worker_queues=(request.namespace,),
+        log_success=False,
+        worker=WorkerConfig(
+            batch_size=max(10, request.concurrency),
+            max_concurrency=request.concurrency,
+            poll_interval=0.01,
+            queues=(request.namespace,),
+        ),
     )
     async with QueueService(config) as service:
         if request.backend == "postgres":
@@ -51,10 +53,12 @@ async def _run(request: AdapterRequest) -> AdapterResult:
             await sqlspec_backend.create_schema()
         worker = Worker(
             service,
-            batch_size=max(10, request.concurrency),
-            max_concurrency=request.concurrency,
-            poll_interval=0.01,
-            queues=(request.namespace,),
+            WorkerConfig(
+                batch_size=max(10, request.concurrency),
+                max_concurrency=request.concurrency,
+                poll_interval=0.01,
+                queues=(request.namespace,),
+            ),
         )
         worker_task: asyncio.Task[None] | None = None
         if request.scenario == "roundtrip":
@@ -93,21 +97,17 @@ def _backend_config(request: AdapterRequest) -> Any:
         from litestar_queues.backends.redis import RedisBackendConfig
 
         return RedisBackendConfig(
-            url=request.dsn, key_prefix=request.namespace, notification_channel=f"{request.namespace}:notifications"
+            url=request.dsn, key_prefix=request.namespace, wakeup_channel=f"{request.namespace}:wakeups"
         )
     if request.backend == "postgres":
         from sqlspec.adapters.psycopg import PsycopgAsyncConfig
 
-        from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+        from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecWorkerWakeupConfig
 
         return SQLSpecBackendConfig(
-            config=PsycopgAsyncConfig(
-                connection_config={"conninfo": request.dsn, "autocommit": True},
-                extension_config={"events": {"backend": "notify"}},
-            ),
+            sqlspec_config=PsycopgAsyncConfig(connection_config={"conninfo": request.dsn, "autocommit": True}),
             queue_table_name=request.namespace,
-            notification_channel=f"{request.namespace}_notify",
-            notify_transport="notify",
+            worker_wakeups=SQLSpecWorkerWakeupConfig(channel_name=f"{request.namespace}_wakeups", transport="notify"),
         )
     msg = f"unsupported Litestar Queues backend {request.backend!r}"
     raise ValueError(msg)

@@ -20,11 +20,11 @@ class FakeSQLSpecConfig(SimpleNamespace):
 
 def test_sqlspec_queue_store_create_statements_split_schema_qualified_table_name() -> "None":
     """CREATE TABLE must quote schema and table as separate identifiers."""
-    store = create_queue_store(_fake_postgres_config(), table_name="app.litestar_queue_task")
+    store = create_queue_store(_fake_postgres_config(), table_name="app.queue_task")
 
     ddl = "\n".join(store.create_statements())
 
-    assert 'CREATE TABLE IF NOT EXISTS "app"."litestar_queue_task"' in ddl
+    assert 'CREATE TABLE IF NOT EXISTS "app"."queue_task"' in ddl
 
 
 def _fake_postgres_config() -> "FakeSQLSpecConfig":

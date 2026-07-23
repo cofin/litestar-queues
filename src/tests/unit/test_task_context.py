@@ -5,9 +5,10 @@ import pytest
 from litestar_queues import QueueConfig, QueueService, task
 from litestar_queues.events import (
     EventBufferConfig,
-    EventConfig,
+    EventDeliveryConfig,
     InMemoryQueueEventSink,
     QueueEventPublisher,
+    QueueEventsConfig,
     TaskExecutionContext,
     beat,
     get_current_task_context,
@@ -41,7 +42,11 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None"
         await publish_task_event("task.custom", message="custom", payload={"value": "ok"})
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="immediate", event=EventConfig(sink=sink))) as service:
+    async with QueueService(
+        QueueConfig(
+            execution_backend="immediate", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)))
+        )
+    ) as service:
         result = await service.enqueue(with_context)
         await result.refresh()
 
@@ -73,7 +78,11 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
         await publish_task_progress(percent=50)
         return received_kwargs
 
-    async with QueueService(QueueConfig(execution_backend="immediate", event=EventConfig(sink=sink))) as service:
+    async with QueueService(
+        QueueConfig(
+            execution_backend="immediate", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)))
+        )
+    ) as service:
         result = await service.enqueue(plain)
         await result.refresh()
 
@@ -84,7 +93,7 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
 
 async def test_context_progress_immediate_flushes_prior() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10))
     context = _build_context(event_publisher=publisher)
 
     await context.log("buffered")
@@ -99,7 +108,7 @@ async def test_context_progress_immediate_flushes_prior() -> "None":
 
 async def test_module_helper_immediate_flushes_prior() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(buffer_size=10))
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10))
     context = _build_context(event_publisher=publisher)
 
     await context.log("buffered")
