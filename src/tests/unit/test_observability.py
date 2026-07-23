@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, Worker, task
+from litestar_queues import QueueConfig, QueueService, Worker, WorkerConfig, task
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -127,11 +127,13 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
-    plugin = QueuePlugin(QueueConfig(observability=ObservabilityConfig(enable_otel=None), in_app_worker=False))
+    plugin = QueuePlugin(
+        QueueConfig(observability=ObservabilityConfig(enable_otel=None), worker=WorkerConfig(run_in_app=False))
+    )
     app = Litestar(plugins=[plugin])
 
     async with plugin._lifespan(app):
-        service = app.state[plugin.config.queue_service_state_key]
+        service = app.state["queue_service"]
         assert isinstance(service, QueueService)
         assert service.observability_runtime is runtime
         assert seen_apps == [app]
@@ -354,7 +356,7 @@ class _ObservabilityTransientWorker(Worker):
     __slots__ = ("recovered", "run_once_calls")
 
     def __init__(self, service: "QueueService", *, recovered: "asyncio.Event", poll_interval: "float") -> "None":
-        super().__init__(service, poll_interval=poll_interval)
+        super().__init__(service, WorkerConfig(poll_interval=poll_interval))
         self.recovered = recovered
         self.run_once_calls = 0
 

@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from inspect import signature
 from pathlib import Path
 
 if sys.version_info >= (3, 11):
@@ -8,7 +9,7 @@ else:
     import tomli as tomllib
 
 
-def test_public_exports() -> "None":
+def test_public_exports() -> "None":  # noqa: PLR0915
     """Test that the package exposes the public queue API.
 
     Optional backends (advanced_alchemy, sqlspec, redis, valkey) are NOT in the
@@ -21,8 +22,8 @@ def test_public_exports() -> "None":
         CloudRunExecutionBackend,
         CloudRunExecutionConfig,
         CloudRunExecutionStatus,
-        EventConfig,
-        EventLogConfig,
+        EventDeliveryConfig,
+        EventHistoryConfig,
         EventStreamConfig,
         ExecutionBackendConfig,
         ExecutionBackendConfigProtocol,
@@ -36,14 +37,17 @@ def test_public_exports() -> "None":
         QueueConfig,
         QueuedTaskRecord,
         QueueError,
+        QueueEventsConfig,
         QueuePlugin,
         QueueService,
         ScheduleConfig,
         StaleTaskRecoveryResult,
         Task,
         TaskExitCode,
+        TaskReservation,
         TaskResult,
         Worker,
+        WorkerConfig,
         beat,
         consume_one,
         get_execution_backend_class,
@@ -63,9 +67,9 @@ def test_public_exports() -> "None":
         "CloudRunExecutionBackend",
         "CloudRunExecutionConfig",
         "CloudRunExecutionStatus",
-        "EnqueueSpec",
-        "EventConfig",
-        "EventLogConfig",
+        "TaskRequest",
+        "EventDeliveryConfig",
+        "EventHistoryConfig",
         "EventStreamConfig",
         "ExecutionBackendConfig",
         "ExecutionBackendConfigProtocol",
@@ -78,6 +82,7 @@ def test_public_exports() -> "None":
         "QueueBackendConfigProtocol",
         "QueuedTaskRecord",
         "QueueConfig",
+        "QueueEventsConfig",
         "QueueError",
         "QueuePlugin",
         "QueueService",
@@ -86,7 +91,9 @@ def test_public_exports() -> "None":
         "Task",
         "TaskExitCode",
         "TaskResult",
+        "TaskReservation",
         "Worker",
+        "WorkerConfig",
         "beat",
         "consume_one",
         "discover_tasks",
@@ -111,9 +118,10 @@ def test_public_exports() -> "None":
     assert expected_exports.issubset(set(litestar_queues.__all__))
     assert forbidden_exports.isdisjoint(set(litestar_queues.__all__))
     assert QueueConfig().queue_backend == "memory"
-    assert EventConfig().enabled is True
-    assert EventLogConfig().enabled is True
-    assert EventStreamConfig().enabled is True
+    assert EventDeliveryConfig().buffer is not None
+    assert EventHistoryConfig().batch_size == 20
+    assert EventStreamConfig().transports == {"sse", "websocket"}
+    assert QueueEventsConfig is not None
     assert QueueBackendConfig is not None
     assert ExecutionBackendConfig is not None
     assert QueueBackendConfigProtocol is not None
@@ -130,7 +138,7 @@ def test_public_exports() -> "None":
     assert {"cloudrun", "immediate", "local"}.issubset(set(list_execution_backends()))
     assert QueuePlugin().config.queue_backend == "memory"
     assert QueuePlugin().config.execution_backend == "local"
-    assert QueuePlugin().config.in_app_worker is True
+    assert QueuePlugin().config.worker.run_in_app is True
     assert QueueService(QueueConfig()).config.queue_backend == "memory"
     assert QueueService(QueueConfig()).config.execution_backend == "local"
     assert issubclass(QueueError, Exception)
@@ -143,7 +151,9 @@ def test_public_exports() -> "None":
     assert CloudRunExecutionStatus().running is True
     assert Task is not None
     assert TaskResult is not None
+    assert TaskReservation is not None
     assert Worker is not None
+    assert WorkerConfig().run_in_app is True
     assert TaskExitCode.SUCCESS.value == 0
     assert callable(consume_one)
     assert callable(run_task)
@@ -151,6 +161,48 @@ def test_public_exports() -> "None":
     assert get_task_registry() == {}
     assert get_scheduled_tasks() == {}
     assert callable(task)
+
+
+def test_enqueue_many_uses_task_request_vocabulary() -> "None":
+    """Bulk enqueue parameters describe submitted task requests."""
+    from litestar_queues.backends import BaseQueueBackend
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+
+    assert tuple(signature(BaseQueueBackend.enqueue_many).parameters) == ("self", "requests")
+    assert tuple(signature(InMemoryQueueBackend.enqueue_many).parameters) == ("self", "requests")
+
+
+def test_signature_namespace_covers_consolidated_public_types() -> "None":
+    """Litestar can resolve every consolidated core annotation by name."""
+    from litestar_queues import QueueConfig
+
+    namespace = QueueConfig().signature_namespace
+    required = {
+        "ChannelAuthorizer",
+        "CompositeQueueEventSink",
+        "EventBufferConfig",
+        "EventDeliveryConfig",
+        "EventHistoryConfig",
+        "EventStreamConfig",
+        "EventStreamTransport",
+        "HeartbeatTouch",
+        "HeartbeatTouchResult",
+        "QueueEventScope",
+        "QueueEventSink",
+        "QueueEventType",
+        "QueueEventsConfig",
+        "TaskIdentityError",
+        "TaskIdentityTooLargeError",
+        "TaskRequest",
+        "TaskReservation",
+        "TaskStatus",
+        "UnauthenticatedAccess",
+        "WorkerConfig",
+    }
+
+    assert required <= namespace.keys()
+    retired = {"Enqueue" + "Spec", "Event" + "Config", "EventLog" + "Config", "Uniqueness" + "Tombstone"}
+    assert retired.isdisjoint(namespace)
 
 
 def test_optional_backends_resolve_lazily_via_factory() -> "None":

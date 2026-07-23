@@ -89,8 +89,8 @@ schedule metadata and creates its next run. Keeping the schedule with the
 queue record lets persistent backends recover after a process restart.
 
 Scheduled records include the same task metadata used by normal enqueue calls.
-When a task does not set ``quiet_success``, schedule startup stores
-``QueueConfig.quiet_success`` on the queued record. This affects only the
+When a task does not set ``log_success``, schedule startup stores
+``QueueConfig.log_success`` on the queued record. This affects only the
 successful completion log line; scheduled tasks still publish lifecycle events
 and event history.
 
@@ -103,7 +103,7 @@ Configuration
        task_modules=("app.tasks",),
        initialize_schedules=True,
        execution_backend="local",
-       in_app_worker=True,
+       worker=WorkerConfig(run_in_app=True),
    )
 
 Set ``initialize_schedules=False`` when schedules are initialized by a separate

@@ -8,14 +8,14 @@ publisher and task tests:
 .. code-block:: python
 
    from litestar_queues import QueueConfig, QueueService
-   from litestar_queues.events import EventConfig, InMemoryQueueEventSink
+   from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
 
 
    async def test_import_publishes_progress() -> None:
        sink = InMemoryQueueEventSink()
        config = QueueConfig(
            execution_backend="immediate",
-           event=EventConfig(sink=sink),
+           events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
        )
 
        async with QueueService(config) as service:

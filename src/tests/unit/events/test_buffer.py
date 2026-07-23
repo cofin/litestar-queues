@@ -43,7 +43,7 @@ async def test_add_below_size_does_not_flush() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=3), sink_publish=sink.publish_many, record_drop=_ignore_drop)
+    buffer = LiveEventBuffer(EventBufferConfig(batch_size=3), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
     await buffer.add(_event("task.progress"), ("tasks",))
     await buffer.add(_event("task.log"), ("tasks",))
@@ -59,7 +59,7 @@ async def test_size_threshold_triggers_eager_flush() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(EventBufferConfig(buffer_size=2), sink_publish=sink.publish_many, record_drop=_ignore_drop)
+    buffer = LiveEventBuffer(EventBufferConfig(batch_size=2), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
     await buffer.add(_event("task.progress"), ("tasks",))
     await buffer.add(_event("task.log"), ("tasks",))
@@ -71,9 +71,7 @@ async def test_task_scoped_flush_drains_only_that_task() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop
-    )
+    buffer = LiveEventBuffer(EventBufferConfig(batch_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
     await buffer.add(_event("task.progress.1", task_id="task-a"), ("task-a",))
     await buffer.add(_event("task.progress.2", task_id="task-b"), ("task-b",))
@@ -94,7 +92,7 @@ async def test_drop_oldest_drops_and_records_metric(caplog: "pytest.LogCaptureFi
     drops: "list[str]" = []
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10, max_pending=2, overflow="drop_oldest"),
+        EventBufferConfig(batch_size=10, max_pending=2, overflow="drop_oldest"),
         sink_publish=sink.publish_many,
         record_drop=drops.append,
     )
@@ -116,7 +114,7 @@ async def test_drop_newest_refuses_incoming() -> "None":
     drops: "list[str]" = []
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10, max_pending=2, overflow="drop_newest"),
+        EventBufferConfig(batch_size=10, max_pending=2, overflow="drop_newest"),
         sink_publish=sink.publish_many,
         record_drop=drops.append,
     )
@@ -135,7 +133,7 @@ async def test_error_policy_raises() -> "None":
 
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10, max_pending=1, overflow="error"),
+        EventBufferConfig(batch_size=10, max_pending=1, overflow="error"),
         sink_publish=sink.publish_many,
         record_drop=_ignore_drop,
     )
@@ -151,7 +149,7 @@ async def test_block_waits_on_flush_not_caller() -> "None":
 
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10, max_pending=1, overflow="block"),
+        EventBufferConfig(batch_size=10, max_pending=1, overflow="block"),
         sink_publish=sink.publish_many,
         record_drop=_ignore_drop,
     )
@@ -174,7 +172,7 @@ async def test_interval_flush() -> "None":
 
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10, flush_interval=0.01), sink_publish=sink.publish_many, record_drop=_ignore_drop
+        EventBufferConfig(batch_size=10, flush_interval=0.01), sink_publish=sink.publish_many, record_drop=_ignore_drop
     )
 
     buffer.start()
@@ -191,9 +189,7 @@ async def test_stop_drains_remainder_before_return() -> "None":
     from litestar_queues.events.buffer import LiveEventBuffer
 
     sink = _RecordingSink()
-    buffer = LiveEventBuffer(
-        EventBufferConfig(buffer_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop
-    )
+    buffer = LiveEventBuffer(EventBufferConfig(batch_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
     await buffer.add(_event("one"), ("tasks",))
     await buffer.stop()
@@ -204,7 +200,7 @@ async def test_stop_drains_remainder_before_return() -> "None":
 async def test_flush_uses_publish_many_when_available() -> "None":
     sink = _BatchAwareSink()
     publisher = QueueEventPublisher(
-        sink, buffer_config=EventBufferConfig(buffer_size=10, flush_interval=60), publish_global_lifecycle=False
+        sink, buffer_config=EventBufferConfig(batch_size=10, flush_interval=60), publish_global_lifecycle=False
     )
 
     await publisher.publish(_event("task.progress"))
@@ -220,7 +216,7 @@ async def test_flush_uses_publish_many_when_available() -> "None":
 async def test_flush_falls_back_to_publish_loop() -> "None":
     sink = _PublishOnlySink()
     publisher = QueueEventPublisher(
-        sink, buffer_config=EventBufferConfig(buffer_size=10, flush_interval=60), publish_global_lifecycle=False
+        sink, buffer_config=EventBufferConfig(batch_size=10, flush_interval=60), publish_global_lifecycle=False
     )
 
     await publisher.publish(_event("task.progress"))

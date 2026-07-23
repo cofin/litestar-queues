@@ -6,21 +6,19 @@ def test_buffer_defaults() -> None:
 
     config = EventBufferConfig()
 
-    assert config.enabled is True
-    assert config.buffer_size == 20
+    assert config.batch_size == 20
     assert config.flush_interval == 0.5
     assert config.max_pending == 2000
     assert config.overflow == "drop_oldest"
 
 
 def test_event_config_buffer_default_factory() -> None:
-    from litestar_queues.events import EventBufferConfig, EventConfig
+    from litestar_queues.events import EventBufferConfig, EventDeliveryConfig
 
-    first = EventConfig()
-    second = EventConfig()
+    first = EventDeliveryConfig()
+    second = EventDeliveryConfig()
 
     assert isinstance(first.buffer, EventBufferConfig)
-    assert first.buffer.enabled is True
     assert first.buffer is not second.buffer
 
 

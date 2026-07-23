@@ -42,11 +42,7 @@ class SpannerQueueStore(SQLSpecQueueStore):
         ]
 
     def create_schema_for_config(self, config: "Any") -> "None":
-        """Create Spanner schema objects through the native DDL operation API.
-
-        Returns:
-            None.
-        """
+        """Create Spanner schema objects through the native DDL operation API."""
         if not self._manage_schema:
             return
         get_database = getattr(config, "get_database", None)

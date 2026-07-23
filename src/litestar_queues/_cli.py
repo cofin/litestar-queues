@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import signal
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, cast
 
@@ -50,14 +51,17 @@ def queues_group() -> "None":
 @queues_group.command(name="run", help="Start a standalone worker fleet.")
 @click.option("--queue", "queues", multiple=True, help="Queue name to process. Repeatable.")
 @click.option(
-    "--max-concurrency", type=click.IntRange(min=1), default=None, help="Override worker_max_concurrency for this run."
+    "--max-concurrency",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Override WorkerConfig.max_concurrency for this run.",
 )
 @click.option(
     "--drain-timeout",
     type=click.FloatRange(min=0),
     default=None,
     help="Seconds to wait for in-flight tasks to drain after SIGTERM/SIGINT. "
-    "Defaults to QueueConfig.worker_graceful_shutdown_timeout.",
+    "Defaults to QueueConfig.worker.graceful_shutdown_timeout.",
 )
 def run_command(
     ctx: "click.Context", queues: "tuple[str, ...]", max_concurrency: "int | None", drain_timeout: "float | None"
@@ -68,10 +72,10 @@ def run_command(
     if config.task_modules:
         load_task_modules(config.task_modules)
 
-    effective_concurrency = max_concurrency or config.worker_max_concurrency
-    effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker_graceful_shutdown_timeout
+    effective_concurrency = max_concurrency or config.worker.max_concurrency
+    effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker.graceful_shutdown_timeout
 
-    effective_queues = queues or config.worker_queues
+    effective_queues = queues or config.worker.queues
 
     exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues))
     ctx.exit(exit_code)
@@ -180,9 +184,9 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
     run_failed = False
     try:
         backend = service.get_queue_backend()
-        if not backend.capabilities.supports_maintenance_lease:
+        if not backend.capabilities.supports_maintenance:
             click.echo(
-                f"error: {type(backend).__name__} does not support the distributed maintenance lease required by "
+                f"error: {type(backend).__name__} does not support distributed maintenance coordination required by "
                 "'litestar queues run-maintenance'.",
                 err=True,
             )
@@ -223,7 +227,7 @@ def _emit_maintenance_summary(summary: "QueueMaintenanceSummary", as_json: "bool
         click.echo(json.dumps(summary.to_payload(), separators=(",", ":")))
         return
     click.echo(f"outcome: {summary.outcome}")
-    click.echo(f"lease_acquired: {summary.lease_acquired}")
+    click.echo(f"acquired: {summary.acquired}")
     click.echo(f"duration_ms: {summary.duration_ms:.1f}")
     click.echo(f"{'Phase':<10}{'Status':<12}{'Changed':>9}{'Duration(ms)':>14}  Error")
     click.echo(f"{'-' * 10}{'-' * 12}{'-' * 9:>9}{'-' * 12:>14}  {'-' * 5}")
@@ -247,23 +251,10 @@ async def _run_worker(
     config = plugin.config
     service = _open_service(plugin)
     await service.open()
-    worker = Worker(
-        service,
-        batch_size=config.worker_batch_size,
-        poll_interval=config.worker_poll_interval,
-        poll_backoff_max=config.worker_poll_backoff_max,
-        poll_backoff_multiplier=config.worker_poll_backoff_multiplier,
-        poll_jitter=config.worker_poll_jitter,
-        max_concurrency=max_concurrency,
-        heartbeat_interval=config.worker_heartbeat_interval,
-        heartbeat_miss_threshold=config.worker_heartbeat_miss_threshold,
-        reconcile_interval=config.worker_reconcile_interval,
-        stale_after=(timedelta(seconds=config.worker_stale_after) if config.worker_stale_after is not None else None),
-        stale_check_interval=config.worker_stale_check_interval,
-        graceful_shutdown_timeout=drain_timeout,
-        final_cancel_timeout=config.worker_final_cancel_timeout,
-        queues=queues,
+    worker_config = replace(
+        config.worker, max_concurrency=max_concurrency, graceful_shutdown_timeout=drain_timeout, queues=queues
     )
+    worker = Worker(service, worker_config)
 
     loop = asyncio.get_running_loop()
     stop_coordinator = _WorkerStopCoordinator(worker)
@@ -289,13 +280,13 @@ async def _run_worker(
                 exit_code = 2
         except asyncio.CancelledError:
             with contextlib.suppress(BaseException):
-                await asyncio.wait_for(worker_task, timeout=config.worker_final_cancel_timeout)
+                await asyncio.wait_for(worker_task, timeout=config.worker.final_cancel_timeout)
             exit_code = 2
         except Exception:
             exit_code = 1
     finally:
         with contextlib.suppress(Exception):
-            await stop_coordinator.finish(timeout=drain_timeout + config.worker_final_cancel_timeout)
+            await stop_coordinator.finish(timeout=drain_timeout + config.worker.final_cancel_timeout)
             await asyncio.wait_for(worker.stop(), timeout=drain_timeout)
         await service.close()
     return exit_code

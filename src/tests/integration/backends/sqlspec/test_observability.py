@@ -11,8 +11,8 @@ from sqlspec.observability import ObservabilityConfig as SQLSpecObservabilityCon
 from sqlspec.observability import StatementEvent
 from sqlspec.utils.correlation import CorrelationContext
 
-from litestar_queues import QueueConfig
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues import QueueConfig, QueueService
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.observability import ObservabilityConfig
 
 if TYPE_CHECKING:
@@ -71,7 +71,8 @@ async def test_sqlspec_backend_emits_queue_metrics_spans_and_correlation(tmp_pat
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            config=sqlspec_config, event_channel=cast("Any", StubEventChannel()), notifications=True
+            sqlspec_config=sqlspec_config,
+            worker_wakeups=SQLSpecWorkerWakeupConfig(channel=cast("Any", StubEventChannel())),
         )
     )
     await backend.open()
@@ -144,26 +145,6 @@ async def _exercise_observed_queue_operations(backend: "SQLSpecQueueBackend") ->
     )
 
 
-async def test_sqlspec_backend_can_disable_queue_domain_observability(tmp_path: "Path") -> "None":
-    statement_events: "list[StatementEvent]" = []
-    sqlspec_config = AiosqliteConfig(
-        connection_config={"database": str(tmp_path / "queue-disabled.db")},
-        observability_config=SQLSpecObservabilityConfig(statement_observers=(statement_events.append,)),
-    )
-    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=sqlspec_config, queue_observability=False))
-    await backend.open()
-    await backend.create_schema()
-    try:
-        with CorrelationContext.context("queue-observability-disabled"):
-            await backend.enqueue("tasks.observed.disabled")
-
-        metrics = sqlspec_config.get_observability_runtime().metrics_snapshot()
-        assert not any(".queue." in name for name in metrics)
-        assert any(event.correlation_id == "queue-observability-disabled" for event in statement_events)
-    finally:
-        await backend.close()
-
-
 async def test_package_observability_disables_sqlspec_queue_domain_observability(tmp_path: "Path") -> "None":
     statement_events: "list[StatementEvent]" = []
     sqlspec_config = AiosqliteConfig(
@@ -171,18 +152,17 @@ async def test_package_observability_disables_sqlspec_queue_domain_observability
         observability_config=SQLSpecObservabilityConfig(statement_observers=(statement_events.append,)),
     )
     queue_config = QueueConfig(observability=ObservabilityConfig(enable_otel=True))
-    backend = SQLSpecQueueBackend(config=queue_config, backend_config=SQLSpecBackendConfig(config=sqlspec_config))
-    await backend.open()
-    await backend.create_schema()
-    try:
+    backend = SQLSpecQueueBackend(
+        config=queue_config, backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config)
+    )
+    async with QueueService(queue_config, queue_backend=backend):
+        await backend.create_schema()
         with CorrelationContext.context("package-queue-observability"):
             await backend.enqueue("tasks.observed.package")
 
         metrics = sqlspec_config.get_observability_runtime().metrics_snapshot()
         assert not any(".queue." in name for name in metrics)
         assert any(event.correlation_id == "package-queue-observability" for event in statement_events)
-    finally:
-        await backend.close()
 
 
 class StubEventChannel:

@@ -15,14 +15,28 @@ class CloudRunExecutionConfig:
 
     backend_name: "ClassVar[str]" = "cloudrun"
     project_id: "str"
+    """Google Cloud project containing the target jobs."""
+
     region: "str" = "us-central1"
+    """Google Cloud region containing the target jobs."""
+
     job_name: "str | None" = None
+    """Default Cloud Run Job name; ``None`` requires a matching profile."""
+
     profiles: "dict[str, str]" = field(default_factory=dict)
+    """Execution-profile names mapped to Cloud Run Job names."""
+
     timeout: "int" = 300
-    poll_interval: "float" = 5.0
+    """Cloud Run API operation timeout in seconds."""
+
     env_prefix: "str" = "LITESTAR_QUEUES"
+    """Prefix used for environment variables passed to Cloud Run jobs."""
+
     extra_env: "dict[str, str]" = field(default_factory=dict)
+    """Additional environment variables passed to every Cloud Run execution."""
+
     fallback_execution_backend: "str | None" = None
+    """Backend used after dispatch failure; ``None`` propagates the failure."""
 
     def resolve_job_name(self, profile: "str | None" = None) -> "str":
         """Return the Cloud Run Job name for a profile.

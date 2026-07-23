@@ -4,6 +4,7 @@ import inspect
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, cast
 
+from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
 from litestar_queues.events.models import QueueEvent
 
 if TYPE_CHECKING:
@@ -51,11 +52,7 @@ class ChannelsQueueEventSink:
             await self._publish_one(event_chunk, channels=channels)
 
     async def publish_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
-        """Publish grouped events to Litestar Channels.
-
-        Returns:
-            None.
-        """
+        """Publish grouped events to Litestar Channels."""
         grouped: "dict[tuple[str, ...], list[QueueEvent]]" = {}
         for event, channels in batch:
             grouped.setdefault(tuple(channels), []).extend(self._event_chunks(event))
@@ -65,8 +62,6 @@ class ChannelsQueueEventSink:
     def _event_chunks(self, event: "QueueEvent") -> "Sequence[QueueEvent]":
         if self._max_payload_bytes is None:
             return (event,)
-        from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
-
         estimator = self._payload_size_estimator or estimate_event_payload_bytes
         return split_event_batch_by_size(event, max_bytes=self._max_payload_bytes, size_estimator=estimator)
 

@@ -10,13 +10,14 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
+from litestar_queues.backends.memory.event_log import InMemoryQueueEventLog
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
     QueuedTaskRecord,
     QueueStatistics,
     StaleTaskRecoveryResult,
-    UniquenessTombstone,
+    TaskReservation,
 )
 
 if TYPE_CHECKING:
@@ -24,8 +25,8 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import EnqueueSpec, HeartbeatTouch
+    from litestar_queues.events import EventHistoryConfig, QueueEventLog
+    from litestar_queues.models import HeartbeatTouch, TaskRequest
 
 __all__ = ("InMemoryQueueBackend",)
 
@@ -37,41 +38,37 @@ class InMemoryQueueBackend(BaseQueueBackend):
         "_event_log",
         "_keys",
         "_lock",
-        "_maintenance_leases",
+        "_maintenances",
         "_notification_event",
         "_pending_read",
         "_records",
-        "_tombstones",
+        "_reservations",
     )
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         super().__init__(config=config)
         self._records: "dict[UUID, QueuedTaskRecord]" = {}
         self._keys: "dict[str, UUID]" = {}
-        self._tombstones: "dict[str, UniquenessTombstone]" = {}
+        self._reservations: "dict[str, TaskReservation]" = {}
         self._lock = asyncio.Lock()
         self._notification_event = asyncio.Event()
         self._pending_read = PendingNativeRead()
         self._event_log: "QueueEventLog | None" = None
-        self._maintenance_leases: "dict[str, tuple[str, datetime]]" = {}
+        self._maintenances: "dict[str, tuple[str, datetime]]" = {}
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
         """Backend behavior capabilities."""
         return QueueBackendCapabilities(
-            supports_notifications=True,
-            notification_backend="asyncio-event",
-            notifications_durable=False,
-            supports_maintenance_lease=True,
+            supports_worker_wakeups=True,
+            wakeup_backend="asyncio-event",
+            wakeups_durable=False,
+            supports_maintenance=True,
         )
 
-    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return bounded, process-local queue event history when enabled."""
-        if not config.enabled:
-            return None
         if self._event_log is None:
-            from litestar_queues.backends.memory.event_log import InMemoryQueueEventLog
-
             self._event_log = InMemoryQueueEventLog(config)
         return self._event_log
 
@@ -121,21 +118,21 @@ class InMemoryQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+    async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
         """Persist multiple in-memory tasks while signaling waiters once.
 
         Returns:
-            Queue task records in the same order as ``specs``.
+            Queue task records in the same order as ``requests``.
         """
-        if not specs:
+        if not requests:
             return []
 
         records: "list[QueuedTaskRecord]" = []
         now = _utc_now()
         async with self._lock:
-            for spec in specs:
-                if spec.key is not None:
-                    existing_id = self._keys.get(spec.key)
+            for request in requests:
+                if request.key is not None:
+                    existing_id = self._keys.get(request.key)
                     if existing_id is not None:
                         existing = self._records.get(existing_id)
                         if existing is not None and not existing.is_terminal:
@@ -143,22 +140,24 @@ class InMemoryQueueBackend(BaseQueueBackend):
                             continue
 
                 record = QueuedTaskRecord(
-                    task_name=spec.task_name,
-                    args=spec.args,
-                    kwargs=dict(spec.kwargs or {}),
-                    queue=spec.queue,
-                    execution_backend=spec.execution_backend,
-                    execution_profile=spec.execution_profile,
-                    status="scheduled" if spec.scheduled_at is not None and spec.scheduled_at > now else "pending",
-                    priority=spec.priority,
-                    max_retries=spec.max_retries,
-                    scheduled_at=spec.scheduled_at,
-                    key=spec.key,
-                    metadata=dict(spec.metadata or {}),
+                    task_name=request.task_name,
+                    args=request.args,
+                    kwargs=dict(request.kwargs or {}),
+                    queue=request.queue,
+                    execution_backend=request.execution_backend,
+                    execution_profile=request.execution_profile,
+                    status=(
+                        "scheduled" if request.scheduled_at is not None and request.scheduled_at > now else "pending"
+                    ),
+                    priority=request.priority,
+                    max_retries=request.max_retries,
+                    scheduled_at=request.scheduled_at,
+                    key=request.key,
+                    metadata=dict(request.metadata or {}),
                 )
                 self._records[record.id] = record
-                if spec.key is not None:
-                    self._keys[spec.key] = record.id
+                if request.key is not None:
+                    self._keys[request.key] = record.id
                 records.append(record)
 
         await self.notify_new_tasks(records)
@@ -450,74 +449,74 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     del self._keys[record.key]
         return removed
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
-        """Acquire an expiring, token-fenced maintenance lease under the async lock.
+    async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire expiring, token-fenced maintenance ownership under the async lock.
 
         Returns:
-            True when the lease was granted to ``token``.
+            True when ownership was granted to ``token``.
         """
         async with self._lock:
             now = _utc_now()
-            existing = self._maintenance_leases.get(name)
+            existing = self._maintenances.get(name)
             if existing is not None and existing[1] > now and existing[0] != token:
                 return False
-            self._maintenance_leases[name] = (token, now + ttl)
+            self._maintenances[name] = (token, now + ttl)
             return True
 
-    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
-        """Release a maintenance lease only when ``token`` matches the holder.
+    async def release_maintenance(self, name: "str", token: "str") -> "bool":
+        """Release maintenance ownership only when ``token`` matches the holder.
 
         Returns:
-            True when a lease held under ``token`` was released.
+            True when ownership held under ``token`` was released.
         """
         async with self._lock:
-            existing = self._maintenance_leases.get(name)
+            existing = self._maintenances.get(name)
             if existing is None or existing[0] != token:
                 return False
-            del self._maintenance_leases[name]
+            del self._maintenances[name]
             return True
 
-    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "TaskReservation | None":
         """Reserve a forever identity under the shared lock beside key ownership.
 
         Returns:
             ``None`` when this caller won the reservation; otherwise the existing
-            owner tombstone.
+            owner reservation.
         """
         async with self._lock:
-            existing = self._tombstones.get(key)
+            existing = self._reservations.get(key)
             if existing is not None:
                 return existing
-            tombstone = UniquenessTombstone(key=key, task_id=task_id, task_name=task_name, created_at=_utc_now())
-            self._tombstones[key] = tombstone
+            reservation = TaskReservation(key=key, task_id=task_id, task_name=task_name, created_at=_utc_now())
+            self._reservations[key] = reservation
             return None
 
-    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
-        """Return the tombstone owning a reserved forever identity, if any."""
-        return self._tombstones.get(key)
+    async def has_identity(self, key: "str") -> "TaskReservation | None":
+        """Return the reservation owning a reserved forever identity, if any."""
+        return self._reservations.get(key)
 
     async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
-        """Delete a forever identity tombstone under the shared lock.
+        """Delete a forever identity reservation under the shared lock.
 
         Args:
             key: The exact effective identity key.
             expected_task_id: Optional task owner required for deletion.
 
         Returns:
-            ``True`` when a tombstone was removed.
+            ``True`` when a reservation was removed.
         """
         async with self._lock:
-            owner = self._tombstones.get(key)
+            owner = self._reservations.get(key)
             if owner is None or (expected_task_id is not None and owner.task_id != expected_task_id):
                 return False
-            del self._tombstones[key]
+            del self._reservations[key]
             return True
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         if record.status in {"pending", "scheduled"} and record.is_due:
             self._notification_event.set()
 
-    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+    async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         if not self._pending_read.has_pending and self._notification_event.is_set():
             self._notification_event.clear()
             return True
@@ -558,8 +557,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
         async with self._lock:
             self._records.clear()
             self._keys.clear()
-            self._maintenance_leases.clear()
-            self._tombstones.clear()
+            self._maintenances.clear()
+            self._reservations.clear()
             self._notification_event.clear()
         await self._pending_read.aclose()
         if self._event_log is not None:

@@ -5,15 +5,15 @@ from uuid import UUID, uuid4
 
 __all__ = (
     "TERMINAL_STATUSES",
-    "EnqueueSpec",
     "HeartbeatTouch",
     "HeartbeatTouchResult",
     "QueueBackendCapabilities",
     "QueueStatistics",
     "QueuedTaskRecord",
     "StaleTaskRecoveryResult",
+    "TaskRequest",
+    "TaskReservation",
     "TaskStatus",
-    "UniquenessTombstone",
 )
 
 TaskStatus = Literal["pending", "scheduled", "running", "completed", "failed", "cancelled"]
@@ -44,11 +44,11 @@ class HeartbeatTouchResult:
 class QueueBackendCapabilities:
     """Behavior advertised by a queue backend."""
 
-    supports_notifications: "bool" = False
-    notification_backend: "str | None" = None
-    notifications_durable: "bool" = False
+    supports_worker_wakeups: "bool" = False
+    wakeup_backend: "str | None" = None
+    wakeups_durable: "bool" = False
     supports_completion_events: "bool" = False
-    supports_maintenance_lease: "bool" = False
+    supports_maintenance: "bool" = False
 
 
 @dataclass(slots=True)
@@ -90,7 +90,7 @@ class StaleTaskRecoveryResult:
 
 
 @dataclass(frozen=True, slots=True)
-class UniquenessTombstone:
+class TaskReservation:
     """A durable ``unique_until="forever"`` identity reservation.
 
     Records only the identity key, the originating task id/name, and the
@@ -106,11 +106,11 @@ class UniquenessTombstone:
 
 
 @dataclass(slots=True)
-class EnqueueSpec:
-    """A single task specification for bulk enqueue via ``enqueue_many``.
+class TaskRequest:
+    """A task submission for bulk enqueue via ``enqueue_many``.
 
-    Mirrors the keyword arguments of :meth:`BaseQueueBackend.enqueue` so a batch
-    of tasks can be described declaratively and submitted in one call.
+    Carries the task name and enqueue arguments needed to submit one item in a
+    batch. The backend returns the resulting queue records in request order.
     """
 
     task_name: "str"

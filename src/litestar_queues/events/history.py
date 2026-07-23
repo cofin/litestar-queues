@@ -3,29 +3,43 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from litestar_queues.exceptions import QueueConfigurationError
+
 if TYPE_CHECKING:
     from datetime import datetime
 
     from litestar_queues.events.models import QueueEvent
 
-__all__ = ("EventLogConfig", "QueueEventLog", "QueueEventLogRecord", "QueueEventStageSummary")
+__all__ = ("EventHistoryConfig", "QueueEventLog", "QueueEventLogRecord", "QueueEventStageSummary")
 
 
 @dataclass(slots=True)
-class EventLogConfig:
+class EventHistoryConfig:
     """Configuration for backend-managed queue event history."""
 
-    enabled: "bool" = True
-    buffer_size: "int" = 20
+    batch_size: "int" = 20
+    """Maximum history records written in one batch."""
+
     flush_interval: "float" = 1.0
+    """Maximum delay between history batch writes in seconds."""
+
     strict: "bool" = False
-    max_records: "int" = 1000
+    """Whether event-history write failures propagate to the publisher."""
+
+    memory_capacity: "int" = 1000
+    """Maximum retained records for the memory backend."""
 
     def __post_init__(self) -> "None":
         """Validate event-history configuration."""
-        if self.max_records <= 0:
-            msg = "EventLogConfig.max_records must be greater than 0."
-            raise ValueError(msg)
+        if self.batch_size <= 0:
+            msg = "EventHistoryConfig.batch_size must be greater than 0."
+            raise QueueConfigurationError(msg)
+        if self.flush_interval <= 0:
+            msg = "EventHistoryConfig.flush_interval must be greater than 0."
+            raise QueueConfigurationError(msg)
+        if self.memory_capacity <= 0:
+            msg = "EventHistoryConfig.memory_capacity must be greater than 0."
+            raise QueueConfigurationError(msg)
 
 
 @dataclass(frozen=True, slots=True)

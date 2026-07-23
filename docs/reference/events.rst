@@ -2,6 +2,14 @@
 Events
 ======
 
+Configuration
+=============
+
+.. automodule:: litestar_queues.events.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Models
 ======
 
@@ -58,7 +66,7 @@ Sinks
 Event History
 =============
 
-.. automodule:: litestar_queues.events.log
+.. automodule:: litestar_queues.events.history
    :members:
    :undoc-members:
    :show-inheritance:

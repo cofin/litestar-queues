@@ -1,10 +1,10 @@
-"""SQLSpec-backed distributed maintenance lease store."""
+"""SQLSpec-backed distributed maintenance coordination store."""
 
 from typing import TYPE_CHECKING, Any
 
 from sqlspec import sql
 
-from litestar_queues.backends.sqlspec.schema import maintenance_lease_table_name_for, validate_table_name
+from litestar_queues.backends.sqlspec.schema import maintenance_table_name_for, validate_table_name
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type
 
@@ -14,20 +14,20 @@ if TYPE_CHECKING:
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecStoreConfig
 
 __all__ = (
-    "SQLSpecMaintenanceLeaseStore",
-    "SpannerMaintenanceLeaseStore",
-    "create_maintenance_lease_store",
-    "resolve_maintenance_lease_table_name",
+    "SQLSpecMaintenanceStore",
+    "SpannerMaintenanceStore",
+    "create_maintenance_store",
+    "resolve_maintenance_table_name",
 )
 
 
-class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
-    """SQLSpec statement store for the distributed maintenance lease table.
+class SQLSpecMaintenanceStore(SQLSpecQueueStore):
+    """SQLSpec statement store for distributed maintenance coordination.
 
-    The lease table has one row per lease name carrying the current holder's
+    The table has one row per operation name carrying the current holder's
     token and an expiry timestamp. Acquire is a compare-and-set; release deletes
     only the row that still matches name and token, so a stale holder can never
-    release a successor's lease.
+    remove a successor's ownership record.
     """
 
     __slots__ = ()
@@ -37,31 +37,31 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
         self._column_map = {}
 
     def create_statements(self) -> "list[str]":
-        """Return statements that create the maintenance-lease table."""
+        """Return statements that create the maintenance coordination table."""
         if not self._manage_schema:
             return []
-        return [self._create_lease_table_sql()]
+        return [self._create_table_sql()]
 
     def drop_statements(self) -> "list[str]":
-        """Return statements that drop the maintenance-lease table."""
+        """Return statements that drop the maintenance coordination table."""
         if not self._manage_schema:
             return []
-        return [self._drop_lease_table_sql()]
+        return [self._drop_table_sql()]
 
     def acquire_update(
         self, *, name: "str", token: "str", expires_at: "DatetimeParam", now: "DatetimeParam"
     ) -> "Update":
-        """Return an UPDATE that claims the named lease when the stored row is expired."""
+        """Return an UPDATE that claims the named operation when ownership expired."""
         return (
             sql
             .update(self.table_name)
             .set(token=token, expires_at=expires_at)
             .where_eq("name", name)
-            .where("expires_at <= :lease_now", lease_now=now)
+            .where("expires_at <= :coordination_now", coordination_now=now)
         )
 
-    def insert_lease(self, *, name: "str", token: "str", expires_at: "DatetimeParam") -> "Insert":
-        """Return an INSERT for a new lease row."""
+    def insert_coordination(self, *, name: "str", token: "str", expires_at: "DatetimeParam") -> "Insert":
+        """Return an INSERT for a new maintenance ownership row."""
         return (
             sql
             .insert(self.table_name)
@@ -69,22 +69,22 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
             .values(name=name, token=token, expires_at=expires_at)
         )
 
-    def select_lease_token(self, *, name: "str") -> "Select":
-        """Return a SELECT of the current token for a lease name."""
+    def select_coordination_token(self, *, name: "str") -> "Select":
+        """Return a SELECT of the current ownership token for an operation."""
         return sql.select("token").from_(self.table_name).where_eq("name", name)
 
-    def count_lease(self, *, name: "str", token: "str") -> "Select":
-        """Return a COUNT of rows matching a lease name and token."""
+    def count_coordination(self, *, name: "str", token: "str") -> "Select":
+        """Return a COUNT of ownership rows matching an operation and token."""
         return (
             sql
-            .select(sql.raw("COUNT(*) AS lease_count"))
+            .select(sql.raw("COUNT(*) AS coordination_count"))
             .from_(self.table_name)
             .where_eq("name", name)
             .where_eq("token", token)
         )
 
-    def release_delete(self, *, name: "str", token: "str") -> "Delete":
-        """Return a DELETE that releases a lease held under ``token``."""
+    def delete_coordination(self, *, name: "str", token: "str") -> "Delete":
+        """Return a DELETE that releases ownership held under ``token``."""
         return sql.delete(self.table_name).where_eq("name", name).where_eq("token", token)
 
     def _is_oracle(self) -> "bool":
@@ -109,7 +109,7 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
 
-    def _create_lease_table_sql(self) -> "str":
+    def _create_table_sql(self) -> "str":
         # Oracle and SQL Server both use identifier_quote_style="none", so Oracle
         # must be checked first. The sqlglot builder renders valid DDL for every
         # dialect EXCEPT SQL Server, whose DATETIME2 column type it cannot parse,
@@ -128,7 +128,7 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
             )
         return self._rendered_create(if_not_exists=True)
 
-    def _drop_lease_table_sql(self) -> "str":
+    def _drop_table_sql(self) -> "str":
         if self._is_oracle():
             return _oracle_ddl_block(f"DROP TABLE {self._quoted_table_name()}", ignored_code=-942)
         if type(self).identifier_quote_style == "none":  # SQL Server
@@ -136,8 +136,8 @@ class SQLSpecMaintenanceLeaseStore(SQLSpecQueueStore):
         return self._to_sql(sql.drop_table(self.table_name).if_exists())
 
 
-class SpannerMaintenanceLeaseStore(SQLSpecMaintenanceLeaseStore):
-    """Spanner maintenance-lease store with native-compatible DDL."""
+class SpannerMaintenanceStore(SQLSpecMaintenanceStore):
+    """Spanner maintenance coordination store with native-compatible DDL."""
 
     __slots__ = ()
 
@@ -146,7 +146,7 @@ class SpannerMaintenanceLeaseStore(SQLSpecMaintenanceLeaseStore):
     skip_cleanup_rollback = True
 
     def create_statements(self) -> "list[str]":
-        """Return the Spanner maintenance-lease CREATE TABLE statement."""
+        """Return the Spanner maintenance coordination CREATE TABLE statement."""
         if not self._manage_schema:
             return []
         columns = (
@@ -161,24 +161,20 @@ class SpannerMaintenanceLeaseStore(SQLSpecMaintenanceLeaseStore):
         ]
 
     def drop_statements(self) -> "list[str]":
-        """Return the Spanner maintenance-lease DROP TABLE statement."""
+        """Return the Spanner maintenance coordination DROP TABLE statement."""
         if not self._manage_schema:
             return []
         return [f"DROP TABLE {self._quoted_table_name()}"]
 
     def create_schema_for_config(self, config: "Any") -> "None":
-        """Create the lease table through Spanner's native DDL operation API.
-
-        Returns:
-            None.
-        """
+        """Create the coordination table through Spanner's native DDL operation API."""
         if not self._manage_schema:
             return
         from litestar_queues.backends.sqlspec.stores.spanner.store import _execute_spanner_ddl
 
         get_database = getattr(config, "get_database", None)
         if not callable(get_database):
-            msg = "Spanner maintenance-lease schema creation requires a SQLSpec SpannerSyncConfig."
+            msg = "Spanner maintenance schema creation requires a SQLSpec SpannerSyncConfig."
             raise TypeError(msg)
         database = get_database()
         for statement in self.create_statements():
@@ -191,63 +187,57 @@ class SpannerMaintenanceLeaseStore(SQLSpecMaintenanceLeaseStore):
         return "TIMESTAMP"
 
 
-def _lease_store_type_for(adapter_store_type: "type[SQLSpecQueueStore]") -> "type[SQLSpecMaintenanceLeaseStore]":
-    """Return a lease store class that inherits the adapter's store behavior.
+def _maintenance_store_type_for(adapter_store_type: "type[SQLSpecQueueStore]") -> "type[SQLSpecMaintenanceStore]":
+    """Return a maintenance store class that inherits the adapter's behavior.
 
-    Mixing the lease DDL/queries with the per-adapter queue store class gives the
-    lease table the adapter's timestamp type, identifier quoting, and datetime
+    Mixing the coordination DDL and queries with the per-adapter queue store
+    gives the table the adapter's timestamp type, identifier quoting, and datetime
     binding (e.g. MySQL ``DATETIME(6)`` and backtick quoting) instead of the
     generic base defaults.
 
     Returns:
-        A lease store subclass for ``adapter_store_type``.
+        A maintenance store subclass for ``adapter_store_type``.
     """
     if adapter_store_type is SQLSpecQueueStore:
-        return SQLSpecMaintenanceLeaseStore
+        return SQLSpecMaintenanceStore
     return type(
-        f"{adapter_store_type.__name__}MaintenanceLease",
-        (SQLSpecMaintenanceLeaseStore, adapter_store_type),
-        {"__slots__": ()},
+        f"{adapter_store_type.__name__}Maintenance", (SQLSpecMaintenanceStore, adapter_store_type), {"__slots__": ()}
     )
 
 
-def create_maintenance_lease_store(
+def create_maintenance_store(
     config: "SQLSpecStoreConfig",
     *,
     queue_table_name: "str",
-    maintenance_lease_table_name: "str | None" = None,
+    maintenance_table_name: "str | None" = None,
     manage_schema: "bool" = True,
-) -> "SQLSpecMaintenanceLeaseStore":
-    """Create a maintenance-lease store for a SQLSpec adapter configuration.
+) -> "SQLSpecMaintenanceStore":
+    """Create a maintenance coordination store for a SQLSpec adapter configuration.
 
     Returns:
-        A lease store configured for the resolved lease table.
+        A store configured for the resolved maintenance table.
     """
-    lease_store_type = (
-        SpannerMaintenanceLeaseStore
+    maintenance_store_type = (
+        SpannerMaintenanceStore
         if _adapter_name(config) == "spanner"
-        else _lease_store_type_for(_adapter_store_type(config))
+        else _maintenance_store_type_for(_adapter_store_type(config))
     )
-    return lease_store_type(
+    return maintenance_store_type(
         config,
-        table_name=resolve_maintenance_lease_table_name(
-            queue_table_name, maintenance_lease_table_name=maintenance_lease_table_name
-        ),
+        table_name=resolve_maintenance_table_name(queue_table_name, maintenance_table_name=maintenance_table_name),
         manage_schema=manage_schema,
     )
 
 
-def resolve_maintenance_lease_table_name(
-    queue_table_name: "str", *, maintenance_lease_table_name: "str | None" = None
-) -> "str":
-    """Resolve the SQLSpec maintenance-lease table name for a queue table.
+def resolve_maintenance_table_name(queue_table_name: "str", *, maintenance_table_name: "str | None" = None) -> "str":
+    """Resolve the SQLSpec maintenance table name for a queue table.
 
     Returns:
-        The explicit lease table name, or the derived queue-table lease name.
+        The explicit maintenance table name, or the name derived from the queue table.
     """
-    if maintenance_lease_table_name is not None:
-        return validate_table_name(maintenance_lease_table_name)
-    return maintenance_lease_table_name_for(queue_table_name)
+    if maintenance_table_name is not None:
+        return validate_table_name(maintenance_table_name)
+    return maintenance_table_name_for(queue_table_name)
 
 
 def _oracle_ddl_block(statement: "str", *, ignored_code: "int") -> "str":

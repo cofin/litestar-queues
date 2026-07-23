@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import EventConfig, QueueConfig, QueueService
-from litestar_queues.events import EventBufferConfig, QueueEvent
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService
+from litestar_queues.events import EventBufferConfig, QueueEvent, QueueEventsConfig
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -15,7 +15,11 @@ pytestmark = pytest.mark.anyio
 async def test_service_close_drains_buffer_before_sink_close() -> None:
     sink = _OrderingSink()
     service = QueueService(
-        QueueConfig(event=EventConfig(sink=sink, buffer=EventBufferConfig(buffer_size=10, flush_interval=60)))
+        QueueConfig(
+            events=QueueEventsConfig(
+                delivery=EventDeliveryConfig(sinks=(sink,), buffer=EventBufferConfig(batch_size=10, flush_interval=60))
+            )
+        )
     )
 
     await service.open()
@@ -31,7 +35,13 @@ async def test_service_close_drains_buffer_before_sink_close() -> None:
 async def test_service_open_starts_flush_loop() -> None:
     sink = _OrderingSink()
     service = QueueService(
-        QueueConfig(event=EventConfig(sink=sink, buffer=EventBufferConfig(buffer_size=10, flush_interval=0.01)))
+        QueueConfig(
+            events=QueueEventsConfig(
+                delivery=EventDeliveryConfig(
+                    sinks=(sink,), buffer=EventBufferConfig(batch_size=10, flush_interval=0.01)
+                )
+            )
+        )
     )
 
     await service.open()

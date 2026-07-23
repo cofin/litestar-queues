@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("valkey")
 
-from litestar_queues import EventLogConfig
+from litestar_queues import EventHistoryConfig
 from litestar_queues.backends.redis.event_log import RedisQueueEventLog
 from litestar_queues.events import QueueEvent
 
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_valkey_event_log_reuses_redis_protocol_implementation(valkey_backend: "ValkeyQueueBackend") -> "None":
-    event_log_config = EventLogConfig(buffer_size=10, flush_interval=60)
+    event_log_config = EventHistoryConfig(batch_size=10, flush_interval=60)
     event_log = valkey_backend.get_event_log(event_log_config)
     assert isinstance(event_log, RedisQueueEventLog)
 
@@ -45,7 +45,7 @@ async def test_valkey_event_log_reuses_redis_protocol_implementation(valkey_back
 
 async def test_valkey_event_cleanup_always_removes_the_global_index(valkey_backend: "ValkeyQueueBackend") -> "None":
     """Valkey must share Redis' explicit global-index cleanup invariant."""
-    event_log = valkey_backend.get_event_log(EventLogConfig(buffer_size=1))
+    event_log = valkey_backend.get_event_log(EventHistoryConfig(batch_size=1))
     assert event_log is not None
     event = QueueEvent(
         id="valkey-event-global-cleanup",
@@ -75,7 +75,7 @@ async def test_valkey_event_cleanup_always_removes_the_global_index(valkey_backe
 
 async def test_valkey_event_cleanup_continues_in_exact_bounded_batches(valkey_backend: "ValkeyQueueBackend") -> "None":
     """Valkey shares Redis' deterministic bounded cleanup continuation."""
-    event_log = valkey_backend.get_event_log(EventLogConfig(buffer_size=1))
+    event_log = valkey_backend.get_event_log(EventHistoryConfig(batch_size=1))
     assert event_log is not None
     events = [
         QueueEvent(

@@ -91,7 +91,7 @@ Event-history support
      - Ownership
    * - Memory
      - Supported, bounded and ephemeral
-     - ``EventLogConfig.max_records`` caps records in the process.
+     - ``EventHistoryConfig.memory_capacity`` caps records in the process.
    * - SQLSpec
      - Supported
      - The app owns the queue schema and migrations; SQLSpec manages the sessions.

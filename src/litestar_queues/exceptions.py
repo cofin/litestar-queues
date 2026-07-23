@@ -6,7 +6,7 @@ __all__ = (
     "QueueError",
     "QueueEventBufferFull",
     "TaskIdentityError",
-    "TaskPayloadTooLargeError",
+    "TaskIdentityTooLargeError",
     "job_cancelled",
     "non_retryable",
 )
@@ -31,7 +31,7 @@ class TaskIdentityError(QueueError):
     """
 
 
-class TaskPayloadTooLargeError(QueueError):
+class TaskIdentityTooLargeError(QueueError):
     """Raised when a canonical argument-identity payload exceeds the configured limit."""
 
     def __init__(self, *, actual_bytes: "int", max_bytes: "int") -> "None":
@@ -39,14 +39,14 @@ class TaskPayloadTooLargeError(QueueError):
 
         Args:
             actual_bytes: Measured size of the canonical identity payload.
-            max_bytes: Configured ``QueueConfig.max_task_payload_bytes`` limit.
+            max_bytes: Configured ``QueueConfig.max_argument_identity_bytes`` limit.
         """
         self.actual_bytes = actual_bytes
         self.max_bytes = max_bytes
         super().__init__(
             f"Task argument-identity payload is {actual_bytes} bytes, which exceeds the configured "
-            f"max_task_payload_bytes of {max_bytes} bytes. Externalize large payloads to object or "
-            "database storage and pass a stable identifier, or raise max_task_payload_bytes."
+            f"max_argument_identity_bytes of {max_bytes} bytes. Externalize large payloads to object or "
+            "database storage and pass a stable identifier, or raise max_argument_identity_bytes."
         )
 
 

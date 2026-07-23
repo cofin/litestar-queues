@@ -7,7 +7,7 @@ import pytest
 from typing_extensions import Self
 
 from litestar_queues import (
-    EventConfig,
+    EventDeliveryConfig,
     HeartbeatTouch,
     HeartbeatTouchResult,
     InMemoryQueueEventSink,
@@ -18,7 +18,7 @@ from litestar_queues import (
     task,
 )
 from litestar_queues.backends import InMemoryQueueBackend
-from litestar_queues.events import QueueEventPublisher
+from litestar_queues.events import QueueEventPublisher, QueueEventsConfig
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
@@ -381,43 +381,40 @@ async def test_backend_contract_requeue_stale_honors_bounded_limit(queue_backend
         assert stored.retry_count == 1
 
 
-async def test_backend_contract_maintenance_lease_fences_holders(queue_backend: "BaseQueueBackend") -> "None":
-    """A held maintenance lease denies other holders; only the matching token releases it."""
-    assert queue_backend.capabilities.supports_maintenance_lease is True
+async def test_backend_contract_maintenance_fences_holders(queue_backend: "BaseQueueBackend") -> "None":
+    """A held maintenance ownership denies other holders; only the matching token releases it."""
+    assert queue_backend.capabilities.supports_maintenance is True
     ttl = timedelta(seconds=60)
 
-    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-a", ttl=ttl) is True
-    # A second holder is denied while the lease is live.
-    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=ttl) is False
-    # A stale holder cannot release a lease it does not own.
-    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is False
-    # The owner releases and the lease becomes reacquirable.
-    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-a") is True
-    assert await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=ttl) is True
-    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is True
+    assert await queue_backend.acquire_maintenance("queue-maintenance", "token-a", ttl=ttl) is True
+    # A second holder is denied while the ownership is live.
+    assert await queue_backend.acquire_maintenance("queue-maintenance", "token-b", ttl=ttl) is False
+    # A stale holder cannot release ownership it does not hold.
+    assert await queue_backend.release_maintenance("queue-maintenance", "token-b") is False
+    # The owner releases and the ownership becomes reacquirable.
+    assert await queue_backend.release_maintenance("queue-maintenance", "token-a") is True
+    assert await queue_backend.acquire_maintenance("queue-maintenance", "token-b", ttl=ttl) is True
+    assert await queue_backend.release_maintenance("queue-maintenance", "token-b") is True
 
 
-async def test_backend_contract_maintenance_lease_expires(queue_backend: "BaseQueueBackend") -> "None":
-    """An expired maintenance lease can be reacquired by a fresh holder."""
+async def test_backend_contract_maintenance_expires(queue_backend: "BaseQueueBackend") -> "None":
+    """An expired maintenance ownership can be reacquired by a fresh holder."""
     assert (
-        await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-a", ttl=timedelta(milliseconds=50))
-        is True
+        await queue_backend.acquire_maintenance("queue-maintenance", "token-a", ttl=timedelta(milliseconds=50)) is True
     )
     await asyncio.sleep(0.2)
-    assert (
-        await queue_backend.acquire_maintenance_lease("queue-maintenance", "token-b", ttl=timedelta(seconds=60)) is True
-    )
-    assert await queue_backend.release_maintenance_lease("queue-maintenance", "token-b") is True
+    assert await queue_backend.acquire_maintenance("queue-maintenance", "token-b", ttl=timedelta(seconds=60)) is True
+    assert await queue_backend.release_maintenance("queue-maintenance", "token-b") is True
 
 
 async def test_memory_backend_notifications_wake_waiters() -> "None":
     backend = InMemoryQueueBackend()
-    waiter = asyncio.create_task(backend.wait_for_notifications(timeout=1))
+    waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=1))
 
     await backend.enqueue("tasks.notified")
 
     assert await waiter is True
-    assert await backend.wait_for_notifications(timeout=0.01) is False
+    assert await backend.wait_for_wakeups(timeout=0.01) is False
 
 
 async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backend: "BaseQueueBackend") -> "None":
@@ -498,7 +495,11 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
     async def succeed() -> "str":
         return "ok"
 
-    config = QueueConfig(task_dependency_resolver=resolver, execution_backend="local", event=EventConfig())
+    config = QueueConfig(
+        task_dependency_resolver=resolver,
+        execution_backend="local",
+        events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+    )
     service = QueueService(config, queue_backend=queue_backend, event_publisher=publisher)
 
     async with service:
@@ -571,7 +572,7 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
         execution_backend="cloudrun",
         execution_profile="batch-small",
         log_level="debug",
-        quiet_success=True,
+        log_success=True,
         run_after=timedelta(minutes=5),
     )
 
@@ -584,7 +585,7 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
     assert result.record.execution_profile == "batch-small"
     assert result.record.metadata["description"] == "external profile task"
     assert result.record.metadata["log_level"] == "debug"
-    assert result.record.metadata["quiet_success"] is True
+    assert result.record.metadata["log_success"] is True
     assert result.record.scheduled_at is not None
     assert result.record.scheduled_at > datetime.now(timezone.utc) + timedelta(minutes=4)
 
@@ -603,12 +604,12 @@ async def test_backend_contract_forever_reset_is_only_deletion_path(queue_backen
     await assert_reset_is_only_deletion_path(queue_backend)
 
 
-async def test_backend_contract_forever_tombstone_survives_terminal_cleanup(
+async def test_backend_contract_forever_reservation_survives_terminal_cleanup(
     queue_backend: "BaseQueueBackend",
 ) -> "None":
-    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+    from tests.integration._uniqueness_contract import assert_reservation_survives_terminal_cleanup
 
-    await assert_tombstone_survives_terminal_cleanup(queue_backend)
+    await assert_reservation_survives_terminal_cleanup(queue_backend)
 
 
 async def test_backend_contract_forever_concurrent_reservation_single_winner(

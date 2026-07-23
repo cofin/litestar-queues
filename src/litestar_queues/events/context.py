@@ -105,11 +105,7 @@ class TaskExecutionContext:
         await self.publish(event_type, message=message, payload=payload)
 
     def beat(self, detail: "str | None" = None) -> "None":
-        """Record last-value-wins progress for the next heartbeat tick.
-
-        Returns:
-            None.
-        """
+        """Record last-value-wins progress for the next heartbeat tick."""
         sink = _current_beat_sink.get()
         if sink is None:
             return

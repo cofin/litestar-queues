@@ -3,34 +3,34 @@
 from advanced_alchemy.base import UUIDAuditBase
 
 from litestar_queues.backends.advanced_alchemy.mixins import (
-    QueueEventLogModelMixin,
-    QueueMaintenanceLeaseModelMixin,
+    QueueEventHistoryModelMixin,
+    QueueMaintenanceModelMixin,
     QueueTaskModelMixin,
-    QueueUniquenessModelMixin,
+    QueueTaskReservationModelMixin,
 )
 
-__all__ = ("QueueEventLogModel", "QueueMaintenanceLeaseModel", "QueueTaskModel", "QueueUniquenessModel")
+__all__ = ("QueueEventHistoryModel", "QueueMaintenanceModel", "QueueTaskModel", "QueueTaskReservationModel")
 
 
 class QueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
     """Default queue task model for the Advanced Alchemy backend."""
 
-    __tablename__ = "litestar_queue_task"
+    __tablename__ = "queue_task"
 
 
-class QueueEventLogModel(UUIDAuditBase, QueueEventLogModelMixin):
+class QueueEventHistoryModel(UUIDAuditBase, QueueEventHistoryModelMixin):
     """Default queue event-history model for the Advanced Alchemy backend."""
 
-    __tablename__ = "litestar_queue_task_event_log"
+    __tablename__ = "queue_task_event_history"
 
 
-class QueueMaintenanceLeaseModel(UUIDAuditBase, QueueMaintenanceLeaseModelMixin):
-    """Default distributed maintenance-lease model for the Advanced Alchemy backend."""
+class QueueMaintenanceModel(UUIDAuditBase, QueueMaintenanceModelMixin):
+    """Default distributed maintenance coordination model for the Advanced Alchemy backend."""
 
-    __tablename__ = "litestar_queue_maintenance_lease"
+    __tablename__ = "queue_maintenance"
 
 
-class QueueUniquenessModel(UUIDAuditBase, QueueUniquenessModelMixin):
-    """Default forever-uniqueness tombstone model for the Advanced Alchemy backend."""
+class QueueTaskReservationModel(UUIDAuditBase, QueueTaskReservationModelMixin):
+    """Default forever-uniqueness reservation model for the Advanced Alchemy backend."""
 
-    __tablename__ = "litestar_queue_task_uniqueness"
+    __tablename__ = "queue_task_reservation"

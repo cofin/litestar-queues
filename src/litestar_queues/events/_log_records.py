@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
-from litestar_queues.events.log import QueueEventLogRecord
+from litestar_queues.events.history import QueueEventLogRecord
 
 if TYPE_CHECKING:
     from litestar_queues.events.models import QueueEvent

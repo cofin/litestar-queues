@@ -120,7 +120,7 @@ identity wins the precedence above, including an explicit enqueue key:
 
 - ``"terminal"`` allows a new record after the current one reaches a final
   state.
-- ``"forever"`` retains a tombstone until an administrator resets it.
+- ``"forever"`` retains a reservation until an administrator resets it.
 
 Spell out ``unique_until="forever"`` only when that retained identity is
 required:
@@ -148,9 +148,9 @@ Rules and validation
 - With no ``key`` and no ``unique_by``, uniqueness is disabled: every call is a
   separate, independently claimable record.
 - Schedules keep their internal ``scheduled:{task_name}`` identity and are never
-  rehashed or given uniqueness tombstones.
+  rehashed or given uniqueness reservations.
 - Hashing keeps only the identity key small. Large task payloads still belong in
   object or database storage; pass a stable id. Set
-  ``QueueConfig.max_task_payload_bytes`` to reject oversized
+  ``QueueConfig.max_argument_identity_bytes`` to reject oversized
   ``unique_by="arguments"`` payloads with
-  :class:`~litestar_queues.exceptions.TaskPayloadTooLargeError`.
+  :class:`~litestar_queues.exceptions.TaskIdentityTooLargeError`.

@@ -31,8 +31,8 @@ async def redis_backend(redis_service: "RedisService") -> "AsyncIterator[RedisQu
         backend_config=RedisBackendConfig(
             url=f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}",
             key_prefix=prefix,
-            notifications=True,
-            notification_channel=f"{prefix}:notifications",
+            worker_wakeups=True,
+            wakeup_channel=f"{prefix}:notifications",
         )
     )
     await backend.open()

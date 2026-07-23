@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from litestar_queues.exceptions import MissingDependencyError
@@ -35,16 +35,28 @@ class ObservabilityConfig:
     """Configuration for optional queue-domain observability."""
 
     enable_otel: "bool | None" = None
+    """OpenTelemetry policy; ``None`` follows the active Litestar telemetry plugin."""
+
     enable_prometheus: "bool" = False
+    """Whether queue metrics are registered with Prometheus."""
+
     tracer_name: "str" = "litestar_queues"
+    """Instrumentation name used to obtain the OpenTelemetry tracer."""
+
     meter_name: "str" = "litestar_queues"
-    service_name: "str | None" = None
-    resource_attributes: "dict[str, object]" = field(default_factory=dict)
+    """Instrumentation name used to obtain the OpenTelemetry meter."""
+
     tracer_provider: "Any | None" = None
+    """Explicit OpenTelemetry tracer provider; ``None`` uses the global provider."""
+
     meter_provider: "Any | None" = None
+    """Explicit OpenTelemetry meter provider; ``None`` uses the global provider."""
+
     prometheus_registry: "Any | None" = None
+    """Explicit Prometheus registry; ``None`` uses the client default registry."""
+
     metric_prefix: "str" = "litestar_queues"
-    disable_sqlspec_queue_observability: "bool" = True
+    """Prefix applied to package queue metric names."""
 
     def should_enable_otel(self, app: "Litestar | None" = None) -> "bool":
         """Return whether OpenTelemetry should be enabled.

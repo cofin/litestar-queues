@@ -28,7 +28,7 @@ from advanced_alchemy.operations import MergeStatement
 from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackend, SQLAlchemyBackendConfig
-from litestar_queues.models import EnqueueSpec, QueuedTaskRecord
+from litestar_queues.models import QueuedTaskRecord, TaskRequest
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
@@ -243,9 +243,9 @@ async def test_advanced_alchemy_enqueue_many_uses_one_operation_and_coalesces_du
     try:
         later = datetime.now(timezone.utc) + timedelta(minutes=5)
         records = await backend.enqueue_many([
-            EnqueueSpec("tasks.bulk.first", key="bulk:active", kwargs={"value": 1}),
-            EnqueueSpec("tasks.bulk.future", scheduled_at=later),
-            EnqueueSpec("tasks.bulk.duplicate", key="bulk:active", kwargs={"value": 2}),
+            TaskRequest("tasks.bulk.first", key="bulk:active", kwargs={"value": 1}),
+            TaskRequest("tasks.bulk.future", scheduled_at=later),
+            TaskRequest("tasks.bulk.duplicate", key="bulk:active", kwargs={"value": 2}),
         ])
 
         assert backend.operation_count == 1
@@ -284,7 +284,7 @@ async def test_advanced_alchemy_enqueue_many_rolls_back_and_skips_notification_o
     backend._service_class = failing_service
     try:
         with pytest.raises(RuntimeError, match="bulk failed"):
-            await backend.enqueue_many([EnqueueSpec("tasks.bulk.failure")])
+            await backend.enqueue_many([TaskRequest("tasks.bulk.failure")])
 
         assert backend.notification_batches == []
         assert (await backend.get_statistics()).total == 0
@@ -300,7 +300,7 @@ async def test_advanced_alchemy_enqueue_many_handles_large_batch_with_bounded_op
     )
     await backend.open()
     try:
-        records = await backend.enqueue_many([EnqueueSpec(f"tasks.bulk.{index}") for index in range(1000)])
+        records = await backend.enqueue_many([TaskRequest(f"tasks.bulk.{index}") for index in range(1000)])
         pending = await backend.list_pending(limit=1000)
 
         assert len(records) == 1000
@@ -334,28 +334,30 @@ async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_n
 ) -> "None":
     sqlite_backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
-            sqlalchemy_config=_sqlite_config(tmp_path / "polling.db"), model_class=ContractQueueTask, notifications=True
+            sqlalchemy_config=_sqlite_config(tmp_path / "polling.db"),
+            model_class=ContractQueueTask,
+            worker_wakeups=True,
         )
     )
     postgres_backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+asyncpg://user:pass@localhost/db"),
             model_class=ContractQueueTask,
-            notifications=True,
+            worker_wakeups=True,
         )
     )
     postgres_psycopg_backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+psycopg://user:pass@localhost/db"),
             model_class=ContractQueueTask,
-            notifications=True,
+            worker_wakeups=True,
         )
     )
     mysql_backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="mysql+asyncmy://user:pass@localhost/db"),
             model_class=ContractQueueTask,
-            notifications=True,
+            worker_wakeups=True,
         )
     )
     oracle_backend = SQLAlchemyBackend(
@@ -364,43 +366,43 @@ async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_n
                 connection_string="oracle+oracledb_async://user:pass@localhost:1521/?service_name=FREEPDB1"
             ),
             model_class=ContractQueueTask,
-            notifications=True,
+            worker_wakeups=True,
         )
     )
 
-    assert sqlite_backend.capabilities.supports_notifications is False
-    assert sqlite_backend.capabilities.notification_backend is None
-    assert sqlite_backend.capabilities.notifications_durable is False
-    assert mysql_backend.capabilities.supports_notifications is False
+    assert sqlite_backend.capabilities.supports_worker_wakeups is False
+    assert sqlite_backend.capabilities.wakeup_backend is None
+    assert sqlite_backend.capabilities.wakeups_durable is False
+    assert mysql_backend.capabilities.supports_worker_wakeups is False
     # Oracle stays polling: Advanced Alchemy exposes no AQ/TxEventQ transport.
-    assert oracle_backend.capabilities.supports_notifications is False
-    assert oracle_backend.capabilities.notification_backend not in {"aq", "txeventq"}
-    assert oracle_backend.capabilities.notification_backend is None
+    assert oracle_backend.capabilities.supports_worker_wakeups is False
+    assert oracle_backend.capabilities.wakeup_backend not in {"aq", "txeventq"}
+    assert oracle_backend.capabilities.wakeup_backend is None
     # Both async PostgreSQL drivers advertise transient LISTEN/NOTIFY wakeups.
     for pg_backend in (postgres_backend, postgres_psycopg_backend):
-        assert pg_backend.capabilities.supports_notifications is True
-        assert pg_backend.capabilities.notification_backend == "postgres-listen-notify"
-        assert pg_backend.capabilities.notifications_durable is False
+        assert pg_backend.capabilities.supports_worker_wakeups is True
+        assert pg_backend.capabilities.wakeup_backend == "postgres-listen-notify"
+        assert pg_backend.capabilities.wakeups_durable is False
 
 
-async def test_advanced_alchemy_wait_for_notifications_uses_dedicated_listener(tmp_path: "Path") -> "None":
+async def test_advanced_alchemy_wait_for_wakeups_uses_dedicated_listener(tmp_path: "Path") -> "None":
     backend = _FakeListenerSQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=SQLAlchemyAsyncConfig(connection_string="postgresql+asyncpg://user:pass@localhost/db"),
             model_class=ContractQueueTask,
-            notifications=True,
+            worker_wakeups=True,
         )
     )
     backend.listener.due_on_reconcile = True
 
-    assert await backend.wait_for_notifications(timeout=0.01) is True
+    assert await backend.wait_for_wakeups(timeout=0.01) is True
     assert backend.listener.started == 1
     assert backend.listener.waits == []
 
     backend.listener.due_on_reconcile = False
     backend.listener.mark_notified()
 
-    assert await backend.wait_for_notifications(timeout=0.01) is True
+    assert await backend.wait_for_wakeups(timeout=0.01) is True
     assert backend.listener.started == 1
     assert backend.listener.waits == [0.01]
 
@@ -422,25 +424,25 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=sqlalchemy_config,
             model_class=model_class,
-            notifications=True,
-            notification_channel=f"lq_notify_{uuid4().hex}",
+            worker_wakeups=True,
+            wakeup_channel=f"lq_notify_{uuid4().hex}",
         )
     )
     await backend.open()
     try:
-        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2.0))
+        waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=2.0))
         # Give the dedicated LISTEN connection time to subscribe before the
         # enqueue commits and publishes its notification.
         await asyncio.sleep(0.2)
         record = await backend.enqueue("tasks.pg.notify")
 
         assert await waiter is True
-        assert backend.capabilities.supports_notifications is True
-        assert backend.capabilities.notification_backend == "postgres-listen-notify"
+        assert backend.capabilities.supports_worker_wakeups is True
+        assert backend.capabilities.wakeup_backend == "postgres-listen-notify"
 
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
-        assert await backend.wait_for_notifications(timeout=0.01) is False
+        assert await backend.wait_for_wakeups(timeout=0.01) is False
     finally:
         with suppress(Exception):
             await _drop_dynamic_queue_model(backend, model_class)
@@ -461,14 +463,14 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=sqlalchemy_config,
             model_class=model_class,
-            notifications=True,
-            notification_channel=f"lq_reuse_{uuid4().hex}",
+            worker_wakeups=True,
+            wakeup_channel=f"lq_reuse_{uuid4().hex}",
         )
     )
     await backend.open()
     try:
         # A first empty wait establishes the LISTEN connection and retains its read.
-        assert await backend.wait_for_notifications(timeout=0.2) is False
+        assert await backend.wait_for_wakeups(timeout=0.2) is False
         listener = cast("Any", backend._notification_listener)
         assert listener is not None
         connection = listener._connection
@@ -476,7 +478,7 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
         assert listener._pending_read.has_pending is True
 
         # A concurrent waiter reuses the retained read; the enqueue's NOTIFY wakes it.
-        waiter = asyncio.create_task(backend.wait_for_notifications(timeout=2.0))
+        waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=2.0))
         await asyncio.sleep(0.1)
         await backend.enqueue("tasks.pg.reuse")
 
@@ -511,8 +513,8 @@ async def test_advanced_alchemy_postgres_dropped_marker_is_reconciled_from_durab
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=sqlalchemy_config,
             model_class=model_class,
-            notifications=True,
-            notification_channel=f"lq_drop_{uuid4().hex}",
+            worker_wakeups=True,
+            wakeup_channel=f"lq_drop_{uuid4().hex}",
         )
     )
     await backend.open()
@@ -522,7 +524,7 @@ async def test_advanced_alchemy_postgres_dropped_marker_is_reconciled_from_durab
 
         # The very first wait subscribes, then reconciles the durable table and
         # discovers the committed due row without any live notification.
-        assert await backend.wait_for_notifications(timeout=1.0) is True
+        assert await backend.wait_for_wakeups(timeout=1.0) is True
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
         assert claimed.status == "running"
@@ -547,8 +549,8 @@ async def test_advanced_alchemy_postgres_uncommitted_row_does_not_wake_committed
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=sqlalchemy_config,
             model_class=model_class,
-            notifications=True,
-            notification_channel=f"lq_commit_{uuid4().hex}",
+            worker_wakeups=True,
+            wakeup_channel=f"lq_commit_{uuid4().hex}",
         )
     )
     await backend.open()
@@ -573,10 +575,10 @@ async def test_advanced_alchemy_postgres_uncommitted_row_does_not_wake_committed
             # Reconciliation runs on a separate connection under READ
             # COMMITTED; the still-open insert is invisible and no marker
             # was published, so the waiter must not wake.
-            assert await backend.wait_for_notifications(timeout=0.4) is False
+            assert await backend.wait_for_wakeups(timeout=0.4) is False
             # Transaction committed on block exit.
         # The committed due row is now visible to durable reconciliation.
-        assert await backend.wait_for_notifications(timeout=1.0) is True
+        assert await backend.wait_for_wakeups(timeout=1.0) is True
     finally:
         with suppress(Exception):
             await _drop_dynamic_queue_model(backend, model_class)
@@ -847,12 +849,12 @@ async def test_advanced_alchemy_forever_reset_is_only_deletion_path(
     await assert_reset_is_only_deletion_path(advanced_alchemy_backend)
 
 
-async def test_advanced_alchemy_forever_tombstone_survives_terminal_cleanup(
+async def test_advanced_alchemy_forever_reservation_survives_terminal_cleanup(
     advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
-    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+    from tests.integration._uniqueness_contract import assert_reservation_survives_terminal_cleanup
 
-    await assert_tombstone_survives_terminal_cleanup(advanced_alchemy_backend)
+    await assert_reservation_survives_terminal_cleanup(advanced_alchemy_backend)
 
 
 async def test_advanced_alchemy_forever_concurrent_reservation_single_winner(

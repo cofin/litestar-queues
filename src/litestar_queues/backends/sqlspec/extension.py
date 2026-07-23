@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING, Any
 
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
-    event_log_table_name_for,
-    maintenance_lease_table_name_for,
+    event_history_table_name_for,
+    maintenance_table_name_for,
     migration_directory,
-    uniqueness_table_name_for,
+    task_reservation_table_name_for,
     validate_table_name,
 )
 
@@ -56,19 +56,19 @@ def configure_queue_migration_extension(
     sqlspec_config: "SQLSpecConfig",
     *,
     queue_table_name: "str" = DEFAULT_TABLE_NAME,
-    event_log_enabled: "bool" = False,
-    event_log_table_name: "str | None" = None,
-    maintenance_lease_table_name: "str | None" = None,
-    uniqueness_table_name: "str | None" = None,
+    event_history_enabled: "bool" = False,
+    event_history_table_name: "str | None" = None,
+    maintenance_table_name: "str | None" = None,
+    task_reservation_table_name: "str | None" = None,
 ) -> "None":
     """Register the packaged queue migrations with SQLSpec's extension runner."""
     queue_settings = _configure_extension_settings(
         sqlspec_config,
         queue_table_name=queue_table_name,
-        event_log_enabled=event_log_enabled,
-        event_log_table_name=event_log_table_name,
-        maintenance_lease_table_name=maintenance_lease_table_name,
-        uniqueness_table_name=uniqueness_table_name,
+        event_history_enabled=event_history_enabled,
+        event_history_table_name=event_history_table_name,
+        maintenance_table_name=maintenance_table_name,
+        task_reservation_table_name=task_reservation_table_name,
     )
     commands = sqlspec_config.get_migration_commands()
     commands.extension_configs[QUEUE_EXTENSION_NAME] = queue_settings
@@ -85,25 +85,23 @@ def _configure_extension_settings(
     sqlspec_config: "SQLSpecConfig",
     *,
     queue_table_name: "str",
-    event_log_enabled: "bool" = False,
-    event_log_table_name: "str | None" = None,
-    maintenance_lease_table_name: "str | None" = None,
-    uniqueness_table_name: "str | None" = None,
+    event_history_enabled: "bool" = False,
+    event_history_table_name: "str | None" = None,
+    maintenance_table_name: "str | None" = None,
+    task_reservation_table_name: "str | None" = None,
 ) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
     queue_settings["table_name"] = validate_table_name(queue_table_name)
-    if event_log_enabled:
-        queue_settings["event_log_enabled"] = True
-        queue_settings["event_log_table_name"] = validate_table_name(
-            event_log_table_name or event_log_table_name_for(queue_table_name)
+    if event_history_enabled:
+        queue_settings["event_history_enabled"] = True
+        queue_settings["event_history_table_name"] = validate_table_name(
+            event_history_table_name or event_history_table_name_for(queue_table_name)
         )
-    # Both auxiliary tables are always provisioned, so their resolved names are
-    # recorded for the packaged 0002 migration.
-    queue_settings["maintenance_lease_table_name"] = validate_table_name(
-        maintenance_lease_table_name or maintenance_lease_table_name_for(queue_table_name)
+    queue_settings["maintenance_table_name"] = validate_table_name(
+        maintenance_table_name or maintenance_table_name_for(queue_table_name)
     )
-    queue_settings["uniqueness_table_name"] = validate_table_name(
-        uniqueness_table_name or uniqueness_table_name_for(queue_table_name)
+    queue_settings["task_reservation_table_name"] = validate_table_name(
+        task_reservation_table_name or task_reservation_table_name_for(queue_table_name)
     )
     return queue_settings

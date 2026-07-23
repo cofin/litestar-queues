@@ -60,59 +60,45 @@ async def test_sqlspec_backend_migration_uses_adapter_specific_queue_store() -> 
 
     assert "CREATE TABLE IF NOT EXISTS" in statements[0]
     assert "JSON" in statements[0]
-    assert not any("maintenance_lease" in statement or "_uniqueness" in statement for statement in statements)
+    assert any("queue_maintenance" in statement for statement in statements)
+    assert any("queue_task_reservation" in statement for statement in statements)
 
 
-async def test_sqlspec_backend_auxiliary_migration_upgrades_v040_schema() -> "None":
-    initial_migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
-    auxiliary_migration = importlib.import_module(
-        "litestar_queues.backends.sqlspec.migrations.0002_create_queue_auxiliary_tables"
-    )
+async def test_sqlspec_backend_migration_creates_coordination_and_reservation_tables() -> "None":
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(config=_fake_adapter_config("duckdb", dialect="duckdb"))
 
-    initial_statements = await initial_migration.up(context)
-    assert not any(
-        "litestar_queue_task_maintenance_lease" in statement or "litestar_queue_task_uniqueness" in statement
-        for statement in initial_statements
-    )
-
-    statements = await auxiliary_migration.up(context)
-    assert any("litestar_queue_task_maintenance_lease" in statement for statement in statements)
+    statements = await migration.up(context)
+    assert any("queue_maintenance" in statement for statement in statements)
     assert any(
         "CREATE TABLE IF NOT EXISTS" in statement
-        and "litestar_queue_task_uniqueness" in statement
+        and "queue_task_reservation" in statement
         and "identity_key" in statement
         for statement in statements
     )
 
-    down_statements = await auxiliary_migration.down(context)
-    assert any("litestar_queue_task_maintenance_lease" in statement for statement in down_statements)
-    assert any("litestar_queue_task_uniqueness" in statement for statement in down_statements)
+    down_statements = await migration.down(context)
+    assert any("queue_maintenance" in statement for statement in down_statements)
+    assert any("queue_task_reservation" in statement for statement in down_statements)
 
 
-async def test_sqlspec_backend_migration_orders_auxiliary_tables_safely() -> "None":
-    migration = importlib.import_module(
-        "litestar_queues.backends.sqlspec.migrations.0002_create_queue_auxiliary_tables"
-    )
+async def test_sqlspec_backend_migration_orders_coordination_tables_safely() -> "None":
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(config=_fake_adapter_config("duckdb", dialect="duckdb"))
 
     statements = await migration.up(context)
-    maintenance_create = next(index for index, statement in enumerate(statements) if "_maintenance_lease" in statement)
-    uniqueness_create = next(index for index, statement in enumerate(statements) if "_uniqueness" in statement)
-    assert maintenance_create < uniqueness_create
+    maintenance_create = next(index for index, statement in enumerate(statements) if "_maintenance" in statement)
+    reservation_create = next(index for index, statement in enumerate(statements) if "_reservation" in statement)
+    assert maintenance_create < reservation_create
 
     down_statements = await migration.down(context)
-    uniqueness_drop = next(index for index, statement in enumerate(down_statements) if "_uniqueness" in statement)
-    maintenance_drop = next(
-        index for index, statement in enumerate(down_statements) if "_maintenance_lease" in statement
-    )
-    assert uniqueness_drop < maintenance_drop
+    reservation_drop = next(index for index, statement in enumerate(down_statements) if "_reservation" in statement)
+    maintenance_drop = next(index for index, statement in enumerate(down_statements) if "_maintenance" in statement)
+    assert reservation_drop < maintenance_drop
 
 
-async def test_sqlspec_backend_auxiliary_migration_uses_configured_table_names() -> "None":
-    migration = importlib.import_module(
-        "litestar_queues.backends.sqlspec.migrations.0002_create_queue_auxiliary_tables"
-    )
+async def test_sqlspec_backend_migration_uses_configured_table_names() -> "None":
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(
         config=_fake_adapter_config(
             "duckdb",
@@ -120,19 +106,19 @@ async def test_sqlspec_backend_auxiliary_migration_uses_configured_table_names()
             extension_config={
                 QUEUE_EXTENSION_NAME: {
                     "table_name": "custom_queue",
-                    "maintenance_lease_table_name": "custom_lease",
-                    "uniqueness_table_name": "custom_tombstone",
+                    "maintenance_table_name": "custom_maintenance",
+                    "task_reservation_table_name": "custom_reservation",
                 }
             },
         )
     )
 
     statements = await migration.up(context)
-    assert any("custom_lease" in statement for statement in statements)
-    assert any("custom_tombstone" in statement for statement in statements)
+    assert any("custom_maintenance" in statement for statement in statements)
+    assert any("custom_reservation" in statement for statement in statements)
 
 
-async def test_queue_plugin_keeps_runtime_and_auxiliary_migration_table_overrides_aligned() -> "None":
+async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned() -> "None":
     pytest.importorskip("aiosqlite")
     from click import Group
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -142,10 +128,10 @@ async def test_queue_plugin_keeps_runtime_and_auxiliary_migration_table_override
 
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     backend_config = SQLSpecBackendConfig(
-        config=sqlspec_config,
+        sqlspec_config=sqlspec_config,
         queue_table_name="custom_queue",
-        maintenance_lease_table_name="custom_lease",
-        uniqueness_table_name="custom_tombstone",
+        maintenance_table_name="custom_maintenance",
+        task_reservation_table_name="custom_reservation",
     )
     plugin = QueuePlugin(QueueConfig(queue_backend=backend_config, initialize_schedules=False))
 
@@ -154,29 +140,25 @@ async def test_queue_plugin_keeps_runtime_and_auxiliary_migration_table_override
     queue_settings = sqlspec_config.get_migration_commands().extension_configs[QUEUE_EXTENSION_NAME]
     assert queue_settings == {
         "table_name": "custom_queue",
-        "maintenance_lease_table_name": "custom_lease",
-        "uniqueness_table_name": "custom_tombstone",
+        "maintenance_table_name": "custom_maintenance",
+        "task_reservation_table_name": "custom_reservation",
     }
 
-    migration = importlib.import_module(
-        "litestar_queues.backends.sqlspec.migrations.0002_create_queue_auxiliary_tables"
-    )
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     migration_config = _fake_adapter_config(
         "aiosqlite", dialect="sqlite", extension_config={QUEUE_EXTENSION_NAME: queue_settings}
     )
     statements = await migration.up(SimpleNamespace(config=migration_config))
-    assert any("custom_lease" in statement for statement in statements)
-    assert any("custom_tombstone" in statement for statement in statements)
+    assert any("custom_maintenance" in statement for statement in statements)
+    assert any("custom_reservation" in statement for statement in statements)
 
     backend = SQLSpecQueueBackend(backend_config=backend_config)
-    assert backend._maintenance_lease_table_name == queue_settings["maintenance_lease_table_name"]
-    assert backend._uniqueness_table_name == queue_settings["uniqueness_table_name"]
+    assert backend._maintenance_table_name == queue_settings["maintenance_table_name"]
+    assert backend._task_reservation_table_name == queue_settings["task_reservation_table_name"]
 
 
-async def test_sqlspec_backend_auxiliary_migration_derives_names_from_custom_queue_table() -> "None":
-    migration = importlib.import_module(
-        "litestar_queues.backends.sqlspec.migrations.0002_create_queue_auxiliary_tables"
-    )
+async def test_sqlspec_backend_migration_derives_names_from_custom_queue_table() -> "None":
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(
         config=_fake_adapter_config(
             "duckdb", dialect="duckdb", extension_config={QUEUE_EXTENSION_NAME: {"table_name": "custom_queue"}}
@@ -184,25 +166,20 @@ async def test_sqlspec_backend_auxiliary_migration_derives_names_from_custom_que
     )
 
     statements = await migration.up(context)
-    assert any("custom_queue_maintenance_lease" in statement for statement in statements)
-    assert any("custom_queue_uniqueness" in statement for statement in statements)
+    assert any("custom_queue_maintenance" in statement for statement in statements)
+    assert any("custom_queue_reservation" in statement for statement in statements)
 
 
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_create_queue_tasks.py", "0002_create_queue_auxiliary_tables.py"]
-    initial_content = paths[0].read_text()
-    assert "create_queue_store" in initial_content
-    assert "create_maintenance_lease_store" not in initial_content
-    assert "create_tombstone_store" not in initial_content
-    assert "return SQLSpecQueueStore(" not in initial_content
-    assert "CREATE TABLE IF NOT EXISTS litestar_queue_task" not in initial_content
-
-    auxiliary_content = paths[1].read_text()
-    assert "create_queue_store" not in auxiliary_content
-    assert "create_maintenance_lease_store" in auxiliary_content
-    assert "create_tombstone_store" in auxiliary_content
+    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
+    migration_content = paths[0].read_text()
+    assert "create_queue_store" in migration_content
+    assert "create_maintenance_store" in migration_content
+    assert "create_task_reservation_store" in migration_content
+    assert "return SQLSpecQueueStore(" not in migration_content
+    assert "CREATE TABLE IF NOT EXISTS queue_task" not in migration_content
 
 
 async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_table(

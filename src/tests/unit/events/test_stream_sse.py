@@ -12,7 +12,7 @@ from litestar.routes import HTTPRoute
 from litestar.testing import create_test_client
 
 from litestar_queues.config import QueueConfig
-from litestar_queues.events import EventConfig, EventStreamConfig, QueueChannels, QueueEvent
+from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
 from litestar_queues.events.streaming import build_stream_router
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ async def test_sse_endpoint_registered_for_scopes() -> None:
 
 
 async def test_sse_disabled_registers_no_sse_routes() -> None:
-    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, sse=False))
+    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, transports={"websocket"}))
 
     assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}"}
 
@@ -39,7 +39,7 @@ async def test_sse_client_receives_event_frames() -> None:
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
     channels = _FakeChannelsPlugin([event.to_json()])
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
     )
 
@@ -55,7 +55,7 @@ async def test_sse_client_receives_event_frames() -> None:
 async def test_sse_authorizer_denies_before_subscribe() -> None:
     channels = _FakeChannelsPlugin([])
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, channel_authorizer=lambda *_: False),
     )
 
@@ -69,7 +69,7 @@ async def test_sse_task_route_serves_event_stream_content_type() -> None:
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
     channels = _FakeChannelsPlugin([event.to_json()])
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
     )
 
@@ -83,7 +83,7 @@ async def test_sse_custom_route_serves_event_stream_content_type() -> None:
     event = QueueEvent(type="task.progress", scope="custom", message="working")
     channels = _FakeChannelsPlugin([event.to_json()])
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"custom"}, heartbeat_interval=0),
     )
 
@@ -117,7 +117,7 @@ async def test_sse_keepalive_comment_and_dedup() -> None:
     second = QueueEvent(type="task.log", scope="task", id="evt-3", task_id="task-1")
     channels = _FakeChannelsPlugin([first.to_json(), duplicate.to_json(), second.to_json()], delay_between_events=0.03)
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0.005),
     )
 

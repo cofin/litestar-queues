@@ -1,21 +1,20 @@
 """Queue event publisher."""
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, default_publish_many
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from litestar_queues.events.chunking import QueueEventSizeEstimator
     from litestar_queues.events.models import QueueEvent
-    from litestar_queues.typing import ChannelsLike
 
-__all__ = ("EventBufferConfig", "EventConfig", "QueueEventPublisher")
+__all__ = ("EventBufferConfig", "QueueEventPublisher")
 
 logger = logging.getLogger(__name__)
 
@@ -52,27 +51,29 @@ _TERMINAL_EVENT_TYPES = frozenset({
 class EventBufferConfig:
     """Producer-side micro-batch buffer for live event delivery."""
 
-    enabled: "bool" = True
-    buffer_size: "int" = 20
+    batch_size: "int" = 20
+    """Maximum live events delivered in one batch."""
+
     flush_interval: "float" = 0.5
+    """Maximum delay before flushing a partial live-event batch in seconds."""
+
     max_pending: "int" = 2000
+    """Maximum live events waiting in the producer-side buffer."""
+
     overflow: 'Literal["drop_oldest", "drop_newest", "block", "error"]' = "drop_oldest"
+    """Action taken when the pending live-event limit is reached."""
 
-
-@dataclass(slots=True)
-class EventConfig:
-    """Configuration for queue event publishing."""
-
-    enabled: "bool" = True
-    buffer: "EventBufferConfig" = field(default_factory=EventBufferConfig)
-    sink: "QueueEventSink | None" = None
-    channels_backend: "ChannelsLike | None" = None
-    max_payload_bytes: "int | None" = None
-    payload_size_estimator: "QueueEventSizeEstimator | None" = None
-    strict: "bool" = False
-    publish_task_channel: "bool" = True
-    publish_queue_channel: "bool" = True
-    publish_global_lifecycle: "bool" = False
+    def __post_init__(self) -> "None":
+        """Validate buffering bounds."""
+        if self.batch_size <= 0:
+            msg = "EventBufferConfig.batch_size must be greater than 0."
+            raise QueueConfigurationError(msg)
+        if self.flush_interval <= 0:
+            msg = "EventBufferConfig.flush_interval must be greater than 0."
+            raise QueueConfigurationError(msg)
+        if self.max_pending <= 0:
+            msg = "EventBufferConfig.max_pending must be greater than 0."
+            raise QueueConfigurationError(msg)
 
 
 class QueueEventPublisher:
@@ -107,7 +108,7 @@ class QueueEventPublisher:
         self._event_log_strict = event_log_strict
         self._buffer = (
             LiveEventBuffer(buffer_config, sink_publish=self._deliver_live_many, record_drop=_ignore_buffer_drop)
-            if buffer_config is not None and buffer_config.enabled
+            if buffer_config is not None
             else None
         )
         self.strict = strict
@@ -129,11 +130,7 @@ class QueueEventPublisher:
     async def publish(
         self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None, immediate: "bool" = False
     ) -> "None":
-        """Publish an event to canonical and explicitly supplied channels.
-
-        Returns:
-            None.
-        """
+        """Publish an event to canonical and explicitly supplied channels."""
         resolved_channels = self.resolve_channels(event, channels=channels)
         await self._record_event(event)
         if self._buffer is not None and not immediate and event.type not in _TERMINAL_EVENT_TYPES:
@@ -162,29 +159,17 @@ class QueueEventPublisher:
         await self._deliver_live(event, resolved_channels)
 
     async def flush_buffer(self) -> "None":
-        """Flush all buffered live events.
-
-        Returns:
-            None.
-        """
+        """Flush all buffered live events."""
         if self._buffer is not None:
             await self._buffer.flush()
 
     def start_buffer(self) -> "None":
-        """Start the live event buffer flush loop.
-
-        Returns:
-            None.
-        """
+        """Start the live event buffer flush loop."""
         if self._buffer is not None:
             self._buffer.start()
 
     async def stop_buffer(self) -> "None":
-        """Stop and drain the live event buffer.
-
-        Returns:
-            None.
-        """
+        """Stop and drain the live event buffer."""
         if self._buffer is not None:
             await self._buffer.stop()
 

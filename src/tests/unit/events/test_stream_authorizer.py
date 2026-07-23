@@ -10,7 +10,7 @@ from litestar.routes import WebSocketRoute
 from litestar.testing import create_test_client
 
 from litestar_queues.config import QueueConfig
-from litestar_queues.events import EventConfig, EventStreamConfig
+from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueEventsConfig
 from litestar_queues.events.streaming import build_stream_router
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ async def test_channel_authorizer_receives_scope_and_key_before_accept() -> None
     channels = _FakeChannelsPlugin()
     socket = _RecordingSocket()
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, channel_authorizer=authorize, heartbeat_interval=0),
     )
 
@@ -77,7 +77,7 @@ async def test_channel_authorizer_denies_with_4003_before_accept() -> None:
     channels = _FakeChannelsPlugin()
     socket = _RecordingSocket()
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"task"}, channel_authorizer=lambda *_: False, heartbeat_interval=0),
     )
 
@@ -100,7 +100,7 @@ async def test_async_channel_authorizer_supported() -> None:
     channels = _FakeChannelsPlugin()
     socket = _RecordingSocket()
     router = build_stream_router(
-        QueueConfig(event=EventConfig(channels_backend=channels)),
+        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
         EventStreamConfig(scopes={"queue"}, channel_authorizer=authorize, heartbeat_interval=0),
     )
 

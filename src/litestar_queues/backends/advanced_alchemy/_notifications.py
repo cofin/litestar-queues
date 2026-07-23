@@ -150,7 +150,7 @@ class _AsyncpgNotificationListener:
         try:
             asyncpg = import_module("asyncpg")
         except ImportError as exc:
-            msg = "SQLAlchemyBackendConfig.notifications=True for postgresql+asyncpg requires asyncpg."
+            msg = "SQLAlchemyBackendConfig.worker_wakeups=True for postgresql+asyncpg requires asyncpg."
             raise QueueConfigurationError(msg) from exc
         return await cast("Any", asyncpg).connect(dsn=self._dsn)
 
@@ -218,7 +218,7 @@ class _PsycopgNotificationListener:
         try:
             psycopg = import_module("psycopg")
         except ImportError as exc:
-            msg = "SQLAlchemyBackendConfig.notifications=True for postgresql+psycopg requires psycopg."
+            msg = "SQLAlchemyBackendConfig.worker_wakeups=True for postgresql+psycopg requires psycopg."
             raise QueueConfigurationError(msg) from exc
         return await cast("Any", psycopg).AsyncConnection.connect(self._conninfo, autocommit=True)
 

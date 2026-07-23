@@ -12,9 +12,9 @@ except ModuleNotFoundError:
 else:
     for declarative_class in (
         "QueueTaskModelMixin",
-        "QueueEventLogModelMixin",
-        "QueueMaintenanceLeaseModelMixin",
-        "QueueUniquenessModelMixin",
+        "QueueEventHistoryModelMixin",
+        "QueueMaintenanceModelMixin",
+        "QueueTaskReservationModelMixin",
         "UUIDAuditBase",
     ):
         warnings.filterwarnings(

@@ -17,6 +17,8 @@ import time
 
 import pytest
 
+from litestar_queues import WorkerConfig
+
 pytestmark = [
     pytest.mark.anyio,
     pytest.mark.timeout(15),
@@ -42,7 +44,8 @@ async def test_run_worker_returns_2_when_single_signal_drain_timeout_cancels(
     await backend.enqueue("cli.stuck")
     plugin = QueuePlugin(
         QueueConfig(
-            execution_backend="local", in_app_worker=False, worker_poll_interval=0.01, worker_final_cancel_timeout=0.1
+            execution_backend="local",
+            worker=WorkerConfig(run_in_app=False, poll_interval=0.01, final_cancel_timeout=0.1),
         )
     )
     plugin._queue_backend = backend
@@ -70,7 +73,7 @@ async def test_run_worker_returns_1_when_worker_loop_crashes(monkeypatch: "pytes
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
     monkeypatch.setattr(cli_module, "Worker", _FailingStartWorker)
-    plugin = QueuePlugin(QueueConfig(execution_backend="local", in_app_worker=False))
+    plugin = QueuePlugin(QueueConfig(execution_backend="local", worker=WorkerConfig(run_in_app=False)))
 
     assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 1
 
@@ -83,10 +86,12 @@ async def test_run_worker_uses_configured_heartbeat_miss_threshold(monkeypatch: 
     monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
     monkeypatch.setattr(cli_module, "Worker", _CapturingStartWorker)
     _CapturingStartWorker.instances.clear()
-    plugin = QueuePlugin(QueueConfig(execution_backend="local", in_app_worker=False, worker_heartbeat_miss_threshold=7))
+    plugin = QueuePlugin(
+        QueueConfig(execution_backend="local", worker=WorkerConfig(run_in_app=False, heartbeat_miss_threshold=7))
+    )
 
     assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 0
-    assert _CapturingStartWorker.instances[0].kwargs["heartbeat_miss_threshold"] == 7
+    assert _CapturingStartWorker.instances[0].config.heartbeat_miss_threshold == 7
 
 
 async def test_run_worker_uses_configured_poll_backoff_settings(monkeypatch: "pytest.MonkeyPatch") -> "None":
@@ -100,18 +105,15 @@ async def test_run_worker_uses_configured_poll_backoff_settings(monkeypatch: "py
     plugin = QueuePlugin(
         QueueConfig(
             execution_backend="local",
-            in_app_worker=False,
-            worker_poll_backoff_max=2.0,
-            worker_poll_backoff_multiplier=1.5,
-            worker_poll_jitter=0.1,
+            worker=WorkerConfig(run_in_app=False, poll_backoff_max=2.0, poll_backoff_multiplier=1.5, poll_jitter=0.1),
         )
     )
 
     assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 0
-    kwargs = _CapturingStartWorker.instances[0].kwargs
-    assert kwargs["poll_backoff_max"] == 2.0
-    assert kwargs["poll_backoff_multiplier"] == 1.5
-    assert kwargs["poll_jitter"] == 0.1
+    config = _CapturingStartWorker.instances[0].config
+    assert config.poll_backoff_max == 2.0
+    assert config.poll_backoff_multiplier == 1.5
+    assert config.poll_jitter == 0.1
 
 
 # This spawns a real interpreter (cold imports: litestar, click, litestar_queues,
@@ -195,12 +197,12 @@ class _FailingStartWorker:
 
 
 class _CapturingStartWorker:
-    __slots__ = ("kwargs",)
+    __slots__ = ("config",)
 
     instances: "list[_CapturingStartWorker]" = []
 
-    def __init__(self, *_args: "object", **kwargs: "object") -> "None":
-        self.kwargs = kwargs
+    def __init__(self, _service: "object", config: "WorkerConfig") -> "None":
+        self.config = config
         self.instances.append(self)
 
     async def start(self) -> "None":

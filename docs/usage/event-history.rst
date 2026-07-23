@@ -11,14 +11,17 @@ Enable history
 .. code-block:: python
 
    from litestar_queues import QueueConfig
-   from litestar_queues.events import EventConfig, EventLogConfig
+   from litestar_queues.events import EventDeliveryConfig, EventHistoryConfig, QueueEventsConfig
 
    queue_config = QueueConfig(
-       event=EventConfig(channels_backend=channels_backend),
-       event_log=EventLogConfig(
-           buffer_size=20,
-           flush_interval=1.0,
-           max_records=1000,
+       events=QueueEventsConfig(
+           channels=channels_backend,
+           delivery=EventDeliveryConfig(),
+           history=EventHistoryConfig(
+               batch_size=20,
+               flush_interval=1.0,
+               memory_capacity=1000,
+           ),
        ),
    )
 
@@ -34,7 +37,7 @@ Support matrix
    * - Backend
      - Support and persistence boundary
    * - Memory
-     - Bounded, temporary history. ``EventLogConfig.max_records`` sets the limit in that process.
+     - Bounded, temporary history. ``EventHistoryConfig.memory_capacity`` sets the limit in that process.
    * - SQLSpec
      - History stored in the SQLSpec queue schema.
    * - Advanced Alchemy
@@ -55,11 +58,11 @@ Configure a bounded event-history phase and run it from one external schedule:
 .. code-block:: python
 
    from litestar_queues import QueueConfig, QueueMaintenanceConfig
-   from litestar_queues.events import EventLogConfig
+   from litestar_queues.events import EventHistoryConfig, QueueEventsConfig
 
    queue_config = QueueConfig(
        queue_backend=...,
-       event_log=EventLogConfig(enabled=True),
+       events=QueueEventsConfig(history=EventHistoryConfig()),
        maintenance=QueueMaintenanceConfig(
            event_retention=30 * 24 * 60 * 60,
            event_limit=1000,
@@ -69,9 +72,9 @@ Configure a bounded event-history phase and run it from one external schedule:
 Then schedule ``litestar queues run-maintenance``. It deletes at most
 ``event_limit`` oldest matching rows in one invocation. Terminal-task retention
 is a separate setting, so the two policies can use different cutoffs. See
-:doc:`maintenance` for lease, cadence, backend, and migration requirements.
+:doc:`maintenance` for coordination, cadence, backend, and migration requirements.
 
-Memory history is bounded by ``max_records`` and disappears with the process.
+Memory history is bounded by ``memory_capacity`` and disappears with the process.
 SQLSpec, Advanced Alchemy, Redis, and Valkey history is durable or shared, so
 those deployments should include cleanup in their backup and privacy policies.
 

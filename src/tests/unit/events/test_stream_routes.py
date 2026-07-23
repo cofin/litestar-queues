@@ -10,8 +10,9 @@ from litestar.handlers.base import BaseRouteHandler
 from litestar.testing import create_test_client
 
 from litestar_queues.config import QueueConfig
-from litestar_queues.events import EventConfig, EventStreamConfig, QueueChannels, QueueEvent
+from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
 from litestar_queues.events.streaming import build_stream_router
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from litestar.handlers.websocket_handlers import WebsocketRouteHandler
@@ -41,33 +42,27 @@ def test_build_stream_router_narrows_to_configured_scopes() -> None:
 
 
 def test_build_stream_router_websocket_only_registers_no_sse_routes() -> None:
-    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, sse=False))
+    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, transports={"websocket"}))
 
     assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}"}
 
 
 def test_build_stream_router_sse_only_registers_no_websocket_routes() -> None:
-    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, websocket=False))
+    router = build_stream_router(QueueConfig(), EventStreamConfig(scopes={"task"}, transports={"sse"}))
 
     assert _stream_paths(router) == {"/queues/events/sse/tasks/{task_id:str}"}
 
 
 def test_stream_config_with_both_transports_disabled_raises_at_app_init() -> None:
-    from litestar_queues import QueuePlugin
     from litestar_queues.exceptions import QueueConfigurationError
 
-    plugin = QueuePlugin(QueueConfig(event_stream=EventStreamConfig(websocket=False, sse=False)))
-
-    with pytest.raises(QueueConfigurationError, match=r"both transports are disabled"):
-        Litestar(plugins=[plugin])
+    with pytest.raises(QueueConfigurationError, match="transports"):
+        EventStreamConfig(transports=set())
 
 
-def test_build_stream_router_ignores_unrecognized_scopes() -> None:
-    stream_config = EventStreamConfig(scopes=cast("Any", {"task", "unknown"}))
-
-    router = build_stream_router(QueueConfig(), stream_config)
-
-    assert _stream_paths(router) == {"/queues/events/tasks/{task_id:str}", "/queues/events/sse/tasks/{task_id:str}"}
+def test_stream_config_rejects_unrecognized_scopes() -> None:
+    with pytest.raises(QueueConfigurationError, match="scopes"):
+        EventStreamConfig(scopes=cast("Any", {"task", "unknown"}))
 
 
 def test_stream_router_applies_guards_and_denies_before_accept() -> None:
@@ -87,7 +82,7 @@ def test_stream_router_applies_guards_and_denies_before_accept() -> None:
 @pytest.mark.anyio
 async def test_task_stream_relays_from_channels_backend() -> None:
     channels = MemoryChannelsBackend(history=0)
-    config = QueueConfig(event=EventConfig(channels_backend=channels))
+    config = QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()))
     router = build_stream_router(config, EventStreamConfig(scopes={"task"}))
     handler = _stream_handler(router, "/tasks/{task_id:str}")
     socket = _RecordingSocket()
@@ -105,6 +100,32 @@ async def test_task_stream_relays_from_channels_backend() -> None:
         await channels.on_shutdown()
 
     assert socket.accepted.is_set()
+    assert socket.sent_json == [event.to_dict()]
+
+
+@pytest.mark.anyio
+async def test_task_stream_prefers_configured_channels_backend_to_connection_plugin() -> None:
+    configured_channels = MemoryChannelsBackend(history=0)
+    connection_channels = MemoryChannelsBackend(history=0)
+    config = QueueConfig(events=QueueEventsConfig(channels=configured_channels, delivery=EventDeliveryConfig()))
+    router = build_stream_router(config, EventStreamConfig(scopes={"task"}))
+    handler = _stream_handler(router, "/tasks/{task_id:str}")
+    socket = _RecordingSocket(channels_plugin=connection_channels)
+    event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
+
+    async def publish() -> None:
+        await socket.accepted.wait()
+        await asyncio.sleep(0.01)
+        await configured_channels.publish(event.to_json(), [QueueChannels.task("task-1")])
+
+    await configured_channels.on_startup()
+    await connection_channels.on_startup()
+    try:
+        await asyncio.wait_for(asyncio.gather(handler.fn(socket, task_id="task-1"), publish()), timeout=1)
+    finally:
+        await connection_channels.on_shutdown()
+        await configured_channels.on_shutdown()
+
     assert socket.sent_json == [event.to_dict()]
 
 
@@ -127,9 +148,10 @@ def _deny_guard(connection: ASGIConnection, route_handler: BaseRouteHandler) -> 
 
 
 class _RecordingSocket:
-    def __init__(self) -> None:
+    def __init__(self, channels_plugin: object | None = None) -> None:
         self.accepted = asyncio.Event()
         self.sent_json: "list[dict[str, object]]" = []
+        self.channels_plugin = channels_plugin
 
     async def accept(self) -> None:
         self.accepted.set()

@@ -17,9 +17,10 @@ from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from litestar_queues import EventLogConfig, QueueConfig
+from litestar_queues import EventHistoryConfig, QueueConfig
 from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
-from litestar_queues.backends.advanced_alchemy.mixins import QueueEventLogModelMixin, QueueTaskModelMixin
+from litestar_queues.backends.advanced_alchemy.mixins import QueueEventHistoryModelMixin, QueueTaskModelMixin
+from litestar_queues.events import QueueEventsConfig
 from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
@@ -49,7 +50,7 @@ class CustomQueueTaskModel(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "custom_queue_task"
 
 
-class CustomQueueEventLogModel(UUIDAuditBase, QueueEventLogModelMixin):
+class CustomQueueEventHistoryModel(UUIDAuditBase, QueueEventHistoryModelMixin):
     __tablename__ = "custom_queue_task_event_log"
 
 
@@ -57,7 +58,7 @@ class AbstractQueueTaskModel(QueueTaskModelMixin):
     __abstract__ = True
 
 
-class AbstractQueueEventLogModel(QueueEventLogModelMixin):
+class AbstractQueueEventHistoryModel(QueueEventHistoryModelMixin):
     __abstract__ = True
 
 
@@ -85,8 +86,8 @@ def test_queue_task_model_mixin_composes_with_custom_advanced_alchemy_base() -> 
     )
 
 
-def test_queue_event_log_model_mixin_adds_generic_event_history_schema() -> "None":
-    assert {"id", "created_at", "updated_at"} <= _column_names(CustomQueueEventLogModel)
+def test_queue_event_history_model_mixin_adds_generic_event_history_schema() -> "None":
+    assert {"id", "created_at", "updated_at"} <= _column_names(CustomQueueEventHistoryModel)
     assert {
         "event_id",
         "event_type",
@@ -104,14 +105,14 @@ def test_queue_event_log_model_mixin_adds_generic_event_history_schema() -> "Non
         "progress_percent",
         "sequence",
         "occurred_at",
-    } <= _column_names(CustomQueueEventLogModel)
-    assert {"stage", "duration_ms"}.isdisjoint(_column_names(CustomQueueEventLogModel))
+    } <= _column_names(CustomQueueEventHistoryModel)
+    assert {"stage", "duration_ms"}.isdisjoint(_column_names(CustomQueueEventHistoryModel))
     assert {
         "ix_custom_queue_task_event_log_task_id",
         "ix_custom_queue_task_event_log_task_name",
         "ix_custom_queue_task_event_log_event_type",
         "ix_custom_queue_task_event_log_occurred_at",
-    } <= _index_names(CustomQueueEventLogModel)
+    } <= _index_names(CustomQueueEventHistoryModel)
 
 
 def test_queue_task_model_mixin_preserves_canonical_python_attributes() -> "None":
@@ -125,16 +126,16 @@ def test_queue_task_model_mixin_preserves_canonical_python_attributes() -> "None
 
 
 def test_advanced_alchemy_backend_uses_default_model_class(tmp_path: "Path") -> "None":
-    from litestar_queues.backends.advanced_alchemy import QueueEventLogModel, QueueTaskModel
+    from litestar_queues.backends.advanced_alchemy import QueueEventHistoryModel, QueueTaskModel
 
     backend = SQLAlchemyBackend(
         backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=_sqlite_config(tmp_path / "default-model.db"))
     )
 
     assert backend._model_class is QueueTaskModel
-    assert backend._event_log_model_class is QueueEventLogModel
-    assert _table(QueueTaskModel).name == "litestar_queue_task"
-    assert _table(QueueEventLogModel).name == "litestar_queue_task_event_log"
+    assert backend._event_history_model_class is QueueEventHistoryModel
+    assert _table(QueueTaskModel).name == "queue_task"
+    assert _table(QueueEventHistoryModel).name == "queue_task_event_history"
 
 
 async def test_advanced_alchemy_schema_is_created_by_native_sqlalchemy_lifecycle(tmp_path: "Path") -> "None":
@@ -146,7 +147,7 @@ async def test_advanced_alchemy_schema_is_created_by_native_sqlalchemy_lifecycle
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=disabled_config,
             model_class=CustomQueueTaskModel,
-            event_log_model_class=CustomQueueEventLogModel,
+            event_history_model_class=CustomQueueEventHistoryModel,
         ),
     )
 
@@ -158,13 +159,13 @@ async def test_advanced_alchemy_schema_is_created_by_native_sqlalchemy_lifecycle
 
     enabled_db = tmp_path / "event-log-enabled.db"
     enabled_config = _sqlite_config(enabled_db)
-    await create_tables(enabled_config, CustomQueueTaskModel, CustomQueueEventLogModel)
+    await create_tables(enabled_config, CustomQueueTaskModel, CustomQueueEventHistoryModel)
     enabled_backend = SQLAlchemyBackend(
-        QueueConfig(event_log=EventLogConfig()),
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=enabled_config,
             model_class=CustomQueueTaskModel,
-            event_log_model_class=CustomQueueEventLogModel,
+            event_history_model_class=CustomQueueEventHistoryModel,
         ),
     )
 
@@ -327,15 +328,15 @@ def test_advanced_alchemy_backend_rejects_invalid_model_class(tmp_path: "Path") 
             backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=AbstractQueueTaskModel)
         )
 
-    with pytest.raises(QueueConfigurationError, match="QueueEventLogModelMixin"):
+    with pytest.raises(QueueConfigurationError, match="QueueEventHistoryModelMixin"):
         SQLAlchemyBackend(
-            backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, event_log_model_class=object)
+            backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, event_history_model_class=object)
         )
 
     with pytest.raises(QueueConfigurationError, match="__tablename__"):
         SQLAlchemyBackend(
             backend_config=SQLAlchemyBackendConfig(
-                sqlalchemy_config=config, event_log_model_class=AbstractQueueEventLogModel
+                sqlalchemy_config=config, event_history_model_class=AbstractQueueEventHistoryModel
             )
         )
 

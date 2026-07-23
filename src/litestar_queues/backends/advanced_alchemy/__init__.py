@@ -3,27 +3,27 @@
 from litestar_queues.backends.advanced_alchemy.backend import SQLAlchemyBackend
 from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import (
-    QueueEventLogModelMixin,
-    QueueMaintenanceLeaseModelMixin,
+    QueueEventHistoryModelMixin,
+    QueueMaintenanceModelMixin,
     QueueTaskModelMixin,
-    QueueUniquenessModelMixin,
+    QueueTaskReservationModelMixin,
 )
 from litestar_queues.backends.advanced_alchemy.models import (
-    QueueEventLogModel,
-    QueueMaintenanceLeaseModel,
+    QueueEventHistoryModel,
+    QueueMaintenanceModel,
     QueueTaskModel,
-    QueueUniquenessModel,
+    QueueTaskReservationModel,
 )
 
 __all__ = (
-    "QueueEventLogModel",
-    "QueueEventLogModelMixin",
-    "QueueMaintenanceLeaseModel",
-    "QueueMaintenanceLeaseModelMixin",
+    "QueueEventHistoryModel",
+    "QueueEventHistoryModelMixin",
+    "QueueMaintenanceModel",
+    "QueueMaintenanceModelMixin",
     "QueueTaskModel",
     "QueueTaskModelMixin",
-    "QueueUniquenessModel",
-    "QueueUniquenessModelMixin",
+    "QueueTaskReservationModel",
+    "QueueTaskReservationModelMixin",
     "SQLAlchemyBackend",
     "SQLAlchemyBackendConfig",
 )

@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, Worker, task
+from litestar_queues import QueueConfig, QueueService, Worker, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.events import QueueEventsConfig
 from litestar_queues.task import clear_task_registry, get_task_registry, load_task_modules
 from tests.integration.execution.cloudrun.helpers import (
     FakeCloudRunExecution,
@@ -305,7 +306,7 @@ async def test_cloudrun_dispatch_failure_default_surfaces_and_preserves_backend(
 
 
 async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not_taken_ownership() -> "None":
-    from litestar_queues.events import EventConfig, InMemoryQueueEventSink
+    from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
     @task("tasks.remote")
@@ -321,7 +322,9 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     )
     event_sink = InMemoryQueueEventSink()
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun", event=EventConfig(sink=event_sink)),
+        QueueConfig(
+            execution_backend="cloudrun", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(event_sink,)))
+        ),
         queue_backend=queue_backend,
         execution_backend=backend,
     )
@@ -559,7 +562,7 @@ async def test_cloudrun_dispatched_task_delivers_beat_detail_through_consumer() 
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun", worker_heartbeat_interval=0.01),
+        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
         queue_backend=queue_backend,
         execution_backend=backend,
     )

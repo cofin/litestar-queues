@@ -1,4 +1,4 @@
-"""Valkey distributed maintenance-lease and bounded-operation contract."""
+"""Valkey distributed maintenance coordination and bounded-operation contract."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -12,8 +12,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 from tests.integration.backends._maintenance_asserts import (
     assert_bounded_cleanup_terminal,
     assert_bounded_stale_recovery,
-    assert_cross_instance_lease,
-    assert_lease_expiry,
+    assert_coordination_expiry,
+    assert_cross_instance_coordination,
 )
 
 if TYPE_CHECKING:
@@ -86,22 +86,22 @@ async def test_valkey_bounded_maintenance_fails_closed_until_legacy_indexes_are_
     assert (await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=-1), limit=2)).requeued == 1
 
 
-async def test_valkey_backend_lease_expiry(valkey_backend: "ValkeyQueueBackend") -> "None":
-    await assert_lease_expiry(valkey_backend)
+async def test_valkey_backend_coordination_expiry(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_coordination_expiry(valkey_backend)
 
 
-async def test_valkey_backend_lease_is_not_process_local(valkey_service: "ValkeyService") -> "None":
-    """Two independently opened Valkey backends share the namespaced lease key."""
+async def test_valkey_backend_coordination_is_not_process_local(valkey_service: "ValkeyService") -> "None":
+    """Two independently opened Valkey backends share the namespaced ownership key."""
     from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
 
-    prefix = f"litestar_queues:test:lease:{uuid.uuid4().hex}"
+    prefix = f"litestar_queues:test:ownership:{uuid.uuid4().hex}"
     url = f"redis://{valkey_service.host}:{valkey_service.port}/{valkey_service.db}"
-    first = ValkeyQueueBackend(backend_config=ValkeyBackendConfig(url=url, key_prefix=prefix, notifications=False))
-    second = ValkeyQueueBackend(backend_config=ValkeyBackendConfig(url=url, key_prefix=prefix, notifications=False))
+    first = ValkeyQueueBackend(backend_config=ValkeyBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False))
+    second = ValkeyQueueBackend(backend_config=ValkeyBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False))
     await first.open()
     await second.open()
     try:
-        await assert_cross_instance_lease(first, second)
+        await assert_cross_instance_coordination(first, second)
     finally:
         await first.close()
         await second.close()

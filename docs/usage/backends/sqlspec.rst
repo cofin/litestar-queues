@@ -26,7 +26,7 @@ example is suitable for local development:
 
    queue_config = QueueConfig(
        queue_backend=SQLSpecBackendConfig(
-           config=sqlspec_config,
+           sqlspec_config=sqlspec_config,
        ),
        execution_backend="local",
    )
@@ -49,15 +49,6 @@ raises a configuration error instead of silently using generic SQL.
    them on your behalf.
 
 
-.. warning::
-
-   The ``mssql-python`` adapter is temporarily unsupported with SQLSpec 0.55.0
-   because its transaction path can report a successful commit while discarding
-   queue writes. Litestar Queues rejects that adapter at configuration time;
-   use ``pymssql`` or ``arrow-odbc`` for SQL Server until
-   `SQLSpec issue 642 <https://github.com/litestar-org/sqlspec/issues/642>`_
-   is fixed upstream.
-
 Schema ownership
 ================
 
@@ -73,16 +64,16 @@ explicit ``create_schema()`` operation after ``open()``. This emits adapter-
 specific DDL directly and does not record a migration revision; it is a
 development fallback, not a replacement for application migrations.
 
-The default queue table is ``litestar_queue_task``. When event history is
-enabled, SQLSpec derives its table by adding ``_event_log`` to the queue table,
-so the default is ``litestar_queue_task_event_log``. Set
-``event_log_table_name`` only when the application needs a different name.
-The packaged forward migration ``0002_create_queue_auxiliary_tables`` adds the
-distributed maintenance-lease and forever-uniqueness tables with
-``_maintenance_lease`` and ``_uniqueness`` suffixes. This separate migration
-upgrades databases that already applied the released ``0001``. Override the
-names with ``maintenance_lease_table_name`` and ``uniqueness_table_name``.
-Schema-qualified names keep their schema and add each suffix to the table part.
+The default queue table is ``queue_task``. When event history is enabled,
+SQLSpec derives its table by adding ``_event_history`` to the queue table,
+so the default is ``queue_task_event_history``. Set
+``event_history_table_name`` only when the application needs a different name.
+The single packaged ``0001_create_queue_tasks`` migration creates the queue
+task table, enabled event history, ``queue_maintenance`` for distributed
+maintenance coordination, and ``queue_task_reservation`` for permanent task
+identity reservations. Override the names with ``maintenance_table_name`` and
+``task_reservation_table_name``. Schema-qualified custom queue names keep their
+schema and add the corresponding suffix to the table part.
 See :doc:`../maintenance` before scheduling maintenance and
 :doc:`../migration` before using forever uniqueness.
 
@@ -116,18 +107,22 @@ queue table (``sqlspec_event_queue`` by default). It is provisioned the same way
 as the queue table: the packaged migration path registers SQLSpec's events
 migration for capable adapters automatically, and the ``create_schema()``
 bootstrap emits its DDL directly. A zero-config capable backend therefore works
-on a fresh database with no manual step. ``event_queue_table`` overrides the
+on a fresh database with no manual step. Set
+``SQLSpecWorkerWakeupConfig.queue_table_name`` to override the events queue
 table name.
 
 To turn native wakeups off and fall back to interval polling, set
-``notifications=False``. Setting ``notifications=True`` on an adapter that has no
-push transport degrades to polling rather than forcing an unsupported one.
+``worker_wakeups=None``. The default ``SQLSpecWorkerWakeupConfig()`` selects the
+adapter capability; an adapter without a push transport continues interval
+polling.
 
-Overrides remain available for advanced setups: ``notify_transport`` pins a
-specific SQLSpec transport, ``notification_channel`` sets the LISTEN/NOTIFY
-channel (default ``litestar_queues_tasks``), and Oracle can opt in to explicitly
-provisioned ``aq`` or ``txeventq`` queues. Oracle stays on polling by default
-because Advanced Queuing requires provisioning that the backend does not create.
+Overrides remain available under ``worker_wakeups``: ``transport`` pins a
+specific SQLSpec transport, ``channel_name`` sets the LISTEN/NOTIFY channel
+(default ``litestar_queues_tasks``), and ``poll_interval`` controls durable
+queue polling in seconds. Oracle can opt in to explicitly provisioned ``aq`` or
+``txeventq`` queues through ``transport`` and ``settings``. Oracle stays on
+polling by default because Advanced Queuing requires provisioning that the
+backend does not create.
 Durable queue transports are competing-consumer queues; do not use them as
 multi-process browser fan-out. See :doc:`../worker-wakeups`.
 
@@ -143,7 +138,7 @@ Event history
 
 SQLSpec event history uses the queue schema, the packaged SQLSpec migration,
 and the SQLSpec session lifecycle. Its table naming follows the queue-table
-``_event_log`` suffix described above. ``event_log_table_name`` customizes the
+``_event_history`` suffix described above. ``event_history_table_name`` customizes the
 table.
 Live SSE/WebSocket delivery still needs a Channels backend. See
 :doc:`../event-history`.

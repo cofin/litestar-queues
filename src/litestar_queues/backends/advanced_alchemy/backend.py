@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from advanced_alchemy.exceptions import DuplicateKeyError
+from advanced_alchemy.exceptions import IntegrityError as AdvancedAlchemyIntegrityError
 from sqlalchemy import delete, text, update
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.engine import make_url
@@ -18,19 +18,20 @@ from litestar_queues.backends.advanced_alchemy._notifications import (
 from litestar_queues.backends.advanced_alchemy.config import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.event_log import AdvancedAlchemyQueueEventLog
 from litestar_queues.backends.advanced_alchemy.mixins import (
-    QueueEventLogModelMixin,
-    QueueMaintenanceLeaseModelMixin,
+    QueueEventHistoryModelMixin,
+    QueueMaintenanceModelMixin,
     QueueTaskModelMixin,
-    QueueUniquenessModelMixin,
+    QueueTaskReservationModelMixin,
 )
 from litestar_queues.backends.advanced_alchemy.service import (
     QueueEventLogService,
+    QueueTaskReservationService,
     QueueTaskService,
-    QueueUniquenessService,
 )
 from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, UniquenessTombstone
+from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, TaskReservation
+from litestar_queues.observability import create_observability_runtime
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
@@ -40,13 +41,13 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.advanced_alchemy._notifications import NotificationListener
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventLogConfig, QueueEventLog
+    from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import (
-        EnqueueSpec,
         HeartbeatTouch,
         QueuedTaskRecord,
         QueueStatistics,
         StaleTaskRecoveryResult,
+        TaskRequest,
     )
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
@@ -65,29 +66,29 @@ class SQLAlchemyBackend(BaseQueueBackend):
 
     _model_class: "type[QueueTaskModelMixin]"
     _service_class: 'type["QueueTaskService"]'
-    _event_log_model_class: "type[QueueEventLogModelMixin]"
+    _event_history_model_class: "type[QueueEventHistoryModelMixin]"
     _event_log_service_class: 'type["QueueEventLogService"]'
-    _maintenance_lease_model_class: "type[QueueMaintenanceLeaseModelMixin]"
-    _uniqueness_model_class: "type[QueueUniquenessModelMixin]"
-    _uniqueness_service_class: 'type["QueueUniquenessService"]'
+    _maintenance_model_class: "type[QueueMaintenanceModelMixin]"
+    _task_reservation_model_class: "type[QueueTaskReservationModelMixin]"
+    _task_reservation_service_class: 'type["QueueTaskReservationService"]'
 
     __slots__ = (
+        "_event_history_model_class",
         "_event_log",
-        "_event_log_model_class",
         "_event_log_service_class",
         "_event_poll_interval",
         "_heartbeat_session_maker",
-        "_maintenance_lease_model_class",
+        "_maintenance_model_class",
         "_model_class",
-        "_notification_channel",
         "_notification_listener",
         "_notifications",
         "_observability_runtime",
         "_opened",
         "_service_class",
         "_sqlalchemy_config",
-        "_uniqueness_model_class",
-        "_uniqueness_service_class",
+        "_task_reservation_model_class",
+        "_task_reservation_service_class",
+        "_wakeup_channel",
     )
 
     def __init__(
@@ -98,18 +99,16 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self._sqlalchemy_config = backend_config.sqlalchemy_config
         self._heartbeat_session_maker = backend_config.heartbeat_session_maker
         self._model_class, self._service_class = self._resolve_model_classes(backend_config.model_class)
-        self._event_log_model_class, self._event_log_service_class = self._resolve_event_log_model_classes(
-            backend_config.event_log_model_class
+        self._event_history_model_class, self._event_log_service_class = self._resolve_event_history_model_classes(
+            backend_config.event_history_model_class
         )
-        self._maintenance_lease_model_class = self._resolve_maintenance_lease_model_class(
-            backend_config.maintenance_lease_model_class
+        self._maintenance_model_class = self._resolve_maintenance_model_class(backend_config.maintenance_model_class)
+        self._task_reservation_model_class, self._task_reservation_service_class = (
+            self._resolve_task_reservation_model_classes(backend_config.task_reservation_model_class)
         )
-        self._uniqueness_model_class, self._uniqueness_service_class = self._resolve_uniqueness_model_classes(
-            backend_config.uniqueness_model_class
-        )
-        self._notifications = backend_config.notifications
-        self._notification_channel = backend_config.notification_channel
-        self._event_poll_interval = backend_config.event_poll_interval
+        self._notifications = backend_config.worker_wakeups
+        self._wakeup_channel = backend_config.wakeup_channel
+        self._event_poll_interval = backend_config.wakeup_poll_interval
         self._notification_listener: "NotificationListener | None" = None
         self._observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None
         self._event_log: "AdvancedAlchemyQueueEventLog | None" = None
@@ -120,10 +119,10 @@ class SQLAlchemyBackend(BaseQueueBackend):
         """Backend behavior capabilities."""
         notifications_enabled = self._notifications_supported()
         return QueueBackendCapabilities(
-            supports_notifications=notifications_enabled,
-            notification_backend=_POSTGRES_NOTIFY_BACKEND if notifications_enabled else None,
-            notifications_durable=False,
-            supports_maintenance_lease=True,
+            supports_worker_wakeups=notifications_enabled,
+            wakeup_backend=_POSTGRES_NOTIFY_BACKEND if notifications_enabled else None,
+            wakeups_durable=False,
+            supports_maintenance=True,
         )
 
     async def open(self) -> "bool":
@@ -147,10 +146,8 @@ class SQLAlchemyBackend(BaseQueueBackend):
             await self._event_log.flush_events()
         self._opened = False
 
-    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return Advanced Alchemy-managed queue event history when enabled."""
-        if not config.enabled:
-            return None
         if self._event_log is None:
             self._event_log = AdvancedAlchemyQueueEventLog(
                 config=config, service_factory=self._event_log_service, transaction_factory=self._event_log_operation
@@ -189,7 +186,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
                     metadata=dict(metadata or {}),
                     id=id,
                 )
-        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+        except (AdvancedAlchemyIntegrityError, SQLAlchemyIntegrityError):
             if key is None:
                 raise
             async with self._service() as service:
@@ -200,16 +197,16 @@ class SQLAlchemyBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+    async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
         """Persist multiple queued tasks in one Advanced Alchemy operation.
 
         Returns:
             Queue task records in input order.
         """
-        if not specs:
+        if not requests:
             return []
         async with self._operation() as service:
-            records = await service.enqueue_many(specs)
+            records = await service.enqueue_many(requests)
         self._increment_queue_metric("enqueue", float(len(records)))
         await self.notify_new_tasks(records)
         return records
@@ -344,35 +341,27 @@ class SQLAlchemyBackend(BaseQueueBackend):
         return record
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
-        """Publish a PostgreSQL worker wakeup marker when enabled.
-
-        Returns:
-            None.
-        """
+        """Publish a PostgreSQL worker wakeup marker when enabled."""
         if not self._notifications_supported() or record.status not in {"pending", "scheduled"} or not record.is_due:
             return
         await self._send_notification_marker()
         self._increment_queue_metric("notify")
 
     async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
-        """Coalesce a batch of task records into at most one wakeup marker.
-
-        Returns:
-            None.
-        """
+        """Coalesce a batch of task records into at most one wakeup marker."""
         for record in records:
             if record.status in {"pending", "scheduled"} and record.is_due:
                 await self.notify_new_task(record)
                 return
 
-    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+    async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for a PostgreSQL worker wakeup marker when configured.
 
         Returns:
             True when a wakeup marker or due-row reconciliation is observed.
         """
         if not self._notifications_supported():
-            return await super().wait_for_notifications(timeout=timeout)
+            return await super().wait_for_wakeups(timeout=timeout)
         listener = self._get_notification_listener()
         await listener.start()
         if await self._has_due_tasks():
@@ -402,17 +391,17 @@ class SQLAlchemyBackend(BaseQueueBackend):
         async with self._operation() as service:
             return await service.cleanup_terminal(before, limit=limit)
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
-        """Acquire a maintenance lease via a portable compare-and-set.
+    async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire maintenance ownership via a portable compare-and-set.
 
         Updates an existing expired row for ``name`` to this token; if no row
         was expired, inserts a fresh one inside a savepoint so a uniqueness race
-        (a live lease held elsewhere) is treated as lease denial.
+        (live ownership held elsewhere) is treated as a denied acquisition.
 
         Returns:
-            True when the lease is now held under ``token``.
+            True when maintenance ownership is held under ``token``.
         """
-        model = cast("Any", self._maintenance_lease_model_class)
+        model = cast("Any", self._maintenance_model_class)
         now = _utc_now()
         new_expiry = now + ttl
         async with self._session() as session, session.begin():
@@ -435,13 +424,13 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 return False
             return True
 
-    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
-        """Release a maintenance lease only when ``token`` matches the holder.
+    async def release_maintenance(self, name: "str", token: "str") -> "bool":
+        """Release maintenance ownership only when ``token`` matches the holder.
 
         Returns:
-            True when a lease held under ``token`` was deleted.
+            True when ownership held under ``token`` was deleted.
         """
-        model = cast("Any", self._maintenance_lease_model_class)
+        model = cast("Any", self._maintenance_model_class)
         async with self._session() as session, session.begin():
             result = cast(
                 "Any",
@@ -483,7 +472,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             msg = "SQLAlchemyBackend requires sqlalchemy_config for PostgreSQL notifications."
             raise QueueConfigurationError(msg)
         return create_notification_listener(
-            connection_string=sqlalchemy_config.connection_string, channel=self._notification_channel
+            connection_string=sqlalchemy_config.connection_string, channel=self._wakeup_channel
         )
 
     async def _send_notification_marker(self) -> "None":
@@ -495,7 +484,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         async with engine.begin() as connection:
             await connection.execute(
                 text("SELECT pg_notify(:channel, :payload)"),
-                {"channel": self._notification_channel, "payload": _POSTGRES_NOTIFY_PAYLOAD},
+                {"channel": self._wakeup_channel, "payload": _POSTGRES_NOTIFY_PAYLOAD},
             )
 
     async def _has_due_tasks(self) -> "bool":
@@ -506,8 +495,6 @@ class SQLAlchemyBackend(BaseQueueBackend):
         if amount == 0 or self.config is None or self.config.observability is None:
             return
         if self._observability_runtime is None:
-            from litestar_queues.observability import create_observability_runtime
-
             self._observability_runtime = create_observability_runtime(self.config.observability)
         self._observability_runtime.record_counter(
             f"litestar_queues.queue.{name}",
@@ -562,23 +549,23 @@ class SQLAlchemyBackend(BaseQueueBackend):
             raise QueueConfigurationError(msg)
         return typed_model, QueueTaskService.for_model(typed_model)
 
-    def _resolve_event_log_model_classes(
+    def _resolve_event_history_model_classes(
         self, model_class: "type[object] | None"
-    ) -> 'tuple[type[QueueEventLogModelMixin], type["QueueEventLogService"]]':
+    ) -> 'tuple[type[QueueEventHistoryModelMixin], type["QueueEventLogService"]]':
         if model_class is None:
-            msg = "SQLAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
+            msg = "SQLAlchemyBackendConfig.event_history_model_class must inherit QueueEventHistoryModelMixin."
             raise QueueConfigurationError(msg)
         try:
-            valid_model = issubclass(model_class, QueueEventLogModelMixin)
+            valid_model = issubclass(model_class, QueueEventHistoryModelMixin)
         except TypeError:
             valid_model = False
         if not valid_model:
-            msg = "SQLAlchemyBackendConfig.event_log_model_class must inherit QueueEventLogModelMixin."
+            msg = "SQLAlchemyBackendConfig.event_history_model_class must inherit QueueEventHistoryModelMixin."
             raise QueueConfigurationError(msg)
         if "__tablename__" not in model_class.__dict__:
-            msg = "SQLAlchemyBackendConfig.event_log_model_class must declare __tablename__."
+            msg = "SQLAlchemyBackendConfig.event_history_model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
-        typed_model = cast("type[QueueEventLogModelMixin]", model_class)
+        typed_model = cast("type[QueueEventHistoryModelMixin]", model_class)
         mapper = cast("Any", sqlalchemy_inspect(typed_model))
         missing_columns = {
             "created_at",
@@ -601,80 +588,80 @@ class SQLAlchemyBackend(BaseQueueBackend):
         } - {property_.key for property_ in mapper.column_attrs}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
-            msg = f"SQLAlchemyBackendConfig.event_log_model_class is missing event-log columns: {columns}."
+            msg = f"SQLAlchemyBackendConfig.event_history_model_class is missing event-log columns: {columns}."
             raise QueueConfigurationError(msg)
         return typed_model, QueueEventLogService.for_model(typed_model)
 
-    def _resolve_maintenance_lease_model_class(
+    def _resolve_maintenance_model_class(
         self, model_class: "type[object] | None"
-    ) -> "type[QueueMaintenanceLeaseModelMixin]":
+    ) -> "type[QueueMaintenanceModelMixin]":
         if model_class is None:
-            msg = "SQLAlchemyBackendConfig.maintenance_lease_model_class must inherit QueueMaintenanceLeaseModelMixin."
+            msg = "SQLAlchemyBackendConfig.maintenance_model_class must inherit QueueMaintenanceModelMixin."
             raise QueueConfigurationError(msg)
         try:
-            valid_model = issubclass(model_class, QueueMaintenanceLeaseModelMixin)
+            valid_model = issubclass(model_class, QueueMaintenanceModelMixin)
         except TypeError:
             valid_model = False
         if not valid_model:
-            msg = "SQLAlchemyBackendConfig.maintenance_lease_model_class must inherit QueueMaintenanceLeaseModelMixin."
+            msg = "SQLAlchemyBackendConfig.maintenance_model_class must inherit QueueMaintenanceModelMixin."
             raise QueueConfigurationError(msg)
         if "__tablename__" not in model_class.__dict__:
-            msg = "SQLAlchemyBackendConfig.maintenance_lease_model_class must declare __tablename__."
+            msg = "SQLAlchemyBackendConfig.maintenance_model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
-        typed_model = cast("type[QueueMaintenanceLeaseModelMixin]", model_class)
+        typed_model = cast("type[QueueMaintenanceModelMixin]", model_class)
         mapper = cast("Any", sqlalchemy_inspect(typed_model))
         missing_columns = {"name", "token", "expires_at"} - {property_.key for property_ in mapper.column_attrs}
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
-            msg = f"SQLAlchemyBackendConfig.maintenance_lease_model_class is missing lease columns: {columns}."
+            msg = f"SQLAlchemyBackendConfig.maintenance_model_class is missing coordination columns: {columns}."
             raise QueueConfigurationError(msg)
         return typed_model
 
-    def _resolve_uniqueness_model_classes(
+    def _resolve_task_reservation_model_classes(
         self, model_class: "type[object] | None"
-    ) -> 'tuple[type[QueueUniquenessModelMixin], type["QueueUniquenessService"]]':
+    ) -> 'tuple[type[QueueTaskReservationModelMixin], type["QueueTaskReservationService"]]':
         if model_class is None:
-            msg = "SQLAlchemyBackendConfig.uniqueness_model_class must inherit QueueUniquenessModelMixin."
+            msg = "SQLAlchemyBackendConfig.task_reservation_model_class must inherit QueueTaskReservationModelMixin."
             raise QueueConfigurationError(msg)
         try:
-            valid_model = issubclass(model_class, QueueUniquenessModelMixin)
+            valid_model = issubclass(model_class, QueueTaskReservationModelMixin)
         except TypeError:
             valid_model = False
         if not valid_model:
-            msg = "SQLAlchemyBackendConfig.uniqueness_model_class must inherit QueueUniquenessModelMixin."
+            msg = "SQLAlchemyBackendConfig.task_reservation_model_class must inherit QueueTaskReservationModelMixin."
             raise QueueConfigurationError(msg)
         if "__tablename__" not in model_class.__dict__:
-            msg = "SQLAlchemyBackendConfig.uniqueness_model_class must declare __tablename__."
+            msg = "SQLAlchemyBackendConfig.task_reservation_model_class must declare __tablename__."
             raise QueueConfigurationError(msg)
-        typed_model = cast("type[QueueUniquenessModelMixin]", model_class)
+        typed_model = cast("type[QueueTaskReservationModelMixin]", model_class)
         mapper = cast("Any", sqlalchemy_inspect(typed_model))
         missing_columns = {"id", "created_at", "identity_key", "task_id", "task_name"} - {
             property_.key for property_ in mapper.column_attrs
         }
         if missing_columns:
             columns = ", ".join(sorted(missing_columns))
-            msg = f"SQLAlchemyBackendConfig.uniqueness_model_class is missing tombstone columns: {columns}."
+            msg = f"SQLAlchemyBackendConfig.task_reservation_model_class is missing reservation columns: {columns}."
             raise QueueConfigurationError(msg)
-        return typed_model, QueueUniquenessService.for_model(typed_model)
+        return typed_model, QueueTaskReservationService.for_model(typed_model)
 
-    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "TaskReservation | None":
         """Reserve a forever identity via select-then-insert with an integrity fallback.
 
-        The tombstone table's unique ``identity_key`` column is the atomicity
+        The reservation table's unique ``identity_key`` column is the atomicity
         arbiter: a losing concurrent insert surfaces an integrity error and the
-        loser re-reads the winning owner. The tombstone table is separate from
+        loser re-reads the winning owner. The reservation table is separate from
         the task table and terminal cleanup never touches it.
 
         Returns:
             ``None`` when this caller won the reservation; otherwise the existing
-            owner tombstone.
+            owner reservation.
         """
         try:
-            async with self._uniqueness_operation() as service:
+            async with self._task_reservation_operation() as service:
                 existing = await service.reserve(key, task_id=task_id, task_name=task_name)
                 if existing is not None:
-                    return self._tombstone_from_model(existing)
-        except (DuplicateKeyError, SQLAlchemyIntegrityError):
+                    return self._reservation_from_model(existing)
+        except (AdvancedAlchemyIntegrityError, SQLAlchemyIntegrityError):
             owner = await self.has_identity(key)
             if owner is not None:
                 return owner
@@ -682,39 +669,39 @@ class SQLAlchemyBackend(BaseQueueBackend):
         else:
             return None
 
-    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
-        """Return the tombstone owning a reserved forever identity, if any."""
-        async with self._uniqueness_service() as service:
+    async def has_identity(self, key: "str") -> "TaskReservation | None":
+        """Return the reservation owning a reserved forever identity, if any."""
+        async with self._task_reservation_service() as service:
             model = await service.get_owner(key)
-            return self._tombstone_from_model(model) if model is not None else None
+            return self._reservation_from_model(model) if model is not None else None
 
     async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
-        """Delete a forever identity tombstone via atomic compare-and-delete.
+        """Delete a forever identity reservation via atomic compare-and-delete.
 
         Args:
             key: The exact effective identity key.
             expected_task_id: Optional task owner required for deletion.
 
         Returns:
-            ``True`` when a tombstone was removed.
+            ``True`` when a reservation was removed.
         """
-        async with self._uniqueness_operation() as service:
+        async with self._task_reservation_operation() as service:
             return await service.delete_by_key(key, expected_task_id=expected_task_id)
 
-    def _tombstone_from_model(self, model: "Any") -> "UniquenessTombstone":
+    def _reservation_from_model(self, model: "Any") -> "TaskReservation":
         created_at = model.created_at
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
-        return UniquenessTombstone(
+        return TaskReservation(
             key=str(model.identity_key),
             task_id=UUID(str(model.task_id)),
             task_name=str(model.task_name),
             created_at=created_at.astimezone(timezone.utc),
         )
 
-    def _event_log_enabled(self) -> "bool":
-        event_log_config = self.config.event_log if self.config is not None else None
-        return event_log_config is not None and event_log_config.enabled
+    def _event_history_enabled(self) -> "bool":
+        events_config = self.config.events if self.config is not None else None
+        return events_config is not None and events_config.history is not None
 
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[AsyncSession]":
@@ -752,16 +739,16 @@ class SQLAlchemyBackend(BaseQueueBackend):
             yield self._event_log_service_class(session=session)
 
     @asynccontextmanager
-    async def _uniqueness_service(self) -> 'AsyncIterator["QueueUniquenessService"]':
+    async def _task_reservation_service(self) -> 'AsyncIterator["QueueTaskReservationService"]':
         self._ensure_opened()
         async with self._session() as session:
-            yield self._uniqueness_service_class(session=session)
+            yield self._task_reservation_service_class(session=session)
 
     @asynccontextmanager
-    async def _uniqueness_operation(self) -> 'AsyncIterator["QueueUniquenessService"]':
+    async def _task_reservation_operation(self) -> 'AsyncIterator["QueueTaskReservationService"]':
         self._ensure_opened()
         async with self._session() as session, session.begin():
-            yield self._uniqueness_service_class(session=session)
+            yield self._task_reservation_service_class(session=session)
 
     @asynccontextmanager
     async def _heartbeat_operation(self) -> 'AsyncIterator["QueueTaskService"]':

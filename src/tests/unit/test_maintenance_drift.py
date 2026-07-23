@@ -50,10 +50,10 @@ def test_docs_recommend_infrequent_not_minute_level_cadence() -> None:
     assert "every minute" not in _MAINTENANCE_DOCS.lower()
 
 
-def test_docs_cover_lease_migration_and_memory_rejection() -> None:
-    """The operator guide documents the lease, migrations, and memory rejection."""
+def test_docs_cover_coordination_storage_and_memory_rejection() -> None:
+    """The operator guide documents the ownership, migrations, and memory rejection."""
     lower = _MAINTENANCE_DOCS.lower()
-    assert "lease" in lower
+    assert "ownership" in lower
     assert "migration" in lower
     assert "in-memory" in lower
     assert "exit" in lower

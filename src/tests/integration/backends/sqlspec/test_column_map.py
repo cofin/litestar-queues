@@ -83,8 +83,8 @@ def test_default_schema_uses_reference_friendly_physical_column_names(
         assert f'"{legacy_name}"' not in ddl_sql
     assert '"task_name"' in insert_sql
     assert '"function"' not in insert_sql
-    assert '"litestar_queue_task"."task_name"' in select_sql
-    assert '"litestar_queue_task"."metadata" AS "metadata_json"' in select_sql
+    assert '"queue_task"."task_name"' in select_sql
+    assert '"queue_task"."metadata" AS "metadata_json"' in select_sql
 
 
 def test_column_map_resolves_generated_statement_columns(
@@ -167,7 +167,7 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
     _create_adopter_sqlite_schema(db_path)
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
-            config=sqlite_config_factory(db_path),
+            sqlspec_config=sqlite_config_factory(db_path),
             queue_table_name="adopter_jobs",
             column_map=ADOPTER_COLUMN_MAP,
             manage_schema=False,
@@ -233,7 +233,7 @@ async def test_manage_schema_false_emits_no_schema_ddl(
     """Schema creation, drop, migrations, and open() stay hands-off when opted out."""
     db_path = tmp_path / "no-schema.db"
     config = sqlite_config_factory(db_path)
-    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(config=config, manage_schema=False))
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=config, manage_schema=False))
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(config=config)
     setattr(config, "manage_schema", False)

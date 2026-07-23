@@ -12,14 +12,24 @@ from collections import OrderedDict
 from collections.abc import Container, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from litestar import Request, Router, WebSocket, get, websocket
+from litestar.exceptions import PermissionDeniedException, WebSocketException
+from litestar.params import FromPath
+from litestar.response import ServerSentEvent
+
+from litestar_queues.config import _OBSERVABILITY_RUNTIME_STATE_KEY
 from litestar_queues.events.channels import QueueChannels
+from litestar_queues.events.litestar import (
+    _STREAM_DEDUP_MAX_KEYS,
+    _decode_event,
+    _event_stream,
+    _resolve_channels_backend,
+)
 from litestar_queues.events.models import QueueEventScope
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from litestar import Router, WebSocket
-    from litestar.response import ServerSentEvent
     from litestar.types import SSEData
 
     from litestar_queues.config import QueueConfig
@@ -102,8 +112,6 @@ async def stream_queue_events_hardened(
     The caller owns route paths, guards, tenant filtering, and authorization.
     Subscriber backpressure is intentionally left to the configured Channels backend.
     """
-    from litestar_queues.events.litestar import _event_stream, _resolve_channels_backend
-
     backend = channels_backend or _resolve_channels_backend(socket)
     if backend is None:
         msg = "A Litestar Channels backend or plugin is required to stream queue events."
@@ -149,8 +157,6 @@ async def _wait_for_stream_tasks(
 async def _pump_events(
     socket: Any, events: "Any", send_lock: "asyncio.Lock", stream_metrics: StreamMetrics | None, scope: QueueEventScope
 ) -> None:
-    from litestar_queues.events.litestar import _STREAM_DEDUP_MAX_KEYS, _decode_event
-
     seen_dedup_keys: "OrderedDict[str, None]" = OrderedDict()
     async for raw_event in events:
         event = _decode_event(raw_event)
@@ -224,7 +230,7 @@ def _resolve_observability_runtime(
     state = getattr(app, "state", None)
     if state is None:
         return None
-    key = config.queue_observability_runtime_state_key
+    key = _OBSERVABILITY_RUNTIME_STATE_KEY
     with contextlib.suppress(KeyError, TypeError):
         runtime = state[key]
         if runtime is not None:
@@ -242,20 +248,28 @@ def _resolve_stream_metrics(connection: Any, config: "QueueConfig") -> "StreamMe
     return None
 
 
-def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig") -> "Router":
+def _configured_stream_channels_backend(
+    config: "QueueConfig", channels_backend: "ChannelsLike | None"
+) -> "ChannelsLike | None":
+    if channels_backend is not None:
+        return channels_backend
+    if config.events is not None:
+        return config.events.channels
+    return None
+
+
+def build_stream_router(
+    config: "QueueConfig", stream_config: "EventStreamConfig", *, channels_backend: "ChannelsLike | None" = None
+) -> "Router":
     """Build plugin-owned queue-event stream handlers for configured scopes.
 
     Returns:
         A router containing one handler per recognized configured scope for each
         enabled transport (WebSocket and/or SSE).
     """
-    from litestar import Router
-    from litestar.exceptions import PermissionDeniedException, WebSocketException
-
-    from litestar_queues.events.litestar import _resolve_channels_backend
-
     authorizer = stream_config.channel_authorizer
-    history = stream_config.history
+    history = stream_config.replay_limit
+    configured_channels_backend = _configured_stream_channels_backend(config, channels_backend)
 
     async def _authorize(
         connection: Any,
@@ -280,9 +294,9 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
     async def _relay(socket: "WebSocket", scope: "QueueEventScope", key: str | None, channel: str) -> None:
         stream_metrics = _resolve_stream_metrics(socket, config)
         await _authorize(socket, scope, key, websocket=True, stream_metrics=stream_metrics)
-        backend = _resolve_channels_backend(socket)
-        if backend is None and config.event is not None:
-            backend = config.event.channels_backend
+        backend = configured_channels_backend
+        if backend is None:
+            backend = _resolve_channels_backend(socket)
         await stream_queue_events_hardened(
             socket,
             [channel],
@@ -296,9 +310,9 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
     async def _sse(connection: Any, scope: "QueueEventScope", key: str | None, channel: str) -> Any:
         stream_metrics = _resolve_stream_metrics(connection, config)
         await _authorize(connection, scope, key, websocket=False, stream_metrics=stream_metrics)
-        backend = _resolve_channels_backend(connection)
-        if backend is None and config.event is not None:
-            backend = config.event.channels_backend
+        backend = configured_channels_backend
+        if backend is None:
+            backend = _resolve_channels_backend(connection)
         return stream_queue_events_sse(
             connection,
             [channel],
@@ -310,13 +324,13 @@ def build_stream_router(config: "QueueConfig", stream_config: "EventStreamConfig
         )
 
     handlers: list[Any] = []
-    if stream_config.websocket:
+    if "websocket" in stream_config.transports:
         _append_task_handler(handlers, stream_config.scopes, _relay)
         _append_queue_handler(handlers, stream_config.scopes, _relay)
         _append_worker_handler(handlers, stream_config.scopes, _relay)
         _append_global_handler(handlers, stream_config.scopes, _relay)
         _append_custom_handler(handlers, stream_config.scopes, _relay)
-    if stream_config.sse:
+    if "sse" in stream_config.transports:
         _append_sse_task_handler(handlers, stream_config.scopes, _sse)
         _append_sse_queue_handler(handlers, stream_config.scopes, _sse)
         _append_sse_worker_handler(handlers, stream_config.scopes, _sse)
@@ -343,8 +357,6 @@ def stream_queue_events_sse(
     scope: QueueEventScope = "task",
 ) -> "ServerSentEvent":
     """Return a server-sent event stream for queue events."""
-    from litestar.response import ServerSentEvent
-
     return ServerSentEvent(
         _sse_events(
             connection,
@@ -368,8 +380,6 @@ async def _sse_events(
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
 ) -> "AsyncIterator[SSEData]":
-    from litestar_queues.events.litestar import _event_stream, _resolve_channels_backend
-
     backend = channels_backend or _resolve_channels_backend(connection)
     if backend is None:
         msg = "A Litestar Channels backend or plugin is required to stream queue events."
@@ -429,8 +439,6 @@ def _sse_frame(
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
 ) -> "dict[str, str] | None":
-    from litestar_queues.events.litestar import _STREAM_DEDUP_MAX_KEYS, _decode_event
-
     event = _decode_event(raw_event)
     if event is None:
         return None
@@ -450,9 +458,6 @@ def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any
     if "task" not in scopes:
         return
 
-    from litestar import websocket
-    from litestar.params import FromPath
-
     @websocket("/tasks/{task_id:str}", name="queue_event_stream_task")
     async def task_stream(socket: "WebSocket", task_id: FromPath[str]) -> None:
         await relay(socket, "task", task_id, QueueChannels.task(task_id))
@@ -463,9 +468,6 @@ def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any
 def _append_sse_task_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
     if "task" not in scopes:
         return
-
-    from litestar import Request, get
-    from litestar.params import FromPath
 
     @get("/sse/tasks/{task_id:str}", name="queue_event_sse_task", media_type="text/event-stream")
     async def task_sse(request: Request, task_id: FromPath[str]) -> Any:
@@ -478,9 +480,6 @@ def _append_queue_handler(handlers: list[Any], scopes: Container[str], relay: An
     if "queue" not in scopes:
         return
 
-    from litestar import websocket
-    from litestar.params import FromPath
-
     @websocket("/queues/{queue:str}", name="queue_event_stream_queue")
     async def queue_stream(socket: "WebSocket", queue: FromPath[str]) -> None:
         await relay(socket, "queue", queue, QueueChannels.queue(queue))
@@ -491,9 +490,6 @@ def _append_queue_handler(handlers: list[Any], scopes: Container[str], relay: An
 def _append_sse_queue_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
     if "queue" not in scopes:
         return
-
-    from litestar import Request, get
-    from litestar.params import FromPath
 
     @get("/sse/queues/{queue:str}", name="queue_event_sse_queue", media_type="text/event-stream")
     async def queue_sse(request: Request, queue: FromPath[str]) -> Any:
@@ -506,9 +502,6 @@ def _append_worker_handler(handlers: list[Any], scopes: Container[str], relay: A
     if "worker" not in scopes:
         return
 
-    from litestar import websocket
-    from litestar.params import FromPath
-
     @websocket("/workers/{worker_id:str}", name="queue_event_stream_worker")
     async def worker_stream(socket: "WebSocket", worker_id: FromPath[str]) -> None:
         await relay(socket, "worker", worker_id, QueueChannels.worker(worker_id))
@@ -519,9 +512,6 @@ def _append_worker_handler(handlers: list[Any], scopes: Container[str], relay: A
 def _append_sse_worker_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
     if "worker" not in scopes:
         return
-
-    from litestar import Request, get
-    from litestar.params import FromPath
 
     @get("/sse/workers/{worker_id:str}", name="queue_event_sse_worker", media_type="text/event-stream")
     async def worker_sse(request: Request, worker_id: FromPath[str]) -> Any:
@@ -534,8 +524,6 @@ def _append_global_handler(handlers: list[Any], scopes: Container[str], relay: A
     if "global" not in scopes:
         return
 
-    from litestar import websocket
-
     @websocket("/global", name="queue_event_stream_global")
     async def global_stream(socket: "WebSocket") -> None:
         await relay(socket, "global", None, QueueChannels.global_channel())
@@ -546,8 +534,6 @@ def _append_global_handler(handlers: list[Any], scopes: Container[str], relay: A
 def _append_sse_global_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
     if "global" not in scopes:
         return
-
-    from litestar import Request, get
 
     @get("/sse/global", name="queue_event_sse_global", media_type="text/event-stream")
     async def global_sse(request: Request) -> Any:
@@ -560,9 +546,6 @@ def _append_custom_handler(handlers: list[Any], scopes: Container[str], relay: A
     if "custom" not in scopes:
         return
 
-    from litestar import websocket
-    from litestar.params import FromPath
-
     @websocket("/custom/{scope_key:str}", name="queue_event_stream_custom")
     async def custom_stream(socket: "WebSocket", scope_key: FromPath[str]) -> None:
         await relay(socket, "custom", scope_key, QueueChannels.custom(scope_key))
@@ -573,9 +556,6 @@ def _append_custom_handler(handlers: list[Any], scopes: Container[str], relay: A
 def _append_sse_custom_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
     if "custom" not in scopes:
         return
-
-    from litestar import Request, get
-    from litestar.params import FromPath
 
     @get("/sse/custom/{scope_key:str}", name="queue_event_sse_custom", media_type="text/event-stream")
     async def custom_sse(request: Request, scope_key: FromPath[str]) -> Any:

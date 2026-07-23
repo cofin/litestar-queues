@@ -11,10 +11,17 @@ import pytest
 pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
-from litestar_queues import EventConfig, EventLogConfig, InMemoryQueueEventSink, QueueConfig, QueueService, task
+from litestar_queues import (
+    EventDeliveryConfig,
+    EventHistoryConfig,
+    InMemoryQueueEventSink,
+    QueueConfig,
+    QueueService,
+    task,
+)
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.events import publish_task_log, publish_task_progress
+from litestar_queues.events import QueueEventsConfig, publish_task_log, publish_task_progress
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema
 
@@ -41,21 +48,21 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
 
     db_path = tmp_path / "event-history.db"
     live_sink = InMemoryQueueEventSink()
-    event_log_config = EventLogConfig(enabled=True, buffer_size=100, flush_interval=60)
-    backend_config = SQLSpecBackendConfig(config=sqlite_config_factory(db_path))
-    await bootstrap_queue_schema(backend_config, event_log_enabled=True)
+    event_log_config = EventHistoryConfig(batch_size=100, flush_interval=60)
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path))
+    await bootstrap_queue_schema(backend_config, event_history_enabled=True)
     config = QueueConfig(
         queue_backend=backend_config,
         execution_backend="immediate",
-        event=EventConfig(sink=live_sink),
-        event_log=event_log_config,
+        events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(live_sink,)), history=event_log_config),
     )
 
     async with QueueService(config) as service:
         result = await service.enqueue(event_history_task)
 
     reader_config = QueueConfig(
-        queue_backend=SQLSpecBackendConfig(config=sqlite_config_factory(db_path)), event_log=event_log_config
+        queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path)),
+        events=QueueEventsConfig(history=event_log_config),
     )
     async with QueueService(reader_config) as reader:
         event_log = reader.get_queue_backend().get_event_log(event_log_config)
@@ -105,56 +112,62 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
     assert (final_deleted, after_final) == (0, [])
 
 
-async def test_sqlspec_event_log_table_follows_event_log_enabled_lifecycle(
+async def test_sqlspec_event_history_table_follows_event_history_enabled_lifecycle(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> "None":
     """SQLSpec only creates the durable event table when event history is enabled."""
     disabled_db_path = tmp_path / "event-log-disabled.db"
-    disabled_backend_config = SQLSpecBackendConfig(config=sqlite_config_factory(disabled_db_path))
+    disabled_backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(disabled_db_path))
     await bootstrap_queue_schema(disabled_backend_config)
     async with QueueService(QueueConfig(queue_backend=disabled_backend_config)):
         pass
 
-    assert "litestar_queue_task_event_log" not in _sqlite_table_names(disabled_db_path)
+    assert "queue_task_event_history" not in _sqlite_table_names(disabled_db_path)
 
     enabled_db_path = tmp_path / "event-log-enabled.db"
-    enabled_backend_config = SQLSpecBackendConfig(config=sqlite_config_factory(enabled_db_path))
-    await bootstrap_queue_schema(enabled_backend_config, event_log_enabled=True)
-    async with QueueService(QueueConfig(queue_backend=enabled_backend_config, event_log=EventLogConfig(enabled=True))):
+    enabled_backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(enabled_db_path))
+    await bootstrap_queue_schema(enabled_backend_config, event_history_enabled=True)
+    async with QueueService(
+        QueueConfig(queue_backend=enabled_backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+    ):
         pass
 
-    assert "litestar_queue_task_event_log" in _sqlite_table_names(enabled_db_path)
+    assert "queue_task_event_history" in _sqlite_table_names(enabled_db_path)
 
 
-async def test_sqlspec_event_log_table_name_follows_queue_table_name(
+async def test_sqlspec_event_history_table_name_follows_queue_table_name(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> "None":
     """SQLSpec derives the default event-log table from the resolved queue table."""
     derived_db_path = tmp_path / "event-log-derived.db"
     derived_backend_config = SQLSpecBackendConfig(
-        config=sqlite_config_factory(derived_db_path), queue_table_name="custom_queue_task"
+        sqlspec_config=sqlite_config_factory(derived_db_path), queue_table_name="custom_queue_task"
     )
-    await bootstrap_queue_schema(derived_backend_config, event_log_enabled=True)
-    async with QueueService(QueueConfig(queue_backend=derived_backend_config, event_log=EventLogConfig(enabled=True))):
+    await bootstrap_queue_schema(derived_backend_config, event_history_enabled=True)
+    async with QueueService(
+        QueueConfig(queue_backend=derived_backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+    ):
         pass
 
     derived_tables = _sqlite_table_names(derived_db_path)
-    assert "custom_queue_task_event_log" in derived_tables
-    assert "litestar_queue_task_event_log" not in derived_tables
+    assert "custom_queue_task_event_history" in derived_tables
+    assert "queue_task_event_history" not in derived_tables
 
     explicit_db_path = tmp_path / "event-log-explicit.db"
     explicit_backend_config = SQLSpecBackendConfig(
-        config=sqlite_config_factory(explicit_db_path),
+        sqlspec_config=sqlite_config_factory(explicit_db_path),
         queue_table_name="explicit_queue_task",
-        event_log_table_name="queue_events",
+        event_history_table_name="queue_events",
     )
-    await bootstrap_queue_schema(explicit_backend_config, event_log_enabled=True)
-    async with QueueService(QueueConfig(queue_backend=explicit_backend_config, event_log=EventLogConfig(enabled=True))):
+    await bootstrap_queue_schema(explicit_backend_config, event_history_enabled=True)
+    async with QueueService(
+        QueueConfig(queue_backend=explicit_backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+    ):
         pass
 
     explicit_tables = _sqlite_table_names(explicit_db_path)
     assert "queue_events" in explicit_tables
-    assert "explicit_queue_task_event_log" not in explicit_tables
+    assert "explicit_queue_task_event_history" not in explicit_tables
 
 
 async def test_sqlspec_event_log_migration_down_drops_event_table() -> "None":
@@ -163,14 +176,12 @@ async def test_sqlspec_event_log_migration_down_drops_event_table() -> "None":
 
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(
-        config=AiosqliteConfig(extension_config={QUEUE_EXTENSION_NAME: {"event_log_enabled": True}})
+        config=AiosqliteConfig(extension_config={QUEUE_EXTENSION_NAME: {"event_history_enabled": True}})
     )
 
     down_statements = await migration.down(context)
 
-    assert any(
-        "DROP TABLE" in statement and "litestar_queue_task_event_log" in statement for statement in down_statements
-    )
+    assert any("DROP TABLE" in statement and "queue_task_event_history" in statement for statement in down_statements)
 
 
 def _sqlite_table_names(db_path: "Path") -> "set[str]":

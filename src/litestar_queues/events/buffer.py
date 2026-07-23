@@ -59,11 +59,7 @@ class LiveEventBuffer:
         self._warned_drop = False
 
     async def add(self, event: "QueueEvent", channels: "Sequence[str]") -> "None":
-        """Add an event to the buffer, applying configured overflow behavior.
-
-        Returns:
-            None.
-        """
+        """Add an event to the buffer, applying configured overflow behavior."""
         item = _BufferedEvent(key=event_buffer_key(event), event=event, channels=tuple(channels))
         should_flush = False
         async with self._condition:
@@ -80,7 +76,7 @@ class LiveEventBuffer:
                     raise QueueEventBufferFull(msg)
                 await self._condition.wait()
             self._append(item)
-            should_flush = len(self._order) >= self._buffer_size
+            should_flush = len(self._order) >= self._batch_size
         if should_flush:
             await self.flush()
 
@@ -93,11 +89,7 @@ class LiveEventBuffer:
             await self._sink_publish(tuple((item.event, item.channels) for item in items))
 
     def start(self) -> "None":
-        """Start the interval flush loop if it is not already running.
-
-        Returns:
-            None.
-        """
+        """Start the interval flush loop if it is not already running."""
         if self._task is not None and not self._task.done():
             return
         if self._stop_event.is_set():
@@ -130,8 +122,8 @@ class LiveEventBuffer:
         return False
 
     @property
-    def _buffer_size(self) -> "int":
-        return max(1, self._config.buffer_size)
+    def _batch_size(self) -> "int":
+        return self._config.batch_size
 
     @property
     def _max_pending(self) -> "int":

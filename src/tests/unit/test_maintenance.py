@@ -13,7 +13,7 @@ from litestar_queues import (
     QueueMaintenanceSummary,
 )
 from litestar_queues.exceptions import QueueConfigurationError
-from litestar_queues.maintenance import LEASE_NAME, PHASE_ORDER
+from litestar_queues.maintenance import MAINTENANCE_NAME, PHASE_ORDER
 from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
@@ -53,11 +53,11 @@ class _StubEventLog:
 
 
 class _StubBackend:
-    """Queue-backend double implementing the lease + terminal-cleanup surface."""
+    """Queue-backend double implementing the ownership + terminal-cleanup surface."""
 
-    def __init__(self, *, supports_lease: "bool" = True, lease_granted: "bool" = True) -> "None":
-        self._capabilities = QueueBackendCapabilities(supports_maintenance_lease=supports_lease)
-        self.lease_granted = lease_granted
+    def __init__(self, *, supports_maintenance: "bool" = True, ownership_granted: "bool" = True) -> "None":
+        self._capabilities = QueueBackendCapabilities(supports_maintenance=supports_maintenance)
+        self.ownership_granted = ownership_granted
         self.acquire_calls: "list[tuple[str, str]]" = []
         self.release_calls: "list[tuple[str, str]]" = []
         self.cleanup_calls: "list[tuple[datetime, int | None]]" = []
@@ -70,11 +70,11 @@ class _StubBackend:
     def capabilities(self) -> "QueueBackendCapabilities":
         return self._capabilities
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+    async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
         self.acquire_calls.append((name, token))
-        return self.lease_granted
+        return self.ownership_granted
 
-    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
+    async def release_maintenance(self, name: "str", token: "str") -> "bool":
         self.release_calls.append((name, token))
         return True
 
@@ -169,14 +169,14 @@ def test_config_defaults_disable_retention_phases() -> "None":
     assert config.stale_after is None
     assert config.terminal_retention is None
     assert config.event_retention is None
-    assert config.lease_ttl > config.time_budget
+    assert config.coordination_timeout > config.time_budget
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"time_budget": 0},
-        {"lease_ttl": 0},
+        {"coordination_timeout": 0},
         {"external_limit": 0},
         {"stale_limit": 0},
         {"terminal_limit": 0},
@@ -184,12 +184,12 @@ def test_config_defaults_disable_retention_phases() -> "None":
         {"stale_after": 0},
         {"terminal_retention": -1},
         {"event_retention": 0},
-        {"lease_ttl": 300.0, "time_budget": 300.0},
-        {"lease_ttl": 100.0, "time_budget": 300.0},
+        {"coordination_timeout": 300.0, "time_budget": 300.0},
+        {"coordination_timeout": 100.0, "time_budget": 300.0},
         {"time_budget": float("nan")},
         {"time_budget": float("inf")},
-        {"lease_ttl": float("nan")},
-        {"lease_ttl": float("inf")},
+        {"coordination_timeout": float("nan")},
+        {"coordination_timeout": float("inf")},
         {"stale_after": float("nan")},
         {"terminal_retention": float("inf")},
         {"event_retention": float("nan")},
@@ -212,26 +212,26 @@ def test_config_allows_positive_retention() -> "None":
 
 
 # --------------------------------------------------------------------------- #
-# Lease + capability
+# Ownership + capability
 # --------------------------------------------------------------------------- #
 
 
-async def test_run_rejects_backend_without_lease_capability() -> "None":
-    backend = _StubBackend(supports_lease=False)
+async def test_run_rejects_backend_without_maintenance_capability() -> "None":
+    backend = _StubBackend(supports_maintenance=False)
     service = _StubService(backend=backend)
     with pytest.raises(QueueConfigurationError):
         await _run(service, QueueMaintenanceConfig())
     assert backend.acquire_calls == []
 
 
-async def test_lease_denial_is_a_no_op_with_skipped_phases() -> "None":
-    backend = _StubBackend(lease_granted=False)
+async def test_coordination_denial_is_a_no_op_with_skipped_phases() -> "None":
+    backend = _StubBackend(ownership_granted=False)
     stub = _StubService(backend=backend, is_external=True)
     stub.reconcile_result = 5
     summary = await _run(stub, QueueMaintenanceConfig(stale_after=60, terminal_retention=60))
 
-    assert summary.outcome == "lease_held"
-    assert summary.lease_acquired is False
+    assert summary.outcome == "already_running"
+    assert summary.acquired is False
     assert [phase.status for phase in summary.phases] == ["skipped", "skipped", "skipped", "skipped"]
     assert stub.reconcile_calls == []
     assert stub.recover_calls == []
@@ -239,12 +239,12 @@ async def test_lease_denial_is_a_no_op_with_skipped_phases() -> "None":
     assert backend.release_calls == []
 
 
-async def test_lease_uses_shared_name_and_is_released() -> "None":
+async def test_coordination_uses_shared_name_and_is_released() -> "None":
     backend = _StubBackend()
     stub = _StubService(backend=backend)
     await _run(stub, QueueMaintenanceConfig())
-    assert [name for name, _ in backend.acquire_calls] == [LEASE_NAME]
-    assert [name for name, _ in backend.release_calls] == [LEASE_NAME]
+    assert [name for name, _ in backend.acquire_calls] == [MAINTENANCE_NAME]
+    assert [name for name, _ in backend.release_calls] == [MAINTENANCE_NAME]
     assert backend.acquire_calls[0][1] == backend.release_calls[0][1]
 
 
@@ -437,7 +437,7 @@ async def test_summary_payload_is_json_native() -> "None":
     payload = summary.to_payload()
     restored = json.loads(json.dumps(payload))
     assert restored["outcome"] == "completed"
-    assert restored["lease_acquired"] is True
+    assert restored["acquired"] is True
     assert isinstance(restored["duration_ms"], (int, float))
     assert {phase["phase"] for phase in restored["phases"]} == set(PHASE_ORDER)
     for phase in restored["phases"]:

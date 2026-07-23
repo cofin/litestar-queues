@@ -177,7 +177,7 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
 async def _heartbeat_loop(
     queue: "QueueService", task_id: "UUID", *, expected_retry_count: "int", beat_sink: "SingleTaskBeatSink"
 ) -> "bool":
-    interval = queue.config.worker_heartbeat_interval
+    interval = queue.config.worker.heartbeat_interval
     while True:
         await asyncio.sleep(interval)
         detail = beat_sink.peek_detail()

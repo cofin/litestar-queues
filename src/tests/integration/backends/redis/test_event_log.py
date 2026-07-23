@@ -8,16 +8,16 @@ import pytest
 
 pytest.importorskip("redis")
 
-from litestar_queues import EventLogConfig, QueueConfig, QueueService
+from litestar_queues import EventHistoryConfig, QueueConfig, QueueService
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.backends.redis.event_log import RedisQueueEventLog
-from litestar_queues.events import QueueEvent
+from litestar_queues.events import QueueEvent, QueueEventsConfig
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_redis_event_log_records_queries_and_cleans_up(redis_backend: "RedisQueueBackend") -> "None":
-    event_log_config = EventLogConfig(buffer_size=10, flush_interval=60)
+    event_log_config = EventHistoryConfig(batch_size=10, flush_interval=60)
     event_log = redis_backend.get_event_log(event_log_config)
     assert event_log is not None
 
@@ -58,13 +58,15 @@ async def test_redis_event_log_records_queries_and_cleans_up(redis_backend: "Red
 
 
 async def test_redis_queue_service_accepts_event_log_config(redis_backend: "RedisQueueBackend") -> "None":
-    async with QueueService(QueueConfig(event_log=EventLogConfig()), queue_backend=redis_backend) as service:
-        assert service.get_queue_backend().get_event_log(EventLogConfig()) is not None
+    async with QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())), queue_backend=redis_backend
+    ) as service:
+        assert service.get_queue_backend().get_event_log(EventHistoryConfig()) is not None
 
 
 async def test_redis_event_cleanup_always_removes_the_global_index(redis_backend: "RedisQueueBackend") -> "None":
     """Cleanup must not rely on a hash's secondary-index metadata for the global ZREM."""
-    event_log = redis_backend.get_event_log(EventLogConfig(buffer_size=1))
+    event_log = redis_backend.get_event_log(EventHistoryConfig(batch_size=1))
     assert event_log is not None
     event = _event("redis-event-global-cleanup")
     await event_log.publish_event(event)
@@ -85,7 +87,7 @@ async def test_redis_event_cleanup_always_removes_the_global_index(redis_backend
 
 async def test_redis_event_cleanup_continues_in_exact_bounded_batches(redis_backend: "RedisQueueBackend") -> "None":
     """Bounded cleanup deletes oldest events first and reaches a stable no-op."""
-    event_log = redis_backend.get_event_log(EventLogConfig(buffer_size=1))
+    event_log = redis_backend.get_event_log(EventHistoryConfig(batch_size=1))
     assert event_log is not None
     events = [_event(f"redis-bounded-{second}", second=second) for second in range(1, 6)]
     for event in events:
@@ -106,11 +108,11 @@ async def test_redis_event_log_non_strict_flush_preserves_failed_batch() -> "Non
         backend_config=RedisBackendConfig(
             client=cast("Any", _FailingRedisClient()),
             key_prefix="litestar_queues:test:failing-event-log",
-            notifications=False,
+            worker_wakeups=False,
         )
     )
     await backend.open()
-    event_log = backend.get_event_log(EventLogConfig(buffer_size=1, strict=False))
+    event_log = backend.get_event_log(EventHistoryConfig(batch_size=1, strict=False))
     assert isinstance(event_log, RedisQueueEventLog)
 
     await event_log.publish_event(_event("redis-failing-event"))

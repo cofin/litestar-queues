@@ -14,25 +14,25 @@ if TYPE_CHECKING:
 
 __all__ = (
     "DEFAULT_COLUMN_MAP",
-    "DEFAULT_EVENT_LOG_TABLE_SUFFIX",
-    "DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX",
+    "DEFAULT_EVENT_HISTORY_TABLE_SUFFIX",
+    "DEFAULT_MAINTENANCE_TABLE_SUFFIX",
     "DEFAULT_TABLE_NAME",
-    "DEFAULT_UNIQUENESS_TABLE_SUFFIX",
-    "event_log_table_name_for",
-    "maintenance_lease_table_name_for",
+    "DEFAULT_TASK_RESERVATION_TABLE_SUFFIX",
+    "event_history_table_name_for",
+    "maintenance_table_name_for",
     "migration_directory",
     "migration_paths",
     "resolve_column_map",
-    "uniqueness_table_name_for",
+    "task_reservation_table_name_for",
     "validate_column_map",
     "validate_native_json_columns",
     "validate_table_name",
 )
 
-DEFAULT_TABLE_NAME = "litestar_queue_task"
-DEFAULT_EVENT_LOG_TABLE_SUFFIX = "_event_log"
-DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX = "_maintenance_lease"
-DEFAULT_UNIQUENESS_TABLE_SUFFIX = "_uniqueness"
+DEFAULT_TABLE_NAME = "queue_task"
+DEFAULT_EVENT_HISTORY_TABLE_SUFFIX = "_event_history"
+DEFAULT_MAINTENANCE_TABLE_SUFFIX = "_maintenance"
+DEFAULT_TASK_RESERVATION_TABLE_SUFFIX = "_reservation"
 DEFAULT_COLUMN_MAP = {
     "args_json": "task_args",
     "kwargs_json": "task_kwargs",
@@ -140,22 +140,22 @@ def validate_native_json_columns(columns: "frozenset[str]") -> "frozenset[str]":
     return columns
 
 
-def event_log_table_name_for(table_name: "str") -> "str":
-    """Return the default event-log table for a queue table name.
+def event_history_table_name_for(table_name: "str") -> "str":
+    """Return the default event-history table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_EVENT_LOG_TABLE_SUFFIX` to the table part.
+    :data:`DEFAULT_EVENT_HISTORY_TABLE_SUFFIX` to the table part.
     """
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
     if len(parts) == 1:
-        return validate_table_name(f"{validated}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
+        return validate_table_name(f"{validated}{DEFAULT_EVENT_HISTORY_TABLE_SUFFIX}")
     schema, table = parts
-    return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_LOG_TABLE_SUFFIX}")
+    return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_HISTORY_TABLE_SUFFIX}")
 
 
 # Smallest common identifier limit across supported dialects (PostgreSQL is 63,
-# MySQL is 64). The derived lease table is deterministically shortened to fit so
+# MySQL is 64). Derived coordination tables are deterministically shortened so
 # the same name is produced by the packaged migration and the runtime backend.
 _MAX_IDENTIFIER_LENGTH = 63
 
@@ -169,11 +169,11 @@ def _bounded_table_part(table: "str", suffix: "str") -> "str":
     return f"{table[:keep]}_{digest}{suffix}"
 
 
-def maintenance_lease_table_name_for(table_name: "str") -> "str":
-    """Return the default maintenance-lease table for a queue table name.
+def maintenance_table_name_for(table_name: "str") -> "str":
+    """Return the default maintenance table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX` to the table part. When the
+    :data:`DEFAULT_MAINTENANCE_TABLE_SUFFIX` to the table part. When the
     derived name would exceed the portable identifier limit it is
     deterministically shortened (truncated table part plus a stable hash) so the
     packaged migration and the runtime backend agree on one name.
@@ -181,33 +181,34 @@ def maintenance_lease_table_name_for(table_name: "str") -> "str":
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
     if len(parts) == 1:
-        return validate_table_name(_bounded_table_part(validated, DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX))
+        if validated == DEFAULT_TABLE_NAME:
+            return "queue_maintenance"
+        return validate_table_name(_bounded_table_part(validated, DEFAULT_MAINTENANCE_TABLE_SUFFIX))
     schema, table = parts
-    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_MAINTENANCE_LEASE_TABLE_SUFFIX)}")
+    if table == DEFAULT_TABLE_NAME:
+        return validate_table_name(f"{schema}.queue_maintenance")
+    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_MAINTENANCE_TABLE_SUFFIX)}")
 
 
-def uniqueness_table_name_for(table_name: "str") -> "str":
-    """Return the default forever-uniqueness tombstone table for a queue table.
+def task_reservation_table_name_for(table_name: "str") -> "str":
+    """Return the default forever-uniqueness reservation table for a queue table.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_UNIQUENESS_TABLE_SUFFIX` to the table part. Long derived
-    names use the same portable deterministic shortening as lease tables.
+    :data:`DEFAULT_TASK_RESERVATION_TABLE_SUFFIX` to the table part. Long derived
+    names use the same portable deterministic shortening as maintenance tables.
     """
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
     if len(parts) == 1:
-        return validate_table_name(_bounded_table_part(validated, DEFAULT_UNIQUENESS_TABLE_SUFFIX))
+        return validate_table_name(_bounded_table_part(validated, DEFAULT_TASK_RESERVATION_TABLE_SUFFIX))
     schema, table = parts
-    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_UNIQUENESS_TABLE_SUFFIX)}")
+    return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_TASK_RESERVATION_TABLE_SUFFIX)}")
 
 
 def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
     directory = migration_directory()
-    return (
-        str(directory.joinpath("0001_create_queue_tasks.py")),
-        str(directory.joinpath("0002_create_queue_auxiliary_tables.py")),
-    )
+    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
 
 
 def migration_directory() -> "Path":

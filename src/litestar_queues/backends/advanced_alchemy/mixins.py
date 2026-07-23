@@ -8,10 +8,10 @@ from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
 
 __all__ = (
-    "QueueEventLogModelMixin",
-    "QueueMaintenanceLeaseModelMixin",
+    "QueueEventHistoryModelMixin",
+    "QueueMaintenanceModelMixin",
     "QueueTaskModelMixin",
-    "QueueUniquenessModelMixin",
+    "QueueTaskReservationModelMixin",
 )
 
 JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
@@ -114,7 +114,7 @@ class QueueTaskModelMixin:
 
 
 @declarative_mixin
-class QueueEventLogModelMixin:
+class QueueEventHistoryModelMixin:
     """Declarative mixin carrying generic queue event-history columns and indexes."""
 
     __abstract__ = True
@@ -195,8 +195,8 @@ class QueueEventLogModelMixin:
 
 
 @declarative_mixin
-class QueueMaintenanceLeaseModelMixin:
-    """Declarative mixin carrying the distributed maintenance-lease columns.
+class QueueMaintenanceModelMixin:
+    """Declarative mixin carrying distributed maintenance coordination columns.
 
     Compose this with an application-owned Advanced Alchemy base that provides
     a compatible ``id`` primary key. Adopter-owned model and migration setups
@@ -220,8 +220,8 @@ class QueueMaintenanceLeaseModelMixin:
 
 
 @declarative_mixin
-class QueueUniquenessModelMixin:
-    """Declarative mixin carrying forever-uniqueness tombstone columns.
+class QueueTaskReservationModelMixin:
+    """Declarative mixin carrying forever-uniqueness reservation columns.
 
     Compose this with an application-owned Advanced Alchemy base that provides
     compatible ``id`` and ``created_at`` columns. The unique ``identity_key``

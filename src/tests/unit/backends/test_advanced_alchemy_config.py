@@ -18,7 +18,7 @@ def test_advanced_alchemy_config_defaults_to_singular_queue_task_model() -> "Non
     config = SQLAlchemyBackendConfig()
 
     assert config.model_class is QueueTaskModel
-    assert QueueTaskModel.__tablename__ == "litestar_queue_task"
+    assert QueueTaskModel.__tablename__ == "queue_task"
 
 
 def test_create_notification_listener_selects_driver_specific_listener() -> "None":

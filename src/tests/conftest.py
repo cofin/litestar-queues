@@ -2,6 +2,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from litestar_queues import WorkerConfig
+
 if TYPE_CHECKING:
     from litestar import Litestar
 
@@ -44,7 +46,7 @@ def queue_config() -> "QueueConfig":
     """Return a default queue configuration for testing."""
     from litestar_queues import QueueConfig
 
-    return QueueConfig(queue_backend="memory", in_app_worker=False)
+    return QueueConfig(queue_backend="memory", worker=WorkerConfig(run_in_app=False))
 
 
 @pytest.fixture

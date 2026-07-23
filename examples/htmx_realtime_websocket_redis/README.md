@@ -123,7 +123,7 @@ what your application needs.
   backend name from `GET /demo/status`.
 
 `QueueConfig` buffers events and enables only the task event stream
-(`EventStreamConfig(scopes={"task"})`). This local demo does not add
+(`EventStreamConfig(scopes={"task"}, unauthenticated_access="allow")`). This local demo does not add
 authentication to its stream. Real deployments must protect the stream route
 and check who may access each task.
 

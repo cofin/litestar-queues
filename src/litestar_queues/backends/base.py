@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventLogConfig, QueueEventLog
-    from litestar_queues.models import EnqueueSpec, HeartbeatTouch, QueuedTaskRecord, UniquenessTombstone
+    from litestar_queues.events import EventHistoryConfig, QueueEventLog
+    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
 
 __all__ = ("BaseQueueBackend",)
 
@@ -51,7 +51,7 @@ class BaseQueueBackend:
     async def close(self) -> "None":
         """Close queue resources."""
 
-    def get_event_log(self, config: "EventLogConfig") -> "QueueEventLog | None":
+    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return a backend-owned queue event history implementation, if supported."""
         return None
 
@@ -75,37 +75,37 @@ class BaseQueueBackend:
 
         When ``id`` is provided the persisted record uses it instead of a freshly
         generated identifier; the service pre-generates it for
-        ``unique_until="forever"`` enqueues so the identity tombstone and the
+        ``unique_until="forever"`` enqueues so the identity reservation and the
         executable record share one id.
         """
         raise NotImplementedError
 
-    async def enqueue_many(self, specs: "Sequence[EnqueueSpec]") -> "list[QueuedTaskRecord]":
+    async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
         """Persist multiple queued tasks, returning records in input order.
 
-        The default implementation issues one :meth:`enqueue` per spec, which
+        The default implementation issues one :meth:`enqueue` per request, which
         preserves per-key deduplication and ordering. Backends with a native
         bulk path (e.g. SQLSpec COPY/Arrow/``execute_many``) override this for
         throughput while keeping the same semantics.
 
         Returns:
-            Queue task records in the same order as ``specs``.
+            Queue task records in the same order as ``requests``.
         """
         records = [
             await self.enqueue(
-                spec.task_name,
-                args=spec.args,
-                kwargs=spec.kwargs,
-                queue=spec.queue,
-                priority=spec.priority,
-                max_retries=spec.max_retries,
-                scheduled_at=spec.scheduled_at,
-                key=spec.key,
-                execution_backend=spec.execution_backend,
-                execution_profile=spec.execution_profile,
-                metadata=spec.metadata,
+                request.task_name,
+                args=request.args,
+                kwargs=request.kwargs,
+                queue=request.queue,
+                priority=request.priority,
+                max_retries=request.max_retries,
+                scheduled_at=request.scheduled_at,
+                key=request.key,
+                execution_backend=request.execution_backend,
+                execution_profile=request.execution_profile,
+                metadata=request.metadata,
             )
-            for spec in specs
+            for request in requests
         ]
         await self.notify_new_tasks(records)
         return records
@@ -275,30 +275,30 @@ class BaseQueueBackend:
         """
         return True
 
-    async def acquire_maintenance_lease(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
-        """Acquire a token-fenced distributed maintenance lease.
+    async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
+        """Acquire token-fenced distributed maintenance ownership.
 
-        Only backends advertising ``supports_maintenance_lease`` implement a
-        real lease. The base raises so the maintenance service fails closed
+        Only backends advertising ``supports_maintenance`` implement a
+        real coordination record. The base raises so maintenance fails closed
         rather than silently running unfenced on a backend that cannot prevent
         overlapping runs.
 
         Raises:
-            NotImplementedError: Always, on backends without lease support.
+            NotImplementedError: Always, on backends without maintenance support.
         """
         raise NotImplementedError
 
-    async def release_maintenance_lease(self, name: "str", token: "str") -> "bool":
-        """Release a maintenance lease held under ``token``.
+    async def release_maintenance(self, name: "str", token: "str") -> "bool":
+        """Release maintenance ownership held under ``token``.
 
         Releases only when the persisted token matches ``token``, so a stale
-        holder that already lost the lease can never delete a successor's lease.
+        holder can never delete a successor's ownership record.
 
         Returns:
-            True when a lease held under ``token`` was released.
+            True when ownership held under ``token`` was released.
 
         Raises:
-            NotImplementedError: Always, on backends without lease support.
+            NotImplementedError: Always, on backends without maintenance support.
         """
         raise NotImplementedError
 
@@ -352,7 +352,7 @@ class BaseQueueBackend:
         """Delete terminal records completed before a cutoff.
 
         Routine terminal cleanup never touches ``unique_until="forever"``
-        tombstones; only :meth:`reset_identity` removes them.
+        reservations; only :meth:`reset_identity` removes them.
 
         Args:
             before: Delete terminal records completed strictly before this UTC
@@ -367,14 +367,14 @@ class BaseQueueBackend:
         """
         return 0
 
-    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "UniquenessTombstone | None":
+    async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "TaskReservation | None":
         """Atomically reserve a ``unique_until="forever"`` identity.
 
         Reservation is atomic: exactly one concurrent caller wins a given key.
-        The winner receives ``None`` and owns the durable tombstone; every other
-        caller receives the existing owner tombstone. Reservation is the only
-        way a tombstone is created and must run before the executable record is
-        persisted so a committed forever task can never lack its tombstone.
+        The winner receives ``None`` and owns the durable reservation; every other
+        caller receives the existing owner reservation. Reservation is the only
+        way a reservation is created and must run before the executable record is
+        persisted so a committed forever task can never lack its reservation.
 
         Args:
             key: The effective identity key to reserve.
@@ -383,19 +383,19 @@ class BaseQueueBackend:
 
         Returns:
             ``None`` when this caller won the reservation; otherwise the existing
-            owner tombstone.
+            owner reservation.
         """
         raise NotImplementedError
 
-    async def has_identity(self, key: "str") -> "UniquenessTombstone | None":
-        """Return the tombstone owning a reserved forever identity, if any."""
+    async def has_identity(self, key: "str") -> "TaskReservation | None":
+        """Return the reservation owning a reserved forever identity, if any."""
         raise NotImplementedError
 
     async def reset_identity(self, key: "str", *, expected_task_id: "UUID | None" = None) -> "bool":
-        """Delete a forever identity tombstone.
+        """Delete a forever identity reservation.
 
-        This is the only tombstone deletion path; routine terminal and event
-        maintenance never remove tombstones. When ``expected_task_id`` is
+        This is the only reservation deletion path; routine terminal and event
+        maintenance never remove reservations. When ``expected_task_id`` is
         provided, delete only when that task still owns the reservation. This
         compare-and-delete form lets enqueue recovery release its own failed
         reservation without deleting a successor created after an explicit
@@ -406,7 +406,7 @@ class BaseQueueBackend:
             expected_task_id: Optional task owner required for deletion.
 
         Returns:
-            ``True`` when a tombstone was removed.
+            ``True`` when a reservation was removed.
         """
         raise NotImplementedError
 
@@ -419,7 +419,7 @@ class BaseQueueBackend:
         if due:
             await self.notify_new_task(due[0])
 
-    async def wait_for_notifications(self, timeout: "float | None" = None) -> "bool":
+    async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait until backend notification arrives.
 
         Returns:

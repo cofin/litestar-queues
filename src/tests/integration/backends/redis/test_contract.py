@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("redis")
 
-from litestar_queues import EnqueueSpec
+from litestar_queues import TaskRequest
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.models import HeartbeatTouch
 
@@ -149,7 +149,7 @@ async def test_redis_enqueue_many_records_remain_claimable_when_batch_marker_is_
     monkeypatch.setattr(type(redis_backend), "notify_new_tasks", drop_marker)
 
     records = await redis_backend.enqueue_many([
-        EnqueueSpec(task_name=f"tasks.batch.{index}", kwargs={"index": index}) for index in range(25)
+        TaskRequest(task_name=f"tasks.batch.{index}", kwargs={"index": index}) for index in range(25)
     ])
     pending = await redis_backend.list_pending(limit=30)
     claimed = [await redis_backend.claim_task(record.id) for record in pending]
@@ -383,7 +383,7 @@ async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
 ) -> "None":
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
-    await pubsub.subscribe(redis_backend._notification_channel)
+    await pubsub.subscribe(redis_backend._wakeup_channel)
     await asyncio.sleep(0.2)
 
     far = datetime.now(timezone.utc) + timedelta(minutes=5)
@@ -403,7 +403,7 @@ async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
 async def test_redis_backend_enqueue_due_publishes_single_notification(redis_backend: "RedisQueueBackend") -> "None":
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
-    await pubsub.subscribe(redis_backend._notification_channel)
+    await pubsub.subscribe(redis_backend._wakeup_channel)
     await asyncio.sleep(0.2)
 
     await redis_backend.enqueue("tasks.due")
@@ -416,10 +416,10 @@ async def test_redis_backend_enqueue_due_publishes_single_notification(redis_bac
 async def test_redis_backend_enqueue_many_coalesces_single_notification(redis_backend: "RedisQueueBackend") -> "None":
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
-    await pubsub.subscribe(redis_backend._notification_channel)
+    await pubsub.subscribe(redis_backend._wakeup_channel)
     await asyncio.sleep(0.2)
 
-    records = await redis_backend.enqueue_many([EnqueueSpec(task_name=f"tasks.batch.{index}") for index in range(5)])
+    records = await redis_backend.enqueue_many([TaskRequest(task_name=f"tasks.batch.{index}") for index in range(5)])
     messages = await _drain_messages(pubsub, window=0.5)
     await pubsub.aclose()
 
@@ -525,10 +525,10 @@ async def test_redis_forever_reset_is_only_deletion_path(redis_backend: "RedisQu
     await assert_reset_is_only_deletion_path(redis_backend)
 
 
-async def test_redis_forever_tombstone_survives_terminal_cleanup(redis_backend: "RedisQueueBackend") -> "None":
-    from tests.integration._uniqueness_contract import assert_tombstone_survives_terminal_cleanup
+async def test_redis_forever_reservation_survives_terminal_cleanup(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration._uniqueness_contract import assert_reservation_survives_terminal_cleanup
 
-    await assert_tombstone_survives_terminal_cleanup(redis_backend)
+    await assert_reservation_survives_terminal_cleanup(redis_backend)
 
 
 async def test_redis_forever_concurrent_reservation_single_winner(redis_backend: "RedisQueueBackend") -> "None":

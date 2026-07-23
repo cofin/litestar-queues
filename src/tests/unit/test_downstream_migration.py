@@ -35,12 +35,11 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(
         interval=300,
         initial_delay=60,
         jitter=30,
-        max_instances=1,
         execution_backend="cloudrun",
         execution_profile="worker-heavy",
         description="Fan out external synchronization work.",
         log_level="debug",
-        quiet_success=True,
+        log_success=True,
     )
     async def distributed_task() -> "dict[str, bool]":
         return {"ok": True}
@@ -63,11 +62,10 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(
     assert distributed_record.execution_profile == "worker-heavy"
     assert distributed_record.metadata["description"] == "Fan out external synchronization work."
     assert distributed_record.metadata["log_level"] == "debug"
-    assert distributed_record.metadata["quiet_success"] is True
+    assert distributed_record.metadata["log_success"] is True
     assert distributed_record.metadata["schedule"]["interval"] == pytest.approx(300.0)
     assert distributed_record.metadata["schedule"]["initial_delay"] == pytest.approx(60.0)
     assert distributed_record.metadata["schedule"]["jitter"] == pytest.approx(30.0)
-    assert distributed_record.metadata["schedule"]["max_instances"] == 1
     assert distributed_record.scheduled_at is not None
     assert before + timedelta(seconds=90) <= distributed_record.scheduled_at <= after + timedelta(seconds=91)
 
@@ -114,7 +112,7 @@ async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> 
         execution_profile="worker-heavy",
         description="Generate weekly operational summary.",
         log_level="info",
-        quiet_success=True,
+        log_success=True,
     )
     async def weekly_reschedule() -> "dict[str, bool]":
         return {"ok": True}
@@ -135,6 +133,6 @@ async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> 
     assert rescheduled_record.execution_profile == "worker-heavy"
     assert rescheduled_record.metadata["description"] == "Generate weekly operational summary."
     assert rescheduled_record.metadata["log_level"] == "info"
-    assert rescheduled_record.metadata["quiet_success"] is True
+    assert rescheduled_record.metadata["log_success"] is True
     assert rescheduled_record.metadata["schedule"]["cron"] == "0 0 ? * MON"
     assert rescheduled_record.metadata["schedule"]["timezone"] == "America/New_York"

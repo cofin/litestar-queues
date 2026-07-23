@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from litestar_queues.backends.advanced_alchemy.service import QueueEventLogService
-    from litestar_queues.events import EventLogConfig, QueueEvent, QueueEventLogRecord, QueueEventStageSummary
+    from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventLogRecord, QueueEventStageSummary
 
 __all__ = ("AdvancedAlchemyQueueEventLog",)
 
@@ -28,7 +28,7 @@ class AdvancedAlchemyQueueEventLog:
     def __init__(
         self,
         *,
-        config: "EventLogConfig",
+        config: "EventHistoryConfig",
         service_factory: 'Callable[[], AbstractAsyncContextManager["QueueEventLogService"]]',
         transaction_factory: 'Callable[[], AbstractAsyncContextManager["QueueEventLogService"]]',
     ) -> "None":
@@ -44,16 +44,12 @@ class AdvancedAlchemyQueueEventLog:
         should_flush = False
         async with self._flush_lock:
             self._pending.append(event_log_record_from_event(event))
-            should_flush = len(self._pending) >= max(1, self._config.buffer_size) or self._flush_interval_elapsed()
+            should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
         if should_flush:
             await self.flush_events()
 
     async def flush_events(self) -> "None":
-        """Flush buffered queue events through an Advanced Alchemy session.
-
-        Returns:
-            None.
-        """
+        """Flush buffered queue events through an Advanced Alchemy session."""
         async with self._flush_lock:
             if not self._pending:
                 return

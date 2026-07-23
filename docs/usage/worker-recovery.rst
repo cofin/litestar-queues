@@ -6,15 +6,17 @@ Workers heartbeat running tasks and can recover records whose worker stopped:
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, WorkerConfig
 
    queue_config = QueueConfig(
-       worker_heartbeat_interval=15,
-       worker_stale_after=120,
-       worker_stale_check_interval=30,
+       worker=WorkerConfig(
+           heartbeat_interval=15,
+           stale_after=120,
+           stale_check_interval=30,
+       ),
    )
 
-These settings are seconds. Leaving ``worker_stale_after=None`` disables
+These settings are seconds. Leaving ``WorkerConfig.stale_after=None`` disables
 automatic stale recovery.
 
 Heartbeats and stale records
@@ -37,7 +39,7 @@ Worker identity
 ===============
 
 Workers default to ``worker-{pid}``, where ``pid`` is the process ID. Set an
-explicit ``worker_id`` when process IDs may repeat across hosts or preforked
+explicit ``WorkerConfig.id`` when process IDs may repeat across hosts or preforked
 processes. The ID appears in logs, metrics, and task events. It does not stop
 another worker from running.
 

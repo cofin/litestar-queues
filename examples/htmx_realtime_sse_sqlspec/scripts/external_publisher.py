@@ -13,7 +13,7 @@ def build_shared_broker_config() -> "QueueConfig":
     """Return a QueueConfig that uses a cross-process Channels backend.
 
     The main demo uses MemoryChannelsBackend, which is intentionally
-    process-local. Replace this placeholder with EventConfig(channels_backend=...)
+    process-local. Replace this placeholder with QueueEventsConfig(channels=..., delivery=EventDeliveryConfig())
     backed by Redis or SQLSpec Channels before running this script.
     """
     msg = "Configure Redis or SQLSpec Channels before publishing from an external process."

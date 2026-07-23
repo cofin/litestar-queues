@@ -57,21 +57,21 @@ until you supply their thresholds.
    config = QueueConfig(
        queue_backend=...,  # a persistent backend
        maintenance=QueueMaintenanceConfig(
-           time_budget=300.0,       # seconds; bounds one whole invocation
-           lease_ttl=360.0,         # seconds; must exceed time_budget
-           external_limit=100,      # max external records reconciled per run
-           stale_after=900.0,       # recover heartbeats older than 15 minutes
-           stale_limit=100,         # max stale records recovered per run
-           terminal_retention=None, # None disables terminal cleanup
-           terminal_limit=1000,     # max terminal records deleted per run
-           event_retention=None,    # None disables event-history cleanup
-           event_limit=1000,        # max event rows deleted per run
+           time_budget=300.0,          # seconds; bounds one whole invocation
+           coordination_timeout=360.0, # seconds; must exceed time_budget
+           external_limit=100,         # max external records reconciled per run
+           stale_after=900.0,          # recover heartbeats older than 15 minutes
+           stale_limit=100,            # max stale records recovered per run
+           terminal_retention=None,    # None disables terminal cleanup
+           terminal_limit=1000,        # max terminal records deleted per run
+           event_retention=None,       # None disables event-history cleanup
+           event_limit=1000,           # max event rows deleted per run
        ),
    )
 
 Durations and retention windows are seconds; every limit and duration must be
-positive. ``lease_ttl`` must be greater than ``time_budget`` because there is
-no lease-renewal path. Leaving
+positive. ``coordination_timeout`` must be greater than ``time_budget`` because
+ownership is not renewed during a run. Leaving
 ``stale_after``, ``terminal_retention``, or ``event_retention`` as ``None``
 disables that phase.
 
@@ -86,20 +86,20 @@ further backend operation starts. The budget does not interrupt a phase already
 in progress. Keep the schedule frequent enough that new work does not outpace
 one batch, or raise the limits.
 
-Distributed lease
-=================
+Distributed coordination
+========================
 
-Before running, the service acquires a token-fenced distributed lease named
-``queue-maintenance`` on the queue backend. If another process already holds the
-lease, this invocation is a **successful no-op** (outcome ``lease_held``, exit
-``0``) so an overlapping scheduled run does not retry into the active one. The
-lease is released in a ``finally`` block. A stale holder that has lost the lease
-cannot release a successor's lease because release checks the holder token.
+Before running, the service acquires token-fenced ownership of the
+``queue-maintenance`` operation on the queue backend. If another process already
+owns it, this invocation is a **successful no-op** (outcome ``already_running``,
+exit ``0``) so an overlapping scheduled run does not retry into the active one.
+Ownership is released in a ``finally`` block. Token checking prevents a stale
+holder from removing a successor's ownership record.
 
-A backend call that hangs past ``lease_ttl`` is outside the guarantee, but every
+A backend call that hangs past ``coordination_timeout`` is outside the guarantee, but every
 bounded mutation is idempotent or conditionally updates current persisted state.
 The next scheduled invocation can therefore resume any remaining work. Keep
-``lease_ttl`` comfortably above the expected runtime as well as above the
+``coordination_timeout`` comfortably above the expected runtime as well as above the
 configured budget.
 
 Command and exit codes
@@ -109,7 +109,7 @@ Command and exit codes
 
    $ litestar queues run-maintenance
    outcome: completed
-   lease_acquired: True
+   acquired: True
    duration_ms: 41.2
    Phase     Status        Changed  Duration(ms)  Error
    ---------------------------------------------------
@@ -122,13 +122,13 @@ Command and exit codes
 filtering only narrows configuration and never enables a disabled retention
 threshold. ``--json`` emits one compact object matching
 :class:`~litestar_queues.QueueMaintenanceSummary`. The output includes the
-outcome, lease state, duration, and one result per selected phase, and never
+outcome, ownership state, duration, and one result per selected phase, and never
 includes task payloads.
 
 ============  ==================================================================
 Code          Meaning
 ============  ==================================================================
-``0``         Completed, a clean no-op, or the lease was held elsewhere.
+``0``         Completed, a clean no-op, or maintenance was already running.
 ``1``         Configuration error, lifecycle failure, or a phase failed.
 ``2``         The time budget was exhausted and later phases were skipped.
 ============  ==================================================================
@@ -143,7 +143,7 @@ Backend support and schema ownership
    * - Queue backend
      - Separate CLI process
      - Embedded service
-     - Lease storage and setup
+     - Coordination storage and setup
    * - In-memory
      - Rejected (exit ``1``)
      - Supported in the same process
@@ -151,36 +151,35 @@ Backend support and schema ownership
    * - Redis / Valkey
      - Supported
      - Supported
-     - Namespaced ``SET NX PX`` lease key; populated pre-release prefixes need
+     - Namespaced ``SET NX PX`` maintenance key; populated prefixes need
        the one-time :ref:`maintenance index rebuild <redis-maintenance-index-upgrade>`
    * - SQLSpec (shared database)
      - Supported
      - Supported
-     - Lease table from ``0002_create_queue_auxiliary_tables``
+     - ``queue_maintenance`` table from the packaged queue migration
    * - Advanced Alchemy (shared database)
      - Supported
      - Supported
-     - Application-owned maintenance-lease model and migration
+     - Application-owned maintenance model and migration
 
 A separate CLI process cannot see in-memory records.
 :class:`~litestar_queues.QueueMaintenanceService` still supports memory for
 tests and same-process applications.
 
-Provision SQL lease tables before scheduling the command:
+Provision SQL maintenance tables before scheduling the command:
 
 * **SQLSpec** — run the application's normal migrations, including the packaged
-  forward migration ``0002_create_queue_auxiliary_tables``. It adds the lease
-  table to upgraded and fresh schemas; ``0001`` remains unchanged. Override the
-  name with ``SQLSpecBackendConfig.maintenance_lease_table_name``.
-* **Advanced Alchemy** — include ``QueueMaintenanceLeaseModel`` in application
+  ``0001_create_queue_tasks`` migration. Override the table name with
+  ``SQLSpecBackendConfig.maintenance_table_name``.
+* **Advanced Alchemy** — include ``QueueMaintenanceModel`` in application
   metadata, or compose
-  :class:`~litestar_queues.backends.advanced_alchemy.QueueMaintenanceLeaseModelMixin`
+  :class:`~litestar_queues.backends.advanced_alchemy.QueueMaintenanceModelMixin`
   into an application model and pass it as
-  ``SQLAlchemyBackendConfig.maintenance_lease_model_class``. Create the table
+  ``SQLAlchemyBackendConfig.maintenance_model_class``. Create the table
   with the same Alembic or ``create_all`` workflow that owns the queue model;
   the queue backend never creates it.
 
-A missing lease table fails closed instead of falling back to a process-local
+A missing maintenance table fails closed instead of falling back to a process-local
 lock.
 
 Scheduling recipe

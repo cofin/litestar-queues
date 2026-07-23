@@ -15,6 +15,7 @@ from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
     CockroachPsycopgSyncQueueStore,
 )
 from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
+from litestar_queues.backends.sqlspec.stores.mssql_python import MssqlPythonQueueStore
 from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
@@ -43,6 +44,7 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
     "arrow_odbc": ArrowOdbcQueueStore,
     "cockroach_asyncpg": CockroachAsyncpgQueueStore,
     "duckdb": DuckDBQueueStore,
+    "mssql_python": MssqlPythonQueueStore,
     "psqlpy": PsqlpyQueueStore,
     "pymssql": PymssqlQueueStore,
     "pymysql": PymysqlQueueStore,
@@ -52,7 +54,6 @@ _ADAPTER_STORE_TYPES: "dict[str, type[SQLSpecQueueStore]]" = {
 _ADBC_SQLITE_DIALECT = "sqlite"
 _ASYNC_OR_SYNC_ADAPTER_NAMES = frozenset({"cockroach_psycopg", "mysqlconnector", "oracledb", "psycopg"})
 _SUPPORTED_ADAPTER_NAMES = frozenset(_ADAPTER_STORE_TYPES) | _ASYNC_OR_SYNC_ADAPTER_NAMES
-_MSSQL_PYTHON_TRANSACTION_ISSUE = "https://github.com/litestar-org/sqlspec/issues/642"
 
 
 def create_queue_store(
@@ -80,13 +81,6 @@ def create_queue_store(
 
 def _adapter_store_type(config: "SQLSpecStoreConfig") -> "type[SQLSpecQueueStore]":
     name = _adapter_name(config)
-    if name == "mssql_python":
-        msg = (
-            "SQLSpec adapter 'mssql_python' is temporarily unsupported by this queue backend because SQLSpec 0.55.0 "
-            "cannot safely commit its queue transactions. Use the 'pymssql' or 'arrow_odbc' SQL Server adapter until "
-            f"the upstream transaction defect is fixed: {_MSSQL_PYTHON_TRANSACTION_ISSUE}"
-        )
-        raise QueueConfigurationError(msg)
     if name == "adbc":
         return _adbc_store_type(config)
     if name == "mysqlconnector":

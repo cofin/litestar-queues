@@ -10,18 +10,18 @@ it does not store the queue record.
 Enable publishing
 =================
 
-Provide a sink or Channels backend:
+Provide Channels or one or more additive sinks:
 
 .. code-block:: python
 
    from litestar_queues import QueueConfig
-   from litestar_queues.events import EventConfig
+   from litestar_queues.events import EventDeliveryConfig, QueueEventsConfig
 
    queue_config = QueueConfig(
-       event=EventConfig(
-           channels_backend=channels_backend,
-           publish_global_lifecycle=True,
-       )
+       events=QueueEventsConfig(
+           channels=channels_backend,
+           delivery=EventDeliveryConfig(publish_global_lifecycle=True),
+       ),
    )
 
 Without a configured sink or Channels backend, publishing does nothing. By

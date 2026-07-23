@@ -78,12 +78,12 @@ Recommended topology
 Use one web service, one always-on dispatcher service, and one Cloud Run Job
 that runs the queued task.
 
-The web service should keep ``in_app_worker=False`` so it only enqueues
+The web service should use ``WorkerConfig(run_in_app=False)`` so it only enqueues
 records. The dispatcher service owns the worker loop.
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, task
+   from litestar_queues import QueueConfig, WorkerConfig, task
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
@@ -94,13 +94,14 @@ records. The dispatcher service owns the worker loop.
 
 
    queue_config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(config=...),
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
        execution_backend=CloudRunExecutionConfig(
            project_id="my-project",
            region="my-region",
            job_name="my-worker-job",
            profiles={"heavy": "my-worker-job-heavy"},
        ),
+       worker=WorkerConfig(run_in_app=False),
        task_modules=("myapp.tasks",),
    )
 
@@ -140,19 +141,19 @@ background polling works only while the service stays warm and has CPU.
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig
+   from litestar_queues import QueueConfig, WorkerConfig
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 
    queue_config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(config=...),
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
        execution_backend=CloudRunExecutionConfig(
            project_id="my-project",
            region="my-region",
            job_name="my-worker-job",
        ),
-       in_app_worker=True,
+       worker=WorkerConfig(run_in_app=True),
    )
 
 .. code-block:: bash

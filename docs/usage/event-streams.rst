@@ -8,21 +8,29 @@ The plugin can add task, queue, worker, global, and custom stream routes under
 .. code-block:: python
 
    from litestar_queues import QueueConfig
-   from litestar_queues.events import EventConfig, EventStreamConfig
+   from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueEventsConfig
 
    queue_config = QueueConfig(
-       event=EventConfig(channels_backend=channels_backend),
-       event_stream=EventStreamConfig(
-           sse=True,
-           websocket=True,
-           scopes={"task", "queue"},
-           channel_authorizer=authorize_channel,
+       events=QueueEventsConfig(
+           channels=channels_backend,
+           delivery=EventDeliveryConfig(),
+           stream=EventStreamConfig(
+               transports={"sse", "websocket"},
+               scopes={"task", "queue"},
+               channel_authorizer=authorize_channel,
+           ),
        ),
    )
 
 Use SSE for server-to-browser updates with automatic browser reconnection. Use
 WebSockets when the connection also needs bidirectional application messages.
 Both deliver the same JSON ``QueueEvent`` envelope.
+
+When ``QueueEventsConfig.channels`` is set, generated stream routes use that
+same Channels source even if the application registers another
+``ChannelsPlugin``. Without an explicit source, the routes use the registered
+plugin. Event publishing and route registration remain separate settings so a
+web process can serve events published by another process.
 
 Envelope and delivery semantics
 ===============================
@@ -41,10 +49,16 @@ policy. Query :doc:`event-history` when a client must replay events.
 Authorization
 =============
 
-Use ``guards`` to protect an entire route. Use ``channel_authorizer`` to check
-each scope and key. Never accept a task ID or queue name from a client without
-checking that the tenant and user may access it. Set ``include_in_schema=True``
-only when these generated routes should be public.
+Application-level guards apply to the generated routes. Use ``guards`` to add
+stream-specific protection and ``channel_authorizer`` to check each scope and
+key. The ``scopes`` setting controls which route families are registered; it
+does not authorize access. Never accept a task ID or queue name from a client
+without checking that the tenant and user may access it.
+
+For an intentionally public stream, set ``unauthenticated_access="allow"`` to
+acknowledge that choice and suppress the startup warning. Set
+``include_in_schema=True`` separately when the generated routes should appear
+in the OpenAPI schema.
 
 Canonical runnable sources
 ==========================

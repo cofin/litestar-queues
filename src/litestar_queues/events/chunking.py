@@ -1,12 +1,11 @@
 """Live queue-event transport sizing helpers."""
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import msgspec
 
-if TYPE_CHECKING:
-    from litestar_queues.events.models import QueueEvent
+from litestar_queues.events.models import QueueEvent
 
 __all__ = ("QueueEventSizeEstimator", "estimate_event_payload_bytes", "split_event_batch_by_size")
 
@@ -67,8 +66,6 @@ def _extract_batch_items(event: "QueueEvent") -> "list[dict[str, Any]] | None":
 
 
 def _replace_batch_items(event: "QueueEvent", items: "Sequence[dict[str, Any]]") -> "QueueEvent":
-    from litestar_queues.events.models import QueueEvent
-
     data = cast("dict[str, Any]", msgspec.to_builtins(event))
     payload = dict(cast("dict[str, Any]", data.get("payload") or {}))
     payload["items"] = list(items)

@@ -195,7 +195,7 @@ async def test_forever_lifetime_is_recorded_in_metadata() -> "None":
     assert record.metadata["unique_until"] == "forever"
 
 
-async def test_forever_retains_tombstone_when_enqueue_raises_after_persistence() -> "None":
+async def test_forever_retains_reservation_when_enqueue_raises_after_persistence() -> "None":
     @task("once.post-persistence", key="once:post-persistence", unique_until="forever")
     async def once() -> "None": ...
 
@@ -205,12 +205,12 @@ async def test_forever_retains_tombstone_when_enqueue_raises_after_persistence()
     with pytest.raises(RuntimeError, match="notification failed after persistence"):
         await service.enqueue(once)
 
-    tombstone = await backend.has_identity("once:post-persistence")
-    assert tombstone is not None
-    assert await backend.get_task(tombstone.task_id) is not None
+    reservation = await backend.has_identity("once:post-persistence")
+    assert reservation is not None
+    assert await backend.get_task(reservation.task_id) is not None
 
 
-async def test_forever_retains_tombstone_when_persistence_verification_fails() -> "None":
+async def test_forever_retains_reservation_when_persistence_verification_fails() -> "None":
     @task("once.verification-failure", key="once:verification-failure", unique_until="forever")
     async def once() -> "None": ...
 
@@ -221,12 +221,12 @@ async def test_forever_retains_tombstone_when_persistence_verification_fails() -
         await service.enqueue(once)
 
     backend.fail_verification = False
-    tombstone = await backend.has_identity("once:verification-failure")
-    assert tombstone is not None
-    assert await backend.get_task(tombstone.task_id) is not None
+    reservation = await backend.has_identity("once:verification-failure")
+    assert reservation is not None
+    assert await backend.get_task(reservation.task_id) is not None
 
 
-async def test_forever_releases_tombstone_when_enqueue_fails_before_persistence() -> "None":
+async def test_forever_releases_reservation_when_enqueue_fails_before_persistence() -> "None":
     @task("once.pre-persistence", key="once:pre-persistence", unique_until="forever")
     async def once() -> "None": ...
 
@@ -242,7 +242,7 @@ async def test_forever_releases_tombstone_when_enqueue_fails_before_persistence(
     assert await backend.has_identity("once:pre-persistence") is None
 
 
-async def test_forever_dedup_collision_does_not_leave_reserved_id_tombstone() -> "None":
+async def test_forever_dedup_collision_does_not_leave_reserved_id_reservation() -> "None":
     @task("once.cross-policy", key="shared:cross-policy", unique_until="forever")
     async def once() -> "None": ...
 
@@ -282,14 +282,14 @@ async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
         first = await _enqueue(service, once, "obj-1")
         key = arguments_identity("once.forever", once.signature, ("obj-1",), {}).key
 
-        # A tombstone exists carrying only key/id/name/time.
-        tombstone = await service.get_task_identity(key)
-        assert tombstone is not None
-        assert tombstone.key == key
-        assert tombstone.task_id == first.id
-        assert tombstone.task_name == "once.forever"
+        # A reservation exists carrying only key/id/name/time.
+        reservation = await service.get_task_identity(key)
+        assert reservation is not None
+        assert reservation.key == key
+        assert reservation.task_id == first.id
+        assert reservation.task_name == "once.forever"
 
-        # Drive the record terminal, then run cleanup: the tombstone must survive.
+        # Drive the record terminal, then run cleanup: the reservation must survive.
         claimed = await backend.claim_task(first.id)
         assert claimed is not None
         await backend.complete_task(first.id, expected_retry_count=claimed.retry_count)
@@ -346,5 +346,5 @@ async def test_schedules_keep_scheduled_key_regardless_of_uniqueness() -> "None"
     assert first[0].key == "scheduled:sched.job"
     # Re-initialization reuses the schedule record; the key is never rehashed.
     assert second[0].id == first[0].id
-    # The forever policy never created a tombstone for the schedule identity.
+    # The forever policy never created a reservation for the schedule identity.
     assert await backend.has_identity("scheduled:sched.job") is None

@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 import msgspec
 import pytest
 
-from litestar_queues import EventConfig, QueueConfig
-from litestar_queues.events import EventBufferConfig, QueueEvent, create_event_producer
+from litestar_queues import EventDeliveryConfig, QueueConfig
+from litestar_queues.events import QueueEvent, QueueEventsConfig, create_event_producer
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -23,11 +23,13 @@ async def test_max_payload_bytes_flows_to_channels_sink() -> None:
     )
     backend = _RecordingChannelsBackend()
     config = QueueConfig(
-        event=EventConfig(
-            channels_backend=backend,
-            buffer=EventBufferConfig(enabled=False),
-            max_payload_bytes=_estimate_wrapped_event_bytes(single_item_event) + 16,
-            payload_size_estimator=_estimate_wrapped_event_bytes,
+        events=QueueEventsConfig(
+            channels=backend,
+            delivery=EventDeliveryConfig(
+                buffer=None,
+                max_payload_bytes=_estimate_wrapped_event_bytes(single_item_event) + 16,
+                payload_size_estimator=_estimate_wrapped_event_bytes,
+            ),
         )
     )
 
@@ -46,7 +48,7 @@ async def test_no_payload_limit_by_default() -> None:
         payload={"batch": True, "count": 2, "items": [{"message": "a"}, {"message": "b"}]},
     )
     backend = _RecordingChannelsBackend()
-    config = QueueConfig(event=EventConfig(channels_backend=backend, buffer=EventBufferConfig(enabled=False)))
+    config = QueueConfig(events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig(buffer=None)))
 
     await config.get_event_publisher().publish(event, channels=("events",))
 
@@ -63,10 +65,12 @@ async def test_external_producer_uses_configured_payload_limit() -> None:
     )
     backend = _RecordingChannelsBackend()
     config = QueueConfig(
-        event=EventConfig(
-            channels_backend=backend,
-            max_payload_bytes=_estimate_wrapped_event_bytes(single_item_event) + 16,
-            payload_size_estimator=_estimate_wrapped_event_bytes,
+        events=QueueEventsConfig(
+            channels=backend,
+            delivery=EventDeliveryConfig(
+                max_payload_bytes=_estimate_wrapped_event_bytes(single_item_event) + 16,
+                payload_size_estimator=_estimate_wrapped_event_bytes,
+            ),
         )
     )
 
