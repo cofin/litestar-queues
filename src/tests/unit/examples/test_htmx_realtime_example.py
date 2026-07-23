@@ -166,15 +166,15 @@ def test_htmx_realtime_examples_keep_live_channels_process_local_by_default() ->
 
 def test_redis_and_valkey_examples_offer_explicit_shared_channels_mode() -> None:
     common_source = (EXAMPLES_ROOT / "htmx_realtime_common.py").read_text()
-    assert 'os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") == "0"' in common_source
-    assert 'return {"worker": WorkerConfig(run_in_app=False)}' in common_source
+    assert 'run_in_app=os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") != "0"' in common_source
+    assert "graceful_shutdown_timeout=5" in common_source
 
     for name in EXAMPLE_VARIANTS:
         if str(EXAMPLE_VARIANTS[name]["backend_name"]) not in {"redis", "valkey"}:
             continue
         app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
         assert "LITESTAR_QUEUES_EXAMPLE_SHARED_CHANNELS" in app_source, name
-        assert "standalone_worker_options" in app_source, name
+        assert "example_worker_config" in app_source, name
         assert "RedisChannelsStreamBackend" in app_source, name
         assert "decode_responses=False" in app_source, name
         assert "CHANNELS_KEY_PREFIX" in app_source, name

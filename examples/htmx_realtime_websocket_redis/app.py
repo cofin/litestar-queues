@@ -14,8 +14,8 @@ from litestar.template.config import TemplateConfig
 from litestar_vite import PathConfig, ViteConfig, VitePlugin
 from redis import asyncio as redis_asyncio
 
-from examples.htmx_realtime_common import standalone_worker_options
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, WorkerConfig, task
+from examples.htmx_realtime_common import example_worker_config
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 from litestar_queues.backends.redis import RedisBackendConfig
 from litestar_queues.events import (
     EventBufferConfig,
@@ -127,7 +127,7 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
-    worker=WorkerConfig(graceful_shutdown_timeout=5),
+    worker=example_worker_config(),
     queue_backend=RedisBackendConfig(url=REDIS_URL, key_prefix=REDIS_KEY_PREFIX),
     events=QueueEventsConfig(
         channels=channels,
@@ -140,7 +140,6 @@ queue_config = QueueConfig(
             transports={"websocket"},
         ),
     ),
-    **standalone_worker_options(),
 )
 
 vite_config = ViteConfig(enabled=True, mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
