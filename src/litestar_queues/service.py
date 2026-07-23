@@ -96,6 +96,10 @@ class QueueService:
         self._execution_backend = execution_backend
         self._event_log: "QueueEventLog | None" = None
         self._event_publisher = event_publisher
+        if observability_runtime is None and config.observability is not None:
+            from litestar_queues.observability import create_observability_runtime
+
+            observability_runtime = create_observability_runtime(config.observability)
         self._observability_runtime = observability_runtime
         self._sync_executor: "ThreadPoolExecutor | None" = None
         if queue_backend is not None:

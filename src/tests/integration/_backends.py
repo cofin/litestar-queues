@@ -423,6 +423,7 @@ async def _build_mssql_python(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "user": svc.user,
                 "password": svc.password,
                 "database": svc.database,
+                "trust_server_certificate": True,
             }
         ),
         queue_table_name=ctx.table_name,
