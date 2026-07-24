@@ -1,10 +1,15 @@
-"""Internal Redis-protocol client typing helpers."""
+"""Structural types for the RESP-protocol client shared by Redis and Valkey.
+
+Both backends speak the same protocol, so the subset the queue relies on is
+described once here. These are pure ``typing`` protocols: importing this
+module never imports a client package.
+"""
 
 from typing import Any, Protocol
 
 
-class RedisPipelineLike(Protocol):
-    """Pipeline subset used by the Redis queue backend."""
+class PipelineLike(Protocol):
+    """Pipeline subset used by the Redis and Valkey queue backends."""
 
     def delete(self, *keys: str) -> object: ...
 
@@ -27,8 +32,8 @@ class RedisPipelineLike(Protocol):
     def execute(self) -> object: ...
 
 
-class RedisPubSubLike(Protocol):
-    """PubSub subset used by the Redis queue backend."""
+class PubSubLike(Protocol):
+    """PubSub subset used by the Redis and Valkey queue backends."""
 
     def subscribe(self, channel: str) -> object: ...
 
@@ -37,12 +42,12 @@ class RedisPubSubLike(Protocol):
     def unsubscribe(self, channel: str) -> object: ...
 
 
-class RedisClientLike(Protocol):
-    """Async Redis-protocol client subset used by the queue backend."""
+class ClientLike(Protocol):
+    """Async RESP-protocol client subset used by the queue backends."""
 
-    def pubsub(self) -> RedisPubSubLike: ...
+    def pubsub(self) -> PubSubLike: ...
 
-    def pipeline(self, *, transaction: bool = False) -> RedisPipelineLike: ...
+    def pipeline(self, *, transaction: bool = False) -> PipelineLike: ...
 
     async def delete(self, *keys: str) -> Any: ...
 

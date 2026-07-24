@@ -22,7 +22,7 @@ from litestar_queues.events._log_records import (
 from litestar_queues.events.history import QueueEventLogRecord
 
 if TYPE_CHECKING:
-    from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike
+    from litestar_queues.backends._protocol import ClientLike, PipelineLike
     from litestar_queues.backends.redis.backend import RedisQueueBackend
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventStageSummary
 
@@ -141,7 +141,7 @@ class RedisQueueEventLog:
             await _execute_pipeline(pipeline)
         return removed
 
-    async def _write_batch(self, client: "RedisClientLike", batch: "list[dict[str, str]]") -> "None":
+    async def _write_batch(self, client: "ClientLike", batch: "list[dict[str, str]]") -> "None":
         pipeline = _create_pipeline(client)
         if pipeline is not None:
             for mapping in batch:
@@ -155,7 +155,7 @@ class RedisQueueEventLog:
             for index_key in _json_loads(mapping["index_keys"], []):
                 await client.zadd(str(index_key), {event_id: score})
 
-    def _queue_write(self, pipeline: "RedisPipelineLike", mapping: "dict[str, str]") -> "None":
+    def _queue_write(self, pipeline: "PipelineLike", mapping: "dict[str, str]") -> "None":
         event_id = mapping["event_id"]
         pipeline.hset(self._backend._event_log_event_key(event_id), mapping=mapping)
         score = _score_datetime(parse_datetime(mapping["occurred_at"]))
@@ -189,12 +189,12 @@ class RedisQueueEventLog:
             "index_keys": _json_dumps(index_keys),
         }
 
-    async def _records_from_ids(self, client: "RedisClientLike", event_ids: "list[Any]") -> "list[QueueEventLogRecord]":
+    async def _records_from_ids(self, client: "ClientLike", event_ids: "list[Any]") -> "list[QueueEventLogRecord]":
         return [
             _record_from_mapping(mapping) for mapping in await self._mappings_from_ids(client, event_ids) if mapping
         ]
 
-    async def _mappings_from_ids(self, client: "RedisClientLike", event_ids: "list[Any]") -> "list[dict[str, Any]]":
+    async def _mappings_from_ids(self, client: "ClientLike", event_ids: "list[Any]") -> "list[dict[str, Any]]":
         event_keys = [self._backend._event_log_event_key(str(_decode(event_id))) for event_id in event_ids]
         if not event_keys:
             return []
@@ -286,17 +286,17 @@ def _decode_mapping(mapping: "dict[Any, Any]") -> "dict[str, Any]":
     return {str(_decode(key)): _decode(value) for key, value in mapping.items()}
 
 
-def _create_pipeline(client: "RedisClientLike") -> "RedisPipelineLike | None":
+def _create_pipeline(client: "ClientLike") -> "PipelineLike | None":
     pipeline_factory = getattr(client, "pipeline", None)
     if pipeline_factory is None:
         return None
     try:
-        return cast("RedisPipelineLike", pipeline_factory(transaction=False))
+        return cast("PipelineLike", pipeline_factory(transaction=False))
     except TypeError:
-        return cast("RedisPipelineLike", pipeline_factory())
+        return cast("PipelineLike", pipeline_factory())
 
 
-async def _execute_pipeline(pipeline: "RedisPipelineLike") -> "list[Any]":
+async def _execute_pipeline(pipeline: "PipelineLike") -> "list[Any]":
     result = pipeline.execute()
     if inspect.isawaitable(result):
         return list(await result)
