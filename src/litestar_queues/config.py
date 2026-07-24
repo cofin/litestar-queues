@@ -262,11 +262,15 @@ class QueueConfig:
     log_success: "bool" = False
     """Whether successful task completion emits an informational log by default."""
 
-    sync_executor_max_workers: "int | None" = None
-    """Maximum synchronous task executor threads; ``None`` uses the executor default."""
+    sync_thread_pool_size: "int" = 40
+    """Maximum threads running synchronous tasks concurrently.
 
-    sync_executor_thread_name_prefix: "str" = "litestar-queues"
-    """Thread-name prefix for the synchronous task executor."""
+    Matches anyio's default thread limiter. Threads are created on demand, so this is a
+    ceiling rather than a startup cost.
+    """
+
+    sync_thread_name_prefix: "str" = "litestar-queues"
+    """Thread-name prefix for the synchronous task thread pool."""
 
     scheduler_canary_task: "str" = "scheduler.heartbeat"
     """Registered task name used by the scheduler-health command."""
@@ -276,6 +280,12 @@ class QueueConfig:
 
     max_argument_identity_bytes: "int | None" = None
     """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
+
+    def __post_init__(self) -> "None":
+        """Validate the synchronous task thread pool."""
+        if self.sync_thread_pool_size <= 0:
+            msg = "QueueConfig.sync_thread_pool_size must be greater than 0."
+            raise QueueConfigurationError(msg)
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":

@@ -41,3 +41,16 @@ def test_task_request_names_the_bulk_enqueue_input() -> None:
 
     assert request.task_name == "reports.generate"
     assert request.args == ("report-1",)
+
+
+def test_sync_thread_pool_size_defaults_to_the_anyio_thread_limiter() -> None:
+    config = QueueConfig()
+
+    assert config.sync_thread_pool_size == 40
+    assert config.sync_thread_name_prefix == "litestar-queues"
+
+
+@pytest.mark.parametrize("size", [0, -1])
+def test_sync_thread_pool_size_must_be_positive(size: int) -> None:
+    with pytest.raises(QueueConfigurationError, match="sync_thread_pool_size must be greater than 0"):
+        QueueConfig(sync_thread_pool_size=size)

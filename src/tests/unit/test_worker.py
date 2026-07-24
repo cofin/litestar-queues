@@ -893,7 +893,7 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
         }
 
     async with QueueService(
-        QueueConfig(execution_backend="immediate", sync_executor_max_workers=1, sync_executor_thread_name_prefix="lq")
+        QueueConfig(execution_backend="immediate", sync_thread_pool_size=1, sync_thread_name_prefix="lq")
     ) as service:
         result = await service.enqueue(sync_context)
 

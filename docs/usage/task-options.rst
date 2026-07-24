@@ -26,6 +26,85 @@ the maximum run time in seconds. Workers claim lower numeric priority values
 first. ``run_after`` delays when the task can run. ``key`` names the logical
 job and prevents more than one active record for that key.
 
+Synchronous tasks
+=================
+
+A task function may be ``async def`` or a plain ``def``. Async tasks run
+directly on the worker's event loop. Synchronous tasks are offloaded to a
+worker thread by default, so a blocking call cannot stall the loop that also
+runs heartbeats, the claim loop, and event publishing:
+
+.. code-block:: python
+
+   from litestar_queues import task
+
+
+   @task("reports.render")
+   def render_report(report_id: str) -> str:
+       return blocking_pdf_library.render(report_id)
+
+``sync_to_thread`` makes that choice explicit, using the same vocabulary as
+Litestar's route handlers:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Value
+     - Behavior
+   * - unset (default)
+     - Offload the synchronous function to a thread.
+   * - ``sync_to_thread=True``
+     - Offload the synchronous function to a thread.
+   * - ``sync_to_thread=False``
+     - Run the synchronous function inline on the event loop.
+
+Set ``sync_to_thread=False`` only when the function is guaranteed not to
+block -- it returns a cached value, formats a string, or does pure arithmetic.
+Offloading has a small cost, and avoiding it for genuinely non-blocking work is
+the only reason to opt out:
+
+.. code-block:: python
+
+   @task("reports.label", sync_to_thread=False)
+   def label(report_id: str) -> str:
+       return f"report:{report_id}"
+
+The default differs from Litestar, which runs unmarked synchronous handlers
+inline and warns. A queue worker shares one loop with its own liveness
+machinery, so the safe path is the default here and no warning is emitted.
+
+``sync_to_thread`` has no effect on an ``async def`` task, which always runs on
+the loop. Passing it to one emits
+:class:`~litestar_queues.exceptions.QueueWarning` at decoration; silence it with
+``LITESTAR_WARN_SYNC_TO_THREAD_WITH_ASYNC=0``, the same variable Litestar uses.
+
+Async detection follows Litestar's rules, so a :func:`functools.partial` around
+a coroutine function and a class instance defining ``async def __call__`` both
+count as async.
+
+Sizing the thread pool
+----------------------
+
+The queue service owns its own thread pool, so synchronous tasks never contend
+with other :func:`asyncio.to_thread` callers in the same process.
+``sync_thread_pool_size`` caps how many run at once and defaults to ``40``,
+matching anyio's default thread limiter:
+
+.. code-block:: python
+
+   QueueConfig(sync_thread_pool_size=64)
+
+Threads are created on demand, so the default is a ceiling rather than a startup
+cost. Raise it when tasks are I/O-bound and spend most of their time waiting;
+lower it to protect a resource that cannot take many concurrent callers, such as
+a small database connection pool.
+
+``sync_thread_name_prefix`` names those threads for profiling. The pool opens
+with the service and shuts down when it closes. Calling a task directly outside
+any service -- ``await render_report("id")`` -- has no pool to draw on and uses
+the loop's default executor instead.
+
 Override one enqueue
 ====================
 

@@ -237,7 +237,7 @@ async def test_service_close_attempts_every_resource_and_raises_first_error(
     executor = _LifecycleSyncExecutor(order, shutdown_error=RuntimeError("executor shutdown failed"))
     monkeypatch.setattr("litestar_queues.service.ThreadPoolExecutor", lambda **_kwargs: executor)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_executor_max_workers=1),
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_thread_pool_size=1),
         queue_backend=_LifecycleQueueBackend(order, event_log, close_error=RuntimeError("queue close failed")),
         execution_backend=_LifecycleExecutionBackend(order, close_error=RuntimeError("execution close failed")),
         event_publisher=publisher,
@@ -269,7 +269,7 @@ async def test_service_close_control_flow_takes_precedence_and_all_resources_clo
     executor = _LifecycleSyncExecutor(order)
     monkeypatch.setattr("litestar_queues.service.ThreadPoolExecutor", lambda **_kwargs: executor)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_executor_max_workers=1),
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_thread_pool_size=1),
         queue_backend=_LifecycleQueueBackend(order, event_log),
         execution_backend=_LifecycleExecutionBackend(order, close_error=RuntimeError("execution close failed")),
         event_publisher=publisher,

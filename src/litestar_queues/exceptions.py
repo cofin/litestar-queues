@@ -5,6 +5,7 @@ __all__ = (
     "QueueConfigurationError",
     "QueueError",
     "QueueEventBufferFull",
+    "QueueWarning",
     "TaskIdentityError",
     "TaskIdentityTooLargeError",
     "job_cancelled",
@@ -14,6 +15,10 @@ __all__ = (
 
 class QueueError(Exception):
     """Base exception for litestar-queues errors."""
+
+
+class QueueWarning(UserWarning):
+    """Base class for litestar-queues warnings."""
 
 
 class QueueConfigurationError(QueueError):

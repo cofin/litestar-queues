@@ -215,10 +215,10 @@ class QueueService:
             await _call_optional_lifecycle(event_publisher.sink, "open")
             opened.append(_RESOURCE_BUFFER)
             event_publisher.start_buffer()
-            if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
+            if self._sync_executor is None:
                 self._sync_executor = ThreadPoolExecutor(
-                    max_workers=self._config.sync_executor_max_workers,
-                    thread_name_prefix=self._config.sync_executor_thread_name_prefix,
+                    max_workers=self._config.sync_thread_pool_size,
+                    thread_name_prefix=self._config.sync_thread_name_prefix,
                 )
                 opened.append(_RESOURCE_SYNC_EXECUTOR)
         except BaseException:
