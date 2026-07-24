@@ -7,14 +7,12 @@ from ``QueuePlugin.server_lifespan`` inside the server-proof context.
 
 import logging
 import os
-import stat
 import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from litestar_queues.backends.ephemeral.backend import NONCE_ENV_VAR, PATH_ENV_VAR
-from litestar_queues.backends.ephemeral.schema import initialize_database
+from litestar_queues.backends.ephemeral.schema import NONCE_ENV_VAR, PATH_ENV_VAR, initialize_database
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -22,7 +20,7 @@ if TYPE_CHECKING:
 
     from typing_extensions import Self
 
-__all__ = ("EphemeralServerContext",)
+__all__ = ("DATABASE_NAME", "EphemeralServerContext")
 
 logger = logging.getLogger(__name__)
 
@@ -134,18 +132,3 @@ class EphemeralServerContext:
                 time.sleep(_CLEANUP_RETRY)
                 continue
             return
-
-
-def is_private_directory(directory: "Path") -> "bool":
-    """Return whether ``directory`` is a non-symlink directory restricted to its owner.
-
-    Returns:
-        True when the directory is safe to use.
-    """
-    try:
-        info = directory.lstat()
-    except OSError:
-        return False
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        return False
-    return not bool(info.st_mode & (stat.S_IRWXG | stat.S_IRWXO))

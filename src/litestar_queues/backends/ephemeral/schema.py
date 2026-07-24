@@ -1,11 +1,15 @@
-"""Schema, connection setup, and failure mapping for the ephemeral SQLite backend.
+"""Where the ephemeral database lives, how it is opened, and how it fails.
 
-Every SQLite failure surfaced by this package is translated into one typed
-:class:`EphemeralDatabaseError` carrying a constant message. No message
-interpolates the database path, task arguments, results, or metadata.
+This module owns the private environment contract, connection setup, schema
+initialization, and failure mapping. Every SQLite failure surfaced by this
+package is translated into one typed :class:`EphemeralDatabaseError` carrying a
+constant message. No message interpolates the database path, task arguments,
+results, or metadata.
 """
 
+import os
 import sqlite3
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,16 +20,23 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 __all__ = (
+    "NONCE_ENV_VAR",
+    "PATH_ENV_VAR",
     "SCHEMA_VERSION",
     "EphemeralDatabaseError",
     "connect",
     "initialize_database",
+    "is_private_directory",
+    "read_environment",
     "read_runtime",
     "sqlite_errors",
 )
 
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 5000
+
+PATH_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_PATH"
+NONCE_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_NONCE"
 
 BUSY_ERROR = "The ephemeral queue database stayed busy past its timeout."
 UNREADABLE_ERROR = "The ephemeral SQLite database contains an unreadable queue payload."
@@ -48,6 +59,35 @@ def _classify(error: "sqlite3.DatabaseError") -> "str | None":
     if any(marker in text for marker in _MISSING_MARKERS):
         return MISSING_ERROR
     return UNREADABLE_ERROR
+
+
+def read_environment() -> "tuple[str, str] | None":
+    """Return the active database path and invocation nonce.
+
+    Returns:
+        The ``(path, nonce)`` pair when both private variables are set and the
+        path is absolute, otherwise ``None``.
+    """
+    path = os.environ.get(PATH_ENV_VAR)
+    nonce = os.environ.get(NONCE_ENV_VAR)
+    if not path or not nonce or not Path(path).is_absolute():
+        return None
+    return path, nonce
+
+
+def is_private_directory(directory: "Path") -> "bool":
+    """Return whether ``directory`` is a non-symlink directory restricted to its owner.
+
+    Returns:
+        True when the directory is safe to use.
+    """
+    try:
+        info = directory.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return False
+    return not bool(info.st_mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
 @contextmanager

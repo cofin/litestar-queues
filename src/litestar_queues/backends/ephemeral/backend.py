@@ -9,8 +9,8 @@ communication.
 """
 
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID, uuid4
 
@@ -24,7 +24,14 @@ from litestar_queues.backends.base import (
 )
 from litestar_queues.backends.ephemeral.codec import record_from_payload, record_to_payload
 from litestar_queues.backends.ephemeral.event_log import EphemeralQueueEventLog
-from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, connect, read_runtime, sqlite_errors
+from litestar_queues.backends.ephemeral.schema import (
+    SCHEMA_VERSION,
+    connect,
+    is_private_directory,
+    read_environment,
+    read_runtime,
+    sqlite_errors,
+)
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
@@ -46,9 +53,6 @@ if TYPE_CHECKING:
 __all__ = ("EphemeralQueueBackend",)
 
 T = TypeVar("T")
-
-PATH_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_PATH"
-NONCE_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_NONCE"
 
 _ACTIVE_STATUSES = ("pending", "scheduled")
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -122,6 +126,14 @@ def _decode_all(rows: "Sequence[sqlite3.Row]") -> "list[QueuedTaskRecord]":
     return [_decode(row) for row in rows]
 
 
+def _belongs_to_invocation(path: "str", nonce: "str") -> "bool":
+    database = Path(path)
+    if not is_private_directory(database.parent) or database.is_symlink():
+        return False
+    runtime = read_runtime(path)
+    return runtime is not None and runtime[0] == SCHEMA_VERSION and runtime[1] == nonce
+
+
 class EphemeralQueueBackend(BaseQueueBackend):
     """Private-file SQLite queue backend owned by one Litestar server invocation."""
 
@@ -168,14 +180,13 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
         Raises:
             QueueConfigurationError: If no server lifespan created the database,
-                or the schema/nonce does not match this invocation.
+                or the location, schema, or nonce does not match this invocation.
         """
-        path = os.environ.get(PATH_ENV_VAR)
-        nonce = os.environ.get(NONCE_ENV_VAR)
-        if not path or not nonce:
+        resolved = read_environment()
+        if resolved is None:
             raise QueueConfigurationError(_NOT_OPEN_ERROR)
-        runtime = await asyncio.to_thread(read_runtime, path)
-        if runtime is None or runtime[0] != SCHEMA_VERSION or runtime[1] != nonce:
+        path, nonce = resolved
+        if not await asyncio.to_thread(_belongs_to_invocation, path, nonce):
             raise QueueConfigurationError(_MISMATCH_ERROR)
         self._path = path
         return True
