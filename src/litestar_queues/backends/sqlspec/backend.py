@@ -337,7 +337,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return await self._enqueue_keyed(record, key)
         store = self._get_store()
         if not type(store).supports_dml_returning:
-            return await self._enqueue_legacy(record)
+            return await self._enqueue_without_returning(record)
         with self._observe_queue_operation("enqueue", queue=queue, task_name=task_name):
             async with self._session() as driver:
                 await driver.execute(store.insert_returning_sql(), self._insert_params(record))
@@ -374,7 +374,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def _enqueue_legacy(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+    async def _enqueue_without_returning(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         with self._observe_queue_operation("enqueue", queue=record.queue, task_name=record.task_name):
             async with self._session() as driver:
                 await driver.begin()
@@ -702,7 +702,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         now = _utc_now()
         store = self._get_store()
         if not type(store).supports_dml_returning:
-            return await self._complete_task_legacy(task_id, result=result, expected_retry_count=expected_retry_count)
+            return await self._complete_task_without_returning(
+                task_id, result=result, expected_retry_count=expected_retry_count
+            )
         parameters: "dict[str, Any]" = {
             "id": str(task_id),
             "completed_at": self._serialize_datetime(now),
@@ -721,7 +723,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._increment_queue_metric("claim_lost")
         return completed
 
-    async def _complete_task_legacy(
+    async def _complete_task_without_returning(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
         now = _utc_now()
@@ -764,7 +766,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "QueuedTaskRecord | None":
         store = self._get_store()
         if not type(store).supports_dml_returning:
-            return await self._fail_task_legacy(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+            return await self._fail_task_without_returning(
+                task_id, error, retry=retry, expected_retry_count=expected_retry_count
+            )
         now = _utc_now()
         stored_error = store.serialize_error(error)
         parameters: "dict[str, Any]" = {
@@ -788,7 +792,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self.notify_new_task(updated)
         return updated
 
-    async def _fail_task_legacy(
+    async def _fail_task_without_returning(
         self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):

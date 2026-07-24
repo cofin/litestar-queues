@@ -1834,18 +1834,18 @@ async def test_sqlspec_postgres_enqueue_returns_persisted_record(
         assert duplicate.kwargs == {"n": 1}
 
 
-async def test_sqlspec_duckdb_uses_legacy_fallback_paths(
+async def test_sqlspec_duckdb_uses_the_non_returning_paths(
     duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
-    """DuckDB has no RETURNING gate, so enqueue/complete/fail route through the legacy methods."""
+    """DuckDB has no RETURNING gate, so enqueue/complete/fail route through the non-RETURNING methods."""
     store = duckdb_backend._get_store()
     assert type(store).supports_dml_returning is False
     assert type(store).supports_returning_claim is False
 
     invoked: "set[str]" = set()
-    original_enqueue = SQLSpecQueueBackend._enqueue_legacy
-    original_complete = SQLSpecQueueBackend._complete_task_legacy
-    original_fail = SQLSpecQueueBackend._fail_task_legacy
+    original_enqueue = SQLSpecQueueBackend._enqueue_without_returning
+    original_complete = SQLSpecQueueBackend._complete_task_without_returning
+    original_fail = SQLSpecQueueBackend._fail_task_without_returning
 
     async def spy_enqueue(self: "SQLSpecQueueBackend", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         invoked.add("enqueue")
@@ -1868,9 +1868,9 @@ async def test_sqlspec_duckdb_uses_legacy_fallback_paths(
         invoked.add("fail")
         return await original_fail(self, task_id, error, retry=retry, expected_retry_count=expected_retry_count)
 
-    monkeypatch.setattr(SQLSpecQueueBackend, "_enqueue_legacy", spy_enqueue)
-    monkeypatch.setattr(SQLSpecQueueBackend, "_complete_task_legacy", spy_complete)
-    monkeypatch.setattr(SQLSpecQueueBackend, "_fail_task_legacy", spy_fail)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_enqueue_without_returning", spy_enqueue)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_complete_task_without_returning", spy_complete)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_fail_task_without_returning", spy_fail)
 
     completed = await duckdb_backend.enqueue("tasks.legacy.complete")
     claimed = await duckdb_backend.claim_task(completed.id)
