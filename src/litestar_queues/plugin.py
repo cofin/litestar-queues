@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from litestar.channels import ChannelsPlugin
 from litestar.plugins import InitPlugin
@@ -13,6 +13,7 @@ from litestar_queues.config import (
     _OBSERVABILITY_RUNTIME_STATE_KEY,
     _SERVICE_STATE_KEY,
     _WORKER_STATE_KEY,
+    MigrationConfiguringBackend,
     QueueConfig,
 )
 from litestar_queues.exceptions import QueueConfigurationError
@@ -29,7 +30,6 @@ if TYPE_CHECKING:
     from litestar.datastructures import State
 
     from litestar_queues.backends import BaseQueueBackend
-    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.typing import ChannelsLike
 
@@ -88,56 +88,11 @@ class QueuePlugin(InitPlugin):
             ),
         )
 
-    def _configure_sqlspec_migrations(self) -> "None":
-        """Register queue migrations with the application's SQLSpec config."""
-        from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
-        from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
-        from litestar_queues.backends.sqlspec.extension import (
-            configure_events_migration_extension,
-            configure_queue_migration_extension,
-        )
-        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
-
+    def _configure_backend_migrations(self) -> "None":
+        """Let the configured backend register whatever migrations it owns."""
         backend_config = self._config.queue_backend
-        if not isinstance(backend_config, SQLSpecBackendConfig):
-            return
-
-        sqlspec_config = backend_config.sqlspec_config
-        if sqlspec_config is None and backend_config.sqlspec is not None:
-            registered_configs = tuple(backend_config.sqlspec.configs.values())
-            if len(registered_configs) == 1:
-                sqlspec_config = registered_configs[0]
-        if sqlspec_config is None:
-            return
-
-        # Register the durable events queue migration first: a capability-native
-        # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
-        # its events table provisioned on migrate-up so zero-config native wakeups
-        # work on a fresh database.
-        events_backend = resolve_events_migration_backend(backend_config, cast("SQLSpecConfig", sqlspec_config))
-        if events_backend is not None:
-            configure_events_migration_extension(
-                cast("SQLSpecConfig", sqlspec_config),
-                backend=events_backend,
-                queue_table=(
-                    backend_config.worker_wakeups.queue_table_name
-                    if backend_config.worker_wakeups is not None
-                    else None
-                ),
-            )
-
-        extension_config = sqlspec_config.extension_config or {}
-        queue_settings = dict(extension_config.get("litestar_queues", {}) or {})
-        queue_table_name = backend_config.queue_table_name or queue_settings.get("table_name") or DEFAULT_TABLE_NAME
-        event_log_config = self._config.events.history if self._config.events is not None else None
-        configure_queue_migration_extension(
-            cast("SQLSpecConfig", sqlspec_config),
-            queue_table_name=str(queue_table_name),
-            event_history_enabled=event_log_config is not None,
-            event_history_table_name=backend_config.event_history_table_name,
-            maintenance_table_name=backend_config.maintenance_table_name,
-            task_reservation_table_name=backend_config.task_reservation_table_name,
-        )
+        if isinstance(backend_config, MigrationConfiguringBackend):
+            backend_config.configure_migrations(self._config)
 
     def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
         """Register queue dependencies, signature namespace, state, and the lifespan manager.
@@ -145,7 +100,7 @@ class QueuePlugin(InitPlugin):
         Returns:
             The updated application configuration.
         """
-        self._configure_sqlspec_migrations()
+        self._configure_backend_migrations()
         self._queue_backend = self._config.get_queue_backend()
         event_config = self._config.events
         if (
@@ -265,7 +220,7 @@ class QueuePlugin(InitPlugin):
         """
         from litestar_queues._cli import register
 
-        self._configure_sqlspec_migrations()
+        self._configure_backend_migrations()
         register(cli)
 
     @asynccontextmanager

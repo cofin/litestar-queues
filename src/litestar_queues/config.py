@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -33,6 +33,7 @@ __all__ = (
     "AsyncServiceProvider",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
+    "MigrationConfiguringBackend",
     "QueueBackendConfig",
     "QueueBackendConfigProtocol",
     "QueueConfig",
@@ -48,6 +49,21 @@ class QueueBackendConfigProtocol(Protocol):
     """Protocol for typed queue backend configuration objects."""
 
     backend_name: "ClassVar[str]"
+
+
+@runtime_checkable
+class MigrationConfiguringBackend(Protocol):
+    """Backend config that registers its own migrations during plugin init.
+
+    A backend owns whatever application wiring its storage needs. ``QueuePlugin``
+    only asks whether the configured backend provides this hook, so selecting one
+    backend never imports another backend's package -- or requires its extra to be
+    installed.
+    """
+
+    def configure_migrations(self, config: "QueueConfig") -> "None":
+        """Register backend-owned migrations with the application."""
+        ...
 
 
 class ExecutionBackendConfigProtocol(Protocol):

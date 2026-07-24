@@ -8,6 +8,11 @@ _APPROVED_NESTED_IMPORTS = {
     "_server_worker.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
     "backends/redis/backend.py": {"redis"},
     "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
+    "backends/sqlspec/config.py": {
+        "litestar_queues.backends.sqlspec.backend",
+        "litestar_queues.backends.sqlspec.extension",
+        "litestar_queues.backends.sqlspec.schema",
+    },
     "backends/sqlspec/event_sink.py": {"sqlspec", "sqlspec.adapters.aiosqlite"},
     "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
     "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
@@ -31,15 +36,7 @@ _APPROVED_NESTED_IMPORTS = {
         "litestar_queues.worker",
     },
     "events/__init__.py": {"litestar_queues.events.channels_sink"},
-    "plugin.py": {
-        "litestar_queues._cli",
-        "litestar_queues.backends.sqlspec",
-        "litestar_queues.backends.sqlspec.backend",
-        "litestar_queues.backends.sqlspec.extension",
-        "litestar_queues.backends.sqlspec.schema",
-        "litestar_queues.events.streaming",
-        "litestar_queues.observability",
-    },
+    "plugin.py": {"litestar_queues._cli", "litestar_queues.events.streaming", "litestar_queues.observability"},
     "service.py": {"litestar_queues.observability"},
     "task.py": {"litestar_queues.config", "litestar_queues.service"},
 }

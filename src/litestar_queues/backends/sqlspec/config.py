@@ -1,7 +1,7 @@
 """SQLSpec backend configuration."""
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from litestar_queues.backends.sqlspec.schema import (
     resolve_column_map,
@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from sqlspec import SQLSpec
     from sqlspec.extensions.events import AsyncEventChannel
 
-    from litestar_queues.backends.sqlspec._typing import SQLSpecStoreConfig
+    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig, SQLSpecStoreConfig
+    from litestar_queues.config import QueueConfig
 
 __all__ = ("DEFAULT_WAKEUP_CHANNEL", "WAKEUP_TRANSPORTS", "SQLSpecBackendConfig", "SQLSpecWorkerWakeupConfig")
 
@@ -117,3 +118,49 @@ class SQLSpecBackendConfig:
             self.task_reservation_table_name = validate_table_name(self.task_reservation_table_name)
         self.column_map = resolve_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
+
+    def configure_migrations(self, config: "QueueConfig") -> "None":
+        """Register the queue and durable-events migrations with the SQLSpec config.
+
+        Implements :class:`~litestar_queues.config.MigrationConfiguringBackend`, so
+        ``QueuePlugin`` reaches this without importing the SQLSpec backend.
+        """
+        from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
+        from litestar_queues.backends.sqlspec.extension import (
+            configure_events_migration_extension,
+            configure_queue_migration_extension,
+        )
+        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
+
+        sqlspec_config = self.sqlspec_config
+        if sqlspec_config is None and self.sqlspec is not None:
+            registered_configs = tuple(self.sqlspec.configs.values())
+            if len(registered_configs) == 1:
+                sqlspec_config = registered_configs[0]
+        if sqlspec_config is None:
+            return
+
+        # Register the durable events queue migration first: a capability-native
+        # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
+        # its events table provisioned on migrate-up so zero-config native wakeups
+        # work on a fresh database.
+        events_backend = resolve_events_migration_backend(self, cast("SQLSpecConfig", sqlspec_config))
+        if events_backend is not None:
+            configure_events_migration_extension(
+                cast("SQLSpecConfig", sqlspec_config),
+                backend=events_backend,
+                queue_table=(self.worker_wakeups.queue_table_name if self.worker_wakeups is not None else None),
+            )
+
+        extension_config = sqlspec_config.extension_config or {}
+        queue_settings = dict(extension_config.get("litestar_queues", {}) or {})
+        queue_table_name = self.queue_table_name or queue_settings.get("table_name") or DEFAULT_TABLE_NAME
+        event_log_config = config.events.history if config.events is not None else None
+        configure_queue_migration_extension(
+            cast("SQLSpecConfig", sqlspec_config),
+            queue_table_name=str(queue_table_name),
+            event_history_enabled=event_log_config is not None,
+            event_history_table_name=self.event_history_table_name,
+            maintenance_table_name=self.maintenance_table_name,
+            task_reservation_table_name=self.task_reservation_table_name,
+        )

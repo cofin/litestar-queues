@@ -247,6 +247,39 @@ assert QueueConfig().queue_backend == "memory"
     assert result.returncode == 0, result.stderr
 
 
+def test_plugin_starts_an_app_without_sqlspec_installed() -> "None":
+    """Selecting one backend must not require another backend's package to be installed."""
+    code = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+
+
+def blocked_import(name, *args, **kwargs):
+    if name == "sqlspec" or name.startswith("sqlspec."):
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+
+
+builtins.__import__ = blocked_import
+
+from litestar import Litestar
+
+from litestar_queues import QueueConfig, QueuePlugin
+from litestar_queues.backends.redis import RedisBackendConfig
+
+config = QueueConfig(queue_backend=RedisBackendConfig(url="redis://localhost:6379/0"))
+app = Litestar(plugins=[QueuePlugin(config)])
+
+assert app is not None
+assert "sqlspec" not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_queued_task_record_normalizes_naive_scheduled_at() -> "None":
     """Queued records normalize naive scheduled datetimes before due checks."""
     from datetime import datetime, timedelta, timezone
