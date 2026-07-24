@@ -33,8 +33,6 @@ SCHEMA_VERSION = 1
 _SERIALIZATION_ERROR = (
     "The ephemeral SQLite backend requires JSON-serializable task arguments, metadata, events, and results."
 )
-_CORRUPTION_ERROR = UNREADABLE_ERROR
-
 _RECORD_FIELDS = (
     "task_name",
     "id",
@@ -83,7 +81,7 @@ _EVENT_FIELDS = (
 
 
 def _raise_corruption() -> "Any":
-    raise EphemeralDatabaseError(_CORRUPTION_ERROR)
+    raise EphemeralDatabaseError(UNREADABLE_ERROR)
 
 
 def encode_payload(value: "object") -> "bytes":
@@ -115,7 +113,7 @@ def decode_payload(payload: "bytes") -> "dict[str, Any]":
     try:
         decoded = decode_json(bytes(payload)[len(MAGIC) :])
     except (SerializationException, TypeError, ValueError):
-        raise EphemeralDatabaseError(_CORRUPTION_ERROR) from None
+        raise EphemeralDatabaseError(UNREADABLE_ERROR) from None
     if not isinstance(decoded, dict):
         _raise_corruption()
     return cast("dict[str, Any]", decoded)
@@ -133,7 +131,7 @@ def _parse_datetime(value: "object") -> "datetime | None":
     try:
         parsed = datetime.fromisoformat(cast("str", value))
     except ValueError:
-        raise EphemeralDatabaseError(_CORRUPTION_ERROR) from None
+        raise EphemeralDatabaseError(UNREADABLE_ERROR) from None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
@@ -182,7 +180,7 @@ def record_from_payload(payload: "bytes") -> "QueuedTaskRecord":
     try:
         record_id = UUID(str(decoded["id"]))
     except (AttributeError, TypeError, ValueError):
-        raise EphemeralDatabaseError(_CORRUPTION_ERROR) from None
+        raise EphemeralDatabaseError(UNREADABLE_ERROR) from None
     args = decoded["args"]
     kwargs = decoded["kwargs"]
     metadata = decoded["metadata"]
