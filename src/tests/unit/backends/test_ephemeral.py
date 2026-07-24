@@ -1,7 +1,12 @@
 """Contract tests for the server-local ephemeral SQLite queue backend."""
 
 import asyncio
+import os
+import sqlite3
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -9,13 +14,17 @@ import pytest
 
 from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues._ephemeral import EphemeralServerContext
-from litestar_queues.backends.ephemeral import EphemeralQueueBackend
+from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, EphemeralQueueBackend
 from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, record_from_payload, record_to_payload
+from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
+from litestar_queues.events import EventHistoryConfig, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
+
+    from litestar_queues.events import QueueEventLog
 
 pytestmark = pytest.mark.anyio
 
@@ -52,10 +61,6 @@ async def test_open_requires_a_server_owned_database() -> "None":
 
 async def test_open_rejects_a_nonce_from_another_invocation(server_context: "EphemeralServerContext") -> "None":
     del server_context
-    import os
-
-    from litestar_queues.backends.ephemeral import NONCE_ENV_VAR
-
     os.environ[NONCE_ENV_VAR] = "a-different-invocation"
     backend = EphemeralQueueBackend(QueueConfig())
 
@@ -420,7 +425,7 @@ def test_codec_error_never_leaks_the_rejected_value() -> "None":
 
 
 def test_codec_rejects_a_missing_magic_prefix() -> "None":
-    with pytest.raises(QueueConfigurationError, match="unreadable"):
+    with pytest.raises(EphemeralDatabaseError, match="unreadable"):
         record_from_payload(b'{"schema_version": 1}')
 
 
@@ -455,3 +460,302 @@ def test_codec_round_trips_a_record_with_every_field() -> "None":
 
 def test_payload_uses_the_private_magic_prefix() -> "None":
     assert record_to_payload(QueuedTaskRecord(task_name="tasks.magic")).startswith(MAGIC)
+
+
+def _event_log(backend: "EphemeralQueueBackend", config: "EventHistoryConfig") -> "QueueEventLog":
+    log = backend.get_event_log(config)
+    assert log is not None
+    return log
+
+
+def _event(index: "int", *, second: "int | None" = None, task_name: "str" = "tasks.bounded") -> "QueueEvent":
+    return QueueEvent(
+        type="task.log",
+        scope="task",
+        task_id=f"task-{index}",
+        task_name=task_name,
+        sequence=index,
+        payload={"index": index},
+        occurred_at=datetime(2026, 1, 1, 0, 0, index if second is None else second, tzinfo=timezone.utc),
+    )
+
+
+async def test_event_log_prunes_the_oldest_records_beyond_capacity(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig(memory_capacity=3))
+
+    for index in range(5):
+        await log.publish_event(_event(index))
+
+    records = await log.list_events(task_name="tasks.bounded")
+
+    assert [record.detail["index"] for record in records] == [2, 3, 4]
+
+
+async def test_event_log_prunes_by_sequence_when_timestamps_tie(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig(memory_capacity=2))
+
+    for index in range(4):
+        await log.publish_event(_event(index, second=0))
+
+    records = await log.list_events(task_name="tasks.bounded")
+
+    assert [record.detail["index"] for record in records] == [2, 3]
+
+
+async def test_event_log_filters_by_task_id_task_name_and_limit(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+    for index in range(3):
+        await log.publish_event(_event(index))
+    await log.publish_event(_event(9, task_name="tasks.other"))
+
+    by_id = await log.list_events(task_id="task-1")
+    by_name = await log.list_events(task_name="tasks.bounded")
+    limited = await log.list_events(task_name="tasks.bounded", limit=2)
+    other = await log.list_events(task_name="tasks.other")
+
+    assert [record.detail["index"] for record in by_id] == [1]
+    assert [record.detail["index"] for record in by_name] == [0, 1, 2]
+    assert [record.detail["index"] for record in limited] == [0, 1]
+    assert [record.detail["index"] for record in other] == [9]
+
+
+async def test_event_log_round_trips_every_history_field(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+    occurred = datetime(2026, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+
+    await log.publish_event(
+        QueueEvent(
+            type="task.progress",
+            scope="task",
+            id="event-1",
+            task_id="task-1",
+            task_name="tasks.detailed",
+            queue="reports",
+            worker_id="worker-1",
+            execution_backend="local",
+            execution_profile="profile",
+            sequence=7,
+            level="info",
+            message="halfway",
+            progress_current=2,
+            progress_total=4,
+            progress_percent=50.0,
+            payload={"stage": "load", "duration_ms": 11},
+            occurred_at=occurred,
+        )
+    )
+    record = (await log.list_events(task_name="tasks.detailed"))[0]
+
+    assert record.event_id == "event-1"
+    assert record.event_type == "task.progress"
+    assert record.queue == "reports"
+    assert record.worker_id == "worker-1"
+    assert record.execution_backend == "local"
+    assert record.execution_profile == "profile"
+    assert record.stage == "load"
+    assert record.level == "info"
+    assert record.message == "halfway"
+    assert record.detail == {"stage": "load", "duration_ms": 11}
+    assert record.progress_current == 2.0
+    assert record.progress_total == 4.0
+    assert record.progress_percent == 50.0
+    assert record.duration_ms == 11.0
+    assert record.sequence == 7
+    assert record.occurred_at == occurred
+
+
+async def test_event_log_summarize_stages_returns_no_aggregates(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+    await log.publish_event(_event(0))
+
+    assert await log.summarize_stages() == []
+    assert await log.summarize_stages(task_name="tasks.bounded") == []
+
+
+async def test_event_log_cleanup_before_is_bounded_and_idempotent(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig(memory_capacity=3))
+    for index in range(5):
+        await log.publish_event(_event(index))
+    cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
+
+    first_deleted = await log.cleanup_before(cutoff, limit=1)
+    after_first = await log.list_events(task_name="tasks.bounded")
+    second_deleted = await log.cleanup_before(cutoff, limit=1)
+    after_second = await log.list_events(task_name="tasks.bounded")
+    final_deleted = await log.cleanup_before(cutoff, limit=1)
+    after_final = await log.list_events(task_name="tasks.bounded")
+
+    assert first_deleted == 1
+    assert [record.detail["index"] for record in after_first] == [3, 4]
+    assert second_deleted == 1
+    assert [record.detail["index"] for record in after_second] == [4]
+    assert final_deleted == 0
+    assert [record.detail["index"] for record in after_final] == [4]
+
+
+async def test_backend_clear_clears_the_event_log(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+    await log.publish_event(_event(0))
+
+    await backend.clear()
+
+    assert await log.list_events(task_name="tasks.bounded") == []
+
+
+async def test_event_log_flush_is_a_no_op(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+    await log.publish_event(_event(0))
+
+    await log.flush_events()
+
+    assert len(await log.list_events(task_name="tasks.bounded")) == 1
+
+
+async def test_two_instances_publish_events_concurrently(backend: "EphemeralQueueBackend") -> "None":
+    config = EventHistoryConfig(memory_capacity=100)
+    other = await _second_backend()
+    try:
+        first = _event_log(backend, config)
+        second = _event_log(other, config)
+
+        await asyncio.gather(
+            *(first.publish_event(_event(index)) for index in range(0, 20, 2)),
+            *(second.publish_event(_event(index)) for index in range(1, 20, 2)),
+        )
+        records = await first.list_events(task_name="tasks.bounded")
+
+        assert sorted(record.detail["index"] for record in records) == list(range(20))
+    finally:
+        await other.close()
+
+
+async def test_enqueue_rejects_metadata_that_is_not_json_serializable(backend: "EphemeralQueueBackend") -> "None":
+    with pytest.raises(QueueConfigurationError, match="JSON-serializable"):
+        await backend.enqueue("tasks.metadata", metadata={"handle": object()})
+
+
+async def test_complete_task_rejects_a_result_that_is_not_json_serializable(backend: "EphemeralQueueBackend") -> "None":
+    record = await backend.enqueue("tasks.result")
+    await backend.claim_task(record.id)
+
+    with pytest.raises(QueueConfigurationError, match="JSON-serializable"):
+        await backend.complete_task(record.id, result=object())
+
+
+async def test_publish_event_rejects_detail_that_is_not_json_serializable(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+
+    with pytest.raises(QueueConfigurationError, match="JSON-serializable"):
+        await log.publish_event(QueueEvent(type="task.log", scope="task", payload={"handle": object()}))
+
+
+async def test_a_corrupt_payload_raises_the_database_error(backend: "EphemeralQueueBackend") -> "None":
+    record = await backend.enqueue("tasks.corrupt")
+    _write_raw_payload(backend.path, record.id, b'{"schema_version": 1}')
+
+    with pytest.raises(EphemeralDatabaseError, match="unreadable"):
+        await backend.get_task(record.id)
+
+
+async def test_an_unknown_payload_schema_version_raises_the_database_error(backend: "EphemeralQueueBackend") -> "None":
+    record = await backend.enqueue("tasks.version")
+    _write_raw_payload(backend.path, record.id, encode_payload({"schema_version": 99}))
+
+    with pytest.raises(EphemeralDatabaseError, match="unreadable"):
+        await backend.get_task(record.id)
+
+
+async def test_a_corrupt_payload_never_leaks_arguments_or_the_database_path(backend: "EphemeralQueueBackend") -> "None":
+    credential = "postgres://user:s3cret-token@example.invalid/db"
+    record = await backend.enqueue("tasks.secret", args=(credential,), metadata={"token": credential})
+    _write_raw_payload(backend.path, record.id, b"not-a-payload")
+
+    with pytest.raises(EphemeralDatabaseError) as caught:
+        await backend.get_task(record.id)
+
+    message = str(caught.value)
+    assert credential not in message
+    assert "s3cret-token" not in message
+    assert backend.path not in message
+
+
+async def test_a_locked_database_raises_the_database_error_after_the_busy_timeout(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    from litestar_queues.backends.ephemeral import schema
+
+    monkeypatch.setattr(schema, "BUSY_TIMEOUT_MS", 25)
+    blocker = sqlite3.connect(backend.path, isolation_level=None)
+    blocker.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(EphemeralDatabaseError, match="busy"):
+            await backend.enqueue("tasks.locked")
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+
+
+def _delete_database(path: "str") -> "None":
+    database = Path(path)
+    for target in (database, database.with_name(f"{database.name}-wal"), database.with_name(f"{database.name}-shm")):
+        target.unlink(missing_ok=True)
+
+
+async def test_a_deleted_database_raises_the_database_error(backend: "EphemeralQueueBackend") -> "None":
+    record = await backend.enqueue("tasks.missing")
+    _delete_database(backend.path)
+
+    with pytest.raises(EphemeralDatabaseError, match="no longer available"):
+        await backend.enqueue("tasks.missing")
+
+    with pytest.raises(EphemeralDatabaseError, match="no longer available"):
+        await backend.get_task(record.id)
+
+
+async def test_database_errors_never_leak_the_database_path(backend: "EphemeralQueueBackend") -> "None":
+    _delete_database(backend.path)
+
+    with pytest.raises(EphemeralDatabaseError) as caught:
+        await backend.enqueue("tasks.missing")
+
+    assert backend.path not in str(caught.value)
+
+
+def _write_raw_payload(path: "str", task_id: "object", payload: "bytes") -> "None":
+    connection = sqlite3.connect(path, isolation_level=None)
+    try:
+        connection.execute("UPDATE queue_task SET payload = ? WHERE id = ?", (payload, str(task_id)))
+    finally:
+        connection.close()
+
+
+def test_the_ephemeral_backend_imports_no_optional_database_driver() -> "None":
+    """Importing the backend must not load SQLSpec or any SQLite driver package."""
+    code = """
+import sys
+
+from litestar_queues.backends.ephemeral import EphemeralQueueBackend
+
+forbidden = [name for name in ("sqlspec", "aiosqlite", "psycopg", "asyncpg") if name in sys.modules]
+assert not forbidden, forbidden
+assert EphemeralQueueBackend.__name__ == "EphemeralQueueBackend"
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_ephemeral_sources_never_import_pickle_or_an_optional_database_package() -> "None":
+    package = Path(__file__).resolve().parents[3] / "litestar_queues" / "backends" / "ephemeral"
+    sources = {module.name: module.read_text(encoding="utf-8") for module in sorted(package.glob("*.py"))}
+
+    offenders = {
+        name: line.strip()
+        for name, text in sources.items()
+        for line in text.splitlines()
+        if line.startswith(("import ", "from "))
+        and any(banned in line for banned in ("pickle", "sqlspec", "aiosqlite", "sqlalchemy", "advanced_alchemy"))
+    }
+
+    assert offenders == {}
+    assert set(sources) == {"__init__.py", "backend.py", "codec.py", "event_log.py", "schema.py"}

@@ -24,7 +24,7 @@ from litestar_queues.backends.base import (
 )
 from litestar_queues.backends.ephemeral.codec import record_from_payload, record_to_payload
 from litestar_queues.backends.ephemeral.event_log import EphemeralQueueEventLog
-from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, connect, read_runtime
+from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, connect, read_runtime, sqlite_errors
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
@@ -199,25 +199,27 @@ class EphemeralQueueBackend(BaseQueueBackend):
         return await asyncio.to_thread(self._call, operation)
 
     def _call(self, operation: "Callable[[sqlite3.Connection], T]") -> "T":
-        connection = connect(self.path)
-        try:
-            return operation(connection)
-        finally:
-            connection.close()
+        with sqlite_errors():
+            connection = connect(self.path)
+            try:
+                return operation(connection)
+            finally:
+                connection.close()
 
     def _atomic(self, operation: "Callable[[sqlite3.Connection], T]") -> "T":
-        connection = connect(self.path)
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with sqlite_errors():
+            connection = connect(self.path)
             try:
-                result = operation(connection)
-            except BaseException:
-                connection.execute("ROLLBACK")
-                raise
-            connection.execute("COMMIT")
-            return result
-        finally:
-            connection.close()
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    result = operation(connection)
+                except BaseException:
+                    connection.execute("ROLLBACK")
+                    raise
+                connection.execute("COMMIT")
+                return result
+            finally:
+                connection.close()
 
     async def _transaction(self, operation: "Callable[[sqlite3.Connection], T]") -> "T":
         """Run one read-modify-write operation inside ``BEGIN IMMEDIATE``.

@@ -13,6 +13,7 @@ from uuid import UUID
 from litestar.exceptions import SerializationException
 from litestar.serialization import decode_json, encode_json
 
+from litestar_queues.backends.ephemeral.schema import UNREADABLE_ERROR, EphemeralDatabaseError
 from litestar_queues.events.history import QueueEventLogRecord
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
@@ -32,7 +33,7 @@ SCHEMA_VERSION = 1
 _SERIALIZATION_ERROR = (
     "The ephemeral SQLite backend requires JSON-serializable task arguments, metadata, events, and results."
 )
-_CORRUPTION_ERROR = "The ephemeral SQLite database contains an unreadable queue payload."
+_CORRUPTION_ERROR = UNREADABLE_ERROR
 
 _RECORD_FIELDS = (
     "task_name",
@@ -82,7 +83,7 @@ _EVENT_FIELDS = (
 
 
 def _raise_corruption() -> "Any":
-    raise QueueConfigurationError(_CORRUPTION_ERROR)
+    raise EphemeralDatabaseError(_CORRUPTION_ERROR)
 
 
 def encode_payload(value: "object") -> "bytes":
@@ -107,14 +108,14 @@ def decode_payload(payload: "bytes") -> "dict[str, Any]":
         The decoded mapping.
 
     Raises:
-        QueueConfigurationError: If the prefix is missing or the body is unreadable.
+        EphemeralDatabaseError: If the prefix is missing or the body is unreadable.
     """
     if not isinstance(payload, (bytes, bytearray)) or not bytes(payload).startswith(MAGIC):
         _raise_corruption()
     try:
         decoded = decode_json(bytes(payload)[len(MAGIC) :])
     except (SerializationException, TypeError, ValueError):
-        raise QueueConfigurationError(_CORRUPTION_ERROR) from None
+        raise EphemeralDatabaseError(_CORRUPTION_ERROR) from None
     if not isinstance(decoded, dict):
         _raise_corruption()
     return cast("dict[str, Any]", decoded)
@@ -132,7 +133,7 @@ def _parse_datetime(value: "object") -> "datetime | None":
     try:
         parsed = datetime.fromisoformat(cast("str", value))
     except ValueError:
-        raise QueueConfigurationError(_CORRUPTION_ERROR) from None
+        raise EphemeralDatabaseError(_CORRUPTION_ERROR) from None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
@@ -181,7 +182,7 @@ def record_from_payload(payload: "bytes") -> "QueuedTaskRecord":
     try:
         record_id = UUID(str(decoded["id"]))
     except (AttributeError, TypeError, ValueError):
-        raise QueueConfigurationError(_CORRUPTION_ERROR) from None
+        raise EphemeralDatabaseError(_CORRUPTION_ERROR) from None
     args = decoded["args"]
     kwargs = decoded["kwargs"]
     metadata = decoded["metadata"]

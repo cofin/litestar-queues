@@ -51,7 +51,8 @@ class EphemeralQueueEventLog:
             )
             connection.execute(
                 "DELETE FROM queue_event WHERE event_id IN ("
-                "SELECT event_id FROM queue_event ORDER BY occurred_at DESC, event_id DESC LIMIT -1 OFFSET ?)",
+                "SELECT event_id FROM queue_event "
+                "ORDER BY occurred_at DESC, COALESCE(sequence, 0) DESC, event_id DESC LIMIT -1 OFFSET ?)",
                 (capacity,),
             )
 
