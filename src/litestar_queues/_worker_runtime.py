@@ -38,8 +38,6 @@ class _WorkerStage(str, Enum):
 class _WorkerStageError(Exception):
     """Sanitized startup failure retaining its original only as a cause."""
 
-    __slots__ = ("exception_type", "stage")
-
     def __init__(self, stage: "_WorkerStage", cause: "Exception") -> "None":
         self.stage = stage
         self.exception_type = type(cause).__name__

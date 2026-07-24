@@ -314,7 +314,7 @@ async def test_startup_failures_map_to_exact_safe_stage(failure_point: "str", ex
     assert error.__cause__ is original
     assert "super-secret" not in str(error)
     assert "super-secret" not in repr(error)
-    assert _WorkerStageError.__slots__ == ("exception_type", "stage")
+    assert set(vars(error)) == {"exception_type", "stage"}
 
     if failure_point == "load":
         assert order == ["tasks.load"]
