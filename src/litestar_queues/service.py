@@ -15,6 +15,7 @@ from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
 from litestar_queues.events.producer import QueueEventProducer
+from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
 from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
@@ -44,6 +45,28 @@ _LOG_LEVELS = {
     "debug": logging.DEBUG,
 }
 _UNVERIFIED_PERSISTENCE = object()
+_RESOURCE_BUFFER = "buffer"
+_RESOURCE_EVENT_LOG = "event_log"
+_RESOURCE_EXECUTION_BACKEND = "execution_backend"
+_RESOURCE_QUEUE_BACKEND = "queue_backend"
+_RESOURCE_SINK = "sink"
+_RESOURCE_SYNC_EXECUTOR = "sync_executor"
+_ROLLBACK_ORDER = (
+    _RESOURCE_SYNC_EXECUTOR,
+    _RESOURCE_BUFFER,
+    _RESOURCE_SINK,
+    _RESOURCE_EXECUTION_BACKEND,
+    _RESOURCE_EVENT_LOG,
+    _RESOURCE_QUEUE_BACKEND,
+)
+_CLOSE_ORDER = (
+    _RESOURCE_EXECUTION_BACKEND,
+    _RESOURCE_EVENT_LOG,
+    _RESOURCE_BUFFER,
+    _RESOURCE_QUEUE_BACKEND,
+    _RESOURCE_SINK,
+    _RESOURCE_SYNC_EXECUTOR,
+)
 
 
 async def _release_failed_forever_reservation(backend: "BaseQueueBackend", key: "str", reserved_id: "UUID") -> "None":
@@ -76,7 +99,9 @@ class QueueService:
         "_event_log",
         "_event_publisher",
         "_execution_backend",
+        "_is_open",
         "_observability_runtime",
+        "_opened_resources",
         "_queue_backend",
         "_sync_executor",
     )
@@ -96,6 +121,8 @@ class QueueService:
         self._execution_backend = execution_backend
         self._event_log: "QueueEventLog | None" = None
         self._event_publisher = event_publisher
+        self._is_open = False
+        self._opened_resources: "frozenset[str]" = frozenset()
         if observability_runtime is None and config.observability is not None:
             from litestar_queues.observability import create_observability_runtime
 
@@ -162,38 +189,75 @@ class QueueService:
         Returns:
             The opened service.
         """
-        queue_backend = self.get_queue_backend()
-        await queue_backend.open()
+        if self._is_open:
+            return self
+        opened: "list[str]" = []
         try:
+            queue_backend = self.get_queue_backend()
+            opened.append(_RESOURCE_QUEUE_BACKEND)
+            await queue_backend.open()
             self._configure_event_log(queue_backend)
-        except Exception:
-            await queue_backend.close()
+            if self._event_log is not None:
+                opened.append(_RESOURCE_EVENT_LOG)
+            execution_backend = self.get_execution_backend()
+            opened.append(_RESOURCE_EXECUTION_BACKEND)
+            await execution_backend.open()
+            event_publisher = self.get_event_publisher()
+            opened.append(_RESOURCE_SINK)
+            await _call_optional_lifecycle(event_publisher.sink, "open")
+            opened.append(_RESOURCE_BUFFER)
+            event_publisher.start_buffer()
+            if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
+                self._sync_executor = ThreadPoolExecutor(
+                    max_workers=self._config.sync_executor_max_workers,
+                    thread_name_prefix=self._config.sync_executor_thread_name_prefix,
+                )
+                opened.append(_RESOURCE_SYNC_EXECUTOR)
+        except BaseException:
+            await self._teardown_resources(frozenset(opened), rollback=True, raise_errors=False)
             raise
-        await self.get_execution_backend().open()
-        await _call_optional_async_method(self.get_event_publisher().sink, "open")
-        self.get_event_publisher().start_buffer()
-        if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
-            self._sync_executor = ThreadPoolExecutor(
-                max_workers=self._config.sync_executor_max_workers,
-                thread_name_prefix=self._config.sync_executor_thread_name_prefix,
-            )
+        self._opened_resources = frozenset(opened)
+        self._is_open = True
         return self
 
     async def close(self) -> "None":
         """Close queue and execution backends."""
-        if self._execution_backend is not None:
-            await self._execution_backend.close()
-        if self._event_log is not None:
-            await self._event_log.flush_events()
-        if self._event_publisher is not None:
-            await self._event_publisher.stop_buffer()
-        if self._queue_backend is not None:
-            await self._queue_backend.close()
-        if self._event_publisher is not None:
-            await _call_optional_async_method(self._event_publisher.sink, "close")
-        if self._sync_executor is not None:
-            self._sync_executor.shutdown(wait=True, cancel_futures=True)
-            self._sync_executor = None
+        opened = self._opened_resources
+        if not self._is_open and not opened:
+            return
+        self._opened_resources = frozenset()
+        self._is_open = False
+        await self._teardown_resources(opened, rollback=False, raise_errors=True)
+
+    async def _teardown_resources(self, opened: "frozenset[str]", *, rollback: "bool", raise_errors: "bool") -> "None":
+        errors: "list[BaseException]" = []
+        order = _ROLLBACK_ORDER if rollback else _CLOSE_ORDER
+        for resource in order:
+            if resource in opened:
+                await self._teardown_resource(resource, errors)
+        error = _select_lifecycle_error(errors)
+        if raise_errors and error is not None:
+            raise error
+
+    async def _teardown_resource(self, resource: "str", errors: "list[BaseException]") -> "None":
+        try:
+            if resource == _RESOURCE_EXECUTION_BACKEND and self._execution_backend is not None:
+                await self._execution_backend.close()
+            elif resource == _RESOURCE_EVENT_LOG and self._event_log is not None:
+                await self._event_log.flush_events()
+            elif resource == _RESOURCE_BUFFER and self._event_publisher is not None:
+                await self._event_publisher.stop_buffer()
+            elif resource == _RESOURCE_QUEUE_BACKEND and self._queue_backend is not None:
+                await self._queue_backend.close()
+            elif resource == _RESOURCE_SINK and self._event_publisher is not None:
+                await _call_optional_lifecycle(self._event_publisher.sink, "close")
+            elif resource == _RESOURCE_SYNC_EXECUTOR and self._sync_executor is not None:
+                self._sync_executor.shutdown(wait=True, cancel_futures=True)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if resource == _RESOURCE_SYNC_EXECUTOR:
+                self._sync_executor = None
 
     def _configure_event_log(self, queue_backend: "BaseQueueBackend") -> "None":
         event_log_config = self._config.events.history if self._config.events is not None else None
@@ -872,15 +936,6 @@ class QueueService:
         result = hook(record)
         if isawaitable(result):
             await result
-
-
-async def _call_optional_async_method(target: "object", name: "str") -> "None":
-    method = getattr(target, name, None)
-    if not callable(method):
-        return
-    result = method()
-    if isawaitable(result):
-        await result
 
 
 def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":

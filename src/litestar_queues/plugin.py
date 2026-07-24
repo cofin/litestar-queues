@@ -78,6 +78,16 @@ class QueuePlugin(InitPlugin):
             return self._service
         return QueueService(self._config, queue_backend=self._queue_backend, event_publisher=self._event_publisher)
 
+    def create_worker_service(self) -> "QueueService":
+        """Create a fresh service that owns its process-local event resources."""
+        return QueueService(
+            self._config,
+            queue_backend=self._config.get_queue_backend(),
+            event_publisher=self._config.get_event_publisher(
+                channels_backend=self._auto_channels_backend, manage_channels_lifecycle=True
+            ),
+        )
+
     def _configure_sqlspec_migrations(self) -> "None":
         """Register queue migrations with the application's SQLSpec config."""
         from litestar_queues.backends.sqlspec import SQLSpecBackendConfig

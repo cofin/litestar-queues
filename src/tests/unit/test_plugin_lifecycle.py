@@ -74,6 +74,27 @@ async def test_plugin_run_in_app_creates_and_cleans_up_worker() -> "None":
     assert not worker.is_running
 
 
+def test_app_publisher_is_non_owning_and_worker_publisher_is_owning() -> "None":
+    channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
+    plugin = QueuePlugin(
+        QueueConfig(
+            worker=WorkerConfig(run_in_app=False),
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(buffer=None)),
+        )
+    )
+
+    app_service = plugin.get_service(plugin.on_app_init(AppConfig()).state)
+    worker_service = plugin.create_worker_service()
+
+    app_sink = app_service.get_event_publisher().sink
+    worker_sink = worker_service.get_event_publisher().sink
+    assert isinstance(app_sink, ChannelsQueueEventSink)
+    assert isinstance(worker_sink, ChannelsQueueEventSink)
+    assert app_sink.manages_lifecycle is False
+    assert worker_sink.manages_lifecycle is True
+    assert worker_service.get_queue_backend() is not app_service.get_queue_backend()
+
+
 def test_importing_litestar_queues_does_not_load_click() -> "None":
     """``click`` is only pulled in when the CLI is actually invoked.
 

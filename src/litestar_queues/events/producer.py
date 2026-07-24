@@ -1,9 +1,9 @@
 """Producer facade for queue event publishing."""
 
-import inspect
 from typing import TYPE_CHECKING, Any, Literal
 
 from litestar_queues.events.models import QueueEvent
+from litestar_queues.events.sinks import _call_optional_lifecycle
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -238,16 +238,3 @@ class _TaskEventHandle(_ScopeEventHandle):
             progress_percent=progress_percent,
             payload=dict(payload or {}),
         )
-
-
-async def _call_optional_lifecycle(resource: "object | None", primary: "str", fallback: "str") -> "None":
-    if resource is None:
-        return
-    method = getattr(resource, primary, None)
-    if method is None:
-        method = getattr(resource, fallback, None)
-    if method is None:
-        return
-    result = method()
-    if inspect.isawaitable(result):
-        await result

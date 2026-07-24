@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -5,20 +6,287 @@ import pytest
 
 from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService
 from litestar_queues.backends import InMemoryQueueBackend
-from litestar_queues.events import QueueEventPublisher, QueueEventsConfig
+from litestar_queues.events import EventHistoryConfig, QueueEventPublisher, QueueEventsConfig
+from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
-    from litestar_queues.events import (
-        EventHistoryConfig,
-        QueueEvent,
-        QueueEventLog,
-        QueueEventLogRecord,
-        QueueEventStageSummary,
-    )
+    from collections.abc import Sequence
+
+    from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
+
+
+class _LifecycleQueueBackend(InMemoryQueueBackend):
+    __slots__ = ("_close_error", "_lifecycle_event_log", "_lifecycle_order")
+
+    def __init__(
+        self, order: "list[str]", event_log: "_LifecycleEventLog", *, close_error: "BaseException | None" = None
+    ) -> "None":
+        super().__init__()
+        self._lifecycle_order = order
+        self._lifecycle_event_log = event_log
+        self._close_error = close_error
+
+    async def open(self) -> "bool":
+        self._lifecycle_order.append("queue.open")
+        return await super().open()
+
+    async def close(self) -> "None":
+        self._lifecycle_order.append("queue.close")
+        if self._close_error is not None:
+            raise self._close_error
+        await super().close()
+
+    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
+        del config
+        return self._lifecycle_event_log
+
+
+class _LifecycleExecutionBackend(BaseExecutionBackend):
+    __slots__ = ("_close_error", "_fail_open", "_lifecycle_order")
+
+    def __init__(
+        self, order: "list[str]", *, fail_open: "bool" = False, close_error: "BaseException | None" = None
+    ) -> "None":
+        super().__init__()
+        self._lifecycle_order = order
+        self._fail_open = fail_open
+        self._close_error = close_error
+
+    async def open(self) -> "bool":
+        self._lifecycle_order.append("execution.open")
+        if self._fail_open:
+            msg = "execution open failed"
+            raise RuntimeError(msg)
+        return True
+
+    async def close(self) -> "None":
+        self._lifecycle_order.append("execution.close")
+        if self._close_error is not None:
+            raise self._close_error
+
+
+class _LifecycleEventLog:
+    def __init__(self, order: "list[str]", *, flush_error: "BaseException | None" = None) -> "None":
+        self._lifecycle_order = order
+        self._flush_error = flush_error
+
+    async def flush_events(self) -> "None":
+        self._lifecycle_order.append("event_log.flush")
+        if self._flush_error is not None:
+            raise self._flush_error
+
+
+class _LifecycleSink:
+    def __init__(
+        self, order: "list[str]", *, fail_open: "bool" = False, close_error: "BaseException | None" = None
+    ) -> "None":
+        self._lifecycle_order = order
+        self._fail_open = fail_open
+        self._close_error = close_error
+
+    async def open(self) -> "None":
+        self._lifecycle_order.append("sink.open")
+        if self._fail_open:
+            msg = "sink open failed"
+            raise RuntimeError(msg)
+
+    async def close(self) -> "None":
+        self._lifecycle_order.append("sink.close")
+        if self._close_error is not None:
+            raise self._close_error
+
+    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
+        del event, channels
+
+
+class _LifecyclePublisher(QueueEventPublisher):
+    __slots__ = ("_lifecycle_order", "_stop_error")
+
+    def __init__(
+        self, sink: "_LifecycleSink", order: "list[str]", *, stop_error: "BaseException | None" = None
+    ) -> "None":
+        super().__init__(sink)
+        self._lifecycle_order = order
+        self._stop_error = stop_error
+
+    def start_buffer(self) -> "None":
+        self._lifecycle_order.append("buffer.start")
+
+    async def stop_buffer(self) -> "None":
+        self._lifecycle_order.append("buffer.stop")
+        if self._stop_error is not None:
+            raise self._stop_error
+
+
+class _LifecycleSyncExecutor:
+    def __init__(self, order: "list[str]", *, shutdown_error: "BaseException | None" = None) -> "None":
+        self._lifecycle_order = order
+        self._shutdown_error = shutdown_error
+
+    def shutdown(self, *, wait: "bool", cancel_futures: "bool") -> "None":
+        assert wait is True
+        assert cancel_futures is True
+        self._lifecycle_order.append("executor.shutdown")
+        if self._shutdown_error is not None:
+            raise self._shutdown_error
+
+
+async def test_service_rolls_back_every_resource_when_execution_open_fails() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order, fail_open=True),
+    )
+
+    with pytest.raises(RuntimeError, match="execution open failed"):
+        await service.open()
+
+    await service.close()
+    assert order == ["queue.open", "execution.open", "execution.close", "event_log.flush", "queue.close"]
+
+
+async def test_service_rolls_back_every_resource_when_sink_open_fails() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order),
+        event_publisher=QueueEventPublisher(_LifecycleSink(order, fail_open=True)),
+    )
+
+    with pytest.raises(RuntimeError, match="sink open failed"):
+        await service.open()
+
+    await service.close()
+    assert order == [
+        "queue.open",
+        "execution.open",
+        "sink.open",
+        "sink.close",
+        "execution.close",
+        "event_log.flush",
+        "queue.close",
+    ]
+
+
+async def test_service_rollback_preserves_primary_failure_and_attempts_every_close() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order, flush_error=RuntimeError("event log flush failed"))
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, event_log, close_error=RuntimeError("queue close failed")),
+        execution_backend=_LifecycleExecutionBackend(
+            order, fail_open=True, close_error=RuntimeError("execution close failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="execution open failed"):
+        await service.open()
+
+    await service.close()
+    assert order == ["queue.open", "execution.open", "execution.close", "event_log.flush", "queue.close"]
+
+
+async def test_service_open_and_close_are_idempotent() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    publisher = _LifecyclePublisher(_LifecycleSink(order), order)
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order),
+        event_publisher=publisher,
+    )
+
+    await service.open()
+    await service.open()
+    await service.close()
+    await service.close()
+
+    assert order == [
+        "queue.open",
+        "execution.open",
+        "sink.open",
+        "buffer.start",
+        "execution.close",
+        "event_log.flush",
+        "buffer.stop",
+        "queue.close",
+        "sink.close",
+    ]
+
+
+async def test_service_close_attempts_every_resource_and_raises_first_error(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order, flush_error=RuntimeError("event log flush failed"))
+    publisher = _LifecyclePublisher(
+        _LifecycleSink(order, close_error=RuntimeError("sink close failed")),
+        order,
+        stop_error=RuntimeError("buffer stop failed"),
+    )
+    executor = _LifecycleSyncExecutor(order, shutdown_error=RuntimeError("executor shutdown failed"))
+    monkeypatch.setattr("litestar_queues.service.ThreadPoolExecutor", lambda **_kwargs: executor)
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_executor_max_workers=1),
+        queue_backend=_LifecycleQueueBackend(order, event_log, close_error=RuntimeError("queue close failed")),
+        execution_backend=_LifecycleExecutionBackend(order, close_error=RuntimeError("execution close failed")),
+        event_publisher=publisher,
+    )
+    await service.open()
+
+    with pytest.raises(RuntimeError, match="execution close failed"):
+        await service.close()
+    await service.close()
+
+    assert order[-6:] == [
+        "execution.close",
+        "event_log.flush",
+        "buffer.stop",
+        "queue.close",
+        "sink.close",
+        "executor.shutdown",
+    ]
+    assert service._sync_executor is None
+
+
+@pytest.mark.parametrize("control_error", [asyncio.CancelledError(), SystemExit(), KeyboardInterrupt()])
+async def test_service_close_control_flow_takes_precedence_and_all_resources_close(
+    monkeypatch: "pytest.MonkeyPatch", control_error: "BaseException"
+) -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order, flush_error=control_error)
+    publisher = _LifecyclePublisher(_LifecycleSink(order), order)
+    executor = _LifecycleSyncExecutor(order)
+    monkeypatch.setattr("litestar_queues.service.ThreadPoolExecutor", lambda **_kwargs: executor)
+    service = QueueService(
+        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_executor_max_workers=1),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order, close_error=RuntimeError("execution close failed")),
+        event_publisher=publisher,
+    )
+    await service.open()
+
+    with pytest.raises(type(control_error)):
+        await service.close()
+
+    assert order[-6:] == [
+        "execution.close",
+        "event_log.flush",
+        "buffer.stop",
+        "queue.close",
+        "sink.close",
+        "executor.shutdown",
+    ]
+    assert service._sync_executor is None
 
 
 async def test_service_context_manager_returns_service() -> "None":

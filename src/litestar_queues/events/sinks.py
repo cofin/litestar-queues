@@ -1,6 +1,7 @@
 """Queue event sink protocols and core implementations."""
 
 import asyncio
+import inspect
 import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING, Protocol
@@ -19,6 +20,35 @@ __all__ = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _call_optional_lifecycle(
+    target: "object | None", method_name: "str", fallback_method_name: "str | None" = None
+) -> "bool":
+    """Call an optional synchronous or asynchronous lifecycle method.
+
+    Returns:
+        Whether the target exposed a callable lifecycle method.
+    """
+    if target is None:
+        return False
+    method = getattr(target, method_name, None)
+    if method is None and fallback_method_name is not None:
+        method = getattr(target, fallback_method_name, None)
+    if not callable(method):
+        return False
+    result = method()
+    if inspect.isawaitable(result):
+        await result
+    return True
+
+
+def _select_lifecycle_error(errors: "Sequence[BaseException]") -> "BaseException | None":
+    """Prefer control-flow exceptions over the first ordinary lifecycle error."""
+    for error in errors:
+        if not isinstance(error, Exception):
+            return error
+    return errors[0] if errors else None
 
 
 class QueueEventSink(Protocol):
@@ -50,16 +80,51 @@ class NoopQueueEventSink:
 class CompositeQueueEventSink:
     """Deliver events to multiple sinks in deterministic order."""
 
-    __slots__ = ("_sinks", "_strict")
+    __slots__ = ("_opened_sinks", "_sinks", "_strict")
 
     def __init__(self, sinks: "Sequence[QueueEventSink]", *, strict: "bool" = False) -> "None":
         self._sinks = tuple(sinks)
         self._strict = strict
+        self._opened_sinks: "tuple[QueueEventSink, ...]" = ()
 
     @property
     def sinks(self) -> "tuple[QueueEventSink, ...]":
         """Configured sinks in delivery order."""
         return self._sinks
+
+    async def open(self) -> "None":
+        """Open child sinks in declaration order."""
+        if self._opened_sinks:
+            return
+        opened: "list[QueueEventSink]" = []
+        try:
+            for sink in self._sinks:
+                if await _call_optional_lifecycle(sink, "open"):
+                    opened.append(sink)
+        except BaseException:
+            for sink in reversed(opened):
+                try:
+                    await _call_optional_lifecycle(sink, "close")
+                except BaseException:  # noqa: PERF203
+                    logger.warning("Queue event sink rollback failed", exc_info=True)
+            raise
+        self._opened_sinks = tuple(opened)
+
+    async def close(self) -> "None":
+        """Close opened child sinks in reverse declaration order."""
+        opened = self._opened_sinks
+        self._opened_sinks = ()
+        errors: "list[BaseException]" = []
+        for sink in reversed(opened):
+            try:
+                await _call_optional_lifecycle(sink, "close")
+            except BaseException as exc:  # noqa: PERF203
+                errors.append(exc)
+                if not self._strict and isinstance(exc, Exception):
+                    logger.warning("Queue event sink close failed", exc_info=True)
+        error = _select_lifecycle_error(errors)
+        if error is not None and (self._strict or not isinstance(error, Exception)):
+            raise error
 
     async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> "None":
         """Publish to every sink, continuing after non-strict failures."""

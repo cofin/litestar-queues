@@ -493,7 +493,9 @@ class QueueConfig:
 
         return get_execution_backend(self.execution_backend, config=self)
 
-    def get_event_publisher(self, *, channels_backend: "ChannelsLike | None" = None) -> "QueueEventPublisher":
+    def get_event_publisher(
+        self, *, channels_backend: "ChannelsLike | None" = None, manage_channels_lifecycle: "bool" = False
+    ) -> "QueueEventPublisher":
         """Return a configured queue event publisher.
 
         Args:
@@ -501,6 +503,8 @@ class QueueConfig:
                 ``QueueEventsConfig.channels`` is unset. ``QueuePlugin`` passes the
                 app's registered ``ChannelsPlugin`` here so event delivery
                 needs no manual channel wiring.
+            manage_channels_lifecycle: Whether the publisher owns the resolved
+                Channels target lifecycle.
         """
         from litestar_queues.events import (
             ChannelsQueueEventSink,
@@ -521,6 +525,7 @@ class QueueConfig:
             sinks.append(
                 ChannelsQueueEventSink(
                     live_backend,
+                    manage_lifecycle=manage_channels_lifecycle,
                     max_payload_bytes=delivery.max_payload_bytes,
                     payload_size_estimator=delivery.payload_size_estimator,
                 )
