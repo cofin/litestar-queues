@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from typing_extensions import Self
 
+from litestar_queues._correlation import bind_correlation_id, capture_correlation_id, reset_correlation_id
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
@@ -153,9 +154,13 @@ class QueueService:
         return self._queue_backend
 
     def _configure_backend_observability(self, backend: "BaseQueueBackend") -> "None":
+        runtime = self._observability_runtime
         configure = getattr(backend, "_set_package_observability_enabled", None)
         if configure is not None:
-            configure(bool(self._observability_runtime is not None and self._observability_runtime.enabled))
+            configure(bool(runtime is not None and runtime.enabled))
+        configure_sqlcommenter = getattr(backend, "_set_sqlcommenter_enabled", None)
+        if configure_sqlcommenter is not None:
+            configure_sqlcommenter(bool(runtime is not None and getattr(runtime, "sqlcommenter_enabled", False)))
 
     def get_execution_backend(self) -> "BaseExecutionBackend":
         """Return the configured execution backend."""
@@ -365,7 +370,7 @@ class QueueService:
         started_at = time.perf_counter()
         span = runtime.start_span("litestar_queues.publish", kind="producer", attributes=span_attributes)
         try:
-            runtime.inject_trace_context(effective_metadata)
+            _capture_enqueue_context(runtime, effective_metadata)
             record = await self.get_queue_backend().enqueue(
                 task_obj.name,
                 args=args,
@@ -513,9 +518,9 @@ class QueueService:
         task_obj = self.resolve_task(record.task_name)
         timeout = record.metadata.get("timeout", task_obj.timeout)
         runtime = self.observability_runtime
-        span, started_at, metric_base_attributes = _start_execution_observability(runtime, record)
+        span, started_at, metric_base_attributes = _start_execution_observability(runtime, record, worker_id=worker_id)
         task_context = _task_execution_context(record, worker_id=worker_id, event_publisher=self.get_event_publisher())
-        context_token = _bind_task_context(task_context)
+        execution_scope = _bind_execution_context(task_context, record.metadata)
         final_status = "failed"
         try:
             await task_context.lifecycle("task.started")
@@ -552,7 +557,7 @@ class QueueService:
                 record, exc, task_context, runtime, span, started_at, metric_base_attributes
             )
         finally:
-            _reset_task_context(context_token)
+            _reset_execution_context(execution_scope)
 
         completed_record = await self.get_queue_backend().complete_task(
             record.id, result=result, expected_retry_count=record.retry_count
@@ -677,7 +682,6 @@ class QueueService:
         reconciled = 0
         current_backend = self.get_execution_backend()
         default_backend_name = execution_backend_name(self._config.execution_backend)
-        runtime = self.observability_runtime
         for record in records:
             if record.execution_ref is None:
                 continue
@@ -693,16 +697,11 @@ class QueueService:
                     extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
                 )
                 continue
+            # The execution backend owns litestar_queues.execution.reconcile.count;
+            # emitting it here too would double-count with a narrower label set.
             updated = await execution_backend.reconcile(self, record)
             if updated is not None and updated.is_terminal:
                 reconciled += 1
-                runtime.record_counter(
-                    "litestar_queues.execution.reconcile.count",
-                    attributes={
-                        "queue.execution.backend": record.execution_backend,
-                        "queue.task.status": updated.status,
-                    },
-                )
         return reconciled
 
     async def recover_stale_tasks(
@@ -995,6 +994,30 @@ def _task_execution_context(
     )
 
 
+def _capture_enqueue_context(runtime: "QueueObservabilityRuntimeProtocol", metadata: "dict[str, Any]") -> "None":
+    """Record the enqueueing caller's trace and correlation context on the queued task."""
+    runtime.inject_trace_context(metadata)
+    capture_correlation_id(metadata)
+
+
+def _bind_execution_context(
+    task_context: "TaskExecutionContext", metadata: "Mapping[str, Any]"
+) -> "tuple[Any, tuple[Any, bool]]":
+    """Bind the ambient context a task body runs under.
+
+    Returns:
+        Scope state for :func:`_reset_execution_context`.
+    """
+    return _bind_task_context(task_context), bind_correlation_id(metadata)
+
+
+def _reset_execution_context(scope: "tuple[Any, tuple[Any, bool]]") -> "None":
+    """Restore the context that was active before the task body ran."""
+    context_token, correlation_state = scope
+    _reset_task_context(context_token)
+    reset_correlation_id(correlation_state)
+
+
 def _base_observability_attributes(
     *,
     operation: "str",
@@ -1034,6 +1057,10 @@ def _finish_execution_observability(
     status: "str",
 ) -> "None":
     runtime.set_attribute(span, "queue.task.status", status)
+    if status == "failed":
+        # Trace backends key error rates off span status, not recorded exceptions,
+        # and a task can fail without an exception reaching this frame.
+        runtime.set_status_error(span, "task failed")
     attributes = {**metric_base_attributes, "queue.task.status": status}
     runtime.record_duration(
         "litestar_queues.task.execution.duration", time.perf_counter() - started_at, attributes=attributes
@@ -1043,7 +1070,7 @@ def _finish_execution_observability(
 
 
 def _start_execution_observability(
-    runtime: "QueueObservabilityRuntimeProtocol", record: "QueuedTaskRecord"
+    runtime: "QueueObservabilityRuntimeProtocol", record: "QueuedTaskRecord", *, worker_id: "str | None" = None
 ) -> "tuple[Any | None, float, dict[str, str]]":
     parent_context = runtime.extract_trace_context(record.metadata)
     span_attributes = _base_observability_attributes(
@@ -1055,6 +1082,8 @@ def _start_execution_observability(
         attempt=record.retry_count + 1,
     )
     span_attributes["messaging.message.id"] = str(record.id)
+    if worker_id is not None:
+        span_attributes["queue.worker.id"] = worker_id
     span = runtime.start_span(
         "litestar_queues.process", kind="consumer", attributes=span_attributes, parent=parent_context
     )

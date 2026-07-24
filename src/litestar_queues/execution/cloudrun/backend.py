@@ -154,7 +154,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             runtime.record_exception(span, exc)
             runtime.record_counter(
                 "litestar_queues.execution.reconcile.count",
-                attributes={**metric_attributes, "queue.execution.status": "error"},
+                attributes={**metric_attributes, "queue.task.status": "error"},
             )
             raise
         finally:
@@ -363,7 +363,7 @@ def _record_reconcile_result(
     if record is not None:
         runtime.record_counter(
             "litestar_queues.execution.reconcile.count",
-            attributes={**metric_attributes, "queue.execution.status": record.status},
+            attributes={**metric_attributes, "queue.task.status": record.status},
         )
 
 

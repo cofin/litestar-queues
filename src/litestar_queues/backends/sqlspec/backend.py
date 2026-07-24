@@ -139,6 +139,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_owns_sqlspec",
         "_pending_read",
         "_queue_table_name",
+        "_sqlcommenter_enabled",
         "_sqlspec",
         "_sqlspec_config",
         "_store",
@@ -193,6 +194,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._wakeup_poll_interval = worker_wakeups.poll_interval if worker_wakeups is not None else None
         self._wakeup_settings = dict(worker_wakeups.settings) if worker_wakeups is not None else {}
         self._native_observability_enabled = True
+        self._sqlcommenter_enabled = False
         self._wakeup_backend = _canonical_wakeup_transport(getattr(self._event_channel, "_backend_name", None))
         self._worker_wakeups_enabled = self._event_channel is not None
         self._event_log_store: "Any | None" = None
@@ -220,6 +222,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         self._get_or_create_sqlspec()
         self._resolve_queue_table_name()
+        self._apply_sqlcommenter()
         self._configure_worker_wakeups()
         self._register_heartbeat_pool()
         self._opened = True
@@ -264,6 +267,33 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     def _set_package_observability_enabled(self, enabled: "bool") -> "None":
         """Suppress SQLSpec queue-domain telemetry when package telemetry is active."""
         self._native_observability_enabled = not enabled
+
+    def _set_sqlcommenter_enabled(self, enabled: "bool") -> "None":
+        """Attach SQLCommenter attribution to queue statements when telemetry is active."""
+        self._sqlcommenter_enabled = enabled
+
+    def _apply_sqlcommenter(self) -> "None":
+        """Turn on SQLCommenter attribution for the queue's SQLSpec config.
+
+        SQLSpec resolves ``traceparent`` from the current OpenTelemetry span, so the
+        comment carries the queue's producer or consumer span and joins database
+        telemetry to the task that issued the statement.
+        """
+        if not self._sqlcommenter_enabled:
+            return
+        config = self._get_sqlspec_config()
+        statement_config = getattr(config, "statement_config", None)
+        replace = getattr(statement_config, "replace", None)
+        if replace is None or getattr(statement_config, "enable_sqlcommenter", False):
+            return
+        attributes = dict(getattr(statement_config, "sqlcommenter_attributes", None) or {})
+        attributes.setdefault("framework", "litestar-queues")
+        config.statement_config = replace(
+            enable_sqlcommenter=True,
+            sqlcommenter_attributes=attributes,
+            sqlcommenter_enable_traceparent=True,
+            sqlcommenter_enable_context=True,
+        )
 
     async def create_schema(self) -> "None":
         """Create the SQLSpec queue table and indexes."""

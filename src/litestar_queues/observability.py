@@ -1,17 +1,28 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
+from weakref import WeakKeyDictionary
 
+from litestar_queues._correlation import (
+    CORRELATION_ID_METADATA_KEY,
+    bind_correlation_id,
+    capture_correlation_id,
+    reset_correlation_id,
+)
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.typing import (
     OPENTELEMETRY_INSTALLED,
     PROMETHEUS_INSTALLED,
     OtelSpanKind,
+    OtelStatus,
+    OtelStatusCode,
     PrometheusCounter,
     PrometheusGauge,
     PrometheusHistogram,
+    otel_context,
     otel_metrics,
     otel_propagate,
     otel_trace,
+    prometheus_default_registry,
 )
 
 if TYPE_CHECKING:
@@ -20,14 +31,51 @@ if TYPE_CHECKING:
     from litestar import Litestar
 
 __all__ = (
+    "CORRELATION_ID_METADATA_KEY",
+    "DEFAULT_DURATION_BUCKETS",
     "TRACE_CONTEXT_METADATA_KEY",
     "ObservabilityConfig",
     "QueueObservabilityRuntime",
     "QueueObservabilityRuntimeProtocol",
+    "bind_correlation_id",
+    "capture_correlation_id",
     "create_observability_runtime",
+    "reset_correlation_id",
 )
 
 TRACE_CONTEXT_METADATA_KEY = "_otel_context"
+
+DEFAULT_DURATION_BUCKETS = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
+    60.0,
+    300.0,
+    600.0,
+    1800.0,
+)
+"""Buckets spanning sub-millisecond enqueues through half-hour task executions.
+
+The ``prometheus_client`` default tops out at ten seconds, which sends every
+real task duration into the ``+Inf`` bucket.
+"""
+
+_PROMETHEUS_COLLECTORS: "WeakKeyDictionary[Any, dict[str, Any]]" = WeakKeyDictionary()
+"""Collectors keyed by registry, so runtimes sharing a registry share collectors.
+
+``prometheus_client`` raises ``Duplicated timeseries in CollectorRegistry`` when
+the same metric name is registered twice. Multiple queue services, workers, and
+backends in one process legitimately record the same metrics.
+"""
 
 
 @dataclass(slots=True)
@@ -37,8 +85,11 @@ class ObservabilityConfig:
     enable_otel: "bool | None" = None
     """OpenTelemetry policy; ``None`` follows the active Litestar telemetry plugin."""
 
-    enable_prometheus: "bool" = False
-    """Whether queue metrics are registered with Prometheus."""
+    enable_prometheus: "bool | None" = None
+    """Prometheus policy; ``None`` follows the app's Litestar Prometheus middleware."""
+
+    enable_sqlcommenter: "bool | None" = None
+    """SQLCommenter policy; ``None`` follows resolved queue telemetry."""
 
     tracer_name: "str" = "litestar_queues"
     """Instrumentation name used to obtain the OpenTelemetry tracer."""
@@ -58,6 +109,9 @@ class ObservabilityConfig:
     metric_prefix: "str" = "litestar_queues"
     """Prefix applied to package queue metric names."""
 
+    duration_buckets: "tuple[float, ...]" = field(default=DEFAULT_DURATION_BUCKETS)
+    """Prometheus histogram buckets, in seconds, for queue duration metrics."""
+
     def should_enable_otel(self, app: "Litestar | None" = None) -> "bool":
         """Return whether OpenTelemetry should be enabled.
 
@@ -76,19 +130,44 @@ class ObservabilityConfig:
             return False
         return app is not None and _has_otel_plugin(app)
 
-    def should_enable_prometheus(self) -> "bool":
+    def should_enable_prometheus(self, app: "Litestar | None" = None) -> "bool":
         """Return whether Prometheus metrics should be enabled.
 
         Returns:
             Whether Prometheus metrics should be enabled.
         """
-        if not self.enable_prometheus:
+        if self.enable_prometheus is True:
+            if not PROMETHEUS_INSTALLED:
+                package_name = "prometheus_client"
+                extra = "prometheus"
+                raise MissingDependencyError(package_name, extra)
+            return True
+        if self.enable_prometheus is False:
             return False
         if not PROMETHEUS_INSTALLED:
-            package_name = "prometheus_client"
-            extra = "prometheus"
-            raise MissingDependencyError(package_name, extra)
-        return True
+            return False
+        return app is not None and _has_prometheus_middleware(app)
+
+    def should_enable_sqlcommenter(self, app: "Litestar | None" = None) -> "bool":
+        """Return whether SQLCommenter attribution should be enabled.
+
+        Returns:
+            Whether queue-owned SQLCommenter attribution should be enabled.
+        """
+        if self.enable_sqlcommenter is not None:
+            return self.enable_sqlcommenter
+        return self.should_enable_otel(app) or self.should_enable_prometheus(app)
+
+    def resolve_prometheus_registry(self) -> "Any":
+        """Return the registry queue collectors are registered with.
+
+        Returns:
+            The configured registry, or the ``prometheus_client`` default
+            registry, which is what Litestar's ``PrometheusController`` scrapes.
+        """
+        if self.prometheus_registry is not None:
+            return self.prometheus_registry
+        return prometheus_default_registry()
 
 
 class QueueObservabilityRuntimeProtocol(Protocol):
@@ -99,19 +178,23 @@ class QueueObservabilityRuntimeProtocol(Protocol):
     def start_span(
         self, name: "str", *, kind: "str", attributes: "Mapping[str, object]", parent: "object | None" = None
     ) -> "Any | None":
-        """Start a queue span.
+        """Start a queue span and make it the current span.
 
         Returns:
-            The started span, or ``None`` when tracing is disabled.
+            The started span handle, or ``None`` when tracing is disabled.
         """
         ...
 
     def end_span(self, span: "Any | None") -> "None":
-        """End a span."""
+        """End a span and restore the previous current span."""
         ...
 
     def record_exception(self, span: "Any | None", exc: "BaseException") -> "None":
-        """Record an exception on a span."""
+        """Record an exception on a span and mark it failed."""
+        ...
+
+    def set_status_error(self, span: "Any | None", description: "str") -> "None":
+        """Mark a span as failed without an exception."""
         ...
 
     def set_attribute(self, span: "Any | None", key: "str", value: "object") -> "None":
@@ -143,6 +226,16 @@ class QueueObservabilityRuntimeProtocol(Protocol):
         ...
 
 
+class _SpanHandle:
+    """A started span plus the context token that made it current."""
+
+    __slots__ = ("span", "token")
+
+    def __init__(self, span: "Any", token: "Any") -> "None":
+        self.span = span
+        self.token = token
+
+
 class QueueObservabilityRuntime:
     """Runtime helper for queue-domain spans and metrics."""
 
@@ -154,6 +247,8 @@ class QueueObservabilityRuntime:
         "_meter",
         "_otel_enabled",
         "_prometheus_enabled",
+        "_registry",
+        "_sqlcommenter_enabled",
         "_tracer",
         "enabled",
     )
@@ -161,13 +256,22 @@ class QueueObservabilityRuntime:
     def __init__(self, config: "ObservabilityConfig | None", *, app: "Litestar | None" = None) -> "None":
         self._config = config
         self._otel_enabled = config.should_enable_otel(app) if config is not None else False
-        self._prometheus_enabled = config.should_enable_prometheus() if config is not None else False
+        self._prometheus_enabled = config.should_enable_prometheus(app) if config is not None else False
+        self._sqlcommenter_enabled = config.should_enable_sqlcommenter(app) if config is not None else False
         self.enabled = self._otel_enabled or self._prometheus_enabled
+        self._registry = (
+            config.resolve_prometheus_registry() if config is not None and self._prometheus_enabled else None
+        )
         self._tracer: "Any | None" = None
         self._meter: "Any | None" = None
         self._counters: "dict[str, Any]" = {}
         self._durations: "dict[str, Any]" = {}
         self._gauges: "dict[str, Any]" = {}
+
+    @property
+    def sqlcommenter_enabled(self) -> "bool":
+        """Whether backends should attach SQLCommenter attribution to statements."""
+        return self._sqlcommenter_enabled
 
     def get_tracer(self) -> "Any":
         """Return the configured tracer.
@@ -194,10 +298,15 @@ class QueueObservabilityRuntime:
     def start_span(
         self, name: "str", *, kind: "str", attributes: "Mapping[str, object]", parent: "object | None" = None
     ) -> "Any | None":
-        """Start a queue span.
+        """Start a queue span and make it the current span.
+
+        The span must be current for two reasons: ``inject_trace_context`` serialises
+        the *current* context, and any instrumentation running inside the span --
+        database drivers, HTTP clients, log correlation -- resolves its parent from
+        the current context.
 
         Returns:
-            The started span, or ``None`` when tracing is disabled.
+            The started span handle, or ``None`` when tracing is disabled.
         """
         if not self._otel_enabled:
             return None
@@ -208,24 +317,35 @@ class QueueObservabilityRuntime:
             if kind == "consumer"
             else OtelSpanKind.INTERNAL
         )
-        return self.get_tracer().start_span(
+        span = self.get_tracer().start_span(
             name, context=cast("Any", parent), kind=span_kind, attributes=cast("Any", dict(attributes))
         )
+        token = otel_context.attach(otel_trace.set_span_in_context(span))
+        return _SpanHandle(span, token)
 
     def end_span(self, span: "Any | None") -> "None":
-        """End a span if one was created."""
-        if span is not None:
-            span.end()
+        """End a span and restore the previous current span."""
+        if span is None:
+            return
+        otel_context.detach(span.token)
+        span.span.end()
 
     def record_exception(self, span: "Any | None", exc: "BaseException") -> "None":
-        """Record an exception on a span if one was created."""
+        """Record an exception on a span and mark the span failed."""
+        if span is None:
+            return
+        span.span.record_exception(exc)
+        span.span.set_status(OtelStatus(OtelStatusCode.ERROR, type(exc).__name__))
+
+    def set_status_error(self, span: "Any | None", description: "str") -> "None":
+        """Mark a span as failed when no exception reached this frame."""
         if span is not None:
-            span.record_exception(exc)
+            span.span.set_status(OtelStatus(OtelStatusCode.ERROR, description))
 
     def set_attribute(self, span: "Any | None", key: "str", value: "object") -> "None":
         """Set a span attribute if one was created."""
         if span is not None:
-            span.set_attribute(key, cast("Any", value))
+            span.span.set_attribute(key, cast("Any", value))
 
     def inject_trace_context(self, metadata: "dict[str, Any]") -> "None":
         """Inject current W3C trace context into queue metadata."""
@@ -257,16 +377,10 @@ class QueueObservabilityRuntime:
                 self._counters[name] = counter
             counter.add(value, attributes=dict(attributes))
         if self._prometheus_enabled:
-            counter = self._counters.get(f"prometheus:{name}")
-            if counter is None:
-                counter = PrometheusCounter(
-                    _prometheus_name(name, self._config),
-                    name.replace(".", " "),
-                    labelnames=tuple(attributes),
-                    registry=self._config.prometheus_registry if self._config is not None else None,
-                )
-                self._counters[f"prometheus:{name}"] = counter
-            counter.labels(**dict(attributes)).inc(value)
+            collector = self._prometheus_collector(
+                PrometheusCounter, name, _counter_name(name, self._config), attributes
+            )
+            collector.labels(**dict(attributes)).inc(value)
 
     def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
         """Record a gauge delta for enabled metrics sinks."""
@@ -278,17 +392,8 @@ class QueueObservabilityRuntime:
                 self._gauges[key] = gauge
             gauge.add(delta, attributes=dict(attributes))
         if self._prometheus_enabled:
-            key = f"prometheus_gauge:{name}"
-            gauge = self._gauges.get(key)
-            if gauge is None:
-                gauge = PrometheusGauge(
-                    _prometheus_name(name, self._config),
-                    name.replace(".", " "),
-                    labelnames=tuple(attributes),
-                    registry=self._config.prometheus_registry if self._config is not None else None,
-                )
-                self._gauges[key] = gauge
-            gauge.labels(**dict(attributes)).inc(delta)
+            collector = self._prometheus_collector(PrometheusGauge, name, _gauge_name(name, self._config), attributes)
+            collector.labels(**dict(attributes)).inc(delta)
 
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         """Record a duration for enabled metrics sinks."""
@@ -299,16 +404,41 @@ class QueueObservabilityRuntime:
                 self._durations[name] = histogram
             histogram.record(seconds, attributes=dict(attributes))
         if self._prometheus_enabled:
-            histogram = self._durations.get(f"prometheus:{name}")
-            if histogram is None:
-                histogram = PrometheusHistogram(
-                    _prometheus_name(name, self._config),
-                    name.replace(".", " "),
-                    labelnames=tuple(attributes),
-                    registry=self._config.prometheus_registry if self._config is not None else None,
-                )
-                self._durations[f"prometheus:{name}"] = histogram
-            histogram.labels(**dict(attributes)).observe(seconds)
+            collector = self._prometheus_collector(
+                PrometheusHistogram, name, _duration_name(name, self._config), attributes, buckets=self._buckets()
+            )
+            collector.labels(**dict(attributes)).observe(seconds)
+
+    def _prometheus_collector(
+        self,
+        collector_type: "Any",
+        metric_name: "str",
+        collector_name: "str",
+        attributes: "Mapping[str, str]",
+        **kwargs: "Any",
+    ) -> "Any":
+        """Return a collector, reusing any already registered under this registry.
+
+        Returns:
+            The Prometheus collector for this metric name and registry.
+        """
+        registry_collectors = _PROMETHEUS_COLLECTORS.setdefault(self._registry, {})
+        collector = registry_collectors.get(collector_name)
+        if collector is None:
+            collector = collector_type(
+                collector_name,
+                metric_name.replace(".", " "),
+                labelnames=tuple(attributes),
+                registry=self._registry,
+                **kwargs,
+            )
+            registry_collectors[collector_name] = collector
+        return collector
+
+    def _buckets(self) -> "tuple[float, ...]":
+        if self._config is None:
+            return DEFAULT_DURATION_BUCKETS
+        return self._config.duration_buckets
 
     def _require_config(self) -> "ObservabilityConfig":
         if self._config is None:
@@ -333,7 +463,61 @@ def _has_otel_plugin(app: "Litestar") -> "bool":
     return any(plugin.__class__.__name__ == "OpenTelemetryPlugin" for plugin in plugins)
 
 
-def _prometheus_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+def _has_prometheus_middleware(app: "Litestar") -> "bool":
+    """Detect Litestar's Prometheus wiring on the application.
+
+    Litestar ships no Prometheus *plugin*: ``PrometheusConfig.middleware`` produces
+    a ``DefineMiddleware`` and ``PrometheusController`` is a route handler, so the
+    plugin registry is empty. Matching on the class name keeps
+    ``litestar.plugins.prometheus`` unimported, which matters because importing it
+    raises when ``prometheus_client`` is absent.
+
+    Returns:
+        Whether the app registers Litestar's Prometheus middleware.
+    """
+    for middleware in getattr(app, "middleware", ()):
+        candidate = getattr(middleware, "middleware", middleware)
+        mro = getattr(candidate, "__mro__", None) or type(candidate).__mro__
+        if any(klass.__name__ == "PrometheusMiddleware" for klass in mro):
+            return True
+    return False
+
+
+def _base_name(name: "str", config: "ObservabilityConfig | None") -> "tuple[str, str]":
     prefix = config.metric_prefix if config is not None else "litestar_queues"
-    base = name.removeprefix("litestar_queues.").replace(".", "_")
+    return prefix, name.removeprefix("litestar_queues.").replace(".", "_")
+
+
+def _counter_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+    """Build the Prometheus counter name.
+
+    ``prometheus_client`` appends ``_total`` itself, so a trailing ``_count``
+    segment would export as ``..._count_total``.
+
+    Returns:
+        The Prometheus collector name for this counter.
+    """
+    prefix, base = _base_name(name, config)
+    return f"{prefix}_{base.removesuffix('_count')}"
+
+
+def _gauge_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+    """Build the Prometheus gauge name.
+
+    Returns:
+        The Prometheus collector name for this gauge.
+    """
+    prefix, base = _base_name(name, config)
+    return f"{prefix}_{base}"
+
+
+def _duration_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+    """Build the Prometheus histogram name, carrying the conventional unit suffix.
+
+    Returns:
+        The Prometheus collector name for this duration histogram.
+    """
+    prefix, base = _base_name(name, config)
+    if not base.endswith("_seconds"):
+        base = f"{base}_seconds"
     return f"{prefix}_{base}"

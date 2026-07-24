@@ -179,7 +179,7 @@ class WorkerHeartbeatManager:
         try:
             result = await self._service.get_queue_backend().touch_heartbeats(touches)
         except Exception as exc:  # noqa: BLE001 - backend failures must not kill heartbeat loops.
-            self._record_failure(exc)
+            self.record_failure(exc)
             return
 
         attributes = self._metric_attributes()
@@ -223,7 +223,7 @@ class WorkerHeartbeatManager:
                     expected_retry_count=registration.expected_retry_count,
                 )
         except Exception as exc:  # noqa: BLE001 - backend/event failures are reported and contained.
-            self._record_failure(exc)
+            self.record_failure(exc)
             return
         self.unregister(task_id)
 
@@ -231,7 +231,7 @@ class WorkerHeartbeatManager:
         try:
             await self._tick()
         except Exception as exc:  # noqa: BLE001 - defensive loop guard.
-            self._record_failure(exc)
+            self.record_failure(exc)
 
     async def _wait_for_next_tick(self) -> "bool":
         try:
@@ -247,17 +247,19 @@ class WorkerHeartbeatManager:
     def _metric_attributes(self) -> "dict[str, str]":
         return {"queue.backend": type(self._service.get_queue_backend()).__name__}
 
-    def _record_failure(self, exc: "BaseException") -> "None":
-        self._service.observability_runtime.record_counter(
-            "litestar_queues.heartbeat.failure.count",
-            1,
-            attributes={**self._metric_attributes(), "worker.error.type": type(exc).__name__},
-        )
-        logger.warning(
-            "Queue worker heartbeat tick failed",
-            exc_info=(type(exc), exc, exc.__traceback__),
-            extra={"worker_id": self._worker_id},
-        )
+    def record_failure(self, exc: "BaseException", message: "str" = "Queue worker heartbeat tick failed") -> "None":
+        """Record and log a heartbeat failure.
+
+        This is the single emitter of ``litestar_queues.heartbeat.failure.count``;
+        the worker delegates here so the label set stays consistent.
+        """
+        with contextlib.suppress(Exception):
+            self._service.observability_runtime.record_counter(
+                "litestar_queues.heartbeat.failure.count",
+                1,
+                attributes={**self._metric_attributes(), "worker.error.type": type(exc).__name__},
+            )
+        logger.warning(message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id})
 
     def _record_gauge_delta(self, name: "str", delta: "int") -> "None":
         self._service.observability_runtime.record_gauge_delta(name, delta, attributes=self._metric_attributes())

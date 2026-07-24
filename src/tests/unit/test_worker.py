@@ -1558,6 +1558,9 @@ class _SpyHeartbeatManager:
         self._registrations.pop(task_id, None)
         self.events.append(("unregister", task_id))
 
+    def record_failure(self, exc: "BaseException", message: "str" = "") -> "None":
+        return None
+
     async def start(self) -> "None":
         return None
 

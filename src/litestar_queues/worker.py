@@ -382,31 +382,15 @@ class Worker:
                 await self._close_heartbeat_manager_if_idle()
 
     async def _dispatch_external(self, records: "list[QueuedTaskRecord]") -> "int":
+        # The execution backend owns litestar_queues.execution.dispatch.count: it is
+        # the only layer that can distinguish a fallback from an outright failure,
+        # and a second emitter here would double-count every dispatch.
         execution_backend = self._service.get_execution_backend()
         dispatched = 0
         for record in records:
             if record.execution_ref is not None:
                 continue
-            try:
-                await execution_backend.dispatch(self._service, record)
-            except Exception:
-                self._record_counter(
-                    "litestar_queues.execution.dispatch.count",
-                    {
-                        "messaging.destination.name": record.queue,
-                        "queue.execution.backend": record.execution_backend,
-                        "queue.execution.status": "error",
-                    },
-                )
-                raise
-            self._record_counter(
-                "litestar_queues.execution.dispatch.count",
-                {
-                    "messaging.destination.name": record.queue,
-                    "queue.execution.backend": record.execution_backend,
-                    "queue.execution.status": "dispatched",
-                },
-            )
+            await execution_backend.dispatch(self._service, record)
             dispatched += 1
         return dispatched
 
@@ -422,18 +406,19 @@ class Worker:
         ):
             return
         result = await self._service.recover_stale_tasks(stale_after=self._stale_after, worker_id=self._worker_id)
-        total = result.requeued + result.failed + result.skipped + result.handler_needed
-        if total:
-            self._record_counter(
-                "litestar_queues.stale_recovery.count",
-                {
-                    "queue.stale.requeued": str(result.requeued),
-                    "queue.stale.failed": str(result.failed),
-                    "queue.stale.skipped": str(result.skipped),
-                    "queue.stale.handler_needed": str(result.handler_needed),
-                },
-                value=total,
-            )
+        # One bounded outcome label, each incremented by its own count. Recording the
+        # counts as label *values* would mint a new time series per distinct tally.
+        outcomes = (
+            ("requeued", result.requeued),
+            ("failed", result.failed),
+            ("skipped", result.skipped),
+            ("handler_needed", result.handler_needed),
+        )
+        for outcome, count in outcomes:
+            if count:
+                self._record_counter(
+                    "litestar_queues.stale_recovery.count", {"queue.stale.outcome": outcome}, value=count
+                )
 
     async def _maybe_reconcile_external(self) -> "None":
         if not await self._service.get_queue_backend().acquire_worker_lock(
@@ -545,9 +530,9 @@ class Worker:
             self._record_heartbeat_failure(exc, "Queue worker heartbeat manager close failed")
 
     def _record_heartbeat_failure(self, exc: "Exception", message: "str") -> "None":
-        with contextlib.suppress(Exception):
-            self._record_counter("litestar_queues.heartbeat.failure.count", {"worker.error.type": type(exc).__name__})
-        logger.warning(message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id})
+        # Delegated so both emitters of litestar_queues.heartbeat.failure.count agree
+        # on one label set; divergent label names break the Prometheus collector.
+        self._heartbeat_manager.record_failure(exc, message)
 
     def _record_claimed(self, records: "list[QueuedTaskRecord]") -> "None":
         counts: "dict[str, int]" = {}
