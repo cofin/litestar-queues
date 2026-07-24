@@ -121,9 +121,7 @@ class SQLSpecQueueEventSink:
                 "pass config to select the event database."
             )
             raise QueueConfigurationError(msg)
-        from sqlspec.adapters.aiosqlite import AiosqliteConfig
-
-        self._sqlspec_config = AiosqliteConfig()
+        self._sqlspec_config = _default_event_config()
         return self._sqlspec_config
 
     def _apply_event_settings(self, sqlspec_config: "Any") -> "None":
@@ -138,6 +136,20 @@ class SQLSpecQueueEventSink:
             set_migration_config(migration_config)
         else:
             sqlspec_config.migration_config = migration_config
+
+
+def _default_event_config() -> "Any":
+    """Build the zero-configuration aiosqlite event config.
+
+    Kept in its own function so the adapter import stays lazy: selecting any other
+    SQLSpec adapter must never require the aiosqlite extra.
+
+    Returns:
+        A new ``AiosqliteConfig``.
+    """
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    return AiosqliteConfig()
 
 
 def _metadata_for(event: "QueueEvent") -> "dict[str, object]":

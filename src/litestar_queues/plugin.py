@@ -91,6 +91,12 @@ class QueuePlugin(InitPlugin):
     def _configure_sqlspec_migrations(self) -> "None":
         """Register queue migrations with the application's SQLSpec config."""
         from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+        from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
+        from litestar_queues.backends.sqlspec.extension import (
+            configure_events_migration_extension,
+            configure_queue_migration_extension,
+        )
+        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
 
         backend_config = self._config.queue_backend
         if not isinstance(backend_config, SQLSpecBackendConfig):
@@ -103,13 +109,6 @@ class QueuePlugin(InitPlugin):
                 sqlspec_config = registered_configs[0]
         if sqlspec_config is None:
             return
-
-        from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
-        from litestar_queues.backends.sqlspec.extension import (
-            configure_events_migration_extension,
-            configure_queue_migration_extension,
-        )
-        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
 
         # Register the durable events queue migration first: a capability-native
         # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
@@ -264,10 +263,9 @@ class QueuePlugin(InitPlugin):
         Args:
             cli: The root ``click.Group`` of the Litestar CLI.
         """
-        self._configure_sqlspec_migrations()
-
         from litestar_queues._cli import register
 
+        self._configure_sqlspec_migrations()
         register(cli)
 
     @asynccontextmanager
