@@ -1,7 +1,10 @@
 import dataclasses
 
+import pytest
+
 from litestar_queues import QueueConfig, TaskRequest, WorkerConfig
 from litestar_queues.backends.memory import InMemoryQueueBackend
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.service import QueueService
 from litestar_queues.worker import Worker
 
@@ -24,6 +27,13 @@ def test_worker_cli_overrides_can_copy_without_mutating_app_config() -> None:
 
     assert configured.max_concurrency == 2
     assert overridden.max_concurrency == 8
+
+
+def test_worker_startup_timeout_must_be_positive() -> None:
+    assert WorkerConfig(startup_timeout=0.25).startup_timeout == 0.25
+
+    with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.startup_timeout"):
+        WorkerConfig(startup_timeout=0)
 
 
 def test_task_request_names_the_bulk_enqueue_input() -> None:

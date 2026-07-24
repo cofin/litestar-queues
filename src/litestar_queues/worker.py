@@ -86,6 +86,9 @@ class Worker:
         "_service",
         "_stale_after",
         "_stale_check_interval",
+        "_started_event",
+        "_startup_completion",
+        "_startup_error",
         "_stop_event",
         "_worker_id",
     )
@@ -124,6 +127,9 @@ class Worker:
         self._running_tasks: "set[asyncio.Task[None]]" = set()
         self._stop_event = asyncio.Event()
         self._completion_event = asyncio.Event()
+        self._startup_completion: "asyncio.Future[BaseException | None] | None" = None
+        self._started_event = asyncio.Event()
+        self._startup_error: "BaseException | None" = None
         self._is_running = False
         self._last_reconcile_at = -float("inf")
         self._last_stale_check_at = -float("inf")
@@ -137,6 +143,37 @@ class Worker:
     def worker_id(self) -> "str":
         """Worker identity used for events and logs."""
         return self._worker_id
+
+    async def wait_started(self) -> "None":
+        """Wait until heartbeat startup succeeds or propagate its failure."""
+        startup_completion = self._startup_completion
+        if startup_completion is not None and startup_completion.done():
+            await asyncio.sleep(0)
+            startup_completion = self._startup_completion
+        if startup_completion is None:
+            startup_completion = asyncio.get_running_loop().create_future()
+            self._startup_completion = startup_completion
+        startup_error = await asyncio.shield(startup_completion)
+        if startup_error is not None:
+            raise startup_error
+
+    def _prepare_startup(self) -> "asyncio.Future[BaseException | None]":
+        """Create or adopt the completion shared by this startup generation."""
+        startup_completion = self._startup_completion
+        if startup_completion is None or startup_completion.done():
+            startup_completion = asyncio.get_running_loop().create_future()
+            self._startup_completion = startup_completion
+        self._started_event.clear()
+        self._startup_error = None
+        return startup_completion
+
+    def _complete_startup(
+        self, startup_completion: "asyncio.Future[BaseException | None]", startup_error: "BaseException | None"
+    ) -> "None":
+        """Publish one startup generation's immutable outcome to its waiters."""
+        self._startup_error = startup_error
+        self._started_event.set()
+        startup_completion.set_result(startup_error)
 
     def _reset_poll_backoff(self) -> "None":
         """Reset the adaptive polling wait to the base interval.
@@ -197,11 +234,17 @@ class Worker:
 
     async def start(self) -> "None":
         """Run the worker loop until stopped or cancelled."""
+        startup_completion = self._prepare_startup()
         self._is_running = True
         self._stop_event.clear()
         self._reset_poll_backoff()
         try:
-            await self._heartbeat_manager.start()
+            try:
+                await self._heartbeat_manager.start()
+            except BaseException as exc:
+                self._complete_startup(startup_completion, exc)
+                raise
+            self._complete_startup(startup_completion, None)
             while not self._stop_event.is_set():
                 try:
                     await self._maybe_requeue_stale()

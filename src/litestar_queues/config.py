@@ -184,6 +184,9 @@ class WorkerConfig:
     final_cancel_timeout: "float" = 5
     """Maximum post-cancellation drain time in seconds."""
 
+    startup_timeout: "float" = 30
+    """Maximum time to wait for worker startup readiness in seconds."""
+
     queues: "tuple[str, ...]" = ()
     """Queue names claimed by this worker; empty claims every queue."""
 
@@ -199,6 +202,7 @@ class WorkerConfig:
             "stale_check_interval": self.stale_check_interval,
             "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
             "final_cancel_timeout": self.final_cancel_timeout,
+            "startup_timeout": self.startup_timeout,
         }
         for name, value in positive.items():
             if value <= 0:

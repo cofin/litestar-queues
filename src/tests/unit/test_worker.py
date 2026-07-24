@@ -503,6 +503,103 @@ async def test_worker_explicit_worker_id_overrides_default() -> "None":
     assert worker.worker_id == "worker-alpha-7"
 
 
+async def test_wait_started_returns_after_heartbeat_startup_succeeds() -> "None":
+    heartbeat_started = asyncio.Event()
+    async with QueueService(QueueConfig()) as service:
+        worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
+        worker._heartbeat_manager = cast(
+            "WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started)
+        )
+        worker_task = asyncio.create_task(worker.start())
+
+        try:
+            await asyncio.wait_for(worker.wait_started(), timeout=1)
+
+            assert heartbeat_started.is_set()
+        finally:
+            await worker.stop()
+            await asyncio.wait_for(worker_task, timeout=1)
+
+
+async def test_wait_started_propagates_heartbeat_startup_failure() -> "None":
+    startup_error = RuntimeError("heartbeat startup failed")
+    async with QueueService(QueueConfig()) as service:
+        worker = Worker(service)
+        worker._heartbeat_manager = cast(
+            "WorkerHeartbeatManager", _StartupHeartbeatManager(startup_error=startup_error)
+        )
+        worker_task = asyncio.create_task(worker.start())
+
+        with pytest.raises(RuntimeError, match="heartbeat startup failed") as wait_started_error:
+            await asyncio.wait_for(worker.wait_started(), timeout=1)
+        with pytest.raises(RuntimeError, match="heartbeat startup failed") as worker_error:
+            await worker_task
+
+    assert wait_started_error.value is startup_error
+    assert worker_error.value is startup_error
+
+
+async def test_wait_started_observes_immediately_scheduled_second_start() -> "None":
+    startup_error = RuntimeError("first heartbeat startup failed")
+    heartbeat_started = asyncio.Event()
+    async with QueueService(QueueConfig()) as service:
+        worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
+        worker._heartbeat_manager = cast(
+            "WorkerHeartbeatManager", _StartupHeartbeatManager(startup_error=startup_error)
+        )
+        first_task = asyncio.create_task(worker.start())
+
+        with pytest.raises(RuntimeError, match="first heartbeat startup failed"):
+            await worker.wait_started()
+        with pytest.raises(RuntimeError, match="first heartbeat startup failed"):
+            await first_task
+
+        worker._heartbeat_manager = cast(
+            "WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started)
+        )
+        second_task = asyncio.create_task(worker.start())
+
+        try:
+            await worker.wait_started()
+
+            assert heartbeat_started.is_set()
+        finally:
+            await asyncio.sleep(0)
+            await worker.stop()
+            await asyncio.wait_for(second_task, timeout=1)
+
+
+async def test_wait_started_isolates_concurrent_waiters_from_next_start_generation() -> "None":
+    startup_error = RuntimeError("first generation failed")
+    heartbeat_started = asyncio.Event()
+    async with QueueService(QueueConfig()) as service:
+        worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
+        manager = _RestartSchedulingHeartbeatManager(
+            worker=worker,
+            next_manager=_StartupHeartbeatManager(started=heartbeat_started),
+            startup_error=startup_error,
+        )
+        worker._heartbeat_manager = cast("WorkerHeartbeatManager", manager)
+        waiters = [asyncio.create_task(worker.wait_started()) for _ in range(2)]
+        first_task = asyncio.create_task(worker.start())
+
+        waiter_results = await asyncio.gather(*waiters, return_exceptions=True)
+        with pytest.raises(RuntimeError, match="first generation failed") as worker_error:
+            await first_task
+
+        second_task = manager.second_task
+        assert second_task is not None
+        try:
+            await worker.wait_started()
+
+            assert waiter_results == [startup_error, startup_error]
+            assert worker_error.value is startup_error
+            assert heartbeat_started.is_set()
+        finally:
+            await worker.stop()
+            await asyncio.wait_for(second_task, timeout=1)
+
+
 async def test_worker_heartbeat_miss_threshold_comes_from_config() -> "None":
     config = QueueConfig()
     assert config.worker.heartbeat_miss_threshold == 2
@@ -1472,6 +1569,45 @@ class _SpyHeartbeatManager:
 
     async def aclose(self) -> "None":
         return None
+
+
+class _StartupHeartbeatManager(_SpyHeartbeatManager):
+    __slots__ = ("_started", "_startup_error")
+
+    def __init__(
+        self, *, started: "asyncio.Event | None" = None, startup_error: "BaseException | None" = None
+    ) -> "None":
+        super().__init__([])
+        self._started = started
+        self._startup_error = startup_error
+
+    async def start(self) -> "None":
+        if self._startup_error is not None:
+            raise self._startup_error
+        if self._started is not None:
+            self._started.set()
+
+
+class _RestartSchedulingHeartbeatManager(_SpyHeartbeatManager):
+    __slots__ = ("_next_manager", "_startup_error", "_worker", "second_task")
+
+    def __init__(
+        self,
+        *,
+        worker: "Worker",
+        next_manager: "_SpyHeartbeatManager",
+        startup_error: "BaseException",
+    ) -> "None":
+        super().__init__([])
+        self._worker = worker
+        self._next_manager = next_manager
+        self._startup_error = startup_error
+        self.second_task: "asyncio.Task[None] | None" = None
+
+    async def start(self) -> "None":
+        self._worker._heartbeat_manager = cast("WorkerHeartbeatManager", self._next_manager)
+        self.second_task = asyncio.create_task(self._worker.start())
+        raise self._startup_error
 
 
 class _FailingUnregisterHeartbeatManager(_SpyHeartbeatManager):
