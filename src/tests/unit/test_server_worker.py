@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -34,10 +35,40 @@ from litestar_queues._worker_runtime import _WorkerStage, _WorkerStageError
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     from pytest import MonkeyPatch
+
+
+@contextlib.contextmanager
+def _restored_logging_state() -> "Iterator[None]":
+    """Snapshot and restore every logger's handlers and level.
+
+    ``_reset_child_logging`` tears down all inherited handlers, which is correct in a
+    fresh worker child but destructive here: run inside the pytest process it also
+    removes pytest's own ``caplog`` handlers, so later tests in the same process
+    silently observe empty log output.
+
+    Yields:
+        None: with the logging state restored on exit.
+    """
+    loggers = [
+        logging.getLogger(),
+        *(logger for logger in logging.root.manager.loggerDict.values() if isinstance(logger, logging.Logger)),
+    ]
+    snapshot = [(logger, logger.handlers[:], logger.level) for logger in loggers]
+    try:
+        yield
+    finally:
+        for logger, handlers, level in snapshot:
+            for installed in tuple(logger.handlers):
+                logger.removeHandler(installed)
+                if installed not in handlers:
+                    installed.close()
+            for handler in handlers:
+                logger.addHandler(handler)
+            logger.setLevel(level)
 
 
 class _FakeConnection:
@@ -175,11 +206,7 @@ class _FakeContext:
 
 def _config() -> QueueConfig:
     return QueueConfig(
-        worker=WorkerConfig(
-            startup_timeout=0.1,
-            graceful_shutdown_timeout=0.1,
-            final_cancel_timeout=0.1,
-        )
+        worker=WorkerConfig(startup_timeout=0.1, graceful_shutdown_timeout=0.1, final_cancel_timeout=0.1)
     )
 
 
@@ -221,8 +248,7 @@ def _supervisor(
 
 
 @pytest.mark.parametrize(
-    ("methods", "expected"),
-    [(["fork", "spawn", "forkserver"], "forkserver"), (["fork", "spawn"], "spawn")],
+    ("methods", "expected"), [(["fork", "spawn", "forkserver"], "forkserver"), (["fork", "spawn"], "spawn")]
 )
 def test_process_context_never_selects_fork(methods: list[str], expected: str) -> None:
     selected: list[str] = []
@@ -248,9 +274,7 @@ def test_launch_spec_contains_only_primitive_data_and_hides_environment() -> Non
     )
 
 
-def test_launch_spec_captures_complete_environment_cwd_and_sys_path(
-    monkeypatch: MonkeyPatch, tmp_path: Path
-) -> None:
+def test_launch_spec_captures_complete_environment_cwd_and_sys_path(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     environment = {"LITESTAR_APP": "example:app", "SECRET_TOKEN": "credential", "EXTRA": "preserved"}
     monkeypatch.setattr(os, "environ", environment)
     monkeypatch.chdir(tmp_path)
@@ -292,6 +316,7 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
         return SimpleNamespace(app=object())
 
     monkeypatch.setattr(LitestarEnv, "from_env", from_env)
+
     def ignore_log_level(level: int) -> None:
         del level
 
@@ -444,9 +469,7 @@ def test_child_requires_exactly_one_queue_plugin() -> None:
         ([], "timeout", "bootstrap \\(TimeoutError\\)"),
     ],
 )
-def test_startup_failures_are_sanitized(
-    messages: list[object], wait_choice: str, expected: str
-) -> None:
+def test_startup_failures_are_sanitized(messages: list[object], wait_choice: str, expected: str) -> None:
     process = _FakeProcess()
 
     def choose_wait_result(objects: Sequence[object], timeout: float | None) -> list[object]:
@@ -457,11 +480,7 @@ def test_startup_failures_are_sanitized(
             return [objects[1]]
         return []
 
-    supervisor, context = _supervisor(
-        process=process,
-        messages=messages,
-        wait_result=choose_wait_result,
-    )
+    supervisor, context = _supervisor(process=process, messages=messages, wait_result=choose_wait_result)
 
     with pytest.raises(QueueConfigurationError, match=expected) as exc_info:
         supervisor.start()
@@ -494,10 +513,7 @@ def test_startup_primary_error_survives_force_and_handle_cleanup_failures() -> N
     process = _FakeProcess()
     process.terminate_failures = 1
     process.close_failures = 1
-    supervisor, context = _supervisor(
-        process=process,
-        messages=[("error", "load_app", "CredentialError")],
-    )
+    supervisor, context = _supervisor(process=process, messages=[("error", "load_app", "CredentialError")])
     context.receive.close_failures = 1
 
     with pytest.raises(QueueConfigurationError, match="load_app \\(CredentialError\\)"):
@@ -563,11 +579,7 @@ def test_ready_starts_watchdog_and_crosses_only_launch_spec_event_and_pipe() -> 
         observed_timeouts.append(timeout)
         return [objects[0]]
 
-    supervisor, context = _supervisor(
-        process=process,
-        messages=[("ready", process.pid)],
-        wait_result=capture_timeout,
-    )
+    supervisor, context = _supervisor(process=process, messages=[("ready", process.pid)], wait_result=capture_timeout)
 
     supervisor.start()
 
@@ -630,12 +642,7 @@ def test_posix_force_stop_uses_verified_group_term_then_stops_when_child_exits()
         signals.append((pgid, sig))
         process.alive = False
 
-    _force_stop_process(
-        process,
-        _platform="posix",
-        _getpgid=lambda pid: pid,
-        _killpg=killpg,
-    )
+    _force_stop_process(process, _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
 
     assert signals == [(73, signal.SIGTERM)]
     assert process.terminated is False
@@ -652,12 +659,7 @@ def test_posix_force_stop_uses_group_term_then_group_kill() -> None:
         if sig == signal.SIGKILL:
             process.alive = False
 
-    _force_stop_process(
-        process,
-        _platform="posix",
-        _getpgid=lambda pid: pid,
-        _killpg=killpg,
-    )
+    _force_stop_process(process, _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
 
     assert signals == [(74, signal.SIGTERM), (74, signal.SIGKILL)]
     assert process.terminated is False
@@ -671,10 +673,7 @@ def test_posix_force_stop_falls_back_to_direct_process_for_unverified_group() ->
     signals: list[tuple[int, int]] = []
 
     _force_stop_process(
-        process,
-        _platform="posix",
-        _getpgid=lambda pid: pid + 1,
-        _killpg=lambda pgid, sig: signals.append((pgid, sig)),
+        process, _platform="posix", _getpgid=lambda pid: pid + 1, _killpg=lambda pgid, sig: signals.append((pgid, sig))
     )
 
     assert signals == []
@@ -720,9 +719,7 @@ def test_unexpected_post_ready_exit_requests_shutdown_once(caplog: pytest.LogCap
     process = _FakeProcess(alive=False)
     process.exitcode = 7
     supervisor, _ = _supervisor(
-        process=process,
-        messages=[("ready", process.pid)],
-        request_shutdown=lambda: requests.append("shutdown"),
+        process=process, messages=[("ready", process.pid)], request_shutdown=lambda: requests.append("shutdown")
     )
     supervisor.start()
 
@@ -745,9 +742,7 @@ def test_watchdog_join_and_callback_failures_still_close_handles_without_unsafe_
         raise RuntimeError(message)
 
     supervisor, context = _supervisor(
-        process=process,
-        messages=[("ready", process.pid)],
-        request_shutdown=fail_shutdown,
+        process=process, messages=[("ready", process.pid)], request_shutdown=fail_shutdown
     )
     supervisor.start()
 
@@ -763,9 +758,7 @@ def test_expected_exit_after_close_never_requests_shutdown() -> None:
     requests: list[str] = []
     process = _FakeProcess(alive=False)
     supervisor, _ = _supervisor(
-        process=process,
-        messages=[("ready", process.pid)],
-        request_shutdown=lambda: requests.append("shutdown"),
+        process=process, messages=[("ready", process.pid)], request_shutdown=lambda: requests.append("shutdown")
     )
     supervisor.start()
     supervisor.close()
@@ -807,8 +800,7 @@ def test_completed_parent_bridge_does_not_request_stop() -> None:
 
 @pytest.mark.parametrize("wait_raises", [False, True])
 def test_parent_bridge_suppresses_closed_loop_scheduling_race(
-    wait_raises: bool,
-    caplog: pytest.LogCaptureFixture,
+    wait_raises: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
     secret = "postgres://user:credential@example"
 
@@ -975,16 +967,10 @@ def test_posix_group_cleanup_requires_child_owned_process_group() -> None:
     killed: list[tuple[int, int]] = []
 
     unverified = _verified_kill_process_group(
-        process,
-        signal.SIGKILL,
-        _getpgid=lambda pid: pid + 1,
-        _killpg=lambda pgid, sig: killed.append((pgid, sig)),
+        process, signal.SIGKILL, _getpgid=lambda pid: pid + 1, _killpg=lambda pgid, sig: killed.append((pgid, sig))
     )
     verified = _verified_kill_process_group(
-        process,
-        signal.SIGKILL,
-        _getpgid=lambda pid: pid,
-        _killpg=lambda pgid, sig: killed.append((pgid, sig)),
+        process, signal.SIGKILL, _getpgid=lambda pid: pid, _killpg=lambda pgid, sig: killed.append((pgid, sig))
     )
 
     assert unverified is False
@@ -993,15 +979,15 @@ def test_posix_group_cleanup_requires_child_owned_process_group() -> None:
 
 
 def test_logging_reset_stops_queue_listeners_and_leaves_one_direct_stderr_handler() -> None:
-    root = logging.getLogger()
-    named = logging.getLogger("litestar_queues.test.server_worker_logging")
-    listener_stops: list[str] = []
-    root_handler = logging.NullHandler()
-    named_handler = logging.NullHandler()
-    setattr(named_handler, "listener", SimpleNamespace(stop=lambda: listener_stops.append("stopped")))
-    root.addHandler(root_handler)
-    named.addHandler(named_handler)
-    try:
+    with _restored_logging_state():
+        root = logging.getLogger()
+        named = logging.getLogger("litestar_queues.test.server_worker_logging")
+        listener_stops: list[str] = []
+        named_handler = logging.NullHandler()
+        setattr(named_handler, "listener", SimpleNamespace(stop=lambda: listener_stops.append("stopped")))
+        root.addHandler(logging.NullHandler())
+        named.addHandler(named_handler)
+
         _reset_child_logging(logging.ERROR)
 
         assert listener_stops == ["stopped"]
@@ -1010,10 +996,6 @@ def test_logging_reset_stops_queue_listeners_and_leaves_one_direct_stderr_handle
         assert type(root.handlers[0]) is logging.StreamHandler
         assert root.handlers[0].stream is sys.stderr
         assert root.level == logging.ERROR
-    finally:
-        for handler in tuple(root.handlers):
-            root.removeHandler(handler)
-            handler.close()
 
 
 def test_apply_launch_spec_replaces_not_merges_environment(monkeypatch: MonkeyPatch) -> None:
@@ -1029,17 +1011,8 @@ def test_apply_launch_spec_replaces_not_merges_environment(monkeypatch: MonkeyPa
 
 
 def test_server_worker_module_import_is_click_free() -> None:
-    script = (
-        "import sys; "
-        "import litestar_queues._server_worker; "
-        "raise SystemExit(1 if 'click' in sys.modules else 0)"
-    )
+    script = "import sys; import litestar_queues._server_worker; raise SystemExit(1 if 'click' in sys.modules else 0)"
 
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr

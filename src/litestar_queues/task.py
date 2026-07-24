@@ -526,12 +526,19 @@ class Task(Generic[P, T]):
     async def __call__(self, *args: "P.args", **kwargs: "P.kwargs") -> "T":
         """Execute the wrapped callable directly.
 
+        A synchronous callable runs in a worker thread so a direct call cannot block
+        the event loop, matching how the worker executes the same task.
+
         Returns:
             The wrapped callable result.
         """
-        result = self._func(*args, **kwargs)
+        if inspect.iscoroutinefunction(self._func):
+            coroutine_func = cast("Callable[..., Awaitable[T]]", self._func)
+            return await coroutine_func(*args, **kwargs)
+        sync_func = cast("Callable[..., T]", self._func)
+        result = await _run_sync_callable(sync_func, args, dict(kwargs), sync_executor=None)
         if inspect.isawaitable(result):
-            return await result
+            return await cast("Awaitable[T]", result)
         return result
 
     async def execute_record(

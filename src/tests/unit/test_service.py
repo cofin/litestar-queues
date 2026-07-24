@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -721,6 +722,39 @@ async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "N
     assert result.failed == 1
     assert called == [str(record.id)]
     assert [event.type for event in sink.events] == ["task.stale_failed", "worker.stale_recovery"]
+
+
+async def test_recover_stale_tasks_offloads_a_sync_stale_failure_hook_to_a_worker_thread() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    observed: "list[int]" = []
+
+    def on_stale_failure(record: "QueuedTaskRecord") -> "None":
+        del record
+        observed.append(threading.get_ident())
+
+    @task("tasks.sync_stale_hook", requeue_on_stale=False, on_stale_failure=on_stale_failure)
+    async def stale_hook() -> "None":
+        return None
+
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue(stale_hook.name, max_retries=3, metadata=stale_hook.metadata())
+    claimed = await backend.claim_task(record.id)
+    assert claimed is not None
+    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    async with QueueService(
+        QueueConfig(execution_backend="local", events=QueueEventsConfig(delivery=EventDeliveryConfig())),
+        queue_backend=backend,
+        event_publisher=QueueEventPublisher(InMemoryQueueEventSink()),
+    ) as service:
+        result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-stale")
+
+    assert result.failed == 1
+    assert observed == [observed[0]]
+    assert observed[0] != threading.get_ident()
 
 
 async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "None":

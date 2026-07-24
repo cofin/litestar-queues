@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any, cast
@@ -366,3 +367,38 @@ def _build_test_context(record: "QueuedTaskRecord") -> "TaskExecutionContext":
         attempt=record.retry_count + 1,
         event_publisher=QueueEventPublisher(NoopQueueEventSink()),
     )
+
+
+async def test_direct_call_offloads_a_sync_task_to_a_worker_thread() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.direct_sync_offload")
+    def sync_task(value: "str") -> "str":
+        observed.append(threading.get_ident())
+        return value.upper()
+
+    assert await sync_task("done") == "DONE"
+    assert observed == [observed[0]]
+    assert observed[0] != threading.get_ident()
+
+
+async def test_direct_call_keeps_an_async_task_on_the_event_loop_thread() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.direct_async_inline")
+    async def async_task() -> "str":
+        observed.append(threading.get_ident())
+        return "ok"
+
+    assert await async_task() == "ok"
+    assert observed == [threading.get_ident()]
+
+
+async def test_direct_call_propagates_sync_task_exceptions() -> "None":
+    @task("tasks.direct_sync_raises")
+    def sync_task() -> "None":
+        message = "sync task failed"
+        raise ValueError(message)
+
+    with pytest.raises(ValueError, match="sync task failed"):
+        await sync_task()

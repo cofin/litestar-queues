@@ -158,9 +158,7 @@ def _resolve_queue_plugin(app: "object") -> "QueuePlugin":
     from litestar_queues.plugin import QueuePlugin
 
     plugins = tuple(
-        plugin
-        for plugin in cast("Iterable[object]", getattr(app, "plugins", ()))
-        if isinstance(plugin, QueuePlugin)
+        plugin for plugin in cast("Iterable[object]", getattr(app, "plugins", ())) if isinstance(plugin, QueuePlugin)
     )
     if len(plugins) != 1:
         msg = "The loaded Litestar app must contain exactly one QueuePlugin."
@@ -190,9 +188,7 @@ def _parent_loss_bridge(
 
 
 async def _bridge_stop_event(
-    stop_event: "_EventLike",
-    graceful_stop: "asyncio.Event",
-    completed: "threading.Event",
+    stop_event: "_EventLike", graceful_stop: "asyncio.Event", completed: "threading.Event"
 ) -> "None":
     while not completed.is_set():
         try:
@@ -338,20 +334,12 @@ def _force_stop_process(
 ) -> "None":
     platform = os.name if _platform is None else _platform
     if platform == "posix" and _verified_kill_process_group(
-        process,
-        signal.SIGTERM,
-        _getpgid=_getpgid,
-        _killpg=_killpg,
+        process, signal.SIGTERM, _getpgid=_getpgid, _killpg=_killpg
     ):
         process.join(_FORCE_STOP_TIMEOUT)
         if not process.is_alive():
             return
-        if _verified_kill_process_group(
-            process,
-            signal.SIGKILL,
-            _getpgid=_getpgid,
-            _killpg=_killpg,
-        ):
+        if _verified_kill_process_group(process, signal.SIGKILL, _getpgid=_getpgid, _killpg=_killpg):
             process.join(_FORCE_STOP_TIMEOUT)
             return
         process.kill()
@@ -505,9 +493,7 @@ class ServerWorkerSupervisor:
                 raise
             try:
                 watchdog = self._thread_factory(
-                    target=self._watch_child,
-                    name="litestar-queues-child-watch",
-                    daemon=True,
+                    target=self._watch_child, name="litestar-queues-child-watch", daemon=True
                 )
                 self._watchdog = watchdog
                 watchdog.start()
@@ -569,9 +555,7 @@ class ServerWorkerSupervisor:
             if process is not None:
                 try:
                     process.join(
-                        self._config.worker.graceful_shutdown_timeout
-                        + self._config.worker.final_cancel_timeout
-                        + 1.0
+                        self._config.worker.graceful_shutdown_timeout + self._config.worker.final_cancel_timeout + 1.0
                     )
                 except BaseException as exc:  # noqa: BLE001 - force and handle cleanup must still run.
                     if primary_error is None:

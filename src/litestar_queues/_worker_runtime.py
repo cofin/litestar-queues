@@ -97,10 +97,7 @@ def _task_crashed(task: "asyncio.Task[None]") -> "bool":
     return _task_exception(task) is not None
 
 
-async def _inspect_startup_tasks(
-    readiness_task: "asyncio.Task[None]",
-    worker_task: "asyncio.Task[None]",
-) -> "bool":
+async def _inspect_startup_tasks(readiness_task: "asyncio.Task[None]", worker_task: "asyncio.Task[None]") -> "bool":
     readiness_succeeded = False
     if readiness_task.done():
         try:
@@ -161,18 +158,12 @@ async def _gracefully_stop_worker(
 ) -> "WorkerRunResult":
     graceful_task = asyncio.create_task(worker.stop())
     try:
-        done, _ = await asyncio.wait(
-            (graceful_task, worker_task, force_wait_task),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        done, _ = await asyncio.wait((graceful_task, worker_task, force_wait_task), return_when=asyncio.FIRST_COMPLETED)
         if force_wait_task in done:
             await _cancel_tasks(graceful_task)
             return await _force_worker(worker, worker_task)
         if graceful_task not in done:
-            done, _ = await asyncio.wait(
-                (graceful_task, force_wait_task),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            done, _ = await asyncio.wait((graceful_task, force_wait_task), return_when=asyncio.FIRST_COMPLETED)
             if force_wait_task in done:
                 await _cancel_tasks(graceful_task)
                 return await _force_worker(worker, worker_task)
@@ -189,12 +180,7 @@ async def _gracefully_stop_worker(
             if escalated:
                 return WorkerRunResult.ESCALATED
             return WorkerRunResult.CRASHED if _task_crashed(worker_task) else WorkerRunResult.CLEAN
-        return await _wait_after_graceful_stop(
-            worker,
-            worker_task,
-            force_wait_task,
-            escalated=escalated,
-        )
+        return await _wait_after_graceful_stop(worker, worker_task, force_wait_task, escalated=escalated)
     finally:
         await _cancel_tasks(graceful_task)
 
@@ -206,8 +192,7 @@ async def _run_until_stopped(
     force_wait_task: "asyncio.Task[bool]",
 ) -> "WorkerRunResult":
     done, _ = await asyncio.wait(
-        (worker_task, graceful_wait_task, force_wait_task),
-        return_when=asyncio.FIRST_COMPLETED,
+        (worker_task, graceful_wait_task, force_wait_task), return_when=asyncio.FIRST_COMPLETED
     )
     if force_wait_task in done:
         return await _force_worker(worker, worker_task)
@@ -230,8 +215,7 @@ async def _start_and_run_worker(
     force_wait_task = asyncio.create_task(force_stop.wait())
     try:
         done, _ = await asyncio.wait(
-            (readiness_task, worker_task, graceful_wait_task, force_wait_task),
-            return_when=asyncio.FIRST_COMPLETED,
+            (readiness_task, worker_task, graceful_wait_task, force_wait_task), return_when=asyncio.FIRST_COMPLETED
         )
         if force_wait_task in done or graceful_wait_task in done:
             await asyncio.sleep(0)
@@ -240,10 +224,7 @@ async def _start_and_run_worker(
             return await _force_worker(worker, worker_task)
         if graceful_wait_task.done():
             return await _gracefully_stop_worker(
-                worker,
-                worker_task,
-                force_wait_task,
-                startup_pending=not readiness_succeeded,
+                worker, worker_task, force_wait_task, startup_pending=not readiness_succeeded
             )
         if readiness_succeeded:
             _publish_ready(ready)
@@ -283,11 +264,7 @@ async def _initialize_worker_schedules(service: "QueueService") -> "None":
         _raise_stage_error(_WorkerStage.INITIALIZE_SCHEDULES, exc)
 
 
-def _build_worker(
-    service: "QueueService",
-    config: "QueueConfig",
-    worker_factory: "_WorkerFactory",
-) -> "_WorkerLike":
+def _build_worker(service: "QueueService", config: "QueueConfig", worker_factory: "_WorkerFactory") -> "_WorkerLike":
     try:
         return worker_factory(service, config.worker)
     except Exception as exc:  # noqa: BLE001 - worker construction is part of startup.
@@ -315,12 +292,7 @@ async def run_worker(
         if config.initialize_schedules:
             await _initialize_worker_schedules(service)
         worker = _build_worker(service, config, _worker_factory)
-        result = await _start_and_run_worker(
-            worker,
-            graceful_stop=graceful_stop,
-            force_stop=force_stop,
-            ready=ready,
-        )
+        result = await _start_and_run_worker(worker, graceful_stop=graceful_stop, force_stop=force_stop, ready=ready)
     except BaseException as exc:  # noqa: BLE001 - cleanup must run without masking this primary failure.
         primary_error = exc
 

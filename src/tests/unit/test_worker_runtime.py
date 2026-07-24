@@ -272,9 +272,7 @@ async def test_worker_completion_before_stop_is_crashed_and_cleanup_error_does_n
         ("ready_callback", _WorkerStage.START_WORKER),
     ],
 )
-async def test_startup_failures_map_to_exact_safe_stage(
-    failure_point: "str", expected_stage: "_WorkerStage"
-) -> "None":
+async def test_startup_failures_map_to_exact_safe_stage(failure_point: "str", expected_stage: "_WorkerStage") -> "None":
     order: "list[str]" = []
     original = RuntimeError("credential=super-secret")
     service = _FakeService(
@@ -441,15 +439,10 @@ async def test_successful_readiness_and_worker_completion_tie_is_crashed() -> "N
 
 @pytest.mark.parametrize(
     ("stop_kind", "expected", "expected_stop_calls"),
-    [
-        ("force", WorkerRunResult.ESCALATED, [True]),
-        ("graceful", WorkerRunResult.CLEAN, [False]),
-    ],
+    [("force", WorkerRunResult.ESCALATED, [True]), ("graceful", WorkerRunResult.CLEAN, [False])],
 )
 async def test_preset_stop_after_successful_readiness_does_not_publish_ready(
-    stop_kind: "str",
-    expected: "WorkerRunResult",
-    expected_stop_calls: "list[bool]",
+    stop_kind: "str", expected: "WorkerRunResult", expected_stop_calls: "list[bool]"
 ) -> "None":
     order: "list[str]" = []
     service = _FakeService(order)
@@ -594,17 +587,12 @@ async def test_worker_reported_drain_escalation_maps_to_escalated() -> "None":
     ],
 )
 async def test_worker_completion_does_not_discard_pending_graceful_stop_result(
-    stop_result: "bool",
-    crash_during_stop: "bool",
-    expected: "WorkerRunResult",
+    stop_result: "bool", crash_during_stop: "bool", expected: "WorkerRunResult"
 ) -> "None":
     order: "list[str]" = []
     service = _FakeService(order)
     worker = _FakeWorker(
-        order,
-        stop_result=stop_result,
-        delay_graceful_result=True,
-        crash_during_graceful_stop=crash_during_stop,
+        order, stop_result=stop_result, delay_graceful_result=True, crash_during_graceful_stop=crash_during_stop
     )
     graceful_stop = asyncio.Event()
 
@@ -662,10 +650,7 @@ async def test_force_remains_live_after_worker_completes_during_graceful_stop() 
     assert service.close_calls == 1
 
 
-@pytest.mark.parametrize(
-    "control_flow",
-    [asyncio.CancelledError(), KeyboardInterrupt(), SystemExit()],
-)
+@pytest.mark.parametrize("control_flow", [asyncio.CancelledError(), KeyboardInterrupt(), SystemExit()])
 async def test_startup_control_flow_is_not_wrapped(control_flow: "BaseException") -> "None":
     order: "list[str]" = []
     service = _FakeService(order)

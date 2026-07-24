@@ -4,7 +4,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -18,7 +18,15 @@ from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
 from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
 from litestar_queues.execution import get_execution_backend
-from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
+from litestar_queues.task import (
+    ScheduleConfig,
+    Task,
+    TaskResult,
+    _ensure_utc,
+    _run_sync_callable,
+    get_scheduled_tasks,
+    get_task_registry,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -933,7 +941,10 @@ class QueueService:
         hook = task_obj.on_stale_failure
         if hook is None:
             return
-        result = hook(record)
+        if iscoroutinefunction(hook):
+            await hook(record)
+            return
+        result = await _run_sync_callable(hook, (record,), {}, sync_executor=self._sync_executor)
         if isawaitable(result):
             await result
 

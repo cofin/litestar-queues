@@ -5,11 +5,7 @@ PACKAGE_ROOT = Path("src/litestar_queues")
 
 _APPROVED_NESTED_IMPORTS = {
     "_cli.py": {"litestar.cli._utils"},
-    "_server_worker.py": {
-        "litestar.cli._utils",
-        "litestar_queues.plugin",
-        "multiprocessing.connection",
-    },
+    "_server_worker.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
     "backends/redis/backend.py": {"redis"},
     "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
     "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner.store"},

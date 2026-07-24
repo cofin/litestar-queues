@@ -507,9 +507,7 @@ async def test_wait_started_returns_after_heartbeat_startup_succeeds() -> "None"
     heartbeat_started = asyncio.Event()
     async with QueueService(QueueConfig()) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
-        worker._heartbeat_manager = cast(
-            "WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started)
-        )
+        worker._heartbeat_manager = cast("WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started))
         worker_task = asyncio.create_task(worker.start())
 
         try:
@@ -554,9 +552,7 @@ async def test_wait_started_observes_immediately_scheduled_second_start() -> "No
         with pytest.raises(RuntimeError, match="first heartbeat startup failed"):
             await first_task
 
-        worker._heartbeat_manager = cast(
-            "WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started)
-        )
+        worker._heartbeat_manager = cast("WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started))
         second_task = asyncio.create_task(worker.start())
 
         try:
@@ -575,9 +571,7 @@ async def test_wait_started_isolates_concurrent_waiters_from_next_start_generati
     async with QueueService(QueueConfig()) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
         manager = _RestartSchedulingHeartbeatManager(
-            worker=worker,
-            next_manager=_StartupHeartbeatManager(started=heartbeat_started),
-            startup_error=startup_error,
+            worker=worker, next_manager=_StartupHeartbeatManager(started=heartbeat_started), startup_error=startup_error
         )
         worker._heartbeat_manager = cast("WorkerHeartbeatManager", manager)
         waiters = [asyncio.create_task(worker.wait_started()) for _ in range(2)]
@@ -1592,11 +1586,7 @@ class _RestartSchedulingHeartbeatManager(_SpyHeartbeatManager):
     __slots__ = ("_next_manager", "_startup_error", "_worker", "second_task")
 
     def __init__(
-        self,
-        *,
-        worker: "Worker",
-        next_manager: "_SpyHeartbeatManager",
-        startup_error: "BaseException",
+        self, *, worker: "Worker", next_manager: "_SpyHeartbeatManager", startup_error: "BaseException"
     ) -> "None":
         super().__init__([])
         self._worker = worker
