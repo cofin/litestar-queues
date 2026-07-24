@@ -168,7 +168,7 @@ class SpannerMaintenanceStore(SQLSpecMaintenanceStore):
 
     def create_schema_for_config(self, config: "Any") -> "None":
         """Create the coordination table through Spanner's native DDL operation API."""
-        from litestar_queues.backends.sqlspec.stores.spanner.store import _execute_spanner_ddl
+        from litestar_queues.backends.sqlspec.stores.spanner import _execute_spanner_ddl
 
         if not self._manage_schema:
             return

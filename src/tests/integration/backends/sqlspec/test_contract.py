@@ -35,29 +35,29 @@ from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_cla
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.stores import (
-    AiomysqlQueueStore,
-    AiosqliteQueueStore,
-    ArrowOdbcQueueStore,
-    AsyncmyQueueStore,
-    AsyncpgQueueStore,
-    CockroachAsyncpgQueueStore,
+from litestar_queues.backends.sqlspec.stores import create_queue_store
+from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.arrow_odbc import ArrowOdbcQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
     CockroachPsycopgAsyncQueueStore,
     CockroachPsycopgSyncQueueStore,
-    DuckDBQueueStore,
-    MssqlPythonQueueStore,
+)
+from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
+from litestar_queues.backends.sqlspec.stores.mssql_python import MssqlPythonQueueStore
+from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
-    OracledbAsyncQueueStore,
-    OracledbSyncQueueStore,
-    PsqlpyQueueStore,
-    PsycopgAsyncQueueStore,
-    PsycopgSyncQueueStore,
-    PymysqlQueueStore,
-    SpannerQueueStore,
-    SqliteQueueStore,
-    create_queue_store,
 )
+from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
+from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
+from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.events import QueueEventsConfig
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
@@ -85,6 +85,11 @@ class FakeSQLSpecConfig(SimpleNamespace):
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
+
+
+def _assert_store_module(store: "object", adapter_name: "str") -> "None":
+    """Assert each adapter's store class is defined in the module named after it."""
+    assert store.__class__.__module__ == f"litestar_queues.backends.sqlspec.stores.{adapter_name}"
 
 
 def _fake_adapter_config(
@@ -400,27 +405,21 @@ def blocked_import(name, *args, **kwargs):
 
 builtins.__import__ = blocked_import
 
-from litestar_queues.backends.sqlspec.stores import (
-    AdbcSqliteQueueStore,
-    AiomysqlQueueStore,
-    AiosqliteQueueStore,
-    AsyncmyQueueStore,
-    AsyncpgQueueStore,
-    DuckDBQueueStore,
-    CockroachAsyncpgQueueStore,
-    CockroachPsycopgAsyncQueueStore,
-    CockroachPsycopgSyncQueueStore,
-    MysqlConnectorAsyncQueueStore,
-    MysqlConnectorSyncQueueStore,
-    OracledbAsyncQueueStore,
-    OracledbSyncQueueStore,
-    PsqlpyQueueStore,
-    PsycopgAsyncQueueStore,
-    PsycopgSyncQueueStore,
-    SpannerQueueStore,
-    SqliteQueueStore,
-    create_queue_store,
-)
+from litestar_queues.backends.sqlspec.stores import create_queue_store
+from litestar_queues.backends.sqlspec.stores.adbc import AdbcSqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import CockroachPsycopgAsyncQueueStore, CockroachPsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.mysqlconnector import MysqlConnectorAsyncQueueStore, MysqlConnectorSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
+from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
+from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 
 def fake_config(adapter_name, dialect, config_type_name):
     config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config"})
@@ -621,7 +620,7 @@ def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
     )
 
     assert store.__class__.__name__ == "AdbcSqliteQueueStore"
-    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.adbc.")
+    _assert_store_module(store, "adbc")
     assert '"queue_tasks"' in "\n".join(store.create_statements())
 
 
@@ -651,7 +650,7 @@ def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
     )
 
     assert store.__class__.__name__ == expected_store_name
-    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    _assert_store_module(store, adapter_name)
 
 
 @pytest.mark.parametrize(
@@ -735,7 +734,7 @@ def test_sqlspec_backend_accepts_arrow_odbc_sql_server_target() -> "None":
 
     ddl = "\n".join(store.create_statements())
 
-    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.arrow_odbc.")
+    _assert_store_module(store, "arrow_odbc")
     assert "DATETIME" in ddl
     assert "NVARCHAR(MAX)" in ddl
     assert "[task_key] VARCHAR(255) UNIQUE" not in ddl
@@ -760,7 +759,7 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
     )
 
     created_statements = "\n".join(store.create_statements())
-    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    _assert_store_module(store, adapter_name)
     assert store.__class__.__name__ == expected_store_name
     assert "WITH (fillfactor = 80)" not in created_statements
     assert "autovacuum_vacuum_scale_factor" not in created_statements
@@ -854,7 +853,7 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     )
 
     assert isinstance(store, expected_store_type)
-    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    _assert_store_module(store, adapter_name)
     assert expected_sql_fragment in "\n".join(store.create_statements())
 
 

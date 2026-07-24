@@ -8,9 +8,9 @@ _APPROVED_NESTED_IMPORTS = {
     "_server_worker.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
     "backends/redis/backend.py": {"redis"},
     "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
-    "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner.store"},
-    "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner.store"},
-    "backends/sqlspec/stores/spanner/store.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
+    "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
+    "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
+    "backends/sqlspec/stores/spanner.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
     "backends/valkey/backend.py": {"valkey"},
     "config.py": {
         "litestar.di",
