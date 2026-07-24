@@ -135,7 +135,17 @@ def _belongs_to_invocation(path: "str", nonce: "str") -> "bool":
 
 
 class EphemeralQueueBackend(BaseQueueBackend):
-    """Private-file SQLite queue backend owned by one Litestar server invocation."""
+    """Private-file SQLite queue backend owned by one Litestar server invocation.
+
+    This backend is ephemeral, not durable. The database lives in a private
+    temporary directory created and removed by the server lifespan, so queued
+    work does not survive the server that produced it.
+
+    Worker wakeups are discovered by polling. There is no cross-process
+    signalling primitive: a producer commits a row and a waiter notices it
+    through short bounded reads, then the worker performs the authoritative
+    transactional claim.
+    """
 
     __slots__ = ("_event_log", "_notification_event", "_path", "_pending_read")
 
