@@ -31,7 +31,7 @@ from litestar_queues.events import (
     QueueEventsConfig,
     publish_task_progress,
 )
-from litestar_queues.events.litestar import ChannelsQueueEventSink
+from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 

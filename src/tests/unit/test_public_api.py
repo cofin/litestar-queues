@@ -412,7 +412,7 @@ if create_event_producer is None:
 
 forbidden = (
     "litestar_queues.events.streaming",
-    "litestar_queues.events.litestar",
+    "litestar_queues.events.channels_sink",
     "litestar.channels",
     "litestar.channels.plugin",
     "litestar.channels.backends.memory",

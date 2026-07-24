@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import EventDeliveryConfig, QueueConfig
+from litestar_queues.backends.sqlspec.event_sink import SQLSpecQueueEventSink
 from litestar_queues.events import EventBufferConfig, QueueChannels, QueueEvent, QueueEventsConfig
-from litestar_queues.events.sqlspec import SQLSpecQueueEventSink
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

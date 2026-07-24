@@ -7,7 +7,7 @@ from litestar.channels import ChannelsPlugin
 from litestar.channels.backends.memory import MemoryChannelsBackend
 
 from litestar_queues.events import CompositeQueueEventSink
-from litestar_queues.events.litestar import ChannelsQueueEventSink
+from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -82,7 +82,7 @@ External Producers
 Litestar Channels
 =================
 
-.. automodule:: litestar_queues.events.litestar
+.. automodule:: litestar_queues.events.channels_sink
    :members:
    :undoc-members:
    :show-inheritance:

@@ -8,6 +8,7 @@ _APPROVED_NESTED_IMPORTS = {
     "_server_worker.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
     "backends/redis/backend.py": {"redis"},
     "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
+    "backends/sqlspec/event_sink.py": {"sqlspec", "sqlspec.adapters.aiosqlite"},
     "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
     "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
     "backends/sqlspec/stores/spanner.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
@@ -29,8 +30,7 @@ _APPROVED_NESTED_IMPORTS = {
         "litestar_queues.task",
         "litestar_queues.worker",
     },
-    "events/__init__.py": {"litestar_queues.events.litestar"},
-    "events/sqlspec.py": {"sqlspec", "sqlspec.adapters.aiosqlite"},
+    "events/__init__.py": {"litestar_queues.events.channels_sink"},
     "plugin.py": {
         "litestar_queues._cli",
         "litestar_queues.backends.sqlspec",

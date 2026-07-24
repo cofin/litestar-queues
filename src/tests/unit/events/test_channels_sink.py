@@ -5,7 +5,7 @@ import msgspec
 import pytest
 
 from litestar_queues.events import QueueEvent
-from litestar_queues.events.litestar import ChannelsQueueEventSink
+from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
