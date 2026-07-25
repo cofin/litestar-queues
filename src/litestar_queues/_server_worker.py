@@ -10,7 +10,7 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, NoReturn, Protocol, cast
 
 from litestar_queues._worker_runtime import WorkerRunResult, _WorkerStageError
 from litestar_queues._worker_runtime import run_worker as _run_worker
@@ -403,7 +403,12 @@ class ServerWorkerSupervisor:
     def from_plugin(cls, plugin: "QueuePlugin") -> "ServerWorkerSupervisor":
         return cls(plugin.config)
 
-    def _raise_start_failure(self, stage: "str", exception_type: "str") -> "None":
+    def _raise_start_failure(self, stage: "str", exception_type: "str") -> "NoReturn":
+        """Fail startup with stage and exception type only.
+
+        Raises:
+            QueueConfigurationError: Always.
+        """
         msg = f"Server queue worker failed during {stage} ({exception_type})."
         raise QueueConfigurationError(msg)
 
