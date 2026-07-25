@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 __all__ = ("QueueEventLogService", "QueueTaskReservationService", "QueueTaskService")
 
 _DUE_STATUSES = ("pending", "scheduled")
-_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "expired")
 _SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"oracle", "postgresql"})
 _NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
 _ORACLE_CLAIM_CANDIDATE_LIMIT = 10
@@ -244,6 +244,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         priority: "int",
         max_retries: "int",
         scheduled_at: "datetime | None",
+        expires_at: "datetime | None",
         key: "str | None",
         execution_backend: "str",
         execution_profile: "str | None",
@@ -271,6 +272,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             priority=priority,
             max_retries=max_retries,
             scheduled_at=scheduled_at,
+            expires_at=expires_at,
             key=key,
             metadata=dict(metadata),
         )
@@ -295,6 +297,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                     priority=request.priority,
                     max_retries=request.max_retries,
                     scheduled_at=request.scheduled_at,
+                    expires_at=request.expires_at,
                     key=request.key,
                     execution_backend=request.execution_backend,
                     execution_profile=request.execution_profile,
@@ -330,7 +333,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         """
         model_type = self.model_type
         now = _utc_now()
-        criteria = [model_type.status.in_(_DUE_STATUSES), model_type.scheduled_at > now]
+        criteria = [
+            model_type.status.in_(_DUE_STATUSES),
+            model_type.scheduled_at > now,
+            or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+        ]
         if queues:
             criteria.append(model_type.queue.in_(list(queues)))
         statement = select(func.min(model_type.scheduled_at)).where(*criteria)
@@ -346,6 +353,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 model_type.id == task_id,
                 model_type.status.in_(_DUE_STATUSES),
                 or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+                or_(model_type.expires_at.is_(None), model_type.expires_at > now),
             )
             .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
         )
@@ -445,6 +453,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 model_type.id.in_(task_ids),
                 model_type.status.in_(_DUE_STATUSES),
                 or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+                or_(model_type.expires_at.is_(None), model_type.expires_at > now),
             )
             .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
             .execution_options(synchronize_session=False)
@@ -460,6 +469,41 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         )
         by_id = {UUID(str(model.id)): self.record_from_model(model) for model in models}
         return [by_id[task_id] for task_id in task_ids if task_id in by_id and by_id[task_id].status == "running"]
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        now = _utc_now()
+        model_type = self.model_type
+        statement = (
+            select(model_type.id)
+            .where(
+                model_type.status.in_(_DUE_STATUSES),
+                model_type.expires_at.is_not(None),
+                model_type.expires_at <= now,
+            )
+            .order_by(model_type.expires_at, model_type.created_at, model_type.id)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        task_ids = list((await self.repository.session.execute(statement)).scalars().all())
+        if not task_ids:
+            return []
+        await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id.in_(task_ids),
+                model_type.status.in_(_DUE_STATUSES),
+                model_type.expires_at <= now,
+            )
+            .values(status="expired", completed_at=now, heartbeat_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        models = (
+            (await self.repository.session.execute(select(model_type).where(model_type.id.in_(task_ids))))
+            .scalars()
+            .all()
+        )
+        by_id = {model.id: self.record_from_model(model) for model in models}
+        return [by_id[task_id] for task_id in task_ids if task_id in by_id and by_id[task_id].status == "expired"]
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -931,6 +975,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             max_retries=record.max_retries,
             retry_count=record.retry_count,
             scheduled_at=record.scheduled_at,
+            expires_at=record.expires_at,
             created_at=record.created_at,
             started_at=record.started_at,
             completed_at=record.completed_at,
@@ -965,6 +1010,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             max_retries=int(model.max_retries),
             retry_count=int(model.retry_count),
             scheduled_at=_coerce_datetime(model.scheduled_at),
+            expires_at=_coerce_datetime(model.expires_at),
             created_at=cast("datetime", _coerce_datetime(model.created_at)),
             started_at=_coerce_datetime(model.started_at),
             completed_at=_coerce_datetime(model.completed_at),
@@ -1046,6 +1092,7 @@ def _build_claim_candidate_statement(
     criteria = [
         model_type.status.in_(_DUE_STATUSES),
         or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+        or_(model_type.expires_at.is_(None), model_type.expires_at > now),
     ]
     if queue is not None:
         criteria.append(model_type.queue == queue)
@@ -1157,7 +1204,7 @@ def _coerce_datetime(value: "Any") -> "datetime | None":
 
 def _coerce_status(value: "Any") -> "TaskStatus":
     status = str(value)
-    if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
+    if status not in {"cancelled", "completed", "expired", "failed", "pending", "running", "scheduled"}:
         msg = f"Unknown queued task status from Advanced Alchemy queue backend: {status!r}"
         raise ValueError(msg)
     return cast("TaskStatus", status)

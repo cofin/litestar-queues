@@ -154,7 +154,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             )
         return self._event_log
 
-    async def enqueue(  # type: ignore[override]  # staged expiry capability
+    async def enqueue(
         self,
         task_name: "str",
         *,
@@ -164,6 +164,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -180,6 +181,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
                     priority=priority,
                     max_retries=max_retries,
                     scheduled_at=scheduled_at,
+                    expires_at=expires_at,
                     key=key,
                     execution_backend=execution_backend,
                     execution_profile=execution_profile,
@@ -380,6 +382,10 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def get_statistics(self) -> "QueueStatistics":
         async with self._service() as service:
             return await service.get_statistics()
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        async with self._operation() as service:
+            return await service.expire_overdue(limit=limit)
 
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10

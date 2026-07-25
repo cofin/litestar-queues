@@ -66,6 +66,26 @@ class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "aa_contract_queue_task"
 
 
+async def test_advanced_alchemy_expiry_contract(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    overdue = await advanced_alchemy_backend.enqueue("tasks.overdue", expires_at=past)
+    live = await advanced_alchemy_backend.enqueue(
+        "tasks.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+    )
+
+    assert await advanced_alchemy_backend.claim_task(overdue.id) is None
+    expired = await advanced_alchemy_backend.expire_overdue()
+    stored = await advanced_alchemy_backend.get_task(overdue.id)
+    pending = await advanced_alchemy_backend.list_pending(limit=10)
+
+    assert stored is not None
+    assert stored.status == "expired"
+    assert overdue.id not in {record.id for record in pending}
+    assert live.id in {record.id for record in pending}
+    assert all(record.status == "expired" for record in expired)
+    assert (await advanced_alchemy_backend.get_statistics()).expired == 1
+
+
 async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> "None":
     assert "advanced-alchemy" in list_queue_backends()
     assert get_queue_backend_class("advanced-alchemy") is SQLAlchemyBackend
