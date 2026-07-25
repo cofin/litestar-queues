@@ -23,7 +23,7 @@ operates.
            worker_wakeups=True,
        ),
        execution_backend="local",
-       worker=WorkerConfig(run_in_app=False),
+       worker=WorkerConfig(placement="external"),
    )
 
 Use ``ValkeyBackendConfig`` from ``litestar_queues.backends.valkey`` for

@@ -103,7 +103,7 @@ Configuration
        task_modules=("app.tasks",),
        initialize_schedules=True,
        execution_backend="local",
-       worker=WorkerConfig(run_in_app=True),
+       worker=WorkerConfig(placement="asgi"),
    )
 
 Set ``initialize_schedules=False`` when schedules are initialized by a separate

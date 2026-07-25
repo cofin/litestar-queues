@@ -545,3 +545,76 @@ def test_package_never_parses_server_command_flags() -> "None":
     }
 
     assert offenders == set()
+
+
+# --------------------------------------------------------------------------- ASGI ownership
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+async def test_server_placement_opens_the_service_but_owns_no_asgi_worker() -> "None":
+    """With a valid marker the ASGI process enqueues only; the worker lives elsewhere."""
+    from litestar.testing import AsyncTestClient
+
+    from litestar_queues import QueueService
+    from litestar_queues.worker.invocation import server_context
+
+    plugin = QueuePlugin(QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="server")))
+    app = Litestar(plugins=[plugin], route_handlers=[])
+
+    with server_context():
+        async with AsyncTestClient(app=app):
+            assert isinstance(app.state["queue_service"], QueueService)
+            assert "queue_worker" not in app.state
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+async def test_server_placement_without_a_marker_fails_before_serving() -> "None":
+    from litestar.testing import AsyncTestClient
+
+    plugin = QueuePlugin(QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="server")))
+    app = Litestar(plugins=[plugin], route_handlers=[])
+
+    with pytest.raises(BaseException) as failure:
+        async with AsyncTestClient(app=app):
+            pytest.fail("a raw ASGI launch must not accept traffic under server placement")
+
+    assert "litestar run" in str(failure.value) or any(
+        "litestar run" in str(inner) for inner in getattr(failure.value, "exceptions", ())
+    )
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+async def test_external_placement_opens_the_service_and_starts_nothing() -> "None":
+    from litestar.testing import AsyncTestClient
+
+    from litestar_queues import QueueService
+
+    plugin = QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external")))
+    app = Litestar(plugins=[plugin], route_handlers=[])
+
+    async with AsyncTestClient(app=app):
+        assert isinstance(app.state["queue_service"], QueueService)
+        assert "queue_worker" not in app.state
+
+
+async def test_asgi_placement_is_explicitly_multiplicative() -> "None":
+    """Two application instances mean two workers; that is the documented trade-off."""
+    from litestar.testing import AsyncTestClient
+
+    workers = []
+    for index in range(2):
+        plugin = QueuePlugin(
+            QueueConfig(
+                queue_backend="memory",
+                worker=WorkerConfig(placement="asgi", poll_interval=0.01, id=f"asgi-worker-{index}"),
+            )
+        )
+        app = Litestar(plugins=[plugin], route_handlers=[])
+        async with AsyncTestClient(app=app):
+            worker = app.state["queue_worker"]
+            assert worker.is_running
+            workers.append(worker)
+
+    assert len({id(worker) for worker in workers}) == 2
+    assert [worker.worker_id for worker in workers] == ["asgi-worker-0", "asgi-worker-1"]
+    assert not any(worker.is_running for worker in workers)

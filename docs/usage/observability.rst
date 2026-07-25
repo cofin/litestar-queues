@@ -105,7 +105,7 @@ CLI workers should load a config factory that returns the same settings:
                enable_otel=True,
                enable_prometheus=True,
            ),
-           worker=WorkerConfig(run_in_app=False),
+           worker=WorkerConfig(placement="external"),
        )
 
 .. code-block:: bash

@@ -87,7 +87,7 @@ async def test_schedules_are_initialized_by_the_process_that_owns_the_worker() -
     assert scheduled.status == "scheduled"
 
 
-async def test_plugin_run_in_app_creates_and_cleans_up_worker() -> "None":
+async def test_asgi_placement_creates_and_cleans_up_one_worker() -> "None":
     plugin = QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi", poll_interval=0.01)))
     app = Litestar(plugins=[plugin])
 
