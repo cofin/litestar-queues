@@ -20,7 +20,7 @@ async def test_queue_config_uses_single_observability_field() -> "None":
     from litestar_queues.observability import ObservabilityConfig
 
     observability = ObservabilityConfig(enable_otel=True, enable_prometheus=True)
-    config = QueueConfig(observability=observability)
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", observability=observability)
     field_names = {config_field.name for config_field in fields(QueueConfig)}
 
     assert config.observability is observability
@@ -39,7 +39,10 @@ async def test_enqueue_uses_observability_runtime_for_producer_span_and_context(
     async def observed_enqueue() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(observed_enqueue, metadata={"source": "test"})
 
     assert runtime.started_spans[0].name == "litestar_queues.publish"
@@ -81,7 +84,10 @@ async def test_execute_record_uses_observability_runtime_for_consumer_span() -> 
     async def observed_execute() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(observed_execute)
         assert result.record is not None
         claimed = await service.get_queue_backend().claim_task(result.id)
@@ -128,7 +134,11 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
     plugin = QueuePlugin(
-        QueueConfig(observability=ObservabilityConfig(enable_otel=None), worker=WorkerConfig(run_in_app=False))
+        QueueConfig(
+            queue_backend="memory",
+            observability=ObservabilityConfig(enable_otel=None),
+            worker=WorkerConfig(placement="external"),
+        )
     )
     app = Litestar(plugins=[plugin])
 
@@ -148,7 +158,10 @@ async def test_worker_records_claim_and_loop_error_metrics() -> "None":
     async def observed_worker() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(observed_worker)
         worker = Worker(service)
         assert await worker.run_once() == 1
@@ -242,7 +255,9 @@ async def test_cloudrun_dispatch_records_span_and_metrics() -> "None":
         jobs_client=_FakeCloudRunJobsClient(),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), execution_backend=backend, observability_runtime=runtime
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        execution_backend=backend,
+        observability_runtime=runtime,
     ) as service:
         result = await service.enqueue(observed_cloudrun)
         assert result.record is not None
@@ -576,7 +591,10 @@ async def test_stale_recovery_labels_stay_bounded(monkeypatch: "pytest.MonkeyPat
 
     monkeypatch.setattr(QueueService, "recover_stale_tasks", recover)
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         worker = Worker(service, WorkerConfig(stale_after=0.01))
         await worker._maybe_requeue_stale()
 
@@ -644,7 +662,10 @@ async def test_unset_execution_profile_is_omitted_from_spans_but_kept_on_metrics
     async def no_profile() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(no_profile)
         claimed = await service.get_queue_backend().claim_task(result.id)
         assert claimed is not None
@@ -665,7 +686,10 @@ async def test_counter_instrument_names_carry_no_count_suffix() -> "None":
     async def naming() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(naming)
         claimed = await service.get_queue_backend().claim_task(result.id)
         assert claimed is not None

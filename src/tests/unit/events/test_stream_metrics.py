@@ -33,7 +33,11 @@ async def test_plugin_startup_publishes_observability_runtime_on_state(monkeypat
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
     plugin = QueuePlugin(
-        QueueConfig(observability=ObservabilityConfig(enable_otel=False), worker=WorkerConfig(run_in_app=False))
+        QueueConfig(
+            queue_backend="memory",
+            observability=ObservabilityConfig(enable_otel=False),
+            worker=WorkerConfig(placement="external"),
+        )
     )
     app = Litestar(plugins=[plugin])
 
@@ -54,6 +58,8 @@ async def test_websocket_stream_metrics_recorded_with_bounded_labels() -> None:
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
             observability=ObservabilityConfig(enable_otel=False),
         ),
@@ -79,6 +85,8 @@ async def test_websocket_stream_metrics_record_heartbeats() -> None:
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
             observability=ObservabilityConfig(enable_otel=False),
         ),
@@ -97,7 +105,11 @@ async def test_stream_metrics_noop_without_observability_runtime() -> None:
     channels = _FakeChannelsPlugin([event.to_json()])
     socket = _RecordingSocket()
     router = build_stream_router(
-        QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+        ),
         EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
     )
 
@@ -112,6 +124,8 @@ async def test_authorizer_denial_records_authz_reason() -> None:
     socket = _RecordingSocket(runtime=runtime)
     router = build_stream_router(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
             observability=ObservabilityConfig(enable_otel=False),
         ),

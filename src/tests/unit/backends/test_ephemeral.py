@@ -13,10 +13,10 @@ from uuid import uuid4
 import pytest
 
 from litestar_queues import QueueConfig, WorkerConfig
-from litestar_queues._ephemeral import EphemeralServerContext
 from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, EphemeralQueueBackend
 from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, record_from_payload, record_to_payload
 from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
+from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
@@ -53,7 +53,7 @@ async def _second_backend() -> "EphemeralQueueBackend":
 
 
 async def test_open_requires_a_server_owned_database() -> "None":
-    backend = EphemeralQueueBackend(QueueConfig())
+    backend = EphemeralQueueBackend(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"))
 
     with pytest.raises(QueueConfigurationError, match="litestar run"):
         await backend.open()
@@ -62,7 +62,7 @@ async def test_open_requires_a_server_owned_database() -> "None":
 async def test_open_rejects_a_nonce_from_another_invocation(server_context: "EphemeralServerContext") -> "None":
     del server_context
     os.environ[NONCE_ENV_VAR] = "a-different-invocation"
-    backend = EphemeralQueueBackend(QueueConfig())
+    backend = EphemeralQueueBackend(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"))
 
     with pytest.raises(QueueConfigurationError, match="does not belong to this server invocation"):
         await backend.open()
@@ -758,4 +758,4 @@ def test_the_ephemeral_sources_never_import_pickle_or_an_optional_database_packa
     }
 
     assert offenders == {}
-    assert set(sources) == {"__init__.py", "backend.py", "codec.py", "event_log.py", "schema.py"}
+    assert set(sources) == {"__init__.py", "backend.py", "codec.py", "event_log.py", "schema.py", "server.py"}

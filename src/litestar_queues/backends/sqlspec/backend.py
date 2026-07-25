@@ -51,7 +51,7 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Generator, Iterator, Mapping, Sequence
 
     from litestar_queues.backends.sqlspec._typing import (
         SQLSpecConfig,
@@ -1766,7 +1766,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._get_sqlspec_config().get_observability_runtime()
 
     @contextmanager
-    def _observe_queue_operation(self, operation: "str", **attributes: "Any") -> "Iterator[None]":
+    def _observe_queue_operation(self, operation: "str", **attributes: "Any") -> "Generator[None]":
         runtime = self._get_observability_runtime()
         if runtime is None:
             yield

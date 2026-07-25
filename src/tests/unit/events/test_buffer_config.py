@@ -1,4 +1,4 @@
-from litestar_queues import QueueConfig
+from litestar_queues import QueueConfig, WorkerConfig
 
 
 def test_buffer_defaults() -> None:
@@ -25,6 +25,6 @@ def test_event_config_buffer_default_factory() -> None:
 def test_signature_namespace_has_buffer_config() -> None:
     from litestar_queues.events import EventBufferConfig
 
-    namespace = QueueConfig().signature_namespace
+    namespace = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory").signature_namespace
 
     assert namespace["EventBufferConfig"] is EventBufferConfig

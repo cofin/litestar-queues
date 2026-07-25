@@ -30,7 +30,7 @@ pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
@@ -943,7 +943,11 @@ async def test_sqlspec_backend_uses_spanner_update_ddl_for_event_log_schema_boot
     config = _fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerSyncConfig")
     config.get_database = lambda: database
     backend = SQLSpecQueueBackend(
-        config=QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        config=QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name="queue_tasks", worker_wakeups=None),
     )
 

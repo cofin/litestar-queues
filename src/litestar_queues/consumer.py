@@ -17,13 +17,13 @@ from importlib import import_module
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-from litestar_queues._heartbeat import SingleTaskBeatSink
 from litestar_queues.config import QueueConfig
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules
+from litestar_queues.worker.heartbeat import SingleTaskBeatSink
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping

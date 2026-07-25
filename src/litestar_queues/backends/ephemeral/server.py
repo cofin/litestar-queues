@@ -2,7 +2,7 @@
 
 This module is dormant: it creates and removes one private database for a
 Litestar CLI server invocation and never starts a process. Chapter 2 enters it
-from ``QueuePlugin.server_lifespan`` inside the server-proof context.
+from ``QueuePlugin.server_lifespan`` inside the server invocation context.
 """
 
 import logging

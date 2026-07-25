@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, Protocol, cast
 
-from litestar_queues._worker_runtime import WorkerRunResult, _WorkerStageError
-from litestar_queues._worker_runtime import run_worker as _run_worker
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.worker.runtime import WorkerRunResult, _WorkerStageError
+from litestar_queues.worker.runtime import run_worker as _run_worker
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -166,6 +166,40 @@ def _resolve_queue_plugin(app: "object") -> "QueuePlugin":
     return plugins[0]
 
 
+def _validate_child_plugin(plugin: "QueuePlugin") -> "None":
+    """Confirm the freshly loaded application still describes a server-owned worker.
+
+    The child imports the application itself, so its configuration is read from
+    source rather than inherited. A parent that started under one configuration
+    must not produce a child that would claim from somewhere else.
+
+    Raises:
+        QueueConfigurationError: If placement is not server-owned, or the
+            configured storage is not reachable from this process.
+    """
+    from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, read_environment, read_runtime
+    from litestar_queues.config import queue_backend_name
+
+    config = plugin.config
+    if config.worker.placement != "server":
+        msg = "The server queue worker requires an application configured with WorkerConfig(placement='server')."
+        raise QueueConfigurationError(msg)
+    backend = queue_backend_name(config.queue_backend)
+    if backend == "memory":
+        msg = "queue_backend='memory' is process-local and cannot be claimed by a server-owned worker process."
+        raise QueueConfigurationError(msg)
+    if backend != "ephemeral":
+        return
+    resolved = read_environment()
+    if resolved is None:
+        msg = "The server-owned ephemeral queue database is not available to this worker process."
+        raise QueueConfigurationError(msg)
+    path, nonce = resolved
+    if read_runtime(path) != (SCHEMA_VERSION, nonce):
+        msg = "The ephemeral queue database does not belong to this server invocation."
+        raise QueueConfigurationError(msg)
+
+
 def _parent_loss_bridge(
     parent: "BaseProcess",
     loop: "asyncio.AbstractEventLoop",
@@ -267,6 +301,7 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
         stage = "resolve_plugin"
         plugin = _resolve_queue_plugin(env.app)
         stage = "validate"
+        _validate_child_plugin(plugin)
         asyncio.run(_run_child(plugin, stop_event, connection, os.getpid(), parent))
     except BaseException as exc:  # noqa: BLE001 - this boundary must suppress unsafe multiprocessing tracebacks.
         if isinstance(exc, _WorkerStageError):

@@ -17,6 +17,7 @@ from litestar_queues import (
     Task,
     TaskExecutionContext,
     TaskResult,
+    WorkerConfig,
     get_scheduled_tasks,
     get_task_registry,
     task,
@@ -127,7 +128,9 @@ async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_
     async def greet(name: "str") -> "dict[str, str]":
         return {"message": f"hello {name}"}
 
-    async with QueueService(QueueConfig(execution_backend="immediate")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="immediate")
+    ) as service:
         result = await service.enqueue("tasks.greet", "Ada")
         await result.refresh()
 

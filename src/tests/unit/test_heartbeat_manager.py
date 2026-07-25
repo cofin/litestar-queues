@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from litestar_queues._heartbeat import WorkerHeartbeatManager
 from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord
+from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -238,7 +238,7 @@ async def test_beat_retained_when_missed() -> "None":
 
 def test_no_taskgroup_in_manager() -> "None":
     """The manager must stay Python 3.10-compatible."""
-    manager_text = Path("src/litestar_queues/_heartbeat.py").read_text()
+    manager_text = Path("src/litestar_queues/worker/heartbeat.py").read_text()
 
     assert "TaskGroup" not in manager_text
 

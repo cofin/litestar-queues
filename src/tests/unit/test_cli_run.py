@@ -44,8 +44,9 @@ async def test_run_worker_returns_2_when_single_signal_drain_timeout_cancels(
     await backend.enqueue("cli.stuck")
     plugin = QueuePlugin(
         QueueConfig(
+            queue_backend="memory",
             execution_backend="local",
-            worker=WorkerConfig(run_in_app=False, poll_interval=0.01, final_cancel_timeout=0.1),
+            worker=WorkerConfig(placement="external", poll_interval=0.01, final_cancel_timeout=0.1),
         )
     )
     plugin._queue_backend = backend
@@ -73,7 +74,9 @@ async def test_run_worker_returns_1_when_worker_loop_crashes(monkeypatch: "pytes
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
     monkeypatch.setattr(cli_module, "Worker", _FailingStartWorker)
-    plugin = QueuePlugin(QueueConfig(execution_backend="local", worker=WorkerConfig(run_in_app=False)))
+    plugin = QueuePlugin(
+        QueueConfig(queue_backend="memory", execution_backend="local", worker=WorkerConfig(placement="external"))
+    )
 
     assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 1
 
@@ -87,7 +90,11 @@ async def test_run_worker_uses_configured_heartbeat_miss_threshold(monkeypatch: 
     monkeypatch.setattr(cli_module, "Worker", _CapturingStartWorker)
     _CapturingStartWorker.instances.clear()
     plugin = QueuePlugin(
-        QueueConfig(execution_backend="local", worker=WorkerConfig(run_in_app=False, heartbeat_miss_threshold=7))
+        QueueConfig(
+            queue_backend="memory",
+            execution_backend="local",
+            worker=WorkerConfig(placement="external", heartbeat_miss_threshold=7),
+        )
     )
 
     assert await cli_module._run_worker(plugin, 1, 0.01, ()) == 0
@@ -104,8 +111,11 @@ async def test_run_worker_uses_configured_poll_backoff_settings(monkeypatch: "py
     _CapturingStartWorker.instances.clear()
     plugin = QueuePlugin(
         QueueConfig(
+            queue_backend="memory",
             execution_backend="local",
-            worker=WorkerConfig(run_in_app=False, poll_backoff_max=2.0, poll_backoff_multiplier=1.5, poll_jitter=0.1),
+            worker=WorkerConfig(
+                placement="external", poll_backoff_max=2.0, poll_backoff_multiplier=1.5, poll_jitter=0.1
+            ),
         )
     )
 

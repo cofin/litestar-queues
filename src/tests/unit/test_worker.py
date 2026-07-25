@@ -28,10 +28,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from uuid import UUID
 
-    from litestar_queues._heartbeat import WorkerHeartbeatManager
     from litestar_queues.events import TaskExecutionContext
     from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord, StaleTaskRecoveryResult
     from litestar_queues.task import TaskResult
+    from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 pytestmark = pytest.mark.anyio
 
@@ -41,7 +41,9 @@ async def test_worker_run_once_processes_pending_local_task() -> "None":
     async def worker_task(value: "int") -> "int":
         return value + 1
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(worker_task, 41)
         worker = Worker(service)
 
@@ -64,7 +66,9 @@ async def test_worker_retries_failed_task_until_success() -> "None":
             raise RuntimeError(msg)
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(flaky)
         worker = Worker(service)
 
@@ -89,7 +93,9 @@ async def test_worker_non_retryable_failure_skips_retries_and_injects_task_conte
         captured_task_id = _task_context.task_id
         non_retryable("permanent failure")
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(permanent_failure)
         worker = Worker(service)
 
@@ -117,7 +123,9 @@ async def test_worker_processes_batch_with_configured_concurrency() -> "None":
         await release.wait()
         return value
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         first = await service.enqueue(concurrent_task, 1)
         second = await service.enqueue(concurrent_task, 2)
         worker = Worker(service, WorkerConfig(batch_size=2, max_concurrency=2))
@@ -144,7 +152,10 @@ async def test_worker_claims_local_records_through_claim_next() -> "None":
     async def capacity(value: "int") -> "int":
         return value
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         for value in range(5):
             await service.enqueue(capacity, value)
         worker = Worker(service, WorkerConfig(batch_size=10, max_concurrency=2))
@@ -163,7 +174,10 @@ async def test_worker_uses_claim_many_when_backend_advertises_batch_claim() -> "
     async def batch_claim(value: "int") -> "int":
         return value
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         for value in range(5):
             await service.enqueue(batch_claim, value)
         worker = Worker(service, WorkerConfig(batch_size=10, max_concurrency=3))
@@ -177,7 +191,10 @@ async def test_worker_uses_claim_many_when_backend_advertises_batch_claim() -> "
 async def test_worker_claim_available_issues_single_batch_claim() -> "None":
     backend = _ClaimManyRecordingInMemoryQueueBackend()
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(queues=("a", "b")))
 
         await worker._claim_available(limit=5)
@@ -190,7 +207,9 @@ async def test_worker_queue_filter_restricts_claimed_records() -> "None":
     async def filtered(value: "str") -> "str":
         return value
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         default_result = await service.enqueue(filtered, "default")
         priority_result = await service.enqueue(filtered.using(queue="priority"), "priority")
         worker = Worker(service, WorkerConfig(queues=("priority",)))
@@ -221,7 +240,9 @@ async def test_worker_start_refills_open_slots_without_waiting_for_slow_batch_me
             fast_tasks_finished.set()
         return value
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         slow = await service.enqueue(refill, 0)
         first_fast = await service.enqueue(refill, 1)
         second_fast = await service.enqueue(refill, 2)
@@ -255,7 +276,9 @@ async def test_worker_start_refills_open_slots_without_waiting_for_slow_batch_me
 
 async def test_worker_start_logs_and_continues_after_transient_loop_error(caplog: "pytest.LogCaptureFixture") -> "None":
     recovered = asyncio.Event()
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         worker = _TransientRunOnceWorker(service, recovered=recovered, poll_interval=0.01)
 
         with caplog.at_level(logging.ERROR, logger="litestar_queues.worker"):
@@ -271,7 +294,9 @@ async def test_worker_start_wakes_from_backend_notifications() -> "None":
     async def notified_worker(value: "int") -> "int":
         return value + 1
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
         worker_task = asyncio.create_task(worker.start())
         await asyncio.sleep(0)
@@ -292,7 +317,9 @@ async def test_worker_wakes_from_completion_event() -> "None":
     async def completion_wakeup(value: "int") -> "int":
         return value + 1
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         first = await service.enqueue(completion_wakeup, 1)
         second = await service.enqueue(completion_wakeup, 2)
         queue_backend = service.get_queue_backend()
@@ -315,7 +342,10 @@ async def test_worker_repeated_idle_polls_reuse_one_native_read() -> "None":
     backend = InMemoryQueueBackend()
     event = _CountingWaitEvent()
     backend._notification_event = cast("Any", event)
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=0.001))
 
         for _ in range(10):
@@ -326,7 +356,9 @@ async def test_worker_repeated_idle_polls_reuse_one_native_read() -> "None":
 
 
 async def test_worker_stop_interrupts_blocked_native_read_promptly() -> "None":
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         backend = cast("InMemoryQueueBackend", service.get_queue_backend())
         # Large intervals ensure a prompt stop cannot be attributed to a poll/reconcile tick.
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None, reconcile_interval=3600))
@@ -352,7 +384,10 @@ async def test_worker_survives_native_read_failure_and_reconciles(caplog: "pytes
         return value + 1
 
     backend = _FailingReadInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=0.01))
 
         with caplog.at_level(logging.ERROR, logger="litestar_queues.worker"):
@@ -381,7 +416,10 @@ async def test_worker_processes_task_when_notification_is_dropped() -> "None":
         return value + 1
 
     backend = _DroppedNotificationInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=0.01))
         worker_task = asyncio.create_task(worker.start())
         await asyncio.sleep(0)
@@ -402,7 +440,10 @@ async def test_worker_processes_task_when_notification_is_dropped() -> "None":
 
 async def test_worker_periodic_requeue_calls_backend_on_cadence() -> "None":
     backend = _CountingInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(stale_after=30, stale_check_interval=0.000001))
 
         await worker._maybe_requeue_stale()
@@ -414,7 +455,10 @@ async def test_worker_periodic_requeue_calls_backend_on_cadence() -> "None":
 
 async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> "None":
     backend = _CountingInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service)  # stale_after defaults to None
 
         for _ in range(3):
@@ -425,7 +469,10 @@ async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> "None
 
 async def test_worker_periodic_requeue_respects_cadence_window() -> "None":
     backend = _CountingInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(stale_after=30, stale_check_interval=3600.0))
 
         await worker._maybe_requeue_stale()
@@ -437,7 +484,10 @@ async def test_worker_periodic_requeue_respects_cadence_window() -> "None":
 
 async def test_worker_periodic_requeue_uses_backend_fleet_lock() -> "None":
     backend = _LockingCountingInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         first = Worker(service, WorkerConfig(stale_after=30, stale_check_interval=0.000001, id="worker-1"))
         second = Worker(service, WorkerConfig(stale_after=30, stale_check_interval=0.000001, id="worker-2"))
 
@@ -450,7 +500,10 @@ async def test_worker_periodic_requeue_uses_backend_fleet_lock() -> "None":
 
 async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> "None":
     backend = _CountingInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(batch_size=7, reconcile_interval=3600.0))
 
         await worker._maybe_reconcile_external()
@@ -463,7 +516,10 @@ async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> 
 
 async def test_worker_periodic_reconcile_uses_backend_fleet_lock() -> "None":
     backend = _LockingCountingInMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         first = Worker(service, WorkerConfig(reconcile_interval=0.000001, id="worker-1"))
         second = Worker(service, WorkerConfig(reconcile_interval=0.000001, id="worker-2"))
 
@@ -476,7 +532,10 @@ async def test_worker_periodic_reconcile_uses_backend_fleet_lock() -> "None":
 
 async def test_worker_reconcile_external_skips_unknown_backend_names(caplog: "pytest.LogCaptureFixture") -> "None":
     backend = InMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         record = await backend.enqueue("tasks.remote", execution_backend="missing-backend")
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
@@ -490,14 +549,14 @@ async def test_worker_reconcile_external_skips_unknown_backend_names(caplog: "py
 
 
 async def test_worker_default_worker_id_uses_pid() -> "None":
-    async with QueueService(QueueConfig()) as service:
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         worker = Worker(service)
 
     assert worker.worker_id == f"worker-{os.getpid()}"
 
 
 async def test_worker_explicit_worker_id_overrides_default() -> "None":
-    async with QueueService(QueueConfig()) as service:
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         worker = Worker(service, WorkerConfig(id="worker-alpha-7"))
 
     assert worker.worker_id == "worker-alpha-7"
@@ -505,7 +564,7 @@ async def test_worker_explicit_worker_id_overrides_default() -> "None":
 
 async def test_wait_started_returns_after_heartbeat_startup_succeeds() -> "None":
     heartbeat_started = asyncio.Event()
-    async with QueueService(QueueConfig()) as service:
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
         worker._heartbeat_manager = cast("WorkerHeartbeatManager", _StartupHeartbeatManager(started=heartbeat_started))
         worker_task = asyncio.create_task(worker.start())
@@ -521,7 +580,7 @@ async def test_wait_started_returns_after_heartbeat_startup_succeeds() -> "None"
 
 async def test_wait_started_propagates_heartbeat_startup_failure() -> "None":
     startup_error = RuntimeError("heartbeat startup failed")
-    async with QueueService(QueueConfig()) as service:
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         worker = Worker(service)
         worker._heartbeat_manager = cast(
             "WorkerHeartbeatManager", _StartupHeartbeatManager(startup_error=startup_error)
@@ -540,7 +599,7 @@ async def test_wait_started_propagates_heartbeat_startup_failure() -> "None":
 async def test_wait_started_observes_immediately_scheduled_second_start() -> "None":
     startup_error = RuntimeError("first heartbeat startup failed")
     heartbeat_started = asyncio.Event()
-    async with QueueService(QueueConfig()) as service:
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
         worker._heartbeat_manager = cast(
             "WorkerHeartbeatManager", _StartupHeartbeatManager(startup_error=startup_error)
@@ -568,7 +627,7 @@ async def test_wait_started_observes_immediately_scheduled_second_start() -> "No
 async def test_wait_started_isolates_concurrent_waiters_from_next_start_generation() -> "None":
     startup_error = RuntimeError("first generation failed")
     heartbeat_started = asyncio.Event()
-    async with QueueService(QueueConfig()) as service:
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
         manager = _RestartSchedulingHeartbeatManager(
             worker=worker, next_manager=_StartupHeartbeatManager(started=heartbeat_started), startup_error=startup_error
@@ -595,10 +654,12 @@ async def test_wait_started_isolates_concurrent_waiters_from_next_start_generati
 
 
 async def test_worker_heartbeat_miss_threshold_comes_from_config() -> "None":
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     assert config.worker.heartbeat_miss_threshold == 2
 
-    custom_config = QueueConfig(worker=WorkerConfig(heartbeat_miss_threshold=3))
+    custom_config = QueueConfig(
+        queue_backend="memory", worker=WorkerConfig(placement="external", heartbeat_miss_threshold=3)
+    )
     assert custom_config.worker.heartbeat_miss_threshold == 3
 
     async with QueueService(custom_config) as service:
@@ -610,8 +671,9 @@ async def test_worker_heartbeat_miss_threshold_comes_from_config() -> "None":
 async def test_plugin_worker_uses_configured_heartbeat_miss_threshold() -> "None":
     plugin = QueuePlugin(
         QueueConfig(
+            queue_backend="memory",
             execution_backend="local",
-            worker=WorkerConfig(run_in_app=True, heartbeat_miss_threshold=5, poll_interval=0.01),
+            worker=WorkerConfig(placement="asgi", heartbeat_miss_threshold=5, poll_interval=0.01),
         )
     )
     app = Litestar(plugins=[plugin])
@@ -630,7 +692,10 @@ async def test_execute_claimed_registers_and_unregisters() -> "None":
     async def heartbeat_cleanup() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         result = await service.enqueue(heartbeat_cleanup)
         worker = Worker(service)
         worker._heartbeat_manager = cast("WorkerHeartbeatManager", _SpyHeartbeatManager(events))
@@ -642,7 +707,9 @@ async def test_execute_claimed_registers_and_unregisters() -> "None":
 
 
 async def test_worker_start_stop_manages_tick() -> "None":
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None))
         worker_task = asyncio.create_task(worker.start())
 
@@ -678,7 +745,10 @@ async def test_run_once_starts_heartbeat_tick_for_standalone_execution() -> "Non
         await release.wait()
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         result = await service.enqueue(standalone_heartbeat)
         worker = Worker(service, WorkerConfig(heartbeat_interval=0.01))
 
@@ -707,7 +777,10 @@ async def test_worker_stop_keeps_heartbeat_manager_running_until_drain_completes
         await release.wait()
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         result = await service.enqueue(drain_heartbeat)
         worker = Worker(service, WorkerConfig(heartbeat_interval=0.01, poll_interval=0.01))
         worker_task = asyncio.create_task(worker.start())
@@ -738,7 +811,10 @@ async def test_execute_claimed_survives_unregister_failure() -> "None":
     async def unregister_failure_cleanup() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         result = await service.enqueue(unregister_failure_cleanup)
         worker = Worker(service)
         worker._heartbeat_manager = cast("WorkerHeartbeatManager", _FailingUnregisterHeartbeatManager(events))
@@ -764,7 +840,10 @@ async def test_worker_beat_delivers_metadata_on_next_heartbeat_tick() -> "None":
         await release.wait()
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         result = await service.enqueue(beat_metadata)
         worker = Worker(service, WorkerConfig(heartbeat_interval=0.01))
 
@@ -790,7 +869,12 @@ async def test_worker_id_propagates_into_published_events() -> "None":
         return "ok"
 
     async with QueueService(
-        QueueConfig(execution_backend="local", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        )
     ) as service:
         result = await service.enqueue(worker_id_task)
         worker = Worker(service, WorkerConfig(id="worker-test"))
@@ -819,7 +903,9 @@ async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> "None":
             cancelled.set()
             raise
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(stuck)
         worker = Worker(service, WorkerConfig(graceful_shutdown_timeout=0.01, final_cancel_timeout=0.2))
         worker_task = asyncio.create_task(worker.start())
@@ -845,8 +931,9 @@ async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
 
     plugin = QueuePlugin(
         QueueConfig(
+            queue_backend="memory",
             execution_backend="local",
-            worker=WorkerConfig(run_in_app=True, poll_interval=0.01, graceful_shutdown_timeout=1),
+            worker=WorkerConfig(placement="asgi", poll_interval=0.01, graceful_shutdown_timeout=1),
         )
     )
     app = Litestar(plugins=[plugin])
@@ -871,7 +958,9 @@ async def test_plugin_logs_when_app_worker_task_dies(monkeypatch: "pytest.Monkey
 
     monkeypatch.setattr(plugin_module, "Worker", _FailingWorker)
     monkeypatch.setattr(plugin_module.logger, "error", log_error)
-    plugin = QueuePlugin(QueueConfig(worker=WorkerConfig(run_in_app=True), execution_backend="local"))
+    plugin = QueuePlugin(
+        QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi"), execution_backend="local")
+    )
     app = Litestar(plugins=[plugin])
 
     async with plugin._lifespan(app):
@@ -893,7 +982,13 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
         }
 
     async with QueueService(
-        QueueConfig(execution_backend="immediate", sync_thread_pool_size=1, sync_thread_name_prefix="lq")
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="immediate",
+            sync_thread_pool_size=1,
+            sync_thread_name_prefix="lq",
+        )
     ) as service:
         result = await service.enqueue(sync_context)
 
@@ -904,7 +999,10 @@ async def test_sync_task_uses_configured_executor_and_preserves_task_context() -
 
 async def test_worker_empty_cycles_grow_and_clamp_to_configured_maximum() -> "None":
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -928,7 +1026,10 @@ async def test_worker_empty_cycles_grow_and_clamp_to_configured_maximum() -> "No
 async def test_worker_fixed_polling_unaffected_when_backoff_disabled() -> "None":
     """Omitting the maximum preserves the exact current fixed-interval sequence."""
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=0.25, poll_backoff_max=None, reconcile_interval=3600.0))
         worker_task = asyncio.create_task(worker.start())
         await _wait_for_timeouts(backend, count=4)
@@ -946,7 +1047,10 @@ async def test_worker_resets_backoff_after_claimed_work() -> "None":
         return value
 
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -974,7 +1078,10 @@ async def test_worker_resets_backoff_after_claimed_work() -> "None":
 
 async def test_worker_resets_backoff_when_native_wait_returns_true() -> "None":
     backend = _NotifyOnCallInMemoryQueueBackend(notify_on_call=3)
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -997,7 +1104,10 @@ async def test_worker_resets_backoff_when_native_wait_returns_true() -> "None":
 
 async def test_worker_resets_backoff_after_recoverable_loop_error(caplog: "pytest.LogCaptureFixture") -> "None":
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = _RaiseOnThirdRunOnceWorker(
             service,
             WorkerConfig(
@@ -1022,7 +1132,10 @@ async def test_worker_resets_backoff_after_recoverable_loop_error(caplog: "pytes
 
 async def test_worker_start_resets_backoff_state_on_each_call() -> "None":
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -1047,7 +1160,9 @@ async def test_worker_start_resets_backoff_state_on_each_call() -> "None":
 
 
 async def test_worker_stop_interrupts_backoff_wait_without_extra_sleep() -> "None":
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         backend = cast("InMemoryQueueBackend", service.get_queue_backend())
         # Large bounds ensure a prompt stop cannot be attributed to a short poll tick.
         worker = Worker(
@@ -1082,7 +1197,10 @@ async def test_worker_native_wait_consumes_backoff_timeout_without_additional_sl
     monkeypatch.setattr(asyncio, "sleep", recording_sleep)
 
     backend = InMemoryQueueBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -1096,7 +1214,7 @@ async def test_worker_native_wait_consumes_backoff_timeout_without_additional_sl
 
 async def test_worker_skips_jitter_sampling_when_backoff_disabled(monkeypatch: "pytest.MonkeyPatch") -> "None":
     """Backoff disabled (maximum unset) preserves the fixed path without extra random calls."""
-    from litestar_queues import worker as worker_module
+    from litestar_queues.worker import worker as worker_module
 
     def _boom() -> "float":
         msg = "jitter must not be sampled when backoff is disabled"
@@ -1104,7 +1222,10 @@ async def test_worker_skips_jitter_sampling_when_backoff_disabled(monkeypatch: "
 
     monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", _boom)
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=0.05, poll_backoff_max=None, poll_jitter=1.0))
 
         await worker._wait_for_work()
@@ -1116,11 +1237,14 @@ async def test_worker_jitters_the_sampled_wait_without_mutating_stored_backoff_s
     monkeypatch: "pytest.MonkeyPatch",
 ) -> "None":
     """Jitter perturbs only the sampled wait; the stored exponential state stays deterministic."""
-    from litestar_queues import worker as worker_module
+    from litestar_queues.worker import worker as worker_module
 
     monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", lambda: 1.0)
     backend = _RecordingTimeoutBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -1151,7 +1275,10 @@ async def test_worker_wait_is_clamped_to_next_due_scheduled_work() -> "None":
     past known future work; ``time_until_next_due`` must clamp it down.
     """
     backend = _NextDueRecordingBackend(due_in=0.02)
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -1173,7 +1300,10 @@ async def test_worker_wait_is_clamped_to_next_due_scheduled_work() -> "None":
 async def test_worker_wait_uses_backoff_when_backend_reports_no_upcoming_due_work() -> "None":
     """When the backend cannot answer (or has no upcoming work), the backoff wait is unclamped."""
     backend = _NextDueRecordingBackend(due_in=None)
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -1194,7 +1324,10 @@ async def test_worker_wait_uses_backoff_when_backend_reports_no_upcoming_due_wor
 async def test_worker_skips_next_due_query_when_backoff_disabled() -> "None":
     """The fixed (backoff-disabled) path never queries the backend for upcoming due work."""
     backend = _NextDueQueryCountingBackend()
-    async with QueueService(QueueConfig(execution_backend="local"), queue_backend=backend) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
         worker = Worker(service, WorkerConfig(poll_interval=0.01, poll_backoff_max=None))
 
         await worker._wait_for_work()
@@ -1216,7 +1349,9 @@ async def test_worker_discovers_scheduled_task_without_waiting_full_backoff() ->
     async def due_soon() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         worker = Worker(
             service,
             WorkerConfig(
@@ -1238,7 +1373,7 @@ async def test_worker_discovers_scheduled_task_without_waiting_full_backoff() ->
 
 
 def test_next_backoff_interval_grows_and_clamps_to_maximum() -> "None":
-    from litestar_queues.worker import _next_backoff_interval
+    from litestar_queues.worker.worker import _next_backoff_interval
 
     assert _next_backoff_interval(1.0, base=1.0, maximum=4.0, multiplier=2.0) == 2.0
     assert _next_backoff_interval(2.0, base=1.0, maximum=4.0, multiplier=2.0) == 4.0
@@ -1246,13 +1381,13 @@ def test_next_backoff_interval_grows_and_clamps_to_maximum() -> "None":
 
 
 def test_next_backoff_interval_never_drops_below_base() -> "None":
-    from litestar_queues.worker import _next_backoff_interval
+    from litestar_queues.worker.worker import _next_backoff_interval
 
     assert _next_backoff_interval(0.1, base=1.0, maximum=4.0, multiplier=1.0) == 1.0
 
 
 def test_apply_jitter_clamps_deterministic_endpoints(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    from litestar_queues import worker as worker_module
+    from litestar_queues.worker import worker as worker_module
 
     monkeypatch.setattr(worker_module, "_sample_symmetric_jitter", lambda: 1.0)
     assert worker_module._apply_jitter(2.0, base=1.0, maximum=4.0, jitter=0.5) == 3.0
@@ -1265,7 +1400,7 @@ def test_apply_jitter_clamps_deterministic_endpoints(monkeypatch: "pytest.Monkey
 
 
 def test_apply_jitter_is_a_noop_when_jitter_is_zero(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    from litestar_queues import worker as worker_module
+    from litestar_queues.worker import worker as worker_module
 
     def _boom() -> "float":
         msg = "jitter must not be sampled when the ratio is zero"

@@ -13,7 +13,7 @@ def create_app() -> "Litestar":
         QueueConfig(
             queue_backend="memory",
             execution_backend="immediate",
-            worker=WorkerConfig(run_in_app=False),
+            worker=WorkerConfig(placement="external"),
             task_modules=("tests._factories.queue_tasks",),
             scheduler_canary_task="support_ping",
         )

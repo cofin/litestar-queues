@@ -4,7 +4,15 @@ from typing import Any, cast
 
 import pytest
 
-from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, TaskRequest, task
+from litestar_queues import (
+    EventHistoryConfig,
+    HeartbeatTouch,
+    QueueConfig,
+    QueueService,
+    TaskRequest,
+    WorkerConfig,
+    task,
+)
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import (
     QueueEvent,
@@ -49,7 +57,12 @@ async def test_memory_backend_event_log_records_task_history_with_custom_detail(
 
     event_log_config = EventHistoryConfig(batch_size=100, flush_interval=60)
     async with QueueService(
-        QueueConfig(execution_backend="immediate", events=QueueEventsConfig(history=event_log_config))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="immediate",
+            events=QueueEventsConfig(history=event_log_config),
+        )
     ) as service:
         result = await service.enqueue(memory_event_history)
         event_log = service.get_queue_backend().get_event_log(event_log_config)
@@ -72,7 +85,13 @@ async def test_memory_backend_event_log_records_task_history_with_custom_detail(
 
 async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() -> "None":
     event_log_config = EventHistoryConfig(memory_capacity=3)
-    backend = InMemoryQueueBackend(QueueConfig(events=QueueEventsConfig(history=event_log_config)))
+    backend = InMemoryQueueBackend(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=event_log_config),
+        )
+    )
     event_log = backend.get_event_log(event_log_config)
     assert event_log is not None
 
@@ -109,7 +128,13 @@ async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() ->
 
 async def test_memory_backend_clear_clears_event_log() -> "None":
     event_log_config = EventHistoryConfig()
-    backend = InMemoryQueueBackend(QueueConfig(events=QueueEventsConfig(history=event_log_config)))
+    backend = InMemoryQueueBackend(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=event_log_config),
+        )
+    )
     event_log = backend.get_event_log(event_log_config)
     assert event_log is not None
 
@@ -471,7 +496,9 @@ async def test_queue_service_local_enqueue_persists_until_worker_processes_recor
     async def uppercase(value: "str") -> "str":
         return value.upper()
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(uppercase, "queue")
 
         pending_status = result.status

@@ -14,9 +14,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import QueueConfig
-from litestar_queues import _ephemeral as ephemeral_runtime
-from litestar_queues._ephemeral import DATABASE_NAME, EphemeralServerContext
 from litestar_queues.backends.ephemeral import EphemeralQueueBackend
+from litestar_queues.backends.ephemeral import server as ephemeral_runtime
 from litestar_queues.backends.ephemeral.schema import (
     NONCE_ENV_VAR,
     PATH_ENV_VAR,
@@ -26,6 +25,7 @@ from litestar_queues.backends.ephemeral.schema import (
     read_environment,
     read_runtime,
 )
+from litestar_queues.backends.ephemeral.server import DATABASE_NAME, EphemeralServerContext
 from litestar_queues.backends.factory import get_queue_backend
 from litestar_queues.exceptions import QueueConfigurationError
 

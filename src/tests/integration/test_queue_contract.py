@@ -15,6 +15,7 @@ from litestar_queues import (
     QueueService,
     Task,
     TaskExecutionContext,
+    WorkerConfig,
     task,
 )
 from litestar_queues.backends import InMemoryQueueBackend
@@ -429,7 +430,12 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backe
     async def consume(**kwargs: "object") -> "dict[str, object]":
         return {"injected_service": kwargs["injected_service"]}
 
-    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_resolver=resolver,
+    )
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
@@ -459,7 +465,12 @@ async def test_task_dependency_resolver_cannot_override_task_context(queue_backe
             "extra_keys": sorted(kwargs),
         }
 
-    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_resolver=resolver,
+    )
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
@@ -496,6 +507,8 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
         return "ok"
 
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
         task_dependency_resolver=resolver,
         execution_backend="local",
         events=QueueEventsConfig(delivery=EventDeliveryConfig()),
@@ -531,7 +544,9 @@ async def test_task_dependency_resolver_exception_records_failure_and_retries(
 
 async def test_task_dependency_resolver_default_is_none_with_no_invocation(queue_backend: "BaseQueueBackend") -> "None":
     clear_task_registry()
-    config = QueueConfig(execution_backend="immediate")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="immediate"
+    )
     assert config.task_dependency_resolver is None
 
     @task("contract.resolver.default")
@@ -576,7 +591,9 @@ async def test_queue_service_runtime_overrides_preserve_execution_metadata_and_d
         run_after=timedelta(minutes=5),
     )
 
-    async with QueueService(QueueConfig(execution_backend="immediate")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="immediate")
+    ) as service:
         result = await service.enqueue(delayed)
 
     assert result.status == "scheduled"

@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, get_args, runtime_checkable
 
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -32,6 +32,7 @@ __all__ = (
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "WorkerConfig",
+    "WorkerPlacement",
     "execution_backend_name",
     "queue_backend_name",
 )
@@ -77,6 +78,23 @@ QueueBackendConfig = str | QueueBackendConfigProtocol
 
 ExecutionBackendConfig = str | ExecutionBackendConfigProtocol
 """Type alias for execution backend selectors."""
+
+WorkerPlacement = Literal["server", "asgi", "external"]
+"""Which process owns the queue worker.
+
+``server``
+    The Litestar CLI server lifespan owns exactly one fresh worker process per
+    ``litestar run`` invocation. This is the default.
+``asgi``
+    Each ASGI worker owns one queue worker inside its own application lifespan.
+    Deliberately multiplicative with the web-worker count.
+``external``
+    Nothing is started automatically; a separate process manager runs
+    ``litestar queues run``, or the caller executes tasks inline.
+"""
+
+_PLACEMENTS: "tuple[str, ...]" = get_args(WorkerPlacement)
+_MANAGED_PLACEMENTS = ("server", "asgi")
 
 
 def queue_backend_name(backend: "QueueBackendConfig") -> "str":
@@ -155,8 +173,8 @@ class AsyncServiceProvider:
 class WorkerConfig:
     """Configuration shared by in-app and standalone workers."""
 
-    run_in_app: "bool" = True
-    """Whether QueuePlugin starts a worker inside the application lifespan."""
+    placement: "WorkerPlacement" = "server"
+    """Which process owns this worker; see :data:`WorkerPlacement`."""
 
     id: "str | None" = None
     """Explicit worker identity; ``None`` uses a process-derived identifier."""
@@ -207,7 +225,10 @@ class WorkerConfig:
     """Queue names claimed by this worker; empty claims every queue."""
 
     def __post_init__(self) -> "None":
-        """Validate worker concurrency, intervals, and adaptive polling."""
+        """Validate worker placement, concurrency, intervals, and adaptive polling."""
+        if self.placement not in _PLACEMENTS:
+            msg = f"WorkerConfig.placement must be one of {_PLACEMENTS}, not {self.placement!r}."
+            raise QueueConfigurationError(msg)
         positive = {
             "batch_size": self.batch_size,
             "poll_interval": self.poll_interval,
@@ -242,7 +263,7 @@ class WorkerConfig:
 class QueueConfig:
     """Configuration for QueuePlugin."""
 
-    queue_backend: "QueueBackendConfig" = "memory"
+    queue_backend: "QueueBackendConfig" = "ephemeral"
     """Queue-record persistence backend selector or typed backend configuration."""
 
     execution_backend: "ExecutionBackendConfig" = "local"
@@ -298,10 +319,54 @@ class QueueConfig:
     """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
 
     def __post_init__(self) -> "None":
-        """Validate the synchronous task thread pool."""
+        """Validate the synchronous task thread pool and the placement matrix."""
         if self.sync_thread_pool_size <= 0:
             msg = "QueueConfig.sync_thread_pool_size must be greater than 0."
             raise QueueConfigurationError(msg)
+        self._validate_placement()
+
+    def _validate_placement(self) -> "None":
+        """Reject storage, execution, and placement combinations that cannot work.
+
+        Selectors are compared by registered name so validating a configuration
+        never imports an optional backend or its driver extra.
+
+        Raises:
+            QueueConfigurationError: If the combination has no coherent owner.
+        """
+        backend = queue_backend_name(self.queue_backend)
+        execution = execution_backend_name(self.execution_backend)
+        placement = self.worker.placement
+
+        if placement in _MANAGED_PLACEMENTS and execution == "immediate":
+            msg = (
+                f"execution_backend='immediate' runs tasks inline at enqueue time, so "
+                f"placement={placement!r} would start a worker with nothing to claim. "
+                f"Use execution_backend='local', or placement='external'."
+            )
+            raise QueueConfigurationError(msg)
+        if backend == "ephemeral" and placement != "server":
+            msg = (
+                f"queue_backend='ephemeral' is created and removed by the Litestar CLI server "
+                f"lifespan, so it is only available to placement='server', not {placement!r}. "
+                f"Configure a persistent backend for {placement!r}."
+            )
+            raise QueueConfigurationError(msg)
+        if backend == "ephemeral" and execution != "local":
+            msg = f"queue_backend='ephemeral' supports execution_backend='local' only, not {execution!r}."
+            raise QueueConfigurationError(msg)
+        if backend == "memory" and placement == "server":
+            msg = (
+                "queue_backend='memory' is process-local, so a separate server-owned worker "
+                "process could never see its records. Use the default queue_backend='ephemeral' "
+                "for zero-setup background work, or a persistent backend."
+            )
+            raise QueueConfigurationError(msg)
+        # memory + external is deliberately allowed: it describes an application
+        # that enqueues into a process-local queue and starts nothing itself,
+        # which is what inline callers and direct Worker tests do. Pointing the
+        # standalone 'litestar queues run' command at it is the incoherent case,
+        # and that command rejects process-local storage itself.
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":
@@ -442,6 +507,7 @@ class QueueConfig:
             "TaskResult": TaskResult,
             "Worker": Worker,
             "WorkerConfig": WorkerConfig,
+            "WorkerPlacement": WorkerPlacement,
             "UnauthenticatedAccess": UnauthenticatedAccess,
             "job_cancelled": job_cancelled,
             "non_retryable": non_retryable,

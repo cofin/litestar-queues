@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.events import (
     EventBufferConfig,
     InMemoryQueueEventSink,
@@ -142,7 +142,11 @@ async def test_producer_does_not_open_or_close_sink() -> None:
 async def test_service_get_event_producer_wraps_same_publisher() -> None:
     sink = InMemoryQueueEventSink()
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,), buffer=None)))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,), buffer=None)),
+        )
     )
 
     await service.get_event_producer().task("t1").log("from service")

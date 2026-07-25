@@ -15,8 +15,8 @@ from uuid import UUID
 import pytest
 
 from litestar_queues import QueueConfig
-from litestar_queues._ephemeral import EphemeralServerContext
 from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, PATH_ENV_VAR, EphemeralQueueBackend
+from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, QueueEvent
 
 if TYPE_CHECKING:

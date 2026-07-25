@@ -647,7 +647,7 @@ class Task(Generic[P, T]):
         Returns:
             A result handle for the queued record.
         """
-        from litestar_queues.config import QueueConfig
+        from litestar_queues.config import QueueConfig, WorkerConfig
         from litestar_queues.service import QueueService
 
         enqueue_kwargs = cast("dict[str, Any]", kwargs)
@@ -655,7 +655,12 @@ class Task(Generic[P, T]):
         if service is not None:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
-        async with QueueService(QueueConfig(execution_backend="immediate")) as service:
+        # No application is wired up, so this call executes inline in the caller's
+        # process: process-local storage, inline execution, and nothing to supervise.
+        fallback = QueueConfig(
+            queue_backend="memory", execution_backend="immediate", worker=WorkerConfig(placement="external")
+        )
+        async with QueueService(fallback) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
     def _accepts_task_context(self) -> "bool":

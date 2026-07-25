@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import EventDeliveryConfig, QueueConfig
+from litestar_queues import EventDeliveryConfig, QueueConfig, WorkerConfig
 from litestar_queues.backends.sqlspec.event_sink import SQLSpecQueueEventSink
 from litestar_queues.events import EventBufferConfig, QueueChannels, QueueEvent, QueueEventsConfig
 
@@ -20,7 +20,11 @@ async def test_factory_opens_and_closes_channels_backend() -> None:
     backend = _RecordingChannelsBackend()
 
     async with create_event_producer(
-        QueueConfig(events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig()))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig()),
+        )
     ) as producer:
         await producer.channel("imports:acme").publish("import.retry_requested")
         assert backend.open_count == 1
@@ -50,7 +54,11 @@ async def test_factory_tolerates_backend_without_open_close() -> None:
     backend = _PublishOnlyChannelsBackend()
 
     async with create_event_producer(
-        QueueConfig(events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig()))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig()),
+        )
     ) as producer:
         await producer.channel("imports:acme").publish("x")
 
@@ -62,7 +70,9 @@ async def test_factory_strict_propagates() -> None:
 
     async with create_event_producer(
         QueueConfig(
-            events=QueueEventsConfig(channels=_FailingChannelsBackend(), delivery=EventDeliveryConfig(strict=True))
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=_FailingChannelsBackend(), delivery=EventDeliveryConfig(strict=True)),
         )
     ) as producer:
         with pytest.raises(RuntimeError, match="publish failed"):
@@ -74,7 +84,11 @@ async def test_factory_explicit_sqlspec_sink_publishes_through_event_channel() -
 
     event_channel = _RecordingSqlSpecEventChannel()
     sink = SQLSpecQueueEventSink(event_channel)
-    config = QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(buffer=None, sinks=(sink,))))
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        events=QueueEventsConfig(delivery=EventDeliveryConfig(buffer=None, sinks=(sink,))),
+    )
 
     async with create_event_producer(config) as producer:
         await producer.task("task-1").progress(current=1, total=2, immediate=True)
@@ -94,9 +108,11 @@ async def test_factory_explicit_sqlspec_sink_drains_buffer_before_close() -> Non
     event_channel = _RecordingSqlSpecEventChannel()
     sink = SQLSpecQueueEventSink(event_channel)
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
         events=QueueEventsConfig(
             delivery=EventDeliveryConfig(buffer=EventBufferConfig(batch_size=10, flush_interval=60), sinks=(sink,))
-        )
+        ),
     )
 
     async with create_event_producer(config) as producer:
@@ -167,7 +183,11 @@ async def test_factory_explicit_sqlspec_sink_builds_channel_lazily_and_closes_ow
         sqlspec_config=_RecordingSQLSpecConfig(),
         settings={"backend": "poll_queue", "queue_table": "queue_events"},
     )
-    config = QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(buffer=None, sinks=(sink,))))
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        events=QueueEventsConfig(delivery=EventDeliveryConfig(buffer=None, sinks=(sink,))),
+    )
     external = create_event_producer(config)
 
     assert sqlspec.channel_calls == 0
@@ -200,7 +220,11 @@ async def test_manual_aclose() -> None:
 
     backend = _RecordingChannelsBackend()
     external = create_event_producer(
-        QueueConfig(events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig()))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=backend, delivery=EventDeliveryConfig()),
+        )
     )
     producer = await external.__aenter__()
     await producer.channel("imports:acme").publish("x")

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.events import EventBufferConfig, QueueEvent, QueueEventsConfig
 
 if TYPE_CHECKING:
@@ -16,9 +16,11 @@ async def test_service_close_drains_buffer_before_sink_close() -> None:
     sink = _OrderingSink()
     service = QueueService(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(
                 delivery=EventDeliveryConfig(sinks=(sink,), buffer=EventBufferConfig(batch_size=10, flush_interval=60))
-            )
+            ),
         )
     )
 
@@ -36,11 +38,13 @@ async def test_service_open_starts_flush_loop() -> None:
     sink = _OrderingSink()
     service = QueueService(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(
                 delivery=EventDeliveryConfig(
                     sinks=(sink,), buffer=EventBufferConfig(batch_size=10, flush_interval=0.01)
                 )
-            )
+            ),
         )
     )
 

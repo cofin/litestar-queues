@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueConfigurationError, QueueService, task
+from litestar_queues import QueueConfig, QueueConfigurationError, QueueService, WorkerConfig, task
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.task import clear_task_registry
@@ -84,7 +84,9 @@ def test_using_propagates_and_revalidates() -> "None":
 
 
 def _service(backend: "InMemoryQueueBackend") -> "QueueService":
-    return QueueService(QueueConfig(), queue_backend=backend)
+    return QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=backend
+    )
 
 
 class _PostPersistenceFailureBackend(InMemoryQueueBackend):

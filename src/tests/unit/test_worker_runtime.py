@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import QueueConfig
-from litestar_queues._worker_runtime import WorkerRunResult, _WorkerStage, _WorkerStageError, run_worker
+from litestar_queues.config import WorkerConfig
+from litestar_queues.worker.runtime import WorkerRunResult, _WorkerStage, _WorkerStageError, run_worker
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from litestar_queues.config import WorkerConfig
     from litestar_queues.service import QueueService
 
 pytestmark = pytest.mark.anyio
@@ -192,7 +192,12 @@ def _loader(order: "list[str]", error: "BaseException | None" = None) -> "Callab
 
 
 def _config(*, initialize_schedules: "bool" = True) -> "QueueConfig":
-    return QueueConfig(task_modules=("tests.fake_tasks",), initialize_schedules=initialize_schedules)
+    return QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        task_modules=("tests.fake_tasks",),
+        initialize_schedules=initialize_schedules,
+    )
 
 
 async def test_clean_graceful_stop_uses_exact_lifecycle_order() -> "None":
@@ -820,10 +825,7 @@ def test_worker_runtime_import_does_not_load_click() -> "None":
         [
             sys.executable,
             "-c",
-            (
-                "import sys; import litestar_queues._worker_runtime; "
-                "raise SystemExit(1 if 'click' in sys.modules else 0)"
-            ),
+            ("import sys; import litestar_queues.worker.runtime; raise SystemExit(1 if 'click' in sys.modules else 0)"),
         ],
         check=False,
         capture_output=True,

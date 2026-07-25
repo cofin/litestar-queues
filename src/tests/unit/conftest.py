@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService
+from litestar_queues import QueueConfig, QueueService, WorkerConfig
 from litestar_queues.events import InMemoryQueueEventSink, NoopQueueEventSink, QueueEventSink
 
 if TYPE_CHECKING:
@@ -22,5 +22,7 @@ def event_sink(request: "pytest.FixtureRequest") -> "QueueEventSink":
 @pytest.fixture
 async def queue_service_memory() -> "AsyncIterator[QueueService]":
     """Yield a lifecycle-managed QueueService backed by memory + local execution."""
-    async with QueueService(QueueConfig(queue_backend="memory", execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         yield service

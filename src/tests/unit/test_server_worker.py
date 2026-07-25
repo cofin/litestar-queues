@@ -17,7 +17,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues import QueueConfig, WorkerConfig
-from litestar_queues._server_worker import (
+from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.worker.runtime import _WorkerStage, _WorkerStageError
+from litestar_queues.worker.supervisor import (
     ServerWorkerSupervisor,
     _apply_launch_spec,
     _build_launch_spec,
@@ -31,8 +33,6 @@ from litestar_queues._server_worker import (
     _worker_process_main,
     _WorkerLaunchSpec,
 )
-from litestar_queues._worker_runtime import _WorkerStage, _WorkerStageError
-from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -206,7 +206,10 @@ class _FakeContext:
 
 def _config() -> QueueConfig:
     return QueueConfig(
-        worker=WorkerConfig(startup_timeout=0.1, graceful_shutdown_timeout=0.1, final_cancel_timeout=0.1)
+        queue_backend="memory",
+        worker=WorkerConfig(
+            placement="external", startup_timeout=0.1, graceful_shutdown_timeout=0.1, final_cancel_timeout=0.1
+        ),
     )
 
 
@@ -296,6 +299,11 @@ def test_launch_spec_requires_explicit_litestar_app(monkeypatch: MonkeyPatch) ->
         _build_launch_spec()
 
 
+def _server_placement_plugin() -> SimpleNamespace:
+    """A plugin-like stand-in whose configuration passes the child validate stage."""
+    return SimpleNamespace(config=QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="server")))
+
+
 def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: MonkeyPatch) -> None:
     from litestar.cli._utils import LitestarEnv
 
@@ -322,10 +330,10 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
 
     def fake_plugin(app: object) -> object:
         del app
-        return object()
+        return _server_placement_plugin()
 
-    monkeypatch.setattr("litestar_queues._server_worker._reset_child_logging", ignore_log_level)
-    monkeypatch.setattr("litestar_queues._server_worker._resolve_queue_plugin", fake_plugin)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore_log_level)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._resolve_queue_plugin", fake_plugin)
 
     def fake_asyncio_run(coroutine: object) -> None:
         order.append("readiness")
@@ -357,7 +365,7 @@ def test_child_error_is_stage_and_type_only(monkeypatch: MonkeyPatch) -> None:
         message = "postgres://user:credential@example"
         raise CredentialError(message)
 
-    monkeypatch.setattr("litestar_queues._server_worker._apply_launch_spec", fail)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", fail)
     connection = _FakeConnection()
 
     _worker_process_main(_spec(), _FakeEvent(), connection)  # type: ignore[arg-type]
@@ -375,7 +383,7 @@ def test_child_cleanup_failures_never_escape_and_always_attempt_pipe_close(monke
         message = "postgres://user:credential@example"
         raise CredentialError(message)
 
-    monkeypatch.setattr("litestar_queues._server_worker._apply_launch_spec", fail)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", fail)
     connection = _FakeConnection(close_failures=1)
     stop = _FakeEvent(set_failures=1)
 
@@ -412,14 +420,14 @@ def test_child_sanitizes_runner_stage_error(monkeypatch: MonkeyPatch) -> None:
 
     def fake_plugin(app: object) -> object:
         del app
-        return object()
+        return _server_placement_plugin()
 
-    monkeypatch.setattr("litestar_queues._server_worker._apply_launch_spec", ignore)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
     monkeypatch.setattr(os, "setsid", lambda: None)
     monkeypatch.setattr("multiprocessing.parent_process", fake_parent)
     monkeypatch.setattr(LitestarEnv, "from_env", fake_environment)
-    monkeypatch.setattr("litestar_queues._server_worker._reset_child_logging", ignore)
-    monkeypatch.setattr("litestar_queues._server_worker._resolve_queue_plugin", fake_plugin)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._resolve_queue_plugin", fake_plugin)
     monkeypatch.setattr("asyncio.run", raise_stage_error)
     connection = _FakeConnection()
 
@@ -436,7 +444,7 @@ def test_missing_parent_process_is_sanitized_bootstrap_failure(monkeypatch: Monk
     def no_parent() -> None:
         return None
 
-    monkeypatch.setattr("litestar_queues._server_worker._apply_launch_spec", ignore)
+    monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
     monkeypatch.setattr(os, "setsid", lambda: None)
     monkeypatch.setattr("multiprocessing.parent_process", no_parent)
     connection = _FakeConnection()
@@ -624,7 +632,7 @@ def test_join_timeout_terminates_then_kills(monkeypatch: MonkeyPatch) -> None:
     process = _FakeProcess()
     process.stop_after_terminate_join = False
     supervisor, _ = _supervisor(process=process, messages=[("ready", process.pid)])
-    monkeypatch.setattr("litestar_queues._server_worker.os.name", "nt")
+    monkeypatch.setattr("litestar_queues.worker.supervisor.os.name", "nt")
     supervisor.start()
 
     supervisor.close()
@@ -828,7 +836,7 @@ def test_parent_bridge_suppresses_closed_loop_scheduling_race(
 
 @pytest.mark.anyio
 async def test_run_child_bridges_parent_loss_independently_and_releases_ipc_wait() -> None:
-    from litestar_queues._worker_runtime import WorkerRunResult
+    from litestar_queues.worker.runtime import WorkerRunResult
 
     class BlockingEvent:
         def __init__(self) -> None:
@@ -905,7 +913,7 @@ async def test_run_child_bridges_parent_loss_independently_and_releases_ipc_wait
 
 @pytest.mark.anyio
 async def test_run_child_finishes_when_stop_event_set_fails() -> None:
-    from litestar_queues._worker_runtime import WorkerRunResult
+    from litestar_queues.worker.runtime import WorkerRunResult
 
     class FailingReleaseEvent:
         def __init__(self) -> None:
@@ -1011,8 +1019,51 @@ def test_apply_launch_spec_replaces_not_merges_environment(monkeypatch: MonkeyPa
 
 
 def test_server_worker_module_import_is_click_free() -> None:
-    script = "import sys; import litestar_queues._server_worker; raise SystemExit(1 if 'click' in sys.modules else 0)"
+    script = (
+        "import sys; import litestar_queues.worker.supervisor; raise SystemExit(1 if 'click' in sys.modules else 0)"
+    )
 
     result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("config", "reason"),
+    [
+        (QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="external")), "placement"),
+        (QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi")), "memory"),
+        (QueueConfig(), "ephemeral"),
+    ],
+)
+def test_child_validate_stage_rejects_a_non_server_application(config: QueueConfig, reason: str) -> None:
+    """The child re-reads configuration from source, so a mismatch must not start a worker."""
+    from litestar.cli._utils import LitestarEnv
+
+    del reason
+    started = False
+
+    def never_run(coroutine: object) -> None:
+        nonlocal started
+        started = True
+        coroutine.close()  # type: ignore[attr-defined]
+
+    def ignore(value: object) -> None:
+        del value
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
+        patch.setattr(os, "setsid", lambda: None)
+        patch.setattr("multiprocessing.parent_process", lambda: SimpleNamespace(sentinel=1))
+        patch.setattr(LitestarEnv, "from_env", lambda *_: SimpleNamespace(app=object()))
+        patch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore)
+        patch.setattr(
+            "litestar_queues.worker.supervisor._resolve_queue_plugin", lambda *_: SimpleNamespace(config=config)
+        )
+        patch.setattr("asyncio.run", never_run)
+        connection = _FakeConnection()
+
+        _worker_process_main(_spec(), _FakeEvent(), connection)  # type: ignore[arg-type]
+
+    assert started is False
+    assert connection.sent == [("error", "validate", "QueueConfigurationError")]

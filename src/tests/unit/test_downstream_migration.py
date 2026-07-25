@@ -3,7 +3,7 @@ from importlib import import_module
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.task import clear_task_registry, get_scheduled_tasks
 
 pytestmark = pytest.mark.anyio
@@ -45,7 +45,9 @@ async def test_downstream_style_schedules_preserve_task_metadata_and_jitter(
         return {"ok": True}
 
     before = datetime.now(timezone.utc)
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         records = await service.initialize_schedules()
     after = datetime.now(timezone.utc)
 
@@ -75,7 +77,9 @@ async def test_initialize_schedules_replaces_changed_schedule_definition() -> "N
     async def changed_schedule() -> "str":
         return "old"
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         old_record = await service.get_queue_backend().enqueue(
             "jobs.changed_schedule",
             key="scheduled:jobs.changed_schedule",
@@ -117,7 +121,9 @@ async def test_downstream_style_cron_schedule_metadata_survives_reschedule() -> 
     async def weekly_reschedule() -> "dict[str, bool]":
         return {"ok": True}
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         records = await service.initialize_schedules()
         first_record = records[0]
         completed_record = await service.get_queue_backend().complete_task(first_record.id, result={"ok": True})

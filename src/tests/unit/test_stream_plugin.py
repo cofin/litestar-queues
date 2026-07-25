@@ -6,7 +6,7 @@ from litestar import Litestar
 from litestar.channels import ChannelsPlugin
 from litestar.channels.backends.memory import MemoryChannelsBackend
 
-from litestar_queues import QueueConfig, QueuePlugin
+from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueEventsConfig
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -15,7 +15,9 @@ def test_enabled_stream_config_registers_scope_routes() -> None:
     channels = _channels_arbitrary()
     plugin = QueuePlugin(
         QueueConfig(
-            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig())
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig()),
         )
     )
 
@@ -39,11 +41,13 @@ def test_enabled_stream_config_respects_configured_scopes() -> None:
     channels = _channels_arbitrary()
     plugin = QueuePlugin(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(
                 channels=channels,
                 delivery=EventDeliveryConfig(),
                 stream=EventStreamConfig(path="/events", scopes={"task"}),
-            )
+            ),
         )
     )
 
@@ -54,8 +58,16 @@ def test_enabled_stream_config_respects_configured_scopes() -> None:
 
 def test_disabled_stream_config_registers_no_routes() -> None:
     sys.modules.pop("litestar_queues.events.streaming", None)
-    default_app = Litestar(plugins=[QueuePlugin(QueueConfig())], openapi_config=None)
-    disabled_app = Litestar(plugins=[QueuePlugin(QueueConfig(events=None))], openapi_config=None)
+    default_app = Litestar(
+        plugins=[QueuePlugin(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"))],
+        openapi_config=None,
+    )
+    disabled_app = Litestar(
+        plugins=[
+            QueuePlugin(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", events=None))
+        ],
+        openapi_config=None,
+    )
 
     assert _stream_paths(default_app) == set()
     assert _stream_paths(disabled_app) == set()
@@ -66,7 +78,9 @@ def test_enabled_without_auth_logs_single_warning(caplog: pytest.LogCaptureFixtu
     channels = _channels_arbitrary()
     plugin = QueuePlugin(
         QueueConfig(
-            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig())
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig()),
         )
     )
 
@@ -90,11 +104,13 @@ def test_enabled_with_channel_authorizer_suppresses_auth_warning(caplog: pytest.
 
     plugin = QueuePlugin(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(
                 channels=channels,
                 delivery=EventDeliveryConfig(),
                 stream=EventStreamConfig(channel_authorizer=allow_all),
-            )
+            ),
         )
     )
 
@@ -112,7 +128,9 @@ def test_enabled_with_app_guard_suppresses_auth_warning(caplog: pytest.LogCaptur
 
     plugin = QueuePlugin(
         QueueConfig(
-            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig())
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig()),
         )
     )
 
@@ -126,11 +144,13 @@ def test_explicit_unauthenticated_stream_suppresses_auth_warning(caplog: pytest.
     channels = _channels_arbitrary()
     plugin = QueuePlugin(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
             events=QueueEventsConfig(
                 channels=channels,
                 delivery=EventDeliveryConfig(),
                 stream=EventStreamConfig(unauthenticated_access="allow"),
-            )
+            ),
         )
     )
 
@@ -144,7 +164,9 @@ def test_channels_plugin_without_arbitrary_channels_raises() -> None:
     channels = _channels_fixed()
     plugin = QueuePlugin(
         QueueConfig(
-            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig())
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig()),
         )
     )
 
@@ -154,7 +176,13 @@ def test_channels_plugin_without_arbitrary_channels_raises() -> None:
 
 def test_bare_channels_plugin_without_arbitrary_channels_raises() -> None:
     channels = _channels_fixed()
-    plugin = QueuePlugin(QueueConfig(events=QueueEventsConfig(stream=EventStreamConfig())))
+    plugin = QueuePlugin(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(stream=EventStreamConfig()),
+        )
+    )
 
     with pytest.raises(QueueConfigurationError, match="arbitrary_channels_allowed=True"):
         Litestar(plugins=[channels, plugin], openapi_config=None)

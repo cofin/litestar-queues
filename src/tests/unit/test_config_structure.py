@@ -5,7 +5,13 @@ PACKAGE_ROOT = Path("src/litestar_queues")
 
 _APPROVED_NESTED_IMPORTS = {
     "_cli.py": {"litestar.cli._utils"},
-    "_server_worker.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
+    "worker/supervisor.py": {
+        "litestar.cli._utils",
+        "litestar_queues.backends.ephemeral.schema",
+        "litestar_queues.config",
+        "litestar_queues.plugin",
+        "multiprocessing.connection",
+    },
     "backends/redis/backend.py": {"redis"},
     "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
     "backends/sqlspec/config.py": {
@@ -36,7 +42,14 @@ _APPROVED_NESTED_IMPORTS = {
         "litestar_queues.worker",
     },
     "events/__init__.py": {"litestar_queues.events.channels_sink"},
-    "plugin.py": {"litestar_queues._cli", "litestar_queues.events.streaming", "litestar_queues.observability"},
+    "plugin.py": {
+        "litestar_queues._cli",
+        "litestar_queues.backends.ephemeral.server",
+        "litestar_queues.events.streaming",
+        "litestar_queues.observability",
+        "litestar_queues.worker",
+        "litestar_queues.worker.invocation",
+    },
     "service.py": {"litestar_queues.observability"},
     "task.py": {"litestar_queues.config", "litestar_queues.service"},
 }

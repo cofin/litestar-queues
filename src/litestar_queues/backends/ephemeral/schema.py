@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from litestar_queues.exceptions import QueueError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 __all__ = (
     "NONCE_ENV_VAR",
@@ -91,7 +91,7 @@ def is_private_directory(directory: "Path") -> "bool":
 
 
 @contextmanager
-def sqlite_errors() -> "Iterator[None]":
+def sqlite_errors() -> "Generator[None]":
     """Translate SQLite failures into one typed error with a constant message.
 
     Uniqueness violations are re-raised untouched because the backend uses them

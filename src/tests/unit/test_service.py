@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService
+from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import EventHistoryConfig, QueueEventPublisher, QueueEventsConfig
 from litestar_queues.execution import BaseExecutionBackend
@@ -140,7 +140,11 @@ async def test_service_rolls_back_every_resource_when_execution_open_fails() -> 
     order: "list[str]" = []
     event_log = _LifecycleEventLog(order)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         queue_backend=_LifecycleQueueBackend(order, event_log),
         execution_backend=_LifecycleExecutionBackend(order, fail_open=True),
     )
@@ -156,7 +160,11 @@ async def test_service_rolls_back_every_resource_when_sink_open_fails() -> "None
     order: "list[str]" = []
     event_log = _LifecycleEventLog(order)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         queue_backend=_LifecycleQueueBackend(order, event_log),
         execution_backend=_LifecycleExecutionBackend(order),
         event_publisher=QueueEventPublisher(_LifecycleSink(order, fail_open=True)),
@@ -181,7 +189,11 @@ async def test_service_rollback_preserves_primary_failure_and_attempts_every_clo
     order: "list[str]" = []
     event_log = _LifecycleEventLog(order, flush_error=RuntimeError("event log flush failed"))
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         queue_backend=_LifecycleQueueBackend(order, event_log, close_error=RuntimeError("queue close failed")),
         execution_backend=_LifecycleExecutionBackend(
             order, fail_open=True, close_error=RuntimeError("execution close failed")
@@ -200,7 +212,11 @@ async def test_service_open_and_close_are_idempotent() -> "None":
     event_log = _LifecycleEventLog(order)
     publisher = _LifecyclePublisher(_LifecycleSink(order), order)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         queue_backend=_LifecycleQueueBackend(order, event_log),
         execution_backend=_LifecycleExecutionBackend(order),
         event_publisher=publisher,
@@ -237,7 +253,12 @@ async def test_service_close_attempts_every_resource_and_raises_first_error(
     executor = _LifecycleSyncExecutor(order, shutdown_error=RuntimeError("executor shutdown failed"))
     monkeypatch.setattr("litestar_queues.service.ThreadPoolExecutor", lambda **_kwargs: executor)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_thread_pool_size=1),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            sync_thread_pool_size=1,
+        ),
         queue_backend=_LifecycleQueueBackend(order, event_log, close_error=RuntimeError("queue close failed")),
         execution_backend=_LifecycleExecutionBackend(order, close_error=RuntimeError("execution close failed")),
         event_publisher=publisher,
@@ -269,7 +290,12 @@ async def test_service_close_control_flow_takes_precedence_and_all_resources_clo
     executor = _LifecycleSyncExecutor(order)
     monkeypatch.setattr("litestar_queues.service.ThreadPoolExecutor", lambda **_kwargs: executor)
     service = QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()), sync_thread_pool_size=1),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            sync_thread_pool_size=1,
+        ),
         queue_backend=_LifecycleQueueBackend(order, event_log),
         execution_backend=_LifecycleExecutionBackend(order, close_error=RuntimeError("execution close failed")),
         event_publisher=publisher,
@@ -292,7 +318,7 @@ async def test_service_close_control_flow_takes_precedence_and_all_resources_clo
 
 async def test_service_context_manager_returns_service() -> "None":
     """Test that the service can be used as an async context manager."""
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
 
     async with config.provide_service() as service:
         assert isinstance(service, QueueService)
@@ -300,7 +326,7 @@ async def test_service_context_manager_returns_service() -> "None":
 
 
 def test_get_event_publisher_uses_noop_sink_when_events_are_disabled() -> "None":
-    config = QueueConfig(events=None)
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", events=None)
 
     publisher = config.get_event_publisher()
 
@@ -318,7 +344,9 @@ async def test_service_placeholder_enqueue_reports_unimplemented() -> "None":
     async def example() -> "str":
         return "ok"
 
-    service = QueueService(QueueConfig(execution_backend="immediate"))
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="immediate")
+    )
 
     async with service:
         result = await service.enqueue("example")
@@ -337,7 +365,9 @@ async def test_enqueue_can_override_requeue_on_stale_metadata() -> "None":
     async def stale_override() -> "str":
         return "ok"
 
-    service = QueueService(QueueConfig(execution_backend="local"))
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    )
 
     async with service:
         result = await service.enqueue(stale_override, requeue_on_stale=False)
@@ -356,7 +386,9 @@ async def test_enqueue_uses_config_log_success_default() -> "None":
     async def config_default() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(config_default)
 
     assert result.record is not None
@@ -373,7 +405,14 @@ async def test_enqueue_respects_config_log_success_false_default() -> "None":
     async def config_false() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local", log_success=False)) as service:
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            log_success=False,
+        )
+    ) as service:
         result = await service.enqueue(config_false)
 
     assert result.record is not None
@@ -394,7 +433,14 @@ async def test_enqueue_log_success_precedence() -> "None":
     async def task_override() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local", log_success=True)) as service:
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            log_success=True,
+        )
+    ) as service:
         metadata_result = await service.enqueue(metadata_only, metadata={"log_success": False})
         task_result = await service.enqueue(task_override, metadata={"log_success": False})
         enqueue_result = await service.enqueue(task_override, log_success=False, metadata={"log_success": True})
@@ -415,7 +461,9 @@ async def test_enqueue_immediate_override_executes_inline_when_configured_backen
         return "ok"
 
     config = QueueConfig(
-        execution_backend=CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="worker")
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend=CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="worker"),
     )
 
     async with QueueService(config) as service:
@@ -436,7 +484,9 @@ async def test_enqueue_normalizes_naive_scheduled_at_to_utc() -> "None":
 
     naive_scheduled_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None)
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         result = await service.enqueue(naive_schedule, scheduled_at=naive_scheduled_at)
 
     assert result.status == "scheduled"
@@ -463,7 +513,12 @@ async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs
     async def consume(**kwargs: "object") -> "dict[str, object]":
         return dict(kwargs)
 
-    config = QueueConfig(execution_backend="immediate", task_dependency_resolver=resolver)
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_resolver=resolver,
+    )
     service = QueueService(config)
 
     async with service:
@@ -502,6 +557,8 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
         return "ok"
 
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
         execution_backend="immediate",
         task_dependency_resolver=resolver,
         events=QueueEventsConfig(delivery=EventDeliveryConfig()),
@@ -542,7 +599,9 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> "None":
     async def absent() -> "str":
         return "ok"
 
-    config = QueueConfig(execution_backend="immediate")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="immediate"
+    )
     service = QueueService(config)
 
     original = Task.execute_record
@@ -574,7 +633,12 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", events=QueueEventsConfig(delivery=EventDeliveryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+        ),
         queue_backend=backend,
         event_publisher=publisher,
     ) as service:
@@ -593,7 +657,11 @@ async def test_event_log_config_is_public_and_memory_backend_is_supported() -> "
     event_log_config_type = getattr(events, "EventHistoryConfig", None)
     assert event_log_config_type is not None
 
-    config = QueueConfig(events=QueueEventsConfig(history=event_log_config_type()))
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        events=QueueEventsConfig(history=event_log_config_type()),
+    )
 
     async with QueueService(config) as service:
         assert service.get_queue_backend().get_event_log(event_log_config_type()) is not None
@@ -613,7 +681,12 @@ async def test_backend_event_log_records_events_when_live_events_are_disabled() 
     async def event_history_task() -> "None":
         await publish_task_log("history only", payload={"stage": "load"})
 
-    config = QueueConfig(execution_backend="immediate", events=QueueEventsConfig(history=event_log_config_type()))
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        events=QueueEventsConfig(history=event_log_config_type()),
+    )
 
     async with QueueService(config, queue_backend=_EventLogBackend(event_log)) as service:
         result = await service.enqueue(event_history_task)
@@ -639,6 +712,8 @@ async def test_backend_event_log_and_live_sink_are_independent() -> "None":
         await publish_task_log("history and live", payload={"stage": "load"})
 
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
         execution_backend="immediate",
         events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)), history=event_log_config_type()),
     )
@@ -661,7 +736,9 @@ async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> 
     async def priority_schedule() -> "None":
         return None
 
-    async with QueueService(QueueConfig(execution_backend="local")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
         records = await service.initialize_schedules()
 
     assert len(records) == 1
@@ -683,7 +760,14 @@ async def test_initialize_schedules_applies_config_log_success_default_and_task_
     async def quiet_schedule_override() -> "None":
         return None
 
-    async with QueueService(QueueConfig(execution_backend="local", log_success=True)) as service:
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            log_success=True,
+        )
+    ) as service:
         records = await service.initialize_schedules()
 
     by_task_name = {record.task_name: record for record in records}
@@ -713,7 +797,12 @@ async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "N
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", events=QueueEventsConfig(delivery=EventDeliveryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+        ),
         queue_backend=backend,
         event_publisher=QueueEventPublisher(sink),
     ) as service:
@@ -746,7 +835,12 @@ async def test_recover_stale_tasks_offloads_a_sync_stale_failure_hook_to_a_worke
     claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
 
     async with QueueService(
-        QueueConfig(execution_backend="local", events=QueueEventsConfig(delivery=EventDeliveryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+        ),
         queue_backend=backend,
         event_publisher=QueueEventPublisher(InMemoryQueueEventSink()),
     ) as service:
@@ -773,6 +867,8 @@ async def test_execute_record_sanitizes_persisted_error_and_failed_event() -> "N
         raise RuntimeError(msg)
 
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
         execution_backend="local",
         events=QueueEventsConfig(delivery=EventDeliveryConfig()),
         error_sanitizer=sanitize_error,

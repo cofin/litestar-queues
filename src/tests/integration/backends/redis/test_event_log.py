@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("redis")
 
-from litestar_queues import EventHistoryConfig, QueueConfig, QueueService
+from litestar_queues import EventHistoryConfig, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.backends.redis.event_log import RedisQueueEventLog
 from litestar_queues.events import QueueEvent, QueueEventsConfig
@@ -59,7 +59,12 @@ async def test_redis_event_log_records_queries_and_cleans_up(redis_backend: "Red
 
 async def test_redis_queue_service_accepts_event_log_config(redis_backend: "RedisQueueBackend") -> "None":
     async with QueueService(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())), queue_backend=redis_backend
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
+        queue_backend=redis_backend,
     ) as service:
         assert service.get_queue_backend().get_event_log(EventHistoryConfig()) is not None
 

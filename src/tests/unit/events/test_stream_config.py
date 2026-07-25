@@ -3,6 +3,7 @@ from typing import get_type_hints
 
 import pytest
 
+from litestar_queues import WorkerConfig
 from litestar_queues.exceptions import QueueConfigurationError
 
 
@@ -35,7 +36,7 @@ def test_queue_config_carries_stream_config() -> "None":
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventStreamConfig
 
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
 
     assert config.events is None
     assert config.signature_namespace["EventStreamConfig"] is EventStreamConfig
@@ -46,7 +47,7 @@ def test_queue_config_sub_config_field_defaults() -> "None":
     from litestar_queues.events import EventDeliveryConfig, EventHistoryConfig
     from litestar_queues.observability import ObservabilityConfig
 
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     field_names = {field.name for field in fields(QueueConfig)}
 
     assert config.events is None
@@ -62,7 +63,7 @@ def test_queue_config_sub_config_field_defaults() -> "None":
 def test_queue_config_disables_all_event_capabilities_by_absence() -> "None":
     from litestar_queues.config import QueueConfig
 
-    assert QueueConfig(events=None).events is None
+    assert QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", events=None).events is None
 
 
 def test_event_log_config_requires_positive_memory_capacity() -> "None":

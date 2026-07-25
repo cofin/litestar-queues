@@ -117,7 +117,7 @@ def test_public_exports() -> "None":  # noqa: PLR0915
 
     assert expected_exports.issubset(set(litestar_queues.__all__))
     assert forbidden_exports.isdisjoint(set(litestar_queues.__all__))
-    assert QueueConfig().queue_backend == "memory"
+    assert QueueConfig().queue_backend == "ephemeral"
     assert EventDeliveryConfig().buffer is not None
     assert EventHistoryConfig().batch_size == 20
     assert EventStreamConfig().transports == {"sse", "websocket"}
@@ -136,10 +136,10 @@ def test_public_exports() -> "None":  # noqa: PLR0915
     assert get_execution_backend_class("immediate") is ImmediateExecutionBackend
     assert get_execution_backend_class("local") is LocalExecutionBackend
     assert {"cloudrun", "immediate", "local"}.issubset(set(list_execution_backends()))
-    assert QueuePlugin().config.queue_backend == "memory"
+    assert QueuePlugin().config.queue_backend == "ephemeral"
     assert QueuePlugin().config.execution_backend == "local"
-    assert QueuePlugin().config.worker.run_in_app is True
-    assert QueueService(QueueConfig()).config.queue_backend == "memory"
+    assert QueuePlugin().config.worker.placement == "server"
+    assert QueueService(QueueConfig()).config.queue_backend == "ephemeral"
     assert QueueService(QueueConfig()).config.execution_backend == "local"
     assert issubclass(QueueError, Exception)
     assert AsyncServiceProvider(QueueConfig()) is not None
@@ -153,7 +153,7 @@ def test_public_exports() -> "None":  # noqa: PLR0915
     assert TaskResult is not None
     assert TaskReservation is not None
     assert Worker is not None
-    assert WorkerConfig().run_in_app is True
+    assert WorkerConfig().placement == "server"
     assert TaskExitCode.SUCCESS.value == 0
     assert callable(consume_one)
     assert callable(run_task)
@@ -240,7 +240,7 @@ for module_name in (
 ):
     assert module_name not in sys.modules, module_name
 
-assert QueueConfig().queue_backend == "memory"
+assert QueueConfig().queue_backend == "ephemeral"
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 

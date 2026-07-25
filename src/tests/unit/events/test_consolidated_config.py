@@ -2,7 +2,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from litestar_queues import QueueConfig
+from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.events import (
     EventBufferConfig,
     EventDeliveryConfig,
@@ -46,9 +46,21 @@ class _BatchRecordingSink:
 
 
 def test_event_capabilities_are_presence_enabled_and_validate_empty_groups() -> None:
-    assert QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(InMemoryQueueEventSink(),))))
-    assert QueueConfig(events=QueueEventsConfig(stream=EventStreamConfig(transports={"sse"})))
-    assert QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig()))
+    assert QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(InMemoryQueueEventSink(),))),
+    )
+    assert QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        events=QueueEventsConfig(stream=EventStreamConfig(transports={"sse"})),
+    )
+    assert QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        events=QueueEventsConfig(history=EventHistoryConfig()),
+    )
 
     with pytest.raises(QueueConfigurationError, match="at least one"):
         QueueEventsConfig()
@@ -78,9 +90,11 @@ async def test_delivery_sinks_are_additive_and_non_strict_failures_continue() ->
     first = _RecordingSink("first", calls, fail=True)
     second = _RecordingSink("second", calls)
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
         events=QueueEventsConfig(
             delivery=EventDeliveryConfig(buffer=EventBufferConfig(batch_size=1), sinks=(first, second))
-        )
+        ),
     )
 
     from litestar_queues.events import QueueEvent

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         TaskDependencyResolver,
         TaskErrorSanitizer,
         WorkerConfig,
+        WorkerPlacement,
     )
     from litestar_queues.consumer import TaskExitCode, consume_one, run_task
     from litestar_queues.events import (
@@ -170,6 +171,7 @@ __all__ = (
     "TaskUniqueUntil",
     "Worker",
     "WorkerConfig",
+    "WorkerPlacement",
     "beat",
     "consume_one",
     "discover_tasks",
@@ -259,6 +261,7 @@ _EXPORTS = {
     "TaskReservation": "litestar_queues.models",
     "Worker": "litestar_queues.worker",
     "WorkerConfig": "litestar_queues.config",
+    "WorkerPlacement": "litestar_queues.config",
     "beat": "litestar_queues.events",
     "consume_one": "litestar_queues.consumer",
     "discover_tasks": "litestar_queues.task",

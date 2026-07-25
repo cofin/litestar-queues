@@ -166,7 +166,8 @@ def test_htmx_realtime_examples_keep_live_channels_process_local_by_default() ->
 
 def test_redis_and_valkey_examples_offer_explicit_shared_channels_mode() -> None:
     common_source = (EXAMPLES_ROOT / "htmx_realtime_common.py").read_text()
-    assert 'run_in_app=os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") != "0"' in common_source
+    assert 'os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") != "0"' in common_source
+    assert 'placement="asgi" if in_process else "external"' in common_source
     assert "graceful_shutdown_timeout=5" in common_source
 
     for name in EXAMPLE_VARIANTS:

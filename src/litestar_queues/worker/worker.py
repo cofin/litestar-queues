@@ -7,9 +7,9 @@ import time
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from litestar_queues._heartbeat import WorkerHeartbeatManager
 from litestar_queues.config import WorkerConfig, execution_backend_name
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
+from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
