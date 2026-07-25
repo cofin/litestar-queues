@@ -16,10 +16,10 @@ __all__ = (
     "TaskStatus",
 )
 
-TaskStatus = Literal["pending", "scheduled", "running", "completed", "failed", "cancelled"]
+TaskStatus = Literal["pending", "scheduled", "running", "completed", "failed", "cancelled", "expired"]
 """Queue task lifecycle states."""
 
-TERMINAL_STATUSES: "frozenset[TaskStatus]" = frozenset({"completed", "failed", "cancelled"})
+TERMINAL_STATUSES: "frozenset[TaskStatus]" = frozenset({"completed", "failed", "cancelled", "expired"})
 """Statuses that represent finished queue records."""
 
 
@@ -61,11 +61,14 @@ class QueueStatistics:
     completed: "int" = 0
     failed: "int" = 0
     cancelled: "int" = 0
+    expired: "int" = 0
 
     @property
     def total(self) -> "int":
         """Total number of known queue records."""
-        return self.pending + self.scheduled + self.running + self.completed + self.failed + self.cancelled
+        return (
+            self.pending + self.scheduled + self.running + self.completed + self.failed + self.cancelled + self.expired
+        )
 
 
 @dataclass(slots=True)
@@ -120,6 +123,7 @@ class TaskRequest:
     priority: "int" = 0
     max_retries: "int" = 0
     scheduled_at: "datetime | None" = None
+    expires_at: "datetime | None" = None
     key: "str | None" = None
     execution_backend: "str" = "local"
     execution_profile: "str | None" = None
@@ -128,6 +132,8 @@ class TaskRequest:
     def __post_init__(self) -> "None":
         if self.scheduled_at is not None:
             self.scheduled_at = _ensure_utc_datetime(self.scheduled_at)
+        if self.expires_at is not None:
+            self.expires_at = _ensure_utc_datetime(self.expires_at)
 
 
 @dataclass(slots=True)
@@ -147,6 +153,7 @@ class QueuedTaskRecord:
     max_retries: "int" = 0
     retry_count: "int" = 0
     scheduled_at: "datetime | None" = None
+    expires_at: "datetime | None" = None
     created_at: "datetime" = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: "datetime | None" = None
     completed_at: "datetime | None" = None
@@ -159,6 +166,8 @@ class QueuedTaskRecord:
     def __post_init__(self) -> "None":
         if self.scheduled_at is not None:
             self.scheduled_at = _ensure_utc_datetime(self.scheduled_at)
+        if self.expires_at is not None:
+            self.expires_at = _ensure_utc_datetime(self.expires_at)
 
     @property
     def is_terminal(self) -> "bool":
@@ -169,6 +178,11 @@ class QueuedTaskRecord:
     def is_due(self) -> "bool":
         """Whether the record is eligible to be claimed now."""
         return self.scheduled_at is None or self.scheduled_at <= datetime.now(timezone.utc)
+
+    @property
+    def is_expired(self) -> "bool":
+        """Whether the not-started deadline has passed."""
+        return self.expires_at is not None and self.expires_at <= datetime.now(timezone.utc)
 
 
 def _ensure_utc_datetime(value: "datetime") -> "datetime":

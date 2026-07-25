@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast
 from typing_extensions import ParamSpec, Self
 
 from litestar_queues.exceptions import QueueWarning
+from litestar_queues.models import TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
@@ -346,16 +347,15 @@ class TaskResult:
             TimeoutError: If the timeout elapses before a terminal status.
             RuntimeError: If the task no longer exists in the queue backend.
         """
-        terminal = {"cancelled", "completed", "failed"}
         start = asyncio.get_running_loop().time()
         backend = self._service.get_queue_backend() if self._service is not None else None
         push = backend is not None and backend.capabilities.supports_completion_events
-        while self.status not in terminal:
+        while self.status not in TERMINAL_STATUSES:
             await self.refresh()
             if self.record is None:
                 msg = f"Task {self._task_id} no longer exists in the queue backend."
                 raise RuntimeError(msg)
-            if self.status in terminal:
+            if self.status in TERMINAL_STATUSES:
                 break
             if timeout is not None and asyncio.get_running_loop().time() - start >= timeout:
                 msg = f"Task {self._task_id} did not complete within {timeout}s"

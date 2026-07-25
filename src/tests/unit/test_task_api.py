@@ -89,6 +89,13 @@ async def test_task_execute_record_injects_only_typed_context() -> "None":
     assert result == {"injected_service": "resolved", "_task_context": context}
 
 
+async def test_task_result_wait_returns_for_expired_record() -> "None":
+    record = QueuedTaskRecord(task_name="tasks.expired_result", status="expired")
+    result = TaskResult(record.id, record.task_name, service=cast("QueueService", _MissingTaskService()), record=record)
+
+    assert await result.wait(poll_interval=0) is result
+
+
 async def test_task_using_returns_configured_copy_without_mutating_original() -> "None":
     @task("email.send", priority=1, retries=1, requeue_on_stale=False)
     async def send_email(address: "str") -> "str":
