@@ -24,7 +24,14 @@ storage, separate workers, or live task events as the application grows.
    usage/index
    examples/index
    reference/index
+
+.. toctree::
+   :hidden:
+   :titlesonly:
+   :caption: Developers
+
    contributing/index
+   changelog
 
 .. grid:: 1 1 2 3
    :padding: 0
@@ -65,3 +72,9 @@ storage, separate workers, or live task events as the application grows.
       :link-type: doc
 
       Test changes, maintain examples, and audit documentation.
+
+   .. grid-item-card:: Changelog
+      :link: changelog
+      :link-type: doc
+
+      Review release notes and breaking changes before upgrading an existing project.

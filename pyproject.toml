@@ -43,7 +43,7 @@ requires-python = ">=3.10"
 version = "0.6.0"
 
 [project.urls]
-Changelog = "https://github.com/cofin/litestar-queues/releases/"
+Changelog = "https://cofin.github.io/litestar-queues/changelog"
 Discord = "https://discord.gg/litestar-919193495116337154"
 Documentation = "https://cofin.github.io/litestar-queues/"
 Homepage = "https://cofin.github.io/litestar-queues/"
@@ -129,13 +129,7 @@ version = "{current_version}"
 # Environment Setup #
 #####################
 [dependency-groups]
-benchmarks = [
-  "hiredis",
-  "psutil",
-  "psycopg[binary,pool]>=3.2.0",
-  "redis>=5.0.0",
-  "sqlspec[mypyc,performance]>=0.56.0",
-]
+benchmarks = ["hiredis", "psutil", "psycopg[binary,pool]>=3.2.0", "redis>=5.0.0", "sqlspec[mypyc,performance]>=0.56.0"]
 build = ["bump-my-version"]
 dev = [
   "litestar[standard,attrs,pydantic]",
@@ -163,6 +157,7 @@ docs = [
   "shibuya",
   "litestar-vite",
 ]
+e2e = ["playwright>=1.50.0", "pytest-playwright>=0.7.0"]
 examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
 tests = [
   "coverage[toml]",
@@ -189,10 +184,6 @@ tests = [
   # SQLSpec adapters covered by the default integration matrix
   "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.56.0",
 ]
-e2e = [
-  "playwright>=1.50.0",
-  "pytest-playwright>=0.7.0",
-]
 
 #####################
 # Testing           #
@@ -206,11 +197,11 @@ filterwarnings = [
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
 ]
-testpaths = ["src/tests"]
 markers = [
   "e2e: end-to-end tests that start real example processes and Chromium",
   "topology: cross-process queue and Channels topology tests",
 ]
+testpaths = ["src/tests"]
 
 [tool.coverage.report]
 exclude_lines = [
