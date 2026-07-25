@@ -82,6 +82,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -107,6 +108,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 priority=priority,
                 max_retries=max_retries,
                 scheduled_at=scheduled_at,
+                expires_at=expires_at,
                 key=key,
                 metadata=dict(metadata or {}),
             )
@@ -152,6 +154,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     priority=request.priority,
                     max_retries=request.max_retries,
                     scheduled_at=request.scheduled_at,
+                    expires_at=request.expires_at,
                     key=request.key,
                     metadata=dict(request.metadata or {}),
                 )

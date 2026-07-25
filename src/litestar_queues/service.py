@@ -305,6 +305,8 @@ class QueueService:
         *args: "Any",
         scheduled_at: "datetime | None" = None,
         run_after: "float | timedelta | None" = None,
+        expires_in: "float | timedelta | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         queue: "str | None" = None,
         priority: "int | None" = None,
@@ -326,13 +328,9 @@ class QueueService:
         """
         task_obj = self.resolve_task(task)
         effective_key, identity_metadata = self._resolve_identity(task_obj, key, args, kwargs)
-        coerced_run_after = _coerce_timedelta(run_after)
-        effective_run_after = coerced_run_after if run_after is not None else task_obj.run_after
-        effective_scheduled_at = scheduled_at
-        if effective_scheduled_at is None and effective_run_after is not None:
-            effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
-        if effective_scheduled_at is not None:
-            effective_scheduled_at = _ensure_utc(effective_scheduled_at)
+        effective_scheduled_at, effective_expires_at = _resolve_schedule_and_expiration(
+            task_obj, scheduled_at=scheduled_at, run_after=run_after, expires_in=expires_in, expires_at=expires_at
+        )
         effective_execution_backend = (
             execution_backend or task_obj.execution_backend or execution_backend_name(self._config.execution_backend)
         )
@@ -385,6 +383,7 @@ class QueueService:
                 execution_profile=effective_execution_profile,
                 metadata=effective_metadata,
                 id=reserved_id,
+                **_expiration_enqueue_kwargs(effective_expires_at),
             )
             if reserved_id is not None and record.id != reserved_id and effective_key is not None:
                 await _raise_forever_identity_collision(self.get_queue_backend(), effective_key, reserved_id)
@@ -935,6 +934,50 @@ def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":
     if isinstance(value, timedelta):
         return value
     return timedelta(seconds=value)
+
+
+def _resolve_schedule_and_expiration(
+    task_obj: "Task[Any, Any]",
+    *,
+    scheduled_at: "datetime | None",
+    run_after: "float | timedelta | None",
+    expires_in: "float | timedelta | None",
+    expires_at: "datetime | None",
+) -> "tuple[datetime | None, datetime | None]":
+    effective_run_after = _coerce_timedelta(run_after) if run_after is not None else task_obj.run_after
+    effective_scheduled_at = scheduled_at
+    if effective_scheduled_at is None and effective_run_after is not None:
+        effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
+    if effective_scheduled_at is not None:
+        effective_scheduled_at = _ensure_utc(effective_scheduled_at)
+    return effective_scheduled_at, _resolve_expires_at(
+        task_obj, expires_in=expires_in, expires_at=expires_at, scheduled_at=effective_scheduled_at
+    )
+
+
+def _resolve_expires_at(
+    task_obj: "Task[Any, Any]",
+    *,
+    expires_in: "float | timedelta | None",
+    expires_at: "datetime | None",
+    scheduled_at: "datetime | None",
+) -> "datetime | None":
+    if expires_in is not None and expires_at is not None:
+        msg = "Cannot specify both expires_in and expires_at."
+        raise ValueError(msg)
+    if expires_at is not None:
+        return _ensure_utc(expires_at)
+    effective_expires_in = _coerce_timedelta(expires_in) if expires_in is not None else task_obj.expires_in
+    if effective_expires_in is None:
+        return None
+    if effective_expires_in < timedelta():
+        msg = "expires_in must not be negative."
+        raise ValueError(msg)
+    return (scheduled_at or datetime.now(timezone.utc)) + effective_expires_in
+
+
+def _expiration_enqueue_kwargs(expires_at: "datetime | None") -> "dict[str, datetime]":
+    return {"expires_at": expires_at} if expires_at is not None else {}
 
 
 def _task_metadata(

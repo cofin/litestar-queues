@@ -494,6 +494,113 @@ async def test_enqueue_normalizes_naive_scheduled_at_to_utc() -> "None":
     assert result.record.scheduled_at == naive_scheduled_at.replace(tzinfo=timezone.utc)
 
 
+async def test_enqueue_rejects_both_expires_in_and_expires_at() -> "None":
+    from litestar_queues import task
+
+    @task("expiry.both")
+    async def expires_with_both() -> "str":
+        return "ok"
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        with pytest.raises(ValueError, match="both expires_in and expires_at"):
+            await service.enqueue(
+                expires_with_both, expires_in=60, expires_at=datetime.now(timezone.utc) + timedelta(minutes=1)
+            )
+
+
+async def test_enqueue_relative_expires_in_uses_enqueue_time() -> "None":
+    from litestar_queues import task
+
+    @task("expiry.immediate")
+    async def expires_from_enqueue() -> "str":
+        return "ok"
+
+    before = datetime.now(timezone.utc)
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(expires_from_enqueue, expires_in=30)
+    after = datetime.now(timezone.utc)
+
+    assert result.record is not None
+    assert before + timedelta(seconds=30) <= result.record.expires_at <= after + timedelta(seconds=30)
+
+
+async def test_enqueue_relative_expires_in_uses_scheduled_at() -> "None":
+    from litestar_queues import task
+
+    @task("expiry.scheduled")
+    async def expires_from_schedule() -> "str":
+        return "ok"
+
+    scheduled_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(expires_from_schedule, scheduled_at=scheduled_at, expires_in=30)
+
+    assert result.record is not None
+    assert result.record.expires_at == scheduled_at + timedelta(seconds=30)
+
+
+async def test_enqueue_absolute_expires_at_is_stored_as_utc() -> "None":
+    from litestar_queues import task
+
+    @task("expiry.absolute")
+    async def expires_absolute() -> "str":
+        return "ok"
+
+    naive_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1)
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(expires_absolute, expires_at=naive_expires_at)
+
+    assert result.record is not None
+    assert result.record.expires_at == naive_expires_at.replace(tzinfo=timezone.utc)
+
+
+async def test_enqueue_uses_and_overrides_task_expires_in_default() -> "None":
+    from litestar_queues import task
+
+    @task("expiry.default", expires_in=45)
+    async def expires_by_default() -> "str":
+        return "ok"
+
+    before = datetime.now(timezone.utc)
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        default_result = await service.enqueue(expires_by_default)
+        override_result = await service.enqueue(expires_by_default, expires_in=90)
+    after = datetime.now(timezone.utc)
+
+    assert default_result.record is not None
+    assert override_result.record is not None
+    assert before + timedelta(seconds=45) <= default_result.record.expires_at <= after + timedelta(seconds=45)
+    assert before + timedelta(seconds=90) <= override_result.record.expires_at <= after + timedelta(seconds=90)
+
+
+async def test_enqueue_rejects_negative_expires_in_and_accepts_zero() -> "None":
+    from litestar_queues import task
+
+    @task("expiry.bounds")
+    async def expiry_bounds() -> "str":
+        return "ok"
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        with pytest.raises(ValueError, match="expires_in must not be negative"):
+            await service.enqueue(expiry_bounds, expires_in=-1)
+        result = await service.enqueue(expiry_bounds, expires_in=0)
+
+    assert result.record is not None
+    assert result.record.is_expired is True
+
+
 async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> "None":
     """Configured resolver fires before task body and its kwargs reach the callable."""
     from litestar_queues import Task, TaskExecutionContext, task

@@ -117,6 +117,17 @@ async def test_task_using_returns_configured_copy_without_mutating_original() ->
     assert await overridden("user@example.com") == "user@example.com"
 
 
+async def test_task_decorator_and_using_set_expires_in() -> "None":
+    @task("tasks.expiry_config", expires_in=30)
+    async def expires_by_default() -> "str":
+        return "ok"
+
+    overridden = expires_by_default.using(expires_in=60)
+
+    assert expires_by_default.expires_in == timedelta(seconds=30)
+    assert overridden.expires_in == timedelta(seconds=60)
+
+
 async def test_task_enqueue_uses_immediate_memory_service_by_default() -> "None":
     @task("tasks.double")
     async def double(value: "int") -> "int":
