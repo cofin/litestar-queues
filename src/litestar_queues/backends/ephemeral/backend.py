@@ -443,8 +443,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         def operation(connection: "sqlite3.Connection") -> "list[QueuedTaskRecord]":
             now = _utc_now()
             expired_rows = connection.execute(
-                "SELECT payload FROM queue_task WHERE status IN (?, ?) "
-                "AND expires_at IS NOT NULL AND expires_at <= ?",
+                "SELECT payload FROM queue_task WHERE status IN (?, ?) AND expires_at IS NOT NULL AND expires_at <= ?",
                 (*_ACTIVE_STATUSES, _iso(now)),
             ).fetchall()
             for record in _decode_all(expired_rows):

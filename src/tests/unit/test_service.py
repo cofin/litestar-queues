@@ -525,7 +525,9 @@ async def test_enqueue_relative_expires_in_uses_enqueue_time() -> "None":
     after = datetime.now(timezone.utc)
 
     assert result.record is not None
-    assert before + timedelta(seconds=30) <= result.record.expires_at <= after + timedelta(seconds=30)
+    expires_at = result.record.expires_at
+    assert expires_at is not None
+    assert before + timedelta(seconds=30) <= expires_at <= after + timedelta(seconds=30)
 
 
 async def test_enqueue_relative_expires_in_uses_scheduled_at() -> "None":
@@ -579,8 +581,12 @@ async def test_enqueue_uses_and_overrides_task_expires_in_default() -> "None":
 
     assert default_result.record is not None
     assert override_result.record is not None
-    assert before + timedelta(seconds=45) <= default_result.record.expires_at <= after + timedelta(seconds=45)
-    assert before + timedelta(seconds=90) <= override_result.record.expires_at <= after + timedelta(seconds=90)
+    default_expires_at = default_result.record.expires_at
+    override_expires_at = override_result.record.expires_at
+    assert default_expires_at is not None
+    assert override_expires_at is not None
+    assert before + timedelta(seconds=45) <= default_expires_at <= after + timedelta(seconds=45)
+    assert before + timedelta(seconds=90) <= override_expires_at <= after + timedelta(seconds=90)
 
 
 async def test_enqueue_rejects_negative_expires_in_and_accepts_zero() -> "None":

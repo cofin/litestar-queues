@@ -564,7 +564,7 @@ class RedisQueueBackend(BaseQueueBackend):
             self._event_log = RedisQueueEventLog(backend=self, config=config)
         return self._event_log
 
-    async def enqueue(
+    async def enqueue(  # type: ignore[override]  # staged expiry capability
         self,
         task_name: "str",
         *,

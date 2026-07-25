@@ -637,3 +637,89 @@ async def test_backend_contract_forever_concurrent_reservation_single_winner(
     from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
 
     await assert_concurrent_reservation_has_single_winner(queue_backend)
+
+
+async def test_backend_contract_fences_expired_claims(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "expiry" not in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise expiry support")
+
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    overdue = await queue_backend.enqueue("tasks.overdue", expires_at=past)
+    live = await queue_backend.enqueue("tasks.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+
+    claimed = await queue_backend.claim_task(overdue.id)
+    stored_overdue = await queue_backend.get_task(overdue.id)
+    pending_ids = [record.id for record in await queue_backend.list_pending(limit=10)]
+
+    assert claimed is None
+    assert stored_overdue is not None
+    assert stored_overdue.status == "expired"
+    assert overdue.id not in pending_ids
+    assert live.id in pending_ids
+
+
+async def test_backend_contract_expire_overdue_transitions_and_reports(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "expiry" not in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise expiry support")
+
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    records = [await queue_backend.enqueue(f"tasks.expire.{index}", expires_at=past) for index in range(3)]
+
+    expired = await queue_backend.expire_overdue(limit=len(records))
+    statistics = await queue_backend.get_statistics()
+    removed = await queue_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+
+    assert [record.id for record in expired] == [record.id for record in records]
+    assert all(record.status == "expired" for record in expired)
+    assert statistics.expired == len(records)
+    assert removed == len(records)
+
+
+async def test_backend_contract_expiry_fences_retry_requeue(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "expiry" not in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise expiry support")
+
+    expires_at = datetime.now(timezone.utc) + timedelta(milliseconds=500)
+    record = await queue_backend.enqueue("tasks.retry_expiry", max_retries=1, expires_at=expires_at)
+    claimed = await queue_backend.claim_task(record.id)
+    assert claimed is not None
+    requeued = await queue_backend.fail_task(
+        record.id, "retry after deadline", expected_retry_count=claimed.retry_count
+    )
+    assert requeued is not None
+    assert requeued.status == "pending"
+    remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+    if remaining > 0:
+        await asyncio.sleep(remaining + 0.01)
+
+    reclaimed = await queue_backend.claim_task(record.id)
+    stored = await queue_backend.get_task(record.id)
+
+    assert reclaimed is None
+    assert stored is not None
+    assert stored.status == "expired"
+
+
+async def test_backend_contract_future_deadline_is_claimable(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "expiry" not in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise expiry support")
+
+    record = await queue_backend.enqueue(
+        "tasks.future_expiry", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+    )
+
+    claimed = await queue_backend.claim_task(record.id)
+    assert claimed is not None
+    completed = await queue_backend.complete_task(record.id, result="ok", expected_retry_count=claimed.retry_count)
+
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.result == "ok"

@@ -445,7 +445,7 @@ async def _build_arrow_odbc_mssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
 
 
 QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
-    BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
+    BackendCase("memory", frozenset(), None, _build_memory, frozenset({"expiry", "in-process", "notify-direct"})),
     BackendCase(
         "aiosqlite",
         frozenset({"aiosqlite", "sqlspec"}),

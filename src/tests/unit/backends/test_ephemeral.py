@@ -162,9 +162,7 @@ async def test_claim_task_skips_records_that_are_not_due(backend: "EphemeralQueu
 
 
 async def test_expired_record_is_hidden_and_fenced_at_claim(backend: "EphemeralQueueBackend") -> "None":
-    expired = await backend.enqueue(
-        "tasks.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
-    )
+    expired = await backend.enqueue("tasks.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
     available = await backend.enqueue("tasks.available")
 
     pending = await backend.list_pending(limit=10)
@@ -179,9 +177,7 @@ async def test_expired_record_is_hidden_and_fenced_at_claim(backend: "EphemeralQ
 
 
 async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBackend") -> "None":
-    expired = await backend.enqueue(
-        "tasks.expired_batch", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
-    )
+    expired = await backend.enqueue("tasks.expired_batch", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
     available = await backend.enqueue("tasks.available_batch")
 
     claimed = await backend.claim_many(limit=10)

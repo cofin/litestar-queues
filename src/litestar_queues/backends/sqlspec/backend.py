@@ -330,7 +330,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 await driver.execute_script(statement)
             await driver.commit()
 
-    async def enqueue(
+    async def enqueue(  # type: ignore[override]  # staged expiry capability
         self,
         task_name: "str",
         *,

@@ -154,7 +154,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             )
         return self._event_log
 
-    async def enqueue(
+    async def enqueue(  # type: ignore[override]  # staged expiry capability
         self,
         task_name: "str",
         *,
