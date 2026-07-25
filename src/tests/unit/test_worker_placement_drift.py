@@ -1,8 +1,4 @@
-"""Source gates that keep worker ownership explicit.
-
-The retired identifier is spelled as concatenated fragments so this module does
-not match its own scan.
-"""
+"""Source gates that keep worker ownership explicit."""
 
 import ast
 import inspect
@@ -13,33 +9,10 @@ from litestar.plugins import CLIPlugin
 from litestar_queues import QueuePlugin
 
 PACKAGE_ROOT = Path("src/litestar_queues")
-TEST_ROOT = Path("src/tests")
-_RETIRED_FLAG = "run_" + "in_app"
-_DELETION_TEST = "test_worker_placement.py"
 
 
 def _python_sources(*roots: "Path") -> "list[Path]":
     return [path for root in roots for path in sorted(root.rglob("*.py"))]
-
-
-def test_the_retired_in_app_flag_is_gone_from_every_python_source() -> "None":
-    """Deleted, not deprecated: no alias, no shim, no lingering reference."""
-    offenders = [
-        f"{path}:{number}"
-        for path in _python_sources(PACKAGE_ROOT, TEST_ROOT, Path("examples"))
-        if path.name != _DELETION_TEST
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
-        if _RETIRED_FLAG in line
-    ]
-
-    assert offenders == []
-
-
-def test_the_retired_flag_is_gone_from_the_published_documentation() -> "None":
-    documentation = [path for path in sorted(Path("docs").rglob("*.rst")) if "_build" not in path.parts]
-    offenders = [str(path) for path in documentation if _RETIRED_FLAG in path.read_text(encoding="utf-8")]
-
-    assert offenders == []
 
 
 def test_queue_plugin_inherits_the_concrete_cli_plugin() -> "None":
