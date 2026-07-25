@@ -12,7 +12,9 @@ pytest.importorskip("google.cloud.spanner_v1")
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import DefaultCredentialsError
-from google.cloud import spanner
+
+# google-cloud-spanner ships no stub exposing this namespace-package attribute.
+from google.cloud import spanner  # type: ignore[attr-defined]
 from sqlspec.adapters.spanner import SpannerSyncConfig, spanner_json
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
@@ -107,6 +109,22 @@ def _spanner_env_connection_config() -> "dict[str, object]":
     }
 
 
+def _builtin_metrics_kwargs() -> "dict[str, object]":
+    """Return the metrics opt-out only when the installed client still accepts it.
+
+    ``google-cloud-spanner`` removed ``disable_builtin_metrics`` in 3.59; against
+    the emulator the client no longer emits them, so the flag is simply dropped
+    on newer versions instead of pinning the dependency backwards.
+
+    Returns:
+        The keyword arguments to splat into ``spanner.Client``.
+    """
+    from inspect import signature
+
+    accepted = signature(spanner.Client.__init__).parameters
+    return {"disable_builtin_metrics": True} if "disable_builtin_metrics" in accepted else {}
+
+
 def _spanner_emulator_connection_config(spanner_service: "SpannerService") -> "dict[str, object]":
     return {
         "project": spanner_service.project,
@@ -114,7 +132,7 @@ def _spanner_emulator_connection_config(spanner_service: "SpannerService") -> "d
         "database_id": spanner_service.database_name,
         "credentials": spanner_service.credentials,
         "client_options": spanner_service.client_options,
-        "disable_builtin_metrics": True,
+        **_builtin_metrics_kwargs(),
     }
 
 
@@ -127,7 +145,7 @@ def _ensure_spanner_emulator_database(spanner_service: "SpannerService") -> "Non
             project=spanner_service.project,
             credentials=spanner_service.credentials,
             client_options=spanner_service.client_options,
-            disable_builtin_metrics=True,
+            **_builtin_metrics_kwargs(),
         ),
     )
     try:

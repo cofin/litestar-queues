@@ -1,9 +1,11 @@
 import asyncio
 import contextvars
 import inspect
+import os
 import pkgutil
 import random
 import sys
+import warnings
 import zoneinfo
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -13,6 +15,8 @@ from importlib import import_module, reload
 from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast, overload
 
 from typing_extensions import ParamSpec, Self
+
+from litestar_queues.exceptions import QueueWarning
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
@@ -388,6 +392,7 @@ class Task(Generic[P, T]):
         "_requeue_on_stale",
         "_retries",
         "_run_after",
+        "_sync_to_thread",
         "_timeout",
         "_unique_by",
         "_unique_until",
@@ -413,8 +418,10 @@ class Task(Generic[P, T]):
         log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
+        sync_to_thread: "bool | None" = None,
     ) -> "None":
         _validate_uniqueness(name=name, key=key, unique_by=unique_by, unique_until=unique_until)
+        self._sync_to_thread = sync_to_thread
         self._func = func
         self._name = name
         self._queue = queue
@@ -523,15 +530,40 @@ class Task(Generic[P, T]):
         """Wrapped callable."""
         return self._func
 
+    @property
+    def sync_to_thread(self) -> "bool | None":
+        """Whether a synchronous callable is offloaded to a worker thread.
+
+        ``None`` keeps the safe default and offloads; ``False`` opts in to running
+        inline on the event loop.
+        """
+        return self._sync_to_thread
+
     async def __call__(self, *args: "P.args", **kwargs: "P.kwargs") -> "T":
         """Execute the wrapped callable directly.
+
+        Unless ``sync_to_thread=False`` was set, a synchronous callable runs in a
+        worker thread so a direct call cannot block the event loop, matching how the
+        worker executes the same task.
 
         Returns:
             The wrapped callable result.
         """
-        result = self._func(*args, **kwargs)
+        return await self._invoke(args, dict(kwargs), sync_executor=None)
+
+    async def _invoke(
+        self, args: "tuple[Any, ...]", kwargs: "dict[str, Any]", *, sync_executor: "Executor | None"
+    ) -> "T":
+        if _is_async_callable(self._func):
+            coroutine_func = cast("Callable[..., Awaitable[T]]", self._func)
+            return await coroutine_func(*args, **kwargs)
+        sync_func = cast("Callable[..., T]", self._func)
+        if self._sync_to_thread is False:
+            result = sync_func(*args, **kwargs)
+        else:
+            result = await _run_sync_callable(sync_func, args, kwargs, sync_executor=sync_executor)
         if inspect.isawaitable(result):
-            return await result
+            return await cast("Awaitable[T]", result)
         return result
 
     async def execute_record(
@@ -552,11 +584,7 @@ class Task(Generic[P, T]):
             kwargs.update(extra_kwargs)
         if task_context is not None and self._accepts_task_context():
             kwargs["_task_context"] = task_context
-        if inspect.iscoroutinefunction(self._func):
-            coroutine_func = cast("Callable[..., Awaitable[T]]", self._func)
-            return await coroutine_func(*record.args, **kwargs)
-        sync_func = cast("Callable[..., T]", self._func)
-        return await _run_sync_callable(sync_func, record.args, kwargs, sync_executor=sync_executor)
+        return await self._invoke(record.args, kwargs, sync_executor=sync_executor)
 
     def metadata(self, values: "dict[str, Any] | None" = None) -> "dict[str, Any]":
         """Return enqueue metadata for this task."""
@@ -589,10 +617,12 @@ class Task(Generic[P, T]):
         log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
+        sync_to_thread: "bool | None" = None,
     ) -> "Task[P, T]":
         """Return a configured copy with enqueue overrides."""
         return Task(
             self._func,
+            sync_to_thread=sync_to_thread if sync_to_thread is not None else self._sync_to_thread,
             name=self._name,
             queue=queue if queue is not None else self._queue,
             priority=priority if priority is not None else self._priority,
@@ -617,15 +647,20 @@ class Task(Generic[P, T]):
         Returns:
             A result handle for the queued record.
         """
+        from litestar_queues.config import QueueConfig, WorkerConfig
+        from litestar_queues.service import QueueService
+
         enqueue_kwargs = cast("dict[str, Any]", kwargs)
         service = get_default_service()
         if service is not None:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
-        from litestar_queues.config import QueueConfig
-        from litestar_queues.service import QueueService
-
-        async with QueueService(QueueConfig(execution_backend="immediate")) as service:
+        # No application is wired up, so this call executes inline in the caller's
+        # process: process-local storage, inline execution, and nothing to supervise.
+        fallback = QueueConfig(
+            queue_backend="memory", execution_backend="immediate", worker=WorkerConfig(placement="external")
+        )
+        async with QueueService(fallback) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
     def _accepts_task_context(self) -> "bool":
@@ -760,6 +795,7 @@ def task(
     log_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
+    sync_to_thread: "bool | None" = None,
     cron: "str | None" = None,
     interval: "float | timedelta | None" = None,
     timezone: "str" = "UTC",
@@ -787,6 +823,7 @@ def task(
     log_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
+    sync_to_thread: "bool | None" = None,
     cron: "str | None" = None,
     interval: "float | timedelta | None" = None,
     timezone: "str" = "UTC",
@@ -821,6 +858,8 @@ def task(
 
     def decorator(func: "AnyTaskCallable") -> "Task[Any, Any]":
         task_name = explicit_name or func.__name__
+        if sync_to_thread is not None and _is_async_callable(func):
+            _warn_sync_to_thread_with_async_callable(func)
         task_obj: "Task[Any, Any]" = Task(
             cast("TaskCallable[..., Any]", func),
             name=task_name,
@@ -839,6 +878,7 @@ def task(
             log_success=log_success,
             requeue_on_stale=requeue_on_stale,
             on_stale_failure=on_stale_failure,
+            sync_to_thread=sync_to_thread,
         )
         _task_registry[task_name] = task_obj
         if schedule is not None:
@@ -915,6 +955,37 @@ def _is_valid_local_time(value: "datetime", tz: "zoneinfo.ZoneInfo") -> "bool":
         and round_tripped.microsecond == value.microsecond
         and round_tripped.fold == value.fold
         and round_tripped.utcoffset() == value.utcoffset()
+    )
+
+
+def _is_async_callable(value: "object") -> "bool":
+    """Detect async callables the way Litestar's ``is_async_callable`` does.
+
+    Extends :func:`inspect.iscoroutinefunction` to also detect async
+    :func:`functools.partial` objects and class instances defining ``async def
+    __call__``. Reimplemented here because importing ``litestar.utils`` pulls optional
+    backend packages into the core import path.
+
+    Returns:
+        Whether calling ``value`` returns an awaitable.
+    """
+    while isinstance(value, partial):
+        value = value.func
+    if inspect.iscoroutinefunction(value):
+        return True
+    call = getattr(value, "__call__", None)  # noqa: B004
+    return callable(value) and call is not None and inspect.iscoroutinefunction(call)
+
+
+def _warn_sync_to_thread_with_async_callable(source: "object", stacklevel: "int" = 3) -> "None":
+    if os.getenv("LITESTAR_WARN_SYNC_TO_THREAD_WITH_ASYNC") == "0":
+        return
+    warnings.warn(
+        f"Use of an asynchronous callable {source} with sync_to_thread; sync_to_thread has no effect on async "
+        "callables, which always run on the event loop. You can disable this warning by setting "
+        "LITESTAR_WARN_SYNC_TO_THREAD_WITH_ASYNC=0",
+        category=QueueWarning,
+        stacklevel=stacklevel,
     )
 
 

@@ -20,7 +20,7 @@ async def test_queue_config_uses_single_observability_field() -> "None":
     from litestar_queues.observability import ObservabilityConfig
 
     observability = ObservabilityConfig(enable_otel=True, enable_prometheus=True)
-    config = QueueConfig(observability=observability)
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", observability=observability)
     field_names = {config_field.name for config_field in fields(QueueConfig)}
 
     assert config.observability is observability
@@ -39,7 +39,10 @@ async def test_enqueue_uses_observability_runtime_for_producer_span_and_context(
     async def observed_enqueue() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(observed_enqueue, metadata={"source": "test"})
 
     assert runtime.started_spans[0].name == "litestar_queues.publish"
@@ -60,7 +63,7 @@ async def test_enqueue_uses_observability_runtime_for_producer_span_and_context(
     assert result.record.metadata["_otel_context"] == {"traceparent": "00-test"}
     assert runtime.counters == [
         (
-            "litestar_queues.enqueue.count",
+            "litestar_queues.enqueue",
             1,
             {
                 "messaging.destination.name": "critical",
@@ -81,7 +84,10 @@ async def test_execute_record_uses_observability_runtime_for_consumer_span() -> 
     async def observed_execute() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(observed_execute)
         assert result.record is not None
         claimed = await service.get_queue_backend().claim_task(result.id)
@@ -96,7 +102,7 @@ async def test_execute_record_uses_observability_runtime_for_consumer_span() -> 
     assert process_span.attributes["messaging.message.id"] == str(completed.id)
     assert process_span.attributes["queue.task.status"] == "completed"
     assert runtime.counters[-1] == (
-        "litestar_queues.task.execution.count",
+        "litestar_queues.task.execution",
         1,
         {
             "messaging.destination.name": "default",
@@ -128,7 +134,11 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)
     plugin = QueuePlugin(
-        QueueConfig(observability=ObservabilityConfig(enable_otel=None), worker=WorkerConfig(run_in_app=False))
+        QueueConfig(
+            queue_backend="memory",
+            observability=ObservabilityConfig(enable_otel=None),
+            worker=WorkerConfig(placement="external"),
+        )
     )
     app = Litestar(plugins=[plugin])
 
@@ -148,7 +158,10 @@ async def test_worker_records_claim_and_loop_error_metrics() -> "None":
     async def observed_worker() -> "str":
         return "ok"
 
-    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
         result = await service.enqueue(observed_worker)
         worker = Worker(service)
         assert await worker.run_once() == 1
@@ -158,12 +171,12 @@ async def test_worker_records_claim_and_loop_error_metrics() -> "None":
         await transient.start()
 
     assert (
-        "litestar_queues.worker.claim.count",
+        "litestar_queues.worker.claim",
         1,
         {"queue.execution.backend": "local", "messaging.destination.name": "default"},
     ) in runtime.counters
     assert (
-        "litestar_queues.worker.loop.error.count",
+        "litestar_queues.worker.loop.error",
         1,
         {"queue.execution.backend": "local", "worker.error.type": "RuntimeError"},
     ) in runtime.counters
@@ -242,7 +255,9 @@ async def test_cloudrun_dispatch_records_span_and_metrics() -> "None":
         jobs_client=_FakeCloudRunJobsClient(),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), execution_backend=backend, observability_runtime=runtime
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        execution_backend=backend,
+        observability_runtime=runtime,
     ) as service:
         result = await service.enqueue(observed_cloudrun)
         assert result.record is not None
@@ -254,7 +269,7 @@ async def test_cloudrun_dispatch_records_span_and_metrics() -> "None":
     assert dispatch_span.kind == "producer"
     assert dispatch_span.attributes["queue.execution.backend"] == "cloudrun"
     assert (
-        "litestar_queues.execution.dispatch.count",
+        "litestar_queues.execution.dispatch",
         1,
         {
             "messaging.destination.name": "default",
@@ -309,6 +324,10 @@ class FakeObservabilityRuntime:
     def record_exception(self, span: "FakeSpan | None", exc: "BaseException") -> "None":
         if span is not None:
             span.record_exception(exc)
+
+    def set_status_error(self, span: "FakeSpan | None", description: "str") -> "None":
+        if span is not None:
+            span.set_attribute("otel.status_description", description)
 
     def end_span(self, span: "FakeSpan | None") -> "None":
         if span is not None:
@@ -403,3 +422,293 @@ class _FakeCloudRunExecution:
         self.failed_count = 0
         self.cancelled_count = 0
         self.conditions: "list[Any] | None" = []
+
+
+async def test_prometheus_metrics_reach_the_default_registry() -> "None":
+    """Metrics must land in the registry Litestar's PrometheusController scrapes.
+
+    Passing ``registry=None`` through to prometheus_client means *do not register*,
+    so the collectors existed but nothing was ever exported.
+    """
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True))
+    runtime.record_counter("litestar_queues.default_registry", attributes={"queue.backend": "memory"})
+
+    exported = prometheus_client.generate_latest(prometheus_client.REGISTRY).decode()
+
+    assert "litestar_queues_default_registry_total" in exported
+    assert (
+        prometheus_client.REGISTRY.get_sample_value(
+            "litestar_queues_default_registry_total", labels={"queue.backend": "memory"}
+        )
+        == 1.0
+    )
+
+
+async def test_prometheus_auto_enables_with_litestar_prometheus_middleware() -> "None":
+    """A Litestar app wired for Prometheus should switch queue metrics on by itself."""
+    pytest.importorskip("prometheus_client")
+
+    from litestar import Litestar
+    from litestar.plugins.prometheus import PrometheusConfig
+
+    from litestar_queues.observability import ObservabilityConfig
+
+    config = ObservabilityConfig()
+    wired = Litestar(route_handlers=[], middleware=[PrometheusConfig().middleware])
+    bare = Litestar(route_handlers=[])
+
+    assert config.should_enable_prometheus(wired) is True
+    assert config.should_enable_prometheus(bare) is False
+    assert config.should_enable_prometheus() is False
+    assert ObservabilityConfig(enable_prometheus=False).should_enable_prometheus(wired) is False
+
+
+async def test_runtimes_sharing_a_registry_reuse_collectors() -> "None":
+    """A service and a worker in one process must not collide on registration."""
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    registry = prometheus_client.CollectorRegistry()
+    config = ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry)
+
+    QueueObservabilityRuntime(config).record_counter("litestar_queues.shared", attributes={"scope": "a"})
+    QueueObservabilityRuntime(config).record_counter("litestar_queues.shared", attributes={"scope": "a"})
+
+    assert registry.get_sample_value("litestar_queues_shared_total", labels={"scope": "a"}) == 2.0
+
+
+async def test_duration_buckets_cover_long_running_tasks() -> "None":
+    """Task durations past the ten-second client default must not all land in +Inf."""
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    registry = prometheus_client.CollectorRegistry()
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry))
+
+    runtime.record_duration("litestar_queues.slow.duration", 120.0, attributes={"scope": "worker"})
+
+    assert (
+        registry.get_sample_value(
+            "litestar_queues_slow_duration_seconds_bucket", labels={"scope": "worker", "le": "300.0"}
+        )
+        == 1.0
+    )
+    assert (
+        registry.get_sample_value(
+            "litestar_queues_slow_duration_seconds_bucket", labels={"scope": "worker", "le": "60.0"}
+        )
+        == 0.0
+    )
+
+
+async def test_publish_span_is_the_injected_parent() -> "None":
+    """The consumer span must descend from the publish span, not the ambient one.
+
+    ``start_span`` does not make a span current, so injection used to serialise
+    whatever context happened to be active -- the HTTP server span, or nothing.
+    """
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    provider = TracerProvider()
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_otel=True, tracer_provider=provider))
+
+    publish = runtime.start_span("litestar_queues.publish", kind="producer", attributes={})
+    assert publish is not None
+    metadata: "dict[str, Any]" = {}
+    runtime.inject_trace_context(metadata)
+    publish_span: "Any" = publish.span
+    publish_context = publish_span.get_span_context()
+    runtime.end_span(publish)
+
+    assert metadata, "enqueue with no ambient span must still propagate trace context"
+
+    process = runtime.start_span(
+        "litestar_queues.process", kind="consumer", attributes={}, parent=runtime.extract_trace_context(metadata)
+    )
+    assert process is not None
+    process_span: "Any" = process.span
+    nested: "Any" = provider.get_tracer("nested").start_span("db.query")
+
+    assert process_span.parent.span_id == publish_context.span_id
+    assert process_span.get_span_context().trace_id == publish_context.trace_id
+    assert nested.parent.span_id == process_span.get_span_context().span_id
+
+    nested.end()
+    runtime.end_span(process)
+    assert trace.get_current_span() is trace.INVALID_SPAN
+
+
+async def test_recorded_exception_marks_the_span_failed() -> "None":
+    """Trace backends key error rates off span status, not recorded exceptions."""
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.trace import StatusCode
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_otel=True, tracer_provider=TracerProvider()))
+    span = runtime.start_span("litestar_queues.process", kind="consumer", attributes={})
+
+    assert span is not None
+    runtime.record_exception(span, RuntimeError("boom"))
+    failed_span: "Any" = span.span
+    assert failed_span.status.status_code is StatusCode.ERROR
+
+    other = runtime.start_span("litestar_queues.process", kind="consumer", attributes={})
+    assert other is not None
+    runtime.set_status_error(other, "task failed")
+    other_span: "Any" = other.span
+    assert other_span.status.status_code is StatusCode.ERROR
+
+    runtime.end_span(other)
+    runtime.end_span(span)
+
+
+async def test_stale_recovery_labels_stay_bounded(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Recovery counts belong in the sample value, never in a label value.
+
+    Emitting them as label values minted a fresh time series for every distinct
+    tally of requeued/failed/skipped/handler-needed tasks.
+    """
+    from litestar_queues.models import StaleTaskRecoveryResult
+
+    runtime = FakeObservabilityRuntime()
+
+    async def recover(_self: "QueueService", **_kwargs: "Any") -> "StaleTaskRecoveryResult":
+        return StaleTaskRecoveryResult(requeued=3, failed=2, skipped=0, handler_needed=1)
+
+    monkeypatch.setattr(QueueService, "recover_stale_tasks", recover)
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
+        worker = Worker(service, WorkerConfig(stale_after=0.01))
+        await worker._maybe_requeue_stale()
+
+    stale_samples = [entry for entry in runtime.counters if entry[0] == "litestar_queues.stale_recovery"]
+
+    assert {(value, attributes["queue.stale.outcome"]) for _name, value, attributes in stale_samples} == {
+        (3, "requeued"),
+        (2, "failed"),
+        (1, "handler_needed"),
+    }
+    for _name, _value, attributes in stale_samples:
+        assert set(attributes) == {"queue.execution.backend", "queue.stale.outcome"}
+        assert not any(value.isdigit() for value in attributes.values())
+
+
+async def test_correlation_id_round_trips_through_record_metadata() -> "None":
+    """A worker must run the task under the correlation ID of the enqueueing request."""
+    pytest.importorskip("sqlspec")
+
+    from sqlspec.utils.correlation import CorrelationContext
+
+    from litestar_queues._correlation import bind_correlation_id, capture_correlation_id, reset_correlation_id
+
+    CorrelationContext.set("request-42")
+    metadata: "dict[str, Any]" = {}
+    capture_correlation_id(metadata)
+    CorrelationContext.set(None)
+
+    assert metadata == {"_correlation_id": "request-42"}
+
+    state = bind_correlation_id(metadata)
+    assert CorrelationContext.get() == "request-42"
+    reset_correlation_id(state)
+    assert CorrelationContext.get() is None
+
+    empty = bind_correlation_id({})
+    assert CorrelationContext.get() is None
+    reset_correlation_id(empty)
+
+
+def test_core_imports_stay_free_of_optional_telemetry() -> "None":
+    """Importing core queue APIs must not drag in OTel, Prometheus, or SQLSpec."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import litestar_queues, litestar_queues.service, litestar_queues.config; "
+        "print([m for m in ('opentelemetry', 'prometheus_client', 'sqlspec') if m in sys.modules])"
+    )
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+
+    assert completed.stdout.strip() == "[]"
+
+
+async def test_unset_execution_profile_is_omitted_from_spans_but_kept_on_metrics() -> "None":
+    """Spans omit unknown attributes; metrics cannot, because label names are fixed.
+
+    Prometheus binds label names when the collector is constructed, so the key must
+    always be present there. An empty label value is the correct encoding: Prometheus
+    treats it as equivalent to the label being absent.
+    """
+    runtime = FakeObservabilityRuntime()
+
+    @task("observability.no_profile")
+    async def no_profile() -> "str":
+        return "ok"
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
+        result = await service.enqueue(no_profile)
+        claimed = await service.get_queue_backend().claim_task(result.id)
+        assert claimed is not None
+        await service.execute_record(claimed)
+
+    for span in runtime.started_spans:
+        assert "queue.execution.profile" not in span.attributes
+    for _name, _value, attributes in runtime.counters:
+        if "queue.execution.profile" in attributes:
+            assert attributes["queue.execution.profile"] == ""
+
+
+async def test_counter_instrument_names_carry_no_count_suffix() -> "None":
+    """The instrument type already conveys "count"; semconv discourages the suffix."""
+    runtime = FakeObservabilityRuntime()
+
+    @task("observability.naming", execution_profile="heavy")
+    async def naming() -> "str":
+        return "ok"
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
+        result = await service.enqueue(naming)
+        claimed = await service.get_queue_backend().claim_task(result.id)
+        assert claimed is not None
+        await service.execute_record(claimed)
+
+    recorded = {name for name, _value, _attributes in runtime.counters}
+
+    assert recorded, "expected counter samples"
+    assert not any(name.endswith(".count") for name in recorded)
+    assert "litestar_queues.enqueue" in recorded
+    assert "litestar_queues.task.execution" in recorded
+
+
+def test_counter_prometheus_names_are_unchanged_by_the_instrument_rename() -> "None":
+    """Dropping the OTel ``.count`` suffix must not move any Prometheus series."""
+    pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import _counter_name
+
+    assert _counter_name("litestar_queues.enqueue", None) == "litestar_queues_enqueue"
+    assert _counter_name("litestar_queues.worker.loop.error", None) == "litestar_queues_worker_loop_error"
+    assert _counter_name("litestar_queues.stale_recovery", None) == "litestar_queues_stale_recovery"

@@ -156,8 +156,10 @@ class SpannerMaintenanceStore(SQLSpecMaintenanceStore):
         )
         column_sql = ",\n  ".join(columns)
         return [
-            f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
-            f"PRIMARY KEY ({self._quote_identifier('name')})"
+            (
+                f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+                f"PRIMARY KEY ({self._quote_identifier('name')})"
+            )
         ]
 
     def drop_statements(self) -> "list[str]":
@@ -168,9 +170,10 @@ class SpannerMaintenanceStore(SQLSpecMaintenanceStore):
 
     def create_schema_for_config(self, config: "Any") -> "None":
         """Create the coordination table through Spanner's native DDL operation API."""
+        from litestar_queues.backends.sqlspec.stores.spanner import _execute_spanner_ddl
+
         if not self._manage_schema:
             return
-        from litestar_queues.backends.sqlspec.stores.spanner.store import _execute_spanner_ddl
 
         get_database = getattr(config, "get_database", None)
         if not callable(get_database):

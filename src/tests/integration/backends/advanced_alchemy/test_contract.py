@@ -25,7 +25,7 @@ from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from advanced_alchemy.operations import MergeStatement
 
-from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues import HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackend, SQLAlchemyBackendConfig
 from litestar_queues.models import QueuedTaskRecord, TaskRequest
@@ -92,7 +92,7 @@ from litestar_queues import InMemoryQueueBackend, QueueConfig
 
 assert "InMemoryQueueBackend" in litestar_queues.__all__
 assert "SQLAlchemyBackend" not in litestar_queues.__all__
-assert QueueConfig().queue_backend == "memory"
+assert QueueConfig().queue_backend == "ephemeral"
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 
@@ -784,7 +784,8 @@ async def test_queue_service_uses_advanced_alchemy_backend(tmp_path: "Path") -> 
     sqlalchemy_config = _sqlite_config(tmp_path / "service.db")
     await create_tables(sqlalchemy_config, ContractQueueTask)
     queue_config = QueueConfig(
-        queue_backend=SQLAlchemyBackendConfig(sqlalchemy_config=sqlalchemy_config, model_class=ContractQueueTask)
+        worker=WorkerConfig(placement="external"),
+        queue_backend=SQLAlchemyBackendConfig(sqlalchemy_config=sqlalchemy_config, model_class=ContractQueueTask),
     )
 
     async with QueueService(queue_config) as service:

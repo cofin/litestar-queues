@@ -165,7 +165,7 @@ def test_bulk_values_orders_columns_to_match_create_table() -> "None":
     """
     from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-    from litestar_queues.backends.sqlspec.stores.aiosqlite.store import AiosqliteQueueStore
+    from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
     from litestar_queues.backends.sqlspec.stores.base import _TASK_COLUMNS
 
     store = AiosqliteQueueStore(AiosqliteConfig(connection_config={"database": ":memory:"}))

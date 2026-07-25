@@ -78,8 +78,8 @@ Recommended topology
 Use one web service, one always-on dispatcher service, and one Cloud Run Job
 that runs the queued task.
 
-The web service should use ``WorkerConfig(run_in_app=False)`` so it only enqueues
-records. The dispatcher service owns the worker loop.
+The web service should use ``WorkerConfig(placement="external")`` so it only
+enqueues records. The dispatcher service owns the worker loop.
 
 .. code-block:: python
 
@@ -101,7 +101,7 @@ records. The dispatcher service owns the worker loop.
            job_name="my-worker-job",
            profiles={"heavy": "my-worker-job-heavy"},
        ),
-       worker=WorkerConfig(run_in_app=False),
+       worker=WorkerConfig(placement="external"),
        task_modules=("myapp.tasks",),
    )
 
@@ -153,7 +153,7 @@ background polling works only while the service stays warm and has CPU.
            region="my-region",
            job_name="my-worker-job",
        ),
-       worker=WorkerConfig(run_in_app=True),
+       worker=WorkerConfig(placement="asgi"),
    )
 
 .. code-block:: bash

@@ -17,9 +17,9 @@ def test_plugin_instantiation_with_defaults() -> "None":
     from litestar_queues import QueuePlugin
 
     plugin = QueuePlugin()
-    assert plugin.config.queue_backend == "memory"
+    assert plugin.config.queue_backend == "ephemeral"
     assert plugin.config.execution_backend == "local"
-    assert plugin.config.worker.run_in_app is True
+    assert plugin.config.worker.placement == "server"
 
 
 def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None":
@@ -28,7 +28,7 @@ def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None"
 
     plugin = QueuePlugin(config=queue_config)
     assert plugin.config.queue_backend == "memory"
-    assert plugin.config.worker.run_in_app is False
+    assert plugin.config.worker.placement == "external"
 
 
 def test_config_defaults() -> "None":
@@ -36,27 +36,29 @@ def test_config_defaults() -> "None":
     from litestar_queues import QueueConfig
 
     config = QueueConfig()
-    assert config.queue_backend == "memory"
+    assert config.queue_backend == "ephemeral"
     assert config.execution_backend == "local"
     assert config.service_dependency_key == "queue_service"
-    assert config.worker.run_in_app is True
+    assert config.worker.placement == "server"
     assert config.log_success is False
     assert config.scheduler_canary_task == "scheduler.heartbeat"
 
 
-def test_worker_run_in_app_controls_plugin_worker_startup() -> "None":
-    """WorkerConfig.run_in_app controls plugin worker startup."""
+def test_worker_placement_selects_the_process_that_owns_the_worker() -> "None":
+    """``WorkerConfig.placement`` replaces the old in-app boolean."""
     from litestar_queues import QueueConfig
 
-    config = QueueConfig(worker=WorkerConfig(run_in_app=False))
-    assert config.worker.run_in_app is False
+    config = QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external"))
+    assert config.worker.placement == "external"
 
 
 def test_scheduler_canary_task_is_overridable() -> "None":
     """Operators can override the canary task name used by scheduler-health."""
     from litestar_queues import QueueConfig
 
-    config = QueueConfig(scheduler_canary_task="ops.healthcheck")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend="memory", scheduler_canary_task="ops.healthcheck"
+    )
     assert config.scheduler_canary_task == "ops.healthcheck"
 
 
@@ -83,7 +85,7 @@ def test_plugin_registers_dependencies_and_state() -> "None":
 
     from litestar_queues import QueueConfig, QueuePlugin
 
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     plugin = QueuePlugin(config=config)
     app_config = AppConfig()
 
@@ -102,7 +104,7 @@ def test_queue_config_get_service_requires_opened_app_state_service() -> "None":
 
     from litestar_queues import QueueConfig, QueueService
 
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     app_config = AppConfig()
     service = QueueService(config)
 
@@ -125,9 +127,14 @@ async def test_plugin_worker_receives_configured_poll_backoff_settings() -> "Non
 
     plugin = QueuePlugin(
         QueueConfig(
+            queue_backend="memory",
             execution_backend="local",
             worker=WorkerConfig(
-                run_in_app=True, poll_interval=0.01, poll_backoff_max=1.0, poll_backoff_multiplier=3.0, poll_jitter=0.25
+                placement="asgi",
+                poll_interval=0.01,
+                poll_backoff_max=1.0,
+                poll_backoff_multiplier=3.0,
+                poll_jitter=0.25,
             ),
         )
     )
@@ -146,7 +153,9 @@ async def test_plugin_worker_defaults_to_enabled_poll_backoff() -> "None":
     from litestar_queues import QueueConfig, QueuePlugin
 
     plugin = QueuePlugin(
-        QueueConfig(execution_backend="local", worker=WorkerConfig(run_in_app=True, poll_interval=0.01))
+        QueueConfig(
+            queue_backend="memory", execution_backend="local", worker=WorkerConfig(placement="asgi", poll_interval=0.01)
+        )
     )
     app = Litestar(plugins=[plugin])
 
@@ -164,7 +173,9 @@ async def test_plugin_worker_explicit_backoff_max_none_opts_out_to_fixed_polling
 
     plugin = QueuePlugin(
         QueueConfig(
-            execution_backend="local", worker=WorkerConfig(run_in_app=True, poll_interval=0.01, poll_backoff_max=None)
+            queue_backend="memory",
+            execution_backend="local",
+            worker=WorkerConfig(placement="asgi", poll_interval=0.01, poll_backoff_max=None),
         )
     )
     app = Litestar(plugins=[plugin])

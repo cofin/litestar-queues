@@ -2,7 +2,7 @@ from typing import cast
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, task
+from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.events import (
     EventBufferConfig,
     EventDeliveryConfig,
@@ -44,7 +44,10 @@ async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None"
 
     async with QueueService(
         QueueConfig(
-            execution_backend="immediate", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)))
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="immediate",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
         )
     ) as service:
         result = await service.enqueue(with_context)
@@ -80,7 +83,10 @@ async def test_task_context_keyword_is_not_injected_when_callable_does_not_accep
 
     async with QueueService(
         QueueConfig(
-            execution_backend="immediate", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)))
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="immediate",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
         )
     ) as service:
         result = await service.enqueue(plain)

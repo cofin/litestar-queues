@@ -51,7 +51,7 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Generator, Iterator, Mapping, Sequence
 
     from litestar_queues.backends.sqlspec._typing import (
         SQLSpecConfig,
@@ -139,6 +139,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_owns_sqlspec",
         "_pending_read",
         "_queue_table_name",
+        "_sqlcommenter_enabled",
         "_sqlspec",
         "_sqlspec_config",
         "_store",
@@ -193,6 +194,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._wakeup_poll_interval = worker_wakeups.poll_interval if worker_wakeups is not None else None
         self._wakeup_settings = dict(worker_wakeups.settings) if worker_wakeups is not None else {}
         self._native_observability_enabled = True
+        self._sqlcommenter_enabled = False
         self._wakeup_backend = _canonical_wakeup_transport(getattr(self._event_channel, "_backend_name", None))
         self._worker_wakeups_enabled = self._event_channel is not None
         self._event_log_store: "Any | None" = None
@@ -220,6 +222,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         self._get_or_create_sqlspec()
         self._resolve_queue_table_name()
+        self._apply_sqlcommenter()
         self._configure_worker_wakeups()
         self._register_heartbeat_pool()
         self._opened = True
@@ -264,6 +267,33 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     def _set_package_observability_enabled(self, enabled: "bool") -> "None":
         """Suppress SQLSpec queue-domain telemetry when package telemetry is active."""
         self._native_observability_enabled = not enabled
+
+    def _set_sqlcommenter_enabled(self, enabled: "bool") -> "None":
+        """Attach SQLCommenter attribution to queue statements when telemetry is active."""
+        self._sqlcommenter_enabled = enabled
+
+    def _apply_sqlcommenter(self) -> "None":
+        """Turn on SQLCommenter attribution for the queue's SQLSpec config.
+
+        SQLSpec resolves ``traceparent`` from the current OpenTelemetry span, so the
+        comment carries the queue's producer or consumer span and joins database
+        telemetry to the task that issued the statement.
+        """
+        if not self._sqlcommenter_enabled:
+            return
+        config = self._get_sqlspec_config()
+        statement_config = getattr(config, "statement_config", None)
+        replace = getattr(statement_config, "replace", None)
+        if replace is None or getattr(statement_config, "enable_sqlcommenter", False):
+            return
+        attributes = dict(getattr(statement_config, "sqlcommenter_attributes", None) or {})
+        attributes.setdefault("framework", "litestar-queues")
+        config.statement_config = replace(
+            enable_sqlcommenter=True,
+            sqlcommenter_attributes=attributes,
+            sqlcommenter_enable_traceparent=True,
+            sqlcommenter_enable_context=True,
+        )
 
     async def create_schema(self) -> "None":
         """Create the SQLSpec queue table and indexes."""
@@ -337,7 +367,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return await self._enqueue_keyed(record, key)
         store = self._get_store()
         if not type(store).supports_dml_returning:
-            return await self._enqueue_legacy(record)
+            return await self._enqueue_without_returning(record)
         with self._observe_queue_operation("enqueue", queue=queue, task_name=task_name):
             async with self._session() as driver:
                 await driver.execute(store.insert_returning_sql(), self._insert_params(record))
@@ -374,7 +404,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await self.notify_new_task(record)
         return record
 
-    async def _enqueue_legacy(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+    async def _enqueue_without_returning(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         with self._observe_queue_operation("enqueue", queue=record.queue, task_name=record.task_name):
             async with self._session() as driver:
                 await driver.begin()
@@ -702,7 +732,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         now = _utc_now()
         store = self._get_store()
         if not type(store).supports_dml_returning:
-            return await self._complete_task_legacy(task_id, result=result, expected_retry_count=expected_retry_count)
+            return await self._complete_task_without_returning(
+                task_id, result=result, expected_retry_count=expected_retry_count
+            )
         parameters: "dict[str, Any]" = {
             "id": str(task_id),
             "completed_at": self._serialize_datetime(now),
@@ -721,7 +753,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._increment_queue_metric("claim_lost")
         return completed
 
-    async def _complete_task_legacy(
+    async def _complete_task_without_returning(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
         now = _utc_now()
@@ -764,7 +796,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "QueuedTaskRecord | None":
         store = self._get_store()
         if not type(store).supports_dml_returning:
-            return await self._fail_task_legacy(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+            return await self._fail_task_without_returning(
+                task_id, error, retry=retry, expected_retry_count=expected_retry_count
+            )
         now = _utc_now()
         stored_error = store.serialize_error(error)
         parameters: "dict[str, Any]" = {
@@ -788,7 +822,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self.notify_new_task(updated)
         return updated
 
-    async def _fail_task_legacy(
+    async def _fail_task_without_returning(
         self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):
@@ -1732,7 +1766,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._get_sqlspec_config().get_observability_runtime()
 
     @contextmanager
-    def _observe_queue_operation(self, operation: "str", **attributes: "Any") -> "Iterator[None]":
+    def _observe_queue_operation(self, operation: "str", **attributes: "Any") -> "Generator[None]":
         runtime = self._get_observability_runtime()
         if runtime is None:
             yield

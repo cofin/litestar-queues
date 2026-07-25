@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip("sqlspec")
 
+from litestar_queues import WorkerConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import migration_paths
 from tests.integration._names import table_name_for_test
@@ -133,7 +134,9 @@ async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned(
         maintenance_table_name="custom_maintenance",
         task_reservation_table_name="custom_reservation",
     )
-    plugin = QueuePlugin(QueueConfig(queue_backend=backend_config, initialize_schedules=False))
+    plugin = QueuePlugin(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend=backend_config, initialize_schedules=False)
+    )
 
     plugin.on_cli_init(Group())
 

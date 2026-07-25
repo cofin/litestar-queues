@@ -39,8 +39,10 @@ def render_markdown(result: BenchmarkResult) -> str:
             "",
             "## Paired comparisons",
             "",
-            "Ratios are candidate throughput divided by Litestar Queues throughput. Results need the configured "
-            "sample count and confidence interval before a difference is marked material.",
+            (
+                "Ratios are candidate throughput divided by Litestar Queues throughput. Results need the "
+                "configured sample count and confidence interval before a difference is marked material."
+            ),
             "",
             "| Candidate | Backend | Scenario | Pairs | Ratio | 95% interval | Material | Class |",
             "|---|---|---|---:|---:|---:|---|---|",

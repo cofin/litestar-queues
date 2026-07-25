@@ -103,7 +103,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
     queue_backend = InMemoryQueueBackend()
     jobs_client = FakeJobsClient()
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"),
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
         queue_backend=queue_backend,
         execution_backend=CloudRunExecutionBackend(
             execution_config=CloudRunExecutionConfig(
@@ -155,7 +155,9 @@ async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
         jobs_client=cast("CloudRunJobsClient", jobs_client),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     ) as service:
         result = await service.enqueue(remote_task.using(execution_backend="cloudrun"), 41)
         record = result.record
@@ -190,7 +192,9 @@ async def test_cloudrun_dispatch_env_excludes_large_and_sensitive_task_args() ->
         jobs_client=cast("CloudRunJobsClient", jobs_client),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     ) as service:
         result = await service.enqueue(remote_sensitive_args.using(execution_backend="cloudrun"), large_payload, secret)
         record = result.record
@@ -225,7 +229,9 @@ async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
         jobs_client=cast("CloudRunJobsClient", jobs_client),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     ) as service:
         result = await service.enqueue(remote_task.using(execution_backend="cloudrun"), 41)
         record = result.record
@@ -252,7 +258,9 @@ async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() 
         jobs_client=cast("CloudRunJobsClient", jobs_client),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -284,7 +292,9 @@ async def test_cloudrun_dispatch_failure_default_surfaces_and_preserves_backend(
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient(error=RuntimeError("api unavailable"))),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -323,7 +333,10 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
     event_sink = InMemoryQueueEventSink()
     service = QueueService(
         QueueConfig(
-            execution_backend="cloudrun", events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(event_sink,)))
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="cloudrun",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(event_sink,))),
         ),
         queue_backend=queue_backend,
         execution_backend=backend,
@@ -372,7 +385,9 @@ async def test_cloudrun_reconcile_updates_terminal_statuses(
         executions_client=FakeExecutionsClient(execution),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -399,7 +414,9 @@ async def test_cloudrun_reconcile_treats_transient_status_errors_as_running() ->
         executions_client=FakeExecutionsClient(RuntimeError("temporary api failure")),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -428,7 +445,9 @@ async def test_cloudrun_reconcile_retries_preclaim_not_found_and_clears_executio
         executions_client=FakeExecutionsClient(NotFoundError("execution not found")),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -459,7 +478,9 @@ async def test_cloudrun_reconcile_does_not_terminal_write_after_stale_retry_reas
         executions_client=FakeExecutionsClient(FakeCloudRunExecution(succeeded_count=1)),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     )
     await service.open()
     try:
@@ -496,7 +517,9 @@ async def test_worker_dispatches_external_records_without_claiming_them() -> "No
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     ) as service:
         result = await service.enqueue(remote_task.using(execution_backend="cloudrun"))
         worker = Worker(service)
@@ -519,7 +542,9 @@ async def test_worker_reconciles_running_external_records() -> "None":
         executions_client=FakeExecutionsClient(FakeCloudRunExecution(failed_count=1)),
     )
     async with QueueService(
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend, execution_backend=backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
     ) as service:
         record = await queue_backend.enqueue("tasks.remote", execution_backend="cloudrun")
         await queue_backend.set_execution_ref(record.id, "cloudrun", "executions/run-1")
@@ -562,7 +587,11 @@ async def test_cloudrun_dispatched_task_delivers_beat_detail_through_consumer() 
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     service = QueueService(
-        QueueConfig(execution_backend="cloudrun", worker=WorkerConfig(heartbeat_interval=0.01)),
+        QueueConfig(
+            queue_backend="memory",
+            execution_backend="cloudrun",
+            worker=WorkerConfig(placement="external", heartbeat_interval=0.01),
+        ),
         queue_backend=queue_backend,
         execution_backend=backend,
     )

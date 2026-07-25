@@ -2,17 +2,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, get_args, runtime_checkable
 
 from litestar_queues.exceptions import QueueConfigurationError
-
-logger = getLogger(__name__)
-
-_SERVICE_STATE_KEY = "queue_service"
-_WORKER_STATE_KEY = "queue_worker"
-_EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
-_EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
-_OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -33,21 +25,46 @@ __all__ = (
     "AsyncServiceProvider",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
+    "MigrationConfiguringBackend",
     "QueueBackendConfig",
     "QueueBackendConfigProtocol",
     "QueueConfig",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "WorkerConfig",
+    "WorkerPlacement",
     "execution_backend_name",
     "queue_backend_name",
 )
+
+logger = getLogger(__name__)
+
+_SERVICE_STATE_KEY = "queue_service"
+_WORKER_STATE_KEY = "queue_worker"
+_EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
+_EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
+_OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
 
 
 class QueueBackendConfigProtocol(Protocol):
     """Protocol for typed queue backend configuration objects."""
 
     backend_name: "ClassVar[str]"
+
+
+@runtime_checkable
+class MigrationConfiguringBackend(Protocol):
+    """Backend config that registers its own migrations during plugin init.
+
+    A backend owns whatever application wiring its storage needs. ``QueuePlugin``
+    only asks whether the configured backend provides this hook, so selecting one
+    backend never imports another backend's package -- or requires its extra to be
+    installed.
+    """
+
+    def configure_migrations(self, config: "QueueConfig") -> "None":
+        """Register backend-owned migrations with the application."""
+        ...
 
 
 class ExecutionBackendConfigProtocol(Protocol):
@@ -61,6 +78,23 @@ QueueBackendConfig = str | QueueBackendConfigProtocol
 
 ExecutionBackendConfig = str | ExecutionBackendConfigProtocol
 """Type alias for execution backend selectors."""
+
+WorkerPlacement = Literal["server", "asgi", "external"]
+"""Which process owns the queue worker.
+
+``server``
+    The Litestar CLI server lifespan owns exactly one fresh worker process per
+    ``litestar run`` invocation. This is the default.
+``asgi``
+    Each ASGI worker owns one queue worker inside its own application lifespan.
+    Deliberately multiplicative with the web-worker count.
+``external``
+    Nothing is started automatically; a separate process manager runs
+    ``litestar queues run``, or the caller executes tasks inline.
+"""
+
+_PLACEMENTS: "tuple[str, ...]" = get_args(WorkerPlacement)
+_MANAGED_PLACEMENTS = ("server", "asgi")
 
 
 def queue_backend_name(backend: "QueueBackendConfig") -> "str":
@@ -139,8 +173,8 @@ class AsyncServiceProvider:
 class WorkerConfig:
     """Configuration shared by in-app and standalone workers."""
 
-    run_in_app: "bool" = True
-    """Whether QueuePlugin starts a worker inside the application lifespan."""
+    placement: "WorkerPlacement" = "server"
+    """Which process owns this worker; see :data:`WorkerPlacement`."""
 
     id: "str | None" = None
     """Explicit worker identity; ``None`` uses a process-derived identifier."""
@@ -184,11 +218,17 @@ class WorkerConfig:
     final_cancel_timeout: "float" = 5
     """Maximum post-cancellation drain time in seconds."""
 
+    startup_timeout: "float" = 30
+    """Maximum time to wait for worker startup readiness in seconds."""
+
     queues: "tuple[str, ...]" = ()
     """Queue names claimed by this worker; empty claims every queue."""
 
     def __post_init__(self) -> "None":
-        """Validate worker concurrency, intervals, and adaptive polling."""
+        """Validate worker placement, concurrency, intervals, and adaptive polling."""
+        if self.placement not in _PLACEMENTS:
+            msg = f"WorkerConfig.placement must be one of {_PLACEMENTS}, not {self.placement!r}."
+            raise QueueConfigurationError(msg)
         positive = {
             "batch_size": self.batch_size,
             "poll_interval": self.poll_interval,
@@ -199,6 +239,7 @@ class WorkerConfig:
             "stale_check_interval": self.stale_check_interval,
             "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
             "final_cancel_timeout": self.final_cancel_timeout,
+            "startup_timeout": self.startup_timeout,
         }
         for name, value in positive.items():
             if value <= 0:
@@ -222,7 +263,7 @@ class WorkerConfig:
 class QueueConfig:
     """Configuration for QueuePlugin."""
 
-    queue_backend: "QueueBackendConfig" = "memory"
+    queue_backend: "QueueBackendConfig" = "ephemeral"
     """Queue-record persistence backend selector or typed backend configuration."""
 
     execution_backend: "ExecutionBackendConfig" = "local"
@@ -258,11 +299,15 @@ class QueueConfig:
     log_success: "bool" = False
     """Whether successful task completion emits an informational log by default."""
 
-    sync_executor_max_workers: "int | None" = None
-    """Maximum synchronous task executor threads; ``None`` uses the executor default."""
+    sync_thread_pool_size: "int" = 40
+    """Maximum threads running synchronous tasks concurrently.
 
-    sync_executor_thread_name_prefix: "str" = "litestar-queues"
-    """Thread-name prefix for the synchronous task executor."""
+    Matches anyio's default thread limiter. Threads are created on demand, so this is a
+    ceiling rather than a startup cost.
+    """
+
+    sync_thread_name_prefix: "str" = "litestar-queues"
+    """Thread-name prefix for the synchronous task thread pool."""
 
     scheduler_canary_task: "str" = "scheduler.heartbeat"
     """Registered task name used by the scheduler-health command."""
@@ -272,6 +317,56 @@ class QueueConfig:
 
     max_argument_identity_bytes: "int | None" = None
     """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
+
+    def __post_init__(self) -> "None":
+        """Validate the synchronous task thread pool and the placement matrix."""
+        if self.sync_thread_pool_size <= 0:
+            msg = "QueueConfig.sync_thread_pool_size must be greater than 0."
+            raise QueueConfigurationError(msg)
+        self._validate_placement()
+
+    def _validate_placement(self) -> "None":
+        """Reject storage, execution, and placement combinations that cannot work.
+
+        Selectors are compared by registered name so validating a configuration
+        never imports an optional backend or its driver extra.
+
+        Raises:
+            QueueConfigurationError: If the combination has no coherent owner.
+        """
+        backend = queue_backend_name(self.queue_backend)
+        execution = execution_backend_name(self.execution_backend)
+        placement = self.worker.placement
+
+        if placement in _MANAGED_PLACEMENTS and execution == "immediate":
+            msg = (
+                f"execution_backend='immediate' runs tasks inline at enqueue time, so "
+                f"placement={placement!r} would start a worker with nothing to claim. "
+                f"Use execution_backend='local', or placement='external'."
+            )
+            raise QueueConfigurationError(msg)
+        if backend == "ephemeral" and placement != "server":
+            msg = (
+                f"queue_backend='ephemeral' is created and removed by the Litestar CLI server "
+                f"lifespan, so it is only available to placement='server', not {placement!r}. "
+                f"Configure a persistent backend for {placement!r}."
+            )
+            raise QueueConfigurationError(msg)
+        if backend == "ephemeral" and execution != "local":
+            msg = f"queue_backend='ephemeral' supports execution_backend='local' only, not {execution!r}."
+            raise QueueConfigurationError(msg)
+        if backend == "memory" and placement == "server":
+            msg = (
+                "queue_backend='memory' is process-local, so a separate server-owned worker "
+                "process could never see its records. Use the default queue_backend='ephemeral' "
+                "for zero-setup background work, or a persistent backend."
+            )
+            raise QueueConfigurationError(msg)
+        # memory + external is deliberately allowed: it describes an application
+        # that enqueues into a process-local queue and starts nothing itself,
+        # which is what inline callers and direct Worker tests do. Pointing the
+        # standalone 'litestar queues run' command at it is the incoherent case,
+        # and that command rejects process-local storage itself.
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":
@@ -412,6 +507,7 @@ class QueueConfig:
             "TaskResult": TaskResult,
             "Worker": Worker,
             "WorkerConfig": WorkerConfig,
+            "WorkerPlacement": WorkerPlacement,
             "UnauthenticatedAccess": UnauthenticatedAccess,
             "job_cancelled": job_cancelled,
             "non_retryable": non_retryable,
@@ -489,7 +585,9 @@ class QueueConfig:
 
         return get_execution_backend(self.execution_backend, config=self)
 
-    def get_event_publisher(self, *, channels_backend: "ChannelsLike | None" = None) -> "QueueEventPublisher":
+    def get_event_publisher(
+        self, *, channels_backend: "ChannelsLike | None" = None, manage_channels_lifecycle: "bool" = False
+    ) -> "QueueEventPublisher":
         """Return a configured queue event publisher.
 
         Args:
@@ -497,6 +595,8 @@ class QueueConfig:
                 ``QueueEventsConfig.channels`` is unset. ``QueuePlugin`` passes the
                 app's registered ``ChannelsPlugin`` here so event delivery
                 needs no manual channel wiring.
+            manage_channels_lifecycle: Whether the publisher owns the resolved
+                Channels target lifecycle.
         """
         from litestar_queues.events import (
             ChannelsQueueEventSink,
@@ -517,6 +617,7 @@ class QueueConfig:
             sinks.append(
                 ChannelsQueueEventSink(
                     live_backend,
+                    manage_lifecycle=manage_channels_lifecycle,
                     max_payload_bytes=delivery.max_payload_bytes,
                     payload_size_estimator=delivery.payload_size_estimator,
                 )

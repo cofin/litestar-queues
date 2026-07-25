@@ -38,7 +38,7 @@ from litestar_queues.models import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from litestar_queues.backends.redis._typing import RedisClientLike, RedisPipelineLike, RedisPubSubLike
+    from litestar_queues.backends._protocol import ClientLike, PipelineLike, PubSubLike
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch, TaskRequest
@@ -510,13 +510,13 @@ class RedisQueueBackend(BaseQueueBackend):
     ) -> "None":
         super().__init__(config=config)
         backend_config = backend_config or _RedisBackendConfig()
-        self._client: "RedisClientLike | None" = cast("RedisClientLike | None", backend_config.client)
+        self._client: "ClientLike | None" = cast("ClientLike | None", backend_config.client)
         self._owns_client = self._client is None
         self._url = backend_config.url
         self._key_prefix = backend_config.key_prefix.rstrip(":")
         self._notifications = backend_config.worker_wakeups
         self._wakeup_channel = backend_config.wakeup_channel
-        self._pubsub: "RedisPubSubLike | None" = None
+        self._pubsub: "PubSubLike | None" = None
         self._pending_read = PendingNativeRead()
         self._event_log: "RedisQueueEventLog | None" = None
 
@@ -1352,17 +1352,17 @@ class RedisQueueBackend(BaseQueueBackend):
         finally:
             await _close_pubsub(pubsub, self._completion_channel)
 
-    def _create_client(self, url: "str") -> "RedisClientLike":
+    def _create_client(self, url: "str") -> "ClientLike":
         from redis import asyncio as redis_asyncio
 
-        return cast("RedisClientLike", redis_asyncio.from_url(url, decode_responses=True))
+        return cast("ClientLike", redis_asyncio.from_url(url, decode_responses=True))
 
-    async def _get_client(self) -> "RedisClientLike":
+    async def _get_client(self) -> "ClientLike":
         if self._client is None:
             await self.open()
-        return cast("RedisClientLike", self._client)
+        return cast("ClientLike", self._client)
 
-    async def _get_pubsub(self) -> "RedisPubSubLike":
+    async def _get_pubsub(self) -> "PubSubLike":
         if self._pubsub is None:
             client = await self._get_client()
             self._pubsub = client.pubsub()
@@ -1642,21 +1642,21 @@ class RedisQueueBackend(BaseQueueBackend):
         )
 
 
-def _create_pipeline(client: "RedisClientLike") -> "RedisPipelineLike":
+def _create_pipeline(client: "ClientLike") -> "PipelineLike":
     try:
         return client.pipeline(transaction=False)
     except TypeError:
         return client.pipeline()
 
 
-async def _execute_pipeline(pipeline: "RedisPipelineLike") -> "list[Any]":
+async def _execute_pipeline(pipeline: "PipelineLike") -> "list[Any]":
     result = pipeline.execute()
     if inspect.isawaitable(result):
         return list(await result)
     return list(cast("list[Any]", result))
 
 
-async def _eval_script(client: "RedisClientLike", script: "str", keys: "list[str]", args: "list[str]") -> "list[Any]":
+async def _eval_script(client: "ClientLike", script: "str", keys: "list[str]", args: "list[str]") -> "list[Any]":
     result = client.eval(script, len(keys), *keys, *args)
     if inspect.isawaitable(result):
         result = await result
@@ -1665,7 +1665,7 @@ async def _eval_script(client: "RedisClientLike", script: "str", keys: "list[str
     return list(cast("list[Any]", result))
 
 
-async def _pipeline_hgetall(client: "RedisClientLike", keys: "list[str]") -> "list[dict[Any, Any]]":
+async def _pipeline_hgetall(client: "ClientLike", keys: "list[str]") -> "list[dict[Any, Any]]":
     if not keys:
         return []
     pipeline = _create_pipeline(client)
@@ -1674,7 +1674,7 @@ async def _pipeline_hgetall(client: "RedisClientLike", keys: "list[str]") -> "li
     return cast("list[dict[Any, Any]]", await _execute_pipeline(pipeline))
 
 
-async def _pipeline_smembers(client: "RedisClientLike", keys: "list[str]") -> "list[set[Any]]":
+async def _pipeline_smembers(client: "ClientLike", keys: "list[str]") -> "list[set[Any]]":
     if not keys:
         return []
     pipeline = _create_pipeline(client)
@@ -1683,7 +1683,7 @@ async def _pipeline_smembers(client: "RedisClientLike", keys: "list[str]") -> "l
     return [set(result) for result in await _execute_pipeline(pipeline)]
 
 
-async def _pipeline_scard(client: "RedisClientLike", keys: "list[str]") -> "list[int]":
+async def _pipeline_scard(client: "ClientLike", keys: "list[str]") -> "list[int]":
     if not keys:
         return []
     pipeline = _create_pipeline(client)
@@ -1796,7 +1796,7 @@ def _coerce_status(value: "Any") -> "TaskStatus":
     return cast("TaskStatus", status)
 
 
-async def _receive_pubsub_message(pubsub: "RedisPubSubLike") -> "bool":
+async def _receive_pubsub_message(pubsub: "PubSubLike") -> "bool":
     """Block until a real published ``message`` arrives on the subscription.
 
     ``get_message(timeout=None)`` blocks indefinitely; subscribe/unsubscribe
@@ -1814,7 +1814,7 @@ async def _receive_pubsub_message(pubsub: "RedisPubSubLike") -> "bool":
             return True
 
 
-async def _close_pubsub(pubsub: "RedisPubSubLike", channel: "str") -> "None":
+async def _close_pubsub(pubsub: "PubSubLike", channel: "str") -> "None":
     """Best-effort unsubscribe + close on a pubsub connection."""
     unsubscribe = getattr(pubsub, "unsubscribe", None)
     if unsubscribe is not None:

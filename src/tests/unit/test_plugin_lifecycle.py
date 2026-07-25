@@ -31,7 +31,7 @@ from litestar_queues.events import (
     QueueEventsConfig,
     publish_task_progress,
 )
-from litestar_queues.events.litestar import ChannelsQueueEventSink
+from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 
@@ -47,8 +47,16 @@ def clean_task_registry() -> "None":
     clear_task_registry()
 
 
-async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> "None":
-    plugin = QueuePlugin(QueueConfig(execution_backend="local", task_modules=("tests._factories.queue_tasks",)))
+async def test_plugin_startup_loads_task_modules_for_every_placement() -> "None":
+    """Task modules load in every application process so string enqueue resolves."""
+    plugin = QueuePlugin(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            task_modules=("tests._factories.queue_tasks",),
+        )
+    )
     app = Litestar(plugins=[plugin])
 
     async with AsyncTestClient(app=app):
@@ -56,14 +64,31 @@ async def test_plugin_startup_loads_task_modules_and_initializes_schedules() -> 
         assert isinstance(service, QueueService)
         assert "support_ping" in get_task_registry()
         assert "support_ping" in get_scheduled_tasks()
-        scheduled = await service.get_queue_backend().get_task_by_key("scheduled:support_ping")
+        # An enqueue-only process must not write schedule records; the process
+        # that owns the worker does that instead.
+        assert await service.get_queue_backend().get_task_by_key("scheduled:support_ping") is None
+
+
+async def test_schedules_are_initialized_by_the_process_that_owns_the_worker() -> "None":
+    @task("tests.scheduled_ping", interval=3600)
+    async def scheduled_ping() -> "str":
+        return "pong"
+
+    plugin = QueuePlugin(
+        QueueConfig(worker=WorkerConfig(placement="asgi"), queue_backend="memory", execution_backend="local")
+    )
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        service = app.state["queue_service"]
+        scheduled = await service.get_queue_backend().get_task_by_key("scheduled:tests.scheduled_ping")
 
     assert scheduled is not None
     assert scheduled.status == "scheduled"
 
 
-async def test_plugin_run_in_app_creates_and_cleans_up_worker() -> "None":
-    plugin = QueuePlugin(QueueConfig(worker=WorkerConfig(run_in_app=True, poll_interval=0.01)))
+async def test_asgi_placement_creates_and_cleans_up_one_worker() -> "None":
+    plugin = QueuePlugin(QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi", poll_interval=0.01)))
     app = Litestar(plugins=[plugin])
 
     async with AsyncTestClient(app=app):
@@ -72,6 +97,28 @@ async def test_plugin_run_in_app_creates_and_cleans_up_worker() -> "None":
         assert worker.is_running
 
     assert not worker.is_running
+
+
+def test_app_publisher_is_non_owning_and_worker_publisher_is_owning() -> "None":
+    channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="memory",
+            worker=WorkerConfig(placement="external"),
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig(buffer=None)),
+        )
+    )
+
+    app_service = plugin.get_service(plugin.on_app_init(AppConfig()).state)
+    worker_service = plugin.create_worker_service()
+
+    app_sink = app_service.get_event_publisher().sink
+    worker_sink = worker_service.get_event_publisher().sink
+    assert isinstance(app_sink, ChannelsQueueEventSink)
+    assert isinstance(worker_sink, ChannelsQueueEventSink)
+    assert app_sink.manages_lifecycle is False
+    assert worker_sink.manages_lifecycle is True
+    assert worker_service.get_queue_backend() is not app_service.get_queue_backend()
 
 
 def test_importing_litestar_queues_does_not_load_click() -> "None":
@@ -168,7 +215,8 @@ async def test_channels_before_queues_drains_worker_before_channels_close(caplog
     )
     plugin = QueuePlugin(
         QueueConfig(
-            worker=WorkerConfig(run_in_app=True, poll_interval=0.01, graceful_shutdown_timeout=1),
+            queue_backend="memory",
+            worker=WorkerConfig(placement="asgi", poll_interval=0.01, graceful_shutdown_timeout=1),
             events=QueueEventsConfig(
                 channels=channels,
                 delivery=EventDeliveryConfig(buffer=EventBufferConfig(batch_size=4, flush_interval=0.05)),
@@ -200,7 +248,13 @@ async def test_channels_before_queues_drains_worker_before_channels_close(caplog
 async def test_queues_before_channels_raises_configuration_error_at_startup() -> "None":
     """Misordered registration (QueuePlugin before ChannelsPlugin) fails fast at lifespan enter."""
     channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
-    plugin = QueuePlugin(QueueConfig(events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig())))
+    plugin = QueuePlugin(
+        QueueConfig(
+            worker=WorkerConfig(placement="asgi"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+        )
+    )
     app = Litestar(plugins=[plugin, channels])
 
     # Litestar's event emitter task group wraps startup failures in ExceptionGroups.
@@ -233,7 +287,8 @@ async def test_event_config_auto_resolves_registered_channels_plugin() -> "None"
 
     channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
     config = QueueConfig(
-        worker=WorkerConfig(run_in_app=True, poll_interval=0.01),
+        queue_backend="memory",
+        worker=WorkerConfig(placement="asgi", poll_interval=0.01),
         events=QueueEventsConfig(delivery=EventDeliveryConfig(buffer=None)),
     )
     plugin = QueuePlugin(config)

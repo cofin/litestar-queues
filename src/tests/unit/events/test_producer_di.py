@@ -3,7 +3,7 @@ from litestar import post
 from litestar.di import NamedDependency
 from litestar.testing import create_test_client
 
-from litestar_queues import EventDeliveryConfig, QueueConfig, QueuePlugin
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.events import InMemoryQueueEventSink, QueueChannels, QueueEventProducer, QueueEventsConfig
 
 pytestmark = pytest.mark.anyio
@@ -20,7 +20,15 @@ def test_queue_events_injects_producer() -> None:
 
     with create_test_client(
         route_handlers=[publish],
-        plugins=[QueuePlugin(QueueConfig(events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,)))))],
+        plugins=[
+            QueuePlugin(
+                QueueConfig(
+                    worker=WorkerConfig(placement="external"),
+                    queue_backend="memory",
+                    events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+                )
+            )
+        ],
         openapi_config=None,
     ) as client:
         response = client.post("/events")
@@ -31,18 +39,23 @@ def test_queue_events_injects_producer() -> None:
 
 
 def test_signature_namespace_has_producer() -> None:
-    assert QueueConfig().signature_namespace["QueueEventProducer"] is QueueEventProducer
+    assert (
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory").signature_namespace[
+            "QueueEventProducer"
+        ]
+        is QueueEventProducer
+    )
 
 
 def test_dependency_key_default() -> None:
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
 
     assert config.events_dependency_key == "queue_events"
     assert "queue_events" in config.dependencies
 
 
 async def test_provider_raises_clear_error_without_publisher_state() -> None:
-    config = QueueConfig()
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     state = _State()
 
     provider = config.provide_event_producer_dependency(state)  # type: ignore[arg-type]

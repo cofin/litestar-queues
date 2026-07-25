@@ -43,7 +43,7 @@ from litestar_queues.events.stream_config import (
 )
 
 if TYPE_CHECKING:
-    from litestar_queues.events.litestar import ChannelsQueueEventSink
+    from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 
 __all__ = (
     "ChannelAuthorizer",
@@ -89,7 +89,7 @@ def __getattr__(name: "str") -> "Any":
         The requested optional Litestar integration export.
     """
     if name == "ChannelsQueueEventSink":
-        from litestar_queues.events.litestar import ChannelsQueueEventSink
+        from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 
         return ChannelsQueueEventSink
     msg = f"module {__name__!r} has no attribute {name!r}"

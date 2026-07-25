@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from litestar_queues._heartbeat import WorkerHeartbeatManager
 from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord
+from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -29,7 +29,7 @@ async def test_one_touch_call_per_tick_for_many_tasks() -> "None":
     assert len(backend.touch_calls[0]) == 1000
     assert {touch.task_id for touch in backend.touch_calls[0]} == set(task_ids)
     assert service.observability_runtime.counters == [
-        ("litestar_queues.heartbeat.flush.count", 1000, {"queue.backend": "FakeBackend"})
+        ("litestar_queues.heartbeat.flush", 1000, {"queue.backend": "FakeBackend"})
     ]
     assert service.observability_runtime.durations[0][0] == "litestar_queues.heartbeat.flush.duration"
 
@@ -49,7 +49,7 @@ async def test_single_miss_does_not_claim_lost() -> "None":
     assert task_id in manager._registrations
     assert manager._registrations[task_id].consecutive_misses == 1
     assert (
-        "litestar_queues.heartbeat.flush.count",
+        "litestar_queues.heartbeat.flush",
         0,
         {"queue.backend": "FakeBackend"},
     ) in service.observability_runtime.counters
@@ -238,7 +238,7 @@ async def test_beat_retained_when_missed() -> "None":
 
 def test_no_taskgroup_in_manager() -> "None":
     """The manager must stay Python 3.10-compatible."""
-    manager_text = Path("src/litestar_queues/_heartbeat.py").read_text()
+    manager_text = Path("src/litestar_queues/worker/heartbeat.py").read_text()
 
     assert "TaskGroup" not in manager_text
 

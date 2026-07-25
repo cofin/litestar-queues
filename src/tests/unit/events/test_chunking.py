@@ -5,8 +5,8 @@ import msgspec
 import pytest
 
 from litestar_queues.events import QueueEvent, QueueEventPublisher
+from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
-from litestar_queues.events.litestar import ChannelsQueueEventSink
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

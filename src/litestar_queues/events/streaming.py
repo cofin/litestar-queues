@@ -19,13 +19,7 @@ from litestar.response import ServerSentEvent
 
 from litestar_queues.config import _OBSERVABILITY_RUNTIME_STATE_KEY
 from litestar_queues.events.channels import QueueChannels
-from litestar_queues.events.litestar import (
-    _STREAM_DEDUP_MAX_KEYS,
-    _decode_event,
-    _event_stream,
-    _resolve_channels_backend,
-)
-from litestar_queues.events.models import QueueEventScope
+from litestar_queues.events.models import QueueEvent, QueueEventScope
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -35,9 +29,68 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events.stream_config import EventStreamConfig
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
-    from litestar_queues.typing import ChannelsLike
+    from litestar_queues.typing import ChannelsLike, ChannelsStreamBackend, ChannelsSubscriptionBackend
 
 __all__ = ("StreamMetrics", "build_stream_router", "stream_queue_events_hardened", "stream_queue_events_sse")
+
+_STREAM_DEDUP_MAX_KEYS = 1024
+
+
+def _resolve_channels_backend(socket: "Any") -> "ChannelsLike | None":
+    if hasattr(socket, "channels_plugin"):
+        return cast("ChannelsLike", socket.channels_plugin)
+    scope = getattr(socket, "scope", None)
+    if isinstance(scope, dict):
+        scoped = scope.get("channels") or scope.get("queue_event_channels")
+        if scoped is not None:
+            return cast("ChannelsLike", scoped)
+    app = getattr(socket, "app", None)
+    state = getattr(app, "state", None)
+    if state is not None:
+        for key in ("queue_event_channels_backend", "channels", "queue_event_channels"):
+            with contextlib.suppress(KeyError, TypeError):
+                value = state[key]
+                if value is not None:
+                    return cast("ChannelsLike", value)
+            value = getattr(state, key, None)
+            if value is not None:
+                return cast("ChannelsLike", value)
+    return None
+
+
+@contextlib.asynccontextmanager
+async def _event_stream(
+    backend: "ChannelsLike", channels: "Sequence[str]", *, history: "int"
+) -> "AsyncIterator[AsyncIterator[bytes]]":
+    if hasattr(backend, "start_subscription"):
+        subscription_backend = cast("ChannelsSubscriptionBackend", backend)
+        async with subscription_backend.start_subscription(list(channels), history=history) as subscriber:
+            yield subscriber.iter_events()
+        return
+
+    if not hasattr(backend, "subscribe") or not hasattr(backend, "stream_events"):
+        msg = "Queue event streaming requires a ChannelsPlugin or ChannelsBackend-like object."
+        raise RuntimeError(msg)
+
+    stream_backend = cast("ChannelsStreamBackend", backend)
+    await stream_backend.subscribe(list(channels))
+    try:
+        yield _backend_events(stream_backend.stream_events(), set(channels))
+    finally:
+        await stream_backend.unsubscribe(list(channels))
+
+
+async def _backend_events(events: "AsyncIterator[tuple[str, bytes]]", channels: "set[str]") -> "AsyncIterator[bytes]":
+    async for channel, payload in events:
+        if channel in channels:
+            yield payload
+
+
+def _decode_event(raw_event: "bytes | str") -> "QueueEvent | None":
+    try:
+        return QueueEvent.from_json(raw_event)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 class StreamMetrics(Protocol):
@@ -126,7 +179,7 @@ async def stream_queue_events_hardened(
         async with _event_stream(backend, channels, history=history) as events:
             event_task = asyncio.create_task(_pump_events(socket, events, send_lock, stream_metrics, scope))
             heartbeat_task = asyncio.create_task(
-                _pump_heartbeat(socket, send_lock, heartbeat_interval, stop, stream_metrics, scope)
+                _pump_heartbeat(socket, send_lock, heartbeat_interval, stop, stream_metrics=stream_metrics, scope=scope)
             )
             await _wait_for_stream_tasks(event_task, heartbeat_task, stop)
     finally:
@@ -180,6 +233,7 @@ async def _pump_heartbeat(
     send_lock: "asyncio.Lock",
     interval: float,
     stop: "asyncio.Event",
+    *,
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
 ) -> None:

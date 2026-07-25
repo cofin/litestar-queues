@@ -1,5 +1,6 @@
 """Public typing helpers for optional observability support and event sinks."""
 
+from litestar_queues._correlation import SQLSPEC_INSTALLED, sqlspec_correlation_context
 from litestar_queues._typing import (
     OPENTELEMETRY_INSTALLED,
     PROMETHEUS_INSTALLED,
@@ -12,9 +13,11 @@ from litestar_queues._typing import (
     PrometheusCounter,
     PrometheusGauge,
     PrometheusHistogram,
+    otel_context,
     otel_metrics,
     otel_propagate,
     otel_trace,
+    prometheus_default_registry,
 )
 from litestar_queues.events._typing import (
     ChannelsLike,
@@ -30,6 +33,7 @@ from litestar_queues.task import TaskUniqueBy, TaskUniqueUntil
 __all__ = (
     "OPENTELEMETRY_INSTALLED",
     "PROMETHEUS_INSTALLED",
+    "SQLSPEC_INSTALLED",
     "ChannelsLike",
     "ChannelsPublishBackend",
     "ChannelsPublishManyBackend",
@@ -48,7 +52,10 @@ __all__ = (
     "PrometheusHistogram",
     "TaskUniqueBy",
     "TaskUniqueUntil",
+    "otel_context",
     "otel_metrics",
     "otel_propagate",
     "otel_trace",
+    "prometheus_default_registry",
+    "sqlspec_correlation_context",
 )

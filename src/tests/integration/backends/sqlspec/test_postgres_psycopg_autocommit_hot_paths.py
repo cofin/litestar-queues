@@ -8,12 +8,12 @@ explicit ``driver.begin()``/``driver.commit()`` call sites in
 ``SQLSpecQueueBackend``: keyed-enqueue dedupe (``_enqueue_keyed``), the
 ``enqueue_many`` bulk insert, and the claim/complete/fail transactional
 fallbacks (``claim_task``, ``_claim_next_optimistic``,
-``_claim_next_skip_locked``, ``_complete_task_legacy``, ``_fail_task_legacy``).
+``_claim_next_skip_locked``, ``_complete_task_without_returning``, ``_fail_task_without_returning``).
 This module exercises every one of those against the real Postgres container
 under both the plain and the autocommit psycopg configs so the two variants
 can be compared directly.
 
-``_complete_task_legacy``/``_fail_task_legacy`` are never reached through the
+``_complete_task_without_returning``/``_fail_task_without_returning`` are never reached through the
 public dispatch on a Postgres-family adapter --
 ``PostgresQueueStore.supports_dml_returning`` is ``True``, so
 ``complete_task``/``fail_task`` always take the RETURNING fast path instead.
@@ -162,20 +162,20 @@ async def test_claim_next_optimistic_direct_invocation_commits_under_the_configu
     assert claimed.status == "running"
 
 
-async def test_complete_and_fail_task_legacy_direct_invocation_commit_under_the_configured_connection_mode(
+async def test_complete_and_fail_task_without_returning_direct_invocation_commit_under_the_configured_connection_mode(
     psycopg_backend: "SQLSpecQueueBackend",
 ) -> "None":
-    """``_complete_task_legacy``/``_fail_task_legacy`` are unreachable via the public API on Postgres
+    """``_complete_task_without_returning``/``_fail_task_without_returning`` are unreachable via the public API on Postgres
 
     (``supports_dml_returning`` routes ``complete_task``/``fail_task`` to the RETURNING fast path
     instead). Call them directly so their ``driver.begin()``/``commit()`` transactions are still
     certified against a real psycopg connection.
     """
-    completed_record = await psycopg_backend.enqueue("tasks.legacy.complete")
+    completed_record = await psycopg_backend.enqueue("tasks.without_returning.complete")
     claimed_complete = await psycopg_backend.claim_task(completed_record.id)
     assert claimed_complete is not None
 
-    completed = await psycopg_backend._complete_task_legacy(claimed_complete.id, result={"ok": True})
+    completed = await psycopg_backend._complete_task_without_returning(claimed_complete.id, result={"ok": True})
 
     assert completed is not None
     assert completed.status == "completed"
@@ -183,11 +183,11 @@ async def test_complete_and_fail_task_legacy_direct_invocation_commit_under_the_
     assert stored_complete is not None
     assert stored_complete.status == "completed"
 
-    failed_record = await psycopg_backend.enqueue("tasks.legacy.fail")
+    failed_record = await psycopg_backend.enqueue("tasks.without_returning.fail")
     claimed_fail = await psycopg_backend.claim_task(failed_record.id)
     assert claimed_fail is not None
 
-    failed = await psycopg_backend._fail_task_legacy(claimed_fail.id, "boom", retry=False)
+    failed = await psycopg_backend._fail_task_without_returning(claimed_fail.id, "boom", retry=False)
 
     assert failed is not None
     assert failed.status == "failed"

@@ -4,12 +4,25 @@ from pathlib import Path
 PACKAGE_ROOT = Path("src/litestar_queues")
 
 _APPROVED_NESTED_IMPORTS = {
-    "_cli.py": {"litestar.cli._utils"},
+    "_cli.py": {"litestar.cli._utils", "litestar_queues.worker.runtime"},
+    "worker/supervisor.py": {
+        "litestar.cli._utils",
+        "litestar_queues.backends.ephemeral.schema",
+        "litestar_queues.config",
+        "litestar_queues.plugin",
+        "multiprocessing.connection",
+    },
     "backends/redis/backend.py": {"redis"},
     "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
-    "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner.store"},
-    "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner.store"},
-    "backends/sqlspec/stores/spanner/store.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
+    "backends/sqlspec/config.py": {
+        "litestar_queues.backends.sqlspec.backend",
+        "litestar_queues.backends.sqlspec.extension",
+        "litestar_queues.backends.sqlspec.schema",
+    },
+    "backends/sqlspec/event_sink.py": {"sqlspec", "sqlspec.adapters.aiosqlite"},
+    "backends/sqlspec/maintenance.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
+    "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
+    "backends/sqlspec/stores/spanner.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
     "backends/valkey/backend.py": {"valkey"},
     "config.py": {
         "litestar.di",
@@ -28,16 +41,14 @@ _APPROVED_NESTED_IMPORTS = {
         "litestar_queues.task",
         "litestar_queues.worker",
     },
-    "events/__init__.py": {"litestar_queues.events.litestar"},
-    "events/sqlspec.py": {"sqlspec", "sqlspec.adapters.aiosqlite"},
+    "events/__init__.py": {"litestar_queues.events.channels_sink"},
     "plugin.py": {
         "litestar_queues._cli",
-        "litestar_queues.backends.sqlspec",
-        "litestar_queues.backends.sqlspec.backend",
-        "litestar_queues.backends.sqlspec.extension",
-        "litestar_queues.backends.sqlspec.schema",
+        "litestar_queues.backends.ephemeral.server",
         "litestar_queues.events.streaming",
         "litestar_queues.observability",
+        "litestar_queues.worker",
+        "litestar_queues.worker.invocation",
     },
     "service.py": {"litestar_queues.observability"},
     "task.py": {"litestar_queues.config", "litestar_queues.service"},
@@ -168,3 +179,34 @@ def test_runtime_imports_stay_within_reviewed_lazy_boundaries() -> None:
             unexpected.extend(f"{path}:{node.lineno}:{module}" for module in modules if module not in approved)
 
     assert unexpected == []
+
+
+def test_modules_declare_imports_and_exports_before_constants() -> None:
+    """Module layout is docstring, imports, TYPE_CHECKING, ``__all__``, then constants."""
+    out_of_order: list[str] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        type_checking_line: int | None = None
+        dunder_all_line: int | None = None
+        first_constant: tuple[int, str] | None = None
+        for node in tree.body:
+            if isinstance(node, ast.If) and ast.unparse(node.test).strip() == "TYPE_CHECKING":
+                type_checking_line = node.lineno
+                continue
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [target.id for target in targets if isinstance(target, ast.Name)]
+            if "__all__" in names:
+                dunder_all_line = node.lineno
+            elif first_constant is None:
+                first_constant = (node.lineno, names[0] if names else "<unnamed>")
+        if first_constant is None:
+            continue
+        line, name = first_constant
+        if type_checking_line is not None and line < type_checking_line:
+            out_of_order.append(f"{path}:{line}: {name} precedes the TYPE_CHECKING block")
+        if dunder_all_line is not None and line < dunder_all_line:
+            out_of_order.append(f"{path}:{line}: {name} precedes __all__")
+
+    assert out_of_order == []

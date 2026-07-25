@@ -30,34 +30,34 @@ pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, task
+from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.stores import (
-    AiomysqlQueueStore,
-    AiosqliteQueueStore,
-    ArrowOdbcQueueStore,
-    AsyncmyQueueStore,
-    AsyncpgQueueStore,
-    CockroachAsyncpgQueueStore,
+from litestar_queues.backends.sqlspec.stores import create_queue_store
+from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.arrow_odbc import ArrowOdbcQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import (
     CockroachPsycopgAsyncQueueStore,
     CockroachPsycopgSyncQueueStore,
-    DuckDBQueueStore,
-    MssqlPythonQueueStore,
+)
+from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
+from litestar_queues.backends.sqlspec.stores.mssql_python import MssqlPythonQueueStore
+from litestar_queues.backends.sqlspec.stores.mysqlconnector import (
     MysqlConnectorAsyncQueueStore,
     MysqlConnectorSyncQueueStore,
-    OracledbAsyncQueueStore,
-    OracledbSyncQueueStore,
-    PsqlpyQueueStore,
-    PsycopgAsyncQueueStore,
-    PsycopgSyncQueueStore,
-    PymysqlQueueStore,
-    SpannerQueueStore,
-    SqliteQueueStore,
-    create_queue_store,
 )
+from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
+from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.pymysql import PymysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
+from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
 from litestar_queues.events import QueueEventsConfig
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
@@ -85,6 +85,11 @@ class FakeSQLSpecConfig(SimpleNamespace):
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
+
+
+def _assert_store_module(store: "object", adapter_name: "str") -> "None":
+    """Assert each adapter's store class is defined in the module named after it."""
+    assert store.__class__.__module__ == f"litestar_queues.backends.sqlspec.stores.{adapter_name}"
 
 
 def _fake_adapter_config(
@@ -400,27 +405,21 @@ def blocked_import(name, *args, **kwargs):
 
 builtins.__import__ = blocked_import
 
-from litestar_queues.backends.sqlspec.stores import (
-    AdbcSqliteQueueStore,
-    AiomysqlQueueStore,
-    AiosqliteQueueStore,
-    AsyncmyQueueStore,
-    AsyncpgQueueStore,
-    DuckDBQueueStore,
-    CockroachAsyncpgQueueStore,
-    CockroachPsycopgAsyncQueueStore,
-    CockroachPsycopgSyncQueueStore,
-    MysqlConnectorAsyncQueueStore,
-    MysqlConnectorSyncQueueStore,
-    OracledbAsyncQueueStore,
-    OracledbSyncQueueStore,
-    PsqlpyQueueStore,
-    PsycopgAsyncQueueStore,
-    PsycopgSyncQueueStore,
-    SpannerQueueStore,
-    SqliteQueueStore,
-    create_queue_store,
-)
+from litestar_queues.backends.sqlspec.stores import create_queue_store
+from litestar_queues.backends.sqlspec.stores.adbc import AdbcSqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
+from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncmy import AsyncmyQueueStore
+from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_asyncpg import CockroachAsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.cockroach_psycopg import CockroachPsycopgAsyncQueueStore, CockroachPsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.mysqlconnector import MysqlConnectorAsyncQueueStore, MysqlConnectorSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.psqlpy import PsqlpyQueueStore
+from litestar_queues.backends.sqlspec.stores.psycopg import PsycopgAsyncQueueStore, PsycopgSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.sqlite import SqliteQueueStore
+from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
+from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
+from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 
 def fake_config(adapter_name, dialect, config_type_name):
     config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config"})
@@ -621,7 +620,7 @@ def test_sqlspec_backend_accepts_adbc_sqlite_adapter() -> "None":
     )
 
     assert store.__class__.__name__ == "AdbcSqliteQueueStore"
-    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.adbc.")
+    _assert_store_module(store, "adbc")
     assert '"queue_tasks"' in "\n".join(store.create_statements())
 
 
@@ -651,7 +650,7 @@ def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
     )
 
     assert store.__class__.__name__ == expected_store_name
-    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    _assert_store_module(store, adapter_name)
 
 
 @pytest.mark.parametrize(
@@ -735,7 +734,7 @@ def test_sqlspec_backend_accepts_arrow_odbc_sql_server_target() -> "None":
 
     ddl = "\n".join(store.create_statements())
 
-    assert store.__class__.__module__.startswith("litestar_queues.backends.sqlspec.stores.arrow_odbc.")
+    _assert_store_module(store, "arrow_odbc")
     assert "DATETIME" in ddl
     assert "NVARCHAR(MAX)" in ddl
     assert "[task_key] VARCHAR(255) UNIQUE" not in ddl
@@ -760,7 +759,7 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
     )
 
     created_statements = "\n".join(store.create_statements())
-    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    _assert_store_module(store, adapter_name)
     assert store.__class__.__name__ == expected_store_name
     assert "WITH (fillfactor = 80)" not in created_statements
     assert "autovacuum_vacuum_scale_factor" not in created_statements
@@ -839,6 +838,7 @@ def test_postgres_native_json_array_bind_shape_matches_adapter(
     ),
 )
 async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
+    *,
     adapter_name: "str",
     dialect: "str | None",
     config_type_name: "str",
@@ -854,7 +854,7 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
     )
 
     assert isinstance(store, expected_store_type)
-    assert store.__class__.__module__.startswith(f"litestar_queues.backends.sqlspec.stores.{adapter_name}.")
+    _assert_store_module(store, adapter_name)
     assert expected_sql_fragment in "\n".join(store.create_statements())
 
 
@@ -944,7 +944,11 @@ async def test_sqlspec_backend_uses_spanner_update_ddl_for_event_log_schema_boot
     config = _fake_adapter_config("spanner", dialect="spanner", config_type_name="SpannerSyncConfig")
     config.get_database = lambda: database
     backend = SQLSpecQueueBackend(
-        config=QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        config=QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name="queue_tasks", worker_wakeups=None),
     )
 
@@ -1333,6 +1337,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
     ),
 )
 def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
+    *,
     adapter_name: "str",
     dialect: "str | None",
     config_type_name: "str",
@@ -1835,18 +1840,18 @@ async def test_sqlspec_postgres_enqueue_returns_persisted_record(
         assert duplicate.kwargs == {"n": 1}
 
 
-async def test_sqlspec_duckdb_uses_legacy_fallback_paths(
+async def test_sqlspec_duckdb_uses_the_non_returning_paths(
     duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
-    """DuckDB has no RETURNING gate, so enqueue/complete/fail route through the legacy methods."""
+    """DuckDB has no RETURNING gate, so enqueue/complete/fail route through the non-RETURNING methods."""
     store = duckdb_backend._get_store()
     assert type(store).supports_dml_returning is False
     assert type(store).supports_returning_claim is False
 
     invoked: "set[str]" = set()
-    original_enqueue = SQLSpecQueueBackend._enqueue_legacy
-    original_complete = SQLSpecQueueBackend._complete_task_legacy
-    original_fail = SQLSpecQueueBackend._fail_task_legacy
+    original_enqueue = SQLSpecQueueBackend._enqueue_without_returning
+    original_complete = SQLSpecQueueBackend._complete_task_without_returning
+    original_fail = SQLSpecQueueBackend._fail_task_without_returning
 
     async def spy_enqueue(self: "SQLSpecQueueBackend", record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         invoked.add("enqueue")
@@ -1869,9 +1874,9 @@ async def test_sqlspec_duckdb_uses_legacy_fallback_paths(
         invoked.add("fail")
         return await original_fail(self, task_id, error, retry=retry, expected_retry_count=expected_retry_count)
 
-    monkeypatch.setattr(SQLSpecQueueBackend, "_enqueue_legacy", spy_enqueue)
-    monkeypatch.setattr(SQLSpecQueueBackend, "_complete_task_legacy", spy_complete)
-    monkeypatch.setattr(SQLSpecQueueBackend, "_fail_task_legacy", spy_fail)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_enqueue_without_returning", spy_enqueue)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_complete_task_without_returning", spy_complete)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_fail_task_without_returning", spy_fail)
 
     completed = await duckdb_backend.enqueue("tasks.legacy.complete")
     claimed = await duckdb_backend.claim_task(completed.id)
@@ -2046,7 +2051,9 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
 
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(tmp_path / "service.db"))
     await bootstrap_queue_schema(backend_config)
-    config = QueueConfig(queue_backend=backend_config, execution_backend="local")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend=backend_config, execution_backend="local"
+    )
 
     async with QueueService(config) as service:
         result = await service.enqueue(lowercase, "QUEUE")

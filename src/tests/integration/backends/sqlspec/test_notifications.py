@@ -25,7 +25,7 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from sqlspec.exceptions import SQLSpecError
 from sqlspec.extensions.litestar import SQLSpecPlugin
 
-from litestar_queues import QueueConfig, QueuePlugin
+from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport
 from litestar_queues.backends.sqlspec.config import DEFAULT_WAKEUP_CHANNEL
@@ -532,7 +532,13 @@ async def test_sqlspec_backend_uses_user_registered_litestar_sqlspec_plugin(
     sqlspec_config = sqlite_config_factory(tmp_path / "litestar.db")
     sqlspec.add_config(sqlspec_config)
 
-    plugin = QueuePlugin(QueueConfig(queue_backend=SQLSpecBackendConfig(sqlspec=sqlspec), initialize_schedules=False))
+    plugin = QueuePlugin(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=SQLSpecBackendConfig(sqlspec=sqlspec),
+            initialize_schedules=False,
+        )
+    )
 
     app = Litestar(plugins=[SQLSpecPlugin(sqlspec), plugin])
 
@@ -557,14 +563,22 @@ def test_queue_plugin_registers_events_migration_for_capable_adapter() -> "None"
         connection_config={"host": "localhost", "port": 5432, "user": "u", "password": "p", "database": "d"}
     )
     QueuePlugin(
-        QueueConfig(queue_backend=SQLSpecBackendConfig(sqlspec_config=capable_config), initialize_schedules=False)
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=SQLSpecBackendConfig(sqlspec_config=capable_config),
+            initialize_schedules=False,
+        )
     ).on_cli_init(Group())
     assert (capable_config.extension_config or {}).get("events") == {"backend": "notify_queue"}
     assert "events" in capable_config.migration_config.get("include_extensions", [])
 
     polling_config = AiosqliteConfig(connection_config={"database": ":memory:"})
     QueuePlugin(
-        QueueConfig(queue_backend=SQLSpecBackendConfig(sqlspec_config=polling_config), initialize_schedules=False)
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=SQLSpecBackendConfig(sqlspec_config=polling_config),
+            initialize_schedules=False,
+        )
     ).on_cli_init(Group())
     assert "events" not in (polling_config.extension_config or {})
 
@@ -593,7 +607,9 @@ async def test_sqlspec_backend_migration_path_provisions_events_table(postgres_s
 
     sqlspec_config = _postgres_config("asyncpg", postgres_service)
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config)
-    QueuePlugin(QueueConfig(queue_backend=backend_config, initialize_schedules=False)).on_cli_init(Group())
+    QueuePlugin(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend=backend_config, initialize_schedules=False)
+    ).on_cli_init(Group())
     await sqlspec_config.migrate_up(echo=False)
 
     backend = SQLSpecQueueBackend(backend_config=backend_config)
@@ -651,7 +667,11 @@ def test_queue_plugin_registers_sqlspec_migrations_for_cli() -> "None":
     from click import Group
 
     sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
-    plugin = QueuePlugin(QueueConfig(queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlspec_config)))
+    plugin = QueuePlugin(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"), queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlspec_config)
+        )
+    )
 
     plugin.on_cli_init(Group())
 

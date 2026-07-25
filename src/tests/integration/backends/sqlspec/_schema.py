@@ -3,7 +3,7 @@
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
-from litestar_queues import QueueConfig
+from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
 from litestar_queues.events import EventHistoryConfig, QueueEventsConfig
@@ -17,7 +17,7 @@ async def bootstrap_queue_schema(
 ) -> "None":
     """Use the queue backend's explicit direct-DDL fallback for a test database."""
     events = QueueEventsConfig(history=EventHistoryConfig()) if event_history_enabled else None
-    queue_config = QueueConfig(queue_backend=backend_config, events=events)
+    queue_config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend=backend_config, events=events)
     backend = SQLSpecQueueBackend(config=queue_config, backend_config=backend_config)
     await backend.open()
     try:

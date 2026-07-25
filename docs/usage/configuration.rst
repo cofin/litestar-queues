@@ -12,7 +12,7 @@ Pass one :class:`~litestar_queues.QueueConfig` to the plugin:
        config=QueueConfig(
            queue_backend="memory",
            execution_backend="local",
-           worker=WorkerConfig(run_in_app=True),
+           worker=WorkerConfig(placement="asgi"),
        )
    )
 
@@ -31,7 +31,7 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``execution_backend``
      - :doc:`backends`
    * - Worker placement
-     - ``worker.run_in_app``
+     - ``worker.placement``
      - :doc:`workers`
    * - Claiming and concurrency
      - ``worker.batch_size``, ``worker.max_concurrency``

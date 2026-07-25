@@ -11,7 +11,7 @@ from sqlspec.observability import ObservabilityConfig as SQLSpecObservabilityCon
 from sqlspec.observability import StatementEvent
 from sqlspec.utils.correlation import CorrelationContext
 
-from litestar_queues import QueueConfig, QueueService
+from litestar_queues import QueueConfig, QueueService, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.observability import ObservabilityConfig
 
@@ -151,7 +151,11 @@ async def test_package_observability_disables_sqlspec_queue_domain_observability
         connection_config={"database": str(tmp_path / "queue-package-observability.db")},
         observability_config=SQLSpecObservabilityConfig(statement_observers=(statement_events.append,)),
     )
-    queue_config = QueueConfig(observability=ObservabilityConfig(enable_otel=True))
+    queue_config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        observability=ObservabilityConfig(enable_otel=True),
+    )
     backend = SQLSpecQueueBackend(
         config=queue_config, backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config)
     )

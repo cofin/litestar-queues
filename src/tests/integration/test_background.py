@@ -26,7 +26,7 @@ def _build_plugin() -> "QueuePlugin":
         QueueConfig(
             queue_backend="memory",
             execution_backend="immediate",
-            worker=WorkerConfig(run_in_app=False),
+            worker=WorkerConfig(placement="external"),
             initialize_schedules=False,
         )
     )

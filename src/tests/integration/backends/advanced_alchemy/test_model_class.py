@@ -17,7 +17,7 @@ from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from litestar_queues import EventHistoryConfig, QueueConfig
+from litestar_queues import EventHistoryConfig, QueueConfig, WorkerConfig
 from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import QueueEventHistoryModelMixin, QueueTaskModelMixin
 from litestar_queues.events import QueueEventsConfig
@@ -143,7 +143,7 @@ async def test_advanced_alchemy_schema_is_created_by_native_sqlalchemy_lifecycle
     disabled_config = _sqlite_config(disabled_db)
     await create_tables(disabled_config, CustomQueueTaskModel)
     disabled_backend = SQLAlchemyBackend(
-        QueueConfig(),
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=disabled_config,
             model_class=CustomQueueTaskModel,
@@ -161,7 +161,11 @@ async def test_advanced_alchemy_schema_is_created_by_native_sqlalchemy_lifecycle
     enabled_config = _sqlite_config(enabled_db)
     await create_tables(enabled_config, CustomQueueTaskModel, CustomQueueEventHistoryModel)
     enabled_backend = SQLAlchemyBackend(
-        QueueConfig(events=QueueEventsConfig(history=EventHistoryConfig())),
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        ),
         backend_config=SQLAlchemyBackendConfig(
             sqlalchemy_config=enabled_config,
             model_class=CustomQueueTaskModel,

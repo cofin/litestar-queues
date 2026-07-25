@@ -17,6 +17,7 @@ from litestar_queues import (
     InMemoryQueueEventSink,
     QueueConfig,
     QueueService,
+    WorkerConfig,
     task,
 )
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
@@ -52,6 +53,7 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path))
     await bootstrap_queue_schema(backend_config, event_history_enabled=True)
     config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
         queue_backend=backend_config,
         execution_backend="immediate",
         events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(live_sink,)), history=event_log_config),
@@ -61,6 +63,7 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
         result = await service.enqueue(event_history_task)
 
     reader_config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
         queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path)),
         events=QueueEventsConfig(history=event_log_config),
     )
@@ -119,7 +122,9 @@ async def test_sqlspec_event_history_table_follows_event_history_enabled_lifecyc
     disabled_db_path = tmp_path / "event-log-disabled.db"
     disabled_backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(disabled_db_path))
     await bootstrap_queue_schema(disabled_backend_config)
-    async with QueueService(QueueConfig(queue_backend=disabled_backend_config)):
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend=disabled_backend_config)
+    ):
         pass
 
     assert "queue_task_event_history" not in _sqlite_table_names(disabled_db_path)
@@ -128,7 +133,11 @@ async def test_sqlspec_event_history_table_follows_event_history_enabled_lifecyc
     enabled_backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(enabled_db_path))
     await bootstrap_queue_schema(enabled_backend_config, event_history_enabled=True)
     async with QueueService(
-        QueueConfig(queue_backend=enabled_backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=enabled_backend_config,
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        )
     ):
         pass
 
@@ -145,7 +154,11 @@ async def test_sqlspec_event_history_table_name_follows_queue_table_name(
     )
     await bootstrap_queue_schema(derived_backend_config, event_history_enabled=True)
     async with QueueService(
-        QueueConfig(queue_backend=derived_backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=derived_backend_config,
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        )
     ):
         pass
 
@@ -161,7 +174,11 @@ async def test_sqlspec_event_history_table_name_follows_queue_table_name(
     )
     await bootstrap_queue_schema(explicit_backend_config, event_history_enabled=True)
     async with QueueService(
-        QueueConfig(queue_backend=explicit_backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=explicit_backend_config,
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+        )
     ):
         pass
 

@@ -65,3 +65,30 @@ async def test_sqlspec_legacy_queue_settings_do_not_override_typed_worker_wakeup
         assert channel.published == ["typed"]
     finally:
         await backend.close()
+
+
+def test_the_sqlspec_backend_registers_its_own_migrations_through_the_plugin() -> None:
+    """QueuePlugin reaches SQLSpec migrations through the backend-owned hook."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, queue_table_name="jobs")
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    queue_settings = commands.extension_configs[QUEUE_EXTENSION_NAME]
+    assert queue_settings["table_name"] == "jobs"
+    assert queue_settings["maintenance_table_name"] == "jobs_maintenance"
+    assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
+
+
+def test_only_backends_that_own_migrations_advertise_the_hook() -> None:
+    """The plugin's extension point is a protocol, not a hard-coded backend list."""
+    from litestar_queues.backends.redis import RedisBackendConfig
+    from litestar_queues.config import MigrationConfiguringBackend
+
+    assert isinstance(SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig()), MigrationConfiguringBackend)
+    assert not isinstance(RedisBackendConfig(url="redis://localhost:6379/0"), MigrationConfiguringBackend)

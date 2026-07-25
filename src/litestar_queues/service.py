@@ -3,21 +3,32 @@ import contextlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from typing_extensions import Self
 
+from litestar_queues._correlation import bind_correlation_id, capture_correlation_id, reset_correlation_id
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.config import execution_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
 from litestar_queues.events.producer import QueueEventProducer
+from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
 from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
 from litestar_queues.execution import get_execution_backend
-from litestar_queues.task import ScheduleConfig, Task, TaskResult, _ensure_utc, get_scheduled_tasks, get_task_registry
+from litestar_queues.task import (
+    ScheduleConfig,
+    Task,
+    TaskResult,
+    _ensure_utc,
+    _run_sync_callable,
+    get_scheduled_tasks,
+    get_task_registry,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,6 +55,28 @@ _LOG_LEVELS = {
     "debug": logging.DEBUG,
 }
 _UNVERIFIED_PERSISTENCE = object()
+_RESOURCE_BUFFER = "buffer"
+_RESOURCE_EVENT_LOG = "event_log"
+_RESOURCE_EXECUTION_BACKEND = "execution_backend"
+_RESOURCE_QUEUE_BACKEND = "queue_backend"
+_RESOURCE_SINK = "sink"
+_RESOURCE_SYNC_EXECUTOR = "sync_executor"
+_ROLLBACK_ORDER = (
+    _RESOURCE_SYNC_EXECUTOR,
+    _RESOURCE_BUFFER,
+    _RESOURCE_SINK,
+    _RESOURCE_EXECUTION_BACKEND,
+    _RESOURCE_EVENT_LOG,
+    _RESOURCE_QUEUE_BACKEND,
+)
+_CLOSE_ORDER = (
+    _RESOURCE_EXECUTION_BACKEND,
+    _RESOURCE_EVENT_LOG,
+    _RESOURCE_BUFFER,
+    _RESOURCE_QUEUE_BACKEND,
+    _RESOURCE_SINK,
+    _RESOURCE_SYNC_EXECUTOR,
+)
 
 
 async def _release_failed_forever_reservation(backend: "BaseQueueBackend", key: "str", reserved_id: "UUID") -> "None":
@@ -76,7 +109,9 @@ class QueueService:
         "_event_log",
         "_event_publisher",
         "_execution_backend",
+        "_is_open",
         "_observability_runtime",
+        "_opened_resources",
         "_queue_backend",
         "_sync_executor",
     )
@@ -96,6 +131,8 @@ class QueueService:
         self._execution_backend = execution_backend
         self._event_log: "QueueEventLog | None" = None
         self._event_publisher = event_publisher
+        self._is_open = False
+        self._opened_resources: "frozenset[str]" = frozenset()
         if observability_runtime is None and config.observability is not None:
             from litestar_queues.observability import create_observability_runtime
 
@@ -118,9 +155,13 @@ class QueueService:
         return self._queue_backend
 
     def _configure_backend_observability(self, backend: "BaseQueueBackend") -> "None":
+        runtime = self._observability_runtime
         configure = getattr(backend, "_set_package_observability_enabled", None)
         if configure is not None:
-            configure(bool(self._observability_runtime is not None and self._observability_runtime.enabled))
+            configure(bool(runtime is not None and runtime.enabled))
+        configure_sqlcommenter = getattr(backend, "_set_sqlcommenter_enabled", None)
+        if configure_sqlcommenter is not None:
+            configure_sqlcommenter(bool(runtime is not None and getattr(runtime, "sqlcommenter_enabled", False)))
 
     def get_execution_backend(self) -> "BaseExecutionBackend":
         """Return the configured execution backend."""
@@ -162,38 +203,75 @@ class QueueService:
         Returns:
             The opened service.
         """
-        queue_backend = self.get_queue_backend()
-        await queue_backend.open()
+        if self._is_open:
+            return self
+        opened: "list[str]" = []
         try:
+            queue_backend = self.get_queue_backend()
+            opened.append(_RESOURCE_QUEUE_BACKEND)
+            await queue_backend.open()
             self._configure_event_log(queue_backend)
-        except Exception:
-            await queue_backend.close()
+            if self._event_log is not None:
+                opened.append(_RESOURCE_EVENT_LOG)
+            execution_backend = self.get_execution_backend()
+            opened.append(_RESOURCE_EXECUTION_BACKEND)
+            await execution_backend.open()
+            event_publisher = self.get_event_publisher()
+            opened.append(_RESOURCE_SINK)
+            await _call_optional_lifecycle(event_publisher.sink, "open")
+            opened.append(_RESOURCE_BUFFER)
+            event_publisher.start_buffer()
+            if self._sync_executor is None:
+                self._sync_executor = ThreadPoolExecutor(
+                    max_workers=self._config.sync_thread_pool_size,
+                    thread_name_prefix=self._config.sync_thread_name_prefix,
+                )
+                opened.append(_RESOURCE_SYNC_EXECUTOR)
+        except BaseException:
+            await self._teardown_resources(frozenset(opened), rollback=True, raise_errors=False)
             raise
-        await self.get_execution_backend().open()
-        await _call_optional_async_method(self.get_event_publisher().sink, "open")
-        self.get_event_publisher().start_buffer()
-        if self._config.sync_executor_max_workers is not None and self._sync_executor is None:
-            self._sync_executor = ThreadPoolExecutor(
-                max_workers=self._config.sync_executor_max_workers,
-                thread_name_prefix=self._config.sync_executor_thread_name_prefix,
-            )
+        self._opened_resources = frozenset(opened)
+        self._is_open = True
         return self
 
     async def close(self) -> "None":
         """Close queue and execution backends."""
-        if self._execution_backend is not None:
-            await self._execution_backend.close()
-        if self._event_log is not None:
-            await self._event_log.flush_events()
-        if self._event_publisher is not None:
-            await self._event_publisher.stop_buffer()
-        if self._queue_backend is not None:
-            await self._queue_backend.close()
-        if self._event_publisher is not None:
-            await _call_optional_async_method(self._event_publisher.sink, "close")
-        if self._sync_executor is not None:
-            self._sync_executor.shutdown(wait=True, cancel_futures=True)
-            self._sync_executor = None
+        opened = self._opened_resources
+        if not self._is_open and not opened:
+            return
+        self._opened_resources = frozenset()
+        self._is_open = False
+        await self._teardown_resources(opened, rollback=False, raise_errors=True)
+
+    async def _teardown_resources(self, opened: "frozenset[str]", *, rollback: "bool", raise_errors: "bool") -> "None":
+        errors: "list[BaseException]" = []
+        order = _ROLLBACK_ORDER if rollback else _CLOSE_ORDER
+        for resource in order:
+            if resource in opened:
+                await self._teardown_resource(resource, errors)
+        error = _select_lifecycle_error(errors)
+        if raise_errors and error is not None:
+            raise error
+
+    async def _teardown_resource(self, resource: "str", errors: "list[BaseException]") -> "None":
+        try:
+            if resource == _RESOURCE_EXECUTION_BACKEND and self._execution_backend is not None:
+                await self._execution_backend.close()
+            elif resource == _RESOURCE_EVENT_LOG and self._event_log is not None:
+                await self._event_log.flush_events()
+            elif resource == _RESOURCE_BUFFER and self._event_publisher is not None:
+                await self._event_publisher.stop_buffer()
+            elif resource == _RESOURCE_QUEUE_BACKEND and self._queue_backend is not None:
+                await self._queue_backend.close()
+            elif resource == _RESOURCE_SINK and self._event_publisher is not None:
+                await _call_optional_lifecycle(self._event_publisher.sink, "close")
+            elif resource == _RESOURCE_SYNC_EXECUTOR and self._sync_executor is not None:
+                self._sync_executor.shutdown(wait=True, cancel_futures=True)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if resource == _RESOURCE_SYNC_EXECUTOR:
+                self._sync_executor = None
 
     def _configure_event_log(self, queue_backend: "BaseQueueBackend") -> "None":
         event_log_config = self._config.events.history if self._config.events is not None else None
@@ -293,7 +371,7 @@ class QueueService:
         started_at = time.perf_counter()
         span = runtime.start_span("litestar_queues.publish", kind="producer", attributes=span_attributes)
         try:
-            runtime.inject_trace_context(effective_metadata)
+            _capture_enqueue_context(runtime, effective_metadata)
             record = await self.get_queue_backend().enqueue(
                 task_obj.name,
                 args=args,
@@ -321,7 +399,7 @@ class QueueService:
             raise
         else:
             runtime.set_attribute(span, "messaging.message.id", str(record.id))
-            runtime.record_counter("litestar_queues.enqueue.count", attributes=metric_attributes)
+            runtime.record_counter("litestar_queues.enqueue", attributes=metric_attributes)
             runtime.record_duration(
                 "litestar_queues.enqueue.duration", time.perf_counter() - started_at, attributes=metric_attributes
             )
@@ -441,46 +519,42 @@ class QueueService:
         task_obj = self.resolve_task(record.task_name)
         timeout = record.metadata.get("timeout", task_obj.timeout)
         runtime = self.observability_runtime
-        span, started_at, metric_base_attributes = _start_execution_observability(runtime, record)
+        telemetry = _start_execution_observability(runtime, record, worker_id=worker_id)
         task_context = _task_execution_context(record, worker_id=worker_id, event_publisher=self.get_event_publisher())
-        context_token = _bind_task_context(task_context)
+        execution_scope = _bind_execution_context(task_context, record.metadata)
         final_status = "failed"
         try:
             await task_context.lifecycle("task.started")
             result = await self._execute_task(record, task_obj, task_context, timeout)
         except asyncio.CancelledError as exc:
             final_status = "cancelled"
-            runtime.record_exception(span, exc)
+            telemetry.record_exception(exc)
             await task_context.lifecycle("task.cancelled")
             self._log_task_event("Queue task cancelled", record, level=logging.WARNING)
-            _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+            telemetry.finish(final_status)
             raise
         except JobCancelledError as exc:
             cancelled = await self.get_queue_backend().cancel_task(record.id, include_running=True)
             if not cancelled:
                 final_status = "claim_lost"
                 current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
-                _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+                telemetry.finish(final_status)
                 return current
             cancelled_record = await self._current_or_claimed(record)
             final_status = cancelled_record.status
             payload = {"status": cancelled_record.status, "retry_count": cancelled_record.retry_count}
             await task_context.lifecycle("task.cancelled", message=str(exc), payload=payload)
             self._log_task_event("Queue task cancelled", cancelled_record, level=logging.INFO, payload=payload)
-            _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+            telemetry.finish(final_status)
             return cancelled_record
         except NonRetryableError as exc:
-            runtime.record_exception(span, exc)
-            return await self._fail_record_without_retry(
-                record, exc, task_context, runtime, span, started_at, metric_base_attributes
-            )
+            telemetry.record_exception(exc)
+            return await self._fail_record_without_retry(record, exc, task_context, telemetry)
         except Exception as exc:
-            runtime.record_exception(span, exc)
-            return await self._fail_record_with_retry(
-                record, exc, task_context, runtime, span, started_at, metric_base_attributes
-            )
+            telemetry.record_exception(exc)
+            return await self._fail_record_with_retry(record, exc, task_context, telemetry)
         finally:
-            _reset_task_context(context_token)
+            _reset_execution_context(execution_scope)
 
         completed_record = await self.get_queue_backend().complete_task(
             record.id, result=result, expected_retry_count=record.retry_count
@@ -488,7 +562,7 @@ class QueueService:
         if completed_record is None:
             final_status = "claim_lost"
             current = await self.publish_claim_lost(record, phase="complete", task_context=task_context)
-            _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+            telemetry.finish(final_status)
             return current
         completed = completed_record
         final_status = completed.status
@@ -497,7 +571,7 @@ class QueueService:
         )
         self._log_task_completed(completed)
         await self._reschedule_if_needed(completed)
-        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, final_status)
+        telemetry.finish(final_status)
         return completed
 
     async def _execute_task(
@@ -518,23 +592,18 @@ class QueueService:
         record: "QueuedTaskRecord",
         exc: "BaseException",
         task_context: "TaskExecutionContext",
-        runtime: "QueueObservabilityRuntimeProtocol",
-        span: "Any | None",
-        started_at: "float",
-        metric_base_attributes: "dict[str, str]",
+        telemetry: "_ExecutionObservability",
     ) -> "QueuedTaskRecord":
         error_message = self._error_message(exc, record)
         updated = await self.get_queue_backend().fail_task(
             record.id, error_message, retry=False, expected_retry_count=record.retry_count
         )
         if updated is None:
-            return await self._finish_claim_lost_observability(
-                record, task_context, runtime, span, started_at, metric_base_attributes
-            )
+            return await self._finish_claim_lost_observability(record, task_context, telemetry)
         payload = {"status": updated.status, "retry_count": updated.retry_count, "will_retry": False}
         await task_context.lifecycle("task.failed", message=error_message, payload=payload)
         self._log_task_event("Queue task failed", updated, level=logging.ERROR, payload=payload)
-        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, updated.status)
+        telemetry.finish(updated.status)
         return updated
 
     async def _fail_record_with_retry(
@@ -542,19 +611,14 @@ class QueueService:
         record: "QueuedTaskRecord",
         exc: "BaseException",
         task_context: "TaskExecutionContext",
-        runtime: "QueueObservabilityRuntimeProtocol",
-        span: "Any | None",
-        started_at: "float",
-        metric_base_attributes: "dict[str, str]",
+        telemetry: "_ExecutionObservability",
     ) -> "QueuedTaskRecord":
         error_message = self._error_message(exc, record)
         updated = await self.get_queue_backend().fail_task(
             record.id, error_message, expected_retry_count=record.retry_count
         )
         if updated is None:
-            return await self._finish_claim_lost_observability(
-                record, task_context, runtime, span, started_at, metric_base_attributes
-            )
+            return await self._finish_claim_lost_observability(record, task_context, telemetry)
         payload = {
             "status": updated.status,
             "retry_count": updated.retry_count,
@@ -569,20 +633,14 @@ class QueueService:
         )
         if updated.status == "failed":
             await self._reschedule_if_needed(updated)
-        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, updated.status)
+        telemetry.finish(updated.status)
         return updated
 
     async def _finish_claim_lost_observability(
-        self,
-        record: "QueuedTaskRecord",
-        task_context: "TaskExecutionContext",
-        runtime: "QueueObservabilityRuntimeProtocol",
-        span: "Any | None",
-        started_at: "float",
-        metric_base_attributes: "dict[str, str]",
+        self, record: "QueuedTaskRecord", task_context: "TaskExecutionContext", telemetry: "_ExecutionObservability"
     ) -> "QueuedTaskRecord":
         current = await self.publish_claim_lost(record, phase="fail", task_context=task_context)
-        _finish_execution_observability(runtime, span, started_at, metric_base_attributes, "claim_lost")
+        telemetry.finish("claim_lost")
         return current
 
     async def reconcile_external(self, limit: "int | None" = None) -> "int":
@@ -605,7 +663,6 @@ class QueueService:
         reconciled = 0
         current_backend = self.get_execution_backend()
         default_backend_name = execution_backend_name(self._config.execution_backend)
-        runtime = self.observability_runtime
         for record in records:
             if record.execution_ref is None:
                 continue
@@ -621,16 +678,11 @@ class QueueService:
                     extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
                 )
                 continue
+            # The execution backend owns litestar_queues.execution.reconcile;
+            # emitting it here too would double-count with a narrower label set.
             updated = await execution_backend.reconcile(self, record)
             if updated is not None and updated.is_terminal:
                 reconciled += 1
-                runtime.record_counter(
-                    "litestar_queues.execution.reconcile.count",
-                    attributes={
-                        "queue.execution.backend": record.execution_backend,
-                        "queue.task.status": updated.status,
-                    },
-                )
         return reconciled
 
     async def recover_stale_tasks(
@@ -869,18 +921,12 @@ class QueueService:
         hook = task_obj.on_stale_failure
         if hook is None:
             return
-        result = hook(record)
+        if iscoroutinefunction(hook):
+            await hook(record)
+            return
+        result = await _run_sync_callable(hook, (record,), {}, sync_executor=self._sync_executor)
         if isawaitable(result):
             await result
-
-
-async def _call_optional_async_method(target: "object", name: "str") -> "None":
-    method = getattr(target, name, None)
-    if not callable(method):
-        return
-    result = method()
-    if isawaitable(result):
-        await result
 
 
 def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":
@@ -929,6 +975,30 @@ def _task_execution_context(
     )
 
 
+def _capture_enqueue_context(runtime: "QueueObservabilityRuntimeProtocol", metadata: "dict[str, Any]") -> "None":
+    """Record the enqueueing caller's trace and correlation context on the queued task."""
+    runtime.inject_trace_context(metadata)
+    capture_correlation_id(metadata)
+
+
+def _bind_execution_context(
+    task_context: "TaskExecutionContext", metadata: "Mapping[str, Any]"
+) -> "tuple[Any, tuple[Any, bool]]":
+    """Bind the ambient context a task body runs under.
+
+    Returns:
+        Scope state for :func:`_reset_execution_context`.
+    """
+    return _bind_task_context(task_context), bind_correlation_id(metadata)
+
+
+def _reset_execution_context(scope: "tuple[Any, tuple[Any, bool]]") -> "None":
+    """Restore the context that was active before the task body ran."""
+    context_token, correlation_state = scope
+    _reset_task_context(context_token)
+    reset_correlation_id(correlation_state)
+
+
 def _base_observability_attributes(
     *,
     operation: "str",
@@ -944,8 +1014,13 @@ def _base_observability_attributes(
         "messaging.destination.name": queue,
         "queue.task.name": task_name,
         "queue.execution.backend": execution_backend,
-        "queue.execution.profile": execution_profile or "",
     }
+    # Spans omit unset attributes rather than carrying an empty value. Metrics
+    # cannot: Prometheus binds label names at collector construction, so the key
+    # must always be present. An empty label value is the right encoding there --
+    # Prometheus treats it as equivalent to the label being absent.
+    if execution_profile:
+        attributes["queue.execution.profile"] = execution_profile
     if attempt is not None:
         attributes["queue.task.attempt"] = attempt
     return attributes
@@ -956,29 +1031,41 @@ def _metric_attributes(attributes: "dict[str, object]") -> "dict[str, str]":
         "messaging.destination.name": str(attributes["messaging.destination.name"]),
         "queue.task.name": str(attributes["queue.task.name"]),
         "queue.execution.backend": str(attributes["queue.execution.backend"]),
-        "queue.execution.profile": str(attributes["queue.execution.profile"]),
+        "queue.execution.profile": str(attributes.get("queue.execution.profile", "")),
     }
 
 
-def _finish_execution_observability(
-    runtime: "QueueObservabilityRuntimeProtocol",
-    span: "Any | None",
-    started_at: "float",
-    metric_base_attributes: "dict[str, str]",
-    status: "str",
-) -> "None":
-    runtime.set_attribute(span, "queue.task.status", status)
-    attributes = {**metric_base_attributes, "queue.task.status": status}
-    runtime.record_duration(
-        "litestar_queues.task.execution.duration", time.perf_counter() - started_at, attributes=attributes
-    )
-    runtime.record_counter("litestar_queues.task.execution.count", attributes=attributes)
-    runtime.end_span(span)
+@dataclass(frozen=True, slots=True)
+class _ExecutionObservability:
+    """One execution's telemetry handles, kept together as they are always used together."""
+
+    runtime: "QueueObservabilityRuntimeProtocol"
+    span: "Any | None"
+    started_at: "float"
+    metric_attributes: "dict[str, str]"
+
+    def record_exception(self, exc: "BaseException") -> "None":
+        """Attach a failure to this execution's span."""
+        self.runtime.record_exception(self.span, exc)
+
+    def finish(self, status: "str") -> "None":
+        """Close out the span and emit the duration and count for ``status``."""
+        self.runtime.set_attribute(self.span, "queue.task.status", status)
+        if status == "failed":
+            # Trace backends key error rates off span status, not recorded exceptions,
+            # and a task can fail without an exception reaching this frame.
+            self.runtime.set_status_error(self.span, "task failed")
+        attributes = {**self.metric_attributes, "queue.task.status": status}
+        self.runtime.record_duration(
+            "litestar_queues.task.execution.duration", time.perf_counter() - self.started_at, attributes=attributes
+        )
+        self.runtime.record_counter("litestar_queues.task.execution", attributes=attributes)
+        self.runtime.end_span(self.span)
 
 
 def _start_execution_observability(
-    runtime: "QueueObservabilityRuntimeProtocol", record: "QueuedTaskRecord"
-) -> "tuple[Any | None, float, dict[str, str]]":
+    runtime: "QueueObservabilityRuntimeProtocol", record: "QueuedTaskRecord", *, worker_id: "str | None" = None
+) -> "_ExecutionObservability":
     parent_context = runtime.extract_trace_context(record.metadata)
     span_attributes = _base_observability_attributes(
         operation="process",
@@ -989,10 +1076,12 @@ def _start_execution_observability(
         attempt=record.retry_count + 1,
     )
     span_attributes["messaging.message.id"] = str(record.id)
+    if worker_id is not None:
+        span_attributes["queue.worker.id"] = worker_id
     span = runtime.start_span(
         "litestar_queues.process", kind="consumer", attributes=span_attributes, parent=parent_context
     )
-    return span, time.perf_counter(), _metric_attributes(span_attributes)
+    return _ExecutionObservability(runtime, span, time.perf_counter(), _metric_attributes(span_attributes))
 
 
 def _coerce_log_level(value: "object", default: "int" = logging.INFO) -> "int":

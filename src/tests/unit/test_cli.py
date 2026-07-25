@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from litestar_queues import WorkerConfig
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from uuid import UUID
@@ -85,7 +87,12 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
 
     async def _seed() -> "None":
         nonlocal task_id
-        async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
+        async with QueueService(
+            QueueConfig(
+                worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"
+            ),
+            queue_backend=queue_backend,
+        ) as service:
             result = await service.enqueue(cli_execute.using(execution_backend="cloudrun"), 41)
             task_id = result.id
 
@@ -94,7 +101,8 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
 
     factory_module = ModuleType("cli_execute_config_factory")
     factory_module.create_service = lambda: QueueService(  # type: ignore[attr-defined]
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
     )
     sys.modules[factory_module.__name__] = factory_module
     monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
@@ -135,7 +143,12 @@ def test_run_task_by_id_flag_runs_existing_record_without_env(monkeypatch: "pyte
 
     async def _seed() -> "None":
         nonlocal task_id
-        async with QueueService(QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend) as service:
+        async with QueueService(
+            QueueConfig(
+                worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"
+            ),
+            queue_backend=queue_backend,
+        ) as service:
             result = await service.enqueue(cli_by_id.using(execution_backend="cloudrun"), 41)
             task_id = result.id
 
@@ -144,7 +157,8 @@ def test_run_task_by_id_flag_runs_existing_record_without_env(monkeypatch: "pyte
 
     factory_module = ModuleType("cli_by_id_config_factory")
     factory_module.create_service = lambda: QueueService(  # type: ignore[attr-defined]
-        QueueConfig(execution_backend="cloudrun"), queue_backend=queue_backend
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
     )
     sys.modules[factory_module.__name__] = factory_module
     for name in [key for key in os.environ if key.startswith("LITESTAR_QUEUES_")]:
@@ -478,7 +492,11 @@ async def test_maintain_rejects_memory_backend_before_opening(monkeypatch: "pyte
     from litestar_queues import QueueConfig, QueueMaintenanceConfig, _cli
 
     service = _FakeMaintenanceServiceHost(_FakeMaintenanceBackend())
-    config = QueueConfig(queue_backend="memory", maintenance=QueueMaintenanceConfig(terminal_retention=60))
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        maintenance=QueueMaintenanceConfig(terminal_retention=60),
+    )
     plugin = _FakePlugin(config, service)
 
     code = await _cli._maintain_run(cast("Any", plugin), (), False)

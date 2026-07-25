@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import warnings
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any, cast
@@ -15,11 +17,13 @@ from litestar_queues import (
     Task,
     TaskExecutionContext,
     TaskResult,
+    WorkerConfig,
     get_scheduled_tasks,
     get_task_registry,
     task,
 )
 from litestar_queues.events import NoopQueueEventSink, QueueEventPublisher
+from litestar_queues.exceptions import QueueWarning
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -124,7 +128,9 @@ async def test_queue_service_enqueue_by_name_executes_immediately_and_refreshes_
     async def greet(name: "str") -> "dict[str, str]":
         return {"message": f"hello {name}"}
 
-    async with QueueService(QueueConfig(execution_backend="immediate")) as service:
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="immediate")
+    ) as service:
         result = await service.enqueue("tasks.greet", "Ada")
         await result.refresh()
 
@@ -366,3 +372,127 @@ def _build_test_context(record: "QueuedTaskRecord") -> "TaskExecutionContext":
         attempt=record.retry_count + 1,
         event_publisher=QueueEventPublisher(NoopQueueEventSink()),
     )
+
+
+async def test_direct_call_offloads_a_sync_task_to_a_worker_thread() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.direct_sync_offload")
+    def sync_task(value: "str") -> "str":
+        observed.append(threading.get_ident())
+        return value.upper()
+
+    assert await sync_task("done") == "DONE"
+    assert observed == [observed[0]]
+    assert observed[0] != threading.get_ident()
+
+
+async def test_direct_call_keeps_an_async_task_on_the_event_loop_thread() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.direct_async_inline")
+    async def async_task() -> "str":
+        observed.append(threading.get_ident())
+        return "ok"
+
+    assert await async_task() == "ok"
+    assert observed == [threading.get_ident()]
+
+
+async def test_direct_call_propagates_sync_task_exceptions() -> "None":
+    @task("tasks.direct_sync_raises")
+    def sync_task() -> "None":
+        message = "sync task failed"
+        raise ValueError(message)
+
+    with pytest.raises(ValueError, match="sync task failed"):
+        await sync_task()
+
+
+async def test_sync_to_thread_false_runs_a_sync_task_inline_on_the_event_loop() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.sync_inline_opt_in", sync_to_thread=False)
+    def sync_task() -> "str":
+        observed.append(threading.get_ident())
+        return "inline"
+
+    assert await sync_task() == "inline"
+    assert observed == [threading.get_ident()]
+
+
+async def test_sync_to_thread_true_runs_a_sync_task_in_a_worker_thread() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.sync_thread_opt_in", sync_to_thread=True)
+    def sync_task() -> "str":
+        observed.append(threading.get_ident())
+        return "threaded"
+
+    assert await sync_task() == "threaded"
+    assert observed[0] != threading.get_ident()
+
+
+async def test_sync_to_thread_false_is_honoured_by_execute_record() -> "None":
+    observed: "list[int]" = []
+
+    @task("tasks.sync_inline_record", sync_to_thread=False)
+    def sync_task() -> "str":
+        observed.append(threading.get_ident())
+        return "inline"
+
+    record = QueuedTaskRecord(task_name="tasks.sync_inline_record")
+
+    assert await sync_task.execute_record(record) == "inline"
+    assert observed == [threading.get_ident()]
+
+
+def test_sync_to_thread_with_an_async_task_warns_that_it_has_no_effect() -> "None":
+    with pytest.warns(QueueWarning, match="no effect on async"):
+
+        @task("tasks.async_with_sync_to_thread", sync_to_thread=True)
+        async def async_task() -> "None":
+            return None
+
+
+def test_sync_to_thread_with_an_async_task_warning_is_suppressible(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    monkeypatch.setenv("LITESTAR_WARN_SYNC_TO_THREAD_WITH_ASYNC", "0")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+
+        @task("tasks.async_sync_to_thread_quiet", sync_to_thread=True)
+        async def async_task() -> "None":
+            return None
+
+
+def test_implicit_sync_task_does_not_warn() -> "None":
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+
+        @task("tasks.implicit_sync_quiet")
+        def sync_task() -> "None":
+            return None
+
+
+async def test_async_callable_instance_is_detected_and_not_offloaded() -> "None":
+    observed: "list[int]" = []
+
+    class AsyncHandler:
+        async def __call__(self) -> "str":
+            observed.append(threading.get_ident())
+            return "async-instance"
+
+    handler = task("tasks.async_callable_instance")(AsyncHandler())
+
+    assert await handler() == "async-instance"
+    assert observed == [threading.get_ident()]
+
+
+async def test_using_preserves_sync_to_thread() -> "None":
+    @task("tasks.sync_to_thread_using", sync_to_thread=False)
+    def sync_task() -> "str":
+        return "value"
+
+    assert sync_task.sync_to_thread is False
+    assert sync_task.using(priority=5).sync_to_thread is False

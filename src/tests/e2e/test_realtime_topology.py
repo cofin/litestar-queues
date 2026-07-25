@@ -37,6 +37,7 @@ def test_queue_worker_uses_the_litestar_queue_cli() -> None:
 )
 @pytest.mark.parametrize("transport", ["sse", "websocket"])
 def test_shared_channels_deliver_from_a_standalone_worker(
+    *,
     backend: str,
     url_env: str,
     default_url: str,

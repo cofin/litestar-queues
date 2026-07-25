@@ -17,6 +17,7 @@ _queue_backend_registry: "dict[str, type[BaseQueueBackend]]" = {}
 
 _BUILTIN_BACKENDS: "dict[str, str]" = {
     "advanced-alchemy": "litestar_queues.backends.advanced_alchemy:SQLAlchemyBackend",
+    "ephemeral": "litestar_queues.backends.ephemeral:EphemeralQueueBackend",
     "memory": "litestar_queues.backends.memory:InMemoryQueueBackend",
     "redis": "litestar_queues.backends.redis:RedisQueueBackend",
     "sqlspec": "litestar_queues.backends.sqlspec:SQLSpecQueueBackend",

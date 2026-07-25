@@ -108,13 +108,13 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             fallback = self.execution_config.fallback_execution_backend
             if fallback is None:
                 runtime.record_counter(
-                    "litestar_queues.execution.dispatch.count",
+                    "litestar_queues.execution.dispatch",
                     attributes={**metric_attributes, "queue.execution.status": "error"},
                 )
                 raise
             await service.get_queue_backend().set_execution_backend(record.id, fallback)
             runtime.record_counter(
-                "litestar_queues.execution.dispatch.count",
+                "litestar_queues.execution.dispatch",
                 attributes={**metric_attributes, "queue.execution.status": "fallback"},
             )
             return None
@@ -125,7 +125,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             record.id, "cloudrun", execution_ref, execution_profile=record.execution_profile
         )
         runtime.record_counter(
-            "litestar_queues.execution.dispatch.count",
+            "litestar_queues.execution.dispatch",
             attributes={**metric_attributes, "queue.execution.status": "dispatched"},
         )
         return execution_ref
@@ -153,8 +153,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         except Exception as exc:
             runtime.record_exception(span, exc)
             runtime.record_counter(
-                "litestar_queues.execution.reconcile.count",
-                attributes={**metric_attributes, "queue.execution.status": "error"},
+                "litestar_queues.execution.reconcile", attributes={**metric_attributes, "queue.task.status": "error"}
             )
             raise
         finally:
@@ -338,14 +337,16 @@ def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":
 
 
 def _queue_observability_attributes(operation: "str", record: "QueuedTaskRecord") -> "dict[str, object]":
-    return {
+    attributes: "dict[str, object]" = {
         "messaging.system": "litestar_queues",
         "messaging.operation.name": operation,
         "messaging.destination.name": record.queue,
         "queue.task.name": record.task_name,
         "queue.execution.backend": record.execution_backend,
-        "queue.execution.profile": record.execution_profile or "",
     }
+    if record.execution_profile:
+        attributes["queue.execution.profile"] = record.execution_profile
+    return attributes
 
 
 def _queue_metric_attributes(attributes: "Mapping[str, object]") -> "dict[str, str]":
@@ -353,7 +354,7 @@ def _queue_metric_attributes(attributes: "Mapping[str, object]") -> "dict[str, s
         "messaging.destination.name": str(attributes["messaging.destination.name"]),
         "queue.task.name": str(attributes["queue.task.name"]),
         "queue.execution.backend": str(attributes["queue.execution.backend"]),
-        "queue.execution.profile": str(attributes["queue.execution.profile"]),
+        "queue.execution.profile": str(attributes.get("queue.execution.profile", "")),
     }
 
 
@@ -362,8 +363,7 @@ def _record_reconcile_result(
 ) -> "None":
     if record is not None:
         runtime.record_counter(
-            "litestar_queues.execution.reconcile.count",
-            attributes={**metric_attributes, "queue.execution.status": record.status},
+            "litestar_queues.execution.reconcile", attributes={**metric_attributes, "queue.task.status": record.status}
         )
 
 

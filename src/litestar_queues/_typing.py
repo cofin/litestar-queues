@@ -27,9 +27,11 @@ __all__ = (
     "PrometheusCounter",
     "PrometheusGauge",
     "PrometheusHistogram",
+    "otel_context",
     "otel_metrics",
     "otel_propagate",
     "otel_trace",
+    "prometheus_default_registry",
 )
 
 OPENTELEMETRY_INSTALLED = find_spec("opentelemetry") is not None
@@ -75,7 +77,7 @@ class _FallbackSpan:
 class _FallbackTracer:
     """Fallback OpenTelemetry tracer shim."""
 
-    def start_span(
+    def start_span(  # noqa: PLR0917 - mirrors opentelemetry.trace.Tracer.start_span positionally.
         self,
         name: "str",
         context: "Any" = None,
@@ -146,6 +148,17 @@ class _TraceModule:
     ) -> "_FallbackTracer":
         return _FallbackTracer()
 
+    def set_span_in_context(self, span: "Any", context: "Any" = None) -> "Any":
+        return None
+
+
+class _ContextModule:
+    def attach(self, context: "Any") -> "Any":
+        return None
+
+    def detach(self, token: "Any") -> "None":
+        return None
+
 
 class _MetricsModule:
     def get_meter(
@@ -162,6 +175,7 @@ class _PropagateModule:
         return None
 
 
+otel_context: Any
 otel_metrics: Any
 otel_propagate: Any
 otel_trace: Any
@@ -173,10 +187,12 @@ OtelStatusCode: Any
 OtelTracer: Any
 
 try:
+    _otel_context_module = import_module("opentelemetry.context")
     _otel_metrics_module = import_module("opentelemetry.metrics")
     _otel_propagate_module = import_module("opentelemetry.propagate")
     _otel_trace_module = import_module("opentelemetry.trace")
 except ImportError:
+    otel_context = _ContextModule()
     otel_metrics = _MetricsModule()
     otel_propagate = _PropagateModule()
     otel_trace = _TraceModule()
@@ -187,6 +203,7 @@ except ImportError:
     OtelStatusCode = _FallbackStatusCode
     OtelTracer = _FallbackTracer
 else:
+    otel_context = _otel_context_module
     otel_metrics = _otel_metrics_module
     otel_propagate = _otel_propagate_module
     otel_trace = _otel_trace_module
@@ -199,7 +216,7 @@ else:
 
 
 class _PrometheusMetric:
-    def __init__(
+    def __init__(  # noqa: PLR0917 - mirrors the prometheus_client metric constructors positionally.
         self,
         name: "str",
         documentation: "str",
@@ -250,7 +267,25 @@ except ImportError:
     PrometheusCounter = _FallbackCounter
     PrometheusGauge = _FallbackGauge
     PrometheusHistogram = _FallbackHistogram
+
+    def prometheus_default_registry() -> "Any":
+        """Return the default Prometheus registry.
+
+        Returns:
+            ``None`` when ``prometheus_client`` is not installed.
+        """
+        return None
+
 else:
     PrometheusCounter = _prometheus_client_module.Counter
     PrometheusGauge = _prometheus_client_module.Gauge
     PrometheusHistogram = _prometheus_client_module.Histogram
+
+    def prometheus_default_registry() -> "Any":
+        """Return the default Prometheus registry.
+
+        Returns:
+            The process-wide ``prometheus_client`` registry that Litestar's
+            ``PrometheusController`` scrapes.
+        """
+        return _prometheus_client_module.REGISTRY
