@@ -183,6 +183,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             for record in self._records.values()
             if record.status in {"pending", "scheduled"}
             and record.is_due
+            and not record.is_expired
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
@@ -195,6 +196,9 @@ class InMemoryQueueBackend(BaseQueueBackend):
             if record is None or record.status not in {"pending", "scheduled"} or not record.is_due:
                 return None
             now = _utc_now()
+            if record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                return None
             record.status = "running"
             record.started_at = now
             record.heartbeat_at = now
@@ -218,14 +222,20 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return []
         async with self._lock:
             now = _utc_now()
-            eligible = [
-                record
-                for record in self._records.values()
-                if record.status in {"pending", "scheduled"}
-                and (record.scheduled_at is None or record.scheduled_at <= now)
-                and (not queues or record.queue in queues)
-                and (execution_backend is None or record.execution_backend == execution_backend)
-            ]
+            eligible: "list[QueuedTaskRecord]" = []
+            for record in self._records.values():
+                if record.status not in {"pending", "scheduled"}:
+                    continue
+                if record.expires_at is not None and record.expires_at <= now:
+                    _expire_record(record, now)
+                    continue
+                if record.scheduled_at is not None and record.scheduled_at > now:
+                    continue
+                if queues and record.queue not in queues:
+                    continue
+                if execution_backend is not None and record.execution_backend != execution_backend:
+                    continue
+                eligible.append(record)
             eligible.sort(key=lambda record: (-record.priority, record.created_at))
             claimed: "list[QueuedTaskRecord]" = []
             for record in eligible[:limit]:
@@ -381,6 +391,26 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     result.handler_needed += 1
                     result.handler_needed_task_ids.append(record.id)
         return result
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``.
+
+        Returns:
+            Records transitioned during this call.
+        """
+        now = _utc_now()
+        expired: "list[QueuedTaskRecord]" = []
+        async with self._lock:
+            for record in self._records.values():
+                if limit is not None and len(expired) >= limit:
+                    break
+                if record.status not in {"pending", "scheduled"}:
+                    continue
+                if record.expires_at is None or record.expires_at > now:
+                    continue
+                _expire_record(record, now)
+                expired.append(record)
+        return expired
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -586,3 +616,9 @@ def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
 
 def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
+
+
+def _expire_record(record: "QueuedTaskRecord", completed_at: "datetime") -> "None":
+    record.status = "expired"
+    record.completed_at = completed_at
+    record.heartbeat_at = None

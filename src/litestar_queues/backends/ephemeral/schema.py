@@ -32,7 +32,7 @@ __all__ = (
     "sqlite_errors",
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 
 PATH_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_PATH"
@@ -123,6 +123,7 @@ _STATEMENTS = (
         priority INTEGER NOT NULL,
         retry_count INTEGER NOT NULL,
         scheduled_at TEXT,
+        expires_at TEXT,
         created_at TEXT NOT NULL,
         completed_at TEXT,
         heartbeat_at TEXT,
@@ -132,7 +133,11 @@ _STATEMENTS = (
     """,
     """
     CREATE INDEX IF NOT EXISTS ix_queue_task_claim
-        ON queue_task(status, execution_backend, queue, scheduled_at, priority, created_at)
+        ON queue_task(status, execution_backend, queue, scheduled_at, expires_at, priority, created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_queue_task_expiry
+        ON queue_task(status, expires_at)
     """,
     """
     CREATE INDEX IF NOT EXISTS ix_queue_task_completed
@@ -141,7 +146,7 @@ _STATEMENTS = (
     """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_queue_task_active_key
         ON queue_task(task_key)
-        WHERE task_key IS NOT NULL AND status NOT IN ('completed', 'failed', 'cancelled')
+        WHERE task_key IS NOT NULL AND status NOT IN ('completed', 'failed', 'cancelled', 'expired')
     """,
     """
     CREATE TABLE IF NOT EXISTS queue_reservation (

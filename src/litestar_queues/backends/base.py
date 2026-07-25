@@ -266,6 +266,18 @@ class BaseQueueBackend:
         """
         return StaleTaskRecoveryResult()
 
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``.
+
+        Backends that support pending-job expiration override this with a
+        fenced transition. The default is a safe no-op while backend
+        capabilities are introduced incrementally.
+
+        Returns:
+            Records transitioned to ``expired``.
+        """
+        return []
+
     async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
         """Acquire a backend-scoped worker coordination lock.
 

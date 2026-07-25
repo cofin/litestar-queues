@@ -79,6 +79,7 @@ async def test_capabilities_report_sqlite_poll(backend: "EphemeralQueueBackend")
 
 async def test_enqueue_and_get_round_trip_every_field(backend: "EphemeralQueueBackend") -> "None":
     scheduled = datetime.now(timezone.utc) + timedelta(hours=1)
+    expires = scheduled + timedelta(hours=2)
     record = await backend.enqueue(
         "tasks.render",
         args=(1, "two"),
@@ -87,6 +88,7 @@ async def test_enqueue_and_get_round_trip_every_field(backend: "EphemeralQueueBa
         priority=7,
         max_retries=3,
         scheduled_at=scheduled,
+        expires_at=expires,
         key="report:1",
         execution_backend="local",
         metadata={"requested_by": "user-1"},
@@ -104,6 +106,7 @@ async def test_enqueue_and_get_round_trip_every_field(backend: "EphemeralQueueBa
     assert stored.max_retries == 3
     assert stored.status == "scheduled"
     assert stored.scheduled_at == scheduled
+    assert stored.expires_at == expires
     assert stored.key == "report:1"
     assert stored.metadata == {"requested_by": "user-1"}
 
@@ -123,16 +126,22 @@ async def test_enqueue_returns_the_active_record_for_a_duplicate_key(backend: "E
 
 async def test_enqueue_many_preserves_order_and_reuses_active_keys(backend: "EphemeralQueueBackend") -> "None":
     existing = await backend.enqueue("tasks.batch", key="shared")
+    expires = datetime.now(timezone.utc) + timedelta(hours=1)
 
     records = await backend.enqueue_many([
         TaskRequest(task_name="tasks.batch", key="shared"),
-        TaskRequest(task_name="tasks.batch", priority=2),
+        TaskRequest(task_name="tasks.batch", priority=2, expires_at=expires),
         TaskRequest(task_name="tasks.batch", priority=1),
     ])
 
     assert [record.task_name for record in records] == ["tasks.batch"] * 3
     assert records[0].id == existing.id
     assert records[1].priority == 2
+    assert records[1].expires_at == expires
+
+    stored = await backend.get_task(records[1].id)
+    assert stored is not None
+    assert stored.expires_at == expires
 
 
 async def test_claim_orders_by_priority_then_creation(backend: "EphemeralQueueBackend") -> "None":
@@ -150,6 +159,54 @@ async def test_claim_task_skips_records_that_are_not_due(backend: "EphemeralQueu
     future = await backend.enqueue("tasks.future", scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1))
 
     assert await backend.claim_task(future.id) is None
+
+
+async def test_expired_record_is_hidden_and_fenced_at_claim(backend: "EphemeralQueueBackend") -> "None":
+    expired = await backend.enqueue(
+        "tasks.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+    available = await backend.enqueue("tasks.available")
+
+    pending = await backend.list_pending(limit=10)
+    claimed = await backend.claim_task(expired.id)
+    stored = await backend.get_task(expired.id)
+
+    assert [record.id for record in pending] == [available.id]
+    assert claimed is None
+    assert stored is not None
+    assert stored.status == "expired"
+    assert stored.completed_at is not None
+
+
+async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBackend") -> "None":
+    expired = await backend.enqueue(
+        "tasks.expired_batch", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+    available = await backend.enqueue("tasks.available_batch")
+
+    claimed = await backend.claim_many(limit=10)
+    stored = await backend.get_task(expired.id)
+
+    assert [record.id for record in claimed] == [available.id]
+    assert stored is not None
+    assert stored.status == "expired"
+
+
+async def test_expire_overdue_is_bounded_idempotent_and_terminal(backend: "EphemeralQueueBackend") -> "None":
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    records = [await backend.enqueue(f"tasks.expire_{index}", expires_at=past) for index in range(3)]
+
+    first = await backend.expire_overdue(limit=2)
+    second = await backend.expire_overdue(limit=2)
+    third = await backend.expire_overdue(limit=2)
+    statistics = await backend.get_statistics()
+    removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+
+    assert [record.id for record in first] == [records[0].id, records[1].id]
+    assert [record.id for record in second] == [records[2].id]
+    assert third == []
+    assert statistics.expired == 3
+    assert removed == 3
 
 
 async def test_complete_and_fail_respect_retry_fencing(backend: "EphemeralQueueBackend") -> "None":
@@ -444,6 +501,7 @@ def test_codec_round_trips_a_record_with_every_field() -> "None":
         max_retries=2,
         retry_count=1,
         scheduled_at=now,
+        expires_at=now,
         started_at=now,
         completed_at=now,
         heartbeat_at=now,
