@@ -53,6 +53,7 @@ _CANONICAL_COLUMNS = frozenset({
     "max_retries",
     "retry_count",
     "scheduled_at",
+    "expires_at",
     "created_at",
     "started_at",
     "completed_at",
@@ -208,7 +209,10 @@ def task_reservation_table_name_for(table_name: "str") -> "str":
 def migration_paths() -> "tuple[str, ...]":
     """Return packaged SQLSpec migration file paths."""
     directory = migration_directory()
-    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
+    return (
+        str(directory.joinpath("0001_create_queue_tasks.py")),
+        str(directory.joinpath("0002_add_task_expiration.py")),
+    )
 
 
 def migration_directory() -> "Path":

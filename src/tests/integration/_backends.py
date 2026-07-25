@@ -99,6 +99,11 @@ class BackendCase:
     build: 'Callable[[FixtureCtx], Awaitable["BaseQueueBackend"]]'
     capabilities: "frozenset[str]"
 
+    def __post_init__(self) -> "None":
+        """Activate capabilities implemented uniformly by one backend family."""
+        if "sqlspec" in self.extras:
+            object.__setattr__(self, "capabilities", self.capabilities | {"expiry"})
+
 
 # ---------------------------------------------------------------------------
 # Builders. Each builder is async and returns a constructed-but-unopened

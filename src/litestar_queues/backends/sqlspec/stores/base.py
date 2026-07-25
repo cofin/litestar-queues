@@ -42,6 +42,7 @@ _TASK_COLUMNS = (
     "max_retries",
     "retry_count",
     "scheduled_at",
+    "expires_at",
     "created_at",
     "started_at",
     "completed_at",
@@ -257,6 +258,7 @@ class SQLSpecQueueStore:
             id_col = self._quoted_col("id")
             status_col = self._quoted_col("status")
             scheduled_col = self._quoted_col("scheduled_at")
+            expires_col = self._quoted_col("expires_at")
             queue_col = self._quoted_col("queue")
             eb_col = self._quoted_col("execution_backend")
             priority_col = self._quoted_col("priority")
@@ -264,6 +266,7 @@ class SQLSpecQueueStore:
             conditions = [
                 f"{status_col} IN ('pending', 'scheduled')",
                 f"({scheduled_col} IS NULL OR {scheduled_col} <= :now)",
+                f"({expires_col} IS NULL OR {expires_col} > :expires_now)",
             ]
             if queue_count:
                 placeholders = ", ".join(f":queue_{index}" for index in range(queue_count))
@@ -371,6 +374,7 @@ class SQLSpecQueueStore:
             ._select_all()
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :now", now=now)
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_now", expires_now=now)
         )
         if queue is not None:
             statement = statement.where_eq(self._col("queue"), queue)
@@ -392,6 +396,7 @@ class SQLSpecQueueStore:
             .from_(self.table_name)
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} > :now", now=now)
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_now", expires_now=now)
         )
         if queues:
             statement = statement.where_in(self._col("queue"), list(queues))
@@ -423,6 +428,10 @@ class SQLSpecQueueStore:
             .where_eq(self._col("id"), task_id)
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
+            .where(
+                f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_due_at",
+                expires_due_at=due_at,
+            )
         )
 
     def claim_tasks(
@@ -446,6 +455,30 @@ class SQLSpecQueueStore:
             .where_in(self._col("id"), list(task_ids))
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
+            .where(
+                f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_due_at",
+                expires_due_at=due_at,
+            )
+        )
+
+    def select_expired(self, *, now: "DatetimeParam", limit: "int | None" = None) -> "Select":
+        """Return overdue pending or scheduled records in deterministic order."""
+        statement = (
+            self._select_all()
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before", expires_before=now)
+            .order_by(_raw_order(f"{self._col('expires_at')} ASC"), _raw_order(f"{self._col('created_at')} ASC"))
+        )
+        return statement.limit(limit) if limit is not None else statement
+
+    def expire_task(self, *, task_id: "str", now: "DatetimeParam") -> "Update":
+        """Return a fenced update transitioning one overdue record to expired."""
+        return (
+            sql.update(self.table_name)
+            .set(**self._mapped_values({"status": "expired", "completed_at": now, "heartbeat_at": None}))
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before", expires_before=now)
         )
 
     def complete_task(
@@ -762,7 +795,7 @@ RETURNING {target}.{id_col} AS id
             sql
             .select(sql.raw("COUNT(*) AS terminal_count"))
             .from_(self.table_name)
-            .where_in(self._col("status"), ("completed", "failed", "cancelled"))
+            .where_in(self._col("status"), ("completed", "failed", "cancelled", "expired"))
             .where(
                 f"{self._col('completed_at')} IS NOT NULL AND {self._col('completed_at')} < :terminal_before",
                 terminal_before=before,
@@ -774,7 +807,7 @@ RETURNING {target}.{id_col} AS id
         return (
             sql
             .delete(self.table_name)
-            .where_in(self._col("status"), ("completed", "failed", "cancelled"))
+            .where_in(self._col("status"), ("completed", "failed", "cancelled", "expired"))
             .where(
                 f"{self._col('completed_at')} IS NOT NULL AND {self._col('completed_at')} < :terminal_before",
                 terminal_before=before,
@@ -791,7 +824,7 @@ RETURNING {target}.{id_col} AS id
             sql
             .select(self._select_column("id"))
             .from_(self.table_name)
-            .where_in(self._col("status"), ("completed", "failed", "cancelled"))
+            .where_in(self._col("status"), ("completed", "failed", "cancelled", "expired"))
             .where(
                 f"{self._col('completed_at')} IS NOT NULL AND {self._col('completed_at')} < :terminal_before",
                 terminal_before=before,
@@ -876,6 +909,7 @@ RETURNING {target}.{id_col} AS id
             .column(self._col("max_retries"), self._integer_type(), not_null=True)
             .column(self._col("retry_count"), self._integer_type(), not_null=True)
             .column(self._col("scheduled_at"), self._timestamp_type())
+            .column(self._col("expires_at"), self._timestamp_type())
             .column(self._col("created_at"), self._timestamp_type(), not_null=True)
             .column(self._col("started_at"), self._timestamp_type())
             .column(self._col("completed_at"), self._timestamp_type())
@@ -909,6 +943,7 @@ RETURNING {target}.{id_col} AS id
                             "queue",
                             "execution_backend",
                             "scheduled_at",
+                            "expires_at",
                             "priority",
                             "created_at",
                         )

@@ -176,7 +176,7 @@ async def test_sqlspec_backend_migration_derives_names_from_custom_queue_table()
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
+    assert [path.name for path in paths] == ["0001_create_queue_tasks.py", "0002_add_task_expiration.py"]
     migration_content = paths[0].read_text()
     assert "create_queue_store" in migration_content
     assert "create_maintenance_store" in migration_content
