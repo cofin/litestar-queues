@@ -96,11 +96,11 @@ Choosing a placement
    :header-rows: 1
 
    * - Placement
-     - Owner
-     - Workers
+     - Who starts the worker
+     - How many it starts
      - Storage
    * - ``server``
-     - Litestar CLI server lifespan
+     - the Litestar CLI server lifespan
      - one per ``litestar run``
      - ephemeral or persistent
    * - ``asgi``
@@ -108,9 +108,12 @@ Choosing a placement
      - one per ASGI process
      - memory or persistent
    * - ``external``
-     - your process manager, or an inline caller
-     - none started automatically
+     - nobody; you do
+     - none
      - persistent for ``litestar queues run``
+
+The count is what the application starts for itself. Any placement on a
+persistent backend can have standalone workers added alongside it.
 
 Managed placements (``server`` and ``asgi``) reject
 ``execution_backend="immediate"``, because inline execution leaves a worker
