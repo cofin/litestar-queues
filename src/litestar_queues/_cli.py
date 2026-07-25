@@ -7,8 +7,8 @@ because the decorator-style command bodies need it at definition time.
 """
 
 import asyncio
-import contextlib
 import json
+import logging
 import os
 import signal
 from dataclasses import replace
@@ -17,12 +17,11 @@ from typing import TYPE_CHECKING, cast
 
 import click
 
-from litestar_queues.config import queue_backend_name
+from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.consumer import run_task
 from litestar_queues.maintenance import QueueMaintenanceService
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
-from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
     from litestar.cli._utils import LitestarEnv
@@ -40,7 +39,53 @@ __all__ = (
     "status_command",
 )
 
+logger = logging.getLogger(__name__)
+
 FORCE_STOP_SIGNAL_COUNT = 2
+
+_EPHEMERAL_UNREACHABLE = (
+    "queue_backend='ephemeral' lives in a private database that its owning 'litestar run' "
+    "invocation creates and removes, so a separate queue command cannot attach to it. "
+    "Configure a persistent backend to use 'litestar queues {command}'."
+)
+_MEMORY_UNREACHABLE = (
+    "queue_backend='memory' keeps its records inside the process that created them, so a "
+    "standalone worker would poll an empty queue forever while appearing healthy. "
+    "Configure a persistent backend to use 'litestar queues run'."
+)
+
+
+def _reject_ephemeral_storage(plugin: "QueuePlugin", command: "str") -> "None":
+    """Fail before opening a service when the database belongs to another invocation.
+
+    Raises:
+        click.ClickException: If the configured backend is server-owned ephemeral storage.
+    """
+    if queue_backend_name(plugin.config.queue_backend) == "ephemeral":
+        raise click.ClickException(_EPHEMERAL_UNREACHABLE.format(command=command))
+
+
+def _reject_managed_placement(plugin: "QueuePlugin") -> "None":
+    """Fail when the application already designates a different worker owner.
+
+    Raises:
+        click.ClickException: If placement is not external, or execution is inline.
+    """
+    config = plugin.config
+    placement = config.worker.placement
+    if placement != "external":
+        msg = (
+            f"'litestar queues run' is the external worker. This application configures "
+            f"WorkerConfig(placement={placement!r}), which already designates a different owner; "
+            f"running both would double the configured worker count. Set placement='external'."
+        )
+        raise click.ClickException(msg)
+    if execution_backend_name(config.execution_backend) == "immediate":
+        msg = (
+            "execution_backend='immediate' runs tasks inline at enqueue time, so a standalone "
+            "worker would have nothing to claim. Use execution_backend='local'."
+        )
+        raise click.ClickException(msg)
 
 
 @click.group(name="queues", help="litestar-queues operations.")
@@ -69,14 +114,17 @@ def run_command(
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     config = plugin.config
-    if config.task_modules:
-        load_task_modules(config.task_modules)
+    _reject_ephemeral_storage(plugin, "run")
+    if queue_backend_name(config.queue_backend) == "memory":
+        raise click.ClickException(_MEMORY_UNREACHABLE)
+    _reject_managed_placement(plugin)
 
     effective_concurrency = max_concurrency or config.worker.max_concurrency
     effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker.graceful_shutdown_timeout
-
     effective_queues = queues or config.worker.queues
 
+    # Task modules and schedules belong to the shared runner, which owns them
+    # identically for this command and for the server-started worker child.
     exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues))
     ctx.exit(exit_code)
 
@@ -92,6 +140,7 @@ def run_command(
 def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "bool") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
+    _reject_ephemeral_storage(plugin, "status")
     exit_code = asyncio.run(_status_run(plugin, queue_filter, as_json))
     ctx.exit(exit_code)
 
@@ -103,6 +152,7 @@ def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "b
 def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
+    _reject_ephemeral_storage(plugin, "scheduler-health")
     exit_code = asyncio.run(_scheduler_health_run(plugin, minutes))
     ctx.exit(exit_code)
 
@@ -141,6 +191,7 @@ def run_task_command(
 def run_maintenance_command(ctx: "click.Context", phases: "tuple[str, ...]", as_json: "bool") -> "None":
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
+    _reject_ephemeral_storage(plugin, "run-maintenance")
     exit_code = asyncio.run(_maintain_run(plugin, phases, as_json))
     ctx.exit(exit_code)
 
@@ -245,87 +296,91 @@ def _maintenance_exit_code(summary: "QueueMaintenanceSummary") -> "int":
     return 0
 
 
+def _failure_detail(exc: "BaseException") -> "str":
+    """Describe a worker failure by stage and exception type only.
+
+    Returns:
+        ``"<stage> (<ExceptionType>)"`` for a staged startup failure, otherwise
+        the exception type name.
+    """
+    stage = getattr(exc, "stage", None)
+    exception_type = getattr(exc, "exception_type", None)
+    if stage is not None and isinstance(exception_type, str):
+        return f"{stage.value} ({exception_type})"
+    return type(exc).__name__
+
+
 async def _run_worker(
     plugin: "QueuePlugin", max_concurrency: "int", drain_timeout: "float", queues: "tuple[str, ...]" = ()
 ) -> "int":
-    config = plugin.config
-    service = _open_service(plugin)
-    await service.open()
-    worker_config = replace(
-        config.worker, max_concurrency=max_concurrency, graceful_shutdown_timeout=drain_timeout, queues=queues
-    )
-    worker = Worker(service, worker_config)
+    """Run one standalone worker until it is signalled to stop.
 
+    Returns:
+        The process exit code: 0 clean, 1 crashed, 2 escalated.
+    """
+    from litestar_queues.worker.runtime import WorkerRunResult, run_worker
+
+    config = replace(
+        plugin.config,
+        worker=replace(
+            plugin.config.worker,
+            max_concurrency=max_concurrency,
+            graceful_shutdown_timeout=drain_timeout,
+            queues=queues,
+        ),
+    )
+    stop = _CLIStopCoordinator()
     loop = asyncio.get_running_loop()
-    stop_coordinator = _WorkerStopCoordinator(worker)
 
     def _register_signal_handler(sig: "signal.Signals") -> "None":
         try:
-            loop.add_signal_handler(sig, stop_coordinator.request_stop)
+            loop.add_signal_handler(sig, stop.request_stop)
         except NotImplementedError:
-            signal.signal(sig, lambda *_: stop_coordinator.request_stop())
+            signal.signal(sig, lambda *_: stop.request_stop())
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         _register_signal_handler(sig)
 
-    worker_task = asyncio.create_task(worker.start())
-    await asyncio.sleep(0)
-    click.echo("litestar queues worker started", err=True)
-    exit_code = 0
+    def announce_ready() -> "None":
+        click.echo("litestar queues worker started", err=True)
+
     try:
-        try:
-            await asyncio.wait_for(worker_task, timeout=None)
-            await stop_coordinator.wait()
-            if stop_coordinator.forced_stop or stop_coordinator.drain_escalated:
-                exit_code = 2
-        except asyncio.CancelledError:
-            with contextlib.suppress(BaseException):
-                await asyncio.wait_for(worker_task, timeout=config.worker.final_cancel_timeout)
-            exit_code = 2
-        except Exception:
-            exit_code = 1
-    finally:
-        with contextlib.suppress(Exception):
-            await stop_coordinator.finish(timeout=drain_timeout + config.worker.final_cancel_timeout)
-            await asyncio.wait_for(worker.stop(), timeout=drain_timeout)
-        await service.close()
-    return exit_code
+        result = await run_worker(
+            plugin.create_worker_service(),
+            config,
+            graceful_stop=stop.graceful,
+            force_stop=stop.force,
+            ready=announce_ready,
+        )
+    except Exception as exc:
+        # Name the startup stage and exception type but never the exception
+        # text: connection strings and credentials routinely appear in backend
+        # errors. The full traceback still reaches the configured log handlers.
+        click.echo(f"error: queue worker failed during {_failure_detail(exc)}", err=True)
+        logger.exception("Standalone queue worker failed")
+        return int(WorkerRunResult.CRASHED)
+    return int(result)
 
 
-class _WorkerStopCoordinator:
-    __slots__ = ("drain_escalated", "forced_stop", "stop_count", "stop_task", "worker")
+class _CLIStopCoordinator:
+    """Translate repeated termination signals into the runner's two stop events.
 
-    def __init__(self, worker: "Worker") -> "None":
-        self.worker = worker
+    The second signal must reach the runner while the first drain is still in
+    flight, so the force request is never queued behind the graceful one.
+    """
+
+    __slots__ = ("force", "graceful", "stop_count")
+
+    def __init__(self) -> "None":
+        self.graceful = asyncio.Event()
+        self.force = asyncio.Event()
         self.stop_count = 0
-        self.stop_task: "asyncio.Task[None] | None" = None
-        self.forced_stop = False
-        self.drain_escalated = False
 
     def request_stop(self) -> "None":
         self.stop_count += 1
         if self.stop_count >= FORCE_STOP_SIGNAL_COUNT:
-            self.forced_stop = True
-            self._schedule_stop(force=True)
-            return
-        self._schedule_stop()
-
-    async def wait(self) -> "None":
-        if self.stop_task is not None:
-            await self.stop_task
-
-    async def finish(self, *, timeout: "float") -> "None":
-        if self.stop_task is not None and not self.stop_task.done():
-            await asyncio.wait_for(self.stop_task, timeout=timeout)
-
-    def _schedule_stop(self, *, force: "bool" = False) -> "None":
-        if self.stop_task is None or self.stop_task.done():
-            self.stop_task = asyncio.create_task(self._stop_worker(force=force))
-
-    async def _stop_worker(self, *, force: "bool" = False) -> "None":
-        escalated = await self.worker.stop(force=force)
-        if escalated:
-            self.drain_escalated = True
+            self.force.set()
+        self.graceful.set()
 
 
 async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json: "bool") -> "int":

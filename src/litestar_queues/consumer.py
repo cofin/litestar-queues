@@ -118,6 +118,11 @@ async def run_task(
             queue = await stack.enter_async_context(
                 _provide_service(config=config, service=service, service_factory=service_factory, env=environ)
             )
+        except QueueConfigurationError:
+            # Process-local storage cannot be reached from a separate consumer
+            # process. That is a configuration fault, not a missing factory.
+            logger.exception("External consumer process cannot attach to the configured queue backend")
+            return TaskExitCode.MISSING_CONFIG_FACTORY
         except Exception:
             if _requires_config_factory(config=config, service=service, service_factory=service_factory):
                 logger.exception("External consumer process could not load CONFIG_FACTORY")

@@ -4,7 +4,7 @@ from pathlib import Path
 PACKAGE_ROOT = Path("src/litestar_queues")
 
 _APPROVED_NESTED_IMPORTS = {
-    "_cli.py": {"litestar.cli._utils"},
+    "_cli.py": {"litestar.cli._utils", "litestar_queues.worker.runtime"},
     "worker/supervisor.py": {
         "litestar.cli._utils",
         "litestar_queues.backends.ephemeral.schema",
