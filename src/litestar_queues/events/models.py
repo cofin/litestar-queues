@@ -17,6 +17,7 @@ QueueEventType = Literal[
     "task.completed",
     "task.failed",
     "task.cancelled",
+    "task.expired",
     "task.claim_lost",
     "task.stale_failed",
     "worker.heartbeat",

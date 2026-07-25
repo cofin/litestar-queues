@@ -211,6 +211,37 @@ async def test_worker_emits_stale_failed_event_for_terminal_stale_recovery() -> 
     assert stale_failed.payload["handler_needed"] is True
 
 
+async def test_expire_overdue_tasks_emits_one_expired_event_per_record() -> "None":
+    sink = InMemoryQueueEventSink()
+    queue_backend = InMemoryQueueBackend()
+    expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    @task("tasks.expired_event")
+    async def expired_event() -> "None":
+        return None
+
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        ),
+        queue_backend=queue_backend,
+    ) as service:
+        first = await service.enqueue(expired_event, expires_at=expires_at)
+        second = await service.enqueue(expired_event, expires_at=expires_at)
+
+        expired = await service.expire_overdue_tasks(worker_id="worker-expiry")
+
+    assert [record.id for record in expired] == [first.id, second.id]
+    assert [event.type for event in sink.events] == ["task.expired", "task.expired"]
+    assert [event.task_id for event in sink.events] == [str(first.id), str(second.id)]
+    assert all(event.worker_id == "worker-expiry" for event in sink.events)
+    assert all(event.payload["status"] == "expired" for event in sink.events)
+    assert all(event.payload["expires_at"] == expires_at.isoformat() for event in sink.events)
+
+
 async def test_log_success_suppresses_success_python_log_but_keeps_lifecycle_events(
     caplog: "pytest.LogCaptureFixture",
 ) -> "None":

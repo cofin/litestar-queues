@@ -712,6 +712,19 @@ class QueueService:
             )
         return result
 
+    async def expire_overdue_tasks(
+        self, *, limit: "int | None" = None, worker_id: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Expire overdue pending or scheduled records and publish one event each.
+
+        Returns:
+            Records transitioned to ``expired``.
+        """
+        expired = await self.get_queue_backend().expire_overdue(limit=limit)
+        for record in expired:
+            await self._publish_expired_event(record, worker_id=worker_id)
+        return expired
+
     async def initialize_schedules(self) -> "list[QueuedTaskRecord]":
         """Create queue records for registered recurring schedules.
 
@@ -876,6 +889,29 @@ class QueueService:
                 "Queue task failed after stale heartbeat", record, level=logging.ERROR, payload=payload
             )
             await self._invoke_stale_failure_hook(record)
+
+    async def _publish_expired_event(self, record: "QueuedTaskRecord", *, worker_id: "str | None") -> "None":
+        payload = {
+            "status": record.status,
+            "retry_count": record.retry_count,
+            "expires_at": record.expires_at.isoformat() if record.expires_at is not None else None,
+        }
+        await self.get_event_publisher().publish(
+            QueueEvent(
+                type="task.expired",
+                scope="task",
+                task_id=str(record.id),
+                task_name=record.task_name,
+                queue=record.queue,
+                worker_id=worker_id,
+                execution_backend=record.execution_backend,
+                execution_profile=record.execution_profile,
+                attempt=record.retry_count + 1,
+                message="Task expired before execution",
+                payload=payload,
+            )
+        )
+        self._log_task_event("Queue task expired before execution", record, level=logging.WARNING, payload=payload)
 
     def _log_task_completed(self, record: "QueuedTaskRecord") -> "None":
         if record.metadata.get("log_success") is False:

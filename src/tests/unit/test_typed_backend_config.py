@@ -151,3 +151,14 @@ def test_queue_config_rejects_jitter_outside_unit_interval(invalid_jitter: "floa
 def test_queue_config_rejects_jitter_outside_unit_interval_even_without_backoff_max() -> "None":
     with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.poll_jitter"):
         QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external", poll_jitter=1.5))
+
+
+def test_worker_config_expiry_sweep_defaults_and_disable_contract() -> "None":
+    assert WorkerConfig().expiry_check_interval == 60.0
+    assert WorkerConfig(expiry_check_interval=None).expiry_check_interval is None
+    assert WorkerConfig(expiry_check_interval=0.0).expiry_check_interval == 0.0
+
+
+def test_worker_config_rejects_negative_expiry_check_interval() -> "None":
+    with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.expiry_check_interval"):
+        WorkerConfig(expiry_check_interval=-1.0)

@@ -212,6 +212,9 @@ class WorkerConfig:
     stale_check_interval: "float" = 60.0
     """Interval between stale-task recovery passes in seconds."""
 
+    expiry_check_interval: "float | None" = 60.0
+    """Interval between pending-job expiration passes; ``None`` disables sweeps."""
+
     graceful_shutdown_timeout: "float" = 30
     """Maximum graceful drain time in seconds."""
 
@@ -256,6 +259,9 @@ class WorkerConfig:
             raise QueueConfigurationError(msg)
         if self.stale_after is not None and self.stale_after <= 0:
             msg = "WorkerConfig.stale_after must be greater than 0 when set."
+            raise QueueConfigurationError(msg)
+        if self.expiry_check_interval is not None and self.expiry_check_interval < 0:
+            msg = "WorkerConfig.expiry_check_interval must be greater than or equal to 0 when set."
             raise QueueConfigurationError(msg)
 
 

@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 from contextlib import suppress
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -23,6 +23,7 @@ from litestar_queues import (
 )
 from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
 from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
+from litestar_queues.execution import BaseExecutionBackend
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -496,6 +497,81 @@ async def test_worker_periodic_requeue_uses_backend_fleet_lock() -> "None":
 
     assert backend.lock_calls == ["stale_recovery", "stale_recovery"]
     assert len(backend.requeue_calls) == 1
+
+
+async def test_worker_periodic_expiry_calls_backend_on_cadence() -> "None":
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service, WorkerConfig(expiry_check_interval=0.0))
+
+        await worker._maybe_expire_overdue()
+        await worker._maybe_expire_overdue()
+
+    assert len(backend.expire_calls) == 2
+
+
+async def test_worker_skips_periodic_expiry_when_interval_is_none() -> "None":
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service, WorkerConfig(expiry_check_interval=None))
+
+        await worker._maybe_expire_overdue()
+
+    assert backend.expire_calls == []
+
+
+async def test_worker_periodic_expiry_respects_cadence_window() -> "None":
+    backend = _CountingInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service, WorkerConfig(expiry_check_interval=3600.0))
+
+        await worker._maybe_expire_overdue()
+        await worker._maybe_expire_overdue()
+
+    assert len(backend.expire_calls) == 1
+
+
+async def test_worker_periodic_expiry_uses_backend_fleet_lock() -> "None":
+    backend = _LockingCountingInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        first = Worker(service, WorkerConfig(expiry_check_interval=0.000001, id="worker-1"))
+        second = Worker(service, WorkerConfig(expiry_check_interval=0.000001, id="worker-2"))
+
+        await first._maybe_expire_overdue()
+        await second._maybe_expire_overdue()
+
+    assert backend.lock_calls == ["expiry_sweep", "expiry_sweep"]
+    assert len(backend.expire_calls) == 1
+
+
+async def test_worker_external_dispatch_skips_expired_record() -> "None":
+    execution_backend = _DispatchRecordingExecutionBackend()
+    backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+        execution_backend=execution_backend,
+    ) as service:
+        record = await backend.enqueue("tasks.external_expired")
+        record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        worker = Worker(service)
+
+        dispatched = await worker._dispatch_external([record])
+
+    assert dispatched == 0
+    assert execution_backend.dispatched == []
 
 
 async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> "None":
@@ -1622,10 +1698,11 @@ class _BeatMetadataRecordingBackend(InMemoryQueueBackend):
 
 
 class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
-    __slots__ = ("list_running_external_calls", "list_running_external_limits", "requeue_calls")
+    __slots__ = ("expire_calls", "list_running_external_calls", "list_running_external_limits", "requeue_calls")
 
     def __init__(self) -> "None":
         super().__init__()
+        self.expire_calls: "list[int | None]" = []
         self.requeue_calls: "list[timedelta]" = []
         self.list_running_external_calls = 0
         self.list_running_external_limits: "list[int | None]" = []
@@ -1640,6 +1717,10 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
     ) -> "StaleTaskRecoveryResult":
         self.requeue_calls.append(stale_after)
         return await super().requeue_stale_running(stale_after=stale_after, limit=limit)
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> 'list["QueuedTaskRecord"]':
+        self.expire_calls.append(limit)
+        return await super().expire_overdue(limit=limit)
 
 
 class _LockingCountingInMemoryQueueBackend(_CountingInMemoryQueueBackend):
@@ -1657,6 +1738,23 @@ class _LockingCountingInMemoryQueueBackend(_CountingInMemoryQueueBackend):
             return False
         self._held_locks.add(name)
         return True
+
+
+class _DispatchRecordingExecutionBackend(BaseExecutionBackend):
+    __slots__ = ("dispatched",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.dispatched: 'list["QueuedTaskRecord"]' = []
+
+    @property
+    def is_external(self) -> "bool":
+        return True
+
+    async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> "str":
+        del service
+        self.dispatched.append(record)
+        return "external/jobs/1"
 
 
 class _FailingWorker:

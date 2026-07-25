@@ -69,10 +69,12 @@ class Worker:
         "_batch_size",
         "_completion_event",
         "_current_poll_interval",
+        "_expiry_check_interval",
         "_final_cancel_timeout",
         "_graceful_shutdown_timeout",
         "_heartbeat_manager",
         "_is_running",
+        "_last_expiry_check_at",
         "_last_reconcile_at",
         "_last_stale_check_at",
         "_max_concurrency",
@@ -110,6 +112,7 @@ class Worker:
         self._current_poll_interval = worker_config.poll_interval
         self._max_concurrency = worker_config.max_concurrency
         self._reconcile_interval = worker_config.reconcile_interval
+        self._expiry_check_interval = worker_config.expiry_check_interval
         self._stale_after = (
             timedelta(seconds=worker_config.stale_after) if worker_config.stale_after is not None else None
         )
@@ -132,6 +135,7 @@ class Worker:
         self._startup_error: "BaseException | None" = None
         self._is_running = False
         self._last_reconcile_at = -float("inf")
+        self._last_expiry_check_at = -float("inf")
         self._last_stale_check_at = -float("inf")
 
     @property
@@ -247,6 +251,7 @@ class Worker:
             self._complete_startup(startup_completion, None)
             while not self._stop_event.is_set():
                 try:
+                    await self._maybe_expire_overdue()
                     await self._maybe_requeue_stale()
                     await self._maybe_reconcile_external()
                     processed = await self.run_once()
@@ -388,6 +393,8 @@ class Worker:
         for record in records:
             if record.execution_ref is not None:
                 continue
+            if record.is_expired:
+                continue
             await execution_backend.dispatch(self._service, record)
             dispatched += 1
         return dispatched
@@ -415,6 +422,24 @@ class Worker:
         for outcome, count in outcomes:
             if count:
                 self._record_counter("litestar_queues.stale_recovery", {"queue.stale.outcome": outcome}, value=count)
+
+    async def _maybe_expire_overdue(self) -> "None":
+        interval = self._expiry_check_interval
+        if interval is None:
+            return
+        now = asyncio.get_running_loop().time()
+        if now - self._last_expiry_check_at < interval:
+            return
+        self._last_expiry_check_at = now
+        if not await self._service.get_queue_backend().acquire_worker_lock(
+            "expiry_sweep", ttl=timedelta(seconds=max(interval, 1.0))
+        ):
+            return
+        expired = await self._service.expire_overdue_tasks(worker_id=self._worker_id)
+        if expired:
+            self._record_counter(
+                "litestar_queues.expiry.count", {"queue.expiry.expired": str(len(expired))}, value=len(expired)
+            )
 
     async def _maybe_reconcile_external(self) -> "None":
         if not await self._service.get_queue_backend().acquire_worker_lock(
