@@ -1,6 +1,6 @@
 import asyncio
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from litestar.channels import ChannelsPlugin
@@ -87,7 +87,7 @@ class _LifecycleSink:
 
 async def test_channels_sink_does_not_manage_lifecycle_by_default() -> "None":
     calls: "list[str]" = []
-    sink = ChannelsQueueEventSink(_LifecycleBackend(calls))
+    sink = ChannelsQueueEventSink(cast("Any", _LifecycleBackend(calls)))
 
     await sink.open()
     await sink.close()
@@ -115,7 +115,7 @@ async def test_channels_sink_enters_exact_plugin_context_and_retains_result() ->
 
 async def test_channels_sink_uses_public_backend_lifecycle_fallback() -> "None":
     calls: "list[str]" = []
-    sink = ChannelsQueueEventSink(_LifecycleBackend(calls), manage_lifecycle=True)
+    sink = ChannelsQueueEventSink(cast("Any", _LifecycleBackend(calls)), manage_lifecycle=True)
 
     await sink.open()
     await sink.open()

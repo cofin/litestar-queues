@@ -489,7 +489,9 @@ async def test_worker_cancellation_after_ready_propagates() -> "None":
         ready_calls += 1
         worker.allow_post_readiness_error.set()
 
-    with pytest.raises(asyncio.CancelledError, match="post-readiness cancellation") as exc_info:
+    # Python 3.10 does not preserve the raised CancelledError instance or its
+    # message across the await, so assert propagation and cleanup, not identity.
+    with pytest.raises(asyncio.CancelledError):
         await run_worker(
             service,  # type: ignore[arg-type]
             _config(),
@@ -500,7 +502,6 @@ async def test_worker_cancellation_after_ready_propagates() -> "None":
             _task_loader=_loader(order),
         )
 
-    assert exc_info.value is cancellation
     assert ready_calls == 1
     assert worker.start_finished.is_set()
     assert service.close_calls == 1
@@ -688,9 +689,9 @@ async def test_external_cancellation_during_pending_startup_propagates_and_clean
         )
     )
     await asyncio.wait_for(worker.wait_started_entered.wait(), timeout=1)
-    runner.cancel("external startup cancellation")
+    runner.cancel()
 
-    with pytest.raises(asyncio.CancelledError, match="external startup cancellation"):
+    with pytest.raises(asyncio.CancelledError):
         await runner
 
     assert worker.start_finished.is_set()
@@ -719,9 +720,9 @@ async def test_cancellation_from_pending_forced_stop_propagates() -> "None":
         )
     )
     await asyncio.wait_for(worker.stop_entered.wait(), timeout=1)
-    runner.cancel("external forced-stop cancellation")
+    runner.cancel()
 
-    with pytest.raises(asyncio.CancelledError, match="external forced-stop cancellation"):
+    with pytest.raises(asyncio.CancelledError):
         await runner
 
     assert worker.stop_calls == [True]

@@ -1,7 +1,7 @@
 import asyncio
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -43,7 +43,7 @@ class _LifecycleQueueBackend(InMemoryQueueBackend):
 
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         del config
-        return self._lifecycle_event_log
+        return cast("QueueEventLog", self._lifecycle_event_log)
 
 
 class _LifecycleExecutionBackend(BaseExecutionBackend):

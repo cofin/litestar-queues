@@ -108,7 +108,11 @@ channels = ChannelsPlugin(
 )
 
 queue_config = QueueConfig(
-    worker=WorkerConfig(graceful_shutdown_timeout=5),
+    # This demo runs everything in one process: a process-local queue and a
+    # process-local Channels backend, so the worker must live here too. The
+    # Redis and Valkey variants share both across processes instead.
+    queue_backend="memory",
+    worker=WorkerConfig(placement="asgi", graceful_shutdown_timeout=5),
     events=QueueEventsConfig(
         channels=channels,
         delivery=EventDeliveryConfig(buffer=EventBufferConfig(batch_size=8, flush_interval=0.2)),

@@ -151,10 +151,13 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         for marker in config["backend_markers"]:
             assert marker in app_source
 
-    memory_app = (EXAMPLES_ROOT / "htmx_realtime_websocket" / "app.py").read_text()
-    assert "queue_backend=" not in memory_app
-    sse_memory_app = (EXAMPLES_ROOT / "htmx_realtime_sse" / "app.py").read_text()
-    assert "queue_backend=" not in sse_memory_app
+    # The single-process demos must be explicit about being single-process: a
+    # process-local queue and a process-local Channels backend only work when
+    # the worker shares the process, which the server-owned default does not.
+    for name in ("htmx_realtime_websocket", "htmx_realtime_sse"):
+        single_process_app = (EXAMPLES_ROOT / name / "app.py").read_text()
+        assert 'queue_backend="memory"' in single_process_app, name
+        assert 'placement="asgi"' in single_process_app, name
 
 
 def test_htmx_realtime_examples_keep_live_channels_process_local_by_default() -> None:

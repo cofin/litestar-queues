@@ -43,11 +43,19 @@ logger = logging.getLogger(__name__)
 
 _UNKNOWN = object()
 _APP_PATH_ENV_VAR = "LITESTAR_APP"
+_PROCESS_LOCAL_CHANNELS_BACKENDS = frozenset({"MemoryChannelsBackend"})
 
 _MISSING_SERVER_CONTEXT_ERROR = (
     "WorkerConfig(placement='server') requires the Litestar CLI server lifecycle. Start the "
     "application with 'litestar run', or choose placement='asgi' to run one worker inside each "
     "ASGI process, or placement='external' to run 'litestar queues run' separately."
+)
+_PROCESS_LOCAL_CHANNELS_ERROR = (
+    "WorkerConfig(placement='server') runs the worker in its own process, but live event "
+    "delivery is configured against a process-local Channels backend ({backend}). Events "
+    "published by the worker would never reach this application's subscribers. Use a "
+    "cross-process Channels backend (for example RedisChannelsStreamBackend), or choose "
+    "placement='asgi' to keep the worker in this process."
 )
 _MISSING_APP_PATH_ERROR = (
     "WorkerConfig(placement='server') loads a fresh application in the worker process, which "
@@ -59,6 +67,20 @@ _MISSING_APP_PATH_ERROR = (
 
 def _find_registered_channels_plugin(plugins: "Iterable[object]") -> "ChannelsLike | None":
     return next((plugin for plugin in plugins if isinstance(plugin, ChannelsPlugin)), None)
+
+
+def _process_local_channels_backend(channels: "object | None") -> "str | None":
+    """Return the backend class name when it cannot cross a process boundary.
+
+    Matched by name, like the other Channels checks here, so this never imports
+    a Channels backend module that the application did not choose itself.
+
+    Returns:
+        The offending backend class name, or ``None`` when events can be shared.
+    """
+    backend = getattr(channels, "_backend", None)
+    name = type(backend).__name__ if backend is not None else None
+    return name if name in _PROCESS_LOCAL_CHANNELS_BACKENDS else None
 
 
 class QueuePlugin(InitPlugin, CLIPlugin):
@@ -276,6 +298,11 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             raise QueueConfigurationError(msg)
         if not os.environ.get(_APP_PATH_ENV_VAR):
             raise QueueConfigurationError(_MISSING_APP_PATH_ERROR)
+        events = self._config.events
+        if events is not None and events.delivery is not None:
+            backend_name = _process_local_channels_backend(self._effective_channels_backend())
+            if backend_name is not None:
+                raise QueueConfigurationError(_PROCESS_LOCAL_CHANNELS_ERROR.format(backend=backend_name))
 
     def _storage_context(self, nonce: "str") -> "AbstractContextManager[object]":
         """Return the storage lifecycle this invocation owns.

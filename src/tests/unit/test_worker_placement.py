@@ -618,3 +618,77 @@ async def test_asgi_placement_is_explicitly_multiplicative() -> "None":
     assert len({id(worker) for worker in workers}) == 2
     assert [worker.worker_id for worker in workers] == ["asgi-worker-0", "asgi-worker-1"]
     assert not any(worker.is_running for worker in workers)
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+def test_server_placement_rejects_a_process_local_channels_backend(fake_supervisor: "type[_FakeSupervisor]") -> "None":
+    """A worker in its own process cannot publish into this process's memory Channels."""
+    from litestar.channels import ChannelsPlugin
+    from litestar.channels.backends.memory import MemoryChannelsBackend
+
+    from litestar_queues.events import EventDeliveryConfig, QueueEventsConfig
+
+    channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="redis",
+            worker=WorkerConfig(placement="server"),
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+        )
+    )
+    app = Litestar(plugins=[channels, plugin], route_handlers=[])
+
+    with pytest.raises(QueueConfigurationError, match="MemoryChannelsBackend"), plugin.server_lifespan(app):
+        pytest.fail("live delivery through a process-local backend must not start a worker")
+
+    assert fake_supervisor.events == []
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+def test_server_placement_accepts_a_shared_channels_backend(fake_supervisor: "type[_FakeSupervisor]") -> "None":
+    """Any backend that can cross a process boundary is accepted; only memory is rejected."""
+    from litestar.channels import ChannelsPlugin
+
+    from litestar_queues.events import EventDeliveryConfig, QueueEventsConfig
+
+    class SharedChannelsBackend:
+        """Stands in for a broker-backed Channels backend."""
+
+    channels = ChannelsPlugin(backend=SharedChannelsBackend(), arbitrary_channels_allowed=True)  # type: ignore[arg-type]
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="redis",
+            worker=WorkerConfig(placement="server"),
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+        )
+    )
+    app = Litestar(plugins=[plugin], route_handlers=[])
+
+    with plugin.server_lifespan(app):
+        pass
+
+    assert fake_supervisor.events == ["construct", "start", "close"]
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+def test_streaming_without_live_delivery_allows_memory_channels(fake_supervisor: "type[_FakeSupervisor]") -> "None":
+    """Only live delivery fans out from the worker; a read-only stream mount is fine."""
+    from litestar.channels import ChannelsPlugin
+    from litestar.channels.backends.memory import MemoryChannelsBackend
+
+    from litestar_queues.events import EventStreamConfig, QueueEventsConfig
+
+    channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="redis",
+            worker=WorkerConfig(placement="server"),
+            events=QueueEventsConfig(channels=channels, stream=EventStreamConfig(unauthenticated_access="allow")),
+        )
+    )
+    app = Litestar(plugins=[channels, plugin], route_handlers=[])
+
+    with plugin.server_lifespan(app):
+        pass
+
+    assert fake_supervisor.events == ["construct", "start", "close"]

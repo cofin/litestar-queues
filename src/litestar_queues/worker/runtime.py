@@ -54,11 +54,13 @@ class _WorkerLike(Protocol):
 
 
 class _WorkerFactory(Protocol):
-    def __call__(self, service: "QueueService", config: "WorkerConfig") -> "_WorkerLike": ...
+    # Positional-only: these are internal injection seams, always called
+    # positionally, so a substitute need not match parameter names.
+    def __call__(self, service: "QueueService", config: "WorkerConfig", /) -> "_WorkerLike": ...
 
 
 class _TaskLoader(Protocol):
-    def __call__(self, modules: "tuple[str, ...]") -> "int": ...
+    def __call__(self, modules: "tuple[str, ...]", /) -> "int": ...
 
 
 def _create_worker(service: "QueueService", config: "WorkerConfig") -> "_WorkerLike":

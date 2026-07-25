@@ -17,12 +17,16 @@ import os
 import tempfile
 from inspect import isawaitable
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from litestar import Litestar
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+
+if TYPE_CHECKING:
+    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
 
 DATABASE_ENV_VAR = "LITESTAR_QUEUES_TEST_DB"
 
@@ -56,8 +60,8 @@ def _migrate(config: "QueueConfig") -> "None":
     backend_config = config.queue_backend
     assert isinstance(backend_config, SQLSpecBackendConfig)
     backend_config.configure_migrations(config)
-    sqlspec_config = backend_config.sqlspec_config
-    assert sqlspec_config is not None
+    assert backend_config.sqlspec_config is not None
+    sqlspec_config = cast("SQLSpecConfig", backend_config.sqlspec_config)
 
     async def upgrade() -> "None":
         result = sqlspec_config.migrate_up(echo=False)

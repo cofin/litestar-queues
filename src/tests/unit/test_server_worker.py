@@ -1,7 +1,5 @@
 """Tests for the private Litestar server-worker supervisor."""
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import logging
@@ -10,11 +8,14 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Sequence
 from dataclasses import fields
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from pytest import MonkeyPatch
 
 from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.exceptions import QueueConfigurationError
@@ -35,10 +36,7 @@ from litestar_queues.worker.supervisor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
-    from pathlib import Path
-
-    from pytest import MonkeyPatch
+    from collections.abc import Iterator
 
 
 @contextlib.contextmanager
@@ -387,9 +385,7 @@ def test_child_cleanup_failures_never_escape_and_always_attempt_pipe_close(monke
     connection = _FakeConnection(close_failures=1)
     stop = _FakeEvent(set_failures=1)
 
-    result = _worker_process_main(_spec(), stop, connection)  # type: ignore[arg-type]
-
-    assert result is None
+    _worker_process_main(_spec(), cast("Any", stop), cast("Any", connection))
     assert connection.sent == [("error", "bootstrap", "CredentialError")]
     assert stop.set_calls == 1
     assert connection.close_calls == 1
@@ -650,7 +646,7 @@ def test_posix_force_stop_uses_verified_group_term_then_stops_when_child_exits()
         signals.append((pgid, sig))
         process.alive = False
 
-    _force_stop_process(process, _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
+    _force_stop_process(cast("Any", process), _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
 
     assert signals == [(73, signal.SIGTERM)]
     assert process.terminated is False
@@ -667,7 +663,7 @@ def test_posix_force_stop_uses_group_term_then_group_kill() -> None:
         if sig == signal.SIGKILL:
             process.alive = False
 
-    _force_stop_process(process, _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
+    _force_stop_process(cast("Any", process), _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
 
     assert signals == [(74, signal.SIGTERM), (74, signal.SIGKILL)]
     assert process.terminated is False
@@ -681,7 +677,10 @@ def test_posix_force_stop_falls_back_to_direct_process_for_unverified_group() ->
     signals: list[tuple[int, int]] = []
 
     _force_stop_process(
-        process, _platform="posix", _getpgid=lambda pid: pid + 1, _killpg=lambda pgid, sig: signals.append((pgid, sig))
+        cast("Any", process),
+        _platform="posix",
+        _getpgid=lambda pid: pid + 1,
+        _killpg=lambda pgid, sig: signals.append((pgid, sig)),
     )
 
     assert signals == []
@@ -754,9 +753,7 @@ def test_watchdog_join_and_callback_failures_still_close_handles_without_unsafe_
     )
     supervisor.start()
 
-    result = supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
-
-    assert result is None
+    supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
     assert context.receive.close_calls == 1
     assert process.close_calls == 1
     assert "credential" not in caplog.text
@@ -796,12 +793,12 @@ def test_completed_parent_bridge_does_not_request_stop() -> None:
     completed.set()
 
     _parent_loss_bridge(
-        SimpleNamespace(sentinel=object()),
-        SimpleNamespace(call_soon_threadsafe=calls.append),
-        _FakeEvent(),
+        cast("Any", SimpleNamespace(sentinel=object())),
+        cast("Any", SimpleNamespace(call_soon_threadsafe=calls.append)),
+        cast("Any", _FakeEvent()),
         completed,
         _wait=list,
-    )  # type: ignore[arg-type]
+    )
 
     assert calls == []
 
@@ -822,15 +819,14 @@ def test_parent_bridge_suppresses_closed_loop_scheduling_race(
             raise OSError(secret)
         return list(objects)
 
-    result = _parent_loss_bridge(
-        SimpleNamespace(sentinel=object()),
-        ClosedLoop(),  # type: ignore[arg-type]
-        _FakeEvent(),  # type: ignore[arg-type]
+    _parent_loss_bridge(
+        cast("Any", SimpleNamespace(sentinel=object())),
+        cast("Any", ClosedLoop()),
+        cast("Any", _FakeEvent()),
         threading.Event(),
         _wait=wait_for_parent,
     )
 
-    assert result is None
     assert secret not in caplog.text
 
 
@@ -890,8 +886,8 @@ async def test_run_child_bridges_parent_loss_independently_and_releases_ipc_wait
     child = asyncio.create_task(
         _run_child(
             plugin,  # type: ignore[arg-type]
-            stop_event,  # type: ignore[arg-type]
-            connection,  # type: ignore[arg-type]
+            cast("Any", stop_event),
+            cast("Any", connection),
             99,
             parent,  # type: ignore[arg-type]
             _runner=fake_runner,
@@ -950,8 +946,8 @@ async def test_run_child_finishes_when_stop_event_set_fails() -> None:
     child = asyncio.create_task(
         _run_child(
             SimpleNamespace(config=object(), create_worker_service=create_service),  # type: ignore[arg-type]
-            stop_event,  # type: ignore[arg-type]
-            _FakeConnection(),  # type: ignore[arg-type]
+            cast("Any", stop_event),
+            cast("Any", _FakeConnection()),
             100,
             SimpleNamespace(sentinel=object(), close=lambda: parent_closed.append("closed")),  # type: ignore[arg-type]
             _runner=finished_runner,
@@ -975,10 +971,16 @@ def test_posix_group_cleanup_requires_child_owned_process_group() -> None:
     killed: list[tuple[int, int]] = []
 
     unverified = _verified_kill_process_group(
-        process, signal.SIGKILL, _getpgid=lambda pid: pid + 1, _killpg=lambda pgid, sig: killed.append((pgid, sig))
+        cast("Any", process),
+        signal.SIGKILL,
+        _getpgid=lambda pid: pid + 1,
+        _killpg=lambda pgid, sig: killed.append((pgid, sig)),
     )
     verified = _verified_kill_process_group(
-        process, signal.SIGKILL, _getpgid=lambda pid: pid, _killpg=lambda pgid, sig: killed.append((pgid, sig))
+        cast("Any", process),
+        signal.SIGKILL,
+        _getpgid=lambda pid: pid,
+        _killpg=lambda pgid, sig: killed.append((pgid, sig)),
     )
 
     assert unverified is False

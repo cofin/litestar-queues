@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
@@ -50,13 +51,23 @@ def _plugin(**worker_kwargs: object) -> "QueuePlugin":
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _RunnerCall:
+    """What the CLI adapter handed to the shared runner."""
+
+    service: "QueueService"
+    config: "QueueConfig"
+    graceful_stop: "asyncio.Event"
+    force_stop: "asyncio.Event"
+
+
 def _capture_runner(
     monkeypatch: "pytest.MonkeyPatch", behaviour: "Callable[..., Awaitable[object]]"
-) -> "list[dict[str, object]]":
+) -> "list[_RunnerCall]":
     """Replace the shared runner and record what the CLI hands it."""
     from litestar_queues.worker import runtime
 
-    calls: "list[dict[str, object]]" = []
+    calls: "list[_RunnerCall]" = []
 
     async def fake_run_worker(
         service: "QueueService",
@@ -67,7 +78,7 @@ def _capture_runner(
         ready: "Callable[[], None] | None" = None,
         **_: object,
     ) -> "object":
-        calls.append({"service": service, "config": config, "graceful_stop": graceful_stop, "force_stop": force_stop})
+        calls.append(_RunnerCall(service, config, graceful_stop, force_stop))
         return await behaviour(graceful_stop=graceful_stop, force_stop=force_stop, ready=ready)
 
     monkeypatch.setattr(runtime, "run_worker", fake_run_worker)
@@ -90,7 +101,7 @@ async def test_run_worker_delegates_to_the_shared_runner(monkeypatch: "pytest.Mo
 
     assert await _run_worker(plugin, 4, 0.5, ("reports",)) == 0
     assert len(calls) == 1
-    worker_config = calls[0]["config"].worker  # type: ignore[union-attr]
+    worker_config = calls[0].config.worker
     assert worker_config.heartbeat_miss_threshold == 7
     assert worker_config.poll_backoff_max == 2.0
     assert worker_config.poll_backoff_multiplier == 1.5
@@ -113,7 +124,7 @@ async def test_run_worker_uses_a_worker_owned_service(monkeypatch: "pytest.Monke
     plugin = _plugin()
 
     assert await _run_worker(plugin, 1, 0.01, ()) == 0
-    service = calls[0]["service"]
+    service = calls[0].service
     assert service is not plugin.get_service()
     assert service.get_queue_backend() is not plugin.get_service().get_queue_backend()
 
@@ -124,7 +135,9 @@ async def test_run_worker_does_not_duplicate_task_module_loading(monkeypatch: "p
 
     from litestar_queues import _cli as cli_module
 
-    source = inspect.getsource(cli_module.run_command.callback)
+    callback = cli_module.run_command.callback
+    assert callback is not None
+    source = inspect.getsource(callback)
     assert "load_task_modules" not in source
     assert "initialize_schedules" not in source
 
@@ -135,7 +148,13 @@ async def test_first_signal_requests_a_graceful_stop(monkeypatch: "pytest.Monkey
     handlers: "dict[object, object]" = {}
     observed: "dict[str, bool]" = {}
 
-    async def drain(*, graceful_stop, force_stop, ready=None, **_kwargs: object) -> "WorkerRunResult":
+    async def drain(
+        *,
+        graceful_stop: "asyncio.Event",
+        force_stop: "asyncio.Event",
+        ready: "Callable[[], None] | None" = None,
+        **_kwargs: object,
+    ) -> "WorkerRunResult":
         if ready is not None:
             ready()
         await graceful_stop.wait()

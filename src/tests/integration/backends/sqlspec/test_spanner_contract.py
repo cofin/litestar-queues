@@ -12,7 +12,9 @@ pytest.importorskip("google.cloud.spanner_v1")
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import DefaultCredentialsError
-from google.cloud import spanner
+
+# google-cloud-spanner ships no stub exposing this namespace-package attribute.
+from google.cloud import spanner  # type: ignore[attr-defined]
 from sqlspec.adapters.spanner import SpannerSyncConfig, spanner_json
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
