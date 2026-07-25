@@ -358,6 +358,22 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
         )
         if result.rowcount != 1:
+            await self.repository.session.execute(
+                update(model_type)
+                .where(
+                    model_type.id == task_id,
+                    model_type.status.in_(_DUE_STATUSES),
+                    model_type.expires_at.is_not(None),
+                    model_type.expires_at <= now,
+                )
+                .values(
+                    _update_values(
+                        model_type,
+                        {"status": "expired", "completed_at": now, "heartbeat_at": None},
+                        now=now,
+                    )
+                )
+            )
             return None
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None

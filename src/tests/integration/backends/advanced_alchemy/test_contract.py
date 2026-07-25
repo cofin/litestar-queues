@@ -74,15 +74,15 @@ async def test_advanced_alchemy_expiry_contract(advanced_alchemy_backend: "SQLAl
     )
 
     assert await advanced_alchemy_backend.claim_task(overdue.id) is None
-    expired = await advanced_alchemy_backend.expire_overdue()
     stored = await advanced_alchemy_backend.get_task(overdue.id)
+    expired = await advanced_alchemy_backend.expire_overdue()
     pending = await advanced_alchemy_backend.list_pending(limit=10)
 
     assert stored is not None
     assert stored.status == "expired"
     assert overdue.id not in {record.id for record in pending}
     assert live.id in {record.id for record in pending}
-    assert all(record.status == "expired" for record in expired)
+    assert expired == []
     assert (await advanced_alchemy_backend.get_statistics()).expired == 1
 
 
