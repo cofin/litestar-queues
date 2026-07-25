@@ -2051,7 +2051,9 @@ async def test_queue_service_uses_sqlspec_backend_from_config(
 
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(tmp_path / "service.db"))
     await bootstrap_queue_schema(backend_config)
-    config = QueueConfig(queue_backend=backend_config, execution_backend="local")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend=backend_config, execution_backend="local"
+    )
 
     async with QueueService(config) as service:
         result = await service.enqueue(lowercase, "QUEUE")

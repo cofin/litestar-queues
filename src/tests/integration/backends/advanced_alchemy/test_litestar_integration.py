@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from advanced_alchemy.base import UUIDAuditBase
 from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig, SQLAlchemyPlugin
 
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, WorkerConfig, task
 from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackendConfig
 from litestar_queues.task import clear_task_registry
 
@@ -42,6 +42,7 @@ def test_advanced_alchemy_litestar_integration_uses_app_owned_sqlalchemy_plugin(
     alchemy_config = _sqlite_config(tmp_path / "litestar.db")
     queue_plugin = QueuePlugin(
         QueueConfig(
+            worker=WorkerConfig(placement="external"),
             queue_backend=SQLAlchemyBackendConfig(sqlalchemy_config=alchemy_config, model_class=LitestarQueueTask),
             initialize_schedules=False,
         )
