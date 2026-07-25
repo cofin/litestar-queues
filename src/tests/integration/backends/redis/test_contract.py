@@ -140,6 +140,39 @@ async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execu
     assert stored_low.status == "pending"
 
 
+async def test_redis_backend_expires_pending_tasks(redis_backend: "RedisQueueBackend") -> "None":
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    claim_overdue = await redis_backend.enqueue("tasks.redis.expired.claim", expires_at=past)
+    sweep_overdue = await redis_backend.enqueue("tasks.redis.expired.sweep", expires_at=past)
+    batch_overdue = await redis_backend.enqueue("tasks.redis.expired.batch", expires_at=past)
+    live = await redis_backend.enqueue(
+        "tasks.redis.live",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+    assert [record.id for record in await redis_backend.list_pending(limit=10)] == [live.id]
+    assert await redis_backend.claim_task(claim_overdue.id) is None
+    swept = await redis_backend.expire_overdue(limit=1)
+    assert len(swept) == 1
+    assert swept[0].id in {sweep_overdue.id, batch_overdue.id}
+    assert [record.id for record in await redis_backend.claim_many(limit=10)] == [live.id]
+    assert await redis_backend.expire_overdue(limit=1) == []
+
+    stored = await redis_backend.get_task(claim_overdue.id)
+    swept_stored = await redis_backend.get_task(sweep_overdue.id)
+    batch_stored = await redis_backend.get_task(batch_overdue.id)
+    statistics = await redis_backend.get_statistics()
+
+    assert stored is not None
+    assert stored.status == "expired"
+    assert swept_stored is not None
+    assert swept_stored.status == "expired"
+    assert batch_stored is not None
+    assert batch_stored.status == "expired"
+    assert statistics.expired == 3
+    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1)) == 3
+
+
 async def test_redis_enqueue_many_records_remain_claimable_when_batch_marker_is_dropped(
     redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":

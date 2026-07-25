@@ -46,9 +46,9 @@ if TYPE_CHECKING:
 __all__ = ("RedisQueueBackend",)
 
 _DUE_STATUSES = {"pending", "scheduled"}
-_STATUS_VALUES = {"cancelled", "completed", "failed", "pending", "running", "scheduled"}
-_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
-_MAINTENANCE_INDEX_VERSION = "1"
+_STATUS_VALUES = {"cancelled", "completed", "expired", "failed", "pending", "running", "scheduled"}
+_TERMINAL_STATUSES = {"cancelled", "completed", "expired", "failed"}
+_MAINTENANCE_INDEX_VERSION = "2"
 _TOUCH_HEARTBEAT_SCRIPT = """
 local status = redis.call('HGET', KEYS[1], 'status')
 if status ~= 'running' then
@@ -115,14 +115,28 @@ for _, id in ipairs(due) do
     local hkey = prefix .. ':task:' .. id
     local status = redis.call('HGET', hkey, 'status')
     if status == 'scheduled' or status == 'pending' then
-        local ready_score = redis.call('HGET', hkey, 'ready_score')
-        if ready_score then
-            redis.call('ZADD', ready, ready_score, id)
-        end
-        if status == 'scheduled' then
-            redis.call('SREM', prefix .. ':status:scheduled', id)
-            redis.call('SADD', prefix .. ':status:pending', id)
-            redis.call('HSET', hkey, 'status', 'pending')
+        local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+        if expires_score > 0 and expires_score <= now_ms then
+            redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
+                'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
+            redis.call('SREM', prefix .. ':status:' .. status, id)
+            redis.call('SADD', prefix .. ':status:expired', id)
+            redis.call('ZREM', ready, id)
+            redis.call('ZREM', prefix .. ':maintenance:running', id)
+            redis.call('ZREM', prefix .. ':maintenance:external', id)
+            redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+            redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
+            redis.call('PUBLISH', prefix .. ':completions', id)
+        else
+            local ready_score = redis.call('HGET', hkey, 'ready_score')
+            if ready_score then
+                redis.call('ZADD', ready, ready_score, id)
+            end
+            if status == 'scheduled' then
+                redis.call('SREM', prefix .. ':status:scheduled', id)
+                redis.call('SADD', prefix .. ':status:pending', id)
+                redis.call('HSET', hkey, 'status', 'pending')
+            end
         end
     end
     redis.call('ZREM', scheduled, id)
@@ -137,29 +151,95 @@ for _, id in ipairs(candidates) do
     if status ~= 'pending' then
         redis.call('ZREM', ready, id)
     else
-        local eb = redis.call('HGET', hkey, 'execution_backend')
-        local q = redis.call('HGET', hkey, 'queue')
-        local eb_ok = (eb_filter == '' or eb == eb_filter)
-        local q_ok = (not has_queue_filter or queue_filter[q] == true)
-        if eb_ok and q_ok then
-            redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
-                'started_score', now_ms, 'heartbeat_score', now_ms)
+        local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+        if expires_score > 0 and expires_score <= now_ms then
+            redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
+                'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
             redis.call('SREM', prefix .. ':status:pending', id)
-            redis.call('SADD', prefix .. ':status:running', id)
+            redis.call('SADD', prefix .. ':status:expired', id)
             redis.call('ZREM', ready, id)
-            redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
-            redis.call('ZREM', prefix .. ':maintenance:terminal', id)
-            local execution_ref = redis.call('HGET', hkey, 'execution_ref')
-            if execution_ref and execution_ref ~= '' then
-                redis.call('ZADD', prefix .. ':maintenance:external', now_ms, id)
-            else
-                redis.call('ZREM', prefix .. ':maintenance:external', id)
+            redis.call('ZREM', scheduled, id)
+            redis.call('ZREM', prefix .. ':maintenance:running', id)
+            redis.call('ZREM', prefix .. ':maintenance:external', id)
+            redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+            redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
+            redis.call('PUBLISH', prefix .. ':completions', id)
+        else
+            local eb = redis.call('HGET', hkey, 'execution_backend')
+            local q = redis.call('HGET', hkey, 'queue')
+            local eb_ok = (eb_filter == '' or eb == eb_filter)
+            local q_ok = (not has_queue_filter or queue_filter[q] == true)
+            if eb_ok and q_ok then
+                redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
+                    'started_score', now_ms, 'heartbeat_score', now_ms)
+                redis.call('SREM', prefix .. ':status:pending', id)
+                redis.call('SADD', prefix .. ':status:running', id)
+                redis.call('ZREM', ready, id)
+                redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
+                redis.call('ZREM', prefix .. ':maintenance:terminal', id)
+                redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+                local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+                if execution_ref and execution_ref ~= '' then
+                    redis.call('ZADD', prefix .. ':maintenance:external', now_ms, id)
+                else
+                    redis.call('ZREM', prefix .. ':maintenance:external', id)
+                end
+                claimed[#claimed + 1] = id
             end
-            claimed[#claimed + 1] = id
         end
     end
 end
 return claimed
+"""
+_CLAIM_TASK_SCRIPT = """
+local hkey = KEYS[1]
+local ready = KEYS[2]
+local scheduled = KEYS[3]
+local prefix = ARGV[1]
+local task_id = ARGV[2]
+local now_ms = tonumber(ARGV[3])
+local now_iso = ARGV[4]
+
+local status = redis.call('HGET', hkey, 'status')
+if status ~= 'pending' and status ~= 'scheduled' then
+    return {0}
+end
+local scheduled_score = redis.call('ZSCORE', scheduled, task_id)
+if scheduled_score and tonumber(scheduled_score) > now_ms then
+    return {0}
+end
+local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+if expires_score > 0 and expires_score <= now_ms then
+    redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
+        'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
+    redis.call('SREM', prefix .. ':status:' .. status, task_id)
+    redis.call('SADD', prefix .. ':status:expired', task_id)
+    redis.call('ZREM', ready, task_id)
+    redis.call('ZREM', scheduled, task_id)
+    redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
+    redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, task_id)
+    redis.call('PUBLISH', prefix .. ':completions', task_id)
+    return {2}
+end
+
+redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
+    'started_score', now_ms, 'heartbeat_score', now_ms)
+redis.call('SREM', prefix .. ':status:' .. status, task_id)
+redis.call('SADD', prefix .. ':status:running', task_id)
+redis.call('ZREM', ready, task_id)
+redis.call('ZREM', scheduled, task_id)
+redis.call('ZADD', prefix .. ':maintenance:running', now_ms, task_id)
+redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
+local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+if execution_ref and execution_ref ~= '' then
+    redis.call('ZADD', prefix .. ':maintenance:external', now_ms, task_id)
+else
+    redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+end
+return {1}
 """
 _COMPLETE_SCRIPT = """
 local hkey = KEYS[1]
@@ -265,6 +345,10 @@ end
 redis.call('HSET', hkey, unpack(ARGV, 10))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
+local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+if expires_score > 0 then
+    redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
+end
 if due == '1' then
     redis.call('ZADD', ready, score, task_id)
     if publish == '1' then
@@ -305,6 +389,10 @@ end
 redis.call('HSET', hkey, unpack(ARGV, 11))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
+local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+if expires_score > 0 then
+    redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
+end
 if due == '1' then
     redis.call('ZADD', ready, score, task_id)
     if publish == '1' then
@@ -371,11 +459,22 @@ if final_status == 'running' then
 else
     redis.call('ZREM', prefix .. ':maintenance:running', task_id)
 end
-if final_status == 'completed' or final_status == 'failed' or final_status == 'cancelled' then
+if final_status == 'completed' or final_status == 'failed' or final_status == 'cancelled'
+        or final_status == 'expired' then
     local completed_score = redis.call('HGET', hkey, 'completed_score') or '0'
     redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
 else
     redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+end
+if final_status == 'pending' or final_status == 'scheduled' then
+    local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+    if expires_score > 0 then
+        redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
+    else
+        redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
+    end
+else
+    redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
 end
 local execution_ref = redis.call('HGET', hkey, 'execution_ref')
 if execution_ref and execution_ref ~= ''
@@ -397,7 +496,7 @@ local hkey = KEYS[1]
 local prefix = ARGV[1]
 local task_id = ARGV[2]
 local status = redis.call('HGET', hkey, 'status')
-if status ~= 'completed' and status ~= 'failed' and status ~= 'cancelled' then
+if status ~= 'completed' and status ~= 'failed' and status ~= 'cancelled' and status ~= 'expired' then
     return {0}
 end
 local dedup_key = redis.call('HGET', hkey, 'key')
@@ -409,6 +508,7 @@ redis.call('SREM', prefix .. ':status:' .. status, task_id)
 redis.call('ZREM', prefix .. ':maintenance:running', task_id)
 redis.call('ZREM', prefix .. ':maintenance:external', task_id)
 redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
 if dedup_key and dedup_key ~= '' then
     if redis.call('HGET', prefix .. ':keys', dedup_key) == task_id then
         redis.call('HDEL', prefix .. ':keys', dedup_key)
@@ -564,7 +664,7 @@ class RedisQueueBackend(BaseQueueBackend):
             self._event_log = RedisQueueEventLog(backend=self, config=config)
         return self._event_log
 
-    async def enqueue(  # type: ignore[override]  # staged expiry capability
+    async def enqueue(
         self,
         task_name: "str",
         *,
@@ -574,6 +674,7 @@ class RedisQueueBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -593,6 +694,7 @@ class RedisQueueBackend(BaseQueueBackend):
             priority=priority,
             max_retries=max_retries,
             scheduled_at=scheduled_at,
+            expires_at=expires_at,
             key=key,
             execution_backend=execution_backend,
             execution_profile=execution_profile,
@@ -626,6 +728,7 @@ class RedisQueueBackend(BaseQueueBackend):
                     priority=request.priority,
                     max_retries=request.max_retries,
                     scheduled_at=request.scheduled_at,
+                    expires_at=request.expires_at,
                     key=request.key,
                     execution_backend=request.execution_backend,
                     execution_profile=request.execution_profile,
@@ -642,6 +745,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 priority=request.priority,
                 max_retries=request.max_retries,
                 scheduled_at=request.scheduled_at,
+                expires_at=request.expires_at,
                 key=None,
                 execution_backend=request.execution_backend,
                 execution_profile=request.execution_profile,
@@ -683,6 +787,7 @@ class RedisQueueBackend(BaseQueueBackend):
             for record in await self._records_from_ids(candidate_ids)
             if record.status in _DUE_STATUSES
             and record.is_due
+            and not record.is_expired
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
@@ -695,29 +800,22 @@ class RedisQueueBackend(BaseQueueBackend):
         Returns:
             The claimed record, if it was still due and claimable.
         """
-        record = await self.get_task(task_id)
-        if record is None or record.status not in _DUE_STATUSES or not record.is_due:
-            return None
+        client = await self._get_client()
         now = _utc_now()
-        maintenance_score = repr(_maintenance_score(now))
-        committed = await self._commit_transition(
-            task_id,
-            expected_status=record.status,
-            new_status="running",
-            patch={
-                "started_at": _serialize_datetime(now),
-                "started_score": maintenance_score,
-                "heartbeat_at": _serialize_datetime(now),
-                "heartbeat_score": maintenance_score,
-            },
-            zset_action="remove",
+        outcome = await _eval_script(
+            client,
+            _CLAIM_TASK_SCRIPT,
+            [self._task_key(task_id), self._ready_key, self._scheduled_key],
+            [
+                self._key_prefix,
+                str(task_id),
+                repr(_maintenance_score(now)),
+                _serialize_datetime(now),
+            ],
         )
-        if not committed:
+        if not outcome or int(outcome[0]) != 1:
             return None
-        record.status = "running"
-        record.started_at = now
-        record.heartbeat_at = now
-        return record
+        return await self.get_task(task_id)
 
     async def claim_many(
         self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
@@ -1099,6 +1197,33 @@ class RedisQueueBackend(BaseQueueBackend):
             setattr(statistics, status, int(count))
         return statistics
 
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending and scheduled records to ``expired``."""
+        if limit is not None and limit <= 0:
+            return []
+        await self._require_maintenance_indexes()
+        client = await self._get_client()
+        now = _utc_now()
+        task_ids = await client.zrangebyscore(
+            self._maintenance_expiry_key,
+            "-inf",
+            _maintenance_score(now),
+            start=0 if limit is not None else None,
+            num=limit,
+        )
+        records = await self._records_from_ids(task_ids)
+        expired: "list[QueuedTaskRecord]" = []
+        for record in records:
+            if record.status not in _DUE_STATUSES or not record.is_expired:
+                await client.zrem(self._maintenance_expiry_key, str(record.id))
+                continue
+            if await self._expire_record(record, now=now):
+                record.status = "expired"
+                record.completed_at = now
+                record.heartbeat_at = None
+                expired.append(record)
+        return expired
+
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
     ) -> "list[QueuedTaskRecord]":
@@ -1165,7 +1290,12 @@ class RedisQueueBackend(BaseQueueBackend):
         client = await self._get_client()
         records = await self._list_records_by_statuses(tuple(sorted(_STATUS_VALUES)))
         pipeline = _create_pipeline(client)
-        pipeline.delete(self._maintenance_running_key, self._maintenance_external_key, self._maintenance_terminal_key)
+        pipeline.delete(
+            self._maintenance_running_key,
+            self._maintenance_external_key,
+            self._maintenance_terminal_key,
+            self._maintenance_expiry_key,
+        )
         for record in records:
             task_id = str(record.id)
             timestamp_scores = {
@@ -1177,6 +1307,8 @@ class RedisQueueBackend(BaseQueueBackend):
             pipeline.hset(self._task_key(record.id), mapping=timestamp_scores)
             if record.status == "running":
                 pipeline.zadd(self._maintenance_running_key, {task_id: _maintenance_score(record.heartbeat_at)})
+            if record.status in _DUE_STATUSES and record.expires_at is not None:
+                pipeline.zadd(self._maintenance_expiry_key, {task_id: _maintenance_score(record.expires_at)})
             if record.execution_ref is not None and record.status in {"pending", "scheduled", "running"}:
                 pipeline.zadd(
                     self._maintenance_external_key,
@@ -1405,6 +1537,23 @@ class RedisQueueBackend(BaseQueueBackend):
         )
         return bool(outcome and int(outcome[0]) == 1)
 
+    async def _expire_record(self, record: "QueuedTaskRecord", *, now: "datetime | None" = None) -> "bool":
+        expired_at = now or _utc_now()
+        return await self._commit_transition(
+            record.id,
+            expected_status=record.status,
+            new_status="expired",
+            patch={
+                "completed_at": _serialize_datetime(expired_at),
+                "completed_score": repr(_maintenance_score(expired_at)),
+                "heartbeat_at": "",
+                "heartbeat_score": "0",
+            },
+            zset_action="remove",
+            publish_channel=self._completion_channel if self._notifications else "",
+            publish_payload=str(record.id),
+        )
+
     async def _enqueue_keyed(self, record: "QueuedTaskRecord", key: "str", *, publish: "bool") -> "QueuedTaskRecord":
         client = await self._get_client()
         args = self._enqueue_args(record, publish=publish)
@@ -1432,6 +1581,7 @@ class RedisQueueBackend(BaseQueueBackend):
         priority: "int",
         max_retries: "int",
         scheduled_at: "datetime | None",
+        expires_at: "datetime | None",
         key: "str | None",
         execution_backend: "str",
         execution_profile: "str | None",
@@ -1448,6 +1598,7 @@ class RedisQueueBackend(BaseQueueBackend):
             priority=priority,
             max_retries=max_retries,
             scheduled_at=scheduled_at,
+            expires_at=expires_at,
             key=key,
             metadata=dict(metadata or {}),
         )
@@ -1555,6 +1706,10 @@ class RedisQueueBackend(BaseQueueBackend):
         return f"{self._key_prefix}:maintenance:external"
 
     @property
+    def _maintenance_expiry_key(self) -> "str":
+        return f"{self._key_prefix}:maintenance:expiry"
+
+    @property
     def _maintenance_terminal_key(self) -> "str":
         return f"{self._key_prefix}:maintenance:terminal"
 
@@ -1601,6 +1756,8 @@ class RedisQueueBackend(BaseQueueBackend):
             "max_retries": str(record.max_retries),
             "retry_count": str(record.retry_count),
             "scheduled_at": _serialize_datetime(record.scheduled_at),
+            "expires_at": _serialize_datetime(record.expires_at),
+            "expires_score": repr(_maintenance_score(record.expires_at)),
             "created_at": _serialize_datetime(record.created_at),
             "created_score": repr(_maintenance_score(record.created_at)),
             "started_at": _serialize_datetime(record.started_at),
@@ -1631,6 +1788,7 @@ class RedisQueueBackend(BaseQueueBackend):
             max_retries=int(str(mapping.get("max_retries") or 0)),
             retry_count=int(str(mapping.get("retry_count") or 0)),
             scheduled_at=_deserialize_datetime(mapping.get("scheduled_at")),
+            expires_at=_deserialize_datetime(mapping.get("expires_at")),
             created_at=_deserialize_datetime(mapping.get("created_at")) or _utc_now(),
             started_at=_deserialize_datetime(mapping.get("started_at")),
             completed_at=_deserialize_datetime(mapping.get("completed_at")),
