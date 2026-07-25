@@ -194,19 +194,33 @@ Each metric name has exactly one emitter. Dispatch and reconcile counters belong
 to the execution backend, and the heartbeat failure counter belongs to the
 heartbeat manager, so a single metric never arrives with two different label sets.
 
+Unset Attributes
+================
+
+Spans omit an attribute that has no value. A task with no execution profile
+carries no ``queue.execution.profile`` attribute at all.
+
+Metrics cannot do that. Prometheus binds label names when a collector is first
+constructed, and a later sample with a different key set is rejected, so every
+sample of a metric must carry every label. Unset labels therefore carry an empty
+value, which is exactly how Prometheus encodes "not set": a label with an empty
+value is equivalent to the label being absent, and
+``queue_execution_profile=""`` matches series that never had the label.
+
 Prometheus Names
 ================
 
 Prometheus collectors register with the configured registry, or the default
-``prometheus_client`` registry when none is given. Names follow Prometheus
-convention rather than mirroring the OpenTelemetry instrument names:
+``prometheus_client`` registry when none is given. Counter instruments carry no
+``.count`` suffix -- the instrument type already conveys it -- and names follow
+Prometheus convention rather than mirroring the OpenTelemetry instrument names:
 
 .. list-table::
    :header-rows: 1
 
    * - Instrument
      - Exported Prometheus name
-   * - ``litestar_queues.enqueue.count``
+   * - ``litestar_queues.enqueue``
      - ``litestar_queues_enqueue_total``
    * - ``litestar_queues.task.execution.duration``
      - ``litestar_queues_task_execution_duration_seconds``

@@ -398,7 +398,7 @@ class QueueService:
             raise
         else:
             runtime.set_attribute(span, "messaging.message.id", str(record.id))
-            runtime.record_counter("litestar_queues.enqueue.count", attributes=metric_attributes)
+            runtime.record_counter("litestar_queues.enqueue", attributes=metric_attributes)
             runtime.record_duration(
                 "litestar_queues.enqueue.duration", time.perf_counter() - started_at, attributes=metric_attributes
             )
@@ -697,7 +697,7 @@ class QueueService:
                     extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
                 )
                 continue
-            # The execution backend owns litestar_queues.execution.reconcile.count;
+            # The execution backend owns litestar_queues.execution.reconcile;
             # emitting it here too would double-count with a narrower label set.
             updated = await execution_backend.reconcile(self, record)
             if updated is not None and updated.is_terminal:
@@ -1033,8 +1033,13 @@ def _base_observability_attributes(
         "messaging.destination.name": queue,
         "queue.task.name": task_name,
         "queue.execution.backend": execution_backend,
-        "queue.execution.profile": execution_profile or "",
     }
+    # Spans omit unset attributes rather than carrying an empty value. Metrics
+    # cannot: Prometheus binds label names at collector construction, so the key
+    # must always be present. An empty label value is the right encoding there --
+    # Prometheus treats it as equivalent to the label being absent.
+    if execution_profile:
+        attributes["queue.execution.profile"] = execution_profile
     if attempt is not None:
         attributes["queue.task.attempt"] = attempt
     return attributes
@@ -1045,7 +1050,7 @@ def _metric_attributes(attributes: "dict[str, object]") -> "dict[str, str]":
         "messaging.destination.name": str(attributes["messaging.destination.name"]),
         "queue.task.name": str(attributes["queue.task.name"]),
         "queue.execution.backend": str(attributes["queue.execution.backend"]),
-        "queue.execution.profile": str(attributes["queue.execution.profile"]),
+        "queue.execution.profile": str(attributes.get("queue.execution.profile", "")),
     }
 
 
@@ -1065,7 +1070,7 @@ def _finish_execution_observability(
     runtime.record_duration(
         "litestar_queues.task.execution.duration", time.perf_counter() - started_at, attributes=attributes
     )
-    runtime.record_counter("litestar_queues.task.execution.count", attributes=attributes)
+    runtime.record_counter("litestar_queues.task.execution", attributes=attributes)
     runtime.end_span(span)
 
 

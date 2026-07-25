@@ -187,7 +187,7 @@ class WorkerHeartbeatManager:
             "litestar_queues.heartbeat.flush.duration", time.perf_counter() - started_at, attributes=attributes
         )
         self._service.observability_runtime.record_counter(
-            "litestar_queues.heartbeat.flush.count", len(result.touched_task_ids), attributes=attributes
+            "litestar_queues.heartbeat.flush", len(result.touched_task_ids), attributes=attributes
         )
 
         for task_id in result.touched_task_ids:
@@ -202,7 +202,7 @@ class WorkerHeartbeatManager:
                 continue
             missed_registration.consecutive_misses += 1
             self._service.observability_runtime.record_counter(
-                "litestar_queues.heartbeat.missed.count", 1, attributes=attributes
+                "litestar_queues.heartbeat.missed", 1, attributes=attributes
             )
             if missed_registration.consecutive_misses >= self._miss_threshold:
                 await self._publish_claim_lost(task_id, missed_registration)
@@ -250,12 +250,12 @@ class WorkerHeartbeatManager:
     def record_failure(self, exc: "BaseException", message: "str" = "Queue worker heartbeat tick failed") -> "None":
         """Record and log a heartbeat failure.
 
-        This is the single emitter of ``litestar_queues.heartbeat.failure.count``;
+        This is the single emitter of ``litestar_queues.heartbeat.failure``;
         the worker delegates here so the label set stays consistent.
         """
         with contextlib.suppress(Exception):
             self._service.observability_runtime.record_counter(
-                "litestar_queues.heartbeat.failure.count",
+                "litestar_queues.heartbeat.failure",
                 1,
                 attributes={**self._metric_attributes(), "worker.error.type": type(exc).__name__},
             )

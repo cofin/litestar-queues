@@ -491,14 +491,14 @@ def _base_name(name: "str", config: "ObservabilityConfig | None") -> "tuple[str,
 def _counter_name(name: "str", config: "ObservabilityConfig | None") -> "str":
     """Build the Prometheus counter name.
 
-    ``prometheus_client`` appends ``_total`` itself, so a trailing ``_count``
-    segment would export as ``..._count_total``.
+    Counter instruments carry no ``.count`` suffix -- the instrument type already
+    conveys it, and ``prometheus_client`` appends ``_total`` on export.
 
     Returns:
         The Prometheus collector name for this counter.
     """
     prefix, base = _base_name(name, config)
-    return f"{prefix}_{base.removesuffix('_count')}"
+    return f"{prefix}_{base}"
 
 
 def _gauge_name(name: "str", config: "ObservabilityConfig | None") -> "str":

@@ -253,9 +253,7 @@ class Worker:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    self._record_counter(
-                        "litestar_queues.worker.loop.error.count", {"worker.error.type": type(exc).__name__}
-                    )
+                    self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
                     logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
                     self._reset_poll_backoff()
                     await self._backoff_after_loop_error()
@@ -382,7 +380,7 @@ class Worker:
                 await self._close_heartbeat_manager_if_idle()
 
     async def _dispatch_external(self, records: "list[QueuedTaskRecord]") -> "int":
-        # The execution backend owns litestar_queues.execution.dispatch.count: it is
+        # The execution backend owns litestar_queues.execution.dispatch: it is
         # the only layer that can distinguish a fallback from an outright failure,
         # and a second emitter here would double-count every dispatch.
         execution_backend = self._service.get_execution_backend()
@@ -416,9 +414,7 @@ class Worker:
         )
         for outcome, count in outcomes:
             if count:
-                self._record_counter(
-                    "litestar_queues.stale_recovery.count", {"queue.stale.outcome": outcome}, value=count
-                )
+                self._record_counter("litestar_queues.stale_recovery", {"queue.stale.outcome": outcome}, value=count)
 
     async def _maybe_reconcile_external(self) -> "None":
         if not await self._service.get_queue_backend().acquire_worker_lock(
@@ -509,7 +505,7 @@ class Worker:
             # (run_once) still discovers work, and the next wait re-establishes
             # the listener from a clean state. The backoff resets so a stale
             # listener does not compound into a longer discovery delay.
-            self._record_counter("litestar_queues.worker.loop.error.count", {"worker.error.type": type(exc).__name__})
+            self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
             logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
             self._reset_poll_backoff()
             await self._backoff_after_loop_error()
@@ -530,7 +526,7 @@ class Worker:
             self._record_heartbeat_failure(exc, "Queue worker heartbeat manager close failed")
 
     def _record_heartbeat_failure(self, exc: "Exception", message: "str") -> "None":
-        # Delegated so both emitters of litestar_queues.heartbeat.failure.count agree
+        # Delegated so both emitters of litestar_queues.heartbeat.failure agree
         # on one label set; divergent label names break the Prometheus collector.
         self._heartbeat_manager.record_failure(exc, message)
 
@@ -539,9 +535,7 @@ class Worker:
         for record in records:
             counts[record.queue] = counts.get(record.queue, 0) + 1
         for queue, count in counts.items():
-            self._record_counter(
-                "litestar_queues.worker.claim.count", {"messaging.destination.name": queue}, value=count
-            )
+            self._record_counter("litestar_queues.worker.claim", {"messaging.destination.name": queue}, value=count)
 
     def _record_counter(self, name: "str", attributes: "dict[str, str]", *, value: "int" = 1) -> "None":
         self._service.observability_runtime.record_counter(

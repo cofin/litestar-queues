@@ -60,7 +60,7 @@ async def test_enqueue_uses_observability_runtime_for_producer_span_and_context(
     assert result.record.metadata["_otel_context"] == {"traceparent": "00-test"}
     assert runtime.counters == [
         (
-            "litestar_queues.enqueue.count",
+            "litestar_queues.enqueue",
             1,
             {
                 "messaging.destination.name": "critical",
@@ -96,7 +96,7 @@ async def test_execute_record_uses_observability_runtime_for_consumer_span() -> 
     assert process_span.attributes["messaging.message.id"] == str(completed.id)
     assert process_span.attributes["queue.task.status"] == "completed"
     assert runtime.counters[-1] == (
-        "litestar_queues.task.execution.count",
+        "litestar_queues.task.execution",
         1,
         {
             "messaging.destination.name": "default",
@@ -158,12 +158,12 @@ async def test_worker_records_claim_and_loop_error_metrics() -> "None":
         await transient.start()
 
     assert (
-        "litestar_queues.worker.claim.count",
+        "litestar_queues.worker.claim",
         1,
         {"queue.execution.backend": "local", "messaging.destination.name": "default"},
     ) in runtime.counters
     assert (
-        "litestar_queues.worker.loop.error.count",
+        "litestar_queues.worker.loop.error",
         1,
         {"queue.execution.backend": "local", "worker.error.type": "RuntimeError"},
     ) in runtime.counters
@@ -254,7 +254,7 @@ async def test_cloudrun_dispatch_records_span_and_metrics() -> "None":
     assert dispatch_span.kind == "producer"
     assert dispatch_span.attributes["queue.execution.backend"] == "cloudrun"
     assert (
-        "litestar_queues.execution.dispatch.count",
+        "litestar_queues.execution.dispatch",
         1,
         {
             "messaging.destination.name": "default",
@@ -420,7 +420,7 @@ async def test_prometheus_metrics_reach_the_default_registry() -> "None":
     from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
 
     runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True))
-    runtime.record_counter("litestar_queues.default_registry.count", attributes={"queue.backend": "memory"})
+    runtime.record_counter("litestar_queues.default_registry", attributes={"queue.backend": "memory"})
 
     exported = prometheus_client.generate_latest(prometheus_client.REGISTRY).decode()
 
@@ -461,8 +461,8 @@ async def test_runtimes_sharing_a_registry_reuse_collectors() -> "None":
     registry = prometheus_client.CollectorRegistry()
     config = ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry)
 
-    QueueObservabilityRuntime(config).record_counter("litestar_queues.shared.count", attributes={"scope": "a"})
-    QueueObservabilityRuntime(config).record_counter("litestar_queues.shared.count", attributes={"scope": "a"})
+    QueueObservabilityRuntime(config).record_counter("litestar_queues.shared", attributes={"scope": "a"})
+    QueueObservabilityRuntime(config).record_counter("litestar_queues.shared", attributes={"scope": "a"})
 
     assert registry.get_sample_value("litestar_queues_shared_total", labels={"scope": "a"}) == 2.0
 
@@ -580,7 +580,7 @@ async def test_stale_recovery_labels_stay_bounded(monkeypatch: "pytest.MonkeyPat
         worker = Worker(service, WorkerConfig(stale_after=0.01))
         await worker._maybe_requeue_stale()
 
-    stale_samples = [entry for entry in runtime.counters if entry[0] == "litestar_queues.stale_recovery.count"]
+    stale_samples = [entry for entry in runtime.counters if entry[0] == "litestar_queues.stale_recovery"]
 
     assert {(value, attributes["queue.stale.outcome"]) for _name, value, attributes in stale_samples} == {
         (3, "requeued"),
@@ -629,3 +629,62 @@ def test_core_imports_stay_free_of_optional_telemetry() -> "None":
     completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
 
     assert completed.stdout.strip() == "[]"
+
+
+async def test_unset_execution_profile_is_omitted_from_spans_but_kept_on_metrics() -> "None":
+    """Spans omit unknown attributes; metrics cannot, because label names are fixed.
+
+    Prometheus binds label names when the collector is constructed, so the key must
+    always be present there. An empty label value is the correct encoding: Prometheus
+    treats it as equivalent to the label being absent.
+    """
+    runtime = FakeObservabilityRuntime()
+
+    @task("observability.no_profile")
+    async def no_profile() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+        result = await service.enqueue(no_profile)
+        claimed = await service.get_queue_backend().claim_task(result.id)
+        assert claimed is not None
+        await service.execute_record(claimed)
+
+    for span in runtime.started_spans:
+        assert "queue.execution.profile" not in span.attributes
+    for _name, _value, attributes in runtime.counters:
+        if "queue.execution.profile" in attributes:
+            assert attributes["queue.execution.profile"] == ""
+
+
+async def test_counter_instrument_names_carry_no_count_suffix() -> "None":
+    """The instrument type already conveys "count"; semconv discourages the suffix."""
+    runtime = FakeObservabilityRuntime()
+
+    @task("observability.naming", execution_profile="heavy")
+    async def naming() -> "str":
+        return "ok"
+
+    async with QueueService(QueueConfig(execution_backend="local"), observability_runtime=runtime) as service:
+        result = await service.enqueue(naming)
+        claimed = await service.get_queue_backend().claim_task(result.id)
+        assert claimed is not None
+        await service.execute_record(claimed)
+
+    recorded = {name for name, _value, _attributes in runtime.counters}
+
+    assert recorded, "expected counter samples"
+    assert not any(name.endswith(".count") for name in recorded)
+    assert "litestar_queues.enqueue" in recorded
+    assert "litestar_queues.task.execution" in recorded
+
+
+def test_counter_prometheus_names_are_unchanged_by_the_instrument_rename() -> "None":
+    """Dropping the OTel ``.count`` suffix must not move any Prometheus series."""
+    pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import _counter_name
+
+    assert _counter_name("litestar_queues.enqueue", None) == "litestar_queues_enqueue"
+    assert _counter_name("litestar_queues.worker.loop.error", None) == "litestar_queues_worker_loop_error"
+    assert _counter_name("litestar_queues.stale_recovery", None) == "litestar_queues_stale_recovery"
