@@ -73,6 +73,22 @@ This command refuses process-local storage. Memory lives inside the process
 that created it, and the ephemeral database belongs to the ``litestar run``
 invocation that created it, so neither is visible to a separate worker.
 
+Scaling out
+===========
+
+``placement`` names the worker your application starts for itself, not a limit
+on how many workers may exist. Once you are on a persistent backend you can add
+standalone workers to any placement:
+
+.. code-block:: bash
+
+   # one worker from the server invocation, plus three more elsewhere
+   litestar --app app:app run
+   LITESTAR_APP=app:app litestar queues run   # x3, on other hosts or containers
+
+They all claim from the same backend, so the total worker count is the built-in
+one plus however many you start.
+
 Choosing a placement
 ====================
 

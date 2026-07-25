@@ -65,22 +65,17 @@ def _reject_ephemeral_storage(plugin: "QueuePlugin", command: "str") -> "None":
         raise click.ClickException(_EPHEMERAL_UNREACHABLE.format(command=command))
 
 
-def _reject_managed_placement(plugin: "QueuePlugin") -> "None":
-    """Fail when the application already designates a different worker owner.
+def _reject_inline_execution(plugin: "QueuePlugin") -> "None":
+    """Fail when nothing is ever queued for a standalone worker to claim.
+
+    Placement is deliberately not checked here. Adding standalone workers to an
+    application that already runs one is how a deployment scales out, and every
+    configuration where that cannot work is rejected by the storage guard above.
 
     Raises:
-        click.ClickException: If placement is not external, or execution is inline.
+        click.ClickException: If execution is inline.
     """
-    config = plugin.config
-    placement = config.worker.placement
-    if placement != "external":
-        msg = (
-            f"'litestar queues run' is the external worker. This application configures "
-            f"WorkerConfig(placement={placement!r}), which already designates a different owner; "
-            f"running both would double the configured worker count. Set placement='external'."
-        )
-        raise click.ClickException(msg)
-    if execution_backend_name(config.execution_backend) == "immediate":
+    if execution_backend_name(plugin.config.execution_backend) == "immediate":
         msg = (
             "execution_backend='immediate' runs tasks inline at enqueue time, so a standalone "
             "worker would have nothing to claim. Use execution_backend='local'."
@@ -117,7 +112,7 @@ def run_command(
     _reject_ephemeral_storage(plugin, "run")
     if queue_backend_name(config.queue_backend) == "memory":
         raise click.ClickException(_MEMORY_UNREACHABLE)
-    _reject_managed_placement(plugin)
+    _reject_inline_execution(plugin)
 
     effective_concurrency = max_concurrency or config.worker.max_concurrency
     effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker.graceful_shutdown_timeout

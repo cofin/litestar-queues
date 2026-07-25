@@ -225,28 +225,39 @@ async def test_runner_failure_maps_to_the_crash_exit_code(monkeypatch: "pytest.M
     assert await _run_worker(_plugin(), 1, 0.01, ()) == 1
 
 
-async def test_run_command_rejects_process_local_and_managed_configurations() -> "None":
-    """Storage and ownership are validated before any service is opened."""
+async def test_run_command_rejects_storage_it_cannot_reach() -> "None":
+    """Storage and execution are validated before any service is opened."""
     import click
 
     from litestar_queues import QueueConfig, QueuePlugin
-    from litestar_queues._cli import _reject_ephemeral_storage, _reject_managed_placement
+    from litestar_queues._cli import _reject_ephemeral_storage, _reject_inline_execution
 
     with pytest.raises(click.ClickException, match="litestar run"):
         _reject_ephemeral_storage(QueuePlugin(QueueConfig()), "run")
-
-    for placement in ("server", "asgi"):
-        plugin = QueuePlugin(
-            QueueConfig(queue_backend="redis", worker=WorkerConfig(placement=placement))  # type: ignore[arg-type]
-        )
-        with pytest.raises(click.ClickException, match="placement='external'"):
-            _reject_managed_placement(plugin)
 
     inline = QueuePlugin(
         QueueConfig(queue_backend="memory", execution_backend="immediate", worker=WorkerConfig(placement="external"))
     )
     with pytest.raises(click.ClickException, match="immediate"):
-        _reject_managed_placement(inline)
+        _reject_inline_execution(inline)
+
+
+@pytest.mark.parametrize("placement", ["server", "asgi", "external"])
+async def test_standalone_workers_scale_out_any_placement(placement: "str") -> "None":
+    """Extra workers are how a deployment scales; placement names the built-in owner, not a lock."""
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues._cli import _reject_ephemeral_storage, _reject_inline_execution
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="redis",
+            execution_backend="local",
+            worker=WorkerConfig(placement=placement),  # type: ignore[arg-type]
+        )
+    )
+
+    _reject_ephemeral_storage(plugin, "run")
+    _reject_inline_execution(plugin)
 
 
 # This spawns a real interpreter (cold imports: litestar, click, litestar_queues,
