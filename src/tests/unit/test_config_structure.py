@@ -166,3 +166,34 @@ def test_runtime_imports_stay_within_reviewed_lazy_boundaries() -> None:
             unexpected.extend(f"{path}:{node.lineno}:{module}" for module in modules if module not in approved)
 
     assert unexpected == []
+
+
+def test_modules_declare_imports_and_exports_before_constants() -> None:
+    """Module layout is docstring, imports, TYPE_CHECKING, ``__all__``, then constants."""
+    out_of_order: list[str] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        type_checking_line: int | None = None
+        dunder_all_line: int | None = None
+        first_constant: tuple[int, str] | None = None
+        for node in tree.body:
+            if isinstance(node, ast.If) and ast.unparse(node.test).strip() == "TYPE_CHECKING":
+                type_checking_line = node.lineno
+                continue
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [target.id for target in targets if isinstance(target, ast.Name)]
+            if "__all__" in names:
+                dunder_all_line = node.lineno
+            elif first_constant is None:
+                first_constant = (node.lineno, names[0] if names else "<unnamed>")
+        if first_constant is None:
+            continue
+        line, name = first_constant
+        if type_checking_line is not None and line < type_checking_line:
+            out_of_order.append(f"{path}:{line}: {name} precedes the TYPE_CHECKING block")
+        if dunder_all_line is not None and line < dunder_all_line:
+            out_of_order.append(f"{path}:{line}: {name} precedes __all__")
+
+    assert out_of_order == []

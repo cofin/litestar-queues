@@ -6,14 +6,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from litestar_queues.exceptions import QueueConfigurationError
 
-logger = getLogger(__name__)
-
-_SERVICE_STATE_KEY = "queue_service"
-_WORKER_STATE_KEY = "queue_worker"
-_EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
-_EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
-_OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
-
 if TYPE_CHECKING:
     from types import TracebackType
 
@@ -43,6 +35,14 @@ __all__ = (
     "execution_backend_name",
     "queue_backend_name",
 )
+
+logger = getLogger(__name__)
+
+_SERVICE_STATE_KEY = "queue_service"
+_WORKER_STATE_KEY = "queue_worker"
+_EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
+_EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
+_OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
 
 
 class QueueBackendConfigProtocol(Protocol):
