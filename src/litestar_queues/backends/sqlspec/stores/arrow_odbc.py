@@ -94,8 +94,10 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
         quoted_table_name = _quote_tsql_identifier(self.table_name)
         quoted_task_key_index = _quote_tsql_identifier(task_key_index)
         return [
-            f"IF EXISTS (SELECT * FROM sys.indexes WHERE object_id = object_id('{table_name}') "  # noqa: S608
-            f"AND name = '{task_key_index}') DROP INDEX {quoted_task_key_index} ON {quoted_table_name}",
+            (
+                f"IF EXISTS (SELECT * FROM sys.indexes WHERE object_id = object_id('{table_name}') "  # noqa: S608
+                f"AND name = '{task_key_index}') DROP INDEX {quoted_task_key_index} ON {quoted_table_name}"
+            ),
             *statements,
         ]
 

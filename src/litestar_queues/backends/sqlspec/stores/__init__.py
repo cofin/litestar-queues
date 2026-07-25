@@ -1,8 +1,9 @@
 """SQLSpec queue store selection.
 
-Store classes are imported from the module that defines them
-(:mod:`.adapters` for family-only drivers, or the adapter's own module).
-This package exports only the base class and the factory.
+Every adapter defines its store in its own module, named after the adapter
+(``asyncpg.py``, ``oracledb.py``, ...). Import a concrete store from there.
+This package exports only the base class and the factory, so selecting one
+adapter never imports another adapter's driver.
 """
 
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore

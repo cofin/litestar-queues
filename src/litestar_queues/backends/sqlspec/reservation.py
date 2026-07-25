@@ -147,8 +147,10 @@ class SpannerQueueReservationStore(SQLSpecTaskReservationStore):
         )
         column_sql = ",\n  ".join(columns)
         return [
-            f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
-            f"PRIMARY KEY ({self._quote_identifier('identity_key')})"
+            (
+                f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) "
+                f"PRIMARY KEY ({self._quote_identifier('identity_key')})"
+            )
         ]
 
     def drop_statements(self) -> "list[str]":

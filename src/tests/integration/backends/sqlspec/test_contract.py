@@ -838,6 +838,7 @@ def test_postgres_native_json_array_bind_shape_matches_adapter(
     ),
 )
 async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
+    *,
     adapter_name: "str",
     dialect: "str | None",
     config_type_name: "str",
@@ -1336,6 +1337,7 @@ def test_sqlspec_backend_rejects_invalid_table_names(table_name: "str") -> "None
     ),
 )
 def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
+    *,
     adapter_name: "str",
     dialect: "str | None",
     config_type_name: "str",

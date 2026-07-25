@@ -179,7 +179,7 @@ async def stream_queue_events_hardened(
         async with _event_stream(backend, channels, history=history) as events:
             event_task = asyncio.create_task(_pump_events(socket, events, send_lock, stream_metrics, scope))
             heartbeat_task = asyncio.create_task(
-                _pump_heartbeat(socket, send_lock, heartbeat_interval, stop, stream_metrics, scope)
+                _pump_heartbeat(socket, send_lock, heartbeat_interval, stop, stream_metrics=stream_metrics, scope=scope)
             )
             await _wait_for_stream_tasks(event_task, heartbeat_task, stop)
     finally:
@@ -233,6 +233,7 @@ async def _pump_heartbeat(
     send_lock: "asyncio.Lock",
     interval: float,
     stop: "asyncio.Event",
+    *,
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
 ) -> None:

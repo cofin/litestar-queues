@@ -13,7 +13,8 @@ import pytest
 pytest.importorskip("sqlspec")
 
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.stores import OracledbAsyncQueueStore, OracledbSyncQueueStore, create_queue_store
+from litestar_queues.backends.sqlspec.stores import create_queue_store
+from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.exceptions import QueueConfigurationError
 
 
