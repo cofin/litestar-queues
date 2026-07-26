@@ -14,7 +14,7 @@ from litestar.testing import create_test_client
 from litestar_queues import WorkerConfig
 from litestar_queues.config import QueueConfig
 from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
-from litestar_queues.events.streaming import build_stream_router
+from litestar_queues.events.streaming import _build_stream_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_sse_endpoint_registered_for_scopes() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}),
     )
@@ -34,7 +34,7 @@ async def test_sse_endpoint_registered_for_scopes() -> None:
 
 
 async def test_sse_disabled_registers_no_sse_routes() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}, transports={"websocket"}),
     )
@@ -45,7 +45,7 @@ async def test_sse_disabled_registers_no_sse_routes() -> None:
 async def test_sse_client_receives_event_frames() -> None:
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
     channels = _FakeChannelsPlugin([event.to_json()])
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -65,7 +65,7 @@ async def test_sse_client_receives_event_frames() -> None:
 
 async def test_sse_authorizer_denies_before_subscribe() -> None:
     channels = _FakeChannelsPlugin([])
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -83,7 +83,7 @@ async def test_sse_authorizer_denies_before_subscribe() -> None:
 async def test_sse_task_route_serves_event_stream_content_type() -> None:
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
     channels = _FakeChannelsPlugin([event.to_json()])
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -101,7 +101,7 @@ async def test_sse_task_route_serves_event_stream_content_type() -> None:
 async def test_sse_custom_route_serves_event_stream_content_type() -> None:
     event = QueueEvent(type="task.progress", scope="custom", message="working")
     channels = _FakeChannelsPlugin([event.to_json()])
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -123,7 +123,7 @@ async def test_sse_guard_denies_before_authorizer() -> None:
         calls.append(args)
         return True
 
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}, guards=[_deny_guard], channel_authorizer=authorize),
     )
@@ -140,7 +140,7 @@ async def test_sse_keepalive_comment_and_dedup() -> None:
     duplicate = QueueEvent(type="task.progress", scope="task", id="evt-2", task_id="task-1", event_key="same")
     second = QueueEvent(type="task.log", scope="task", id="evt-3", task_id="task-1")
     channels = _FakeChannelsPlugin([first.to_json(), duplicate.to_json(), second.to_json()], delay_between_events=0.03)
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",

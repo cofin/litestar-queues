@@ -10,7 +10,7 @@ from litestar.routes import WebSocketRoute
 from litestar_queues import QueuePlugin, WorkerConfig
 from litestar_queues.config import QueueConfig
 from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
-from litestar_queues.events.streaming import build_stream_router
+from litestar_queues.events.streaming import _build_stream_router
 from litestar_queues.observability import ObservabilityConfig
 
 if TYPE_CHECKING:
@@ -56,7 +56,7 @@ async def test_websocket_stream_metrics_recorded_with_bounded_labels() -> None:
     runtime = _FakeObservabilityRuntime()
     channels = _FakeChannelsPlugin([event.to_json(), event.to_json()])
     socket = _RecordingSocket(runtime=runtime)
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -83,7 +83,7 @@ async def test_websocket_stream_metrics_record_heartbeats() -> None:
     runtime = _FakeObservabilityRuntime()
     channels = _FakeChannelsPlugin([], delay_before_close=0.01)
     socket = _RecordingSocket(runtime=runtime)
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -104,7 +104,7 @@ async def test_stream_metrics_noop_without_observability_runtime() -> None:
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1")
     channels = _FakeChannelsPlugin([event.to_json()])
     socket = _RecordingSocket()
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -122,7 +122,7 @@ async def test_authorizer_denial_records_authz_reason() -> None:
     runtime = _FakeObservabilityRuntime()
     channels = _FakeChannelsPlugin([])
     socket = _RecordingSocket(runtime=runtime)
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",

@@ -11,10 +11,13 @@ Unreleased
 
 **Breaking changes:**
 
-* ``stream_queue_events_hardened`` is renamed to ``stream_queue_events_ws`` with
-  no alias. It sits beside ``stream_queue_events_sse`` and takes the same
-  arguments, so the name now says which transport it uses instead of describing
-  a since-removed unhardened variant.
+* ``stream_queue_events_hardened``, ``stream_queue_events_sse``, and
+  ``build_stream_router`` are now private, with no aliases. They were rendered
+  into the API reference but were never re-exported, documented, or shown in an
+  example, and the plugin is their only caller. Configure streaming through
+  :class:`EventStreamConfig`, which owns the path, transports, guards, channel
+  authorizer, scopes, heartbeat interval, and replay limit. ``StreamMetrics``
+  stays public, since it describes the stream observability surface.
 * Ephemeral storage is no longer restricted by worker placement. Configuring
   ``queue_backend="ephemeral"`` with ``placement="asgi"`` or
   ``placement="external"``, or with ``execution_backend="immediate"``, was

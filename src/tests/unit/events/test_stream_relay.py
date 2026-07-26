@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues.events import QueueEvent
-from litestar_queues.events.streaming import stream_queue_events_ws
+from litestar_queues.events.streaming import _stream_queue_events_ws
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -75,7 +75,7 @@ async def test_ws_relay_emits_heartbeat_between_events() -> None:
     plugin = _FakeChannelsPlugin([first.to_json(), second.to_json()], delay_between_events=0.03)
     socket = _RecordingSocket()
 
-    await stream_queue_events_ws(
+    await _stream_queue_events_ws(
         socket, ["litestar_queues:task:task_1:events"], history=4, channels_backend=plugin, heartbeat_interval=0.005
     )
 
@@ -94,7 +94,7 @@ async def test_ws_relay_cancels_heartbeat_when_event_stream_ends() -> None:
     plugin = _FakeChannelsPlugin([])
     socket = _RecordingSocket()
 
-    await stream_queue_events_ws(
+    await _stream_queue_events_ws(
         socket, ["litestar_queues:task:task_1:events"], channels_backend=plugin, heartbeat_interval=0.005
     )
     sent_count = len(socket.sent_json)

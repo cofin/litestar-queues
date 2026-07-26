@@ -12,7 +12,7 @@ from litestar.testing import create_test_client
 from litestar_queues import WorkerConfig
 from litestar_queues.config import QueueConfig
 from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
-from litestar_queues.events.streaming import build_stream_router
+from litestar_queues.events.streaming import _build_stream_router
 from litestar_queues.exceptions import QueueConfigurationError
 from tests.helpers._timing import wait_until
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 def test_build_stream_router_registers_all_scopes_by_default() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), EventStreamConfig()
     )
 
@@ -40,7 +40,7 @@ def test_build_stream_router_registers_all_scopes_by_default() -> None:
 
 
 def test_build_stream_router_narrows_to_configured_scopes() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}),
     )
@@ -49,7 +49,7 @@ def test_build_stream_router_narrows_to_configured_scopes() -> None:
 
 
 def test_build_stream_router_websocket_only_registers_no_sse_routes() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}, transports={"websocket"}),
     )
@@ -58,7 +58,7 @@ def test_build_stream_router_websocket_only_registers_no_sse_routes() -> None:
 
 
 def test_build_stream_router_sse_only_registers_no_websocket_routes() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}, transports={"sse"}),
     )
@@ -79,7 +79,7 @@ def test_stream_config_rejects_unrecognized_scopes() -> None:
 
 
 def test_stream_router_applies_guards_and_denies_before_accept() -> None:
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(guards=[_deny_guard], scopes={"task"}),
     )
@@ -103,7 +103,7 @@ async def test_task_stream_relays_from_channels_backend() -> None:
         queue_backend="memory",
         events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
     )
-    router = build_stream_router(config, EventStreamConfig(scopes={"task"}))
+    router = _build_stream_router(config, EventStreamConfig(scopes={"task"}))
     handler = _stream_handler(router, "/tasks/{task_id:str}")
     socket = _RecordingSocket()
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
@@ -135,7 +135,7 @@ async def test_task_stream_prefers_configured_channels_backend_to_connection_plu
         queue_backend="memory",
         events=QueueEventsConfig(channels=configured_channels, delivery=EventDeliveryConfig()),
     )
-    router = build_stream_router(config, EventStreamConfig(scopes={"task"}))
+    router = _build_stream_router(config, EventStreamConfig(scopes={"task"}))
     handler = _stream_handler(router, "/tasks/{task_id:str}")
     socket = _RecordingSocket(channels_plugin=connection_channels)
     event = QueueEvent(type="task.progress", scope="task", task_id="task-1", message="working")
