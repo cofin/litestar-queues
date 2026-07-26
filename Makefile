@@ -228,7 +228,7 @@ test-examples-e2e: install-e2e                       ## Install Chromium and run
 	@echo "${INFO} Installing Chromium for browser E2E tests... ⚡"
 	@uv run playwright install chromium
 	@echo "${INFO} Running browser E2E tests... 🧪"
-	@uv run pytest src/tests/integration/e2e -m e2e
+	@uv run pytest src/tests/e2e -m e2e
 	@echo "${OK} Browser E2E tests complete 🧪"
 
 # -----------------------------------------------------------------------------

@@ -29,7 +29,7 @@ flush it, before checking events that occur before the task's final state.
 
 Stream tests should cover the package's SSE/WebSocket routes, authorization,
 content type, keepalives, and event envelopes. Use the Playwright suite in
-``src/tests/integration/e2e`` for browser behavior. Curl cannot prove that HTMX starts,
+``src/tests/e2e`` for browser behavior. Curl cannot prove that HTMX starts,
 updates the page, reconnects, or closes sockets.
 
 Use unique Redis/Valkey queue and Channels prefixes in topology tests. Never
