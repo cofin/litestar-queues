@@ -20,10 +20,13 @@ from litestar_queues import TaskRequest
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.models import HeartbeatTouch
 from tests.integration._expiry_contract import (
+    assert_claim_many_preserves_expired_dispatch_reservation,
+    assert_claim_many_reports_owned_expirations,
     assert_expire_overdue_transitions_and_reports,
     assert_expired_claim_is_fenced,
     assert_expiry_fences_retry_requeue,
     assert_external_dispatch_reservation_is_fenced,
+    assert_finalized_dispatch_claims_after_queue_deadline,
     assert_future_deadline_is_claimable,
 )
 
@@ -41,6 +44,10 @@ async def test_redis_expire_overdue_transitions_and_reports(redis_backend: "Redi
     await assert_expire_overdue_transitions_and_reports(redis_backend)
 
 
+async def test_redis_claim_many_reports_owned_expirations(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_claim_many_reports_owned_expirations(redis_backend)
+
+
 async def test_redis_expiry_fences_retry_requeue(redis_backend: "RedisQueueBackend") -> "None":
     await assert_expiry_fences_retry_requeue(redis_backend)
 
@@ -51,6 +58,14 @@ async def test_redis_future_deadline_is_claimable(redis_backend: "RedisQueueBack
 
 async def test_redis_external_dispatch_reservation_is_fenced(redis_backend: "RedisQueueBackend") -> "None":
     await assert_external_dispatch_reservation_is_fenced(redis_backend)
+
+
+async def test_redis_claim_many_preserves_expired_dispatch_reservation(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_claim_many_preserves_expired_dispatch_reservation(redis_backend)
+
+
+async def test_redis_finalized_dispatch_claims_after_queue_deadline(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_finalized_dispatch_claims_after_queue_deadline(redis_backend)
 
 
 def test_top_level_litestar_queues_import_does_not_pull_in_redis_or_valkey() -> "None":

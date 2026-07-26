@@ -317,10 +317,9 @@ class Worker:
         return len(claimed_records)
 
     async def _claim_available(self, *, limit: "int") -> "list[QueuedTaskRecord]":
-        queue_backend = self._service.get_queue_backend()
         execution_backend_name_ = execution_backend_name(self._service.config.execution_backend)
-        return await queue_backend.claim_many(
-            limit=limit, queues=self._queues, execution_backend=execution_backend_name_
+        return await self._service.claim_tasks(
+            limit=limit, queues=self._queues, execution_backend=execution_backend_name_, worker_id=self._worker_id
         )
 
     async def _list_pending(self, *, limit: "int") -> "list[QueuedTaskRecord]":

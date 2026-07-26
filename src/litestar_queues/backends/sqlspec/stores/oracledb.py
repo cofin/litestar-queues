@@ -32,10 +32,6 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         """Return statements that create Oracle queue artifacts."""
         return self._create_statements_with_storage(self._configured_json_storage(), include_expiration=True)
 
-    def create_initial_statements(self) -> "list[str]":
-        """Return the historical pre-expiration Oracle schema."""
-        return self._create_statements_with_storage(self._configured_json_storage(), include_expiration=False)
-
     async def create_statements_for_driver(self, driver: "Any") -> "list[str]":
         """Return schema statements using cached Oracle version-aware JSON storage."""
         storage_type = await self._detect_json_storage_type(driver)

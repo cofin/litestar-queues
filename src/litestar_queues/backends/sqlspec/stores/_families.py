@@ -28,10 +28,6 @@ class MssqlQueueStore(SQLSpecQueueStore):
         """Return statements that create SQL Server queue artifacts."""
         return self._create_statements(include_expiration=True)
 
-    def create_initial_statements(self) -> "list[str]":
-        """Return the historical pre-expiration SQL Server schema."""
-        return self._create_statements(include_expiration=False)
-
     def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
@@ -165,10 +161,6 @@ class PostgresQueueStore(SQLSpecQueueStore):
         """Return statements that create Postgres-family queue artifacts."""
         return self._create_statements(include_expiration=True)
 
-    def create_initial_statements(self) -> "list[str]":
-        """Return the historical pre-expiration Postgres schema."""
-        return self._create_statements(include_expiration=False)
-
     def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
@@ -258,10 +250,6 @@ class MySQLQueueStore(SQLSpecQueueStore):
     def create_statements(self) -> "list[str]":
         """Return statements that create MySQL-family queue artifacts."""
         return self._create_statements(include_expiration=True)
-
-    def create_initial_statements(self) -> "list[str]":
-        """Return the historical pre-expiration MySQL schema."""
-        return self._create_statements(include_expiration=False)
 
     def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:

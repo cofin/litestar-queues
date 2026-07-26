@@ -13,6 +13,7 @@ from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from uuid import UUID
 
     from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
     from litestar_queues.models import QueuedTaskRecord
@@ -44,6 +45,14 @@ class _LifecycleQueueBackend(InMemoryQueueBackend):
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         del config
         return cast("QueueEventLog", self._lifecycle_event_log)
+
+
+class _DelayedClaimBackend(InMemoryQueueBackend):
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        await asyncio.sleep(0.1)
+        return await super().claim_task_with_expired(task_id)
 
 
 class _LifecycleExecutionBackend(BaseExecutionBackend):
@@ -528,6 +537,35 @@ async def test_enqueue_relative_expires_in_uses_enqueue_time() -> "None":
     expires_at = result.record.expires_at
     assert expires_at is not None
     assert before + timedelta(seconds=30) <= expires_at <= after + timedelta(seconds=30)
+
+
+async def test_immediate_enqueue_publishes_expiration_when_deadline_crosses_during_claim() -> "None":
+    from litestar_queues import task
+
+    calls: "list[str]" = []
+
+    @task("expiry.immediate_claim")
+    async def immediate_claim() -> "None":
+        calls.append("executed")
+
+    sink = InMemoryQueueEventSink()
+    queue_backend = _DelayedClaimBackend()
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="immediate",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        ),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(immediate_claim, expires_in=0.05)
+        stored = await queue_backend.get_task(result.id)
+
+    assert calls == []
+    assert stored is not None
+    assert stored.status == "expired"
+    assert [event.type for event in sink.events] == ["task.expired"]
 
 
 async def test_enqueue_relative_expires_in_uses_scheduled_at() -> "None":

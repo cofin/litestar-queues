@@ -28,10 +28,6 @@ class SpannerQueueStore(SQLSpecQueueStore):
         """Return statements that create the Spanner queue table and indexes."""
         return self._create_statements(include_expiration=True)
 
-    def create_initial_statements(self) -> "list[str]":
-        """Return the historical pre-expiration Spanner schema."""
-        return self._create_statements(include_expiration=False)
-
     def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []

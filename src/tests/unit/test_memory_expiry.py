@@ -4,6 +4,7 @@ import pytest
 
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import BaseQueueBackend
+from tests.integration._expiry_contract import assert_claim_many_preserves_expired_dispatch_reservation
 
 pytestmark = pytest.mark.anyio
 
@@ -47,6 +48,10 @@ async def test_memory_claim_many_fences_and_transitions_expired_records() -> "No
     assert [record.id for record in claimed] == [available.id]
     assert stored_expired is not None
     assert stored_expired.status == "expired"
+
+
+async def test_memory_claim_many_preserves_expired_dispatch_reservation() -> "None":
+    await assert_claim_many_preserves_expired_dispatch_reservation(InMemoryQueueBackend())
 
 
 async def test_memory_expire_overdue_transitions_once_and_respects_limit() -> "None":

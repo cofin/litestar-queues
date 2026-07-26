@@ -414,7 +414,7 @@ class QueueService:
         if record.execution_backend == "immediate" and record.status == "pending":
             execution_backend_impl = self._execution_backend_for_name(record.execution_backend)
             if not execution_backend_impl.is_external:
-                claimed = await self.get_queue_backend().claim_task(record.id)
+                claimed, _ = await self.claim_task(record.id)
                 if claimed is not None:
                     await execution_backend_impl.execute(self, claimed)
         return result
@@ -728,6 +728,39 @@ class QueueService:
         for record in expired:
             await self._publish_expired_event(record, worker_id=worker_id)
         return expired
+
+    async def claim_tasks(
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        worker_id: "str | None" = None,
+    ) -> "list[QueuedTaskRecord]":
+        """Claim due tasks and publish events for claim-time expirations.
+
+        Returns:
+            Records successfully transitioned to ``running``.
+        """
+        claimed, expired = await self.get_queue_backend().claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend
+        )
+        for record in expired:
+            await self._publish_expired_event(record, worker_id=worker_id)
+        return claimed
+
+    async def claim_task(
+        self, task_id: "UUID", *, worker_id: "str | None" = None
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and publish its claim-time expiration event.
+
+        Returns:
+            The claimed record and the expired record, at most one of which is set.
+        """
+        claimed, expired = await self.get_queue_backend().claim_task_with_expired(task_id)
+        if expired is not None:
+            await self._publish_expired_event(expired, worker_id=worker_id)
+        return claimed, expired
 
     async def initialize_schedules(self) -> "list[QueuedTaskRecord]":
         """Create queue records for registered recurring schedules.

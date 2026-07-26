@@ -26,7 +26,7 @@ async def up(context: "MigrationContext | None" = None) -> "list[str]":
     """Return SQL statements that provision every queue-owned table."""
     queue_store = _load_queue_store(context)
     event_log_store = _load_event_log_store(context)
-    statements = queue_store.create_initial_statements()
+    statements = queue_store.create_statements()
     if event_log_store is not None:
         statements.extend(event_log_store.create_statements())
     statements.extend(_load_maintenance_store(context).create_statements())

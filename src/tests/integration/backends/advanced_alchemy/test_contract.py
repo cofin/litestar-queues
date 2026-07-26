@@ -31,10 +31,12 @@ from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAl
 from litestar_queues.models import QueuedTaskRecord, TaskRequest
 from litestar_queues.task import clear_task_registry
 from tests.integration._expiry_contract import (
+    assert_claim_many_reports_owned_expirations,
     assert_expire_overdue_transitions_and_reports,
     assert_expired_claim_is_fenced,
     assert_expiry_fences_retry_requeue,
     assert_external_dispatch_reservation_is_fenced,
+    assert_finalized_dispatch_claims_after_queue_deadline,
     assert_future_deadline_is_claimable,
 )
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
@@ -83,6 +85,12 @@ async def test_advanced_alchemy_expire_overdue_transitions_and_reports(
     await assert_expire_overdue_transitions_and_reports(advanced_alchemy_backend)
 
 
+async def test_advanced_alchemy_claim_many_reports_owned_expirations(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    await assert_claim_many_reports_owned_expirations(advanced_alchemy_backend)
+
+
 async def test_advanced_alchemy_expiry_fences_retry_requeue(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
     await assert_expiry_fences_retry_requeue(advanced_alchemy_backend)
 
@@ -95,6 +103,12 @@ async def test_advanced_alchemy_external_dispatch_reservation_is_fenced(
     advanced_alchemy_backend: "SQLAlchemyBackend",
 ) -> "None":
     await assert_external_dispatch_reservation_is_fenced(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_finalized_dispatch_claims_after_queue_deadline(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    await assert_finalized_dispatch_claims_after_queue_deadline(advanced_alchemy_backend)
 
 
 async def test_advanced_alchemy_concurrent_expiry_sweeps_report_one_owner(

@@ -20,8 +20,9 @@ if TYPE_CHECKING:
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
 
-__all__ = ("BaseQueueBackend",)
+__all__ = ("EXTERNAL_DISPATCH_RESERVATION_PREFIX", "BaseQueueBackend", "is_external_dispatch_reservation")
 
+EXTERNAL_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
 STALE_REQUEUE_PRIORITY = 4
 
@@ -130,6 +131,20 @@ class BaseQueueBackend:
         """Atomically claim a pending task."""
         raise NotImplementedError
 
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and report when this call expires that task.
+
+        Returns:
+            The claimed record and the expired record, at most one of which is set.
+        """
+        expired = await self.expire_overdue()
+        claimed = await self.claim_task(task_id)
+        expired.extend(await self.expire_overdue())
+        expired_record = next((record for record in expired if record.id == task_id), None)
+        return claimed, expired_record
+
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -169,6 +184,20 @@ class BaseQueueBackend:
                 break
             records.append(claimed)
         return records
+
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and report overdue records transitioned while claiming.
+
+        Returns:
+            Claimed records and records expired by this call.
+        """
+        expired = await self.expire_overdue()
+        claimed = await self.claim_many(limit=limit, queues=queues, execution_backend=execution_backend)
+        expired.extend(await self.expire_overdue())
+        unique = {record.id: record for record in expired}
+        return claimed, list(unique.values())
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -358,6 +387,18 @@ class BaseQueueBackend:
         """Release a matching external-dispatch reservation."""
         return None
 
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        """Replace an owned dispatch reservation with its execution reference."""
+        return None
+
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -512,6 +553,11 @@ class BaseQueueBackend:
         exc_tb: "TracebackType | None",  # noqa: PYI036
     ) -> "None":
         await self.close()
+
+
+def is_external_dispatch_reservation(execution_ref: "str | None") -> "bool":
+    """Return whether an execution reference is a temporary dispatch lease."""
+    return execution_ref is not None and execution_ref.startswith(EXTERNAL_DISPATCH_RESERVATION_PREFIX)
 
 
 def record_matches_filters(

@@ -177,7 +177,7 @@ async def test_sqlspec_backend_migration_derives_names_from_custom_queue_table()
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_create_queue_tasks.py", "0002_add_task_expiration.py"]
+    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
     migration_content = paths[0].read_text()
     assert "create_queue_store" in migration_content
     assert "create_maintenance_store" in migration_content
@@ -186,22 +186,17 @@ async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     assert "CREATE TABLE IF NOT EXISTS queue_task" not in migration_content
 
 
-async def test_sqlspec_backend_fresh_migration_chain_adds_expiration_once() -> "None":
-    """The historical create migration and expiration upgrade compose on a fresh database."""
-    create_migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
-    expiration_migration = importlib.import_module(
-        "litestar_queues.backends.sqlspec.migrations.0002_add_task_expiration"
-    )
+async def test_sqlspec_backend_initial_migration_includes_expiration() -> "None":
+    """The initial migration creates the expiration column on a fresh database."""
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(config=_fake_adapter_config("aiosqlite", dialect="sqlite"))
 
-    create_statements = await create_migration.up(context)
-    expiration_statements = await expiration_migration.up(context)
+    statements = await migration.up(context)
 
-    assert "expires_at" not in create_statements[0]
-    assert sum("ADD COLUMN" in statement and "expires_at" in statement for statement in expiration_statements) == 1
+    assert "expires_at" in statements[0]
 
     with sqlite3.connect(":memory:") as connection:
-        for statement in (*create_statements, *expiration_statements):
+        for statement in statements:
             connection.executescript(statement)
         columns = connection.execute("PRAGMA table_info(queue_task)").fetchall()
 

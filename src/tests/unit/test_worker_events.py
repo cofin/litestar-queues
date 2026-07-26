@@ -242,6 +242,37 @@ async def test_expire_overdue_tasks_emits_one_expired_event_per_record() -> "Non
     assert all(event.payload["expires_at"] == expires_at.isoformat() for event in sink.events)
 
 
+async def test_worker_claim_reports_task_that_expires_after_enqueue() -> "None":
+    sink = InMemoryQueueEventSink()
+    queue_backend = InMemoryQueueBackend()
+
+    @task("tasks.claim_time_expiry")
+    async def claim_time_expiry() -> "None":
+        return None
+
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        ),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(claim_time_expiry, expires_in=0.2)
+        await asyncio.sleep(0.25)
+
+        claimed = await Worker(service, WorkerConfig(id="claim-worker")).run_once()
+        stored = await queue_backend.get_task(result.id)
+
+    assert claimed == 0
+    assert stored is not None
+    assert stored.status == "expired"
+    assert [event.type for event in sink.events] == ["task.expired"]
+    assert sink.events[0].task_id == str(result.id)
+    assert sink.events[0].worker_id == "claim-worker"
+
+
 async def test_log_success_suppresses_success_python_log_but_keeps_lifecycle_events(
     caplog: "pytest.LogCaptureFixture",
 ) -> "None":

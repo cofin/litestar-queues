@@ -20,6 +20,7 @@ from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
+from tests.integration._expiry_contract import assert_claim_many_preserves_expired_dispatch_reservation
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -186,6 +187,10 @@ async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBa
     assert [record.id for record in claimed] == [available.id]
     assert stored is not None
     assert stored.status == "expired"
+
+
+async def test_claim_many_preserves_expired_dispatch_reservation(backend: "EphemeralQueueBackend") -> "None":
+    await assert_claim_many_preserves_expired_dispatch_reservation(backend)
 
 
 async def test_expire_overdue_is_bounded_idempotent_and_terminal(backend: "EphemeralQueueBackend") -> "None":

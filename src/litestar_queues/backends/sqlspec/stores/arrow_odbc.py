@@ -67,10 +67,6 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
         """Return SQL Server queue artifacts for Arrow ODBC."""
         return self._append_task_key_index(super().create_statements())
 
-    def create_initial_statements(self) -> "list[str]":
-        """Return historical pre-expiration SQL Server artifacts for Arrow ODBC."""
-        return self._append_task_key_index(super().create_initial_statements())
-
     def _append_task_key_index(self, statements: "list[str]") -> "list[str]":
         if not statements:
             return []

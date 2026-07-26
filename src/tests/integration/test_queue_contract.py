@@ -659,6 +659,16 @@ async def test_backend_contract_expire_overdue_transitions_and_reports(
     await assert_expire_overdue_transitions_and_reports(queue_backend)
 
 
+async def test_backend_contract_claim_many_reports_owned_expirations(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "expiry" not in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise expiry support")
+    from tests.integration._expiry_contract import assert_claim_many_reports_owned_expirations
+
+    await assert_claim_many_reports_owned_expirations(queue_backend)
+
+
 async def test_backend_contract_expiry_fences_retry_requeue(
     queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
 ) -> "None":
@@ -687,3 +697,13 @@ async def test_backend_contract_external_dispatch_reservation_is_fenced(
     from tests.integration._expiry_contract import assert_external_dispatch_reservation_is_fenced
 
     await assert_external_dispatch_reservation_is_fenced(queue_backend)
+
+
+async def test_backend_contract_finalized_dispatch_claims_after_queue_deadline(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if "expiry" not in queue_backend_case.capabilities:
+        pytest.skip(f"{queue_backend_case.name}: backend does not advertise expiry support")
+    from tests.integration._expiry_contract import assert_finalized_dispatch_claims_after_queue_deadline
+
+    await assert_finalized_dispatch_claims_after_queue_deadline(queue_backend)

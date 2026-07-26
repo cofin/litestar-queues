@@ -1605,6 +1605,13 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
     ) -> 'list["QueuedTaskRecord"]':
         return await BaseQueueBackend.claim_many(self, limit=limit, queues=queues, execution_backend=execution_backend)
 
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> 'tuple[list["QueuedTaskRecord"], list["QueuedTaskRecord"]]':
+        return await BaseQueueBackend.claim_many_with_expired(
+            self, limit=limit, queues=queues, execution_backend=execution_backend
+        )
+
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":

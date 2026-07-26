@@ -18,6 +18,7 @@ from litestar_queues.backends.advanced_alchemy.repository import (
     QueueTaskReservationRepository,
 )
 from litestar_queues.backends.base import (
+    EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     record_matches_filters,
     stale_requeue_error,
@@ -345,6 +346,13 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return _coerce_datetime(result.scalar())
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(task_id)
+        return claimed
+
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and identify a claim-time expiry owned by this call."""
         now = _utc_now()
         model_type = self.model_type
         result = await self.repository.session.execute(
@@ -353,28 +361,67 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 model_type.id == task_id,
                 model_type.status.in_(_DUE_STATUSES),
                 or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
-                or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+                or_(
+                    model_type.expires_at.is_(None), model_type.expires_at > now, model_type.execution_ref.is_not(None)
+                ),
+                or_(
+                    model_type.execution_ref.is_(None),
+                    model_type.execution_ref.not_like(f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%"),
+                ),
             )
             .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
         )
         if result.rowcount != 1:
-            await self.repository.session.execute(
+            ownership_token = f"__litestar_queues_expiry__:{uuid4()}"
+            expire_result = await self.repository.session.execute(
                 update(model_type)
                 .where(
                     model_type.id == task_id,
                     model_type.status.in_(_DUE_STATUSES),
+                    model_type.execution_ref.is_(None),
                     model_type.expires_at.is_not(None),
                     model_type.expires_at <= now,
                 )
                 .values(
                     _update_values(
-                        model_type, {"status": "expired", "completed_at": now, "heartbeat_at": None}, now=now
+                        model_type,
+                        {
+                            "status": "expired",
+                            "completed_at": now,
+                            "heartbeat_at": None,
+                            "execution_ref": ownership_token,
+                        },
+                        now=now,
                     )
                 )
+                .execution_options(synchronize_session=False)
             )
-            return None
+            if getattr(expire_result, "rowcount", None) == 0:
+                return None, None
+            model = (
+                (
+                    await self.repository.session.execute(
+                        select(model_type)
+                        .where(model_type.id == task_id, model_type.execution_ref == ownership_token)
+                        .execution_options(populate_existing=True)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if model is None:
+                return None, None
+            await self.repository.session.execute(
+                update(model_type)
+                .where(model_type.id == task_id, model_type.execution_ref == ownership_token)
+                .values(execution_ref=None)
+                .execution_options(synchronize_session=False)
+            )
+            expired = self.record_from_model(model)
+            expired.execution_ref = None
+            return None, expired
         model = await self._select_task(task_id)
-        return self.record_from_model(model) if model is not None else None
+        return (self.record_from_model(model) if model is not None else None), None
 
     async def claim_next(self, *, queue: "str | None", execution_backend: "str | None") -> "QueuedTaskRecord | None":
         if _supports_skip_locked_claim(self._dialect_name()):
@@ -416,6 +463,36 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 break
             records.append(claimed)
         return records
+
+    async def claim_many_with_expired(
+        self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and report all expiry transitions owned by this transaction."""
+        if limit <= 0:
+            return [], []
+        expired = await self.expire_overdue()
+        claimed: "list[QueuedTaskRecord]" = []
+        seen: "set[UUID]" = set()
+        while len(claimed) < limit:
+            pending_limit = max(_CAS_CLAIM_BATCH_SIZE, limit - len(claimed))
+            pending = await self.list_pending(limit=pending_limit, queue=queue, execution_backend=execution_backend)
+            candidates = [record for record in pending if record.id not in seen]
+            if not candidates:
+                break
+            for candidate in candidates:
+                seen.add(candidate.id)
+                claimed_record, expired_record = await self.claim_task_with_expired(candidate.id)
+                if expired_record is not None:
+                    expired.append(expired_record)
+                if claimed_record is not None:
+                    claimed.append(claimed_record)
+                    if len(claimed) >= limit:
+                        break
+            if len(pending) < pending_limit:
+                break
+        expired.extend(await self.expire_overdue())
+        unique_expired = {record.id: record for record in expired}
+        return claimed, list(unique_expired.values())
 
     async def _claim_next_skip_locked(
         self, *, queue: "str | None", execution_backend: "str | None"
@@ -468,6 +545,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 model_type.status.in_(_DUE_STATUSES),
                 or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
                 or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+                or_(
+                    model_type.execution_ref.is_(None),
+                    model_type.execution_ref.not_like(f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%"),
+                ),
             )
             .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
             .execution_options(synchronize_session=False)
@@ -965,6 +1046,36 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
 
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(model_type.id == task_id, model_type.execution_ref == reservation_ref)
+            .values(
+                _update_values(
+                    model_type,
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": execution_ref,
+                    },
+                )
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None"
     ) -> "QueuedTaskRecord | None":
@@ -1186,6 +1297,10 @@ def _build_claim_candidate_statement(
         model_type.status.in_(_DUE_STATUSES),
         or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
         or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+        or_(
+            model_type.execution_ref.is_(None),
+            model_type.execution_ref.not_like(f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%"),
+        ),
     ]
     if queue is not None:
         criteria.append(model_type.queue == queue)

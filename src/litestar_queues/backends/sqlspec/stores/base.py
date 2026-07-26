@@ -10,6 +10,7 @@ from sqlspec.data_dictionary import get_dialect_config
 from sqlspec.utils.serializers import from_json, to_json
 from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
+from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
@@ -154,12 +155,6 @@ class SQLSpecQueueStore:
             return []
         return [self._create_table_sql(), *self._create_index_statements()]
 
-    def create_initial_statements(self) -> "list[str]":
-        """Return the historical pre-expiration queue schema."""
-        if not self._manage_schema:
-            return []
-        return [self._create_initial_table_sql(), *self._create_index_statements(include_expiration=False)]
-
     def drop_statements(self) -> "list[str]":
         """Return statements that drop queue artifacts."""
         if not self._manage_schema:
@@ -265,6 +260,7 @@ class SQLSpecQueueStore:
             status_col = self._quoted_col("status")
             scheduled_col = self._quoted_col("scheduled_at")
             expires_col = self._quoted_col("expires_at")
+            execution_ref_col = self._quoted_col("execution_ref")
             queue_col = self._quoted_col("queue")
             eb_col = self._quoted_col("execution_backend")
             priority_col = self._quoted_col("priority")
@@ -273,6 +269,7 @@ class SQLSpecQueueStore:
                 f"{status_col} IN ('pending', 'scheduled')",
                 f"({scheduled_col} IS NULL OR {scheduled_col} <= :now)",
                 f"({expires_col} IS NULL OR {expires_col} > :expires_now)",
+                (f"({execution_ref_col} IS NULL OR {execution_ref_col} NOT LIKE :reservation_prefix)"),
             ]
             if queue_count:
                 placeholders = ", ".join(f":queue_{index}" for index in range(queue_count))
@@ -381,6 +378,10 @@ class SQLSpecQueueStore:
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :now", now=now)
             .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_now", expires_now=now)
+            .where(
+                f"{self._col('execution_ref')} IS NULL OR {self._col('execution_ref')} NOT LIKE :reservation_prefix",
+                reservation_prefix=f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%",
+            )
         )
         if queue is not None:
             statement = statement.where_eq(self._col("queue"), queue)
@@ -435,8 +436,13 @@ class SQLSpecQueueStore:
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :due_at", due_at=due_at)
             .where(
-                f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_due_at",
+                f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_due_at "
+                f"OR {self._col('execution_ref')} IS NOT NULL",
                 expires_due_at=due_at,
+            )
+            .where(
+                f"{self._col('execution_ref')} IS NULL OR {self._col('execution_ref')} NOT LIKE :reservation_prefix",
+                reservation_prefix=f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%",
             )
         )
 
@@ -464,6 +470,10 @@ class SQLSpecQueueStore:
             .where(
                 f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_due_at",
                 expires_due_at=due_at,
+            )
+            .where(
+                f"{self._col('execution_ref')} IS NULL OR {self._col('execution_ref')} NOT LIKE :reservation_prefix",
+                reservation_prefix=f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%",
             )
         )
 
@@ -496,6 +506,32 @@ class SQLSpecQueueStore:
                 expires_before=now,
             )
         )
+
+    def expire_task_owned(
+        self, *, task_id: "str", now: "DatetimeParam", ownership_ref: "str", expected_execution_ref: "str | None"
+    ) -> "Update":
+        """Return a fenced single-record expiry update with reporting ownership."""
+        statement = (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "status": "expired",
+                    "completed_at": now,
+                    "heartbeat_at": None,
+                    "execution_ref": ownership_ref,
+                })
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(
+                f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before",
+                expires_before=now,
+            )
+        )
+        if expected_execution_ref is None:
+            return statement.where(f"{self._col('execution_ref')} IS NULL")
+        return statement.where_eq(self._col("execution_ref"), expected_execution_ref)
 
     def expire_tasks(self, *, task_ids: "Sequence[str]", now: "DatetimeParam", ownership_ref: "str") -> "Update":
         """Return one fenced update transitioning overdue records to expired."""
@@ -828,6 +864,30 @@ RETURNING {target}.{id_col} AS id
                     "execution_backend": execution_backend,
                     "execution_profile": execution_profile,
                     "execution_ref": None,
+                })
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("execution_ref"), reservation_ref)
+        )
+
+    def finalize_external_dispatch(
+        self,
+        *,
+        task_id: "str",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_profile: "str | None",
+        execution_ref: "str",
+    ) -> "Update":
+        """Return a compare-and-set external-dispatch finalization update."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "execution_backend": execution_backend,
+                    "execution_profile": execution_profile,
+                    "execution_ref": execution_ref,
                 })
             )
             .where_eq(self._col("id"), task_id)

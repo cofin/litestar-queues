@@ -1,10 +1,14 @@
+import asyncio
 import logging
+import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import BaseExecutionBackend
@@ -25,7 +29,8 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
 _TASK_ID_ENV_SUFFIX = "TASK_ID"
-_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
+_DISPATCH_RESERVATION_LEASE_SECONDS = 15 * 60
+_DISPATCH_OWNERSHIP_LOST_ERROR = "Cloud Run dispatch reservation ownership was lost before finalization"
 _HTTP_NOT_FOUND = 404
 logger = logging.getLogger(__name__)
 
@@ -99,7 +104,9 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         attributes["messaging.message.id"] = str(record.id)
         metric_attributes = _queue_metric_attributes(attributes)
         span = runtime.start_span("litestar_queues.dispatch", kind="producer", attributes=attributes)
-        reservation_ref = f"{_DISPATCH_RESERVATION_PREFIX}{uuid4()}"
+        reservation_ref = (
+            f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}{int(time.time() + _DISPATCH_RESERVATION_LEASE_SECONDS)}:{uuid4()}"
+        )
         queue_backend = service.get_queue_backend()
         reserved = await queue_backend.reserve_external_dispatch(
             record.id, "cloudrun", reservation_ref, execution_profile=record.execution_profile
@@ -116,6 +123,18 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             client = await self._get_jobs_client()
             operation = await client.run_job(request=request)
             execution_ref = _require_operation_execution_ref(operation)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await asyncio.shield(
+                    queue_backend.release_external_dispatch(
+                        record.id, reservation_ref, record.execution_backend, execution_profile=record.execution_profile
+                    )
+                )
+            runtime.record_counter(
+                "litestar_queues.execution.dispatch",
+                attributes={**metric_attributes, "queue.execution.status": "cancelled"},
+            )
+            raise
         except Exception as exc:
             runtime.record_exception(span, exc)
             await self._publish_dispatch_failure(service, record, exc)
@@ -140,9 +159,15 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         finally:
             runtime.end_span(span)
 
-        await queue_backend.set_execution_ref(
-            record.id, "cloudrun", execution_ref, execution_profile=record.execution_profile
+        finalized = await queue_backend.finalize_external_dispatch(
+            record.id, reservation_ref, "cloudrun", execution_ref, execution_profile=record.execution_profile
         )
+        if finalized is None:
+            runtime.record_counter(
+                "litestar_queues.execution.dispatch",
+                attributes={**metric_attributes, "queue.execution.status": "ownership_lost"},
+            )
+            raise RuntimeError(_DISPATCH_OWNERSHIP_LOST_ERROR)
         runtime.record_counter(
             "litestar_queues.execution.dispatch",
             attributes={**metric_attributes, "queue.execution.status": "dispatched"},
@@ -155,9 +180,11 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         Returns:
             The terminal queue record when reconciliation completed it.
         """
-        if record.execution_ref is None or record.execution_ref.startswith(_DISPATCH_RESERVATION_PREFIX):
+        if record.execution_ref is None:
             return None
         queue_backend = service.get_queue_backend()
+        if record.execution_ref.startswith(EXTERNAL_DISPATCH_RESERVATION_PREFIX):
+            return await self._recover_dispatch_reservation(service, record)
         current = await queue_backend.get_task(record.id) or record
         if current.is_terminal:
             return None
@@ -213,6 +240,21 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             return updated
 
         return None
+
+    async def _recover_dispatch_reservation(
+        self, service: "QueueService", record: "QueuedTaskRecord"
+    ) -> "QueuedTaskRecord | None":
+        """Release an elapsed dispatch lease and expire its task when overdue."""
+        execution_ref = record.execution_ref
+        if execution_ref is None or not _dispatch_reservation_is_stale(execution_ref):
+            return None
+        released = await service.get_queue_backend().release_external_dispatch(
+            record.id, execution_ref, record.execution_backend, execution_profile=record.execution_profile
+        )
+        if released is None:
+            return None
+        expired = await service.expire_overdue_tasks()
+        return next((candidate for candidate in expired if candidate.id == record.id), None)
 
     async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> "bool":
         """Cloud Run Jobs do not expose per-execution cancellation here.
@@ -344,6 +386,18 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
                 exc_info=True,
                 extra={"queue_task_id": str(record.id)},
             )
+
+
+def _dispatch_reservation_is_stale(execution_ref: "str") -> "bool":
+    """Return whether a dispatch reservation lease has elapsed."""
+    payload = execution_ref.removeprefix(EXTERNAL_DISPATCH_RESERVATION_PREFIX)
+    deadline, separator, _ = payload.partition(":")
+    if not separator:
+        return True
+    try:
+        return float(deadline) <= time.time()
+    except ValueError:
+        return True
 
 
 def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":

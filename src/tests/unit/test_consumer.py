@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from uuid import UUID
 
-    from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult
+    from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord
     from litestar_queues.service import QueueService
 
 pytestmark = pytest.mark.anyio
@@ -80,6 +80,14 @@ class _MultiTouchRecordingBackend(InMemoryQueueBackend):
         return await super().touch_heartbeats(touches)
 
 
+class _DelayedClaimBackend(InMemoryQueueBackend):
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        await asyncio.sleep(0.1)
+        return await super().claim_task_with_expired(task_id)
+
+
 async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.consumer import TaskExitCode, consume_one
@@ -102,6 +110,69 @@ async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     assert exit_code == TaskExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
+
+
+async def test_consume_one_publishes_expiration_when_deadline_crosses_during_claim() -> "None":
+    from litestar_queues import (
+        EventDeliveryConfig,
+        InMemoryQueueEventSink,
+        QueueConfig,
+        QueueEventsConfig,
+        QueueService,
+        task,
+    )
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    @task("tasks.consumer_claim_expiry")
+    async def consumer_claim_expiry() -> "None":
+        return None
+
+    sink = InMemoryQueueEventSink()
+    queue_backend = _DelayedClaimBackend()
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="cloudrun",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        ),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(consumer_claim_expiry.using(execution_backend="cloudrun"), expires_in=0.05)
+        exit_code = await consume_one(service, result.id)
+        stored = await queue_backend.get_task(result.id)
+
+    assert exit_code == TaskExitCode.CLAIM_LOST
+    assert stored is not None
+    assert stored.status == "expired"
+    assert [event.type for event in sink.events] == ["task.expired"]
+
+
+async def test_consume_one_claims_dispatched_record_after_queue_deadline() -> "None":
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    @task("tasks.consumer_dispatched_before_expiry")
+    async def consumer_dispatched_before_expiry() -> "str":
+        return "completed"
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(
+            consumer_dispatched_before_expiry.using(execution_backend="cloudrun"), expires_in=0.5
+        )
+        await queue_backend.set_execution_ref(result.id, "cloudrun", "operations/accepted-before-deadline")
+        await asyncio.sleep(0.55)
+
+        exit_code = await consume_one(service, result.id)
+        await result.refresh()
+
+    assert exit_code == TaskExitCode.SUCCESS
+    assert result.status == "completed"
+    assert result.result == "completed"
 
 
 async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":

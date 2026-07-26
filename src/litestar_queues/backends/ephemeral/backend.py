@@ -18,6 +18,7 @@ from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    is_external_dispatch_reservation,
     record_matches_filters,
     stale_requeue_error,
     stale_requeue_priority,
@@ -398,34 +399,44 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 values.append(execution_backend)
             sql += " ORDER BY priority DESC, created_at ASC LIMIT ?"
             values.append(limit)
-            return _decode_all(connection.execute(sql, values).fetchall())
+            return [
+                record
+                for record in _decode_all(connection.execute(sql, values).fetchall())
+                if not is_external_dispatch_reservation(record.execution_ref)
+            ]
 
         return await self._run(operation)
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
-        """Transition one due record to running.
+        claimed, _ = await self.claim_task_with_expired(task_id)
+        return claimed
 
-        Returns:
-            The claimed record, or ``None`` when it was not claimable.
-        """
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and return an expiry transitioned in the transaction."""
 
-        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
-                return None
+                return None, None
             record = _decode(row)
-            if record.status not in _ACTIVE_STATUSES or not record.is_due:
-                return None
+            if (
+                record.status not in _ACTIVE_STATUSES
+                or not record.is_due
+                or is_external_dispatch_reservation(record.execution_ref)
+            ):
+                return None, None
             now = _utc_now()
-            if record.expires_at is not None and record.expires_at <= now:
+            if record.execution_ref is None and record.expires_at is not None and record.expires_at <= now:
                 _expire_record(record, now)
                 _write(connection, record)
-                return None
+                return None, record
             record.status = "running"
             record.started_at = now
             record.heartbeat_at = now
             _write(connection, record)
-            return record
+            return record, None
 
         return await self._transaction(operation)
 
@@ -437,16 +448,30 @@ class EphemeralQueueBackend(BaseQueueBackend):
         Returns:
             Claimed task records in claim order.
         """
-        if limit <= 0:
-            return []
+        claimed, _ = await self.claim_many_with_expired(limit=limit, queues=queues, execution_backend=execution_backend)
+        return claimed
 
-        def operation(connection: "sqlite3.Connection") -> "list[QueuedTaskRecord]":
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and return overdue records expired in the transaction."""
+        if limit <= 0:
+            return [], []
+
+        def operation(connection: "sqlite3.Connection") -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
             now = _utc_now()
             expired_rows = connection.execute(
                 "SELECT payload FROM queue_task WHERE status IN (?, ?) AND expires_at IS NOT NULL AND expires_at <= ?",
                 (*_ACTIVE_STATUSES, _iso(now)),
             ).fetchall()
-            for record in _decode_all(expired_rows):
+            expired = [
+                record
+                for record in _decode_all(expired_rows)
+                if not is_external_dispatch_reservation(record.execution_ref)
+                and (not queues or record.queue in queues)
+                and (execution_backend is None or record.execution_backend == execution_backend)
+            ]
+            for record in expired:
                 _expire_record(record, now)
                 _write(connection, record)
             sql = (
@@ -465,12 +490,14 @@ class EphemeralQueueBackend(BaseQueueBackend):
             claimed: "list[QueuedTaskRecord]" = []
             for row in connection.execute(sql, values).fetchall():
                 record = _decode(row)
+                if is_external_dispatch_reservation(record.execution_ref):
+                    continue
                 record.status = "running"
                 record.started_at = now
                 record.heartbeat_at = now
                 _write(connection, record)
                 claimed.append(record)
-            return claimed
+            return claimed, expired
 
         return await self._transaction(operation)
 
@@ -556,6 +583,30 @@ class EphemeralQueueBackend(BaseQueueBackend):
         if record is not None:
             await self.notify_new_task(record)
         return record
+
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = execution_ref
+            _write(connection, record)
+            return record
+
+        return await self._transaction(operation)
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None

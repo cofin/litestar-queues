@@ -17,10 +17,13 @@ pytest.importorskip("valkey")
 from litestar_queues import TaskRequest
 from litestar_queues.models import HeartbeatTouch
 from tests.integration._expiry_contract import (
+    assert_claim_many_preserves_expired_dispatch_reservation,
+    assert_claim_many_reports_owned_expirations,
     assert_expire_overdue_transitions_and_reports,
     assert_expired_claim_is_fenced,
     assert_expiry_fences_retry_requeue,
     assert_external_dispatch_reservation_is_fenced,
+    assert_finalized_dispatch_claims_after_queue_deadline,
     assert_future_deadline_is_claimable,
 )
 
@@ -38,6 +41,10 @@ async def test_valkey_expire_overdue_transitions_and_reports(valkey_backend: "Va
     await assert_expire_overdue_transitions_and_reports(valkey_backend)
 
 
+async def test_valkey_claim_many_reports_owned_expirations(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_claim_many_reports_owned_expirations(valkey_backend)
+
+
 async def test_valkey_expiry_fences_retry_requeue(valkey_backend: "ValkeyQueueBackend") -> "None":
     await assert_expiry_fences_retry_requeue(valkey_backend)
 
@@ -48,6 +55,14 @@ async def test_valkey_future_deadline_is_claimable(valkey_backend: "ValkeyQueueB
 
 async def test_valkey_external_dispatch_reservation_is_fenced(valkey_backend: "ValkeyQueueBackend") -> "None":
     await assert_external_dispatch_reservation_is_fenced(valkey_backend)
+
+
+async def test_valkey_claim_many_preserves_expired_dispatch_reservation(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_claim_many_preserves_expired_dispatch_reservation(valkey_backend)
+
+
+async def test_valkey_finalized_dispatch_claims_after_queue_deadline(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_finalized_dispatch_claims_after_queue_deadline(valkey_backend)
 
 
 async def test_valkey_backend_keeps_claim_fallback_without_batch_capability(
