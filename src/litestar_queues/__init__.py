@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     )
     from litestar_queues.background import QueuedBackgroundTask
     from litestar_queues.config import (
-        AsyncServiceProvider,
         ExecutionBackendConfig,
         ExecutionBackendConfigProtocol,
         QueueBackendConfig,
@@ -108,7 +107,6 @@ if TYPE_CHECKING:
     from litestar_queues.worker import Worker
 
 __all__ = (
-    "AsyncServiceProvider",
     "BaseExecutionBackend",
     "BaseQueueBackend",
     "CloudRunExecutionBackend",
@@ -198,7 +196,6 @@ __all__ = (
 )
 
 _EXPORTS = {
-    "AsyncServiceProvider": "litestar_queues.config",
     "BaseExecutionBackend": "litestar_queues.execution",
     "BaseQueueBackend": "litestar_queues.backends",
     "CloudRunExecutionBackend": "litestar_queues.execution",

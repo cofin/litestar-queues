@@ -2,7 +2,7 @@
 
 from typing import ClassVar
 
-from litestar_queues.backends.sqlspec.stores._families import PostgresQueueStore
+from litestar_queues.backends.sqlspec.stores._dialects import PostgresQueueStore
 
 __all__ = ("PsycopgAsyncQueueStore", "PsycopgSyncQueueStore")
 

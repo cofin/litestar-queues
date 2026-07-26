@@ -13,7 +13,7 @@ from sqlspec import sql
 from sqlspec.utils.text import split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.schema import task_reservation_table_name_for, validate_table_name
-from litestar_queues.backends.sqlspec.stores._families import _NVARCHAR_MAX_THRESHOLD, _quote_tsql_identifier
+from litestar_queues.backends.sqlspec.stores._dialects import _NVARCHAR_MAX_THRESHOLD, _quote_tsql_identifier
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 
 if TYPE_CHECKING:

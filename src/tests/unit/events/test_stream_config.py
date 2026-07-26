@@ -33,16 +33,18 @@ def test_event_stream_config_type_hints_resolve() -> "None":
 
 
 def test_queue_config_carries_stream_config() -> "None":
+    import litestar_queues
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventStreamConfig
 
     config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
 
     assert config.events is None
-    assert config.signature_namespace["EventStreamConfig"] is EventStreamConfig
+    assert litestar_queues.EventStreamConfig is EventStreamConfig
 
 
 def test_queue_config_sub_config_field_defaults() -> "None":
+    import litestar_queues
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventDeliveryConfig, EventHistoryConfig
     from litestar_queues.observability import ObservabilityConfig
@@ -53,9 +55,9 @@ def test_queue_config_sub_config_field_defaults() -> "None":
     assert config.events is None
     assert config.observability is None
     assert EventHistoryConfig().memory_capacity == 1000
-    assert config.signature_namespace["EventDeliveryConfig"] is EventDeliveryConfig
-    assert config.signature_namespace["EventHistoryConfig"] is EventHistoryConfig
-    assert config.signature_namespace["ObservabilityConfig"] is ObservabilityConfig
+    assert litestar_queues.EventDeliveryConfig is EventDeliveryConfig
+    assert litestar_queues.EventHistoryConfig is EventHistoryConfig
+    assert ObservabilityConfig is not None
     assert {"events", "observability"}.issubset(field_names)
     assert {"event", "event_stream", "event_log"}.isdisjoint(field_names)
 

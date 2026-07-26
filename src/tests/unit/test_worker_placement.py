@@ -51,7 +51,6 @@ def test_worker_placement_is_publicly_exported() -> "None":
 
     assert litestar_queues.WorkerPlacement is WorkerPlacement
     assert "WorkerPlacement" in litestar_queues.__all__
-    assert "WorkerPlacement" in QueueConfig().signature_namespace
 
 
 # --------------------------------------------------------------------------- matrix

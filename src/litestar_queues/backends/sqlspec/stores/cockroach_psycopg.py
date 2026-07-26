@@ -1,6 +1,6 @@
 """cockroach_psycopg SQLSpec queue stores."""
 
-from litestar_queues.backends.sqlspec.stores._families import CockroachQueueStore
+from litestar_queues.backends.sqlspec.stores._dialects import CockroachQueueStore
 
 __all__ = ("CockroachPsycopgAsyncQueueStore", "CockroachPsycopgSyncQueueStore")
 

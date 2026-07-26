@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, get_ar
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from types import TracebackType
-
     from litestar.datastructures import State
 
     from litestar_queues.backends import BaseQueueBackend
@@ -24,7 +22,6 @@ if TYPE_CHECKING:
     from litestar_queues.typing import ChannelsLike
 
 __all__ = (
-    "AsyncServiceProvider",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
     "MigrationConfiguringBackend",
@@ -167,59 +164,6 @@ TaskDependencyResolver = Callable[
 
 TaskErrorSanitizer = Callable[["BaseException", "QueuedTaskRecord"], str]
 """User-supplied callable that converts task exceptions into persisted error messages."""
-
-
-class AsyncServiceProvider:
-    """Provides QueueService as an async context manager."""
-
-    __slots__ = ("_config", "_service")
-
-    def __init__(self, config: "QueueConfig") -> "None":
-        """Initialize the service provider.
-
-        Args:
-            config: Queue configuration.
-        """
-        self._config = config
-        self._service: "QueueService | None" = None
-
-    async def __aenter__(self) -> "QueueService":
-        """Enter the async context and return a QueueService.
-
-        Returns:
-            A managed QueueService instance.
-        """
-        from litestar_queues.service import QueueService
-
-        self._service = QueueService(self._config)
-        await self._service.__aenter__()
-        return self._service
-
-    async def __aexit__(
-        self,
-        exc_type: "type[BaseException] | None",  # noqa: PYI036
-        exc_val: "BaseException | None",  # noqa: PYI036
-        exc_tb: "TracebackType | None",  # noqa: PYI036
-    ) -> "None":
-        """Exit the async context and close the QueueService."""
-        if self._service is not None:
-            await self._service.__aexit__(exc_type, exc_val, exc_tb)
-            self._service = None
-
-    async def __aiter__(self) -> 'AsyncIterator["QueueService"]':
-        """Yield a managed QueueService for Litestar dependency injection.
-
-        Yields:
-            Managed queue service instance.
-        """
-        service = await self.__aenter__()
-        try:
-            yield service
-        except BaseException as exc:
-            await self.__aexit__(type(exc), exc, exc.__traceback__)
-            raise
-        else:
-            await self.__aexit__(None, None, None)
 
 
 @dataclass(slots=True)
@@ -429,174 +373,33 @@ class QueueConfig:
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":
-        """Names added to Litestar's signature namespace.
+        """Names Litestar must resolve that an application cannot supply itself.
 
-        Optional backends (advanced_alchemy, sqlspec, redis, valkey) are added
-        only when their driver extra is installed; missing extras silently drop
-        the corresponding entries.
+        This carries only the types named in this package's own dependency
+        providers. ``provide_service_dependency`` and
+        ``provide_event_producer_dependency`` annotate their return types as
+        strings while importing those types under ``TYPE_CHECKING``, so Litestar
+        needs them here to resolve the injected ``queue_service`` and
+        ``queue_events`` dependencies.
+
+        Nothing else belongs here. Config, backend, worker, and event types are
+        named in application setup code, not in handler signatures, and a
+        handler that does annotate one has already imported it. Registering the
+        whole public API instead made ``QueuePlugin.on_app_init`` import every
+        installed adapter on every application startup, which defeated the
+        package's lazy-import boundary and charged applications for extras they
+        never selected.
         """
         from litestar.di import NamedDependency
 
-        from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
-        from litestar_queues.events import (
-            ChannelAuthorizer,
-            CompositeQueueEventSink,
-            EventBufferConfig,
-            EventDeliveryConfig,
-            EventHistoryConfig,
-            EventStreamConfig,
-            EventStreamTransport,
-            InMemoryQueueEventSink,
-            NoopQueueEventSink,
-            QueueChannels,
-            QueueEvent,
-            QueueEventActor,
-            QueueEventEntityRef,
-            QueueEventLog,
-            QueueEventLogRecord,
-            QueueEventProducer,
-            QueueEventPublisher,
-            QueueEventsConfig,
-            QueueEventScope,
-            QueueEventSink,
-            QueueEventStageSummary,
-            QueueEventType,
-            TaskExecutionContext,
-            UnauthenticatedAccess,
-        )
-        from litestar_queues.exceptions import (
-            JobCancelledError,
-            NonRetryableError,
-            TaskIdentityError,
-            TaskIdentityTooLargeError,
-            job_cancelled,
-            non_retryable,
-        )
-        from litestar_queues.execution import (
-            BaseExecutionBackend,
-            CloudRunExecutionBackend,
-            CloudRunExecutionConfig,
-            CloudRunExecutionStatus,
-            ImmediateExecutionBackend,
-            LocalExecutionBackend,
-        )
-        from litestar_queues.maintenance import (
-            QueueMaintenanceConfig,
-            QueueMaintenancePhaseResult,
-            QueueMaintenanceService,
-            QueueMaintenanceSummary,
-        )
-        from litestar_queues.models import (
-            HeartbeatTouch,
-            HeartbeatTouchResult,
-            QueueBackendCapabilities,
-            QueuedTaskRecord,
-            QueueStatistics,
-            StaleTaskRecoveryResult,
-            TaskRequest,
-            TaskReservation,
-            TaskStatus,
-        )
-        from litestar_queues.observability import ObservabilityConfig
+        from litestar_queues.events import QueueEventProducer
         from litestar_queues.service import QueueService
-        from litestar_queues.task import ScheduleConfig, Task, TaskResult
-        from litestar_queues.worker import Worker
 
-        namespace: "dict[str, Any]" = {
-            "BaseExecutionBackend": BaseExecutionBackend,
-            "BaseQueueBackend": BaseQueueBackend,
-            "CloudRunExecutionBackend": CloudRunExecutionBackend,
-            "CloudRunExecutionConfig": CloudRunExecutionConfig,
-            "CloudRunExecutionStatus": CloudRunExecutionStatus,
-            "ChannelAuthorizer": ChannelAuthorizer,
-            "CompositeQueueEventSink": CompositeQueueEventSink,
-            "EventDeliveryConfig": EventDeliveryConfig,
-            "EventBufferConfig": EventBufferConfig,
-            "EventHistoryConfig": EventHistoryConfig,
-            "EventStreamConfig": EventStreamConfig,
-            "EventStreamTransport": EventStreamTransport,
-            "HeartbeatTouch": HeartbeatTouch,
-            "HeartbeatTouchResult": HeartbeatTouchResult,
-            "ImmediateExecutionBackend": ImmediateExecutionBackend,
-            "InMemoryQueueBackend": InMemoryQueueBackend,
-            "LocalExecutionBackend": LocalExecutionBackend,
+        return {
             "NamedDependency": NamedDependency,
-            "ObservabilityConfig": ObservabilityConfig,
-            "JobCancelledError": JobCancelledError,
-            "NonRetryableError": NonRetryableError,
-            "NoopQueueEventSink": NoopQueueEventSink,
-            "InMemoryQueueEventSink": InMemoryQueueEventSink,
-            "ExecutionBackendConfig": ExecutionBackendConfig,
-            "QueueChannels": QueueChannels,
-            "QueueConfig": QueueConfig,
-            "QueueBackendCapabilities": QueueBackendCapabilities,
-            "QueueBackendConfig": QueueBackendConfig,
-            "QueueBackendConfigProtocol": QueueBackendConfigProtocol,
-            "QueueEvent": QueueEvent,
-            "QueueEventActor": QueueEventActor,
-            "QueueEventEntityRef": QueueEventEntityRef,
-            "QueueEventLog": QueueEventLog,
-            "QueueEventLogRecord": QueueEventLogRecord,
             "QueueEventProducer": QueueEventProducer,
-            "QueueEventPublisher": QueueEventPublisher,
-            "QueueEventScope": QueueEventScope,
-            "QueueEventSink": QueueEventSink,
-            "QueueEventStageSummary": QueueEventStageSummary,
-            "QueueEventType": QueueEventType,
-            "QueueEventsConfig": QueueEventsConfig,
-            "QueueMaintenanceConfig": QueueMaintenanceConfig,
-            "QueueMaintenancePhaseResult": QueueMaintenancePhaseResult,
-            "QueueMaintenanceService": QueueMaintenanceService,
-            "QueueMaintenanceSummary": QueueMaintenanceSummary,
-            "QueuedTaskRecord": QueuedTaskRecord,
             "QueueService": QueueService,
-            "QueueStatistics": QueueStatistics,
-            "ScheduleConfig": ScheduleConfig,
-            "StaleTaskRecoveryResult": StaleTaskRecoveryResult,
-            "Task": Task,
-            "TaskIdentityError": TaskIdentityError,
-            "TaskIdentityTooLargeError": TaskIdentityTooLargeError,
-            "TaskRequest": TaskRequest,
-            "TaskReservation": TaskReservation,
-            "TaskStatus": TaskStatus,
-            "TaskDependencyResolver": TaskDependencyResolver,
-            "TaskErrorSanitizer": TaskErrorSanitizer,
-            "ExecutionBackendConfigProtocol": ExecutionBackendConfigProtocol,
-            "TaskExecutionContext": TaskExecutionContext,
-            "TaskResult": TaskResult,
-            "Worker": Worker,
-            "WorkerConfig": WorkerConfig,
-            "WorkerPlacement": WorkerPlacement,
-            "UnauthenticatedAccess": UnauthenticatedAccess,
-            "job_cancelled": job_cancelled,
-            "non_retryable": non_retryable,
         }
-        with suppress(ImportError):
-            from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
-
-            namespace["SQLAlchemyBackend"] = SQLAlchemyBackend
-            namespace["SQLAlchemyBackendConfig"] = SQLAlchemyBackendConfig
-        with suppress(ImportError):
-            from litestar_queues.backends.sqlspec import (
-                SQLSpecBackendConfig,
-                SQLSpecQueueBackend,
-                SQLSpecWorkerWakeupConfig,
-            )
-
-            namespace["SQLSpecBackendConfig"] = SQLSpecBackendConfig
-            namespace["SQLSpecQueueBackend"] = SQLSpecQueueBackend
-            namespace["SQLSpecWorkerWakeupConfig"] = SQLSpecWorkerWakeupConfig
-        with suppress(ImportError):
-            from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
-
-            namespace["RedisBackendConfig"] = RedisBackendConfig
-            namespace["RedisQueueBackend"] = RedisQueueBackend
-        with suppress(ImportError):
-            from litestar_queues.backends.valkey import ValkeyBackendConfig, ValkeyQueueBackend
-
-            namespace["ValkeyBackendConfig"] = ValkeyBackendConfig
-            namespace["ValkeyQueueBackend"] = ValkeyQueueBackend
-        return namespace
 
     @property
     def dependencies(self) -> "dict[str, Any]":
@@ -694,14 +497,6 @@ class QueueConfig:
             publish_queue_channel=delivery.publish_queue_channel,
             publish_global_lifecycle=delivery.publish_global_lifecycle,
         )
-
-    def provide_service(self) -> "AsyncServiceProvider":
-        """Provide a QueueService instance as an async context manager.
-
-        Returns:
-            An async service provider.
-        """
-        return AsyncServiceProvider(self)
 
     async def provide_service_dependency(self, state: "State") -> 'AsyncIterator["QueueService"]':
         """Yield the application-scoped QueueService for Litestar dependency injection."""

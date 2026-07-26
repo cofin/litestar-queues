@@ -439,17 +439,18 @@ class Worker:
             self._record_counter("litestar_queues.expiry", {"queue.expiry.outcome": "expired"}, value=len(expired))
 
     async def _maybe_reconcile_external(self) -> "None":
+        # Check the local cadence before the fleet lock, matching the stale and
+        # expiry passes. Taking the lock first made every worker loop iteration
+        # write a coordination record only to discard it at the interval check.
+        if self._reconcile_interval > 0:
+            now = asyncio.get_running_loop().time()
+            if now - self._last_reconcile_at < self._reconcile_interval:
+                return
+            self._last_reconcile_at = now
         if not await self._service.get_queue_backend().acquire_worker_lock(
             "external_reconcile", ttl=timedelta(seconds=max(self._reconcile_interval, 1.0))
         ):
             return
-        if self._reconcile_interval <= 0:
-            await self.reconcile_external(limit=self._batch_size)
-            return
-        now = asyncio.get_running_loop().time()
-        if now - self._last_reconcile_at < self._reconcile_interval:
-            return
-        self._last_reconcile_at = now
         await self.reconcile_external(limit=self._batch_size)
 
     async def _drain_running(self) -> "bool":

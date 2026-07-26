@@ -1,4 +1,4 @@
-"""Shared SQLSpec queue store implementations for dialect families."""
+"""Shared SQLSpec queue store implementations, one per SQL dialect."""
 
 from typing import ClassVar, Literal
 

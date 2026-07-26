@@ -593,6 +593,21 @@ async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> 
     assert backend.list_running_external_limits == [7]
 
 
+async def test_worker_periodic_reconcile_does_not_take_the_fleet_lock_inside_cadence_window() -> "None":
+    backend = _LockingCountingInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service, WorkerConfig(reconcile_interval=3600.0))
+
+        await worker._maybe_reconcile_external()
+        await worker._maybe_reconcile_external()
+        await worker._maybe_reconcile_external()
+
+    assert backend.lock_calls == ["external_reconcile"]
+
+
 async def test_worker_periodic_reconcile_uses_backend_fleet_lock() -> "None":
     backend = _LockingCountingInMemoryQueueBackend()
     async with QueueService(
@@ -1762,6 +1777,11 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
     async def expire_overdue(self, *, limit: "int | None" = None) -> 'list["QueuedTaskRecord"]':
         self.expire_calls.append(limit)
         return await super().expire_overdue(limit=limit)
+
+    async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
+        """Always grant, so cadence tests measure cadence rather than fleet locking."""
+        del name, ttl
+        return True
 
 
 class _LockingCountingInMemoryQueueBackend(_CountingInMemoryQueueBackend):
