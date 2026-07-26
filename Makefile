@@ -57,11 +57,13 @@ install-uv:                                         ## Install latest version of
 	@echo "${OK} UV installed successfully 🎉"
 
 .PHONY: install
-install: clean                                      ## Install the project and dependencies for local development
+install: destroy clean setup-env                    ## Install the project, dependencies, and pre-commit for local development
 	@echo "${INFO} Starting fresh installation... ⚡"
+	@uv python pin $(PYTHON_VERSION) >/dev/null 2>&1
+	@uv venv >/dev/null 2>&1
 	@uv sync $(UV_SYNC_ARGS)
 	@$(MAKE) install-examples-assets
-	@echo "${OK} Installation complete 🎉"
+	@echo "${OK} Installation complete! 🎉"
 
 .PHONY: install-examples-assets
 install-examples-assets:                              ## Install frontend assets for bundled example apps
@@ -98,8 +100,9 @@ install-e2e:                                       ## Install browser E2E depend
 	@echo "${OK} Browser E2E dependencies installed 🎉"
 
 .PHONY: destroy
-destroy:                                            ## Destroy the virtual environment
+destroy:                                            ## Destroy virtual environment and clean caches
 	@echo "${INFO} Destroying virtual environment... 🗑️"
+	@uvx prek clean >/dev/null 2>&1 || true
 	@rm -rf .venv
 	@echo "${OK} Virtual environment destroyed 🗑️"
 
