@@ -5,7 +5,7 @@ repos:
     hooks:
       - id: no-future-annotations
         name: Disallow future annotations import
-        entry: python tools/no_future_annotations.py
+        entry: python tools/scripts/no_future_annotations.py
         language: python
         types_or: [python]
   - repo: https://github.com/compilerla/conventional-pre-commit
