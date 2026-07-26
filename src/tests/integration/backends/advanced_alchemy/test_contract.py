@@ -489,10 +489,11 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(
     )
     await backend.open()
     try:
-        waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=2.0))
-        # Give the dedicated LISTEN connection time to subscribe before the
-        # enqueue commits and publishes its notification.
-        await asyncio.sleep(0.2)
+        # Establish LISTEN and retain its native read before publishing.
+        assert await backend.wait_for_wakeups(timeout=0.01) is False
+        listener = cast("Any", backend._notification_listener)
+        assert listener is not None
+        waiter = asyncio.create_task(listener.wait(timeout=2.0))
         record = await backend.enqueue("tasks.pg.notify")
 
         assert await waiter is True
@@ -537,8 +538,7 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
         assert listener._pending_read.has_pending is True
 
         # A concurrent waiter reuses the retained read; the enqueue's NOTIFY wakes it.
-        waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=2.0))
-        await asyncio.sleep(0.1)
+        waiter = asyncio.create_task(listener.wait(timeout=2.0))
         await backend.enqueue("tasks.pg.reuse")
 
         assert await waiter is True

@@ -18,7 +18,10 @@ pytest.importorskip("redis")
 
 from litestar_queues import TaskRequest
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
+from litestar_queues.backends.redis import backend as redis_backend_module
 from litestar_queues.models import HeartbeatTouch
+from tests.helpers._timing import MutableClock
+from tests.helpers.redis_protocol import wait_for_channel_subscribers
 from tests.integration._expiry_contract import (
     assert_claim_many_preserves_expired_dispatch_reservation,
     assert_claim_many_reports_owned_expirations,
@@ -60,8 +63,13 @@ async def test_redis_external_dispatch_reservation_is_fenced(redis_backend: "Red
     await assert_external_dispatch_reservation_is_fenced(redis_backend)
 
 
-async def test_redis_claim_many_preserves_expired_dispatch_reservation(redis_backend: "RedisQueueBackend") -> "None":
-    await assert_claim_many_preserves_expired_dispatch_reservation(redis_backend)
+async def test_redis_claim_many_preserves_expired_dispatch_reservation(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr(redis_backend_module, "_utc_now", clock)
+
+    await assert_claim_many_preserves_expired_dispatch_reservation(redis_backend, clock)
 
 
 async def test_redis_finalized_dispatch_claims_after_queue_deadline(redis_backend: "RedisQueueBackend") -> "None":
@@ -391,7 +399,7 @@ async def test_redis_backend_complete_clears_heartbeat_and_publishes(redis_backe
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._completion_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(redis_backend, redis_backend._completion_channel)
 
     completed = await redis_backend.complete_task(record.id, result={"ok": True})
 
@@ -456,7 +464,7 @@ async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._wakeup_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(redis_backend, redis_backend._wakeup_channel)
 
     far = datetime.now(timezone.utc) + timedelta(minutes=5)
     record = await redis_backend.enqueue("tasks.future", scheduled_at=far)
@@ -476,7 +484,7 @@ async def test_redis_backend_enqueue_due_publishes_single_notification(redis_bac
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._wakeup_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(redis_backend, redis_backend._wakeup_channel)
 
     await redis_backend.enqueue("tasks.due")
     messages = await _drain_messages(pubsub, window=0.5)
@@ -489,7 +497,7 @@ async def test_redis_backend_enqueue_many_coalesces_single_notification(redis_ba
     client = cast("Any", await redis_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(redis_backend._wakeup_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(redis_backend, redis_backend._wakeup_channel)
 
     records = await redis_backend.enqueue_many([TaskRequest(task_name=f"tasks.batch.{index}") for index in range(5)])
     messages = await _drain_messages(pubsub, window=0.5)

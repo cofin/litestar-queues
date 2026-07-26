@@ -14,6 +14,7 @@ from litestar_queues.config import QueueConfig
 from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueChannels, QueueEvent, QueueEventsConfig
 from litestar_queues.events.streaming import build_stream_router
 from litestar_queues.exceptions import QueueConfigurationError
+from tests.helpers._timing import wait_until
 
 if TYPE_CHECKING:
     from litestar.handlers.websocket_handlers import WebsocketRouteHandler
@@ -109,8 +110,11 @@ async def test_task_stream_relays_from_channels_backend() -> None:
 
     async def publish() -> None:
         await socket.accepted.wait()
-        await asyncio.sleep(0.01)
-        await channels.publish(event.to_json(), [QueueChannels.task("task-1")])
+        channel = QueueChannels.task("task-1")
+        await wait_until(
+            lambda: channel in channels._channels, message=f"stream handler did not subscribe to {channel!r}"
+        )
+        await channels.publish(event.to_json(), [channel])
 
     await channels.on_startup()
     try:
@@ -138,8 +142,11 @@ async def test_task_stream_prefers_configured_channels_backend_to_connection_plu
 
     async def publish() -> None:
         await socket.accepted.wait()
-        await asyncio.sleep(0.01)
-        await configured_channels.publish(event.to_json(), [QueueChannels.task("task-1")])
+        channel = QueueChannels.task("task-1")
+        await wait_until(
+            lambda: channel in configured_channels._channels, message=f"stream handler did not subscribe to {channel!r}"
+        )
+        await configured_channels.publish(event.to_json(), [channel])
 
     await configured_channels.on_startup()
     await connection_channels.on_startup()

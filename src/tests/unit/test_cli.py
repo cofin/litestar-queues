@@ -26,7 +26,7 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture(autouse=True)
 def _evict_support_modules() -> "Iterator[None]":
-    """Force re-import of tests.support.* between tests so task_modules re-register cleanly.
+    """Force re-import of tests.helpers.support.* between tests so task_modules re-register cleanly.
 
     ``clean_task_registry`` (autouse, project conftest) clears the registry but
     ``load_task_modules`` short-circuits on ``_loaded_modules``; evicting
@@ -37,11 +37,11 @@ def _evict_support_modules() -> "Iterator[None]":
     """
     yield
     for name in list(sys.modules):
-        if name == "tests._factories.queue_tasks":
+        if name == "tests.helpers.queue_tasks":
             del sys.modules[name]
     from litestar_queues.task import _loaded_modules
 
-    _loaded_modules.discard("tests._factories.queue_tasks")
+    _loaded_modules.discard("tests.helpers.queue_tasks")
 
 
 def _runner_invoke(app_target: "str", args: "list[str]", monkeypatch: "pytest.MonkeyPatch") -> "Result":
@@ -59,7 +59,7 @@ def _runner_invoke(app_target: "str", args: "list[str]", monkeypatch: "pytest.Mo
 
 
 def test_litestar_queues_help_lists_subcommands(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "--help"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "run" in result.stdout
@@ -108,7 +108,7 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
     monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
     monkeypatch.setenv("LITESTAR_QUEUES_TASK_ID", str(task_id))
     try:
-        result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-task"], monkeypatch)
+        result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "run-task"], monkeypatch)
     finally:
         sys.modules.pop(factory_module.__name__, None)
 
@@ -165,7 +165,7 @@ def test_run_task_by_id_flag_runs_existing_record_without_env(monkeypatch: "pyte
         monkeypatch.delenv(name, raising=False)
     try:
         result = _runner_invoke(
-            "tests.support.cli_app:app",
+            "tests.helpers.support.cli_app:app",
             [
                 "queues",
                 "run-task",
@@ -210,7 +210,7 @@ def test_cli_module_exposes_public_command_callbacks() -> "None":
 
 
 def test_status_subcommand_default_table(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "status"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "status"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "pending" in result.stdout
@@ -219,7 +219,7 @@ def test_status_subcommand_default_table(monkeypatch: "pytest.MonkeyPatch") -> "
 
 
 def test_status_subcommand_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "status", "--json"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "status", "--json"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -229,7 +229,9 @@ def test_status_subcommand_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
 
 
 def test_status_subcommand_advisory_queue_filter(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "status", "--queue", "billing"], monkeypatch)
+    result = _runner_invoke(
+        "tests.helpers.support.cli_app:app", ["queues", "status", "--queue", "billing"], monkeypatch
+    )
 
     assert result.exit_code == 0, result.stderr
     assert "advisory" in result.stderr.lower()
@@ -237,28 +239,32 @@ def test_status_subcommand_advisory_queue_filter(monkeypatch: "pytest.MonkeyPatc
 
 def test_scheduler_health_returns_4_when_no_canary_runs(monkeypatch: "pytest.MonkeyPatch") -> "None":
     """Canary task is registered but never executed, so the health check is stale."""
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "scheduler-health", "--minutes", "5"], monkeypatch)
+    result = _runner_invoke(
+        "tests.helpers.support.cli_app:app", ["queues", "scheduler-health", "--minutes", "5"], monkeypatch
+    )
 
     assert result.exit_code == 4
     assert "stale" in result.stderr.lower()
 
 
 def test_scheduler_health_returns_3_when_canary_not_registered(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app_missing_canary:app", ["queues", "scheduler-health"], monkeypatch)
+    result = _runner_invoke(
+        "tests.helpers.support.cli_app_missing_canary:app", ["queues", "scheduler-health"], monkeypatch
+    )
 
     assert result.exit_code == 3
     assert "canary" in result.stderr.lower()
 
 
 def test_litestar_queues_help_lists_run_maintenance(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "--help"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "run-maintenance" in result.stdout
 
 
 def test_run_maintenance_help_exposes_only_phase_and_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-maintenance", "--help"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "run-maintenance", "--help"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "--phase" in result.stdout
@@ -269,7 +275,7 @@ def test_run_maintenance_help_exposes_only_phase_and_json(monkeypatch: "pytest.M
 
 
 def test_run_maintenance_reports_missing_maintenance_config(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "run-maintenance"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "run-maintenance"], monkeypatch)
 
     assert result.exit_code == 1
     assert "not configured" in result.stderr.lower()
@@ -565,7 +571,7 @@ def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: 
     async def _seed_canary() -> "None":
         import importlib
 
-        cli_app = importlib.import_module("tests.support.cli_app")
+        cli_app = importlib.import_module("tests.helpers.support.cli_app")
         from litestar_queues import QueuePlugin
         from litestar_queues.task import get_task_registry, load_task_modules
 
@@ -584,7 +590,7 @@ def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: 
 
     anyio.run(_seed_canary)
 
-    result = _runner_invoke("tests.support.cli_app:app", ["queues", "scheduler-health"], monkeypatch)
+    result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "scheduler-health"], monkeypatch)
 
     assert result.exit_code == 0, result.stderr
     assert "healthy" in result.stdout.lower()

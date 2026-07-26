@@ -15,7 +15,10 @@ import pytest
 pytest.importorskip("valkey")
 
 from litestar_queues import TaskRequest
+from litestar_queues.backends.redis import backend as redis_backend_module
 from litestar_queues.models import HeartbeatTouch
+from tests.helpers._timing import MutableClock
+from tests.helpers.redis_protocol import wait_for_channel_subscribers
 from tests.integration._expiry_contract import (
     assert_claim_many_preserves_expired_dispatch_reservation,
     assert_claim_many_reports_owned_expirations,
@@ -57,8 +60,13 @@ async def test_valkey_external_dispatch_reservation_is_fenced(valkey_backend: "V
     await assert_external_dispatch_reservation_is_fenced(valkey_backend)
 
 
-async def test_valkey_claim_many_preserves_expired_dispatch_reservation(valkey_backend: "ValkeyQueueBackend") -> "None":
-    await assert_claim_many_preserves_expired_dispatch_reservation(valkey_backend)
+async def test_valkey_claim_many_preserves_expired_dispatch_reservation(
+    valkey_backend: "ValkeyQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr(redis_backend_module, "_utc_now", clock)
+
+    await assert_claim_many_preserves_expired_dispatch_reservation(valkey_backend, clock)
 
 
 async def test_valkey_finalized_dispatch_claims_after_queue_deadline(valkey_backend: "ValkeyQueueBackend") -> "None":
@@ -341,7 +349,7 @@ async def test_valkey_backend_complete_clears_heartbeat_and_publishes(valkey_bac
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(valkey_backend._completion_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(valkey_backend, valkey_backend._completion_channel)
 
     completed = await valkey_backend.complete_task(record.id, result={"ok": True})
 
@@ -408,7 +416,7 @@ async def test_valkey_backend_enqueue_future_scheduled_indexes_without_publish(
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(valkey_backend._wakeup_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(valkey_backend, valkey_backend._wakeup_channel)
 
     far = datetime.now(timezone.utc) + timedelta(minutes=5)
     record = await valkey_backend.enqueue("tasks.future", scheduled_at=far)
@@ -428,7 +436,7 @@ async def test_valkey_backend_enqueue_due_publishes_single_notification(valkey_b
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(valkey_backend._wakeup_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(valkey_backend, valkey_backend._wakeup_channel)
 
     await valkey_backend.enqueue("tasks.due")
     messages = await _drain_messages(pubsub, window=0.5)
@@ -443,7 +451,7 @@ async def test_valkey_backend_enqueue_many_coalesces_single_notification(
     client = cast("Any", await valkey_backend._get_client())
     pubsub = client.pubsub()
     await pubsub.subscribe(valkey_backend._wakeup_channel)
-    await asyncio.sleep(0.2)
+    await wait_for_channel_subscribers(valkey_backend, valkey_backend._wakeup_channel)
 
     records = await valkey_backend.enqueue_many([TaskRequest(task_name=f"tasks.batch.{index}") for index in range(5)])
     messages = await _drain_messages(pubsub, window=0.5)

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from litestar_queues.backends import BaseQueueBackend
+    from tests.helpers._timing import MutableClock
 
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 
@@ -147,17 +148,19 @@ async def assert_external_dispatch_reservation_is_fenced(queue_backend: "BaseQue
     assert finalized.execution_ref == "operations/current"
 
 
-async def assert_claim_many_preserves_expired_dispatch_reservation(queue_backend: "BaseQueueBackend") -> "None":
+async def assert_claim_many_preserves_expired_dispatch_reservation(
+    queue_backend: "BaseQueueBackend", clock: "MutableClock"
+) -> "None":
     reservation = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}leased"
     leased = await queue_backend.enqueue(
         "tasks.leased_dispatch",
         queue="lease-fence",
         execution_backend="cloudrun",
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=0.2),
+        expires_at=clock() + timedelta(hours=1),
     )
     leased_record = await queue_backend.reserve_external_dispatch(leased.id, "cloudrun", reservation)
     assert leased_record is not None
-    await asyncio.sleep(0.25)
+    clock.advance(timedelta(hours=2))
 
     claimed, expired = await queue_backend.claim_many_with_expired(
         limit=1, queues=("lease-fence",), execution_backend="cloudrun"

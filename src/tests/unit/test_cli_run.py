@@ -288,7 +288,7 @@ async def test_standalone_workers_scale_out_any_placement(placement: "str") -> "
 @pytest.mark.timeout(45)
 def test_run_subcommand_drains_on_sigterm(tmp_path: "Path") -> "None":
     env = os.environ.copy()
-    env["LITESTAR_APP"] = "tests.support.cli_worker_app:app"
+    env["LITESTAR_APP"] = "tests.helpers.support.cli_worker_app:app"
     env["LITESTAR_QUEUES_TEST_DB"] = str(tmp_path / "queue.db")
     env["PYTHONPATH"] = "src" + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
