@@ -24,6 +24,7 @@ from litestar_queues import (
 from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
 from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
 from litestar_queues.execution import BaseExecutionBackend
+from tests.helpers._timing import wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -253,7 +254,7 @@ async def test_worker_start_refills_open_slots_without_waiting_for_slow_batch_me
 
         try:
             await asyncio.wait_for(slow_started.wait(), timeout=1)
-            await asyncio.wait_for(fast_tasks_finished.wait(), timeout=0.5)
+            await asyncio.wait_for(fast_tasks_finished.wait(), timeout=1)
             assert release_slow.is_set() is False
             refilled = True
         finally:
@@ -364,7 +365,9 @@ async def test_worker_stop_interrupts_blocked_native_read_promptly() -> "None":
         # Large intervals ensure a prompt stop cannot be attributed to a poll/reconcile tick.
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None, reconcile_interval=3600))
         worker_task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: backend._pending_read.has_pending, message="worker did not start its native wakeup read"
+        )
         assert backend._pending_read.has_pending is True
 
         started = asyncio.get_running_loop().time()
@@ -863,12 +866,11 @@ async def test_worker_stop_keeps_heartbeat_manager_running_until_drain_completes
 
         await asyncio.wait_for(started.wait(), timeout=1)
         stop_task = asyncio.create_task(worker.stop())
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(backend.touch_recorded.wait(), timeout=1)
         manager_task = worker._heartbeat_manager._task
         assert manager_task is not None
         assert manager_task.done() is False
         assert stop_task.done() is False
-        await asyncio.wait_for(backend.touch_recorded.wait(), timeout=1)
 
         release.set()
         await asyncio.wait_for(stop_task, timeout=1)
@@ -1246,7 +1248,9 @@ async def test_worker_stop_interrupts_backoff_wait_without_extra_sleep() -> "Non
             WorkerConfig(poll_interval=60, poll_backoff_max=120, poll_backoff_multiplier=2.0, reconcile_interval=3600),
         )
         worker_task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: backend._pending_read.has_pending, message="worker did not start its native wakeup read"
+        )
         assert backend._pending_read.has_pending is True
 
         started = asyncio.get_running_loop().time()

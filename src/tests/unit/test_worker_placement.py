@@ -345,7 +345,7 @@ def fake_supervisor(monkeypatch: "pytest.MonkeyPatch") -> "Iterator[type[_FakeSu
     _FakeSupervisor.databases = []
     _FakeSupervisor.fail_on_start = False
     monkeypatch.setattr(supervisor, "ServerWorkerSupervisor", _FakeSupervisor)
-    monkeypatch.setenv("LITESTAR_APP", "tests.support.cli_app:app")
+    monkeypatch.setenv("LITESTAR_APP", "tests.helpers.support.cli_app:app")
     yield _FakeSupervisor
 
 

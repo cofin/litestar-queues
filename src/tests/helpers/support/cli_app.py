@@ -1,6 +1,6 @@
 """Litestar app factory used by CLI tests.
 
-Pointed at via ``LITESTAR_APP=tests.support.cli_app:app``.
+Pointed at via ``LITESTAR_APP=tests.helpers.support.cli_app:app``.
 """
 
 from litestar import Litestar
@@ -14,7 +14,7 @@ def create_app() -> "Litestar":
             queue_backend="memory",
             execution_backend="immediate",
             worker=WorkerConfig(placement="external"),
-            task_modules=("tests._factories.queue_tasks",),
+            task_modules=("tests.helpers.queue_tasks",),
             scheduler_canary_task="support_ping",
         )
     )

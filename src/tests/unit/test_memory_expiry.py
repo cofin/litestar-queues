@@ -4,6 +4,8 @@ import pytest
 
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.backends.memory import backend as memory_backend_module
+from tests.helpers._timing import MutableClock
 from tests.integration._expiry_contract import assert_claim_many_preserves_expired_dispatch_reservation
 
 pytestmark = pytest.mark.anyio
@@ -50,8 +52,11 @@ async def test_memory_claim_many_fences_and_transitions_expired_records() -> "No
     assert stored_expired.status == "expired"
 
 
-async def test_memory_claim_many_preserves_expired_dispatch_reservation() -> "None":
-    await assert_claim_many_preserves_expired_dispatch_reservation(InMemoryQueueBackend())
+async def test_memory_claim_many_preserves_expired_dispatch_reservation(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr(memory_backend_module, "_utc_now", clock)
+
+    await assert_claim_many_preserves_expired_dispatch_reservation(InMemoryQueueBackend(), clock)
 
 
 async def test_memory_expire_overdue_transitions_once_and_respects_limit() -> "None":

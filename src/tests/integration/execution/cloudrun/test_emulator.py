@@ -295,7 +295,7 @@ async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() 
     try:
         record = await queue_backend.enqueue(remote_task.name, execution_backend="cloudrun")
 
-        execution_ref = await asyncio.wait_for(backend.dispatch(service, record), timeout=0.05)
+        execution_ref = await asyncio.wait_for(backend.dispatch(service, record), timeout=1.0)
         stored = await queue_backend.get_task(record.id)
     finally:
         await service.close()

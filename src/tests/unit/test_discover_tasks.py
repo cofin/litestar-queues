@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.anyio
 
-_FIXTURE_PACKAGE = "tests.support.discover_tasks_pkg"
+_FIXTURE_PACKAGE = "tests.helpers.support.discover_tasks_pkg"
 _EXPECTED_TASKS = ("discover.bar.notify", "discover.baz.inner.run", "discover.foo.send")
 
 

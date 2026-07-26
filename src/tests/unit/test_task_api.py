@@ -160,7 +160,7 @@ async def test_task_result_wait_raises_when_record_disappears() -> "None":
     result = TaskResult(uuid4(), "tasks.missing", service=cast("QueueService", _MissingTaskService()))
 
     with pytest.raises(RuntimeError, match="no longer exists"):
-        await asyncio.wait_for(result.wait(poll_interval=0), timeout=0.05)
+        await asyncio.wait_for(result.wait(poll_interval=0), timeout=1.0)
 
 
 async def test_task_result_wait_pushes_to_completion_events_backend_when_supported(

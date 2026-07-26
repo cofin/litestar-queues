@@ -618,8 +618,9 @@ async def test_sqlspec_backend_migration_path_provisions_events_table(postgres_s
     try:
         assert backend.capabilities.wakeup_backend == "notify_queue"
 
+        # Prime the retained native read so LISTEN is established before enqueue.
+        assert await backend.wait_for_wakeups(timeout=0.05) is False
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
-        await asyncio.sleep(0.3)
         start = time.monotonic()
         await backend.enqueue("tasks.migrate_wake")
         assert await waiter is True
@@ -756,8 +757,9 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
             assert backend.capabilities.wakeup_backend == event_backend
             assert backend.capabilities.wakeups_durable is True
 
+            # Establish the retained AQ read before publishing the wakeup.
+            assert await backend.wait_for_wakeups(timeout=1.5) is False
             waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=10))
-            await asyncio.sleep(0.5)
             await backend.enqueue(f"tasks.oracle_{event_backend}_wake")
             assert await waiter is True
         finally:
@@ -908,8 +910,8 @@ async def test_sqlspec_backend_postgres_notify_queue_wakes(
         assert backend.capabilities.wakeups_durable is True
 
         # NOTIFY wake: subscribe first, then enqueue, and measure latency.
+        assert await backend.wait_for_wakeups(timeout=0.05) is False
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
-        await asyncio.sleep(0.2)
         start = time.monotonic()
         await backend.enqueue("tasks.pg_wake")
         assert await waiter is True
@@ -1014,8 +1016,8 @@ async def test_sqlspec_backend_postgres_native_wakeup_default_on(
         assert backend.capabilities.wakeup_backend == "notify_queue"
         assert backend.capabilities.wakeups_durable is True
 
+        assert await backend.wait_for_wakeups(timeout=0.05) is False
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
-        await asyncio.sleep(0.3)
         start = time.monotonic()
         await backend.enqueue(f"tasks.{adapter_name}_wake")
         assert await waiter is True

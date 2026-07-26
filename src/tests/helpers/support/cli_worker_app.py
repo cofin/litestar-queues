@@ -1,6 +1,6 @@
 """Litestar app factory used by the standalone-worker CLI tests.
 
-Pointed at via ``LITESTAR_APP=tests.support.cli_worker_app:app``.
+Pointed at via ``LITESTAR_APP=tests.helpers.support.cli_worker_app:app``.
 
 ``litestar queues run`` is the external worker, so it requires storage that
 outlives and is visible outside a single process. This app uses a file-backed
@@ -50,7 +50,7 @@ def _queue_config() -> "QueueConfig":
         ),
         execution_backend="local",
         worker=WorkerConfig(placement="external", poll_interval=0.05),
-        task_modules=("tests._factories.queue_tasks",),
+        task_modules=("tests.helpers.queue_tasks",),
         scheduler_canary_task="support_ping",
     )
 

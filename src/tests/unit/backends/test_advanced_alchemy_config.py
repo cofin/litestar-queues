@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from tests.helpers._timing import wait_until
+
 pytest.importorskip("advanced_alchemy")
 pytest.importorskip("sqlalchemy")
 
@@ -355,7 +357,7 @@ async def test_psycopg_listener_cancel_during_wait_retains_read_then_close_clean
 
     listener = _PsycopgNotificationListener(conninfo="postgresql://ignored/db", channel="lq")
     waiter = asyncio.ensure_future(listener.wait(timeout=None))
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: _has_pending(listener), message="notification read was not retained")
     waiter.cancel()
     with pytest.raises(asyncio.CancelledError):
         await waiter

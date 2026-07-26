@@ -6,7 +6,8 @@ The test suite lives under ``src/tests``. Keep these roles separate:
 * ``src/tests/unit`` covers pure-Python behavior.
 * ``src/tests/integration`` covers queue drivers, service containers, vendor
   emulators, and execution backends.
-* ``src/tests/_factories`` contains shared test factories.
+* ``src/tests/helpers`` contains shared timing and protocol helpers, task
+  factories, and support applications imported by tests.
 
 The root ``src/tests/conftest.py`` provides fixtures that every tier can use:
 ``anyio_backend``, task-registry cleanup, and default Litestar app/plugin

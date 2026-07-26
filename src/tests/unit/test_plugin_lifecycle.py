@@ -54,7 +54,7 @@ async def test_plugin_startup_loads_task_modules_for_every_placement() -> "None"
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
             execution_backend="local",
-            task_modules=("tests._factories.queue_tasks",),
+            task_modules=("tests.helpers.queue_tasks",),
         )
     )
     app = Litestar(plugins=[plugin])

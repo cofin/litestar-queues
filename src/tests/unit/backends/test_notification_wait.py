@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues.backends._notification_wait import PendingNativeRead
+from tests.helpers._timing import wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -93,7 +94,7 @@ async def test_outer_cancellation_retains_the_native_read() -> "None":
         await pending.race(factory, timeout=None)
 
     task = asyncio.create_task(waiter())
-    await asyncio.sleep(0.01)
+    await wait_until(lambda: _has_pending(pending), message="native read was not retained")
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task

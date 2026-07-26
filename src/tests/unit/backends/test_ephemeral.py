@@ -14,12 +14,14 @@ import pytest
 
 from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, EphemeralQueueBackend
+from litestar_queues.backends.ephemeral import backend as ephemeral_backend_module
 from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, record_from_payload, record_to_payload
 from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
+from tests.helpers._timing import MutableClock
 from tests.integration._expiry_contract import assert_claim_many_preserves_expired_dispatch_reservation
 
 if TYPE_CHECKING:
@@ -189,8 +191,13 @@ async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBa
     assert stored.status == "expired"
 
 
-async def test_claim_many_preserves_expired_dispatch_reservation(backend: "EphemeralQueueBackend") -> "None":
-    await assert_claim_many_preserves_expired_dispatch_reservation(backend)
+async def test_claim_many_preserves_expired_dispatch_reservation(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    clock = MutableClock()
+    monkeypatch.setattr(ephemeral_backend_module, "_utc_now", clock)
+
+    await assert_claim_many_preserves_expired_dispatch_reservation(backend, clock)
 
 
 async def test_expire_overdue_is_bounded_idempotent_and_terminal(backend: "EphemeralQueueBackend") -> "None":
@@ -397,7 +404,6 @@ async def test_wait_for_wakeups_notices_another_instance_commit(backend: "Epheme
     producer = await _second_backend()
     try:
         waiter = asyncio.ensure_future(backend.wait_for_wakeups(timeout=30.0))
-        await asyncio.sleep(0.05)
         await producer.enqueue("tasks.cross_process")
 
         assert await asyncio.wait_for(waiter, timeout=2.0) is True
