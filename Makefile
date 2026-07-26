@@ -115,13 +115,14 @@ upgrade:                                            ## Upgrade all dependencies 
 	@echo "${INFO} Updating all dependencies... 🔄"
 	@uv lock --upgrade
 	@echo "${OK} Dependencies updated 🔄"
-	@uvx prek autoupdate
-	@echo "${OK} Updated prek hooks 🔄"
+	@uvx prek autoupdate --cooldown-days 7
+	@echo "${OK} Updated prek hooks (7-day cooldown) 🔄"
+	@uv lock >/dev/null 2>&1
 
 .PHONY: lock
 lock:                                               ## Rebuild lockfiles from scratch
 	@echo "${INFO} Rebuilding lockfiles... 🔄"
-	@uv lock --upgrade
+	@uv lock --upgrade >/dev/null 2>&1
 	@echo "${OK} Lockfiles updated 🔄"
 
 # =============================================================================
