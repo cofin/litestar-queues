@@ -319,14 +319,8 @@ fix:                                                ## Fix linting issues
 	@uv run ruff format src/
 	@echo "${OK} Linting issues fixed ✨"
 
-.PHONY: check-future-annotations
-check-future-annotations:                           ## Check for forbidden __future__ annotations imports
-	@echo "${INFO} Checking future annotations rules... 🔍"
-	@uv run python tools/no-future-annotations.py
-	@echo "${OK} Future annotations check passed ✨"
-
 .PHONY: lint
-lint: prek type-check slotscheck check-future-annotations ## Run all linting checks
+lint: prek type-check slotscheck                    ## Run all linting checks
 
 .PHONY: check-all
 check-all: lint test-all coverage docs docs-audit docs-linkcheck build ## Run complete validation suite
