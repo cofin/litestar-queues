@@ -26,6 +26,80 @@ the maximum run time in seconds. Workers claim lower numeric priority values
 first. ``run_after`` delays when the task can run. ``key`` names the logical
 job and prevents more than one active record for that key.
 
+Queued deadlines, runtime timeouts, and retention
+=================================================
+
+Use ``expires_in`` when a task is no longer useful if it waits too long before
+starting:
+
+.. code-block:: python
+
+   @task("reports.refresh", expires_in=300)
+   async def refresh_report(report_id: str) -> None:
+       ...
+
+   result = await queue_service.enqueue(refresh_report, "report-123")
+
+The deadline starts when the record becomes runnable. For an immediately due
+record, that is its enqueue time. For a delayed record, it is
+``scheduled_at``:
+
+.. code-block:: python
+
+   result = await queue_service.enqueue(
+       refresh_report,
+       "report-123",
+       run_after=600,
+       expires_in=120,
+   )
+
+This record may wait ten minutes before becoming runnable, then has two minutes
+to start. The stored ``expires_at`` is an absolute UTC timestamp. Pass an
+absolute deadline when the caller already owns one:
+
+.. code-block:: python
+
+   from datetime import datetime, timezone
+
+   result = await queue_service.enqueue(
+       refresh_report,
+       "report-123",
+       expires_at=datetime(2026, 7, 26, 12, 0, tzinfo=timezone.utc),
+   )
+
+``expires_in`` and ``expires_at`` are mutually exclusive. A task-level
+``expires_in`` is the default only when the enqueue call supplies neither
+option. The same stored deadline fences every retry claim; it does not restart
+for each attempt. If the deadline passes before a claim, the backend records
+terminal status ``expired`` and the worker publishes ``task.expired``. A task
+that has already started continues running.
+
+Keep these three clocks separate:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 28 48
+
+   * - Concern
+     - Configure with
+     - Effect
+   * - Queued deadline
+     - ``expires_in`` or ``expires_at``
+     - Prevents a late claim; the record becomes ``expired``.
+   * - Runtime timeout
+     - ``timeout``
+     - Bounds the running task body. It does not age a queued record.
+   * - Terminal retention
+     - ``QueueMaintenanceConfig.terminal_retention``
+     - Deletes old terminal records, including ``expired`` records. It does not
+       stop queued or running work.
+
+Workers sweep overdue records every
+``WorkerConfig.expiry_check_interval`` seconds (default ``60``) so an unclaimed
+record becomes observable as ``expired``. Set the interval to ``None`` to
+disable the sweep. The backend claim fence remains authoritative and still
+prevents overdue work from running.
+
 Synchronous tasks
 =================
 

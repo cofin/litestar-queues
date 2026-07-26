@@ -305,6 +305,8 @@ class QueueService:
         *args: "Any",
         scheduled_at: "datetime | None" = None,
         run_after: "float | timedelta | None" = None,
+        expires_in: "float | timedelta | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         queue: "str | None" = None,
         priority: "int | None" = None,
@@ -326,13 +328,9 @@ class QueueService:
         """
         task_obj = self.resolve_task(task)
         effective_key, identity_metadata = self._resolve_identity(task_obj, key, args, kwargs)
-        coerced_run_after = _coerce_timedelta(run_after)
-        effective_run_after = coerced_run_after if run_after is not None else task_obj.run_after
-        effective_scheduled_at = scheduled_at
-        if effective_scheduled_at is None and effective_run_after is not None:
-            effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
-        if effective_scheduled_at is not None:
-            effective_scheduled_at = _ensure_utc(effective_scheduled_at)
+        effective_scheduled_at, effective_expires_at = _resolve_schedule_and_expiration(
+            task_obj, scheduled_at=scheduled_at, run_after=run_after, expires_in=expires_in, expires_at=expires_at
+        )
         effective_execution_backend = (
             execution_backend or task_obj.execution_backend or execution_backend_name(self._config.execution_backend)
         )
@@ -385,6 +383,7 @@ class QueueService:
                 execution_profile=effective_execution_profile,
                 metadata=effective_metadata,
                 id=reserved_id,
+                **_expiration_enqueue_kwargs(effective_expires_at),
             )
             if reserved_id is not None and record.id != reserved_id and effective_key is not None:
                 await _raise_forever_identity_collision(self.get_queue_backend(), effective_key, reserved_id)
@@ -406,12 +405,16 @@ class QueueService:
         finally:
             runtime.end_span(span)
 
+        if record.status in {"pending", "scheduled"} and record.is_expired:
+            expired = await self.expire_overdue_tasks()
+            record = next((candidate for candidate in expired if candidate.id == record.id), record)
+
         result = TaskResult(record.id, task_obj.name, service=self, record=record)
 
         if record.execution_backend == "immediate" and record.status == "pending":
             execution_backend_impl = self._execution_backend_for_name(record.execution_backend)
             if not execution_backend_impl.is_external:
-                claimed = await self.get_queue_backend().claim_task(record.id)
+                claimed, _ = await self.claim_task(record.id)
                 if claimed is not None:
                     await execution_backend_impl.execute(self, claimed)
         return result
@@ -713,6 +716,52 @@ class QueueService:
             )
         return result
 
+    async def expire_overdue_tasks(
+        self, *, limit: "int | None" = None, worker_id: "str | None" = None
+    ) -> "list[QueuedTaskRecord]":
+        """Expire overdue pending or scheduled records and publish one event each.
+
+        Returns:
+            Records transitioned to ``expired``.
+        """
+        expired = await self.get_queue_backend().expire_overdue(limit=limit)
+        for record in expired:
+            await self._publish_expired_event(record, worker_id=worker_id)
+        return expired
+
+    async def claim_tasks(
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        worker_id: "str | None" = None,
+    ) -> "list[QueuedTaskRecord]":
+        """Claim due tasks and publish events for claim-time expirations.
+
+        Returns:
+            Records successfully transitioned to ``running``.
+        """
+        claimed, expired = await self.get_queue_backend().claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend
+        )
+        for record in expired:
+            await self._publish_expired_event(record, worker_id=worker_id)
+        return claimed
+
+    async def claim_task(
+        self, task_id: "UUID", *, worker_id: "str | None" = None
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and publish its claim-time expiration event.
+
+        Returns:
+            The claimed record and the expired record, at most one of which is set.
+        """
+        claimed, expired = await self.get_queue_backend().claim_task_with_expired(task_id)
+        if expired is not None:
+            await self._publish_expired_event(expired, worker_id=worker_id)
+        return claimed, expired
+
     async def initialize_schedules(self) -> "list[QueuedTaskRecord]":
         """Create queue records for registered recurring schedules.
 
@@ -732,6 +781,7 @@ class QueueService:
                     continue
                 await queue_backend.cancel_task(existing.id)
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
+            expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
             records.append(
                 await queue_backend.enqueue(
                     task_name,
@@ -739,6 +789,7 @@ class QueueService:
                     max_retries=0,
                     priority=task_obj.priority,
                     scheduled_at=scheduled_at,
+                    expires_at=expires_at,
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
@@ -783,13 +834,17 @@ class QueueService:
             jitter=schedule_data.get("jitter", 0),
             timezone=str(schedule_data.get("timezone", "UTC")),
         )
+        task_obj = self.resolve_task(record.task_name)
+        scheduled_at = schedule.get_next_run(record.completed_at)
+        expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
         await self.get_queue_backend().enqueue(
             record.task_name,
             key=record.key,
             queue=record.queue,
             max_retries=record.max_retries,
             priority=record.priority,
-            scheduled_at=schedule.get_next_run(record.completed_at),
+            scheduled_at=scheduled_at,
+            expires_at=expires_at,
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
             metadata={**record.metadata, "schedule": schedule.as_metadata()},
@@ -878,6 +933,29 @@ class QueueService:
             )
             await self._invoke_stale_failure_hook(record)
 
+    async def _publish_expired_event(self, record: "QueuedTaskRecord", *, worker_id: "str | None") -> "None":
+        payload = {
+            "status": record.status,
+            "retry_count": record.retry_count,
+            "expires_at": record.expires_at.isoformat() if record.expires_at is not None else None,
+        }
+        await self.get_event_publisher().publish(
+            QueueEvent(
+                type="task.expired",
+                scope="task",
+                task_id=str(record.id),
+                task_name=record.task_name,
+                queue=record.queue,
+                worker_id=worker_id,
+                execution_backend=record.execution_backend,
+                execution_profile=record.execution_profile,
+                attempt=record.retry_count + 1,
+                message="Task expired before execution",
+                payload=payload,
+            )
+        )
+        self._log_task_event("Queue task expired before execution", record, level=logging.WARNING, payload=payload)
+
     def _log_task_completed(self, record: "QueuedTaskRecord") -> "None":
         if record.metadata.get("log_success") is False:
             return
@@ -935,6 +1013,50 @@ def _coerce_timedelta(value: "float | timedelta | None") -> "timedelta | None":
     if isinstance(value, timedelta):
         return value
     return timedelta(seconds=value)
+
+
+def _resolve_schedule_and_expiration(
+    task_obj: "Task[Any, Any]",
+    *,
+    scheduled_at: "datetime | None",
+    run_after: "float | timedelta | None",
+    expires_in: "float | timedelta | None",
+    expires_at: "datetime | None",
+) -> "tuple[datetime | None, datetime | None]":
+    effective_run_after = _coerce_timedelta(run_after) if run_after is not None else task_obj.run_after
+    effective_scheduled_at = scheduled_at
+    if effective_scheduled_at is None and effective_run_after is not None:
+        effective_scheduled_at = datetime.now(timezone.utc) + effective_run_after
+    if effective_scheduled_at is not None:
+        effective_scheduled_at = _ensure_utc(effective_scheduled_at)
+    return effective_scheduled_at, _resolve_expires_at(
+        task_obj, expires_in=expires_in, expires_at=expires_at, scheduled_at=effective_scheduled_at
+    )
+
+
+def _resolve_expires_at(
+    task_obj: "Task[Any, Any]",
+    *,
+    expires_in: "float | timedelta | None",
+    expires_at: "datetime | None",
+    scheduled_at: "datetime | None",
+) -> "datetime | None":
+    if expires_in is not None and expires_at is not None:
+        msg = "Cannot specify both expires_in and expires_at."
+        raise ValueError(msg)
+    if expires_at is not None:
+        return _ensure_utc(expires_at)
+    effective_expires_in = _coerce_timedelta(expires_in) if expires_in is not None else task_obj.expires_in
+    if effective_expires_in is None:
+        return None
+    if effective_expires_in < timedelta():
+        msg = "expires_in must not be negative."
+        raise ValueError(msg)
+    return (scheduled_at or datetime.now(timezone.utc)) + effective_expires_in
+
+
+def _expiration_enqueue_kwargs(expires_at: "datetime | None") -> "dict[str, datetime]":
+    return {"expires_at": expires_at} if expires_at is not None else {}
 
 
 def _task_metadata(

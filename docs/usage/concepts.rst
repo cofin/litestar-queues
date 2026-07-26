@@ -10,8 +10,19 @@ The task flow
 
 .. code-block:: text
 
-   enqueue -> queued task record -> worker wakeup or polling -> claim -> execute
-   -> retry/terminal state -> optional task event delivery
+   enqueue -> pending/scheduled record -> worker wakeup or polling
+                                  |              |
+                                  | overdue      | claim
+                                  v              v
+                              expired         running -> retry or terminal state
+                                  \______________|______________/
+                                                 v
+                                      optional task event delivery
+
+``expired`` means the record passed its not-started deadline before a worker
+claimed it. It is distinct from user cancellation and from a runtime failure.
+See :doc:`task-options` for the deadline clock and its relationship to runtime
+timeouts and terminal retention.
 
 Task and record
 ===============

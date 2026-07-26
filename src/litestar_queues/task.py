@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast
 from typing_extensions import ParamSpec, Self
 
 from litestar_queues.exceptions import QueueWarning
+from litestar_queues.models import TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
@@ -346,16 +347,15 @@ class TaskResult:
             TimeoutError: If the timeout elapses before a terminal status.
             RuntimeError: If the task no longer exists in the queue backend.
         """
-        terminal = {"cancelled", "completed", "failed"}
         start = asyncio.get_running_loop().time()
         backend = self._service.get_queue_backend() if self._service is not None else None
         push = backend is not None and backend.capabilities.supports_completion_events
-        while self.status not in terminal:
+        while self.status not in TERMINAL_STATUSES:
             await self.refresh()
             if self.record is None:
                 msg = f"Task {self._task_id} no longer exists in the queue backend."
                 raise RuntimeError(msg)
-            if self.status in terminal:
+            if self.status in TERMINAL_STATUSES:
                 break
             if timeout is not None and asyncio.get_running_loop().time() - start >= timeout:
                 msg = f"Task {self._task_id} did not complete within {timeout}s"
@@ -381,6 +381,7 @@ class Task(Generic[P, T]):
         "_description",
         "_execution_backend",
         "_execution_profile",
+        "_expires_in",
         "_func",
         "_key",
         "_log_level",
@@ -413,6 +414,7 @@ class Task(Generic[P, T]):
         unique_by: "TaskUniqueBy | None" = None,
         unique_until: "TaskUniqueUntil" = "terminal",
         run_after: "float | timedelta | None" = None,
+        expires_in: "float | timedelta | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
         log_success: "bool | None" = None,
@@ -434,6 +436,7 @@ class Task(Generic[P, T]):
         self._unique_by = unique_by
         self._unique_until = unique_until
         self._run_after = _coerce_interval(run_after)
+        self._expires_in = _coerce_interval(expires_in)
         self._description = description
         self._log_level = log_level
         self._log_success = log_success
@@ -499,6 +502,11 @@ class Task(Generic[P, T]):
     def run_after(self) -> "timedelta | None":
         """Relative delay for enqueue operations."""
         return self._run_after
+
+    @property
+    def expires_in(self) -> "timedelta | None":
+        """Relative not-started deadline for enqueue operations."""
+        return self._expires_in
 
     @property
     def description(self) -> "str | None":
@@ -612,6 +620,7 @@ class Task(Generic[P, T]):
         unique_by: "TaskUniqueBy | None" = None,
         unique_until: "TaskUniqueUntil | None" = None,
         run_after: "float | timedelta | None" = None,
+        expires_in: "float | timedelta | None" = None,
         description: "str | None" = None,
         log_level: "str | None" = None,
         log_success: "bool | None" = None,
@@ -634,6 +643,7 @@ class Task(Generic[P, T]):
             unique_by=unique_by if unique_by is not None else self._unique_by,
             unique_until=unique_until if unique_until is not None else self._unique_until,
             run_after=run_after if run_after is not None else self._run_after,
+            expires_in=expires_in if expires_in is not None else self._expires_in,
             description=description if description is not None else self._description,
             log_level=log_level if log_level is not None else self._log_level,
             log_success=log_success if log_success is not None else self._log_success,
@@ -790,6 +800,7 @@ def task(
     unique_by: "TaskUniqueBy | None" = None,
     unique_until: "TaskUniqueUntil" = "terminal",
     run_after: "float | timedelta | None" = None,
+    expires_in: "float | timedelta | None" = None,
     description: "str | None" = None,
     log_level: "str | None" = None,
     log_success: "bool | None" = None,
@@ -818,6 +829,7 @@ def task(
     unique_by: "TaskUniqueBy | None" = None,
     unique_until: "TaskUniqueUntil" = "terminal",
     run_after: "float | timedelta | None" = None,
+    expires_in: "float | timedelta | None" = None,
     description: "str | None" = None,
     log_level: "str | None" = None,
     log_success: "bool | None" = None,
@@ -873,6 +885,7 @@ def task(
             unique_by=unique_by,
             unique_until=unique_until,
             run_after=run_after,
+            expires_in=expires_in,
             description=description,
             log_level=log_level,
             log_success=log_success,

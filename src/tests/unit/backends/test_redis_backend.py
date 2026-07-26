@@ -42,7 +42,8 @@ async def test_redis_statistics_use_status_indexes_without_task_scan() -> "None"
 
     assert statistics.pending == 2
     assert statistics.failed == 1
-    assert client.scard_calls == 6
+    assert statistics.expired == 0
+    assert client.scard_calls == 7
     assert client.smembers_calls == 0
 
 

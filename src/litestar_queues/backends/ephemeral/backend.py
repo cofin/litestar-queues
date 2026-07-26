@@ -18,6 +18,7 @@ from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    is_external_dispatch_reservation,
     record_matches_filters,
     stale_requeue_error,
     stale_requeue_priority,
@@ -55,7 +56,7 @@ __all__ = ("EphemeralQueueBackend",)
 T = TypeVar("T")
 
 _ACTIVE_STATUSES = ("pending", "scheduled")
-_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "expired")
 _MIN_POLL = 0.01
 _MAX_POLL = 0.1
 _NOT_OPEN_ERROR = (
@@ -86,6 +87,7 @@ def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
         record.priority,
         record.retry_count,
         _iso(record.scheduled_at),
+        _iso(record.expires_at),
         _iso(record.created_at),
         _iso(record.completed_at),
         _iso(record.heartbeat_at),
@@ -97,14 +99,14 @@ def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
 _INSERT = """
 INSERT INTO queue_task (
     id, task_name, queue, execution_backend, status, priority, retry_count,
-    scheduled_at, created_at, completed_at, heartbeat_at, task_key, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    scheduled_at, expires_at, created_at, completed_at, heartbeat_at, task_key, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _UPDATE = """
 UPDATE queue_task SET
     task_name = ?, queue = ?, execution_backend = ?, status = ?, priority = ?, retry_count = ?,
-    scheduled_at = ?, created_at = ?, completed_at = ?, heartbeat_at = ?, task_key = ?, payload = ?
+    scheduled_at = ?, expires_at = ?, created_at = ?, completed_at = ?, heartbeat_at = ?, task_key = ?, payload = ?
 WHERE id = ?
 """
 
@@ -260,6 +262,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -282,6 +285,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
             priority=priority,
             max_retries=max_retries,
             scheduled_at=scheduled_at,
+            expires_at=expires_at,
             key=key,
             metadata=dict(metadata or {}),
         )
@@ -331,6 +335,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
                     priority=request.priority,
                     max_retries=request.max_retries,
                     scheduled_at=request.scheduled_at,
+                    expires_at=request.expires_at,
                     key=request.key,
                     metadata=dict(request.metadata or {}),
                 )
@@ -380,10 +385,12 @@ class EphemeralQueueBackend(BaseQueueBackend):
         """
 
         def operation(connection: "sqlite3.Connection") -> "list[QueuedTaskRecord]":
+            now = _iso(_utc_now())
             sql = (
-                "SELECT payload FROM queue_task WHERE status IN (?, ?) AND (scheduled_at IS NULL OR scheduled_at <= ?)"
+                "SELECT payload FROM queue_task WHERE status IN (?, ?) "
+                "AND (scheduled_at IS NULL OR scheduled_at <= ?) AND (expires_at IS NULL OR expires_at > ?)"
             )
-            values: "list[Any]" = [*_ACTIVE_STATUSES, _iso(_utc_now())]
+            values: "list[Any]" = [*_ACTIVE_STATUSES, now, now]
             if queue is not None:
                 sql += " AND queue = ?"
                 values.append(queue)
@@ -392,30 +399,44 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 values.append(execution_backend)
             sql += " ORDER BY priority DESC, created_at ASC LIMIT ?"
             values.append(limit)
-            return _decode_all(connection.execute(sql, values).fetchall())
+            return [
+                record
+                for record in _decode_all(connection.execute(sql, values).fetchall())
+                if not is_external_dispatch_reservation(record.execution_ref)
+            ]
 
         return await self._run(operation)
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
-        """Transition one due record to running.
+        claimed, _ = await self.claim_task_with_expired(task_id)
+        return claimed
 
-        Returns:
-            The claimed record, or ``None`` when it was not claimable.
-        """
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and return an expiry transitioned in the transaction."""
 
-        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
-                return None
+                return None, None
             record = _decode(row)
-            if record.status not in _ACTIVE_STATUSES or not record.is_due:
-                return None
+            if (
+                record.status not in _ACTIVE_STATUSES
+                or not record.is_due
+                or is_external_dispatch_reservation(record.execution_ref)
+            ):
+                return None, None
             now = _utc_now()
+            if record.execution_ref is None and record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                _write(connection, record)
+                return None, record
             record.status = "running"
             record.started_at = now
             record.heartbeat_at = now
             _write(connection, record)
-            return record
+            return record, None
 
         return await self._transaction(operation)
 
@@ -427,15 +448,37 @@ class EphemeralQueueBackend(BaseQueueBackend):
         Returns:
             Claimed task records in claim order.
         """
-        if limit <= 0:
-            return []
+        claimed, _ = await self.claim_many_with_expired(limit=limit, queues=queues, execution_backend=execution_backend)
+        return claimed
 
-        def operation(connection: "sqlite3.Connection") -> "list[QueuedTaskRecord]":
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and return overdue records expired in the transaction."""
+        if limit <= 0:
+            return [], []
+
+        def operation(connection: "sqlite3.Connection") -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
             now = _utc_now()
+            expired_rows = connection.execute(
+                "SELECT payload FROM queue_task WHERE status IN (?, ?) AND expires_at IS NOT NULL AND expires_at <= ?",
+                (*_ACTIVE_STATUSES, _iso(now)),
+            ).fetchall()
+            expired = [
+                record
+                for record in _decode_all(expired_rows)
+                if not is_external_dispatch_reservation(record.execution_ref)
+                and (not queues or record.queue in queues)
+                and (execution_backend is None or record.execution_backend == execution_backend)
+            ]
+            for record in expired:
+                _expire_record(record, now)
+                _write(connection, record)
             sql = (
-                "SELECT payload FROM queue_task WHERE status IN (?, ?) AND (scheduled_at IS NULL OR scheduled_at <= ?)"
+                "SELECT payload FROM queue_task WHERE status IN (?, ?) "
+                "AND (scheduled_at IS NULL OR scheduled_at <= ?) AND (expires_at IS NULL OR expires_at > ?)"
             )
-            values: "list[Any]" = [*_ACTIVE_STATUSES, _iso(now)]
+            values: "list[Any]" = [*_ACTIVE_STATUSES, _iso(now), _iso(now)]
             if queues:
                 sql += f" AND queue IN ({','.join('?' * len(queues))})"
                 values.extend(queues)
@@ -447,12 +490,121 @@ class EphemeralQueueBackend(BaseQueueBackend):
             claimed: "list[QueuedTaskRecord]" = []
             for row in connection.execute(sql, values).fetchall():
                 record = _decode(row)
+                if is_external_dispatch_reservation(record.execution_ref):
+                    continue
                 record.status = "running"
                 record.started_at = now
                 record.heartbeat_at = now
                 _write(connection, record)
                 claimed.append(record)
-            return claimed
+            return claimed, expired
+
+        return await self._transaction(operation)
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``.
+
+        Returns:
+            Records transitioned during this call.
+        """
+
+        def operation(connection: "sqlite3.Connection") -> "list[QueuedTaskRecord]":
+            now = _utc_now()
+            sql = (
+                "SELECT payload FROM queue_task WHERE status IN (?, ?) "
+                "AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY expires_at ASC, created_at ASC, id ASC"
+            )
+            values: "list[Any]" = [*_ACTIVE_STATUSES, _iso(now)]
+            if limit is not None:
+                sql += " LIMIT ?"
+                values.append(limit)
+            expired = [
+                record
+                for record in _decode_all(connection.execute(sql, values).fetchall())
+                if record.execution_ref is None
+            ]
+            for record in expired:
+                _expire_record(record, now)
+                _write(connection, record)
+            return expired
+
+        return await self._transaction(operation)
+
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            now = _utc_now()
+            if record.status not in _ACTIVE_STATUSES or not record.is_due or record.execution_ref is not None:
+                return None
+            if record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                _write(connection, record)
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = reservation_ref
+            _write(connection, record)
+            return record
+
+        return await self._transaction(operation)
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = None
+            _write(connection, record)
+            return record
+
+        record = await self._transaction(operation)
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = execution_ref
+            _write(connection, record)
+            return record
 
         return await self._transaction(operation)
 
@@ -924,10 +1076,12 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
     async def _has_due_work(self) -> "bool":
         def operation(connection: "sqlite3.Connection") -> "bool":
+            now = _iso(_utc_now())
             row = connection.execute(
                 "SELECT EXISTS(SELECT 1 FROM queue_task WHERE status IN (?, ?) "
-                "AND (scheduled_at IS NULL OR scheduled_at <= ?)) AS due",
-                (*_ACTIVE_STATUSES, _iso(_utc_now())),
+                "AND (scheduled_at IS NULL OR scheduled_at <= ?) "
+                "AND (expires_at IS NULL OR expires_at > ?)) AS due",
+                (*_ACTIVE_STATUSES, now, now),
             ).fetchone()
             return bool(row["due"])
 
@@ -943,9 +1097,10 @@ class EphemeralQueueBackend(BaseQueueBackend):
         def operation(connection: "sqlite3.Connection") -> "str | None":
             sql = (
                 "SELECT MIN(scheduled_at) AS next_due FROM queue_task WHERE status IN (?, ?) "
-                "AND scheduled_at IS NOT NULL AND scheduled_at > ?"
+                "AND scheduled_at IS NOT NULL AND scheduled_at > ? AND (expires_at IS NULL OR expires_at > ?)"
             )
-            values: "list[Any]" = [*_ACTIVE_STATUSES, _iso(_utc_now())]
+            now = _iso(_utc_now())
+            values: "list[Any]" = [*_ACTIVE_STATUSES, now, now]
             if queues:
                 sql += f" AND queue IN ({','.join('?' * len(queues))})"
                 values.extend(queues)
@@ -974,6 +1129,12 @@ def _active_by_key(connection: "sqlite3.Connection", key: "str") -> "QueuedTaskR
     sql = f"SELECT payload FROM queue_task WHERE task_key = ? AND status NOT IN ({placeholders}) LIMIT 1"  # noqa: S608 - bound placeholders only
     row = connection.execute(sql, (key, *_TERMINAL_STATUSES)).fetchone()
     return None if row is None else _decode(row)
+
+
+def _expire_record(record: "QueuedTaskRecord", completed_at: "datetime") -> "None":
+    record.status = "expired"
+    record.completed_at = completed_at
+    record.heartbeat_at = None
 
 
 def _locked_record(

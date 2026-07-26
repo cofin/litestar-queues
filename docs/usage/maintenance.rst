@@ -28,8 +28,9 @@ Every invocation runs the configured phases once, in this fixed order:
    immediate/local execution).
 #. **stale** — recover running tasks whose heartbeats are stale. Enabled when
    ``stale_after`` is set.
-#. **terminal** — delete terminal (completed/failed/cancelled) records older
-   than ``terminal_retention``. Enabled when ``terminal_retention`` is set.
+#. **terminal** — delete terminal (completed/failed/cancelled/expired) records
+   older than ``terminal_retention``. Enabled when ``terminal_retention`` is
+   set.
 #. **events** — delete durable event-history rows older than
    ``event_retention``. Enabled when ``event_retention`` is set *and* a durable
    event log is configured; otherwise the phase is skipped, not an error.

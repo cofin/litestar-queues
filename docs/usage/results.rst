@@ -15,9 +15,9 @@ Every enqueue returns a :class:`~litestar_queues.TaskResult` linked to its
    elif result.status == "failed":
        error = result.error
 
-``wait()`` checks the task until its state is ``completed``, ``failed``, or
-``cancelled``. It raises ``TimeoutError`` when its timeout expires. That local
-timeout does not stop the queued task.
+``wait()`` checks the task until its state is ``completed``, ``failed``,
+``cancelled``, or ``expired``. It raises ``TimeoutError`` when its own waiting
+timeout expires. That local timeout does not stop or expire the queued task.
 
 Refresh cached state
 ====================

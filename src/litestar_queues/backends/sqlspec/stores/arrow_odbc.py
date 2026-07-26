@@ -65,7 +65,9 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return SQL Server queue artifacts for Arrow ODBC."""
-        statements = super().create_statements()
+        return self._append_task_key_index(super().create_statements())
+
+    def _append_task_key_index(self, statements: "list[str]") -> "list[str]":
         if not statements:
             return []
         task_key_column = _quote_tsql_identifier(self._col("task_key"))

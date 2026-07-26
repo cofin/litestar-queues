@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from inspect import isawaitable, iscoroutinefunction
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast, overload
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlspec import SQLSpec
 from sqlspec.exceptions import SerializationConflictError
@@ -16,8 +16,10 @@ from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
+    EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    is_external_dispatch_reservation,
     record_matches_filters,
     stale_requeue_error,
     stale_requeue_priority,
@@ -340,6 +342,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -358,6 +361,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             priority=priority,
             max_retries=max_retries,
             scheduled_at=scheduled_at,
+            expires_at=expires_at,
             key=key,
             metadata=dict(metadata or {}),
         )
@@ -566,6 +570,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return [self._record_from_row(row) for row in rows]
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(task_id)
+        return claimed
+
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and identify a claim-time expiry owned by this call."""
+        claimed: "QueuedTaskRecord | None" = None
+        expired: "QueuedTaskRecord | None" = None
         with self._observe_queue_operation("claim", task_id=str(task_id)):
             async with self._session() as driver:
                 await driver.begin()
@@ -573,14 +586,42 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     row = await self._select_task(driver, task_id)
                     if row is None:
                         await driver.rollback()
-                        return None
+                        return None, None
 
                     record = self._record_from_row(row)
-                    if record.status not in _DUE_STATUSES or not record.is_due:
+                    if (
+                        record.status not in _DUE_STATUSES
+                        or not record.is_due
+                        or is_external_dispatch_reservation(record.execution_ref)
+                    ):
                         await driver.rollback()
-                        return None
+                        return None, None
 
                     now = _utc_now()
+                    if record.execution_ref is None and record.expires_at is not None and record.expires_at <= now:
+                        ownership_ref = f"__litestar_queues_expiry__:{uuid4()}"
+                        result = await driver.execute(
+                            self._get_store().expire_task_owned(
+                                task_id=str(task_id),
+                                now=self._serialize_datetime(now),
+                                ownership_ref=ownership_ref,
+                                expected_execution_ref=record.execution_ref,
+                            )
+                        )
+                        if self._resolve_rows_affected(result) != 0:
+                            expired_row = await self._select_task(driver, task_id)
+                            if expired_row is not None:
+                                candidate = self._record_from_row(expired_row)
+                                if candidate.status == "expired" and candidate.execution_ref == ownership_ref:
+                                    await driver.execute(
+                                        self._get_store().clear_expiry_ownership(
+                                            task_ids=[str(task_id)], ownership_ref=ownership_ref
+                                        )
+                                    )
+                                    candidate.execution_ref = None
+                                    expired = candidate
+                        await driver.commit()
+                        return None, expired
                     result = await driver.execute(
                         self._get_store().claim_task(
                             task_id=str(task_id),
@@ -591,12 +632,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     )
                     if self._resolve_rows_affected(result) == 0:
                         await driver.rollback()
-                        return None
+                        return None, None
 
                     updated_row = await self._select_task(driver, task_id)
                     if updated_row is None or self._record_from_row(updated_row).status != "running":
                         await driver.rollback()
-                        return None
+                        return None, None
                     await driver.commit()
                 except Exception:
                     with suppress(Exception):
@@ -605,7 +646,49 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         claimed = self._record_from_row(updated_row) if updated_row is not None else None
         if claimed is not None:
             self._increment_queue_metric("claim")
-        return claimed
+        return claimed, None
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``."""
+        store = self._get_store()
+        now = _utc_now()
+        serialized_now = self._serialize_datetime(now)
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                rows = await self._select_rows(driver, store.select_expired(now=serialized_now, limit=limit))
+                task_ids = [str(self._record_from_row(row).id) for row in rows]
+                if not task_ids:
+                    await driver.rollback()
+                    return []
+                ownership_ref = f"__litestar_queues_expiry__:{uuid4()}"
+                result = await driver.execute(
+                    store.expire_tasks(task_ids=task_ids, now=serialized_now, ownership_ref=ownership_ref)
+                )
+                if self._resolve_rows_affected(result) == 0:
+                    await driver.rollback()
+                    return []
+                updated_rows = await self._select_rows(driver, store.select_tasks_by_ids(task_ids))
+                updated_by_id = {
+                    str(record.id): record
+                    for row in updated_rows
+                    if (record := self._record_from_row(row)).status == "expired"
+                    and record.execution_ref == ownership_ref
+                }
+                expired = [updated_by_id[task_id] for task_id in task_ids if task_id in updated_by_id]
+                if expired:
+                    expired_ids = [str(record.id) for record in expired]
+                    await driver.execute(
+                        store.clear_expiry_ownership(task_ids=expired_ids, ownership_ref=ownership_ref)
+                    )
+                    for record in expired:
+                        record.execution_ref = None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return expired
 
     async def claim_many(
         self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
@@ -627,9 +710,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         now = _utc_now()
         parameters: "dict[str, Any]" = {
             "now": self._serialize_datetime(now),
+            "expires_now": self._serialize_datetime(now),
             "started_at": self._serialize_datetime(now),
             "heartbeat_at": self._serialize_datetime(now),
             "limit": limit,
+            "reservation_prefix": f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%",
         }
         for index, queue in enumerate(queues):
             parameters[f"queue_{index}"] = queue
@@ -645,6 +730,44 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if records:
             self._increment_queue_metric("claim", float(len(records)))
         return records
+
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and report every expiry transition owned by this call."""
+        if limit <= 0:
+            return [], []
+        store = self._get_store()
+        if type(store).supports_returning_claim:
+            return await super().claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend
+            )
+
+        expired = await self.expire_overdue()
+        claimed: "list[QueuedTaskRecord]" = []
+        seen: "set[UUID]" = set()
+        for queue in queues or (None,):
+            while len(claimed) < limit:
+                rows = await self._select_pending_rows(
+                    limit=max(10, limit - len(claimed)), queue=queue, execution_backend=execution_backend
+                )
+                candidates = [self._record_from_row(row) for row in rows if UUID(str(row["id"])) not in seen]
+                if not candidates:
+                    break
+                for candidate in candidates:
+                    seen.add(candidate.id)
+                    claimed_record, expired_record = await self.claim_task_with_expired(candidate.id)
+                    if expired_record is not None:
+                        expired.append(expired_record)
+                    if claimed_record is not None:
+                        claimed.append(claimed_record)
+                        if len(claimed) >= limit:
+                            break
+                if len(rows) < max(10, limit - len(claimed)):
+                    break
+        expired.extend(await self.expire_overdue())
+        unique_expired = {record.id: record for record in expired}
+        return claimed, list(unique_expired.values())
 
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
@@ -1167,6 +1290,98 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     )
                 )
                 row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return self._record_from_row(row) if row is not None else None
+
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().reserve_external_dispatch(
+                        task_id=str(task_id),
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                        execution_ref=reservation_ref,
+                        now=self._serialize_datetime(_utc_now()),
+                    )
+                )
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        record = self._record_from_row(row) if row is not None else None
+        return record if record is not None and record.execution_ref == reservation_ref else None
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().release_external_dispatch(
+                        task_id=str(task_id),
+                        reservation_ref=reservation_ref,
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                    )
+                )
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        record = self._record_from_row(row) if row is not None else None
+        if record is not None and record.execution_ref is not None:
+            record = None
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().finalize_external_dispatch(
+                        task_id=str(task_id),
+                        reservation_ref=reservation_ref,
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                        execution_ref=execution_ref,
+                    )
+                )
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
+                if row is not None and self._record_from_row(row).execution_ref != execution_ref:
+                    row = None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1871,6 +2086,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             priority=request.priority,
             max_retries=request.max_retries,
             scheduled_at=request.scheduled_at,
+            expires_at=request.expires_at,
             key=request.key,
             metadata=dict(request.metadata or {}),
         )
@@ -1910,6 +2126,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "completed_at": self._serialize_datetime(record.completed_at),
             "created_at": self._serialize_datetime(record.created_at),
             "error": record.error,
+            "expires_at": self._serialize_datetime(record.expires_at),
             "execution_backend": record.execution_backend,
             "execution_profile": record.execution_profile,
             "execution_ref": record.execution_ref,
@@ -1950,6 +2167,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             max_retries=int(row["max_retries"]),
             retry_count=int(row["retry_count"]),
             scheduled_at=_deserialize_datetime(row["scheduled_at"]),
+            expires_at=_deserialize_datetime(row["expires_at"]),
             created_at=cast("datetime", _deserialize_datetime(row["created_at"])),
             started_at=_deserialize_datetime(row["started_at"]),
             completed_at=_deserialize_datetime(row["completed_at"]),
@@ -2193,7 +2411,7 @@ def _deserialize_datetime(value: "Any") -> "datetime | None":
 
 def _coerce_status(value: "Any") -> "TaskStatus":
     status = str(value)
-    if status not in {"cancelled", "completed", "failed", "pending", "running", "scheduled"}:
+    if status not in {"cancelled", "completed", "expired", "failed", "pending", "running", "scheduled"}:
         msg = f"Unknown queued task status from SQLSpec queue backend: {status!r}"
         raise ValueError(msg)
     return cast("TaskStatus", status)

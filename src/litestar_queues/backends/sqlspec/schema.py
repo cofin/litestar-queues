@@ -53,6 +53,7 @@ _CANONICAL_COLUMNS = frozenset({
     "max_retries",
     "retry_count",
     "scheduled_at",
+    "expires_at",
     "created_at",
     "started_at",
     "completed_at",

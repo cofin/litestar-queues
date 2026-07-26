@@ -1,6 +1,7 @@
 """Extension-migration tests for the SQLSpec queue backend."""
 
 import importlib
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -183,6 +184,23 @@ async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     assert "create_task_reservation_store" in migration_content
     assert "return SQLSpecQueueStore(" not in migration_content
     assert "CREATE TABLE IF NOT EXISTS queue_task" not in migration_content
+
+
+async def test_sqlspec_backend_initial_migration_includes_expiration() -> "None":
+    """The initial migration creates the expiration column on a fresh database."""
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    context = SimpleNamespace(config=_fake_adapter_config("aiosqlite", dialect="sqlite"))
+
+    statements = await migration.up(context)
+
+    assert "expires_at" in statements[0]
+
+    with sqlite3.connect(":memory:") as connection:
+        for statement in statements:
+            connection.executescript(statement)
+        columns = connection.execute("PRAGMA table_info(queue_task)").fetchall()
+
+    assert [column[1] for column in columns].count("expires_at") == 1
 
 
 async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_table(

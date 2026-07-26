@@ -99,6 +99,11 @@ class BackendCase:
     build: 'Callable[[FixtureCtx], Awaitable["BaseQueueBackend"]]'
     capabilities: "frozenset[str]"
 
+    def __post_init__(self) -> "None":
+        """Activate capabilities implemented uniformly by one backend family."""
+        if "sqlspec" in self.extras:
+            object.__setattr__(self, "capabilities", self.capabilities | {"expiry"})
+
 
 # ---------------------------------------------------------------------------
 # Builders. Each builder is async and returns a constructed-but-unopened
@@ -445,7 +450,7 @@ async def _build_arrow_odbc_mssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
 
 
 QUEUE_BACKENDS: "tuple[BackendCase, ...]" = (
-    BackendCase("memory", frozenset(), None, _build_memory, frozenset({"in-process", "notify-direct"})),
+    BackendCase("memory", frozenset(), None, _build_memory, frozenset({"expiry", "in-process", "notify-direct"})),
     BackendCase(
         "aiosqlite",
         frozenset({"aiosqlite", "sqlspec"}),

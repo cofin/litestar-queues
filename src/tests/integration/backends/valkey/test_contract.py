@@ -16,11 +16,53 @@ pytest.importorskip("valkey")
 
 from litestar_queues import TaskRequest
 from litestar_queues.models import HeartbeatTouch
+from tests.integration._expiry_contract import (
+    assert_claim_many_preserves_expired_dispatch_reservation,
+    assert_claim_many_reports_owned_expirations,
+    assert_expire_overdue_transitions_and_reports,
+    assert_expired_claim_is_fenced,
+    assert_expiry_fences_retry_requeue,
+    assert_external_dispatch_reservation_is_fenced,
+    assert_finalized_dispatch_claims_after_queue_deadline,
+    assert_future_deadline_is_claimable,
+)
 
 if TYPE_CHECKING:
     from litestar_queues.backends.valkey import ValkeyQueueBackend
 
 pytestmark = pytest.mark.anyio
+
+
+async def test_valkey_expired_claim_is_fenced(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_expired_claim_is_fenced(valkey_backend)
+
+
+async def test_valkey_expire_overdue_transitions_and_reports(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_expire_overdue_transitions_and_reports(valkey_backend)
+
+
+async def test_valkey_claim_many_reports_owned_expirations(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_claim_many_reports_owned_expirations(valkey_backend)
+
+
+async def test_valkey_expiry_fences_retry_requeue(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_expiry_fences_retry_requeue(valkey_backend)
+
+
+async def test_valkey_future_deadline_is_claimable(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_future_deadline_is_claimable(valkey_backend)
+
+
+async def test_valkey_external_dispatch_reservation_is_fenced(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_external_dispatch_reservation_is_fenced(valkey_backend)
+
+
+async def test_valkey_claim_many_preserves_expired_dispatch_reservation(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_claim_many_preserves_expired_dispatch_reservation(valkey_backend)
+
+
+async def test_valkey_finalized_dispatch_claims_after_queue_deadline(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_finalized_dispatch_claims_after_queue_deadline(valkey_backend)
 
 
 async def test_valkey_backend_keeps_claim_fallback_without_batch_capability(
@@ -96,6 +138,36 @@ async def test_valkey_backend_claims_due_tasks_once_by_priority_and_filters_exec
     stored_low = await valkey_backend.get_task(low.id)
     assert stored_low is not None
     assert stored_low.status == "pending"
+
+
+async def test_valkey_backend_expires_pending_tasks(valkey_backend: "ValkeyQueueBackend") -> "None":
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    claim_overdue = await valkey_backend.enqueue("tasks.valkey.expired.claim", expires_at=past)
+    sweep_overdue = await valkey_backend.enqueue("tasks.valkey.expired.sweep", expires_at=past)
+    batch_overdue = await valkey_backend.enqueue("tasks.valkey.expired.batch", expires_at=past)
+    live = await valkey_backend.enqueue("tasks.valkey.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+
+    assert [record.id for record in await valkey_backend.list_pending(limit=10)] == [live.id]
+    assert await valkey_backend.claim_task(claim_overdue.id) is None
+    swept = await valkey_backend.expire_overdue(limit=1)
+    assert len(swept) == 1
+    assert swept[0].id in {sweep_overdue.id, batch_overdue.id}
+    assert [record.id for record in await valkey_backend.claim_many(limit=10)] == [live.id]
+    assert await valkey_backend.expire_overdue(limit=1) == []
+
+    stored = await valkey_backend.get_task(claim_overdue.id)
+    swept_stored = await valkey_backend.get_task(sweep_overdue.id)
+    batch_stored = await valkey_backend.get_task(batch_overdue.id)
+    statistics = await valkey_backend.get_statistics()
+
+    assert stored is not None
+    assert stored.status == "expired"
+    assert swept_stored is not None
+    assert swept_stored.status == "expired"
+    assert batch_stored is not None
+    assert batch_stored.status == "expired"
+    assert statistics.expired == 3
+    assert await valkey_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1)) == 3
 
 
 async def test_valkey_enqueue_many_records_remain_claimable_when_batch_marker_is_dropped(
@@ -299,7 +371,7 @@ async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]
 
 async def _status_memberships(backend: "ValkeyQueueBackend", task_id: "object") -> "list[str]":
     client = cast("Any", await backend._get_client())
-    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired")
     return [
         status
         for status in statuses
@@ -320,7 +392,7 @@ async def test_valkey_backend_enqueue_places_record_in_single_status_set(
     record = await valkey_backend.enqueue("tasks.single")
 
     client = cast("Any", await valkey_backend._get_client())
-    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired")
     memberships = [
         status
         for status in statuses

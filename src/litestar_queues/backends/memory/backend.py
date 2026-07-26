@@ -6,6 +6,7 @@ from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    is_external_dispatch_reservation,
     record_matches_filters,
     stale_requeue_error,
     stale_requeue_priority,
@@ -82,6 +83,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -107,6 +109,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 priority=priority,
                 max_retries=max_retries,
                 scheduled_at=scheduled_at,
+                expires_at=expires_at,
                 key=key,
                 metadata=dict(metadata or {}),
             )
@@ -152,6 +155,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     priority=request.priority,
                     max_retries=request.max_retries,
                     scheduled_at=request.scheduled_at,
+                    expires_at=request.expires_at,
                     key=request.key,
                     metadata=dict(request.metadata or {}),
                 )
@@ -180,6 +184,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
             for record in self._records.values()
             if record.status in {"pending", "scheduled"}
             and record.is_due
+            and not record.is_expired
+            and not is_external_dispatch_reservation(record.execution_ref)
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
@@ -187,15 +193,30 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return due_records[:limit]
 
     async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(task_id)
+        return claimed
+
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and return an expiry transitioned under the same lock."""
         async with self._lock:
             record = self._records.get(task_id)
-            if record is None or record.status not in {"pending", "scheduled"} or not record.is_due:
-                return None
+            if (
+                record is None
+                or record.status not in {"pending", "scheduled"}
+                or not record.is_due
+                or is_external_dispatch_reservation(record.execution_ref)
+            ):
+                return None, None
             now = _utc_now()
+            if record.execution_ref is None and record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                return None, record
             record.status = "running"
             record.started_at = now
             record.heartbeat_at = now
-            return record
+            return record, None
 
     async def claim_many(
         self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
@@ -211,18 +232,35 @@ class InMemoryQueueBackend(BaseQueueBackend):
         Returns:
             Claimed task records in claim order.
         """
+        claimed, _ = await self.claim_many_with_expired(limit=limit, queues=queues, execution_backend=execution_backend)
+        return claimed
+
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and return overdue records expired under the same lock."""
         if limit <= 0:
-            return []
+            return [], []
         async with self._lock:
             now = _utc_now()
-            eligible = [
-                record
-                for record in self._records.values()
-                if record.status in {"pending", "scheduled"}
-                and (record.scheduled_at is None or record.scheduled_at <= now)
-                and (not queues or record.queue in queues)
-                and (execution_backend is None or record.execution_backend == execution_backend)
-            ]
+            eligible: "list[QueuedTaskRecord]" = []
+            expired: "list[QueuedTaskRecord]" = []
+            for record in self._records.values():
+                if record.status not in {"pending", "scheduled"}:
+                    continue
+                if queues and record.queue not in queues:
+                    continue
+                if execution_backend is not None and record.execution_backend != execution_backend:
+                    continue
+                if is_external_dispatch_reservation(record.execution_ref):
+                    continue
+                if record.expires_at is not None and record.expires_at <= now:
+                    _expire_record(record, now)
+                    expired.append(record)
+                    continue
+                if record.scheduled_at is not None and record.scheduled_at > now:
+                    continue
+                eligible.append(record)
             eligible.sort(key=lambda record: (-record.priority, record.created_at))
             claimed: "list[QueuedTaskRecord]" = []
             for record in eligible[:limit]:
@@ -230,7 +268,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 record.started_at = now
                 record.heartbeat_at = now
                 claimed.append(record)
-            return claimed
+            return claimed, expired
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -378,6 +416,90 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     result.handler_needed += 1
                     result.handler_needed_task_ids.append(record.id)
         return result
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``.
+
+        Returns:
+            Records transitioned during this call.
+        """
+        now = _utc_now()
+        expired: "list[QueuedTaskRecord]" = []
+        async with self._lock:
+            for record in self._records.values():
+                if limit is not None and len(expired) >= limit:
+                    break
+                if record.status not in {"pending", "scheduled"}:
+                    continue
+                if record.execution_ref is not None:
+                    continue
+                if record.expires_at is None or record.expires_at > now:
+                    continue
+                _expire_record(record, now)
+                expired.append(record)
+        return expired
+
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        now = _utc_now()
+        async with self._lock:
+            record = self._records.get(task_id)
+            if (
+                record is None
+                or record.status not in {"pending", "scheduled"}
+                or not record.is_due
+                or record.execution_ref is not None
+            ):
+                return None
+            if record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = reservation_ref
+            return record
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = None
+        await self.notify_new_task(record)
+        return record
+
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = execution_ref
+            return record
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
@@ -583,3 +705,9 @@ def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
 
 def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
+
+
+def _expire_record(record: "QueuedTaskRecord", completed_at: "datetime") -> "None":
+    record.status = "expired"
+    record.completed_at = completed_at
+    record.heartbeat_at = None

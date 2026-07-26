@@ -19,11 +19,53 @@ pytest.importorskip("redis")
 from litestar_queues import TaskRequest
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.models import HeartbeatTouch
+from tests.integration._expiry_contract import (
+    assert_claim_many_preserves_expired_dispatch_reservation,
+    assert_claim_many_reports_owned_expirations,
+    assert_expire_overdue_transitions_and_reports,
+    assert_expired_claim_is_fenced,
+    assert_expiry_fences_retry_requeue,
+    assert_external_dispatch_reservation_is_fenced,
+    assert_finalized_dispatch_claims_after_queue_deadline,
+    assert_future_deadline_is_claimable,
+)
 
 if TYPE_CHECKING:
     from litestar_queues.backends.redis import RedisQueueBackend
 
 pytestmark = pytest.mark.anyio
+
+
+async def test_redis_expired_claim_is_fenced(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_expired_claim_is_fenced(redis_backend)
+
+
+async def test_redis_expire_overdue_transitions_and_reports(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_expire_overdue_transitions_and_reports(redis_backend)
+
+
+async def test_redis_claim_many_reports_owned_expirations(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_claim_many_reports_owned_expirations(redis_backend)
+
+
+async def test_redis_expiry_fences_retry_requeue(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_expiry_fences_retry_requeue(redis_backend)
+
+
+async def test_redis_future_deadline_is_claimable(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_future_deadline_is_claimable(redis_backend)
+
+
+async def test_redis_external_dispatch_reservation_is_fenced(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_external_dispatch_reservation_is_fenced(redis_backend)
+
+
+async def test_redis_claim_many_preserves_expired_dispatch_reservation(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_claim_many_preserves_expired_dispatch_reservation(redis_backend)
+
+
+async def test_redis_finalized_dispatch_claims_after_queue_deadline(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_finalized_dispatch_claims_after_queue_deadline(redis_backend)
 
 
 def test_top_level_litestar_queues_import_does_not_pull_in_redis_or_valkey() -> "None":
@@ -138,6 +180,36 @@ async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execu
     stored_low = await redis_backend.get_task(low.id)
     assert stored_low is not None
     assert stored_low.status == "pending"
+
+
+async def test_redis_backend_expires_pending_tasks(redis_backend: "RedisQueueBackend") -> "None":
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    claim_overdue = await redis_backend.enqueue("tasks.redis.expired.claim", expires_at=past)
+    sweep_overdue = await redis_backend.enqueue("tasks.redis.expired.sweep", expires_at=past)
+    batch_overdue = await redis_backend.enqueue("tasks.redis.expired.batch", expires_at=past)
+    live = await redis_backend.enqueue("tasks.redis.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+
+    assert [record.id for record in await redis_backend.list_pending(limit=10)] == [live.id]
+    assert await redis_backend.claim_task(claim_overdue.id) is None
+    swept = await redis_backend.expire_overdue(limit=1)
+    assert len(swept) == 1
+    assert swept[0].id in {sweep_overdue.id, batch_overdue.id}
+    assert [record.id for record in await redis_backend.claim_many(limit=10)] == [live.id]
+    assert await redis_backend.expire_overdue(limit=1) == []
+
+    stored = await redis_backend.get_task(claim_overdue.id)
+    swept_stored = await redis_backend.get_task(sweep_overdue.id)
+    batch_stored = await redis_backend.get_task(batch_overdue.id)
+    statistics = await redis_backend.get_statistics()
+
+    assert stored is not None
+    assert stored.status == "expired"
+    assert swept_stored is not None
+    assert swept_stored.status == "expired"
+    assert batch_stored is not None
+    assert batch_stored.status == "expired"
+    assert statistics.expired == 3
+    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1)) == 3
 
 
 async def test_redis_enqueue_many_records_remain_claimable_when_batch_marker_is_dropped(
@@ -349,7 +421,7 @@ async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]
 
 async def _status_memberships(backend: "RedisQueueBackend", task_id: "object") -> "list[str]":
     client = cast("Any", await backend._get_client())
-    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired")
     return [
         status
         for status in statuses
@@ -368,7 +440,7 @@ async def test_redis_backend_enqueue_places_record_in_single_status_set(redis_ba
     record = await redis_backend.enqueue("tasks.single")
 
     client = cast("Any", await redis_backend._get_client())
-    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired")
     memberships = [
         status
         for status in statuses

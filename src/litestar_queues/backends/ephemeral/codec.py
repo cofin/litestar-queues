@@ -27,8 +27,8 @@ __all__ = (
     "record_to_payload",
 )
 
-MAGIC = b"LQEP\x01"
-SCHEMA_VERSION = 1
+MAGIC = b"LQEP\x02"
+SCHEMA_VERSION = 2
 
 _SERIALIZATION_ERROR = (
     "The ephemeral SQLite backend requires JSON-serializable task arguments, metadata, events, and results."
@@ -47,6 +47,7 @@ _RECORD_FIELDS = (
     "max_retries",
     "retry_count",
     "scheduled_at",
+    "expires_at",
     "created_at",
     "started_at",
     "completed_at",
@@ -56,7 +57,7 @@ _RECORD_FIELDS = (
     "key",
     "metadata",
 )
-_RECORD_DATETIMES = ("scheduled_at", "created_at", "started_at", "completed_at", "heartbeat_at")
+_RECORD_DATETIMES = ("scheduled_at", "expires_at", "created_at", "started_at", "completed_at", "heartbeat_at")
 _EVENT_FIELDS = (
     "event_id",
     "event_type",
@@ -136,7 +137,7 @@ def _parse_datetime(value: "object") -> "datetime | None":
 
 
 def record_to_payload(record: "QueuedTaskRecord") -> "bytes":
-    """Encode one queue record as a canonical schema-1 mapping.
+    """Encode one queue record as a canonical schema-2 mapping.
 
     Returns:
         The encoded payload blob.
@@ -166,7 +167,7 @@ def record_to_payload(record: "QueuedTaskRecord") -> "bytes":
 
 
 def record_from_payload(payload: "bytes") -> "QueuedTaskRecord":
-    """Rebuild a queue record from its schema-1 payload.
+    """Rebuild a queue record from its schema-2 payload.
 
     Returns:
         The reconstructed record.

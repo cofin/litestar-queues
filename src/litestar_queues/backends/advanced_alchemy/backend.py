@@ -164,6 +164,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         priority: "int" = 0,
         max_retries: "int" = 0,
         scheduled_at: "datetime | None" = None,
+        expires_at: "datetime | None" = None,
         key: "str | None" = None,
         execution_backend: "str" = "local",
         execution_profile: "str | None" = None,
@@ -180,6 +181,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
                     priority=priority,
                     max_retries=max_retries,
                     scheduled_at=scheduled_at,
+                    expires_at=expires_at,
                     key=key,
                     execution_backend=execution_backend,
                     execution_profile=execution_profile,
@@ -242,6 +244,12 @@ class SQLAlchemyBackend(BaseQueueBackend):
         async with self._operation() as service:
             return await service.claim_task(task_id)
 
+    async def claim_task_with_expired(
+        self, task_id: "UUID"
+    ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        async with self._operation() as service:
+            return await service.claim_task_with_expired(task_id)
+
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -274,6 +282,27 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 records.extend(claimed_records)
         self._increment_queue_metric("claim", float(len(records)))
         return records
+
+    async def claim_many_with_expired(
+        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        """Claim records and report expiry transitions from the same transactions."""
+        if limit <= 0:
+            return [], []
+        records: "list[QueuedTaskRecord]" = []
+        expired: "list[QueuedTaskRecord]" = []
+        async with self._operation() as service:
+            for queue in queues or (None,):
+                if len(records) >= limit:
+                    break
+                claimed_records, expired_records = await service.claim_many_with_expired(
+                    limit=limit - len(records), queue=queue, execution_backend=execution_backend
+                )
+                records.extend(claimed_records)
+                expired.extend(expired_records)
+        self._increment_queue_metric("claim", float(len(records)))
+        unique_expired = {record.id: record for record in expired}
+        return records, list(unique_expired.values())
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -329,6 +358,49 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 task_id, execution_backend, execution_ref, execution_profile=execution_profile
             )
 
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            return await service.reserve_external_dispatch(
+                task_id, execution_backend, reservation_ref, execution_profile=execution_profile
+            )
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            record = await service.release_external_dispatch(
+                task_id, reservation_ref, execution_backend, execution_profile=execution_profile
+            )
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def finalize_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            return await service.finalize_external_dispatch(
+                task_id, reservation_ref, execution_backend, execution_ref, execution_profile=execution_profile
+            )
+
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -380,6 +452,10 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def get_statistics(self) -> "QueueStatistics":
         async with self._service() as service:
             return await service.get_statistics()
+
+    async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        async with self._operation() as service:
+            return await service.expire_overdue(limit=limit)
 
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10

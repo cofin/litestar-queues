@@ -141,6 +141,35 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
     assert stored.status == "pending"
 
 
+async def test_cloudrun_dispatch_reservation_rejects_an_expired_record_before_side_effect() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    ) as service:
+        record = await queue_backend.enqueue(
+            "tasks.expired_remote",
+            execution_backend="cloudrun",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+
+        execution_ref = await backend.dispatch(service, record)
+        stored = await queue_backend.get_task(record.id)
+
+    assert execution_ref is None
+    assert jobs_client.requests == []
+    assert stored is not None
+    assert stored.status == "expired"
+
+
 async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
@@ -358,6 +387,90 @@ async def test_cloudrun_dispatch_failure_falls_back_to_local_when_remote_has_not
         event.type == "task.event" and event.payload.get("phase") == "cloudrun.dispatch_fallback"
         for event in event_sink.events
     )
+
+
+async def test_cloudrun_dispatch_cancellation_releases_reservation() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    @task("tasks.cancelled_dispatch")
+    async def cancelled_dispatch() -> "None":
+        return None
+
+    class BlockingJobsClient:
+        def __init__(self) -> "None":
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run_job(self, *, request: "object") -> "object":
+            del request
+            self.started.set()
+            await self.release.wait()
+            raise AssertionError
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = BlockingJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    ) as service:
+        record = await queue_backend.enqueue(cancelled_dispatch.name, execution_backend="cloudrun")
+        dispatch = asyncio.create_task(backend.dispatch(service, record))
+        await jobs_client.started.wait()
+        dispatch.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await dispatch
+        stored = await queue_backend.get_task(record.id)
+
+    assert stored is not None
+    assert stored.execution_ref is None
+    assert stored.status == "pending"
+
+
+async def test_cloudrun_reconcile_recovers_stale_reservation_and_expires_task() -> "None":
+    from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    event_sink = InMemoryQueueEventSink()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker")
+    )
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="cloudrun",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(event_sink,))),
+        ),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    ) as service:
+        record = await queue_backend.enqueue(
+            "tasks.abandoned_dispatch",
+            execution_backend="cloudrun",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+        )
+        reserved = await queue_backend.reserve_external_dispatch(
+            record.id, "cloudrun", "__litestar_queues_dispatching__:0:abandoned"
+        )
+        assert reserved is not None
+        reserved.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        updated = await backend.reconcile(service, reserved)
+        stored = await queue_backend.get_task(record.id)
+
+    assert updated is not None
+    assert updated.status == "expired"
+    assert stored is not None
+    assert stored.status == "expired"
+    assert stored.execution_ref is None
+    assert [event.type for event in event_sink.events] == ["task.expired"]
 
 
 @pytest.mark.parametrize(
