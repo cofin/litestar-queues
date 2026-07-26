@@ -57,6 +57,9 @@ def test_worker_placement_is_publicly_exported() -> "None":
 
 _VALID = [
     ("ephemeral", "local", "server"),
+    ("ephemeral", "local", "asgi"),
+    ("ephemeral", "local", "external"),
+    ("ephemeral", "immediate", "external"),
     ("memory", "local", "asgi"),
     ("memory", "immediate", "external"),
     ("memory", "local", "external"),
@@ -66,9 +69,8 @@ _VALID = [
 ]
 
 _INVALID = [
-    ("ephemeral", "local", "asgi"),
-    ("ephemeral", "local", "external"),
     ("ephemeral", "immediate", "server"),
+    ("ephemeral", "immediate", "asgi"),
     ("memory", "local", "server"),
     ("memory", "immediate", "server"),
     ("memory", "immediate", "asgi"),
@@ -93,6 +95,23 @@ def test_invalid_placement_combinations(backend: "str", execution: "str", placem
 def test_unknown_placement_is_rejected() -> "None":
     with pytest.raises(QueueConfigurationError):
         WorkerConfig(placement="inline")  # type: ignore[arg-type]
+
+
+async def test_ephemeral_backend_refuses_to_open_without_a_prepared_database() -> "None":
+    """Placement does not decide whether an ephemeral database exists.
+
+    The database is created by whatever entered
+    :class:`EphemeralServerContext`, so the backend's own open path is what
+    enforces its presence. Rejecting a placement at configuration time
+    restated that check as a proxy and blocked embedders that create the
+    database themselves.
+    """
+    from litestar_queues.backends.ephemeral import EphemeralQueueBackend
+
+    config = QueueConfig(queue_backend="ephemeral", worker=WorkerConfig(placement="external"))
+
+    with pytest.raises(QueueConfigurationError, match="Litestar CLI server lifespan"):
+        await EphemeralQueueBackend(config).open()
 
 
 def test_validation_uses_backend_names_not_backend_instances() -> "None":

@@ -348,16 +348,11 @@ class QueueConfig:
                 f"Use execution_backend='local', or placement='external'."
             )
             raise QueueConfigurationError(msg)
-        if backend == "ephemeral" and placement != "server":
-            msg = (
-                f"queue_backend='ephemeral' is created and removed by the Litestar CLI server "
-                f"lifespan, so it is only available to placement='server', not {placement!r}. "
-                f"Configure a persistent backend for {placement!r}."
-            )
-            raise QueueConfigurationError(msg)
-        if backend == "ephemeral" and execution != "local":
-            msg = f"queue_backend='ephemeral' supports execution_backend='local' only, not {execution!r}."
-            raise QueueConfigurationError(msg)
+        # Ephemeral storage is deliberately unconstrained by placement. Placement
+        # does not decide whether the private database exists: whatever entered
+        # EphemeralServerContext created it, and the backend refuses to open when
+        # that environment is absent. Restating that check as a placement rule
+        # only blocked embedders that create the database themselves.
         if backend == "memory" and placement == "server":
             msg = (
                 "queue_backend='memory' is process-local, so a separate server-owned worker "

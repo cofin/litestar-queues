@@ -30,9 +30,11 @@ configure.
   execution.
 * Storage, execution, and placement combinations that cannot work are rejected at
   startup rather than at first claim. Process-local storage with a separate worker
-  process, inline execution under a managed placement, and ephemeral storage
-  outside its owning server all raise with a message that names the fix. Starting
-  through a raw ASGI server under server placement fails before serving traffic.
+  process and inline execution under a managed placement both raise with a message
+  that names the fix. Starting through a raw ASGI server under server placement
+  fails before serving traffic. Ephemeral storage is not restricted by placement:
+  the backend refuses to open when no private database has been prepared, so an
+  embedder that creates one itself is free to use any placement.
 
 **Added:**
 
