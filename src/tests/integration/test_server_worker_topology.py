@@ -7,12 +7,12 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-import psutil
+import psutil  # type: ignore[import-untyped]
 import pytest
 from typing_extensions import Self
 
@@ -20,6 +20,8 @@ pytestmark = pytest.mark.topology
 
 ROOT = Path(__file__).resolve().parents[3]
 APP_PATH = "tests.helpers.support.server_worker_app:create_app"
+WINDOWS_CREATE_NEW_PROCESS_GROUP = cast("int", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+WINDOWS_CTRL_BREAK_EVENT = cast("int", getattr(signal, "CTRL_BREAK_EVENT", signal.SIGINT))
 
 
 def _free_port() -> "int":
@@ -31,7 +33,7 @@ def _free_port() -> "int":
 def _json_request(url: str, *, method: str = "GET") -> "dict[str, Any]":
     request = Request(url, method=method)
     with urlopen(request, timeout=1) as response:
-        return json.loads(response.read())
+        return cast("dict[str, Any]", json.loads(response.read()))
 
 
 def _wait_for_json(url: str, *, timeout: float = 20) -> "dict[str, Any]":
@@ -99,7 +101,7 @@ class ServerProcess:
         if self.server == "granian":
             command.extend(("--workers", str(self.workers)))
         self._output = self.output_path.open("wb")
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        creationflags = WINDOWS_CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -120,7 +122,10 @@ class ServerProcess:
         return self
 
     def markers(self, role: str) -> "list[dict[str, Any]]":
-        return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.marker_dir.glob(f"{role}-*.json"))]
+        return [
+            cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
+            for path in sorted(self.marker_dir.glob(f"{role}-*.json"))
+        ]
 
     def _remember_descendants(self) -> "None":
         process = self.process
@@ -168,7 +173,7 @@ class ServerProcess:
         self._remember_descendants()
         try:
             if process.poll() is None:
-                process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
+                process.send_signal(WINDOWS_CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
                 try:
                     process.wait(timeout=15)
                 except subprocess.TimeoutExpired:
@@ -205,7 +210,7 @@ def test_server_placement_owns_exactly_one_fresh_queue_child(tmp_path: "Path", s
         def completed() -> "bool":
             nonlocal terminal
             terminal = _json_request(f"{running.base_url}/tasks/{task_id}")
-            return terminal["status"] == "completed"
+            return cast("str | None", terminal.get("status")) == "completed"
 
         _wait_for(completed, message="enqueued task did not complete")
         assert terminal["result"] == queue_pid

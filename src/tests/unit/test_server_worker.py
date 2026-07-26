@@ -665,12 +665,12 @@ def test_windows_tree_cleanup_failure_is_sanitized_and_never_claimed_clean(failu
     process = _FakeProcess(pid=82)
 
     def run(command: list[str], **kwargs: "Any") -> "Any":
+        command_name = "taskkill"
         del command, kwargs
         if failure == "missing":
             raise FileNotFoundError
         if failure == "timeout":
-            command = "taskkill"
-            raise subprocess.TimeoutExpired(command, 5)
+            raise subprocess.TimeoutExpired(command_name, 5)
         return SimpleNamespace(returncode=1)
 
     with pytest.raises(_QueueProcessCleanupError, match="Windows process-tree cleanup failed"):

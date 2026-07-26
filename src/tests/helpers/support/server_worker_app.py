@@ -67,7 +67,7 @@ async def task_status(task_id: "UUID", queue_service: "NamedDependency[QueueServ
 def create_app() -> "Litestar":
     if os.environ.get(PROCESS_ROLE_ENV_VAR) == "server-worker":
         _write_marker("queue")
-    plugins: "list[object]" = [
+    plugins: "list[Any]" = [
         QueuePlugin(
             QueueConfig(
                 worker=WorkerConfig(

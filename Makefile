@@ -12,8 +12,8 @@ MAKEFLAGS += --no-print-directory
 PYTHON_VERSION ?= 3.10
 UV_SYNC_ARGS ?= --all-extras --dev
 INFRA_ARGS ?=
-EXAMPLE_APPS := $(wildcard examples/htmx_realtime_*/)
-EXAMPLE_APP_MODULES := $(addsuffix .app:app, $(subst /,.,$(patsubst %/,%,$(EXAMPLE_APPS))))
+EXAMPLE_APP_FILES := $(wildcard examples/htmx_realtime_*/app.py)
+EXAMPLE_APP_MODULES := $(subst /,.,$(patsubst %/app.py,%.app:app,$(EXAMPLE_APP_FILES)))
 
 # Detect Rodete and configure index URLs for Python tools
 ifneq ($(shell grep -s -q "rodete" /etc/os-release && echo "yes"),)
