@@ -336,6 +336,7 @@ ban-relative-imports = "all"
 "__init__.py" = ["F401"]
 "docs/**/*.*" = ["A", "B", "D", "DTZ", "ERA", "RET", "S", "TC"]
 "src/litestar_queues/_cli.py" = ["BLE001"]
+"src/litestar_queues/_typing.py" = ["PLR0917"]
 "src/litestar_queues/backends/advanced_alchemy/mixins.py" = ["N805", "PLW3201"]
 "src/litestar_queues/backends/sqlspec/backend.py" = ["BLE001"]
 "src/litestar_queues/backends/sqlspec/stores/**/*.*" = ["SLF001"]

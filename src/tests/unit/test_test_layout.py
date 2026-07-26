@@ -3,6 +3,20 @@ from pathlib import Path
 TESTS = Path("src/tests")
 
 
+def test_end_to_end_harness_resolves_the_real_repository_root() -> None:
+    """The harness launches example apps with the repo root as its cwd.
+
+    ``REPO_ROOT`` is counted in parent hops, so moving the harness between test
+    tiers silently retargets it. Pointing one level short leaves the subprocess
+    in ``src/``, where ``examples`` does not exist, and every example server
+    fails to import rather than reporting a bad path.
+    """
+    from tests.integration.e2e.server_manager import REPO_ROOT
+
+    assert (REPO_ROOT / "pyproject.toml").is_file()
+    assert (REPO_ROOT / "examples" / "htmx_realtime_websocket" / "app.py").is_file()
+
+
 def test_shared_test_helpers_use_the_single_helpers_tree() -> None:
     assert not (TESTS / "support").exists()
     assert not (TESTS / "_factories").exists()

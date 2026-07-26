@@ -74,7 +74,7 @@ def _restored_logging_state() -> "Iterator[None]":
 
 
 def _patch_posix_child_session(monkeypatch: "MonkeyPatch", callback: "Callable[[], None]") -> "None":
-    monkeypatch.setattr("litestar_queues.worker.supervisor.os.name", "posix")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._os_name", lambda: "posix")
     monkeypatch.setattr(os, "setsid", callback, raising=False)
 
 
@@ -641,7 +641,7 @@ def test_join_timeout_terminates_then_kills(monkeypatch: MonkeyPatch) -> None:
     process = _FakeProcess()
     process.stop_after_terminate_join = False
     supervisor, _ = _supervisor(process=process, messages=[("ready", process.pid)])
-    monkeypatch.setattr("litestar_queues.worker.supervisor.os.name", "nt")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._os_name", lambda: "nt")
     monkeypatch.setattr("litestar_queues.worker.supervisor._kill_windows_process_tree", lambda process: process.kill())
     supervisor.start()
 
@@ -708,9 +708,9 @@ def test_server_shutdown_request_is_portable(monkeypatch: MonkeyPatch) -> None:
     )
     monkeypatch.setattr("litestar_queues.worker.supervisor.os.kill", lambda _pid, sig: signals.append(("kill", sig)))
 
-    monkeypatch.setattr("litestar_queues.worker.supervisor.sys.platform", "win32")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._sys_platform", lambda: "win32")
     _request_server_shutdown()
-    monkeypatch.setattr("litestar_queues.worker.supervisor.sys.platform", "linux")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._sys_platform", lambda: "linux")
     _request_server_shutdown()
 
     assert signals == [("raise", signal.SIGINT), ("kill", signal.SIGTERM)]

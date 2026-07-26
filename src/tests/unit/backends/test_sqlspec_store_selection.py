@@ -46,8 +46,8 @@ def _fake_config(adapter: "str", *, is_async: "bool" = True, dialect: "str | Non
     sys.modules.setdefault(module_name, types.ModuleType(module_name))
     config_type = type(f"{'Async' if is_async else 'Sync'}Config", (), {"__module__": module_name})
     config = config_type()
-    config.statement_config = types.SimpleNamespace(dialect=dialect)  # type: ignore[attr-defined]
-    config.extension_config = {}  # type: ignore[attr-defined]
+    config.statement_config = types.SimpleNamespace(dialect=dialect)
+    config.extension_config = {}
     return config
 
 

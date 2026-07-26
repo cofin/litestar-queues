@@ -295,12 +295,36 @@ async def _run_child(
                 parent.close()
 
 
+def _os_name() -> "str":
+    """Return the OS family through a seam tests can replace.
+
+    Tests must never assign to ``os.name`` itself: it is process-global, and
+    with it set to ``"posix"`` on Windows ``pathlib.Path`` builds a
+    ``PosixPath`` and raises. That breaks pytest's own failure reporting, which
+    turns an ordinary assertion into an INTERNALERROR before monkeypatch can
+    restore it.
+
+    Returns:
+        The value of :data:`os.name`.
+    """
+    return os.name
+
+
+def _sys_platform() -> "str":
+    """Return the platform identifier through a seam tests can replace.
+
+    Returns:
+        The value of :data:`sys.platform`.
+    """
+    return sys.platform
+
+
 def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", connection: "Connection") -> "None":
     stage = "bootstrap"
     try:
         _apply_launch_spec(spec)
         os.environ[_PROCESS_ROLE_ENV_VAR] = "server-worker"
-        if os.name == "posix":
+        if _os_name() == "posix":
             os.setsid()
         parent = _get_parent_process()
         stage = "load_app"
@@ -327,7 +351,7 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
 
 
 def _request_server_shutdown() -> "None":
-    if sys.platform == "win32":
+    if _sys_platform() == "win32":
         signal.raise_signal(signal.SIGINT)
     else:
         os.kill(os.getpid(), signal.SIGTERM)
@@ -407,7 +431,7 @@ def _force_stop_process(
     _getpgid: "Callable[[int], int]" = _get_process_group,
     _killpg: "Callable[[int, int], None]" = _kill_process_group,
 ) -> "None":
-    platform = os.name if _platform is None else _platform
+    platform = _os_name() if _platform is None else _platform
     if platform == "nt":
         try:
             _kill_windows_process_tree(process)
