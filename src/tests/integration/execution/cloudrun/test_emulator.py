@@ -141,6 +141,35 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
     assert stored.status == "pending"
 
 
+async def test_cloudrun_dispatch_reservation_rejects_an_expired_record_before_side_effect() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+    )
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    ) as service:
+        record = await queue_backend.enqueue(
+            "tasks.expired_remote",
+            execution_backend="cloudrun",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+
+        execution_ref = await backend.dispatch(service, record)
+        stored = await queue_backend.get_task(record.id)
+
+    assert execution_ref is None
+    assert jobs_client.requests == []
+    assert stored is not None
+    assert stored.status == "expired"
+
+
 async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 

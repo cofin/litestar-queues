@@ -9,4 +9,4 @@ def test_sqlspec_backend_registry_includes_mysql_pymysql_case() -> "None":
     assert case is not None
     assert case.extras == frozenset({"pymysql", "sqlspec"})
     assert case.service_attr == "mysql_service"
-    assert case.capabilities == frozenset({"polling-only", "json-column", "sync-driver"})
+    assert case.capabilities == frozenset({"polling-only", "json-column", "sync-driver", "expiry"})

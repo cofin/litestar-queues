@@ -491,13 +491,71 @@ class EphemeralQueueBackend(BaseQueueBackend):
             if limit is not None:
                 sql += " LIMIT ?"
                 values.append(limit)
-            expired = _decode_all(connection.execute(sql, values).fetchall())
+            expired = [
+                record
+                for record in _decode_all(connection.execute(sql, values).fetchall())
+                if record.execution_ref is None
+            ]
             for record in expired:
                 _expire_record(record, now)
                 _write(connection, record)
             return expired
 
         return await self._transaction(operation)
+
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            now = _utc_now()
+            if record.status not in _ACTIVE_STATUSES or not record.is_due or record.execution_ref is not None:
+                return None
+            if record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                _write(connection, record)
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = reservation_ref
+            _write(connection, record)
+            return record
+
+        return await self._transaction(operation)
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = None
+            _write(connection, record)
+            return record
+
+        record = await self._transaction(operation)
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None

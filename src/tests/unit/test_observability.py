@@ -631,11 +631,7 @@ async def test_expiry_counter_uses_a_bounded_outcome_label(monkeypatch: "pytest.
     expiry_samples = [entry for entry in runtime.counters if entry[0] == "litestar_queues.expiry"]
 
     assert expiry_samples == [
-        (
-            "litestar_queues.expiry",
-            3,
-            {"queue.execution.backend": "local", "queue.expiry.outcome": "expired"},
-        )
+        ("litestar_queues.expiry", 3, {"queue.execution.backend": "local", "queue.expiry.outcome": "expired"})
     ]
 
 

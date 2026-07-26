@@ -26,10 +26,17 @@ class MssqlQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return statements that create SQL Server queue artifacts."""
+        return self._create_statements(include_expiration=True)
+
+    def create_initial_statements(self) -> "list[str]":
+        """Return the historical pre-expiration SQL Server schema."""
+        return self._create_statements(include_expiration=False)
+
+    def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
         return [
-            self._create_mssql_table_statement(),
+            self._create_mssql_table_statement(include_expiration=include_expiration),
             self._create_mssql_unique_task_key_index_statement(),
             self._create_mssql_index_statement("pending"),
             self._create_mssql_index_statement("heartbeat"),
@@ -56,7 +63,8 @@ class MssqlQueueStore(SQLSpecQueueStore):
     def _integer_type(self) -> "str":
         return "INT"
 
-    def _create_mssql_table_statement(self) -> "str":
+    def _create_mssql_table_statement(self, *, include_expiration: "bool" = True) -> "str":
+        expiration_column = f"{self._quoted_col('expires_at')} {self._timestamp_type()}," if include_expiration else ""
         return f"""
         IF OBJECT_ID(N'{self.table_name}', N'U') IS NULL
         BEGIN
@@ -74,6 +82,7 @@ class MssqlQueueStore(SQLSpecQueueStore):
                 {self._quoted_col("max_retries")} {self._integer_type()} NOT NULL,
                 {self._quoted_col("retry_count")} {self._integer_type()} NOT NULL,
                 {self._quoted_col("scheduled_at")} {self._timestamp_type()},
+                {expiration_column}
                 {self._quoted_col("created_at")} {self._timestamp_type()} NOT NULL,
                 {self._quoted_col("started_at")} {self._timestamp_type()},
                 {self._quoted_col("completed_at")} {self._timestamp_type()},
@@ -154,12 +163,19 @@ class PostgresQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Postgres-family queue artifacts."""
+        return self._create_statements(include_expiration=True)
+
+    def create_initial_statements(self) -> "list[str]":
+        """Return the historical pre-expiration Postgres schema."""
+        return self._create_statements(include_expiration=False)
+
+    def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
-        create_table = self._create_table_sql()
+        create_table = self._create_table_sql() if include_expiration else self._create_initial_table_sql()
         if type(self).table_storage_parameters:
             create_table = f"{create_table} WITH (fillfactor = 80)"
-        statements = [create_table, *self._create_index_statements()]
+        statements = [create_table, *self._create_index_statements(include_expiration=include_expiration)]
         if type(self).table_storage_parameters:
             statements.append(
                 f"ALTER TABLE {self._quoted_table_name()} SET ("
@@ -179,7 +195,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
             self._to_sql(sql.drop_table(self.table_name).if_exists()),
         ]
 
-    def _create_index_statements(self) -> "list[str]":
+    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
         table_name = self._quoted_table_name()
         return [
             (
@@ -241,9 +257,16 @@ class MySQLQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return statements that create MySQL-family queue artifacts."""
+        return self._create_statements(include_expiration=True)
+
+    def create_initial_statements(self) -> "list[str]":
+        """Return the historical pre-expiration MySQL schema."""
+        return self._create_statements(include_expiration=False)
+
+    def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
-        return [self._create_mysql_table_statement()]
+        return [self._create_mysql_table_statement(include_expiration=include_expiration)]
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop MySQL-family queue artifacts."""
@@ -251,7 +274,8 @@ class MySQLQueueStore(SQLSpecQueueStore):
             return []
         return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
 
-    def _create_mysql_table_statement(self) -> "str":
+    def _create_mysql_table_statement(self, *, include_expiration: "bool" = True) -> "str":
+        expiration_column = f"{self._quoted_col('expires_at')} {self._timestamp_type()}," if include_expiration else ""
         return f"""
         CREATE TABLE IF NOT EXISTS {self._quoted_table_name()} (
             {self._quoted_col("id")} {self._id_type()} PRIMARY KEY,
@@ -267,6 +291,7 @@ class MySQLQueueStore(SQLSpecQueueStore):
             {self._quoted_col("max_retries")} {self._integer_type()} NOT NULL,
             {self._quoted_col("retry_count")} {self._integer_type()} NOT NULL,
             {self._quoted_col("scheduled_at")} {self._timestamp_type()},
+            {expiration_column}
             {self._quoted_col("created_at")} {self._timestamp_type()} NOT NULL,
             {self._quoted_col("started_at")} {self._timestamp_type()},
             {self._quoted_col("completed_at")} {self._timestamp_type()},

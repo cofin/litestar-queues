@@ -596,15 +596,22 @@ async def test_enqueue_rejects_negative_expires_in_and_accepts_zero() -> "None":
     async def expiry_bounds() -> "str":
         return "ok"
 
+    sink = InMemoryQueueEventSink()
     async with QueueService(
-        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        )
     ) as service:
         with pytest.raises(ValueError, match="expires_in must not be negative"):
             await service.enqueue(expiry_bounds, expires_in=-1)
         result = await service.enqueue(expiry_bounds, expires_in=0)
 
     assert result.record is not None
-    assert result.record.is_expired is True
+    assert result.record.status == "expired"
+    assert [event.type for event in sink.events].count("task.expired") == 1
 
 
 async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> "None":
@@ -857,6 +864,35 @@ async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> 
     assert len(records) == 1
     assert records[0].task_name == priority_schedule.name
     assert records[0].priority == 5
+
+
+async def test_initialize_schedules_applies_task_expiration_from_each_run_time() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    backend = InMemoryQueueBackend()
+
+    @task("tasks.expiring_schedule", interval=60, expires_in=30)
+    async def expiring_schedule() -> "None":
+        return None
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=backend
+    ) as service:
+        records = await service.initialize_schedules()
+        first = records[0]
+        assert first.scheduled_at is not None
+        assert first.expires_at == first.scheduled_at + timedelta(seconds=30)
+
+        first.status = "completed"
+        first.completed_at = datetime.now(timezone.utc)
+        await service._reschedule_if_needed(first)
+        rescheduled = await backend.get_task_by_key("scheduled:tasks.expiring_schedule")
+
+    assert rescheduled is not None
+    assert rescheduled.scheduled_at is not None
+    assert rescheduled.expires_at == rescheduled.scheduled_at + timedelta(seconds=30)
 
 
 async def test_initialize_schedules_applies_config_log_success_default_and_task_override() -> "None":

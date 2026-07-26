@@ -72,6 +72,10 @@ async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
         await queue.get_queue_backend().fail_task(record.id, f"Unknown queue task: {record.task_name!r}", retry=False)
         return TaskExitCode.UNKNOWN_TASK
 
+    if record.is_expired:
+        await queue.expire_overdue_tasks()
+        return TaskExitCode.CLAIM_LOST
+
     claimed = await queue.get_queue_backend().claim_task(record.id)
     if claimed is None:
         await queue.publish_claim_lost(record, phase="claim")

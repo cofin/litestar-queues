@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from advanced_alchemy.operations import OnConflictUpsert
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
@@ -244,7 +244,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         priority: "int",
         max_retries: "int",
         scheduled_at: "datetime | None",
-        expires_at: "datetime | None",
+        expires_at: "datetime | None" = None,
         key: "str | None",
         execution_backend: "str",
         execution_profile: "str | None",
@@ -368,9 +368,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 )
                 .values(
                     _update_values(
-                        model_type,
-                        {"status": "expired", "completed_at": now, "heartbeat_at": None},
-                        now=now,
+                        model_type, {"status": "expired", "completed_at": now, "heartbeat_at": None}, now=now
                     )
                 )
             )
@@ -493,6 +491,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             select(model_type.id)
             .where(
                 model_type.status.in_(_DUE_STATUSES),
+                model_type.execution_ref.is_(None),
                 model_type.expires_at.is_not(None),
                 model_type.expires_at <= now,
             )
@@ -503,23 +502,45 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         task_ids = list((await self.repository.session.execute(statement)).scalars().all())
         if not task_ids:
             return []
-        await self.repository.session.execute(
+        ownership_token = f"__litestar_queues_expiry__:{uuid4()}"
+        update_result = await self.repository.session.execute(
             update(model_type)
             .where(
                 model_type.id.in_(task_ids),
                 model_type.status.in_(_DUE_STATUSES),
+                model_type.execution_ref.is_(None),
                 model_type.expires_at <= now,
             )
-            .values(status="expired", completed_at=now, heartbeat_at=None)
+            .values(status="expired", completed_at=now, heartbeat_at=None, execution_ref=ownership_token)
             .execution_options(synchronize_session=False)
         )
+        if getattr(update_result, "rowcount", None) == 0:
+            return []
         models = (
-            (await self.repository.session.execute(select(model_type).where(model_type.id.in_(task_ids))))
+            (
+                await self.repository.session.execute(
+                    select(model_type).where(
+                        model_type.id.in_(task_ids),
+                        model_type.status == "expired",
+                        model_type.execution_ref == ownership_token,
+                    )
+                )
+            )
             .scalars()
             .all()
         )
+        if models:
+            await self.repository.session.execute(
+                update(model_type)
+                .where(model_type.id.in_([model.id for model in models]), model_type.execution_ref == ownership_token)
+                .values(execution_ref=None)
+                .execution_options(synchronize_session=False)
+            )
         by_id = {model.id: self.record_from_model(model) for model in models}
-        return [by_id[task_id] for task_id in task_ids if task_id in by_id and by_id[task_id].status == "expired"]
+        expired = [by_id[task_id] for task_id in task_ids if task_id in by_id]
+        for record in expired:
+            record.execution_ref = None
+        return expired
 
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
@@ -882,6 +903,62 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                     },
                 )
             )
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
+    async def reserve_external_dispatch(
+        self, task_id: "UUID", execution_backend: "str", reservation_ref: "str", *, execution_profile: "str | None"
+    ) -> "QueuedTaskRecord | None":
+        now = _utc_now()
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.status.in_(_DUE_STATUSES),
+                or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+                or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+                model_type.execution_ref.is_(None),
+            )
+            .values(
+                _update_values(
+                    model_type,
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": reservation_ref,
+                    },
+                    now=now,
+                )
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
+    async def release_external_dispatch(
+        self, task_id: "UUID", reservation_ref: "str", execution_backend: "str", *, execution_profile: "str | None"
+    ) -> "QueuedTaskRecord | None":
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(model_type.id == task_id, model_type.execution_ref == reservation_ref)
+            .values(
+                _update_values(
+                    model_type,
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": None,
+                    },
+                )
+            )
+            .execution_options(synchronize_session=False)
         )
         if result.rowcount != 1:
             return None

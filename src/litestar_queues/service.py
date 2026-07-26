@@ -405,6 +405,10 @@ class QueueService:
         finally:
             runtime.end_span(span)
 
+        if record.status in {"pending", "scheduled"} and record.is_expired:
+            expired = await self.expire_overdue_tasks()
+            record = next((candidate for candidate in expired if candidate.id == record.id), record)
+
         result = TaskResult(record.id, task_obj.name, service=self, record=record)
 
         if record.execution_backend == "immediate" and record.status == "pending":
@@ -744,6 +748,7 @@ class QueueService:
                     continue
                 await queue_backend.cancel_task(existing.id)
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
+            expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
             records.append(
                 await queue_backend.enqueue(
                     task_name,
@@ -751,6 +756,7 @@ class QueueService:
                     max_retries=0,
                     priority=task_obj.priority,
                     scheduled_at=scheduled_at,
+                    expires_at=expires_at,
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
@@ -795,13 +801,17 @@ class QueueService:
             jitter=schedule_data.get("jitter", 0),
             timezone=str(schedule_data.get("timezone", "UTC")),
         )
+        task_obj = self.resolve_task(record.task_name)
+        scheduled_at = schedule.get_next_run(record.completed_at)
+        expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
         await self.get_queue_backend().enqueue(
             record.task_name,
             key=record.key,
             queue=record.queue,
             max_retries=record.max_retries,
             priority=record.priority,
-            scheduled_at=schedule.get_next_run(record.completed_at),
+            scheduled_at=scheduled_at,
+            expires_at=expires_at,
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
             metadata={**record.metadata, "schedule": schedule.as_metadata()},

@@ -19,11 +19,38 @@ pytest.importorskip("redis")
 from litestar_queues import TaskRequest
 from litestar_queues.backends import get_queue_backend_class, list_queue_backends
 from litestar_queues.models import HeartbeatTouch
+from tests.integration._expiry_contract import (
+    assert_expire_overdue_transitions_and_reports,
+    assert_expired_claim_is_fenced,
+    assert_expiry_fences_retry_requeue,
+    assert_external_dispatch_reservation_is_fenced,
+    assert_future_deadline_is_claimable,
+)
 
 if TYPE_CHECKING:
     from litestar_queues.backends.redis import RedisQueueBackend
 
 pytestmark = pytest.mark.anyio
+
+
+async def test_redis_expired_claim_is_fenced(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_expired_claim_is_fenced(redis_backend)
+
+
+async def test_redis_expire_overdue_transitions_and_reports(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_expire_overdue_transitions_and_reports(redis_backend)
+
+
+async def test_redis_expiry_fences_retry_requeue(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_expiry_fences_retry_requeue(redis_backend)
+
+
+async def test_redis_future_deadline_is_claimable(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_future_deadline_is_claimable(redis_backend)
+
+
+async def test_redis_external_dispatch_reservation_is_fenced(redis_backend: "RedisQueueBackend") -> "None":
+    await assert_external_dispatch_reservation_is_fenced(redis_backend)
 
 
 def test_top_level_litestar_queues_import_does_not_pull_in_redis_or_valkey() -> "None":
@@ -145,10 +172,7 @@ async def test_redis_backend_expires_pending_tasks(redis_backend: "RedisQueueBac
     claim_overdue = await redis_backend.enqueue("tasks.redis.expired.claim", expires_at=past)
     sweep_overdue = await redis_backend.enqueue("tasks.redis.expired.sweep", expires_at=past)
     batch_overdue = await redis_backend.enqueue("tasks.redis.expired.batch", expires_at=past)
-    live = await redis_backend.enqueue(
-        "tasks.redis.live",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-    )
+    live = await redis_backend.enqueue("tasks.redis.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
 
     assert [record.id for record in await redis_backend.list_pending(limit=10)] == [live.id]
     assert await redis_backend.claim_task(claim_overdue.id) is None

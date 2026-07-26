@@ -406,11 +406,57 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     break
                 if record.status not in {"pending", "scheduled"}:
                     continue
+                if record.execution_ref is not None:
+                    continue
                 if record.expires_at is None or record.expires_at > now:
                     continue
                 _expire_record(record, now)
                 expired.append(record)
         return expired
+
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        now = _utc_now()
+        async with self._lock:
+            record = self._records.get(task_id)
+            if (
+                record is None
+                or record.status not in {"pending", "scheduled"}
+                or not record.is_due
+                or record.execution_ref is not None
+            ):
+                return None
+            if record.expires_at is not None and record.expires_at <= now:
+                _expire_record(record, now)
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = reservation_ref
+            return record
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.execution_ref != reservation_ref:
+                return None
+            record.execution_backend = execution_backend
+            record.execution_profile = execution_profile
+            record.execution_ref = None
+        await self.notify_new_task(record)
+        return record
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None

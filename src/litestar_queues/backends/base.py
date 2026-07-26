@@ -332,6 +332,32 @@ class BaseQueueBackend:
         record.execution_profile = execution_profile
         return record
 
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        """Atomically reserve a due, unexpired task for external dispatch.
+
+        The default rejects dispatch because a read-then-write fallback cannot
+        protect the external side effect.
+        """
+        return None
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        """Release a matching external-dispatch reservation."""
+        return None
+
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":

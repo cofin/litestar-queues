@@ -16,11 +16,38 @@ pytest.importorskip("valkey")
 
 from litestar_queues import TaskRequest
 from litestar_queues.models import HeartbeatTouch
+from tests.integration._expiry_contract import (
+    assert_expire_overdue_transitions_and_reports,
+    assert_expired_claim_is_fenced,
+    assert_expiry_fences_retry_requeue,
+    assert_external_dispatch_reservation_is_fenced,
+    assert_future_deadline_is_claimable,
+)
 
 if TYPE_CHECKING:
     from litestar_queues.backends.valkey import ValkeyQueueBackend
 
 pytestmark = pytest.mark.anyio
+
+
+async def test_valkey_expired_claim_is_fenced(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_expired_claim_is_fenced(valkey_backend)
+
+
+async def test_valkey_expire_overdue_transitions_and_reports(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_expire_overdue_transitions_and_reports(valkey_backend)
+
+
+async def test_valkey_expiry_fences_retry_requeue(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_expiry_fences_retry_requeue(valkey_backend)
+
+
+async def test_valkey_future_deadline_is_claimable(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_future_deadline_is_claimable(valkey_backend)
+
+
+async def test_valkey_external_dispatch_reservation_is_fenced(valkey_backend: "ValkeyQueueBackend") -> "None":
+    await assert_external_dispatch_reservation_is_fenced(valkey_backend)
 
 
 async def test_valkey_backend_keeps_claim_fallback_without_batch_capability(
@@ -103,10 +130,7 @@ async def test_valkey_backend_expires_pending_tasks(valkey_backend: "ValkeyQueue
     claim_overdue = await valkey_backend.enqueue("tasks.valkey.expired.claim", expires_at=past)
     sweep_overdue = await valkey_backend.enqueue("tasks.valkey.expired.sweep", expires_at=past)
     batch_overdue = await valkey_backend.enqueue("tasks.valkey.expired.batch", expires_at=past)
-    live = await valkey_backend.enqueue(
-        "tasks.valkey.live",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-    )
+    live = await valkey_backend.enqueue("tasks.valkey.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
 
     assert [record.id for record in await valkey_backend.list_pending(limit=10)] == [live.id]
     assert await valkey_backend.claim_task(claim_overdue.id) is None

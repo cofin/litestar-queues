@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from inspect import isawaitable, iscoroutinefunction
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast, overload
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlspec import SQLSpec
 from sqlspec.exceptions import SerializationConflictError
@@ -585,9 +585,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     now = _utc_now()
                     if record.expires_at is not None and record.expires_at <= now:
                         await driver.execute(
-                            self._get_store().expire_task(
-                                task_id=str(task_id), now=self._serialize_datetime(now)
-                            )
+                            self._get_store().expire_task(task_id=str(task_id), now=self._serialize_datetime(now))
                         )
                         await driver.commit()
                         return None
@@ -626,16 +624,32 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 rows = await self._select_rows(driver, store.select_expired(now=serialized_now, limit=limit))
-                expired: "list[QueuedTaskRecord]" = []
-                for row in rows:
-                    record = self._record_from_row(row)
-                    result = await driver.execute(store.expire_task(task_id=str(record.id), now=serialized_now))
-                    if self._resolve_rows_affected(result) == 0:
-                        continue
-                    record.status = "expired"
-                    record.completed_at = now
-                    record.heartbeat_at = None
-                    expired.append(record)
+                task_ids = [str(self._record_from_row(row).id) for row in rows]
+                if not task_ids:
+                    await driver.rollback()
+                    return []
+                ownership_ref = f"__litestar_queues_expiry__:{uuid4()}"
+                result = await driver.execute(
+                    store.expire_tasks(task_ids=task_ids, now=serialized_now, ownership_ref=ownership_ref)
+                )
+                if self._resolve_rows_affected(result) == 0:
+                    await driver.rollback()
+                    return []
+                updated_rows = await self._select_rows(driver, store.select_tasks_by_ids(task_ids))
+                updated_by_id = {
+                    str(record.id): record
+                    for row in updated_rows
+                    if (record := self._record_from_row(row)).status == "expired"
+                    and record.execution_ref == ownership_ref
+                }
+                expired = [updated_by_id[task_id] for task_id in task_ids if task_id in updated_by_id]
+                if expired:
+                    expired_ids = [str(record.id) for record in expired]
+                    await driver.execute(
+                        store.clear_expiry_ownership(task_ids=expired_ids, ownership_ref=ownership_ref)
+                    )
+                    for record in expired:
+                        record.execution_ref = None
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -1210,6 +1224,67 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     await driver.rollback()
                 raise
         return self._record_from_row(row) if row is not None else None
+
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().reserve_external_dispatch(
+                        task_id=str(task_id),
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                        execution_ref=reservation_ref,
+                        now=self._serialize_datetime(_utc_now()),
+                    )
+                )
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        record = self._record_from_row(row) if row is not None else None
+        return record if record is not None and record.execution_ref == reservation_ref else None
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    self._get_store().release_external_dispatch(
+                        task_id=str(task_id),
+                        reservation_ref=reservation_ref,
+                        execution_backend=execution_backend,
+                        execution_profile=execution_profile,
+                    )
+                )
+                row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        record = self._record_from_row(row) if row is not None else None
+        if record is not None and record.execution_ref is not None:
+            record = None
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
 
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None

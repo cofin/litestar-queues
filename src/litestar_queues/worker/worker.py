@@ -395,8 +395,8 @@ class Worker:
                 continue
             if record.is_expired:
                 continue
-            await execution_backend.dispatch(self._service, record)
-            dispatched += 1
+            if await execution_backend.dispatch(self._service, record) is not None:
+                dispatched += 1
         return dispatched
 
     async def _maybe_requeue_stale(self) -> "None":
@@ -437,9 +437,7 @@ class Worker:
             return
         expired = await self._service.expire_overdue_tasks(worker_id=self._worker_id)
         if expired:
-            self._record_counter(
-                "litestar_queues.expiry", {"queue.expiry.outcome": "expired"}, value=len(expired)
-            )
+            self._record_counter("litestar_queues.expiry", {"queue.expiry.outcome": "expired"}, value=len(expired))
 
     async def _maybe_reconcile_external(self) -> "None":
         if not await self._service.get_queue_backend().acquire_worker_lock(

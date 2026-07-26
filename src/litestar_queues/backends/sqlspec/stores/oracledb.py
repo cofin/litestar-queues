@@ -30,12 +30,16 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Oracle queue artifacts."""
-        return self._create_statements_with_storage(self._configured_json_storage())
+        return self._create_statements_with_storage(self._configured_json_storage(), include_expiration=True)
+
+    def create_initial_statements(self) -> "list[str]":
+        """Return the historical pre-expiration Oracle schema."""
+        return self._create_statements_with_storage(self._configured_json_storage(), include_expiration=False)
 
     async def create_statements_for_driver(self, driver: "Any") -> "list[str]":
         """Return schema statements using cached Oracle version-aware JSON storage."""
         storage_type = await self._detect_json_storage_type(driver)
-        return self._create_statements_with_storage(storage_type)
+        return self._create_statements_with_storage(storage_type, include_expiration=True)
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop Oracle queue artifacts."""
@@ -81,12 +85,16 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         configured = self._json_storage
         return configured if configured is not None else _OracleJSONStorageType.BLOB_JSON
 
-    def _create_statements_with_storage(self, storage_type: "_OracleJSONStorageType") -> "list[str]":
+    def _create_statements_with_storage(
+        self, storage_type: "_OracleJSONStorageType", *, include_expiration: "bool"
+    ) -> "list[str]":
         if not self._manage_schema:
             return []
         self._apply_json_storage(storage_type)
         return [
-            _create_table_block(self, storage_type, bool(getattr(self, "_in_memory", False))),
+            _create_table_block(
+                self, storage_type, bool(getattr(self, "_in_memory", False)), include_expiration=include_expiration
+            ),
             _create_index_block(
                 self,
                 "pending",
@@ -308,9 +316,12 @@ def _index_name(store: "SQLSpecQueueStore", suffix: "str") -> "str":
     return f"{prefix}{table_name[:table_budget]}{suffix_text}"
 
 
-def _create_table_block(store: "SQLSpecQueueStore", storage_type: "_OracleJSONStorageType", in_memory: "bool") -> "str":
+def _create_table_block(
+    store: "SQLSpecQueueStore", storage_type: "_OracleJSONStorageType", in_memory: "bool", *, include_expiration: "bool"
+) -> "str":
     table_name = store.table_name
     in_memory_clause = " INMEMORY PRIORITY HIGH" if in_memory else ""
+    expiration_column = f"{store._col('expires_at')} {store._timestamp_type()}," if include_expiration else ""
     return f"""
     BEGIN
         EXECUTE IMMEDIATE 'CREATE TABLE {table_name} (
@@ -327,6 +338,7 @@ def _create_table_block(store: "SQLSpecQueueStore", storage_type: "_OracleJSONSt
             {store._col("max_retries")} {store._integer_type()} NOT NULL,
             {store._col("retry_count")} {store._integer_type()} NOT NULL,
             {store._col("scheduled_at")} {store._timestamp_type()},
+            {expiration_column}
             {store._col("created_at")} {store._timestamp_type()} NOT NULL,
             {store._col("started_at")} {store._timestamp_type()},
             {store._col("completed_at")} {store._timestamp_type()},

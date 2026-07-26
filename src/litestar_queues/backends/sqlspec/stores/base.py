@@ -154,6 +154,12 @@ class SQLSpecQueueStore:
             return []
         return [self._create_table_sql(), *self._create_index_statements()]
 
+    def create_initial_statements(self) -> "list[str]":
+        """Return the historical pre-expiration queue schema."""
+        if not self._manage_schema:
+            return []
+        return [self._create_initial_table_sql(), *self._create_index_statements(include_expiration=False)]
+
     def drop_statements(self) -> "list[str]":
         """Return statements that drop queue artifacts."""
         if not self._manage_schema:
@@ -464,9 +470,14 @@ class SQLSpecQueueStore:
     def select_expired(self, *, now: "DatetimeParam", limit: "int | None" = None) -> "Select":
         """Return overdue pending or scheduled records in deterministic order."""
         statement = (
-            self._select_all()
+            self
+            ._select_all()
             .where_in(self._col("status"), _DUE_STATUSES)
-            .where(f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before", expires_before=now)
+            .where(f"{self._col('execution_ref')} IS NULL")
+            .where(
+                f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before",
+                expires_before=now,
+            )
             .order_by(_raw_order(f"{self._col('expires_at')} ASC"), _raw_order(f"{self._col('created_at')} ASC"))
         )
         return statement.limit(limit) if limit is not None else statement
@@ -474,11 +485,48 @@ class SQLSpecQueueStore:
     def expire_task(self, *, task_id: "str", now: "DatetimeParam") -> "Update":
         """Return a fenced update transitioning one overdue record to expired."""
         return (
-            sql.update(self.table_name)
+            sql
+            .update(self.table_name)
             .set(**self._mapped_values({"status": "expired", "completed_at": now, "heartbeat_at": None}))
             .where_eq(self._col("id"), task_id)
             .where_in(self._col("status"), _DUE_STATUSES)
-            .where(f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before", expires_before=now)
+            .where(f"{self._col('execution_ref')} IS NULL")
+            .where(
+                f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before",
+                expires_before=now,
+            )
+        )
+
+    def expire_tasks(self, *, task_ids: "Sequence[str]", now: "DatetimeParam", ownership_ref: "str") -> "Update":
+        """Return one fenced update transitioning overdue records to expired."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "status": "expired",
+                    "completed_at": now,
+                    "heartbeat_at": None,
+                    "execution_ref": ownership_ref,
+                })
+            )
+            .where_in(self._col("id"), list(task_ids))
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('execution_ref')} IS NULL")
+            .where(
+                f"{self._col('expires_at')} IS NOT NULL AND {self._col('expires_at')} <= :expires_before",
+                expires_before=now,
+            )
+        )
+
+    def clear_expiry_ownership(self, *, task_ids: "Sequence[str]", ownership_ref: "str") -> "Update":
+        """Clear the temporary marker owned by one expiry sweep."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"execution_ref": None}))
+            .where_in(self._col("id"), list(task_ids))
+            .where_eq(self._col("execution_ref"), ownership_ref)
         )
 
     def complete_task(
@@ -739,6 +787,53 @@ RETURNING {target}.{id_col} AS id
             .where_eq(self._col("id"), task_id)
         )
 
+    def reserve_external_dispatch(
+        self,
+        *,
+        task_id: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        execution_profile: "str | None",
+        now: "DatetimeParam",
+    ) -> "Update":
+        """Return the fenced external-dispatch reservation update."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "execution_backend": execution_backend,
+                    "execution_profile": execution_profile,
+                    "execution_ref": execution_ref,
+                })
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(
+                f"{self._col('scheduled_at')} IS NULL OR {self._col('scheduled_at')} <= :dispatch_now", dispatch_now=now
+            )
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_now", expires_now=now)
+            .where(f"{self._col('execution_ref')} IS NULL")
+        )
+
+    def release_external_dispatch(
+        self, *, task_id: "str", reservation_ref: "str", execution_backend: "str", execution_profile: "str | None"
+    ) -> "Update":
+        """Return a compare-and-clear external-dispatch reservation update."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "execution_backend": execution_backend,
+                    "execution_profile": execution_profile,
+                    "execution_ref": None,
+                })
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("execution_ref"), reservation_ref)
+        )
+
     def set_execution_backend(
         self, *, task_id: "str", execution_backend: "str", execution_profile: "str | None"
     ) -> "Update":
@@ -891,8 +986,8 @@ RETURNING {target}.{id_col} AS id
         columns = tuple(self._select_column(canonical) for canonical in _TASK_COLUMNS)
         return sql.select(*columns).from_(self.table_name)
 
-    def _create_table_statement(self) -> "CreateTable":
-        return (
+    def _create_table_statement(self, *, include_expiration: "bool" = True) -> "CreateTable":
+        statement = (
             sql
             .create_table(self.table_name)
             .if_not_exists()
@@ -909,7 +1004,11 @@ RETURNING {target}.{id_col} AS id
             .column(self._col("max_retries"), self._integer_type(), not_null=True)
             .column(self._col("retry_count"), self._integer_type(), not_null=True)
             .column(self._col("scheduled_at"), self._timestamp_type())
-            .column(self._col("expires_at"), self._timestamp_type())
+        )
+        if include_expiration:
+            statement = statement.column(self._col("expires_at"), self._timestamp_type())
+        return (
+            statement
             .column(self._col("created_at"), self._timestamp_type(), not_null=True)
             .column(self._col("started_at"), self._timestamp_type())
             .column(self._col("completed_at"), self._timestamp_type())
@@ -922,33 +1021,31 @@ RETURNING {target}.{id_col} AS id
 
     def _create_table_sql(self) -> "str":
         rendered = self._to_sql(self._create_table_statement())
+        return self._qualify_created_table(rendered)
+
+    def _create_initial_table_sql(self) -> "str":
+        rendered = self._to_sql(self._create_table_statement(include_expiration=False))
+        return self._qualify_created_table(rendered)
+
+    def _qualify_created_table(self, rendered: "str") -> "str":
         unsplit_target = self._quote_unsplit_identifier(self.table_name)
         split_target = self._quoted_table_name()
         if unsplit_target != split_target:
             rendered = rendered.replace(unsplit_target, split_target, 1)
         return rendered
 
-    def _create_index_statements(self) -> "list[str]":
+    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
+        pending_columns = ["status", "queue", "execution_backend", "scheduled_at"]
+        if include_expiration:
+            pending_columns.append("expires_at")
+        pending_columns.extend(("priority", "created_at"))
         return [
             self._to_sql(
                 sql
                 .create_index(self._index_name("pending"))
                 .if_not_exists()
                 .on_table(self.table_name)
-                .columns(
-                    *(
-                        self._col(canonical)
-                        for canonical in (
-                            "status",
-                            "queue",
-                            "execution_backend",
-                            "scheduled_at",
-                            "expires_at",
-                            "priority",
-                            "created_at",
-                        )
-                    )
-                )
+                .columns(*(self._col(canonical) for canonical in pending_columns))
             ),
             self._to_sql(
                 sql

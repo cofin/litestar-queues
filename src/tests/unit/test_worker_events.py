@@ -229,8 +229,8 @@ async def test_expire_overdue_tasks_emits_one_expired_event_per_record() -> "Non
         ),
         queue_backend=queue_backend,
     ) as service:
-        first = await service.enqueue(expired_event, expires_at=expires_at)
-        second = await service.enqueue(expired_event, expires_at=expires_at)
+        first = await queue_backend.enqueue(expired_event.name, expires_at=expires_at)
+        second = await queue_backend.enqueue(expired_event.name, expires_at=expires_at)
 
         expired = await service.expire_overdue_tasks(worker_id="worker-expiry")
 

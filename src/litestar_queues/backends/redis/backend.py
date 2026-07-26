@@ -541,6 +541,56 @@ return {redis.call('HDEL', KEYS[1], ARGV[1])}
 """
 
 
+_RESERVE_EXTERNAL_DISPATCH_SCRIPT = """
+local hkey = KEYS[1]
+local status = redis.call('HGET', hkey, 'status')
+if status ~= 'pending' and status ~= 'scheduled' then
+    return {0}
+end
+local now = tonumber(ARGV[2])
+local scheduled = tonumber(redis.call('HGET', hkey, 'scheduled_score')) or 0
+local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+if scheduled > now or (expires > 0 and expires <= now)
+        or (execution_ref and execution_ref ~= '') then
+    return {0}
+end
+redis.call(
+    'HSET',
+    hkey,
+    'execution_backend', ARGV[3],
+    'execution_profile', ARGV[4],
+    'execution_ref', ARGV[5]
+)
+redis.call('ZREM', KEYS[2], ARGV[1])
+local created = tonumber(redis.call('HGET', hkey, 'created_score')) or 0
+redis.call('ZADD', KEYS[3], created, ARGV[1])
+return {1}
+"""
+
+
+_RELEASE_EXTERNAL_DISPATCH_SCRIPT = """
+local hkey = KEYS[1]
+if redis.call('HGET', hkey, 'execution_ref') ~= ARGV[2] then
+    return {0}
+end
+redis.call(
+    'HSET',
+    hkey,
+    'execution_backend', ARGV[3],
+    'execution_profile', ARGV[4],
+    'execution_ref', ''
+)
+redis.call('ZREM', KEYS[3], ARGV[1])
+local status = redis.call('HGET', hkey, 'status')
+local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+if (status == 'pending' or status == 'scheduled') and expires > 0 then
+    redis.call('ZADD', KEYS[2], expires, ARGV[1])
+end
+return {1}
+"""
+
+
 _RELEASE_MAINTENANCE_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return {redis.call('DEL', KEYS[1])}
@@ -806,12 +856,7 @@ class RedisQueueBackend(BaseQueueBackend):
             client,
             _CLAIM_TASK_SCRIPT,
             [self._task_key(task_id), self._ready_key, self._scheduled_key],
-            [
-                self._key_prefix,
-                str(task_id),
-                repr(_maintenance_score(now)),
-                _serialize_datetime(now),
-            ],
+            [self._key_prefix, str(task_id), repr(_maintenance_score(now)), _serialize_datetime(now)],
         )
         if not outcome or int(outcome[0]) != 1:
             return None
@@ -1140,6 +1185,53 @@ class RedisQueueBackend(BaseQueueBackend):
         record.execution_ref = execution_ref
         return record
 
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        client = await self._get_client()
+        outcome = await _eval_script(
+            client,
+            _RESERVE_EXTERNAL_DISPATCH_SCRIPT,
+            [self._task_key(task_id), self._maintenance_expiry_key, self._maintenance_external_key],
+            [
+                str(task_id),
+                repr(_maintenance_score(_utc_now())),
+                execution_backend,
+                execution_profile or "",
+                reservation_ref,
+            ],
+        )
+        if not outcome or int(outcome[0]) != 1:
+            return None
+        return await self.get_task(task_id)
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        client = await self._get_client()
+        outcome = await _eval_script(
+            client,
+            _RELEASE_EXTERNAL_DISPATCH_SCRIPT,
+            [self._task_key(task_id), self._maintenance_expiry_key, self._maintenance_external_key],
+            [str(task_id), reservation_ref, execution_backend, execution_profile or ""],
+        )
+        if not outcome or int(outcome[0]) != 1:
+            return None
+        record = await self.get_task(task_id)
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
@@ -1307,7 +1399,7 @@ class RedisQueueBackend(BaseQueueBackend):
             pipeline.hset(self._task_key(record.id), mapping=timestamp_scores)
             if record.status == "running":
                 pipeline.zadd(self._maintenance_running_key, {task_id: _maintenance_score(record.heartbeat_at)})
-            if record.status in _DUE_STATUSES and record.expires_at is not None:
+            if record.status in _DUE_STATUSES and record.expires_at is not None and record.execution_ref is None:
                 pipeline.zadd(self._maintenance_expiry_key, {task_id: _maintenance_score(record.expires_at)})
             if record.execution_ref is not None and record.status in {"pending", "scheduled", "running"}:
                 pipeline.zadd(

@@ -331,6 +331,35 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 task_id, execution_backend, execution_ref, execution_profile=execution_profile
             )
 
+    async def reserve_external_dispatch(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            return await service.reserve_external_dispatch(
+                task_id, execution_backend, reservation_ref, execution_profile=execution_profile
+            )
+
+    async def release_external_dispatch(
+        self,
+        task_id: "UUID",
+        reservation_ref: "str",
+        execution_backend: "str",
+        *,
+        execution_profile: "str | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            record = await service.release_external_dispatch(
+                task_id, reservation_ref, execution_backend, execution_profile=execution_profile
+            )
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":

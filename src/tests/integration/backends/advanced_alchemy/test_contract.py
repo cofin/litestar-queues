@@ -30,6 +30,13 @@ from litestar_queues.backends import get_queue_backend_class, list_queue_backend
 from litestar_queues.backends.advanced_alchemy import QueueTaskModelMixin, SQLAlchemyBackend, SQLAlchemyBackendConfig
 from litestar_queues.models import QueuedTaskRecord, TaskRequest
 from litestar_queues.task import clear_task_registry
+from tests.integration._expiry_contract import (
+    assert_expire_overdue_transitions_and_reports,
+    assert_expired_claim_is_fenced,
+    assert_expiry_fences_retry_requeue,
+    assert_external_dispatch_reservation_is_fenced,
+    assert_future_deadline_is_claimable,
+)
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
 if TYPE_CHECKING:
@@ -66,24 +73,42 @@ class ContractQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     __tablename__ = "aa_contract_queue_task"
 
 
-async def test_advanced_alchemy_expiry_contract(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
-    overdue = await advanced_alchemy_backend.enqueue("tasks.overdue", expires_at=past)
-    live = await advanced_alchemy_backend.enqueue(
-        "tasks.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+async def test_advanced_alchemy_expired_claim_is_fenced(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    await assert_expired_claim_is_fenced(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_expire_overdue_transitions_and_reports(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    await assert_expire_overdue_transitions_and_reports(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_expiry_fences_retry_requeue(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    await assert_expiry_fences_retry_requeue(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_future_deadline_is_claimable(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    await assert_future_deadline_is_claimable(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_external_dispatch_reservation_is_fenced(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    await assert_external_dispatch_reservation_is_fenced(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_concurrent_expiry_sweeps_report_one_owner(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    record = await advanced_alchemy_backend.enqueue(
+        "tasks.concurrent_expiry", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
     )
 
-    assert await advanced_alchemy_backend.claim_task(overdue.id) is None
-    stored = await advanced_alchemy_backend.get_task(overdue.id)
-    expired = await advanced_alchemy_backend.expire_overdue()
-    pending = await advanced_alchemy_backend.list_pending(limit=10)
+    outcomes = await asyncio.gather(
+        advanced_alchemy_backend.expire_overdue(limit=1), advanced_alchemy_backend.expire_overdue(limit=1)
+    )
 
-    assert stored is not None
-    assert stored.status == "expired"
-    assert overdue.id not in {record.id for record in pending}
-    assert live.id in {record.id for record in pending}
-    assert expired == []
-    assert (await advanced_alchemy_backend.get_statistics()).expired == 1
+    assert [expired.id for batch in outcomes for expired in batch] == [record.id]
 
 
 async def test_advanced_alchemy_backend_is_registered_without_sqlspec() -> "None":

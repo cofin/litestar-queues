@@ -26,9 +26,19 @@ class SpannerQueueStore(SQLSpecQueueStore):
 
     def create_statements(self) -> "list[str]":
         """Return statements that create the Spanner queue table and indexes."""
+        return self._create_statements(include_expiration=True)
+
+    def create_initial_statements(self) -> "list[str]":
+        """Return the historical pre-expiration Spanner schema."""
+        return self._create_statements(include_expiration=False)
+
+    def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
-        return [self._build_create_table_sql(), *self._create_index_statements()]
+        return [
+            self._build_create_table_sql(include_expiration=include_expiration),
+            *self._create_index_statements(include_expiration=include_expiration),
+        ]
 
     def drop_statements(self) -> "list[str]":
         """Return statements that drop Spanner queue artifacts."""
@@ -76,8 +86,8 @@ class SpannerQueueStore(SQLSpecQueueStore):
             return _deserialize_spanner_json(value)
         return super().deserialize_json(canonical, value)
 
-    def _build_create_table_sql(self) -> "str":
-        columns = (
+    def _build_create_table_sql(self, *, include_expiration: "bool" = True) -> "str":
+        columns = [
             f"{self._quoted_col('id')} {self._id_type()} NOT NULL",
             f"{self._quoted_col('task_name')} {self._indexed_text_type()} NOT NULL",
             f"{self._quoted_col('args_json')} {self._payload_json_type('args_json')} NOT NULL",
@@ -91,6 +101,10 @@ class SpannerQueueStore(SQLSpecQueueStore):
             f"{self._quoted_col('max_retries')} {self._integer_type()} NOT NULL",
             f"{self._quoted_col('retry_count')} {self._integer_type()} NOT NULL",
             f"{self._quoted_col('scheduled_at')} {self._timestamp_type()}",
+        ]
+        if include_expiration:
+            columns.append(f"{self._quoted_col('expires_at')} {self._timestamp_type()}")
+        columns.extend((
             f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
             f"{self._quoted_col('started_at')} {self._timestamp_type()}",
             f"{self._quoted_col('completed_at')} {self._timestamp_type()}",
@@ -99,11 +113,11 @@ class SpannerQueueStore(SQLSpecQueueStore):
             f"{self._quoted_col('error')} {self._error_type()}",
             f"{self._quoted_col('task_key')} {self._indexed_text_type()}",
             f"{self._quoted_col('metadata_json')} {self._metadata_json_type('metadata_json')} NOT NULL",
-        )
+        ))
         column_sql = ",\n  ".join(columns)
         return f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) PRIMARY KEY ({self._quoted_col('id')})"
 
-    def _create_index_statements(self) -> "list[str]":
+    def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
         return [
             (
                 f"CREATE INDEX {self._quoted_index_name('pending')} ON {self._quoted_table_name()} "

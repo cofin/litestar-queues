@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
@@ -24,6 +25,7 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
 _TASK_ID_ENV_SUFFIX = "TASK_ID"
+_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 _HTTP_NOT_FOUND = 404
 logger = logging.getLogger(__name__)
 
@@ -97,8 +99,20 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         attributes["messaging.message.id"] = str(record.id)
         metric_attributes = _queue_metric_attributes(attributes)
         span = runtime.start_span("litestar_queues.dispatch", kind="producer", attributes=attributes)
+        reservation_ref = f"{_DISPATCH_RESERVATION_PREFIX}{uuid4()}"
+        queue_backend = service.get_queue_backend()
+        reserved = await queue_backend.reserve_external_dispatch(
+            record.id, "cloudrun", reservation_ref, execution_profile=record.execution_profile
+        )
+        if reserved is None:
+            runtime.record_counter(
+                "litestar_queues.execution.dispatch",
+                attributes={**metric_attributes, "queue.execution.status": "skipped"},
+            )
+            runtime.end_span(span)
+            return None
         try:
-            request = self.build_run_job_request(service, record)
+            request = self.build_run_job_request(service, reserved)
             client = await self._get_jobs_client()
             operation = await client.run_job(request=request)
             execution_ref = _require_operation_execution_ref(operation)
@@ -107,12 +121,17 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             await self._publish_dispatch_failure(service, record, exc)
             fallback = self.execution_config.fallback_execution_backend
             if fallback is None:
+                await queue_backend.release_external_dispatch(
+                    record.id, reservation_ref, record.execution_backend, execution_profile=record.execution_profile
+                )
                 runtime.record_counter(
                     "litestar_queues.execution.dispatch",
                     attributes={**metric_attributes, "queue.execution.status": "error"},
                 )
                 raise
-            await service.get_queue_backend().set_execution_backend(record.id, fallback)
+            await queue_backend.release_external_dispatch(
+                record.id, reservation_ref, fallback, execution_profile=record.execution_profile
+            )
             runtime.record_counter(
                 "litestar_queues.execution.dispatch",
                 attributes={**metric_attributes, "queue.execution.status": "fallback"},
@@ -121,7 +140,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         finally:
             runtime.end_span(span)
 
-        await service.get_queue_backend().set_execution_ref(
+        await queue_backend.set_execution_ref(
             record.id, "cloudrun", execution_ref, execution_profile=record.execution_profile
         )
         runtime.record_counter(
@@ -136,7 +155,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         Returns:
             The terminal queue record when reconciliation completed it.
         """
-        if record.execution_ref is None:
+        if record.execution_ref is None or record.execution_ref.startswith(_DISPATCH_RESERVATION_PREFIX):
             return None
         queue_backend = service.get_queue_backend()
         current = await queue_backend.get_task(record.id) or record
