@@ -10,7 +10,7 @@ When moving from memory to a persistent backend:
 
 * use task arguments the backend can serialize;
 * create its schema or data structures;
-* disable the in-app worker if workers run separately; and
+* choose ``placement="external"`` if workers run separately; and
 * refresh ``TaskResult`` before reading a later state.
 
 See :doc:`backends` for the current support matrix and :doc:`event-history`

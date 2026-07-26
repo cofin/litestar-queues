@@ -1,8 +1,10 @@
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, get_args, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, get_args, runtime_checkable
 
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -44,6 +46,57 @@ _WORKER_STATE_KEY = "queue_worker"
 _EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
 _EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
 _OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
+
+
+def _cgroup_cpu_limit(
+    *,
+    cpu_max: "Path" = Path("/sys/fs/cgroup/cpu.max"),
+    cpu_quota: "Path" = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+    cpu_period: "Path" = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
+) -> "int | None":
+    """Return the rounded-up cgroup v2 or v1 CPU quota when available."""
+    with suppress(OSError, ValueError):
+        quota_text, period_text = cpu_max.read_text(encoding="utf-8").split()
+        if quota_text != "max":
+            quota = int(quota_text)
+            period = int(period_text)
+            if quota > 0 and period > 0:
+                return max(1, (quota + period - 1) // period)
+    with suppress(OSError, ValueError):
+        quota = int(cpu_quota.read_text(encoding="utf-8"))
+        period = int(cpu_period.read_text(encoding="utf-8"))
+        if quota > 0 and period > 0:
+            return max(1, (quota + period - 1) // period)
+    return None
+
+
+def _effective_cpu_count() -> "int":
+    """Return CPUs usable by this process, including a Linux cgroup quota."""
+    counts: "list[int]" = []
+    process_cpu_count = cast("Callable[[], int | None] | None", getattr(os, "process_cpu_count", None))
+    if process_cpu_count is not None:
+        with suppress(OSError):
+            count = process_cpu_count()
+            if count is not None and count > 0:
+                counts.append(count)
+    sched_getaffinity = cast("Callable[[int], set[int]] | None", getattr(os, "sched_getaffinity", None))
+    if sched_getaffinity is not None:
+        with suppress(OSError):
+            affinity_count = len(sched_getaffinity(0))
+            if affinity_count > 0:
+                counts.append(affinity_count)
+    host_count = os.cpu_count()
+    if host_count is not None and host_count > 0:
+        counts.append(host_count)
+    cgroup_count = _cgroup_cpu_limit()
+    if cgroup_count is not None:
+        counts.append(cgroup_count)
+    return max(1, min(counts, default=1))
+
+
+def _default_sync_thread_pool_size() -> "int":
+    """Match the modern Python executor default using process-usable CPUs."""
+    return min(32, _effective_cpu_count() + 4)
 
 
 class QueueBackendConfigProtocol(Protocol):
@@ -305,11 +358,11 @@ class QueueConfig:
     log_success: "bool" = False
     """Whether successful task completion emits an informational log by default."""
 
-    sync_thread_pool_size: "int" = 40
+    sync_thread_pool_size: "int" = field(default_factory=_default_sync_thread_pool_size)
     """Maximum threads running synchronous tasks concurrently.
 
-    Matches anyio's default thread limiter. Threads are created on demand, so this is a
-    ceiling rather than a startup cost.
+    Defaults to the cgroup-aware effective CPU count plus four, capped at 32.
+    Threads are created on demand, so this is a ceiling rather than a startup cost.
     """
 
     sync_thread_name_prefix: "str" = "litestar-queues"

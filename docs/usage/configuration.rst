@@ -37,7 +37,8 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``worker.batch_size``, ``worker.max_concurrency``
      - :doc:`workers`
    * - Idle waiting
-     - ``worker.poll_interval``
+     - ``worker.poll_interval``, ``worker.poll_backoff_max``,
+       ``worker.poll_backoff_multiplier``, ``worker.poll_jitter``
      - :doc:`worker-wakeups`
    * - Heartbeats and recovery
      - ``worker.heartbeat_interval``, ``worker.heartbeat_miss_threshold``,
@@ -72,5 +73,29 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``task_dependency_resolver``
      - :doc:`dependency-resolver`
 
-Defaults favor a one-process development app: memory persistence, local
-execution, and an in-app worker. Make production choices explicit.
+Adaptive polling
+================
+
+Polling-only workers reduce idle backend traffic by increasing their wait
+after empty cycles. The default grows from ``0.1`` seconds to at most ``30``
+seconds, applies bounded jitter, and resets immediately when work or a native
+notification arrives:
+
+.. code-block:: python
+
+   worker = WorkerConfig(
+       poll_interval=0.1,
+       poll_backoff_max=10.0,
+       poll_backoff_multiplier=2.0,
+       poll_jitter=0.15,
+   )
+
+For polling-only backends, ``poll_backoff_max`` is the worst-case discovery
+latency for newly inserted work. Native notifications still wake immediately,
+and known scheduled or retry work clamps the wait to its due time. Set
+``poll_backoff_max=None`` to retain fixed-interval polling when latency matters
+more than idle load.
+
+Defaults favor zero-configuration background execution: ephemeral SQLite,
+local execution, and one server-owned worker started by ``litestar run``.
+Choose persistent storage and placement explicitly for durable deployments.

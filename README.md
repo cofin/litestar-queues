@@ -60,16 +60,20 @@ Enqueue a task:
 curl -X POST http://127.0.0.1:8000/accounts/acct-123/sync
 ```
 
-The response contains a task ID and an initial status. The default in-memory
-queue and in-app worker are ideal for this first run.
+The response contains a task ID and an initial status. `QueueConfig()` starts
+one fresh queue-worker child for this `litestar run` invocation and shares a
+private temporary SQLite file with it. No queue socket or port is exposed, and
+the temporary queue is removed on normal shutdown; it is not durable across
+server restarts.
 
 ## Production boundary
 
-Choose where tasks are stored separately from where they run. The default
-memory backend stores tasks in one Python process. If the web app and worker
-run in separate processes, use a shared backend such as SQLSpec, Advanced
-Alchemy, Redis, or Valkey. Use standalone workers when the web app and task
-workers must scale separately. Cloud Run runs tasks; it does not store them.
+Choose where tasks are stored separately from where they run. For durable
+deployments use a shared backend such as SQLSpec, Advanced Alchemy, Redis, or
+Valkey. Use standalone workers when the web app and task workers must scale
+separately. The process-local memory backend remains useful for inline tests
+or an explicitly single-ASGI-process worker. Cloud Run runs tasks; it does not
+store them.
 
 ## Next steps
 

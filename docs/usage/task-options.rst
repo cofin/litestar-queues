@@ -162,8 +162,9 @@ Sizing the thread pool
 
 The queue service owns its own thread pool, so synchronous tasks never contend
 with other :func:`asyncio.to_thread` callers in the same process.
-``sync_thread_pool_size`` caps how many run at once and defaults to ``40``,
-matching anyio's default thread limiter:
+``sync_thread_pool_size`` caps how many run at once. Its default is the
+process-usable CPU count plus four, capped at 32; Linux cgroup quotas and CPU
+affinity constrain that count:
 
 .. code-block:: python
 

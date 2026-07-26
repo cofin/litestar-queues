@@ -54,6 +54,9 @@ configure.
 * ``litestar queues run`` now runs alongside whatever the application already
   starts, so adding worker processes does not require changing application
   configuration. It refuses only storage it genuinely cannot reach.
+* The default synchronous-task thread-pool size now follows the process-usable
+  CPU count plus four, capped at 32. Linux cgroup quotas and CPU affinity
+  constrain the default; an explicit ``sync_thread_pool_size`` remains exact.
 * Selecting one queue backend no longer imports another backend's package, so an
   application with only ``asyncpg`` installed starts cleanly.
 * Worker modules are grouped into one ``litestar_queues.worker`` package split by
@@ -130,7 +133,7 @@ deprecations, or compatibility shims for the replaced pre-release surface.
 **Fixed:**
 
 * Preserved standalone Redis and Valkey example worker settings while allowing the
-  CI topology runner to disable in-app workers.
+  CI topology runner to select external placement.
 * Trusted the self-signed SQL Server certificate in the ``mssql-python`` test
   adapter, and handled wrapped Advanced Alchemy integrity errors during concurrent
   task reservation.

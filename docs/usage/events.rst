@@ -31,6 +31,33 @@ only when the caller must receive a sink error.
 Publish from a task
 ===================
 
+Choose the signal that matches what happened:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Signal
+     - Meaning
+     - Owner
+   * - Heartbeat
+     - Liveness timestamp used for recovery; ``beat(detail)`` may attach the
+       latest short diagnostic detail.
+     - The worker updates timestamps automatically while a task runs.
+   * - Progress
+     - Typed, measurable movement such as ``current`` out of ``total``.
+     - Task code publishes it when meaningful work advances.
+   * - Custom event
+     - A distinct domain occurrence, such as ``crawl.page_discovered``.
+     - Task code publishes it when that occurrence happens.
+   * - Lifecycle event
+     - A queue-owned state transition such as ``task.started``,
+       ``task.completed``, or ``task.failed``.
+     - The service and worker publish it automatically.
+
+Tasks do not need to call ``beat()`` to remain alive, and a progress update
+should not also be copied into a generic custom event. Use ``beat(detail)``
+only when a short, last-value diagnostic helps recovery or operations.
+
 .. code-block:: python
 
    from litestar_queues import task
@@ -54,6 +81,14 @@ When enabled, history is written before live delivery. Non-terminal live events
 are sent in small batches, and the buffer is flushed before the final event.
 Sinks with ``publish_many`` receive a batch; other sinks receive the events one
 at a time in order.
+
+Retries may produce another ``task.started`` for the same task ID.
+``task.failed`` includes ``will_retry`` so a consumer can distinguish an
+attempt failure from a terminal failure. Cancellation, claim loss, and stale
+failure are separate terminal paths; consumers should not infer persisted
+result data from the event payload alone. After any terminal event, refresh the
+:class:`~litestar_queues.TaskResult` when the record, result, or error is
+needed.
 
 Code outside a worker should use this context manager:
 

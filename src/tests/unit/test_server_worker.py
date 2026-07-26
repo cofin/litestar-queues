@@ -25,7 +25,10 @@ from litestar_queues.worker.supervisor import (
     _apply_launch_spec,
     _build_launch_spec,
     _force_stop_process,
+    _kill_windows_process_tree,
     _parent_loss_bridge,
+    _QueueProcessCleanupError,
+    _request_server_shutdown,
     _reset_child_logging,
     _resolve_queue_plugin,
     _run_child,
@@ -344,7 +347,11 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
     _worker_process_main(_spec(), stop, connection)  # type: ignore[arg-type]
 
     assert captured == {
-        "environment": {"SECRET_TOKEN": "credential", "LITESTAR_APP": "example:app"},
+        "environment": {
+            "SECRET_TOKEN": "credential",
+            "LITESTAR_APP": "example:app",
+            "LITESTAR_QUEUES_PROCESS_ROLE": "server-worker",
+        },
         "sys_path": ("/tmp/example",),
         "app_path": "example:app",
         "app_dir": "/tmp/example",
@@ -629,13 +636,78 @@ def test_join_timeout_terminates_then_kills(monkeypatch: MonkeyPatch) -> None:
     process.stop_after_terminate_join = False
     supervisor, _ = _supervisor(process=process, messages=[("ready", process.pid)])
     monkeypatch.setattr("litestar_queues.worker.supervisor.os.name", "nt")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._kill_windows_process_tree", lambda process: process.kill())
     supervisor.start()
 
     supervisor.close()
 
-    assert process.terminated is True
+    assert process.terminated is False
     assert process.killed is True
-    assert process.join_timeouts == [1.2, 5.0, 5.0]
+    assert process.join_timeouts == [1.2, 5.0]
+
+
+def test_windows_tree_cleanup_uses_bounded_taskkill() -> None:
+    process = _FakeProcess(pid=81)
+    calls: "list[tuple[list[str], bool, bool, float]]" = []
+
+    def run(command: list[str], *, check: bool, capture_output: bool, timeout: float) -> "Any":
+        calls.append((command, check, capture_output, timeout))
+        process.alive = False
+        return SimpleNamespace(returncode=0)
+
+    _kill_windows_process_tree(cast("Any", process), _which=lambda _name: "C:/Windows/taskkill.exe", _run=run)
+
+    assert calls == [(["C:/Windows/taskkill.exe", "/PID", "81", "/T", "/F"], False, True, 5.0)]
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "status"])
+def test_windows_tree_cleanup_failure_is_sanitized_and_never_claimed_clean(failure: str) -> None:
+    process = _FakeProcess(pid=82)
+
+    def run(command: list[str], **kwargs: "Any") -> "Any":
+        del command, kwargs
+        if failure == "missing":
+            raise FileNotFoundError
+        if failure == "timeout":
+            command = "taskkill"
+            raise subprocess.TimeoutExpired(command, 5)
+        return SimpleNamespace(returncode=1)
+
+    with pytest.raises(_QueueProcessCleanupError, match="Windows process-tree cleanup failed"):
+        _kill_windows_process_tree(cast("Any", process), _which=lambda _name: None, _run=run)
+
+    assert process.killed is True
+
+
+def test_windows_force_stop_joins_after_tree_cleanup_failure(monkeypatch: MonkeyPatch) -> None:
+    process = _FakeProcess(pid=83)
+    message = "Windows process-tree cleanup failed"
+
+    def fail_tree_cleanup(process: object) -> None:
+        del process
+        raise _QueueProcessCleanupError(message)
+
+    monkeypatch.setattr("litestar_queues.worker.supervisor._kill_windows_process_tree", fail_tree_cleanup)
+
+    with pytest.raises(_QueueProcessCleanupError, match="Windows process-tree cleanup failed"):
+        _force_stop_process(cast("Any", process), _platform="nt")
+
+    assert process.join_timeouts == [5.0]
+
+
+def test_server_shutdown_request_is_portable(monkeypatch: MonkeyPatch) -> None:
+    signals: "list[tuple[str, int]]" = []
+    monkeypatch.setattr(
+        "litestar_queues.worker.supervisor.signal.raise_signal", lambda sig: signals.append(("raise", sig))
+    )
+    monkeypatch.setattr("litestar_queues.worker.supervisor.os.kill", lambda _pid, sig: signals.append(("kill", sig)))
+
+    monkeypatch.setattr("litestar_queues.worker.supervisor.sys.platform", "win32")
+    _request_server_shutdown()
+    monkeypatch.setattr("litestar_queues.worker.supervisor.sys.platform", "linux")
+    _request_server_shutdown()
+
+    assert signals == [("raise", signal.SIGINT), ("kill", signal.SIGTERM)]
 
 
 def test_posix_force_stop_uses_verified_group_term_then_stops_when_child_exits() -> None:
