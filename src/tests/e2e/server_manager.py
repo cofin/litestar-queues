@@ -16,7 +16,7 @@ import httpx
 from .assertions import assert_asset_urls_on_origin, assert_production_assets
 from .health_check import wait_for_paths
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 ExampleMode = Literal["dev", "production"]
 
 EXAMPLE_APPS: dict[str, str] = {

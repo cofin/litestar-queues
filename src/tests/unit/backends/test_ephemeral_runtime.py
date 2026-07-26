@@ -151,10 +151,17 @@ def test_is_private_directory_rejects_symlinks_and_shared_modes(tmp_path: "Path"
     link = tmp_path / "link"
     link.symlink_to(private, target_is_directory=True)
 
-    assert is_private_directory(private) is True
-    assert is_private_directory(shared) is False
-    assert is_private_directory(link) is False
-    assert is_private_directory(tmp_path / "absent") is False
+    assert is_private_directory(private, _platform="posix") is True
+    assert is_private_directory(shared, _platform="posix") is False
+    assert is_private_directory(link, _platform="posix") is False
+    assert is_private_directory(tmp_path / "absent", _platform="posix") is False
+
+
+def test_is_private_directory_uses_windows_directory_acl_boundary(tmp_path: "Path") -> "None":
+    directory = tmp_path / "windows-private"
+    directory.mkdir(mode=0o755)
+
+    assert is_private_directory(directory, _platform="nt") is True
 
 
 def test_a_schema_failure_leaves_no_environment_or_files(monkeypatch: "pytest.MonkeyPatch") -> "None":

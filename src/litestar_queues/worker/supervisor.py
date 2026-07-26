@@ -42,6 +42,7 @@ _BOOTSTRAP_STAGES = frozenset(("bootstrap", "load_app", "resolve_plugin", "valid
 _SAFE_STAGES = _RUNNER_STAGES | _BOOTSTRAP_STAGES
 _PROCESS_ROLE_ENV_VAR = "LITESTAR_QUEUES_PROCESS_ROLE"
 _WINDOWS_CLEANUP_ERROR = "Windows process-tree cleanup failed."
+_POSIX_SIGKILL = cast("int", getattr(signal, "SIGKILL", 9))
 
 
 class _QueueProcessCleanupError(QueueError):
@@ -419,7 +420,7 @@ def _force_stop_process(
         process.join(_FORCE_STOP_TIMEOUT)
         if not process.is_alive():
             return
-        if _verified_kill_process_group(process, signal.SIGKILL, _getpgid=_getpgid, _killpg=_killpg):
+        if _verified_kill_process_group(process, _POSIX_SIGKILL, _getpgid=_getpgid, _killpg=_killpg):
             process.join(_FORCE_STOP_TIMEOUT)
             return
         process.kill()

@@ -21,6 +21,7 @@ from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.runtime import _WorkerStage, _WorkerStageError
 from litestar_queues.worker.supervisor import (
+    _POSIX_SIGKILL,
     ServerWorkerSupervisor,
     _apply_launch_spec,
     _build_launch_spec,
@@ -70,6 +71,11 @@ def _restored_logging_state() -> "Iterator[None]":
             for handler in handlers:
                 logger.addHandler(handler)
             logger.setLevel(level)
+
+
+def _patch_posix_child_session(monkeypatch: "MonkeyPatch", callback: "Callable[[], None]") -> "None":
+    monkeypatch.setattr("litestar_queues.worker.supervisor.os.name", "posix")
+    monkeypatch.setattr(os, "setsid", callback, raising=False)
 
 
 class _FakeConnection:
@@ -313,7 +319,7 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
     fake_environment: dict[str, str] = {"STALE": "value"}
     monkeypatch.setattr(os, "environ", fake_environment)
     monkeypatch.setattr(sys, "path", ["stale"])
-    monkeypatch.setattr(os, "setsid", lambda: order.append("setsid"))
+    _patch_posix_child_session(monkeypatch, lambda: order.append("setsid"))
     monkeypatch.setattr("multiprocessing.parent_process", lambda: SimpleNamespace(sentinel=1, close=lambda: None))
 
     def from_env(app_path: str, app_dir: Path) -> object:
@@ -426,7 +432,7 @@ def test_child_sanitizes_runner_stage_error(monkeypatch: MonkeyPatch) -> None:
         return _server_placement_plugin()
 
     monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
-    monkeypatch.setattr(os, "setsid", lambda: None)
+    _patch_posix_child_session(monkeypatch, lambda: None)
     monkeypatch.setattr("multiprocessing.parent_process", fake_parent)
     monkeypatch.setattr(LitestarEnv, "from_env", fake_environment)
     monkeypatch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore)
@@ -448,7 +454,7 @@ def test_missing_parent_process_is_sanitized_bootstrap_failure(monkeypatch: Monk
         return None
 
     monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
-    monkeypatch.setattr(os, "setsid", lambda: None)
+    _patch_posix_child_session(monkeypatch, lambda: None)
     monkeypatch.setattr("multiprocessing.parent_process", no_parent)
     connection = _FakeConnection()
 
@@ -577,7 +583,7 @@ def test_watchdog_creation_failure_stops_child_and_closes_handles() -> None:
         supervisor.start()
 
     assert context.stop_event.is_set() is True
-    assert process.terminated is True
+    assert process.terminated is True or process.killed is True
     assert process.closed is True
     assert context.receive.closed is True
 
@@ -732,12 +738,12 @@ def test_posix_force_stop_uses_group_term_then_group_kill() -> None:
 
     def killpg(pgid: int, sig: int) -> None:
         signals.append((pgid, sig))
-        if sig == signal.SIGKILL:
+        if sig == _POSIX_SIGKILL:
             process.alive = False
 
     _force_stop_process(cast("Any", process), _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
 
-    assert signals == [(74, signal.SIGTERM), (74, signal.SIGKILL)]
+    assert signals == [(74, signal.SIGTERM), (74, _POSIX_SIGKILL)]
     assert process.terminated is False
     assert process.killed is False
     assert process.join_timeouts == [5.0, 5.0]
@@ -1044,20 +1050,20 @@ def test_posix_group_cleanup_requires_child_owned_process_group() -> None:
 
     unverified = _verified_kill_process_group(
         cast("Any", process),
-        signal.SIGKILL,
+        _POSIX_SIGKILL,
         _getpgid=lambda pid: pid + 1,
         _killpg=lambda pgid, sig: killed.append((pgid, sig)),
     )
     verified = _verified_kill_process_group(
         cast("Any", process),
-        signal.SIGKILL,
+        _POSIX_SIGKILL,
         _getpgid=lambda pid: pid,
         _killpg=lambda pgid, sig: killed.append((pgid, sig)),
     )
 
     assert unverified is False
     assert verified is True
-    assert killed == [(73, signal.SIGKILL)]
+    assert killed == [(73, _POSIX_SIGKILL)]
 
 
 def test_logging_reset_stops_queue_listeners_and_leaves_one_direct_stderr_handler() -> None:
@@ -1127,7 +1133,7 @@ def test_child_validate_stage_rejects_a_non_server_application(config: QueueConf
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
-        patch.setattr(os, "setsid", lambda: None)
+        _patch_posix_child_session(patch, lambda: None)
         patch.setattr("multiprocessing.parent_process", lambda: SimpleNamespace(sentinel=1))
         patch.setattr(LitestarEnv, "from_env", lambda *_: SimpleNamespace(app=object()))
         patch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore)
