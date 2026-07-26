@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
     from litestar_queues.typing import ChannelsLike, ChannelsStreamBackend, ChannelsSubscriptionBackend
 
-__all__ = ("StreamMetrics", "build_stream_router", "stream_queue_events_hardened", "stream_queue_events_sse")
+__all__ = ("StreamMetrics", "build_stream_router", "stream_queue_events_sse", "stream_queue_events_ws")
 
 _STREAM_DEDUP_MAX_KEYS = 1024
 
@@ -94,7 +94,7 @@ def _decode_event(raw_event: "bytes | str") -> "QueueEvent | None":
 
 
 class StreamMetrics(Protocol):
-    """Optional metric callbacks used by the hardened stream relay."""
+    """Optional metric callbacks used by the WebSocket and SSE stream relays."""
 
     def on_connect(self, scope: "QueueEventScope") -> None:
         """Record a stream connection."""
@@ -150,7 +150,7 @@ class _RuntimeStreamMetrics:
         )
 
 
-async def stream_queue_events_hardened(
+async def stream_queue_events_ws(
     socket: Any,
     channels: Sequence[str],
     *,
@@ -351,7 +351,7 @@ def build_stream_router(
         backend = configured_channels_backend
         if backend is None:
             backend = _resolve_channels_backend(socket)
-        await stream_queue_events_hardened(
+        await stream_queue_events_ws(
             socket,
             [channel],
             history=history,

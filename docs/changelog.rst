@@ -6,6 +6,38 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+Unreleased
+==========
+
+**Breaking changes:**
+
+* ``stream_queue_events_hardened`` is renamed to ``stream_queue_events_ws`` with
+  no alias. It sits beside ``stream_queue_events_sse`` and takes the same
+  arguments, so the name now says which transport it uses instead of describing
+  a since-removed unhardened variant.
+* Ephemeral storage is no longer restricted by worker placement. Configuring
+  ``queue_backend="ephemeral"`` with ``placement="asgi"`` or
+  ``placement="external"``, or with ``execution_backend="immediate"``, was
+  rejected at startup; the backend already refuses to open when no private
+  database has been prepared, so an embedder that creates one itself may now use
+  any placement. Process-local ``"memory"`` storage is still rejected under
+  ``placement="server"``.
+
+**Fixed:**
+
+* Worker fleet coordination is now actually fenced. ``acquire_worker_lock``
+  returned true unconditionally, so stale recovery, expiry sweeps, and external
+  reconciliation ran on every worker at once instead of one at a time.
+* External reconciliation checks its interval before taking the fleet lock. It
+  previously wrote a coordination record on every worker loop iteration and
+  discarded it at the interval check.
+* Applications no longer import every installed queue adapter at startup. The
+  Litestar signature namespace carried the whole public API, which defeated the
+  package's lazy imports and charged applications for extras they never selected.
+* Queue backends that fail to implement a required method now raise instead of
+  silently succeeding. Two of those defaults returned an unpersisted record, so a
+  gap dropped execution references rather than reporting itself.
+
 0.6.0 - 2026-07-25
 ==================
 
@@ -30,11 +62,9 @@ configure.
   execution.
 * Storage, execution, and placement combinations that cannot work are rejected at
   startup rather than at first claim. Process-local storage with a separate worker
-  process and inline execution under a managed placement both raise with a message
-  that names the fix. Starting through a raw ASGI server under server placement
-  fails before serving traffic. Ephemeral storage is not restricted by placement:
-  the backend refuses to open when no private database has been prepared, so an
-  embedder that creates one itself is free to use any placement.
+  process, inline execution under a managed placement, and ephemeral storage
+  outside its owning server all raise with a message that names the fix. Starting
+  through a raw ASGI server under server placement fails before serving traffic.
 
 **Added:**
 

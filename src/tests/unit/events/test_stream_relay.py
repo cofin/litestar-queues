@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues.events import QueueEvent
-from litestar_queues.events.streaming import stream_queue_events_hardened
+from litestar_queues.events.streaming import stream_queue_events_ws
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -69,13 +69,13 @@ class _RecordingSocket:
             self._sending = False
 
 
-async def test_hardened_relay_emits_heartbeat_between_events() -> None:
+async def test_ws_relay_emits_heartbeat_between_events() -> None:
     first = QueueEvent(type="task.progress", scope="task", id="evt-1", task_id="task-1")
     second = QueueEvent(type="task.progress", scope="task", id="evt-2", task_id="task-1")
     plugin = _FakeChannelsPlugin([first.to_json(), second.to_json()], delay_between_events=0.03)
     socket = _RecordingSocket()
 
-    await stream_queue_events_hardened(
+    await stream_queue_events_ws(
         socket, ["litestar_queues:task:task_1:events"], history=4, channels_backend=plugin, heartbeat_interval=0.005
     )
 
@@ -90,11 +90,11 @@ async def test_hardened_relay_emits_heartbeat_between_events() -> None:
     assert any(0 < index < second_index for index in ping_indices)
 
 
-async def test_hardened_relay_cancels_heartbeat_when_event_stream_ends() -> None:
+async def test_ws_relay_cancels_heartbeat_when_event_stream_ends() -> None:
     plugin = _FakeChannelsPlugin([])
     socket = _RecordingSocket()
 
-    await stream_queue_events_hardened(
+    await stream_queue_events_ws(
         socket, ["litestar_queues:task:task_1:events"], channels_backend=plugin, heartbeat_interval=0.005
     )
     sent_count = len(socket.sent_json)
