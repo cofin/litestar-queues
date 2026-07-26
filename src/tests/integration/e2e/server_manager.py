@@ -27,7 +27,9 @@ EXAMPLE_APPS: dict[str, str] = {
     "sse_valkey": "examples.htmx_realtime_sse_valkey.app:app",
     "websocket_valkey": "examples.htmx_realtime_websocket_valkey.app:app",
 }
-INSTALLED_EXAMPLES: set[str] = set()
+# Every example resolves to the one shared Vite project, so the install is a
+# property of the run rather than of the example under test.
+SHARED_ASSETS_INSTALLED = False
 
 
 def find_free_port() -> int:
@@ -75,10 +77,12 @@ class ExampleServer:
             message = "Example server is already started"
             raise RuntimeError(message)
 
+        global SHARED_ASSETS_INSTALLED  # noqa: PLW0603
+
         env = self._environment()
-        if self.example_name not in INSTALLED_EXAMPLES:
+        if not SHARED_ASSETS_INSTALLED:
             self._run_cli(["assets", "install"], env=env)
-            INSTALLED_EXAMPLES.add(self.example_name)
+            SHARED_ASSETS_INSTALLED = True
 
         if self.mode == "production":
             self._run_cli(["assets", "build"], env=env)

@@ -14,6 +14,8 @@ UV_SYNC_ARGS ?= --all-extras --dev
 INFRA_ARGS ?=
 EXAMPLE_APP_FILES := $(wildcard examples/htmx_realtime_*/app.py)
 EXAMPLE_APP_MODULES := $(subst /,.,$(patsubst %/app.py,%.app:app,$(EXAMPLE_APP_FILES)))
+# Every example app shares one Vite project, so assets install and build once.
+EXAMPLE_ASSETS_APP := examples.htmx_realtime_sse.app:app
 
 # Detect Rodete and configure index URLs for Python tools
 ifneq ($(shell grep -s -q "rodete" /etc/os-release && echo "yes"),)
@@ -66,23 +68,19 @@ install: destroy clean setup-env                    ## Install the project, depe
 	@echo "${OK} Installation complete! 🎉"
 
 .PHONY: install-examples-assets
-install-examples-assets:                              ## Install frontend assets for bundled example apps
-	@if [ -n "$(EXAMPLE_APP_MODULES)" ]; then \
-		for app in $(EXAMPLE_APP_MODULES); do \
-			echo "${INFO} Installing frontend assets for $$app... ⚡"; \
-			LITESTAR_APP=$$app uv run litestar assets install; \
-		done; \
+install-examples-assets:                              ## Install frontend assets shared by the example apps
+	@if [ -n "$(EXAMPLE_APP_FILES)" ]; then \
+		echo "${INFO} Installing frontend assets shared by the example apps... ⚡"; \
+		LITESTAR_APP=$(EXAMPLE_ASSETS_APP) uv run litestar assets install; \
 	else \
 		echo "${WARN} No example apps matched examples/htmx_realtime_*"; \
 	fi
 
 .PHONY: build-examples-assets
-build-examples-assets:                               ## Build frontend assets for bundled example apps
-	@if [ -n "$(EXAMPLE_APP_MODULES)" ]; then \
-		for app in $(EXAMPLE_APP_MODULES); do \
-			echo "${INFO} Building frontend assets for $$app... 📦"; \
-			LITESTAR_APP=$$app uv run litestar assets build; \
-		done; \
+build-examples-assets:                               ## Build frontend assets shared by the example apps
+	@if [ -n "$(EXAMPLE_APP_FILES)" ]; then \
+		echo "${INFO} Building frontend assets shared by the example apps... 📦"; \
+		LITESTAR_APP=$(EXAMPLE_ASSETS_APP) uv run litestar assets build; \
 	else \
 		echo "${WARN} No example apps matched examples/htmx_realtime_*"; \
 	fi

@@ -72,15 +72,16 @@ WebSocket application:
    :language: python
    :caption: examples/htmx_realtime_websocket/app.py
 
-WebSocket frontend:
+WebSocket frontend. All ten examples share one Vite project under
+``examples/shared``, with an entry point per transport:
 
-.. literalinclude:: ../../examples/htmx_realtime_websocket/resources/main.ts
+.. literalinclude:: ../../examples/shared/resources/main-ws.ts
    :language: typescript
-   :caption: examples/htmx_realtime_websocket/resources/main.ts
+   :caption: examples/shared/resources/main-ws.ts
 
-.. literalinclude:: ../../examples/htmx_realtime_websocket/templates/index.html
+.. literalinclude:: ../../examples/shared/templates/partials/stream_mount_ws.html
    :language: html+jinja
-   :caption: examples/htmx_realtime_websocket/templates/index.html
+   :caption: examples/shared/templates/partials/stream_mount_ws.html
 
 SSE application:
 
@@ -90,13 +91,19 @@ SSE application:
 
 SSE frontend:
 
-.. literalinclude:: ../../examples/htmx_realtime_sse/resources/main.ts
+.. literalinclude:: ../../examples/shared/resources/main-sse.ts
    :language: typescript
-   :caption: examples/htmx_realtime_sse/resources/main.ts
+   :caption: examples/shared/resources/main-sse.ts
 
-.. literalinclude:: ../../examples/htmx_realtime_sse/templates/index.html
+.. literalinclude:: ../../examples/shared/templates/partials/stream_mount_sse.html
    :language: html+jinja
-   :caption: examples/htmx_realtime_sse/templates/index.html
+   :caption: examples/shared/templates/partials/stream_mount_sse.html
+
+The page markup both transports render is shared too:
+
+.. literalinclude:: ../../examples/shared/templates/index.html
+   :language: html+jinja
+   :caption: examples/shared/templates/index.html
 
 Backend variants
 ================
