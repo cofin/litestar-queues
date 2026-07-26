@@ -150,15 +150,15 @@ release:                                           ## Bump version and create re
 # =============================================================================
 
 .PHONY: docs
-docs:                                               ## Build documentation
+docs:                                               ## Build HTML documentation with warnings as errors
 	@echo "${INFO} Building docs... 📚"
-	@uv run sphinx-build -b html docs docs/_build/html
+	@uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 	@echo "${OK} Docs build complete 📚"
 
 .PHONY: docs-linkcheck
-docs-linkcheck:                                     ## Check documentation links
+docs-linkcheck:                                     ## Validate documentation links
 	@echo "${INFO} Checking docs links... 📚"
-	@uv run sphinx-build -b linkcheck docs docs/_build/linkcheck
+	@uv run sphinx-build -W --keep-going -b linkcheck docs docs/_build/linkcheck
 	@echo "${OK} Docs linkcheck complete 📚"
 
 .PHONY: docs-audit
@@ -319,8 +319,14 @@ fix:                                                ## Fix linting issues
 	@uv run ruff format src/
 	@echo "${OK} Linting issues fixed ✨"
 
+.PHONY: check-future-annotations
+check-future-annotations:                           ## Check for forbidden __future__ annotations imports
+	@echo "${INFO} Checking future annotations rules... 🔍"
+	@uv run python tools/no-future-annotations.py
+	@echo "${OK} Future annotations check passed ✨"
+
 .PHONY: lint
-lint: prek type-check slotscheck                    ## Run all linting checks
+lint: prek type-check slotscheck check-future-annotations ## Run all linting checks
 
 .PHONY: check-all
 check-all: lint test-all coverage                   ## Run all checks (lint, test, coverage)
