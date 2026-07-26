@@ -228,6 +228,31 @@ source = ["src/litestar_queues"]
 #####################
 # Tools             #
 #####################
+[tool.uv]
+exclude-newer = "2026-07-19T00:00:00Z"
+preview-features = ["index-exclude-newer"]
+
+[tool.uv.exclude-newer-package]
+advanced-alchemy = "2099-01-01T00:00:00Z"
+litestar = "2099-01-01T00:00:00Z"
+litestar-asyncapi = "2099-01-01T00:00:00Z"
+litestar-asyncpg = "2099-01-01T00:00:00Z"
+litestar-autowire = "2099-01-01T00:00:00Z"
+litestar-email = "2099-01-01T00:00:00Z"
+litestar-granian = "2099-01-01T00:00:00Z"
+litestar-htmx = "2099-01-01T00:00:00Z"
+litestar-mcp = "2099-01-01T00:00:00Z"
+litestar-oracledb = "2099-01-01T00:00:00Z"
+litestar-queues = "2099-01-01T00:00:00Z"
+litestar-saq = "2099-01-01T00:00:00Z"
+litestar-security = "2099-01-01T00:00:00Z"
+litestar-vite = "2099-01-01T00:00:00Z"
+polyfactory = "2099-01-01T00:00:00Z"
+pytest-databases = "2099-01-01T00:00:00Z"
+sqlglot = "2099-01-01T00:00:00Z"
+sqlglotc = "2099-01-01T00:00:00Z"
+sqlspec = "2099-01-01T00:00:00Z"
+
 [tool.ruff]
 exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build"]
 include = [
