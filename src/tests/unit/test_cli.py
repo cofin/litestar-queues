@@ -214,6 +214,7 @@ def test_status_subcommand_default_table(monkeypatch: "pytest.MonkeyPatch") -> "
 
     assert result.exit_code == 0, result.stderr
     assert "pending" in result.stdout
+    assert "expired" in result.stdout
     assert "total" in result.stdout
 
 
@@ -222,7 +223,7 @@ def test_status_subcommand_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
-    expected_keys = {"pending", "scheduled", "running", "completed", "failed", "cancelled", "total"}
+    expected_keys = {"pending", "scheduled", "running", "completed", "failed", "cancelled", "expired", "total"}
     assert expected_keys.issubset(payload.keys())
     assert all(isinstance(payload[key], int) for key in expected_keys)
 

@@ -399,6 +399,7 @@ async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json
         "completed": stats.completed,
         "failed": stats.failed,
         "cancelled": stats.cancelled,
+        "expired": stats.expired,
         "total": stats.total,
     }
 
@@ -407,7 +408,7 @@ async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json
     else:
         click.echo(f"{'Status':<12}{'Count':>8}")
         click.echo(f"{'-' * 12}{'-' * 8:>8}")
-        for key in ("pending", "scheduled", "running", "completed", "failed", "cancelled"):
+        for key in ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired"):
             click.echo(f"{key:<12}{payload[key]:>8}")
         click.echo(f"{'total':<12}{payload['total']:>8}")
     return 0

@@ -610,6 +610,35 @@ async def test_stale_recovery_labels_stay_bounded(monkeypatch: "pytest.MonkeyPat
         assert not any(value.isdigit() for value in attributes.values())
 
 
+async def test_expiry_counter_uses_a_bounded_outcome_label(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from litestar_queues.models import QueuedTaskRecord
+
+    runtime = FakeObservabilityRuntime()
+    expired = [QueuedTaskRecord(task_name=f"tasks.expired.{index}", status="expired") for index in range(3)]
+
+    async def expire(_self: "QueueService", **_kwargs: "Any") -> "list[QueuedTaskRecord]":
+        return expired
+
+    monkeypatch.setattr(QueueService, "expire_overdue_tasks", expire)
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        observability_runtime=runtime,
+    ) as service:
+        worker = Worker(service, WorkerConfig(expiry_check_interval=0.0))
+        await worker._maybe_expire_overdue()
+
+    expiry_samples = [entry for entry in runtime.counters if entry[0] == "litestar_queues.expiry"]
+
+    assert expiry_samples == [
+        (
+            "litestar_queues.expiry",
+            3,
+            {"queue.execution.backend": "local", "queue.expiry.outcome": "expired"},
+        )
+    ]
+
+
 async def test_correlation_id_round_trips_through_record_metadata() -> "None":
     """A worker must run the task under the correlation ID of the enqueueing request."""
     pytest.importorskip("sqlspec")

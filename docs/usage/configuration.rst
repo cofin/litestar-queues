@@ -43,6 +43,10 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``worker.heartbeat_interval``, ``worker.heartbeat_miss_threshold``,
        ``worker.stale_after``, ``worker.stale_check_interval``
      - :doc:`worker-recovery`
+   * - Queued task expiration
+     - ``worker.expiry_check_interval``, task ``expires_in``, enqueue
+       ``expires_in`` / ``expires_at``
+     - :doc:`task-options`
    * - Shutdown
      - ``worker.graceful_shutdown_timeout``, ``worker.final_cancel_timeout``
      - :doc:`workers`

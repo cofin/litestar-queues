@@ -332,7 +332,7 @@ async def _drain_messages(pubsub: "object", *, window: "float") -> "list[object]
 
 async def _status_memberships(backend: "ValkeyQueueBackend", task_id: "object") -> "list[str]":
     client = cast("Any", await backend._get_client())
-    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired")
     return [
         status
         for status in statuses
@@ -353,7 +353,7 @@ async def test_valkey_backend_enqueue_places_record_in_single_status_set(
     record = await valkey_backend.enqueue("tasks.single")
 
     client = cast("Any", await valkey_backend._get_client())
-    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled")
+    statuses = ("pending", "scheduled", "running", "completed", "failed", "cancelled", "expired")
     memberships = [
         status
         for status in statuses

@@ -140,7 +140,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             return None
         queue_backend = service.get_queue_backend()
         current = await queue_backend.get_task(record.id) or record
-        if current.status in {"completed", "failed", "cancelled"}:
+        if current.is_terminal:
             return None
 
         runtime = service.observability_runtime

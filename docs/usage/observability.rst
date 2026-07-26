@@ -182,13 +182,16 @@ values. This prevents unbounded label counts:
   ``fallback``, or ``error``
 - ``queue.stale.outcome`` on stale-recovery metrics, one of ``requeued``,
   ``failed``, ``skipped``, or ``handler_needed``
+- ``queue.expiry.outcome`` on the expiry metric, currently ``expired``
 - ``worker.error.type``
 - ``queue.worker.id`` on spans only, when a worker id already exists
 - ``scope`` on plugin-owned stream metrics
 - ``reason`` on stream authorization-denial metrics only
 
 Counts never appear as label values. Stale recovery reports each outcome as its
-own sample rather than encoding the tallies into labels.
+own sample rather than encoding the tallies into labels. The
+``litestar_queues.expiry`` counter records the number of records transitioned
+by a worker sweep as its sample value with the bounded ``expired`` outcome.
 
 Each metric name has exactly one emitter. Dispatch and reconcile counters belong
 to the execution backend, and the heartbeat failure counter belongs to the
@@ -222,6 +225,8 @@ Prometheus convention rather than mirroring the OpenTelemetry instrument names:
      - Exported Prometheus name
    * - ``litestar_queues.enqueue``
      - ``litestar_queues_enqueue_total``
+   * - ``litestar_queues.expiry``
+     - ``litestar_queues_expiry_total``
    * - ``litestar_queues.task.execution.duration``
      - ``litestar_queues_task_execution_duration_seconds``
    * - ``litestar_queues.heartbeat.active``

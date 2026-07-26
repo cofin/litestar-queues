@@ -78,15 +78,16 @@ Prints queue status counts.
    completed        120
    failed             2
    cancelled          0
-   total            126
+   expired            1
+   total            127
 
 Options:
 
 * ``--queue NAME`` (advisory) — backend-side filtering is not yet
   enforced; flag is logged to ``stderr``.
-* ``--json`` — emit a single JSON object with the seven keys
+* ``--json`` — emit a single JSON object with the eight keys
   (``pending``, ``scheduled``, ``running``, ``completed``, ``failed``,
-  ``cancelled``, ``total``). Output uses
+  ``cancelled``, ``expired``, ``total``). Output uses
   ``sqlspec.utils.serializers.to_json`` when available for symmetry with
   the camelCase wire format; falls back to stdlib ``json``.
 

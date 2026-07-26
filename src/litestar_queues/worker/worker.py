@@ -438,7 +438,7 @@ class Worker:
         expired = await self._service.expire_overdue_tasks(worker_id=self._worker_id)
         if expired:
             self._record_counter(
-                "litestar_queues.expiry.count", {"queue.expiry.expired": str(len(expired))}, value=len(expired)
+                "litestar_queues.expiry", {"queue.expiry.outcome": "expired"}, value=len(expired)
             )
 
     async def _maybe_reconcile_external(self) -> "None":
