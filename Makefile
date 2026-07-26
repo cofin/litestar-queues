@@ -329,4 +329,4 @@ check-future-annotations:                           ## Check for forbidden __fut
 lint: prek type-check slotscheck check-future-annotations ## Run all linting checks
 
 .PHONY: check-all
-check-all: lint test-all coverage                   ## Run all checks (lint, test, coverage)
+check-all: lint test-all coverage docs docs-audit docs-linkcheck build ## Run complete validation suite
