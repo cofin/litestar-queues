@@ -11,7 +11,15 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
 
-__all__ = ("CLOUD_TASKS_MAX_SCHEDULE_HORIZON", "CLOUD_TASKS_PROTOCOL_VERSION", "CloudTasksExecutionConfig")
+__all__ = (
+    "CLOUD_TASKS_BACKEND_NAME",
+    "CLOUD_TASKS_MAX_SCHEDULE_HORIZON",
+    "CLOUD_TASKS_PROTOCOL_VERSION",
+    "CloudTasksExecutionConfig",
+)
+
+CLOUD_TASKS_BACKEND_NAME = "cloudtasks"
+"""Registry name of this execution backend, and its value on every metric label."""
 
 CLOUD_TASKS_MAX_SCHEDULE_HORIZON = timedelta(days=30)
 """Google's fixed ceiling on how far ahead a Cloud Tasks task may be scheduled."""

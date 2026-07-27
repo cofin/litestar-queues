@@ -10,6 +10,7 @@ leaves a handle to look the delivery up by.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
@@ -19,8 +20,14 @@ from litestar.serialization import encode_json
 
 from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError, QueueConfigurationError, QueueDispatchError
-from litestar_queues.execution.base import BaseExecutionBackend, DispatchRepairResult
+from litestar_queues.execution.base import (
+    BaseExecutionBackend,
+    DispatchRepairResult,
+    _queue_metric_attributes,
+    _queue_observability_attributes,
+)
 from litestar_queues.execution.cloudtasks.config import (
+    CLOUD_TASKS_BACKEND_NAME,
     CLOUD_TASKS_MAX_SCHEDULE_HORIZON,
     CLOUD_TASKS_PROTOCOL_VERSION,
     CloudTasksExecutionConfig,
@@ -37,20 +44,78 @@ __all__ = ("CloudTasksExecutionBackend",)
 
 _GOOGLE_CLOUD_TASKS_PACKAGE = "google-cloud-tasks"
 _CLOUD_TASKS_EXTRA = "cloud-tasks"
-_BACKEND_NAME = "cloudtasks"
+_BACKEND_NAME = CLOUD_TASKS_BACKEND_NAME
 _DELIVERY_PREFIX = "lq-"
 _HTTP_CONFLICT = 409
 _HTTP_NOT_FOUND = 404
-_SCHEDULE_FAILED_PHASE = "cloudtasks.schedule_failed"
-_REPAIR_FAILED_PHASE = "cloudtasks.repair_failed"
-_FAILURE_MESSAGES = {
-    _SCHEDULE_FAILED_PHASE: "Cloud Tasks delivery creation failed",
-    _REPAIR_FAILED_PHASE: "Cloud Tasks delivery repair failed",
-}
 # A record a consumer already holds is excluded: Cloud Tasks keeps that delivery
 # open until the response, so re-creating it would run the task twice.
 _REPAIRABLE_STATUSES = frozenset({"pending", "scheduled"})
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeliveryOperation:
+    """What one delivery-creating operation calls the things that happen to it.
+
+    Scheduling and repair create a delivery exactly the same way and differ only
+    in how the result should be reported, so the difference lives in one object
+    rather than in branches through the shared path.
+
+    ``metric`` deliberately differs between the two. A Prometheus collector fixes
+    its label names when the metric name is first registered, so two operations
+    with different outcome vocabularies need two families -- reusing one name
+    would make whichever backend recorded second raise instead of counting.
+    """
+
+    phase: "str"
+    """Bounded identifier attached to failure logs and events."""
+
+    failure_message: "str"
+    """Fixed human-readable summary; never the API's own text."""
+
+    metric: "str"
+    """Counter family this operation reports into."""
+
+    outcome_label: "str"
+    """The one label key this operation adds to the shared label set."""
+
+    created: "str"
+    """Outcome for a delivery this call created."""
+
+    already_present: "str"
+    """Outcome for a delivery an earlier call had already created."""
+
+    failed: "str"
+    """Outcome for a delivery that could not be created."""
+
+
+_SCHEDULE = _DeliveryOperation(
+    phase="cloudtasks.schedule_failed",
+    failure_message="Cloud Tasks delivery creation failed",
+    metric="litestar_queues.execution.dispatch",
+    outcome_label="queue.execution.status",
+    created="scheduled",
+    already_present="already_exists",
+    failed="error",
+)
+_REPAIR = _DeliveryOperation(
+    phase="cloudtasks.repair_failed",
+    failure_message="Cloud Tasks delivery repair failed",
+    metric="litestar_queues.execution.repair",
+    outcome_label="queue.repair.outcome",
+    created="recreated",
+    # Repair only creates after the transport reported the delivery gone, and it
+    # creates under a fresh random name, so a collision still means exactly one
+    # delivery now exists. That is the same operational fact as recreating it.
+    already_present="recreated",
+    failed="error",
+)
+_DISPATCH_SKIPPED = "skipped"
+"""Dispatch outcome for a record that settled before its delivery was created."""
+
+_REPAIR_PRESENT = "present"
+"""Repair outcome for a delivery the transport was still holding."""
 
 
 class CloudTasksExecutionBackend(BaseExecutionBackend):
@@ -106,23 +171,55 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             longer eligible.
 
         Raises:
-            QueueDispatchError: If the delivery could not be created. The record
-                is committed, so the caller must not retry the enqueue.
+            Exception: Whatever prevented the delivery from being created,
+                after the failure has been marked on the span. The record is
+                committed, so the caller must not retry the enqueue.
         """
-        queue_backend = service.get_queue_backend()
-        current = await queue_backend.get_task(record.id)
+        current = await service.get_queue_backend().get_task(record.id)
         if current is None or current.is_terminal:
+            _record_outcome(service, record, _SCHEDULE, _DISPATCH_SKIPPED)
             return None
 
+        runtime = service.observability_runtime
+        span = runtime.start_span(
+            "litestar_queues.dispatch", kind="producer", attributes=_queue_observability_attributes("dispatch", current)
+        )
+        try:
+            return await self._schedule_delivery(service, current)
+        except Exception:
+            # The phase, never the exception object. A span serializes the
+            # message of anything recorded onto it, and Google's own errors
+            # quote the target URL and the calling service account.
+            runtime.set_status_error(span, _SCHEDULE.phase)
+            raise
+        finally:
+            runtime.end_span(span)
+
+    async def _schedule_delivery(self, service: "QueueService", current: "QueuedTaskRecord") -> "str | None":
+        """Reserve a name for the current attempt and create its delivery.
+
+        Returns:
+            The delivery's full resource name, or ``None`` when the record went
+            away while its name was being reserved.
+
+        Raises:
+            QueueConfigurationError: If Cloud Tasks would refuse the record, or
+                would accept a delivery that can never run.
+        """
         config = self.execution_config
-        _validate_schedulable(current, config)
+        try:
+            _validate_schedulable(current, config)
+        except QueueConfigurationError:
+            _record_outcome(service, current, _SCHEDULE, _SCHEDULE.failed)
+            raise
 
         task_name = current.execution_ref
         if task_name is None or not _is_current_delivery_name(task_name, config, current):
             task_name = await self._reserve_delivery_name(service, current, config)
             if task_name is None:
+                _record_outcome(service, current, _SCHEDULE, _DISPATCH_SKIPPED)
                 return None
-        return await self._create_delivery(service, current, config, task_name, phase=_SCHEDULE_FAILED_PHASE)
+        return await self._create_delivery(service, current, config, task_name, operation=_SCHEDULE)
 
     async def repair(self, service: "QueueService", *, limit: "int") -> "DispatchRepairResult":
         """Recreate deliveries Cloud Tasks no longer holds for still-active records.
@@ -182,17 +279,20 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             return False
         try:
             if await self._delivery_exists(current.execution_ref, config):
+                _record_outcome(service, current, _REPAIR, _REPAIR_PRESENT)
                 return False
             task_name = await self._reserve_delivery_name(service, current, config)
             if task_name is None:
                 return False
-            await self._create_delivery(service, current, config, task_name, phase=_REPAIR_FAILED_PHASE)
+            await self._create_delivery(service, current, config, task_name, operation=_REPAIR)
         except QueueDispatchError:
-            # Already reported with a sanitized payload. The record keeps the
-            # name it reserved, and the next maintenance pass tries again.
+            # Already counted and reported with a sanitized payload where it was
+            # raised. The record keeps the name it reserved, and the next
+            # maintenance pass tries again.
             return False
         except Exception as exc:  # noqa: BLE001 - one broken candidate must not end the pass.
-            await self._publish_delivery_failure(service, current, exc, phase=_REPAIR_FAILED_PHASE)
+            _record_outcome(service, current, _REPAIR, _REPAIR.failed)
+            await self._publish_delivery_failure(service, current, exc, operation=_REPAIR)
             return False
         return True
 
@@ -236,7 +336,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         config: "CloudTasksExecutionConfig",
         task_name: "str",
         *,
-        phase: "str",
+        operation: "_DeliveryOperation",
     ) -> "str":
         """Create the named delivery on the queue.
 
@@ -256,10 +356,13 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             if _is_already_exists(exc) and await self._owns_delivery(service, record, task_name):
                 # This attempt's own name: a previous create reached Google after
                 # all, so the delivery it describes is already in flight.
+                _record_outcome(service, record, operation, operation.already_present)
                 return task_name
-            await self._publish_delivery_failure(service, record, exc, phase=phase)
+            _record_outcome(service, record, operation, operation.failed)
+            await self._publish_delivery_failure(service, record, exc, operation=operation)
             msg = f"Cloud Tasks delivery could not be created for task {record.id}."
             raise QueueDispatchError(msg, task_id=record.id, committed=True) from exc
+        _record_outcome(service, record, operation, operation.created)
         return task_name
 
     async def _owns_delivery(self, service: "QueueService", record: "QueuedTaskRecord", task_name: "str") -> "bool":
@@ -290,15 +393,22 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         return self.client
 
     async def _publish_delivery_failure(
-        self, service: "QueueService", record: "QueuedTaskRecord", exc: "BaseException", *, phase: "str"
+        self,
+        service: "QueueService",
+        record: "QueuedTaskRecord",
+        exc: "BaseException",
+        *,
+        operation: "_DeliveryOperation",
     ) -> "None":
         """Report a failed delivery without repeating the API's message.
 
         Google's error text routinely quotes the target URL and the calling
         service account, so only the phase reaches the event payload; the
-        original exception stays on the log record and chained to the raise.
+        original exception stays on the log record and chained to the raise,
+        which is what keeps the failure diagnosable for the operator who owns
+        both.
         """
-        message = _FAILURE_MESSAGES[phase]
+        message = operation.failure_message
         logger.warning(
             message,
             exc_info=(type(exc), exc, exc.__traceback__),
@@ -323,7 +433,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                     attempt=record.retry_count + 1,
                     level="warning",
                     message=message,
-                    payload={"phase": phase},
+                    payload={"phase": operation.phase},
                 )
             )
         except Exception:
@@ -332,6 +442,21 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                 exc_info=True,
                 extra={"queue_task_id": str(record.id)},
             )
+
+
+def _record_outcome(
+    service: "QueueService", record: "QueuedTaskRecord", operation: "_DeliveryOperation", outcome: "str"
+) -> "None":
+    """Count one operation outcome under its family's fixed label set.
+
+    Every value is bounded: the shared labels come from the deployment's own
+    configuration, and the outcome comes from this operation's vocabulary. The
+    record's id and its delivery's resource name are both unique per attempt and
+    so appear on neither.
+    """
+    service.observability_runtime.record_counter(
+        operation.metric, attributes={**_queue_metric_attributes(record), operation.outcome_label: outcome}
+    )
 
 
 def _validate_schedulable(record: "QueuedTaskRecord", config: "CloudTasksExecutionConfig") -> "None":

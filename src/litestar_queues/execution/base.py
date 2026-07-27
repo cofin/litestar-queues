@@ -13,6 +13,47 @@ if TYPE_CHECKING:
 
 __all__ = ("BaseExecutionBackend", "DispatchRepairResult")
 
+_MESSAGING_SYSTEM = "litestar_queues"
+
+
+def _queue_observability_attributes(operation: "str", record: "QueuedTaskRecord") -> "dict[str, object]":
+    """Build the span attributes for one execution-backend operation.
+
+    Returns:
+        Span attributes describing the record and the operation.
+    """
+    attributes: "dict[str, object]" = {
+        "messaging.system": _MESSAGING_SYSTEM,
+        "messaging.operation.name": operation,
+        "messaging.destination.name": record.queue,
+        "queue.task.name": record.task_name,
+        "queue.execution.backend": record.execution_backend,
+    }
+    if record.execution_profile:
+        attributes["queue.execution.profile"] = record.execution_profile
+    return attributes
+
+
+def _queue_metric_attributes(record: "QueuedTaskRecord") -> "dict[str, str]":
+    """Build the label set every execution-backend metric family carries.
+
+    Shared rather than per-backend because a Prometheus collector is registered
+    once per metric name and registry, label names included: a backend that adds
+    or drops one key raises on the first recording instead of opening a second
+    series. Every value here is bounded by the deployment's own configuration --
+    queue names, task names, backend and profile selectors -- and the operation's
+    outcome is the only key a caller adds.
+
+    Returns:
+        The shared metric labels for this record.
+    """
+    return {
+        "messaging.destination.name": record.queue,
+        "queue.task.name": record.task_name,
+        "queue.execution.backend": record.execution_backend,
+        "queue.execution.profile": record.execution_profile or "",
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class DispatchRepairResult:
