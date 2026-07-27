@@ -742,3 +742,35 @@ async def test_backend_contract_finalized_dispatch_claims_after_queue_deadline(
     from tests.integration._expiry_contract import assert_finalized_dispatch_claims_after_queue_deadline
 
     await assert_finalized_dispatch_claims_after_queue_deadline(queue_backend)
+
+
+async def test_backend_contract_retires_a_record_whose_task_name_is_unknown(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    """A name this process cannot resolve ends the record on every backend.
+
+    Redelivering will not teach the process a task it does not have, so the
+    record has to reach a terminal state. That failure is a write, and every
+    persistent backend only accepts one over a record that is running and owned
+    at the retry count the writer claimed -- which is why the claim has to be
+    taken before the name is looked up. The in-memory backend accepts the write
+    either way, so it is the one place this ordering mistake stays invisible.
+    """
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    clear_task_registry()
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"
+    )
+    record = await queue_backend.enqueue("contract.consumer.never_registered", max_retries=0)
+
+    async with QueueService(config, queue_backend=queue_backend) as service:
+        exit_code = await consume_one(service, record.id)
+        stored = await queue_backend.get_task(record.id)
+
+    assert exit_code == TaskExitCode.UNKNOWN_TASK
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.is_terminal
+    assert stored.error is not None
+    assert "contract.consumer.never_registered" in stored.error

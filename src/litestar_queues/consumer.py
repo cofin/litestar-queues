@@ -40,7 +40,13 @@ _TASK_ID_ENV_SUFFIX = "TASK_ID"
 
 
 class TaskExitCode(IntEnum):
-    """Deterministic external-consumer process exit codes."""
+    """Deterministic external-consumer process exit codes.
+
+    ``CANCELLED`` reports a record whose durable execution result is
+    ``cancelled``. A consumer whose own caller was cancelled reports nothing at
+    all: the cancellation propagates instead, because the record is still
+    running and no outcome has been reached.
+    """
 
     SUCCESS = 0
     FAILURE = 1
@@ -59,18 +65,16 @@ async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
     The live record in the queue backend is authoritative; the id only locates
     it. Redelivery is fenced by the live ``expected_retry_count`` at claim time.
 
+    The claim is taken before the task name is resolved, because retiring a
+    record this process cannot run is itself a write, and a persistent backend
+    only accepts one over a record that is running and owned.
+
     Returns:
         A deterministic task exit code.
     """
     record = await queue.get_task(task_id)
     if record is None:
         return TaskExitCode.MISSING_RECORD
-
-    try:
-        queue.resolve_task(record.task_name)
-    except KeyError:
-        await queue.get_queue_backend().fail_task(record.id, f"Unknown queue task: {record.task_name!r}", retry=False)
-        return TaskExitCode.UNKNOWN_TASK
 
     claimed, expired = await queue.claim_task(record.id)
     if expired is not None:
@@ -79,7 +83,31 @@ async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
         await queue.publish_claim_lost(record, phase="claim")
         return TaskExitCode.CLAIM_LOST
 
+    try:
+        queue.resolve_task(claimed.task_name)
+    except KeyError:
+        return await _retire_unresolvable_record(queue, claimed)
+
     return await _execute_claimed_record(queue, claimed)
+
+
+async def _retire_unresolvable_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "TaskExitCode":
+    """Fail a claimed record whose task name is not registered in this process.
+
+    Redelivery cannot teach this process a name it does not have, so leaving the
+    record active would strand it: on a self-dispatching queue there is no
+    worker that will come back for it.
+
+    Returns:
+        ``UNKNOWN_TASK``, or ``CLAIM_LOST`` when the attempt moved on first.
+    """
+    updated = await queue.get_queue_backend().fail_task(
+        claimed.id, f"Unknown queue task: {claimed.task_name!r}", retry=False, expected_retry_count=claimed.retry_count
+    )
+    if updated is None:
+        await queue.publish_claim_lost(claimed, phase="unknown_task", expected_retry_count=claimed.retry_count)
+        return TaskExitCode.CLAIM_LOST
+    return TaskExitCode.UNKNOWN_TASK
 
 
 async def run_task(
@@ -166,7 +194,15 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
             return TaskExitCode.CLAIM_LOST
         updated = await execution_task
     except asyncio.CancelledError:
-        return TaskExitCode.CANCELLED
+        # The caller going away is not the queue deciding anything. The record
+        # is still running and still owned, so stop the body, let the ``finally``
+        # clear the heartbeat that stale recovery reads, and let the
+        # cancellation reach the caller rather than reporting an outcome it
+        # could mistake for a settled one.
+        execution_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await execution_task
+        raise
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

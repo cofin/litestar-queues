@@ -437,3 +437,110 @@ async def test_consume_one_without_beat_calls_stays_healthy_across_intervals() -
     assert all(touch.metadata_patch is None for calls in queue_backend.touch_calls for touch in calls)
     assert stored is not None
     assert stored.status == "completed"
+
+
+class _RunningOnlyFailureBackend(InMemoryQueueBackend):
+    """Refuses to fail a record nobody is holding.
+
+    Every persistent backend behaves this way -- ``fail_task`` is a conditional
+    update over a row that is still ``running`` -- and the in-memory backend is
+    the one that does not, which is exactly why an ordering mistake here can
+    pass the unit tier and strand records in production.
+    """
+
+    async def fail_task(
+        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
+        current = await self.get_task(task_id)
+        if current is None or current.status != "running":
+            return None
+        return await super().fail_task(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+
+
+async def test_an_unregistered_task_fails_durably_on_a_backend_that_needs_the_claim() -> "None":
+    """A task name this process cannot resolve has to end the record, not skip it.
+
+    Nothing polls a self-dispatching queue, so a record left pending here is a
+    record that waits forever. The failure therefore has to be written under the
+    claim, which means claiming before resolving the name.
+    """
+    from litestar_queues import QueueConfig, QueueService
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    queue_backend = _RunningOnlyFailureBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+    ) as service:
+        record = await queue_backend.enqueue("tasks.never_registered", max_retries=0)
+        exit_code = await consume_one(service, record.id)
+        stored = await queue_backend.get_task(record.id)
+
+    assert exit_code == TaskExitCode.UNKNOWN_TASK
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.is_terminal
+
+
+async def test_an_unregistered_task_that_someone_else_claimed_first_is_not_failed() -> "None":
+    """Losing the claim means another owner decides this attempt's outcome."""
+    from litestar_queues import QueueConfig, QueueService
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+    ) as service:
+        record = await queue_backend.enqueue("tasks.never_registered_claimed", max_retries=0)
+        claimed = await queue_backend.claim_task(record.id)
+        assert claimed is not None
+        exit_code = await consume_one(service, record.id)
+        stored = await queue_backend.get_task(record.id)
+
+    assert exit_code == TaskExitCode.CLAIM_LOST
+    assert stored is not None
+    assert stored.status == "running"
+
+
+async def test_a_cancelled_consumer_reports_no_outcome_at_all() -> "None":
+    """Cancelling the caller is not the queue deciding anything.
+
+    A consumer that answered here would be telling its caller the delivery is
+    settled while the record is still running. The cancellation has to reach the
+    caller instead, so nothing is acknowledged.
+    """
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import consume_one
+
+    started = asyncio.Event()
+    body_cancelled = asyncio.Event()
+
+    @task("tasks.consumer_cancelled")
+    async def consumer_cancelled() -> "None":
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            body_cancelled.set()
+            raise
+
+    queue_backend = _RecordingHeartbeatBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(consumer_cancelled.using(execution_backend="cloudrun"))
+        record = await queue_backend.get_task(result.id)
+        assert record is not None
+        runner = asyncio.create_task(consume_one(service, record.id))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+        stored = await queue_backend.get_task(record.id)
+
+    assert body_cancelled.is_set()
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.heartbeat_at is None
