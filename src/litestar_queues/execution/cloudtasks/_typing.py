@@ -24,6 +24,10 @@ class CloudTasksClient(Protocol):
         """Create one task on a Cloud Tasks queue."""
         ...
 
+    async def get_task(self, *, name: "str", timeout: "float | None" = None) -> "CloudTasksTaskLike":
+        """Look up one task by full resource name."""
+        ...
+
     async def close(self) -> "None":
         """Release the client's transport."""
         ...

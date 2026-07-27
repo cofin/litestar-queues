@@ -129,6 +129,41 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert stored_local.status == "pending"
 
 
+async def test_backend_contract_lists_active_external_records_awaiting_delivery(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    """Records holding a delivery reference count as external before anyone claims them.
+
+    A worker-dispatched record is running by the time it has a reference, but a
+    transport that schedules the record itself reserves one while the record is
+    still pending or scheduled -- and those are exactly the records whose
+    delivery can go missing with nothing polling to notice. A zero budget has to
+    come back empty for the same reason: it is what a caller passes once repair
+    has already spent the pass.
+    """
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    pending = await queue_backend.enqueue("tasks.awaiting.pending", execution_backend="cloudtasks")
+    scheduled = await queue_backend.enqueue(
+        "tasks.awaiting.scheduled", execution_backend="cloudtasks", scheduled_at=later
+    )
+    undelivered = await queue_backend.enqueue("tasks.awaiting.undelivered", execution_backend="cloudtasks")
+    await queue_backend.set_execution_ref(pending.id, "cloudtasks", "queues/example/tasks/lq-pending")
+    await queue_backend.set_execution_ref(scheduled.id, "cloudtasks", "queues/example/tasks/lq-scheduled")
+
+    listed = await queue_backend.list_running_external()
+    bounded = await queue_backend.list_running_external(limit=1)
+    spent = await queue_backend.list_running_external(limit=0)
+
+    assert {record.id for record in listed} == {pending.id, scheduled.id}
+    assert undelivered.id not in {record.id for record in listed}
+    assert all(record.execution_ref is not None for record in listed)
+    # Which one a partial budget returns is the neighbouring test's business;
+    # here it only matters that the budget is honoured exactly.
+    assert len(bounded) == 1
+    assert bounded[0].id in {pending.id, scheduled.id}
+    assert spent == []
+
+
 async def test_backend_contract_bounds_external_reconciliation_deterministically(
     queue_backend: "BaseQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":

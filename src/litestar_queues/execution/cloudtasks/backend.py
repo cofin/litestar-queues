@@ -19,7 +19,7 @@ from litestar.serialization import encode_json
 
 from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError, QueueConfigurationError, QueueDispatchError
-from litestar_queues.execution.base import BaseExecutionBackend
+from litestar_queues.execution.base import BaseExecutionBackend, DispatchRepairResult
 from litestar_queues.execution.cloudtasks.config import (
     CLOUD_TASKS_MAX_SCHEDULE_HORIZON,
     CloudTasksExecutionConfig,
@@ -40,6 +40,16 @@ _BACKEND_NAME = "cloudtasks"
 _DELIVERY_PREFIX = "lq-"
 _DELIVERY_VERSION = 1
 _HTTP_CONFLICT = 409
+_HTTP_NOT_FOUND = 404
+_SCHEDULE_FAILED_PHASE = "cloudtasks.schedule_failed"
+_REPAIR_FAILED_PHASE = "cloudtasks.repair_failed"
+_FAILURE_MESSAGES = {
+    _SCHEDULE_FAILED_PHASE: "Cloud Tasks delivery creation failed",
+    _REPAIR_FAILED_PHASE: "Cloud Tasks delivery repair failed",
+}
+# A record a consumer already holds is excluded: Cloud Tasks keeps that delivery
+# open until the response, so re-creating it would run the task twice.
+_REPAIRABLE_STATUSES = frozenset({"pending", "scheduled"})
 logger = logging.getLogger(__name__)
 
 
@@ -107,31 +117,38 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         config = self.execution_config
         _validate_schedulable(current, config)
 
-        existing = current.execution_ref
-        if existing is not None and _is_current_delivery_name(existing, config, current):
-            task_name = existing
-        else:
-            task_name = _delivery_name(config, current)
-            stored = await queue_backend.set_execution_ref(
-                current.id, current.execution_backend, task_name, execution_profile=current.execution_profile
-            )
-            if stored is None:
+        task_name = current.execution_ref
+        if task_name is None or not _is_current_delivery_name(task_name, config, current):
+            task_name = await self._reserve_delivery_name(service, current, config)
+            if task_name is None:
                 return None
+        return await self._create_delivery(service, current, config, task_name, phase=_SCHEDULE_FAILED_PHASE)
 
-        client = await self._get_client()
-        try:
-            await client.create_task(
-                request=_create_task_request(config, current, task_name), timeout=config.api_timeout
-            )
-        except Exception as exc:
-            if _is_already_exists(exc) and await self._owns_delivery(service, current, task_name):
-                # This attempt's own name: a previous create reached Google after
-                # all, so the delivery it describes is already in flight.
-                return task_name
-            await self._publish_schedule_failure(service, current, exc)
-            msg = f"Cloud Tasks delivery could not be created for task {current.id}."
-            raise QueueDispatchError(msg, task_id=current.id, committed=True) from exc
-        return task_name
+    async def repair(self, service: "QueueService", *, limit: "int") -> "DispatchRepairResult":
+        """Recreate deliveries Cloud Tasks no longer holds for still-active records.
+
+        A delivery can go missing while its record stays active: a create call
+        that failed after Google had already accepted it, an operator purging
+        the queue, a retention window closing before the schedule time arrived.
+        Nothing polls these records, so without this pass they wait forever.
+
+        Every candidate is attempted at most once per pass, so a queue whose
+        target is broken cannot spin inside one maintenance window.
+
+        Args:
+            service: The queue service whose records to repair.
+            limit: Ceiling on how many records this pass may examine.
+
+        Returns:
+            How many records the pass looked at, and how many it re-delivered.
+        """
+        candidates = await service.get_queue_backend().list_running_external(limit=limit)
+        config = self.execution_config
+        changed = 0
+        for candidate in candidates:
+            if await self._repair_one(service, candidate, config):
+                changed += 1
+        return DispatchRepairResult(examined=len(candidates), changed=changed)
 
     async def close(self) -> "None":
         """Release a client this backend created.
@@ -142,6 +159,108 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             await self.client.close()
             self.client = None
             self._owns_client = False
+
+    async def _repair_one(
+        self, service: "QueueService", record: "QueuedTaskRecord", config: "CloudTasksExecutionConfig"
+    ) -> "bool":
+        """Re-deliver one candidate when Cloud Tasks no longer holds its delivery.
+
+        The candidate list is a snapshot, so the record is re-read: between the
+        listing and here it may have been cancelled, or claimed by a consumer
+        whose delivery Cloud Tasks is still holding open for the response.
+
+        Returns:
+            True when a new delivery was created.
+        """
+        current = await service.get_queue_backend().get_task(record.id)
+        if (
+            current is None
+            or current.execution_ref is None
+            or current.status not in _REPAIRABLE_STATUSES
+            or current.execution_backend != _BACKEND_NAME
+        ):
+            return False
+        try:
+            if await self._delivery_exists(current.execution_ref, config):
+                return False
+            task_name = await self._reserve_delivery_name(service, current, config)
+            if task_name is None:
+                return False
+            await self._create_delivery(service, current, config, task_name, phase=_REPAIR_FAILED_PHASE)
+        except QueueDispatchError:
+            # Already reported with a sanitized payload. The record keeps the
+            # name it reserved, and the next maintenance pass tries again.
+            return False
+        except Exception as exc:  # noqa: BLE001 - one broken candidate must not end the pass.
+            await self._publish_delivery_failure(service, current, exc, phase=_REPAIR_FAILED_PHASE)
+            return False
+        return True
+
+    async def _delivery_exists(self, task_name: "str", config: "CloudTasksExecutionConfig") -> "bool":
+        """Whether Cloud Tasks still holds the named delivery.
+
+        Returns:
+            True when the task is present.
+
+        Raises:
+            Exception: Any lookup error other than a definite absence, so the
+                caller does not treat an unknown answer as a missing delivery.
+        """
+        client = await self._get_client()
+        try:
+            await client.get_task(name=task_name, timeout=config.api_timeout)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return False
+            raise
+        return True
+
+    async def _reserve_delivery_name(
+        self, service: "QueueService", record: "QueuedTaskRecord", config: "CloudTasksExecutionConfig"
+    ) -> "str | None":
+        """Assign a fresh delivery name and persist it before anything is created.
+
+        Returns:
+            The reserved name, or ``None`` when the record no longer exists.
+        """
+        task_name = _delivery_name(config, record)
+        stored = await service.get_queue_backend().set_execution_ref(
+            record.id, record.execution_backend, task_name, execution_profile=record.execution_profile
+        )
+        return None if stored is None else task_name
+
+    async def _create_delivery(
+        self,
+        service: "QueueService",
+        record: "QueuedTaskRecord",
+        config: "CloudTasksExecutionConfig",
+        task_name: "str",
+        *,
+        phase: "str",
+    ) -> "str":
+        """Create the named delivery on the queue.
+
+        Returns:
+            The delivery's full resource name.
+
+        Raises:
+            QueueDispatchError: If the delivery could not be created. The record
+                is committed, so the caller must not retry the enqueue.
+        """
+        client = await self._get_client()
+        try:
+            await client.create_task(
+                request=_create_task_request(config, record, task_name), timeout=config.api_timeout
+            )
+        except Exception as exc:
+            if _is_already_exists(exc) and await self._owns_delivery(service, record, task_name):
+                # This attempt's own name: a previous create reached Google after
+                # all, so the delivery it describes is already in flight.
+                return task_name
+            await self._publish_delivery_failure(service, record, exc, phase=phase)
+            msg = f"Cloud Tasks delivery could not be created for task {record.id}."
+            raise QueueDispatchError(msg, task_id=record.id, committed=True) from exc
+        return task_name
 
     async def _owns_delivery(self, service: "QueueService", record: "QueuedTaskRecord", task_name: "str") -> "bool":
         """Whether the record still names ``task_name`` as its delivery.
@@ -170,17 +289,18 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             self._owns_client = True
         return self.client
 
-    async def _publish_schedule_failure(
-        self, service: "QueueService", record: "QueuedTaskRecord", exc: "BaseException"
+    async def _publish_delivery_failure(
+        self, service: "QueueService", record: "QueuedTaskRecord", exc: "BaseException", *, phase: "str"
     ) -> "None":
-        """Report a failed delivery creation without repeating the API's message.
+        """Report a failed delivery without repeating the API's message.
 
         Google's error text routinely quotes the target URL and the calling
         service account, so only the phase reaches the event payload; the
         original exception stays on the log record and chained to the raise.
         """
+        message = _FAILURE_MESSAGES[phase]
         logger.warning(
-            "Cloud Tasks delivery creation failed",
+            message,
             exc_info=(type(exc), exc, exc.__traceback__),
             extra={
                 "queue_task_id": str(record.id),
@@ -202,8 +322,8 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                     execution_profile=record.execution_profile,
                     attempt=record.retry_count + 1,
                     level="warning",
-                    message="Cloud Tasks delivery creation failed",
-                    payload={"phase": "cloudtasks.schedule_failed"},
+                    message=message,
+                    payload={"phase": phase},
                 )
             )
         except Exception:
@@ -307,3 +427,12 @@ def _is_already_exists(exc: "BaseException") -> "bool":
         True for an already-exists error.
     """
     return exc.__class__.__name__ == "AlreadyExists" or getattr(exc, "code", None) == _HTTP_CONFLICT
+
+
+def _is_not_found(exc: "BaseException") -> "bool":
+    """Whether an API error reports the named task as absent.
+
+    Returns:
+        True for a not-found error.
+    """
+    return exc.__class__.__name__ == "NotFound" or getattr(exc, "code", None) == _HTTP_NOT_FOUND

@@ -91,6 +91,7 @@ class FakeCloudTasksClient:
     """
 
     on_create: "Callable[[CreateCall], Awaitable[None]] | None" = None
+    on_get: "Callable[[str], Awaitable[None]] | None" = None
     existing: "set[str]" = field(default_factory=set)
     create_calls: "list[CreateCall]" = field(default_factory=list)
     get_calls: "list[str]" = field(default_factory=list)
@@ -121,6 +122,8 @@ class FakeCloudTasksClient:
         """
         del timeout
         self.get_calls.append(name)
+        if self.on_get is not None:
+            await self.on_get(name)
         if name not in self.existing:
             msg = "task not found"
             raise NotFound(msg)

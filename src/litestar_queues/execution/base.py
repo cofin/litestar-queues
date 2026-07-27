@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from typing_extensions import Self
@@ -10,7 +11,20 @@ if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
-__all__ = ("BaseExecutionBackend",)
+__all__ = ("BaseExecutionBackend", "DispatchRepairResult")
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchRepairResult:
+    """Outcome of one bounded delivery-repair pass.
+
+    ``examined`` is how much of the caller's budget the pass consumed, whether
+    or not a candidate needed anything done, so the caller can spend what is
+    left on its other work.
+    """
+
+    examined: "int" = 0
+    changed: "int" = 0
 
 
 class BaseExecutionBackend:
@@ -56,6 +70,24 @@ class BaseExecutionBackend:
             The external delivery reference, if one was created.
         """
         return await self.dispatch(service, record)
+
+    async def repair(self, service: "QueueService", *, limit: "int") -> "DispatchRepairResult":
+        """Recreate deliveries this backend owns that its transport no longer holds.
+
+        A no-op for every backend whose records are found by polling: nothing
+        can go missing from a store the worker reads directly. Only a managed
+        transport that took ownership of the record can lose it silently.
+
+        Args:
+            service: The queue service whose records to repair.
+            limit: Ceiling on how many records one pass may examine. Bounded
+                maintenance is the only caller, and it always passes a positive
+                budget it needs back.
+
+        Returns:
+            An empty result.
+        """
+        return DispatchRepairResult()
 
     async def open(self) -> "bool":
         """Open execution resources.

@@ -775,14 +775,30 @@ class QueueService:
     async def reconcile_external(self, limit: "int | None" = None) -> "int":
         """Reconcile externally dispatched records against their executor.
 
-        Lists running external records (bounded by ``limit`` when provided),
-        reconciles each against its execution backend, and records a metric for
-        every record that reached a terminal queue status. Records that name an
-        unknown execution backend are skipped with a warning.
+        A bounded call first asks the configured backend to repair deliveries
+        its transport lost, then spends what is left of the budget on ordinary
+        reconciliation, so one maintenance pass stays finite however the two
+        divide the work. The worker's unbounded sweep skips repair: it has no
+        ceiling to respect, and repair is a maintenance responsibility.
 
         Args:
-            limit: When provided, reconcile at most this many external records.
-                ``None`` reconciles every outstanding external record.
+            limit: When provided, examine at most this many external records
+                across both halves. ``None`` reconciles every outstanding
+                external record and repairs nothing.
+
+        Returns:
+            Number of records repaired or brought to a terminal queue status.
+        """
+        if limit is None:
+            return await self._reconcile_external_records(limit=None)
+        repair = await self.get_execution_backend().repair(self, limit=limit)
+        return repair.changed + await self._reconcile_external_records(limit=max(0, limit - repair.examined))
+
+    async def _reconcile_external_records(self, *, limit: "int | None") -> "int":
+        """Reconcile outstanding external records against their execution backends.
+
+        Records a metric for every record that reached a terminal queue status.
+        Records naming an unknown execution backend are skipped with a warning.
 
         Returns:
             Number of records that reached a terminal queue status.
