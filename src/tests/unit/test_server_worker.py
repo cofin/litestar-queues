@@ -22,6 +22,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.runtime import _WorkerStage, _WorkerStageError
 from litestar_queues.worker.supervisor import (
     _POSIX_SIGKILL,
+    _WINDOWS_CONTROL_C_EXIT,
     ServerWorkerSupervisor,
     _apply_launch_spec,
     _build_launch_spec,
@@ -851,6 +852,43 @@ def test_expected_exit_after_close_never_requests_shutdown() -> None:
     supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
 
     assert requests == []
+
+
+def test_a_console_control_exit_never_escalates_to_a_parent_shutdown(caplog: pytest.LogCaptureFixture) -> None:
+    """Ctrl+C and Ctrl+Break reach the whole console process group on Windows.
+
+    The child has no handler for it and dies with STATUS_CONTROL_C_EXIT, which is
+    an ordinary console shutdown rather than a crash. Escalating tore the server
+    down before it could unwind its lifespan, leaking the private ephemeral
+    database it was supposed to remove on the way out.
+    """
+    requests: list[str] = []
+    process = _FakeProcess(alive=False)
+    process.exitcode = _WINDOWS_CONTROL_C_EXIT
+    supervisor, _ = _supervisor(
+        process=process, messages=[("ready", process.pid)], request_shutdown=lambda: requests.append("shutdown")
+    )
+    supervisor.start()
+
+    supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
+
+    assert requests == []
+    assert "unexpectedly" not in caplog.text
+
+
+def test_a_crashed_child_still_escalates_to_a_parent_shutdown() -> None:
+    """Only the console-control exit is exempt; a real crash still takes the server down."""
+    requests: list[str] = []
+    process = _FakeProcess(alive=False)
+    process.exitcode = 8
+    supervisor, _ = _supervisor(
+        process=process, messages=[("ready", process.pid)], request_shutdown=lambda: requests.append("shutdown")
+    )
+    supervisor.start()
+
+    supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
+
+    assert requests == ["shutdown"]
 
 
 def test_parent_sentinel_bridge_requests_graceful_stop_once() -> None:

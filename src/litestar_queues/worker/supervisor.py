@@ -43,6 +43,11 @@ _SAFE_STAGES = _RUNNER_STAGES | _BOOTSTRAP_STAGES
 _PROCESS_ROLE_ENV_VAR = "LITESTAR_QUEUES_PROCESS_ROLE"
 _WINDOWS_CLEANUP_ERROR = "Windows process-tree cleanup failed."
 _POSIX_SIGKILL = cast("int", getattr(signal, "SIGKILL", 9))
+# STATUS_CONTROL_C_EXIT: Windows terminates a console process with this status
+# when Ctrl+C or Ctrl+Break is delivered and nothing handles it. Both the
+# unsigned status and the signed value multiprocessing may surface count.
+_WINDOWS_CONTROL_C_EXIT = 0xC000013A
+_CONSOLE_CONTROL_EXITS = frozenset({_WINDOWS_CONTROL_C_EXIT, _WINDOWS_CONTROL_C_EXIT - (1 << 32)})
 
 
 class _QueueProcessCleanupError(QueueError):
@@ -557,6 +562,14 @@ class ServerWorkerSupervisor:
                 return
             self._shutdown_requested.set()
             exit_code = process.exitcode if isinstance(process.exitcode, int) else -1
+            if exit_code in _CONSOLE_CONTROL_EXITS:
+                # Ctrl+C and Ctrl+Break reach every process in the console group,
+                # and the child installs no handler for them. That is an ordinary
+                # console shutdown, not a crash: the server is already on its way
+                # down and escalating would kill it before it unwinds its
+                # lifespan, leaking the private database it removes on exit.
+                logger.debug("Server queue worker stopped with the console; leaving shutdown to the server.")
+                return
             logger.error("Server queue worker exited unexpectedly with exit code %s.", exit_code)
             with contextlib.suppress(BaseException):
                 self._request_parent_shutdown()
