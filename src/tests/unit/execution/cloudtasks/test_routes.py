@@ -86,8 +86,20 @@ async def fails_then_retries() -> "None":
 
 
 @pytest.fixture(autouse=True)
-def _clear_executions() -> "None":
+def _register_route_tasks() -> "None":
+    """Undo the suite-wide registry reset for this module's tasks.
+
+    A delivery only carries an id, so the consumer resolves the record's task
+    name out of the registry. These tasks are declared once at module scope and
+    put back per test, which is also what a real consumer process does when it
+    imports its task modules at startup.
+    """
+    from litestar_queues.task import get_task_registry
+
     executions.clear()
+    registry = get_task_registry()
+    for task_obj in (succeeds, fails_terminally, fails_then_retries):
+        registry[task_obj.name] = task_obj
 
 
 def _deny_everything(connection: "ASGIConnection[Any, Any, Any, Any]", handler: "BaseRouteHandler") -> "None":

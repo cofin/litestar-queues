@@ -11,10 +11,17 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
 
-__all__ = ("CLOUD_TASKS_MAX_SCHEDULE_HORIZON", "CloudTasksExecutionConfig")
+__all__ = ("CLOUD_TASKS_MAX_SCHEDULE_HORIZON", "CLOUD_TASKS_PROTOCOL_VERSION", "CloudTasksExecutionConfig")
 
 CLOUD_TASKS_MAX_SCHEDULE_HORIZON = timedelta(days=30)
 """Google's fixed ceiling on how far ahead a Cloud Tasks task may be scheduled."""
+
+CLOUD_TASKS_PROTOCOL_VERSION = 1
+"""Version stamped on every delivery body and required by the consumer route.
+
+Lives here rather than beside either side of the wire so the producer and the
+route cannot drift apart while both still look correct on their own.
+"""
 
 _MIN_DISPATCH_DEADLINE = 15
 _MAX_DISPATCH_DEADLINE = 1800

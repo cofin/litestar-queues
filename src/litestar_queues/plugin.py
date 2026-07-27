@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 _UNKNOWN = object()
 _APP_PATH_ENV_VAR = "LITESTAR_APP"
+_CLOUD_TASKS_BACKEND = "cloudtasks"
 _PROCESS_LOCAL_CHANNELS_BACKENDS = frozenset({"MemoryChannelsBackend"})
 
 _MISSING_SERVER_CONTEXT_ERROR = (
@@ -184,6 +185,12 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             app_config.route_handlers.append(
                 _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
+        if execution_backend_name(self._config.execution_backend) == _CLOUD_TASKS_BACKEND:
+            # Imported here so an ordinary application never loads the delivery
+            # route, its request type, or anything the Cloud Tasks extra brings.
+            from litestar_queues.execution.cloudtasks.routes import build_cloud_tasks_route
+
+            app_config.route_handlers.append(build_cloud_tasks_route(self._config))
         app_config.state.update(state)
         # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
         # hooks): Litestar runs on_shutdown hooks AFTER exiting every lifespan manager,

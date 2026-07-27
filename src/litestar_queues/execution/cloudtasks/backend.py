@@ -22,6 +22,7 @@ from litestar_queues.exceptions import MissingDependencyError, QueueConfiguratio
 from litestar_queues.execution.base import BaseExecutionBackend, DispatchRepairResult
 from litestar_queues.execution.cloudtasks.config import (
     CLOUD_TASKS_MAX_SCHEDULE_HORIZON,
+    CLOUD_TASKS_PROTOCOL_VERSION,
     CloudTasksExecutionConfig,
     _execution_config_from_queue_config,
 )
@@ -38,7 +39,6 @@ _GOOGLE_CLOUD_TASKS_PACKAGE = "google-cloud-tasks"
 _CLOUD_TASKS_EXTRA = "cloud-tasks"
 _BACKEND_NAME = "cloudtasks"
 _DELIVERY_PREFIX = "lq-"
-_DELIVERY_VERSION = 1
 _HTTP_CONFLICT = 409
 _HTTP_NOT_FOUND = 404
 _SCHEDULE_FAILED_PHASE = "cloudtasks.schedule_failed"
@@ -406,7 +406,7 @@ def _create_task_request(
             "http_method": "POST",
             "url": config.target_url,
             "headers": {"Content-Type": "application/json"},
-            "body": encode_json({"version": _DELIVERY_VERSION, "task_id": str(record.id)}),
+            "body": encode_json({"version": CLOUD_TASKS_PROTOCOL_VERSION, "task_id": str(record.id)}),
             "oidc_token": {"service_account_email": config.service_account_email, "audience": config.audience},
         },
     }
