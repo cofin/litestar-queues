@@ -9,7 +9,7 @@ from litestar_queues import QueueConfig, QueueService, Worker, WorkerConfig, tas
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from litestar_queues.execution.cloudrun._typing import CloudRunExecutionLike, CloudRunOperation
+    from litestar_queues.execution.cloudrun.typing import CloudRunExecutionLike, CloudRunOperation
     from litestar_queues.observability import ObservabilityConfig
 
 pytestmark = pytest.mark.anyio

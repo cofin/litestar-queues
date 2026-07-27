@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from pytest_databases.docker.oracle import OracleService
     from sqlspec.extensions.events import AsyncEventChannel
 
-    from litestar_queues.backends.sqlspec._typing import SQLSpecManager, SQLSpecSessionConfig
+    from litestar_queues.backends.sqlspec.typing import SQLSpecManager, SQLSpecSessionConfig
     from tests.integration._backends import PostgresService
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 

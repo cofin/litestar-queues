@@ -13,13 +13,13 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events import QueueEventProducer, QueueEventPublisher, QueueEventsConfig, TaskExecutionContext
+    from litestar_queues.events.typing import ChannelsLike
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.maintenance import QueueMaintenanceConfig
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.observability import ObservabilityConfig
     from litestar_queues.service import QueueService
     from litestar_queues.task import Task
-    from litestar_queues.typing import ChannelsLike
 
 __all__ = (
     "ExecutionBackendConfig",

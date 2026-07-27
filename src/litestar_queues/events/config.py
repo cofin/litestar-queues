@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from litestar_queues.events.history import EventHistoryConfig
     from litestar_queues.events.sinks import QueueEventSink
     from litestar_queues.events.stream_config import EventStreamConfig
-    from litestar_queues.typing import ChannelsLike
+    from litestar_queues.events.typing import ChannelsLike
 
 __all__ = ("EventDeliveryConfig", "QueueEventsConfig")
 

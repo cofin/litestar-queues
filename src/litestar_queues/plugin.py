@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events import QueueEventPublisher
-    from litestar_queues.typing import ChannelsLike
+    from litestar_queues.events.typing import ChannelsLike
 
 __all__ = ("QueuePlugin",)
 

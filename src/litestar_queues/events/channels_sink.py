@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.events.chunking import QueueEventSizeEstimator
     from litestar_queues.events.models import QueueEvent
-    from litestar_queues.typing import (
+    from litestar_queues.events.typing import (
         ChannelsLike,
         ChannelsPublishBackend,
         ChannelsPublishManyBackend,
