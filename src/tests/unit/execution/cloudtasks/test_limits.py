@@ -43,15 +43,22 @@ async def cloud_tasks_service(
 ) -> "AsyncIterator[QueueService]":
     """Yield a lifecycle-managed service on a Cloud Tasks queue.
 
+    An accepted record is scheduled for delivery on the way out of ``enqueue``,
+    so the client is injected: these tests are about what the queue refuses to
+    persist, not about what it sends.
+
     Yields:
         A service whose execution backend is a typed Cloud Tasks config.
     """
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend
+    from tests.unit.execution.cloudtasks._fakes import FakeCloudTasksClient
+
+    execution_config = cloud_tasks_config()
     async with QueueService(
         QueueConfig(
-            queue_backend=shared_storage,
-            execution_backend=cloud_tasks_config(),
-            worker=WorkerConfig(placement="external"),
-        )
+            queue_backend=shared_storage, execution_backend=execution_config, worker=WorkerConfig(placement="external")
+        ),
+        execution_backend=CloudTasksExecutionBackend(execution_config=execution_config, client=FakeCloudTasksClient()),
     ) as service:
         yield service
 

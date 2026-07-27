@@ -435,15 +435,24 @@ class QueueService:
             expired = await self.expire_overdue_tasks()
             record = next((candidate for candidate in expired if candidate.id == record.id), record)
 
-        result = TaskResult(record.id, task_obj.name, service=self, record=record)
+        # After expiry, never before: a record that is already dead should not be
+        # handed to a transport that would deliver it days from now.
+        record = await self._schedule_persisted(record)
 
-        if record.execution_backend == "immediate" and record.status == "pending":
-            execution_backend_impl = self._execution_backend_for_name(record.execution_backend)
-            if not execution_backend_impl.is_external:
-                claimed, _ = await self.claim_task(record.id)
-                if claimed is not None:
-                    await execution_backend_impl.execute(self, claimed)
+        result = TaskResult(record.id, task_obj.name, service=self, record=record)
+        await self._run_immediate(record)
         return result
+
+    async def _run_immediate(self, record: "QueuedTaskRecord") -> "None":
+        """Run an immediate-mode record inline, before ``enqueue`` returns."""
+        if record.execution_backend != "immediate" or record.status != "pending":
+            return
+        backend = self._execution_backend_for_name(record.execution_backend)
+        if backend.is_external:
+            return
+        claimed, _ = await self.claim_task(record.id)
+        if claimed is not None:
+            await backend.execute(self, claimed)
 
     def _resolve_identity(
         self, task_obj: "Task[Any, Any]", key: "str | None", args: "tuple[Any, ...]", kwargs: "dict[str, Any]"
@@ -558,10 +567,15 @@ class QueueService:
         unconditionally. The record is reloaded afterwards because the backend
         may have written a delivery reference the caller would otherwise miss.
 
+        Self-scheduling is a property of the queue, not of one record: a backend
+        that dispatches without a worker refuses to share a queue with backends
+        that need one. Reading the configured backend therefore answers the
+        question, and keeps a per-record lookup off the enqueue path.
+
         Returns:
             The live record.
         """
-        backend = self._execution_backend_for_name(record.execution_backend)
+        backend = self.get_execution_backend()
         if not backend.schedules_on_enqueue:
             return record
         await backend.schedule(self, record)
