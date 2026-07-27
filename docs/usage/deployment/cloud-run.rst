@@ -5,6 +5,44 @@ Cloud Run Deployment
 This guide shows a general Cloud Run setup for ``litestar-queues``. Replace the
 project, region, service, job, and import-path placeholders with your values.
 
+Choosing a topology
+===================
+
+There are four ways to run queued work on Cloud Run. They differ in what has to
+stay running, how long a task may take, and what happens when nothing is
+happening. Picking one is worth a few minutes: changing later means changing
+both your deployment and your task timeouts.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Topology
+     - What stays running
+     - Task length
+     - Use it when
+   * - **In-process worker**
+     - The API service, warm and unthrottled
+     - Bounded by the instance
+     - Low volume, few services, and you accept work stalling whenever the
+       service scales down.
+   * - **External dispatcher** with Cloud Run Jobs
+     - A dedicated dispatcher, always on
+     - Hours
+     - Tasks are long, heavy, or need their own image and resources.
+   * - **Cloud Tasks** direct to a private Cloud Run service
+     - Nothing
+     - Up to 30 minutes
+     - Work is HTTP-shaped and finishes in minutes. Everything scales to zero
+       between deliveries. See :doc:`cloud-tasks`.
+   * - **Eventarc Advanced** direct to a Cloud Run Job
+     - Nothing
+     - Hours
+     - Not implemented, and not planned as part of this backend. Listed only so
+       it is not mistaken for a supported option.
+
+The first two are covered below. The third has its own guide, because it is a
+different execution backend rather than a different way to deploy this one.
+
 The core model
 ==============
 

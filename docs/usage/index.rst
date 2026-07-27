@@ -114,6 +114,12 @@ Choose production options
 
       Persist, dispatch, and execute work across Cloud Run services and Jobs.
 
+   .. grid-item-card:: Deploy on Cloud Tasks
+      :link: deployment/cloud-tasks
+      :link-type: doc
+
+      Run queued work with nothing left running between deliveries.
+
 .. toctree::
    :hidden:
    :maxdepth: 2
@@ -143,4 +149,5 @@ Choose production options
    observability
    dependency-resolver
    deployment/cloud-run
+   deployment/cloud-tasks
    migration

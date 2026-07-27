@@ -179,7 +179,12 @@ values. This prevents unbounded label counts:
 - ``queue.execution.backend``
 - ``queue.execution.profile``
 - ``queue.execution.status`` on dispatch metrics, one of ``dispatched``,
-  ``fallback``, or ``error``
+  ``fallback``, ``error``, ``skipped``, ``cancelled``, ``ownership_lost``,
+  ``scheduled``, or ``already_exists``
+- ``queue.delivery.outcome`` on the delivery metric, one of ``acknowledged``,
+  ``duplicate``, ``retry_scheduled``, or ``transient_error``
+- ``queue.repair.outcome`` on the repair metric, one of ``present``,
+  ``recreated``, or ``error``
 - ``queue.stale.outcome`` on stale-recovery metrics, one of ``requeued``,
   ``failed``, ``skipped``, or ``handler_needed``
 - ``queue.expiry.outcome`` on the expiry metric, currently ``expired``
@@ -193,9 +198,48 @@ own sample rather than encoding the tallies into labels. The
 ``litestar_queues.expiry`` counter records the number of records transitioned
 by a worker sweep as its sample value with the bounded ``expired`` outcome.
 
-Each metric name has exactly one emitter. Dispatch and reconcile counters belong
-to the execution backend, and the heartbeat failure counter belongs to the
-heartbeat manager, so a single metric never arrives with two different label sets.
+Each metric name has exactly one emitter. Dispatch, reconcile, and repair
+counters belong to the execution backend, and the heartbeat failure counter
+belongs to the heartbeat manager, so a single metric never arrives with two
+different label sets.
+
+That constraint is why re-checking lost deliveries reports into
+``litestar_queues.execution.repair`` rather than joining
+``litestar_queues.execution.reconcile``. Both describe bringing a record back in
+line with its executor, but they answer different questions and so carry
+different label keys, and a collector fixes its label names when the metric is
+first registered. Two vocabularies on one name would make whichever backend
+recorded second raise instead of counting.
+
+Managed transports
+------------------
+
+A backend that hands records to a transport instead of a worker emits three
+families:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Metric
+     - Outcome label
+     - What it tells you
+   * - ``litestar_queues.execution.dispatch``
+     - ``queue.execution.status``
+     - Whether a delivery was created for a record that became due.
+   * - ``litestar_queues.execution.delivery``
+     - ``queue.delivery.outcome``
+     - What each arriving delivery did. A queue whose deliveries are mostly
+       ``retry_scheduled`` is paying twice for every unit of work; a rising
+       ``duplicate`` rate is redelivery, which is expected but worth watching.
+   * - ``litestar_queues.execution.repair``
+     - ``queue.repair.outcome``
+     - How often maintenance finds a delivery the transport lost. On a queue
+       nobody polls, a non-zero ``recreated`` rate is the only warning that
+       records would otherwise have waited forever.
+
+The delivery metric carries only the execution backend and its outcome. The
+route holds a record id, not a record, and labelling it further would mean
+reading storage again on the one path that otherwise needs nothing.
 
 Unset Attributes
 ================

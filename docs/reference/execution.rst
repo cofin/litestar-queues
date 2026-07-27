@@ -52,6 +52,24 @@ Cloud Run
    :undoc-members:
    :show-inheritance:
 
+Cloud Tasks
+===========
+
+.. automodule:: litestar_queues.execution.cloudtasks.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.cloudtasks.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.cloudtasks.routes
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Consumer
 ========
 

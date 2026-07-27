@@ -9,6 +9,29 @@ project is pre-1.0, so minor releases may make intentional API breaks.
 Unreleased
 ==========
 
+**Added:**
+
+* Google Cloud Tasks is available as an optional execution backend, installed
+  with ``pip install "litestar-queues[cloud-tasks]"``. A queue configured for it
+  keeps no worker process anywhere: Google holds each record's delivery and
+  calls a private consumer route when it is due, so every process can scale to
+  zero between deliveries. Only the record's id crosses the network — arguments,
+  metadata, and results are re-read from the queue store by the consumer.
+  See :doc:`usage/deployment/cloud-tasks`.
+* The delivery route is registered for you at ``/_litestar-queues/cloud-tasks``
+  when the execution backend is Cloud Tasks. It requires either Cloud Run's own
+  IAM asserted explicitly or your guards, and never treats a delivery header as
+  authentication.
+* Bounded maintenance now repairs deliveries a managed transport has lost. On a
+  queue nobody polls, a delivery that disappears would otherwise leave its record
+  waiting forever with no error raised. Repair shares the existing external
+  phase's budget, so the number of records one pass touches is unchanged.
+* Managed transports report ``litestar_queues.execution.dispatch``,
+  ``litestar_queues.execution.delivery``, and
+  ``litestar_queues.execution.repair``, each with a fixed outcome vocabulary.
+  Task ids, delivery names, and API error text never reach a metric, span, or
+  event.
+
 **Breaking changes:**
 
 * ``stream_queue_events_hardened``, ``stream_queue_events_sse``, and
@@ -40,6 +63,14 @@ Unreleased
 * Queue backends that fail to implement a required method now raise instead of
   silently succeeding. Two of those defaults returned an unpersisted record, so a
   gap dropped execution references rather than reporting itself.
+* A record naming a task the running process does not have registered is now
+  retired durably. The failure was written while the record was still pending,
+  which every persistent backend rejects, so the record stayed pending forever —
+  and on a queue with no worker, nothing was coming back for it.
+* A consumer whose caller is cancelled no longer reports the record as
+  cancelled. It said the record was settled while the task was still running,
+  which an HTTP delivery would have acknowledged. ``TaskExitCode.CANCELLED`` now
+  means only a record whose durable status is ``cancelled``.
 
 0.6.0 - 2026-07-25
 ==================
