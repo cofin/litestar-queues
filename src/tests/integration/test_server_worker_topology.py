@@ -67,8 +67,12 @@ class ServerProcess:
         self.server = server
         self.workers = workers
         self.process: "subprocess.Popen[bytes] | None" = None
+        self.forced_shutdown = False
         self._output: "Any" = None
         self._descendants: "dict[int, psutil.Process]" = {}
+
+    def log_tail(self, limit: int = 2048) -> "str":
+        return self.output_path.read_text(encoding="utf-8", errors="replace")[-limit:]
 
     @property
     def base_url(self) -> "str":
@@ -175,8 +179,12 @@ class ServerProcess:
             if process.poll() is None:
                 process.send_signal(WINDOWS_CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
                 try:
-                    process.wait(timeout=15)
+                    # Windows runners unwind a server lifespan far slower than the
+                    # POSIX ones, and a premature kill skips the storage teardown
+                    # this suite exists to prove.
+                    process.wait(timeout=45 if os.name == "nt" else 15)
                 except subprocess.TimeoutExpired:
+                    self.forced_shutdown = True
                     process.kill()
                     process.wait(timeout=5)
             self._reap_descendants(assert_clean=assert_clean)
@@ -205,8 +213,7 @@ def test_server_placement_owns_exactly_one_fresh_queue_child(tmp_path: "Path", s
         _wait_for(
             lambda: len(running.markers("web")) == workers,
             message=(
-                f"expected {workers} web process markers, saw {len(running.markers('web'))}\n"
-                f"{running.output_path.read_text(encoding='utf-8', errors='replace')[-2048:]}"
+                f"expected {workers} web process markers, saw {len(running.markers('web'))}\n{running.log_tail()}"
             ),
         )
         _wait_for(lambda: len(running.markers("queue")) == 1, message="expected one queue child marker")
@@ -234,5 +241,9 @@ def test_server_placement_owns_exactly_one_fresh_queue_child(tmp_path: "Path", s
         assert database_path.is_file()
         database_directory = database_path.parent
 
-    assert not database_path.exists()
-    assert not database_directory.exists()
+    # The server removes its private database on the way out. A survivor means
+    # either the lifespan never unwound (forced kill) or a handle outlived the
+    # retry budget, so report which one rather than just that a file exists.
+    assert not running.forced_shutdown, f"server did not shut down on signal\n{running.log_tail()}"
+    assert not database_path.exists(), f"ephemeral database survived shutdown\n{running.log_tail()}"
+    assert not database_directory.exists(), f"ephemeral directory survived shutdown\n{running.log_tail()}"

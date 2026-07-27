@@ -34,6 +34,7 @@ _PREEXISTING_ERROR = (
     "The ephemeral queue environment is already set. Nested Litestar servers cannot share one ephemeral database."
 )
 _CLEANUP_WARNING = "Could not remove the private ephemeral queue directory; it is left for inspection."
+_CLEANUP_FILE_WARNING = "Could not remove the private ephemeral queue files (%s); they are left on disk."
 
 
 class EphemeralServerContext:
@@ -109,26 +110,49 @@ class EphemeralServerContext:
 
     def _remove(self, directory: "Path", path: "Path") -> "None":
         targets = (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm"))
-        deadline = time.monotonic() + _CLEANUP_DEADLINE
-        for target in targets:
-            while True:
-                try:
-                    target.unlink(missing_ok=True)
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(_CLEANUP_RETRY)
-                    continue
-                break
-        while True:
-            try:
-                directory.rmdir()
-            except FileNotFoundError:
-                return
-            except OSError:
-                if time.monotonic() >= deadline:
-                    logger.warning(_CLEANUP_WARNING)
-                    return
-                time.sleep(_CLEANUP_RETRY)
-                continue
+        survivors = [target.name for target in targets if not _unlink_within_deadline(target)]
+        if survivors:
+            logger.warning(_CLEANUP_FILE_WARNING, ", ".join(survivors))
+        _remove_directory_within_deadline(directory)
+
+
+def _unlink_within_deadline(target: "Path") -> "bool":
+    """Delete one file, retrying while another process still holds it open.
+
+    Each target carries its own deadline. Windows refuses to unlink a file with
+    an open handle, so a single shared budget let the database consume all of it
+    and leave the write-ahead log and shared-memory files unretried.
+
+    Args:
+        target: File to delete.
+
+    Returns:
+        ``True`` once the file is gone, ``False`` if it outlived the deadline.
+    """
+    deadline = time.monotonic() + _CLEANUP_DEADLINE
+    while True:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_CLEANUP_RETRY)
+            continue
+        return True
+
+
+def _remove_directory_within_deadline(directory: "Path") -> "None":
+    """Remove the private directory once it is empty, or warn and leave it."""
+    deadline = time.monotonic() + _CLEANUP_DEADLINE
+    while True:
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
             return
+        except OSError:
+            if time.monotonic() >= deadline:
+                logger.warning(_CLEANUP_WARNING)
+                return
+            time.sleep(_CLEANUP_RETRY)
+            continue
+        return
