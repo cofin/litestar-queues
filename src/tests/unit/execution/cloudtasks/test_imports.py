@@ -188,3 +188,52 @@ def test_building_a_client_without_the_extra_names_the_install_target() -> "None
         "else:\n"
         "    raise AssertionError('expected MissingDependencyError')\n"
     )
+
+
+def test_the_delivery_route_does_not_pull_in_google_or_click() -> "None":
+    """The consumer imports the route on every request path; the producer's client is not its business."""
+    _run(
+        "import sys\n"
+        "import litestar_queues.execution.cloudtasks.routes\n"
+        "assert 'google.cloud.tasks_v2' not in sys.modules\n"
+        "assert 'click' not in sys.modules, sorted(m for m in sys.modules if 'click' in m)\n"
+    )
+
+
+def test_a_plugin_without_cloud_tasks_never_loads_the_delivery_route() -> "None":
+    """An ordinary application pays nothing for a route it will never serve."""
+    _run(
+        "import sys\n"
+        "from litestar import Litestar\n"
+        "from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig\n"
+        "Litestar(plugins=[QueuePlugin(QueueConfig(\n"
+        "    queue_backend='memory', execution_backend='local', worker=WorkerConfig(placement='external')\n"
+        "))])\n"
+        "assert 'litestar_queues.execution.cloudtasks.routes' not in sys.modules\n"
+    )
+
+
+def test_the_delivery_route_is_servable_without_the_extra() -> "None":
+    """Only building a producer client needs Google; receiving a delivery does not.
+
+    A consumer-only deployment is a legitimate shape -- it reads records and
+    runs them -- so the route has to stand up without the extra installed.
+    """
+    _run_without_cloud_tasks(
+        "from litestar import Litestar\n"
+        "from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig\n"
+        "from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig\n"
+        "app = Litestar(plugins=[QueuePlugin(QueueConfig(\n"
+        "    queue_backend='sqlspec',\n"
+        "    execution_backend=CloudTasksExecutionConfig(\n"
+        "        project_id='example-project',\n"
+        "        location='us-central1',\n"
+        "        queue_id='queue-consumer',\n"
+        "        service_url='https://consumer.example.run.app',\n"
+        "        service_account_email='queues@example-project.iam.gserviceaccount.com',\n"
+        "        trust_platform_auth=True,\n"
+        "    ),\n"
+        "    worker=WorkerConfig(placement='external'),\n"
+        "))])\n"
+        "assert any(r.path == '/_litestar-queues/cloud-tasks' for r in app.routes)\n"
+    )

@@ -16,6 +16,7 @@ authenticate or parse, because that is a deployment fault an operator has to
 see rather than a queue outcome.
 """
 
+import asyncio
 from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -51,6 +52,11 @@ SUCCEEDS = "cloudtasks.route_succeeds"
 FAILS_TERMINALLY = "cloudtasks.route_fails_terminally"
 FAILS_THEN_RETRIES = "cloudtasks.route_fails_then_retries"
 NEVER_REGISTERED = "cloudtasks.route_never_registered"
+HOLDS_THE_CLAIM = "cloudtasks.route_holds_the_claim"
+RECOVERABLE = "cloudtasks.route_recoverable"
+
+held = asyncio.Event()
+running = asyncio.Event()
 
 executions: "list[str]" = []
 
@@ -85,6 +91,20 @@ async def fails_then_retries() -> "None":
     raise RuntimeError(msg)
 
 
+@task(HOLDS_THE_CLAIM)
+async def holds_the_claim() -> "None":
+    """Announces that it is running and holds the claim until released."""
+    executions.append(HOLDS_THE_CLAIM)
+    running.set()
+    await held.wait()
+
+
+@task(RECOVERABLE, requeue_on_stale=True)
+async def recoverable() -> "None":
+    """A task whose record may be returned to the queue if its consumer is lost."""
+    executions.append(RECOVERABLE)
+
+
 @pytest.fixture(autouse=True)
 def _register_route_tasks() -> "None":
     """Undo the suite-wide registry reset for this module's tasks.
@@ -97,8 +117,10 @@ def _register_route_tasks() -> "None":
     from litestar_queues.task import get_task_registry
 
     executions.clear()
+    held.clear()
+    running.clear()
     registry = get_task_registry()
-    for task_obj in (succeeds, fails_terminally, fails_then_retries):
+    for task_obj in (succeeds, fails_terminally, fails_then_retries, holds_the_claim, recoverable):
         registry[task_obj.name] = task_obj
 
 
@@ -661,3 +683,108 @@ async def test_the_delivery_client_is_released_when_the_application_stops(
         assert tasks.close_calls == 0
 
     assert tasks.close_calls == 1
+
+
+# --------------------------------------------------------------------------- duplicate delivery
+
+
+async def test_two_deliveries_for_one_record_run_the_task_once(delivery: "Callable[..., Any]") -> "None":
+    """At-least-once delivery is the transport's contract; running once is the queue's job.
+
+    Google will re-send a task whose response it never saw, so two consumers can
+    genuinely be holding the same delivery. The claim is what makes that safe,
+    and the second arrival has to be acknowledged rather than argued with.
+    """
+    live = await delivery()
+    record = await live.service.enqueue(holds_the_claim)
+
+    first = asyncio.create_task(live.deliver(record.id))
+    await asyncio.wait_for(running.wait(), timeout=2)
+    second = await live.deliver(record.id)
+    held.set()
+    first_response = await asyncio.wait_for(first, timeout=2)
+
+    assert (first_response.status_code, second.status_code) == (HTTP_NO_CONTENT, HTTP_NO_CONTENT)
+    assert executions == [HOLDS_THE_CLAIM]
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert stored.status == "completed"
+    # Left clean for stale recovery: a finished record still advertising a
+    # heartbeat is a record recovery has to reason about for no reason.
+    assert stored.heartbeat_at is None
+
+
+async def test_a_delivery_arriving_after_the_work_finished_changes_nothing(delivery: "Callable[..., Any]") -> "None":
+    """A response Google never saw is redelivered, and the record is already terminal."""
+    live = await delivery()
+    record = await live.service.enqueue(succeeds)
+    await live.deliver(record.id)
+    completed = await live.record(record.id)
+    assert completed is not None
+
+    replayed = await live.deliver(record.id)
+
+    assert replayed.status_code == HTTP_NO_CONTENT
+    assert executions == [SUCCEEDS]
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert (stored.status, stored.retry_count) == (completed.status, completed.retry_count)
+
+
+async def test_a_retry_that_lost_its_delivery_is_run_by_the_redelivery(delivery: "Callable[..., Any]") -> "None":
+    """The 503 is not a dead end: the same delivery coming back is what repairs the record.
+
+    The record is left pending with no Cloud Task of its own, which on this
+    topology would be a record nothing ever picks up. The delivery Google
+    retries is the one thing that can still reach it.
+    """
+    from tests.unit.execution.cloudtasks._fakes import ServiceUnavailable
+
+    live = await delivery()
+    record = await live.service.enqueue(fails_then_retries)
+
+    async def refuse(call: "CreateCall") -> "None":
+        msg = "the API did not answer"
+        raise ServiceUnavailable(msg)
+
+    live.tasks.on_create = refuse
+    lost = await live.deliver(record.id)
+    live.tasks.on_create = None
+
+    recovered = await live.deliver(record.id)
+
+    assert (lost.status_code, recovered.status_code) == (HTTP_UNAVAILABLE, HTTP_NO_CONTENT)
+    assert executions == [FAILS_THEN_RETRIES, FAILS_THEN_RETRIES]
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert stored.execution_ref in {call.name for call in live.tasks.create_calls}
+
+
+async def test_a_record_left_running_by_a_lost_consumer_can_be_delivered_again(
+    delivery: "Callable[..., Any]",
+) -> "None":
+    """This is why a cancelled consumer must not acknowledge anything.
+
+    A consumer that disappears mid-task leaves the record running with no
+    heartbeat -- exactly the state stale recovery exists to resolve. Had the
+    cancellation been reported as a settled outcome, the delivery would have
+    been acknowledged and the work would be waiting on a recovery pass that has
+    no reason to hurry.
+    """
+    from datetime import timedelta
+
+    live = await delivery()
+    record = await live.service.enqueue(recoverable)
+    claimed, _expired = await live.service.claim_task(record.id)
+    assert claimed is not None
+    await live.service.get_queue_backend().null_heartbeats([record.id], expected_retry_count=claimed.retry_count)
+
+    abandoned = await live.deliver(record.id)
+    await live.service.recover_stale_tasks(stale_after=timedelta(seconds=0))
+    resumed = await live.deliver(record.id)
+
+    assert (abandoned.status_code, resumed.status_code) == (HTTP_NO_CONTENT, HTTP_NO_CONTENT)
+    assert executions == [RECOVERABLE]
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert stored.status == "completed"
