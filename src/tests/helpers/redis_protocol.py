@@ -24,8 +24,4 @@ async def wait_for_channel_subscribers(
                 return int(item[1]) >= expected
         return False
 
-    await wait_until(
-        subscribed,
-        timeout=timeout,
-        message=f"channel {channel!r} did not reach {expected} subscriber(s)",
-    )
+    await wait_until(subscribed, timeout=timeout, message=f"channel {channel!r} did not reach {expected} subscriber(s)")

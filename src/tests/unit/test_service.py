@@ -329,7 +329,7 @@ async def test_service_context_manager_returns_service() -> "None":
     """Test that the service can be used as an async context manager."""
     config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
 
-    async with config.provide_service() as service:
+    async with QueueService(config) as service:
         assert isinstance(service, QueueService)
         assert service.config is config
 

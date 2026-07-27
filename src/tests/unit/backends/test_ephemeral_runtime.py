@@ -151,10 +151,17 @@ def test_is_private_directory_rejects_symlinks_and_shared_modes(tmp_path: "Path"
     link = tmp_path / "link"
     link.symlink_to(private, target_is_directory=True)
 
-    assert is_private_directory(private) is True
-    assert is_private_directory(shared) is False
-    assert is_private_directory(link) is False
-    assert is_private_directory(tmp_path / "absent") is False
+    assert is_private_directory(private, _platform="posix") is True
+    assert is_private_directory(shared, _platform="posix") is False
+    assert is_private_directory(link, _platform="posix") is False
+    assert is_private_directory(tmp_path / "absent", _platform="posix") is False
+
+
+def test_is_private_directory_uses_windows_directory_acl_boundary(tmp_path: "Path") -> "None":
+    directory = tmp_path / "windows-private"
+    directory.mkdir(mode=0o755)
+
+    assert is_private_directory(directory, _platform="nt") is True
 
 
 def test_a_schema_failure_leaves_no_environment_or_files(monkeypatch: "pytest.MonkeyPatch") -> "None":
@@ -235,7 +242,9 @@ def test_an_unexpected_extra_file_prevents_removal_and_is_never_deleted(
     path.parent.rmdir()
 
 
-def test_a_sharing_violation_on_the_database_is_retried_and_bounded(monkeypatch: "pytest.MonkeyPatch") -> "None":
+def test_a_sharing_violation_on_the_database_is_retried_and_bounded(
+    monkeypatch: "pytest.MonkeyPatch", caplog: "pytest.LogCaptureFixture"
+) -> "None":
     monkeypatch.setattr(ephemeral_runtime, "_CLEANUP_DEADLINE", 0.05)
     monkeypatch.setattr(ephemeral_runtime, "_CLEANUP_RETRY", 0.01)
     attempts = {"count": 0}
@@ -249,12 +258,53 @@ def test_a_sharing_violation_on_the_database_is_retried_and_bounded(monkeypatch:
         original(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", blocked)
-    with EphemeralServerContext(nonce="nonce-11") as context:
+    with (
+        caplog.at_level("WARNING", logger=ephemeral_runtime.__name__),
+        EphemeralServerContext(nonce="nonce-11") as context,
+    ):
         path = context.path
 
     monkeypatch.undo()
     assert attempts["count"] > 1
     assert path.exists()
+    # A database that outlives its server is a leak on the host, so it has to be
+    # reported by name. Windows refuses to unlink files with open handles, which
+    # made this the silent failure mode there.
+    assert DATABASE_NAME in caplog.text
+    path.unlink()
+    path.parent.rmdir()
+
+
+def test_one_stuck_file_does_not_consume_the_retry_budget_of_the_others(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Each target gets its own deadline.
+
+    A single shared budget let the database exhaust it, so the write-ahead log and
+    shared-memory files were never retried and leaked alongside it.
+    """
+    monkeypatch.setattr(ephemeral_runtime, "_CLEANUP_DEADLINE", 0.05)
+    monkeypatch.setattr(ephemeral_runtime, "_CLEANUP_RETRY", 0.01)
+    original = Path.unlink
+    wal_attempts = {"count": 0}
+
+    def blocked(self: "Path", missing_ok: "bool" = False) -> "None":
+        if self.name == DATABASE_NAME:
+            msg = "The process cannot access the file because it is being used by another process"
+            raise PermissionError(msg)
+        if self.name.endswith("-wal"):
+            wal_attempts["count"] += 1
+            if wal_attempts["count"] < 3:
+                msg = "The process cannot access the file because it is being used by another process"
+                raise PermissionError(msg)
+        original(self, missing_ok=missing_ok)
+
+    with EphemeralServerContext(nonce="nonce-12") as context:
+        path = context.path
+        wal = path.with_name(f"{path.name}-wal")
+        wal.write_bytes(b"")
+        monkeypatch.setattr(Path, "unlink", blocked)
+
+    monkeypatch.undo()
+    assert not wal.exists()
     path.unlink()
     path.parent.rmdir()
 

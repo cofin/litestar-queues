@@ -77,7 +77,7 @@ class _FallbackSpan:
 class _FallbackTracer:
     """Fallback OpenTelemetry tracer shim."""
 
-    def start_span(  # noqa: PLR0917 - mirrors opentelemetry.trace.Tracer.start_span positionally.
+    def start_span(
         self,
         name: "str",
         context: "Any" = None,
@@ -216,7 +216,7 @@ else:
 
 
 class _PrometheusMetric:
-    def __init__(  # noqa: PLR0917 - mirrors the prometheus_client metric constructors positionally.
+    def __init__(
         self,
         name: "str",
         documentation: "str",

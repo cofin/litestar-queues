@@ -5,14 +5,16 @@ import contextlib
 import logging
 import multiprocessing
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, Protocol, cast
 
-from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.exceptions import QueueConfigurationError, QueueError
 from litestar_queues.worker.runtime import WorkerRunResult, _WorkerStageError
 from litestar_queues.worker.runtime import run_worker as _run_worker
 
@@ -38,6 +40,18 @@ _ERROR_MESSAGE_LENGTH = 3
 _RUNNER_STAGES = frozenset(("load_tasks", "open_service", "initialize_schedules", "start_worker"))
 _BOOTSTRAP_STAGES = frozenset(("bootstrap", "load_app", "resolve_plugin", "validate"))
 _SAFE_STAGES = _RUNNER_STAGES | _BOOTSTRAP_STAGES
+_PROCESS_ROLE_ENV_VAR = "LITESTAR_QUEUES_PROCESS_ROLE"
+_WINDOWS_CLEANUP_ERROR = "Windows process-tree cleanup failed."
+_POSIX_SIGKILL = cast("int", getattr(signal, "SIGKILL", 9))
+# STATUS_CONTROL_C_EXIT: Windows terminates a console process with this status
+# when Ctrl+C or Ctrl+Break is delivered and nothing handles it. Both the
+# unsigned status and the signed value multiprocessing may surface count.
+_WINDOWS_CONTROL_C_EXIT = 0xC000013A
+_CONSOLE_CONTROL_EXITS = frozenset({_WINDOWS_CONTROL_C_EXIT, _WINDOWS_CONTROL_C_EXIT - (1 << 32)})
+
+
+class _QueueProcessCleanupError(QueueError):
+    """Raised when the supervisor cannot prove descendant cleanup."""
 
 
 class _EventLike(Protocol):
@@ -286,11 +300,36 @@ async def _run_child(
                 parent.close()
 
 
+def _os_name() -> "str":
+    """Return the OS family through a seam tests can replace.
+
+    Tests must never assign to ``os.name`` itself: it is process-global, and
+    with it set to ``"posix"`` on Windows ``pathlib.Path`` builds a
+    ``PosixPath`` and raises. That breaks pytest's own failure reporting, which
+    turns an ordinary assertion into an INTERNALERROR before monkeypatch can
+    restore it.
+
+    Returns:
+        The value of :data:`os.name`.
+    """
+    return os.name
+
+
+def _sys_platform() -> "str":
+    """Return the platform identifier through a seam tests can replace.
+
+    Returns:
+        The value of :data:`sys.platform`.
+    """
+    return sys.platform
+
+
 def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", connection: "Connection") -> "None":
     stage = "bootstrap"
     try:
         _apply_launch_spec(spec)
-        if os.name == "posix":
+        os.environ[_PROCESS_ROLE_ENV_VAR] = "server-worker"
+        if _os_name() == "posix":
             os.setsid()
         parent = _get_parent_process()
         stage = "load_app"
@@ -309,6 +348,7 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
         else:
             _safe_send(connection, ("error", stage, type(exc).__name__))
     finally:
+        os.environ.pop(_PROCESS_ROLE_ENV_VAR, None)
         with contextlib.suppress(BaseException):
             stop_event.set()
         with contextlib.suppress(BaseException):
@@ -316,7 +356,10 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
 
 
 def _request_server_shutdown() -> "None":
-    os.kill(os.getpid(), signal.SIGTERM)
+    if _sys_platform() == "win32":
+        signal.raise_signal(signal.SIGINT)
+    else:
+        os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _connection_wait(objects: "Sequence[object]", timeout: "float | None" = None) -> "list[object]":
@@ -335,6 +378,32 @@ def _get_process_group(pid: "int") -> "int":
 
 def _kill_process_group(pgid: "int", sig: "int") -> "None":
     os.killpg(pgid, sig)
+
+
+def _kill_windows_process_tree(
+    process: "_ProcessLike",
+    *,
+    _which: "Callable[[str], str | None]" = shutil.which,
+    _run: "Callable[..., subprocess.CompletedProcess[bytes]]" = subprocess.run,
+) -> "None":
+    pid = process.pid
+    if pid is None:
+        raise _QueueProcessCleanupError(_WINDOWS_CLEANUP_ERROR)
+    executable = _which("taskkill")
+    if executable is None:
+        executable = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "taskkill.exe")
+    try:
+        completed = _run(
+            [executable, "/PID", str(pid), "/T", "/F"], check=False, capture_output=True, timeout=_FORCE_STOP_TIMEOUT
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        if process.is_alive():
+            process.kill()
+        raise _QueueProcessCleanupError(_WINDOWS_CLEANUP_ERROR) from None
+    if completed.returncode != 0:
+        if process.is_alive():
+            process.kill()
+        raise _QueueProcessCleanupError(_WINDOWS_CLEANUP_ERROR)
 
 
 def _verified_kill_process_group(
@@ -367,14 +436,20 @@ def _force_stop_process(
     _getpgid: "Callable[[int], int]" = _get_process_group,
     _killpg: "Callable[[int, int], None]" = _kill_process_group,
 ) -> "None":
-    platform = os.name if _platform is None else _platform
+    platform = _os_name() if _platform is None else _platform
+    if platform == "nt":
+        try:
+            _kill_windows_process_tree(process)
+        finally:
+            process.join(_FORCE_STOP_TIMEOUT)
+        return
     if platform == "posix" and _verified_kill_process_group(
         process, signal.SIGTERM, _getpgid=_getpgid, _killpg=_killpg
     ):
         process.join(_FORCE_STOP_TIMEOUT)
         if not process.is_alive():
             return
-        if _verified_kill_process_group(process, signal.SIGKILL, _getpgid=_getpgid, _killpg=_killpg):
+        if _verified_kill_process_group(process, _POSIX_SIGKILL, _getpgid=_getpgid, _killpg=_killpg):
             process.join(_FORCE_STOP_TIMEOUT)
             return
         process.kill()
@@ -487,6 +562,14 @@ class ServerWorkerSupervisor:
                 return
             self._shutdown_requested.set()
             exit_code = process.exitcode if isinstance(process.exitcode, int) else -1
+            if exit_code in _CONSOLE_CONTROL_EXITS:
+                # Ctrl+C and Ctrl+Break reach every process in the console group,
+                # and the child installs no handler for them. That is an ordinary
+                # console shutdown, not a crash: the server is already on its way
+                # down and escalating would kill it before it unwinds its
+                # lifespan, leaking the private database it removes on exit.
+                logger.debug("Server queue worker stopped with the console; leaving shutdown to the server.")
+                return
             logger.error("Server queue worker exited unexpectedly with exit code %s.", exit_code)
             with contextlib.suppress(BaseException):
                 self._request_parent_shutdown()

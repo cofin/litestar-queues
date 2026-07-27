@@ -27,6 +27,27 @@ worker at a time check for stale records. A stale task returns to the queue if
 it has retries left. Otherwise, it ends with a stale failure. A task may turn
 off stale requeueing or register ``on_stale_failure`` for cleanup.
 
+Heartbeat timestamps are automatic for every running task. Calling
+``beat(detail)`` is optional: it replaces the latest short diagnostic detail
+without changing heartbeat cadence. Progress and custom task events are
+observability signals, not liveness writes.
+
+Completion and recovery ordering
+================================
+
+On success, the task body returns first. The service then persists the
+completed record and result, publishes ``task.completed``, flushes buffered
+and live delivery, schedules the next recurring run when applicable, and
+finally clears heartbeat ownership. A terminal event therefore means the
+record transition was already stored, but consumers should still call
+:meth:`~litestar_queues.TaskResult.refresh` before reading cached result data.
+
+A retryable attempt publishes ``task.failed`` with ``will_retry=True`` and a
+later attempt publishes ``task.started`` again for the same task ID. A final
+exception uses ``will_retry=False``. Cancellation, claim loss, and stale
+failure stop the current execution through their own fenced paths; claim loss
+must not let the old worker overwrite the record now owned by another worker.
+
 Heartbeat pool isolation
 ========================
 

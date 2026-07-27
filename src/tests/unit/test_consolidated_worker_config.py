@@ -1,7 +1,10 @@
 import dataclasses
+import os
+from pathlib import Path
 
 import pytest
 
+import litestar_queues.config as config_module
 from litestar_queues import QueueConfig, TaskRequest, WorkerConfig
 from litestar_queues.backends.memory import InMemoryQueueBackend
 from litestar_queues.exceptions import QueueConfigurationError
@@ -43,11 +46,37 @@ def test_task_request_names_the_bulk_enqueue_input() -> None:
     assert request.args == ("report-1",)
 
 
-def test_sync_thread_pool_size_defaults_to_the_anyio_thread_limiter() -> None:
+def test_sync_thread_pool_size_defaults_to_cgroup_aware_executor_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "_effective_cpu_count", lambda: 2)
+
     config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
 
-    assert config.sync_thread_pool_size == 40
+    assert config.sync_thread_pool_size == 6
     assert config.sync_thread_name_prefix == "litestar-queues"
+
+
+def test_explicit_sync_thread_pool_size_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "_effective_cpu_count", lambda: 2)
+
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", sync_thread_pool_size=40)
+
+    assert config.sync_thread_pool_size == 40
+
+
+def test_cgroup_v2_cpu_quota_is_rounded_up(tmp_path: Path) -> None:
+    cpu_max = tmp_path / "cpu.max"
+    cpu_max.write_text("150000 100000\n")
+
+    assert config_module._cgroup_cpu_limit(cpu_max=cpu_max) == 2  # pyright: ignore[reportPrivateUsage]
+
+
+def test_effective_cpu_count_honors_cgroup_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "_cgroup_cpu_limit", lambda: 2)
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False)
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8, raising=False)
+
+    assert config_module._effective_cpu_count() == 2  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("size", [0, -1])

@@ -1,6 +1,6 @@
 """pymysql SQLSpec queue store."""
 
-from litestar_queues.backends.sqlspec.stores._families import MySQLQueueStore
+from litestar_queues.backends.sqlspec.stores._dialects import MySQLQueueStore
 
 __all__ = ("PymysqlQueueStore",)
 

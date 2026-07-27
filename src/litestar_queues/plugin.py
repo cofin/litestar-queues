@@ -165,7 +165,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             state[_EVENT_CHANNELS_STATE_KEY] = self._effective_channels_backend()
         stream_config = self._config.events.stream if self._config.events is not None else None
         if stream_config is not None:
-            from litestar_queues.events.streaming import build_stream_router
+            from litestar_queues.events.streaming import _build_stream_router
 
             self._verify_stream_channels_source(app_config)
             if (
@@ -182,7 +182,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
                     raise QueueConfigurationError(message)
                 logger.warning(message)
             app_config.route_handlers.append(
-                build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
+                _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
         app_config.state.update(state)
         # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
@@ -335,9 +335,9 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             return
         self._validate_server_placement()
         from litestar_queues.worker import supervisor
-        from litestar_queues.worker.invocation import server_context
+        from litestar_queues.worker.invocation import console_break_unwinds, server_context
 
-        with server_context() as nonce, self._storage_context(nonce):
+        with console_break_unwinds(), server_context() as nonce, self._storage_context(nonce):
             server_worker = supervisor.ServerWorkerSupervisor.from_plugin(self)
             server_worker.start()
             try:

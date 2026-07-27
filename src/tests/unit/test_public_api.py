@@ -9,7 +9,7 @@ else:
     import tomli as tomllib
 
 
-def test_public_exports() -> "None":  # noqa: PLR0915
+def test_public_exports() -> "None":
     """Test that the package exposes the public queue API.
 
     Optional backends (advanced_alchemy, sqlspec, redis, valkey) are NOT in the
@@ -18,7 +18,6 @@ def test_public_exports() -> "None":  # noqa: PLR0915
     """
     import litestar_queues
     from litestar_queues import (
-        AsyncServiceProvider,
         CloudRunExecutionBackend,
         CloudRunExecutionConfig,
         CloudRunExecutionStatus,
@@ -61,7 +60,6 @@ def test_public_exports() -> "None":  # noqa: PLR0915
     )
 
     expected_exports = {
-        "AsyncServiceProvider",
         "BaseExecutionBackend",
         "BaseQueueBackend",
         "CloudRunExecutionBackend",
@@ -142,7 +140,6 @@ def test_public_exports() -> "None":  # noqa: PLR0915
     assert QueueService(QueueConfig()).config.queue_backend == "ephemeral"
     assert QueueService(QueueConfig()).config.execution_backend == "local"
     assert issubclass(QueueError, Exception)
-    assert AsyncServiceProvider(QueueConfig()) is not None
     assert ScheduleConfig(task_name="example", interval=1).task_name == "example"
     assert StaleTaskRecoveryResult().requeued == 0
     assert QueuedTaskRecord(task_name="example").task_name == "example"
@@ -172,37 +169,89 @@ def test_enqueue_many_uses_task_request_vocabulary() -> "None":
     assert tuple(signature(InMemoryQueueBackend.enqueue_many).parameters) == ("self", "requests")
 
 
-def test_signature_namespace_covers_consolidated_public_types() -> "None":
-    """Litestar can resolve every consolidated core annotation by name."""
+def test_signature_namespace_carries_only_the_injectable_dependencies() -> "None":
+    """The namespace resolves this package's own DI providers and nothing else.
+
+    Config, backend, worker, and event types are named in application setup
+    code rather than handler signatures, so registering them here bought
+    nothing and forced every optional adapter to be imported at startup.
+    """
     from litestar_queues import QueueConfig
 
     namespace = QueueConfig().signature_namespace
+
+    assert set(namespace) == {"NamedDependency", "QueueEventProducer", "QueueService"}
+
+
+def test_consolidated_public_types_are_importable_from_the_package_root() -> "None":
+    """Every consolidated core type stays reachable as a top-level export."""
+    import litestar_queues
+
     required = {
-        "ChannelAuthorizer",
-        "CompositeQueueEventSink",
         "EventBufferConfig",
         "EventDeliveryConfig",
         "EventHistoryConfig",
         "EventStreamConfig",
-        "EventStreamTransport",
         "HeartbeatTouch",
         "HeartbeatTouchResult",
-        "QueueEventScope",
-        "QueueEventSink",
-        "QueueEventType",
         "QueueEventsConfig",
         "TaskIdentityError",
         "TaskIdentityTooLargeError",
         "TaskRequest",
         "TaskReservation",
         "TaskStatus",
-        "UnauthenticatedAccess",
         "WorkerConfig",
     }
 
-    assert required <= namespace.keys()
+    assert required <= set(litestar_queues.__all__)
+    for name in required:
+        assert getattr(litestar_queues, name) is not None
     retired = {"Enqueue" + "Spec", "Event" + "Config", "EventLog" + "Config", "Uniqueness" + "Tombstone"}
-    assert retired.isdisjoint(namespace)
+    assert retired.isdisjoint(litestar_queues.__all__)
+
+
+def test_signature_namespace_does_not_import_optional_backends() -> "None":
+    """Building the signature namespace must not pull in optional backends or their drivers.
+
+    ``QueuePlugin.on_app_init`` builds this namespace on every application
+    startup, so importing every installed adapter here would undo the package's
+    lazy-import boundary and pay for extras the application never selected.
+    """
+    import subprocess
+    import sys
+
+    code = """
+import sys
+import litestar
+from litestar_queues import QueueConfig
+
+# Litestar imports some optional integrations of its own, so the baseline is
+# taken after the framework loads. What matters here is that building the
+# namespace adds no queue adapter or driver on top of that.
+baseline = set(sys.modules)
+
+namespace = QueueConfig().signature_namespace
+assert "QueueService" in namespace, "core names must still resolve"
+
+optional_prefixes = (
+    "litestar_queues.backends.advanced_alchemy",
+    "litestar_queues.backends.redis",
+    "litestar_queues.backends.sqlspec",
+    "litestar_queues.backends.valkey",
+    "litestar_queues.execution.cloudrun",
+)
+leaked = sorted(m for m in sys.modules if m.startswith(optional_prefixes))
+assert not leaked, leaked
+
+drivers = sorted(
+    m for m in ("advanced_alchemy", "redis", "sqlspec", "valkey", "google")
+    if m in sys.modules and m not in baseline
+)
+assert not drivers, drivers
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_optional_backends_resolve_lazily_via_factory() -> "None":
@@ -323,29 +372,28 @@ def test_task_dependency_resolver_config_surface() -> "None":
 
     assert "TaskDependencyResolver" in config_module.__all__
     assert "TaskErrorSanitizer" in config_module.__all__
+    import litestar_queues
+
     assert TaskDependencyResolver is not None
     assert TaskErrorSanitizer is not None
     instance = QueueConfig()
     assert instance.task_dependency_resolver is None
     assert instance.error_sanitizer is None
-    assert instance.signature_namespace["TaskDependencyResolver"] is TaskDependencyResolver
-    assert instance.signature_namespace["TaskErrorSanitizer"] is TaskErrorSanitizer
+    assert litestar_queues.TaskDependencyResolver is TaskDependencyResolver
+    assert litestar_queues.TaskErrorSanitizer is TaskErrorSanitizer
 
 
-def test_job_cancelled_helper_is_public_and_in_signature_namespace() -> "None":
-    """Cooperative cancellation is available from the package root and Litestar signature namespace."""
+def test_job_cancelled_helper_is_public() -> "None":
+    """Cooperative cancellation is available from the package root."""
     import litestar_queues
     from litestar_queues import JobCancelledError, job_cancelled
-    from litestar_queues.config import QueueConfig
     from litestar_queues.exceptions import JobCancelledError as ExceptionsJobCancelledError
-
-    instance = QueueConfig()
 
     assert JobCancelledError is ExceptionsJobCancelledError
     assert "JobCancelledError" in litestar_queues.__all__
     assert "job_cancelled" in litestar_queues.__all__
-    assert instance.signature_namespace["JobCancelledError"] is JobCancelledError
-    assert instance.signature_namespace["job_cancelled"] is job_cancelled
+    assert litestar_queues.JobCancelledError is JobCancelledError
+    assert litestar_queues.job_cancelled is job_cancelled
 
 
 def test_public_typing_facade_exports_optional_observability_types() -> "None":
@@ -436,8 +484,6 @@ import litestar_queues.events
 from litestar_queues import QueueConfig
 from litestar_queues.events import EventStreamConfig, QueueEventProducer, create_event_producer
 
-if QueueConfig().signature_namespace["EventStreamConfig"] is not EventStreamConfig:
-    raise SystemExit("EventStreamConfig missing from signature namespace")
 if QueueConfig().signature_namespace["QueueEventProducer"] is not QueueEventProducer:
     raise SystemExit("QueueEventProducer missing from signature namespace")
 if create_event_producer is None:

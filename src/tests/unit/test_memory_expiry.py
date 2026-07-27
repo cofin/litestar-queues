@@ -3,16 +3,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from litestar_queues.backends import InMemoryQueueBackend
-from litestar_queues.backends.base import BaseQueueBackend
 from litestar_queues.backends.memory import backend as memory_backend_module
 from tests.helpers._timing import MutableClock
 from tests.integration._expiry_contract import assert_claim_many_preserves_expired_dispatch_reservation
 
 pytestmark = pytest.mark.anyio
-
-
-async def test_base_expire_overdue_is_a_safe_noop() -> "None":
-    assert await BaseQueueBackend().expire_overdue() == []
 
 
 async def test_memory_claim_fences_expired_record() -> "None":

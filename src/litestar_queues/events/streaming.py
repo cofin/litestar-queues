@@ -1,7 +1,13 @@
-"""Plugin-owned WebSocket streaming endpoints for queue events.
+"""Plugin-owned WebSocket and SSE streaming endpoints for queue events.
 
 Imported only when a stream config is present and enabled, so base package
 imports stay free of routing and Channels-driver imports.
+
+The router and both relays are private: ``QueuePlugin`` is their only caller,
+and applications configure streaming through
+:class:`~litestar_queues.events.stream_config.EventStreamConfig` instead.
+``StreamMetrics`` stays public because it describes the observability surface
+an application can record against.
 """
 
 import asyncio
@@ -31,7 +37,7 @@ if TYPE_CHECKING:
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
     from litestar_queues.typing import ChannelsLike, ChannelsStreamBackend, ChannelsSubscriptionBackend
 
-__all__ = ("StreamMetrics", "build_stream_router", "stream_queue_events_hardened", "stream_queue_events_sse")
+__all__ = ("StreamMetrics",)
 
 _STREAM_DEDUP_MAX_KEYS = 1024
 
@@ -94,7 +100,7 @@ def _decode_event(raw_event: "bytes | str") -> "QueueEvent | None":
 
 
 class StreamMetrics(Protocol):
-    """Optional metric callbacks used by the hardened stream relay."""
+    """Optional metric callbacks used by the WebSocket and SSE stream relays."""
 
     def on_connect(self, scope: "QueueEventScope") -> None:
         """Record a stream connection."""
@@ -150,7 +156,7 @@ class _RuntimeStreamMetrics:
         )
 
 
-async def stream_queue_events_hardened(
+async def _stream_queue_events_ws(
     socket: Any,
     channels: Sequence[str],
     *,
@@ -312,7 +318,7 @@ def _configured_stream_channels_backend(
     return None
 
 
-def build_stream_router(
+def _build_stream_router(
     config: "QueueConfig", stream_config: "EventStreamConfig", *, channels_backend: "ChannelsLike | None" = None
 ) -> "Router":
     """Build plugin-owned queue-event stream handlers for configured scopes.
@@ -351,7 +357,7 @@ def build_stream_router(
         backend = configured_channels_backend
         if backend is None:
             backend = _resolve_channels_backend(socket)
-        await stream_queue_events_hardened(
+        await _stream_queue_events_ws(
             socket,
             [channel],
             history=history,
@@ -367,7 +373,7 @@ def build_stream_router(
         backend = configured_channels_backend
         if backend is None:
             backend = _resolve_channels_backend(connection)
-        return stream_queue_events_sse(
+        return _stream_queue_events_sse(
             connection,
             [channel],
             history=history,
@@ -400,7 +406,7 @@ def build_stream_router(
     )
 
 
-def stream_queue_events_sse(
+def _stream_queue_events_sse(
     connection: Any,
     channels: Sequence[str],
     *,

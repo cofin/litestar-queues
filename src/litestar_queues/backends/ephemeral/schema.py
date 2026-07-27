@@ -75,7 +75,7 @@ def read_environment() -> "tuple[str, str] | None":
     return path, nonce
 
 
-def is_private_directory(directory: "Path") -> "bool":
+def is_private_directory(directory: "Path", *, _platform: "str | None" = None) -> "bool":
     """Return whether ``directory`` is a non-symlink directory restricted to its owner.
 
     Returns:
@@ -87,6 +87,8 @@ def is_private_directory(directory: "Path") -> "bool":
         return False
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         return False
+    if (_platform or os.name) == "nt":
+        return True
     return not bool(info.st_mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 

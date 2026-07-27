@@ -1,5 +1,6 @@
 import asyncio
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from typing_extensions import Self
 
@@ -266,8 +267,11 @@ class BaseQueueBackend:
 
         Returns:
             The task IDs confirmed touched or missed by the backend.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
-        return HeartbeatTouchResult(missed_task_ids={touch.task_id for touch in touches})
+        raise NotImplementedError
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
         """Clear heartbeat timestamps for task IDs.
@@ -276,7 +280,11 @@ class BaseQueueBackend:
             task_ids: Queue record identifiers.
             expected_retry_count: When provided, clear only records that still
                 match this retry count.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
+        raise NotImplementedError
 
     async def requeue_stale_running(
         self, *, stale_after: "timedelta", limit: "int | None" = None
@@ -292,31 +300,36 @@ class BaseQueueBackend:
 
         Returns:
             Summary of requeued, failed, skipped, and handler-needed records.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
-        return StaleTaskRecoveryResult()
+        raise NotImplementedError
 
     async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         """Transition overdue pending or scheduled records to ``expired``.
 
-        Backends that support pending-job expiration override this with a
-        fenced transition. The default is a safe no-op while backend
-        capabilities are introduced incrementally.
-
         Returns:
             Records transitioned to ``expired``.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
-        return []
+        raise NotImplementedError
 
     async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
         """Acquire a backend-scoped worker coordination lock.
 
-        Backends that can provide fleet-wide locks should override this. The
-        default preserves existing behavior for backends without lock support.
+        Fleet coordination and maintenance ownership are the same primitive, so
+        this routes to :meth:`acquire_maintenance` under a fresh token. The lock
+        is never released explicitly: ``ttl`` bounds it so a worker that dies
+        mid-pass cannot wedge the fleet, and the next holder takes over once the
+        stored ownership expires.
 
         Returns:
             True when the caller should run the coordinated worker action.
         """
-        return True
+        return await self.acquire_maintenance(name, str(uuid4()), ttl=ttl)
 
     async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
         """Acquire token-fenced distributed maintenance ownership.
@@ -352,14 +365,11 @@ class BaseQueueBackend:
 
         Returns:
             The updated queued task record, if one exists.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
-        record = await self.get_task(task_id)
-        if record is None:
-            return None
-        record.execution_backend = execution_backend
-        record.execution_ref = execution_ref
-        record.execution_profile = execution_profile
-        return record
+        raise NotImplementedError
 
     async def reserve_external_dispatch(
         self,
@@ -406,28 +416,37 @@ class BaseQueueBackend:
 
         Returns:
             The updated queued task record, if one exists.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
-        record = await self.get_task(task_id)
-        if record is None:
-            return None
-        record.execution_backend = execution_backend
-        record.execution_profile = execution_profile
-        record.execution_ref = None
-        return record
+        raise NotImplementedError
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
-        """Return externally dispatched tasks with references to reconcile."""
-        return []
+        """Return externally dispatched tasks with references to reconcile.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
+        raise NotImplementedError
 
     async def get_statistics(self) -> "QueueStatistics":
-        """Return queue status counts."""
-        return QueueStatistics()
+        """Return queue status counts.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
+        raise NotImplementedError
 
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
     ) -> "list[QueuedTaskRecord]":
-        """Return recent completed records for a task name."""
-        return []
+        """Return recent completed records for a task name.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
+        raise NotImplementedError
 
     async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete terminal records completed before a cutoff.
@@ -445,8 +464,11 @@ class BaseQueueBackend:
 
         Returns:
             The number of deleted records.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
         """
-        return 0
+        raise NotImplementedError
 
     async def reserve_identity(self, key: "str", *, task_id: "UUID", task_name: "str") -> "TaskReservation | None":
         """Atomically reserve a ``unique_until="forever"`` identity.

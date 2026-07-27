@@ -67,14 +67,15 @@ You receive JSON shaped like this:
    {"task_id":"...","status":"pending"}
 
 The ID identifies the saved task record. ``pending`` is its status when it
-enters the queue. The in-app worker may complete the task immediately after
-the response is created.
+enters the queue. The server-owned worker child may complete the task
+immediately after the response is created. The default private SQLite queue
+belongs to this server invocation and is removed when it stops.
 
 Next steps
 ==========
 
 * :doc:`../usage/concepts` explains records, workers, and backend choices.
 * :doc:`../usage/results` shows how to refresh and wait for a result.
-* :doc:`../usage/workers` moves work into standalone worker processes.
-* :doc:`../usage/backends` replaces process-local storage for production.
+* :doc:`../usage/workers` explains server, ASGI, and standalone placement.
+* :doc:`../usage/backends` selects durable shared storage for production.
 * :doc:`../usage/events` publishes progress for applications and operators.

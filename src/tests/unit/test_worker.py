@@ -593,6 +593,21 @@ async def test_worker_periodic_reconcile_skips_calls_inside_cadence_window() -> 
     assert backend.list_running_external_limits == [7]
 
 
+async def test_worker_periodic_reconcile_does_not_take_the_fleet_lock_inside_cadence_window() -> "None":
+    backend = _LockingCountingInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service, WorkerConfig(reconcile_interval=3600.0))
+
+        await worker._maybe_reconcile_external()
+        await worker._maybe_reconcile_external()
+        await worker._maybe_reconcile_external()
+
+    assert backend.lock_calls == ["external_reconcile"]
+
+
 async def test_worker_periodic_reconcile_uses_backend_fleet_lock() -> "None":
     backend = _LockingCountingInMemoryQueueBackend()
     async with QueueService(
@@ -1117,6 +1132,36 @@ async def test_worker_fixed_polling_unaffected_when_backoff_disabled() -> "None"
             await asyncio.wait_for(worker_task, timeout=1)
 
     assert backend.timeouts[:4] == [0.25, 0.25, 0.25, 0.25]
+
+
+async def test_adaptive_worker_makes_fewer_idle_claim_cycles_over_the_same_virtual_duration() -> "None":
+    async def count_cycles(config: "WorkerConfig") -> "int":
+        backend = _VirtualDurationBackend(duration=32.0)
+        async with QueueService(
+            QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+            queue_backend=backend,
+        ) as service:
+            worker = _CountingRunOnceWorker(service, config)
+            worker_task = asyncio.create_task(worker.start())
+            await asyncio.wait_for(backend.duration_reached.wait(), timeout=1)
+            await worker.stop()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(worker_task, timeout=1)
+        return worker.run_once_calls
+
+    fixed_cycles = await count_cycles(WorkerConfig(poll_interval=1.0, poll_backoff_max=None, reconcile_interval=3600.0))
+    adaptive_cycles = await count_cycles(
+        WorkerConfig(
+            poll_interval=1.0,
+            poll_backoff_max=8.0,
+            poll_backoff_multiplier=2.0,
+            poll_jitter=0.0,
+            reconcile_interval=3600.0,
+        )
+    )
+
+    assert adaptive_cycles < fixed_cycles
+    assert (adaptive_cycles, fixed_cycles) == (7, 32)
 
 
 async def test_worker_resets_backoff_after_claimed_work() -> "None":
@@ -1733,6 +1778,11 @@ class _CountingInMemoryQueueBackend(InMemoryQueueBackend):
         self.expire_calls.append(limit)
         return await super().expire_overdue(limit=limit)
 
+    async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
+        """Always grant, so cadence tests measure cadence rather than fleet locking."""
+        del name, ttl
+        return True
+
 
 class _LockingCountingInMemoryQueueBackend(_CountingInMemoryQueueBackend):
     __slots__ = ("_held_locks", "lock_calls")
@@ -1894,6 +1944,26 @@ class _RecordingTimeoutBackend(InMemoryQueueBackend):
         return False
 
 
+class _VirtualDurationBackend(InMemoryQueueBackend):
+    """Polling backend whose timeout requests advance a deterministic clock."""
+
+    __slots__ = ("duration", "duration_reached", "elapsed")
+
+    def __init__(self, *, duration: "float") -> "None":
+        super().__init__()
+        self.duration = duration
+        self.duration_reached = asyncio.Event()
+        self.elapsed = 0.0
+
+    async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
+        assert timeout is not None
+        if self.elapsed + timeout >= self.duration:
+            self.duration_reached.set()
+            await asyncio.Event().wait()
+        self.elapsed += timeout
+        return False
+
+
 class _NotifyOnCallInMemoryQueueBackend(InMemoryQueueBackend):
     """Memory backend double whose native wait reports a notification on one call."""
 
@@ -1923,6 +1993,20 @@ class _RaiseOnThirdRunOnceWorker(Worker):
         if self.run_once_calls == 3:
             msg = "transient backend failure"
             raise RuntimeError(msg)
+        return 0
+
+
+class _CountingRunOnceWorker(Worker):
+    """Worker double that records empty claim cycles."""
+
+    __slots__ = ("run_once_calls",)
+
+    def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
+        super().__init__(*args, **kwargs)
+        self.run_once_calls = 0
+
+    async def run_once(self) -> "int":
+        self.run_once_calls += 1
         return 0
 
 

@@ -12,7 +12,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
@@ -1030,14 +1030,6 @@ class EphemeralQueueBackend(BaseQueueBackend):
             return cursor.rowcount > 0
 
         return await self._transaction(operation)
-
-    async def acquire_worker_lock(self, name: "str", *, ttl: "timedelta") -> "bool":
-        """Acquire a short-lived cross-process worker lock.
-
-        Returns:
-            True when the lock was granted.
-        """
-        return await self.acquire_maintenance(name, str(uuid4()), ttl=ttl)
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         """Signal same-instance waiters that due work exists."""

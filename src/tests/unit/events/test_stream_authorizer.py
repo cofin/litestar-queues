@@ -12,7 +12,7 @@ from litestar.testing import create_test_client
 from litestar_queues import WorkerConfig
 from litestar_queues.config import QueueConfig
 from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueEventsConfig
-from litestar_queues.events.streaming import build_stream_router
+from litestar_queues.events.streaming import _build_stream_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -62,7 +62,7 @@ async def test_channel_authorizer_receives_scope_and_key_before_accept() -> None
 
     channels = _FakeChannelsPlugin()
     socket = _RecordingSocket()
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -81,7 +81,7 @@ async def test_channel_authorizer_receives_scope_and_key_before_accept() -> None
 async def test_channel_authorizer_denies_with_4003_before_accept() -> None:
     channels = _FakeChannelsPlugin()
     socket = _RecordingSocket()
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -108,7 +108,7 @@ async def test_async_channel_authorizer_supported() -> None:
 
     channels = _FakeChannelsPlugin()
     socket = _RecordingSocket()
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
@@ -131,7 +131,7 @@ async def test_guard_auth_failure_closes_4001_before_authorizer() -> None:
         calls.append((scope, key))
         return True
 
-    router = build_stream_router(
+    router = _build_stream_router(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(guards=[_deny_guard], channel_authorizer=authorize),
     )

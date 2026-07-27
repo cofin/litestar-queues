@@ -35,10 +35,12 @@ The record—not the Python coroutine—is what a worker claims.
 Queue backend
 =============
 
-The **queue backend** stores task records and their states. The default memory
-backend stores them in one process. SQLSpec, Advanced Alchemy, Redis, and
-Valkey can share records between web and worker processes. The saved task
-record is always the source of truth.
+The **queue backend** stores task records and their states. The default
+ephemeral SQLite backend shares one private temporary file between the server
+and its worker child; it is not durable across server restarts. The explicit
+memory backend stores live Python objects in one process. SQLSpec, Advanced
+Alchemy, Redis, and Valkey can share durable records between web and worker
+processes. The saved task record is always the source of truth.
 
 Execution backend
 =================
@@ -51,9 +53,10 @@ Worker lifecycle
 ================
 
 A worker finds tasks that are ready, claims them, and runs or dispatches them.
-It then saves the result and retries failures when allowed. The plugin can
-start a worker in the web process. Production deployments often run workers
-separately.
+It then saves the result and retries failures when allowed. By default the
+Litestar CLI server lifespan owns one fresh worker child. ``asgi`` placement
+deliberately starts one inside each web process, while ``external`` placement
+leaves worker startup to the operator.
 
 Wakeups and reconciliation
 ==========================

@@ -27,6 +27,8 @@ __all__ = ("index", "restart_demo", "run_crawl", "status_json")
 
 
 EXAMPLE_ROOT = Path(__file__).parent
+SHARED_ROOT = EXAMPLE_ROOT.parent / "shared"
+VITE_ENTRY = "resources/main-sse.ts"
 BACKEND_NAME = "sqlspec-aiosqlite"
 DEMO_STEPS = 6
 DEMO_STEP_DELAY = 1
@@ -76,7 +78,7 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
 # -- docs-routes-start --
 @get("/")
 async def index() -> Template:
-    return Template("index.html", context={"backend_name": BACKEND_NAME})
+    return Template("index.html", context={"backend_name": BACKEND_NAME, "vite_entry": VITE_ENTRY})
 
 
 @get("/demo/status")
@@ -91,7 +93,7 @@ async def restart_demo(queue_service: NamedDependency[QueueService]) -> Template
     task_id = str(result.id)
     reused = existing is not None and not existing.is_terminal and existing.id == result.id
     return HTMXTemplate(
-        template_name="partials/stream_mount.html",
+        template_name="partials/stream_mount_sse.html",
         context={"task_id": task_id, "task_sse_url": f"/queues/events/sse/tasks/{result.id}"},
         push_url=False,
         re_target="#stream-mount",
@@ -124,7 +126,7 @@ queue_config = QueueConfig(
     ),
 )
 
-vite_config = ViteConfig(enabled=True, mode="htmx", paths=PathConfig(root=EXAMPLE_ROOT, resource_dir="resources"))
+vite_config = ViteConfig(enabled=True, mode="htmx", paths=PathConfig(root=SHARED_ROOT, resource_dir="resources"))
 
 
 async def bootstrap_queue_schema() -> None:
@@ -134,7 +136,7 @@ async def bootstrap_queue_schema() -> None:
 
 app = Litestar(
     route_handlers=[index, status_json, restart_demo],
-    template_config=TemplateConfig(directory=EXAMPLE_ROOT / "templates", engine=JinjaTemplateEngine),
+    template_config=TemplateConfig(directory=SHARED_ROOT / "templates", engine=JinjaTemplateEngine),
     signature_namespace={"NamedDependency": NamedDependency},
     on_startup=[bootstrap_queue_schema],
     plugins=[HTMXPlugin(), channels, QueuePlugin(queue_config), VitePlugin(config=vite_config)],

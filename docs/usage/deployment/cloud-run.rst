@@ -363,4 +363,4 @@ See also
 ========
 
 * :doc:`../backends` for the backend configuration surface.
-* :doc:`../workers` for local worker behavior and in-app worker placement.
+* :doc:`../workers` for server, ASGI, and external worker placement.

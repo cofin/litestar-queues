@@ -72,13 +72,13 @@ what your application needs.
   opens a new one. This replaces roughly ninety lines of custom `WebSocket`
   code.
 - **One small JS adapter.** Queue events are JSON, so the extension cannot swap
-  them as HTML. `resources/main.ts` listens for `htmx:wsBeforeMessage`, parses
+  them as HTML. `../shared/resources/main-ws.ts` listens for `htmx:wsBeforeMessage`, parses
   the frame, ignores `{"type":"ping"}` heartbeats, appends the event to the page,
   turns the readout gold on `task.completed`, and calls `preventDefault()` so
   htmx does not treat the JSON as HTML. After `HTMXTemplate` swaps the element,
   its `queue-demo:started` event resets the display for the task returned by
   the backend.
-- **htmx wiring.** `resources/main.ts` imports htmx, publishes it as
+- **htmx wiring.** `../shared/resources/main-ws.ts` imports htmx, publishes it as
   `window.htmx`, calls `registerHtmxExtension()`, and then imports
   `htmx-ext-ws`. This order is required because the htmx 2 ESM build does not
   add itself to `window`.
@@ -93,7 +93,7 @@ and check who may access each task.
 
 ## External Publisher
 
-`scripts/external_publisher.py` shows how code outside Litestar can publish with
+`../shared/scripts/external_publisher.py` shows how code outside Litestar can publish with
 `create_event_producer`. It raises an error until you replace its placeholder
 with a shared Redis or SQLSpec Channels backend. The memory Channels backend
 cannot connect separate processes.

@@ -109,6 +109,12 @@ Configuration
 Set ``initialize_schedules=False`` when schedules are initialized by a separate
 worker or management command.
 
+Schedule synchronization follows the worker owner: once in the server child
+for ``server`` placement, once in each deliberately multiplicative ASGI worker
+for ``asgi``, and once in each standalone worker for ``external``. An
+enqueue-only ASGI service under server or external placement does not
+synchronize schedules.
+
 See also
 ========
 

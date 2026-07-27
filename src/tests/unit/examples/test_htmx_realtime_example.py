@@ -6,6 +6,7 @@ from typing import cast
 
 ROOT = Path(__file__).resolve().parents[4]
 EXAMPLES_ROOT = ROOT / "examples"
+SHARED_ROOT = EXAMPLES_ROOT / "shared"
 
 # All ten examples use the same simple frontend and declarative htmx stream
 # connection; only the queue backend and transport vary.
@@ -92,24 +93,36 @@ EXAMPLE_VARIANTS["htmx_realtime_sse"].update({
 })
 
 
-def test_htmx_realtime_example_variants_have_expected_files() -> None:
+def test_each_example_owns_only_its_application_and_readme() -> None:
+    """An example is its ``app.py`` and its README; the frontend is shared.
+
+    Every asset below was byte-identical across all ten examples, or varied
+    only by transport, so each copy was one more place to forget an edit.
+    """
+    for name in EXAMPLE_VARIANTS:
+        example_root = EXAMPLES_ROOT / name
+        owned = {path.name for path in example_root.iterdir() if path.is_file()}
+
+        assert owned == {"app.py", "README.md", "__init__.py"}, name
+
+
+def test_the_shared_frontend_holds_one_copy_of_every_asset() -> None:
     shared_files = {
-        "app.py",
-        "README.md",
         "package.json",
         "vite.config.ts",
-        "resources/main.ts",
+        "resources/main-sse.ts",
+        "resources/main-ws.ts",
         "resources/styles.css",
+        "resources/vite-env.d.ts",
         "templates/base.html",
         "templates/index.html",
-        "templates/partials/stream_mount.html",
+        "templates/partials/stream_mount_sse.html",
+        "templates/partials/stream_mount_ws.html",
         "scripts/external_publisher.py",
     }
 
-    for name in EXAMPLE_VARIANTS:
-        example_root = EXAMPLES_ROOT / name
-        for relative_path in shared_files:
-            assert (example_root / relative_path).is_file(), f"{name}/{relative_path}"
+    for relative_path in shared_files:
+        assert (SHARED_ROOT / relative_path).is_file(), relative_path
 
 
 def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
@@ -117,7 +130,7 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
         assert "HTMXPlugin()" in app_source
         assert 'mode="htmx"' in app_source
-        assert 'PathConfig(root=EXAMPLE_ROOT, resource_dir="resources")' in app_source
+        assert 'PathConfig(root=SHARED_ROOT, resource_dir="resources")' in app_source
         assert 'signature_namespace={"NamedDependency": NamedDependency}' in app_source
         assert "RuntimeConfig(" not in app_source
         assert 'executor="bun"' not in app_source
@@ -169,8 +182,8 @@ def test_htmx_realtime_examples_keep_live_channels_process_local_by_default() ->
 
 def test_redis_and_valkey_examples_offer_explicit_shared_channels_mode() -> None:
     common_source = (EXAMPLES_ROOT / "htmx_realtime_common.py").read_text()
-    assert 'os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") != "0"' in common_source
-    assert 'placement="asgi" if in_process else "external"' in common_source
+    assert 'os.getenv("LITESTAR_QUEUES_EXAMPLE_PLACEMENT", "asgi")' in common_source
+    assert '{"server", "asgi", "external"}' in common_source
     assert "graceful_shutdown_timeout=5" in common_source
 
     for name in EXAMPLE_VARIANTS:
@@ -186,8 +199,9 @@ def test_redis_and_valkey_examples_offer_explicit_shared_channels_mode() -> None
             assert "from redis" not in app_source, name
 
 
-def _assert_canonical_frontend(example_root: Path) -> str:
-    frontend_source = (example_root / "resources" / "main.ts").read_text()
+def _assert_canonical_frontend(example_root: Path, transport: str) -> str:
+    entry = "main-ws.ts" if transport == "websocket" else "main-sse.ts"
+    frontend_source = (SHARED_ROOT / "resources" / entry).read_text()
     assert 'from "litestar-vite-plugin/helpers"' in frontend_source
     assert 'import htmx from "htmx.org"' in frontend_source
     assert "registerHtmxExtension()" in frontend_source
@@ -197,7 +211,7 @@ def _assert_canonical_frontend(example_root: Path) -> str:
     assert "queue-demo:started" in frontend_source
     assert "mission-control" not in frontend_source
 
-    template_source = (example_root / "templates" / "index.html").read_text()
+    template_source = (SHARED_ROOT / "templates" / "index.html").read_text()
     assert 'hx-swap="json"' in template_source
     assert 'ls-if="backend"' in template_source
     assert 'hx-post="/demo/restart"' in template_source
@@ -206,19 +220,18 @@ def _assert_canonical_frontend(example_root: Path) -> str:
     assert 'hx-sync="this:replace"' in template_source
     assert "<form" not in template_source
 
-    partial_source = (example_root / "templates" / "partials" / "stream_mount.html").read_text()
-    package_source = (example_root / "package.json").read_text()
+    mount = "stream_mount_ws.html" if transport == "websocket" else "stream_mount_sse.html"
+    partial_source = (SHARED_ROOT / "templates" / "partials" / mount).read_text()
     app_source = (example_root / "app.py").read_text()
-    return f"{frontend_source}\n{template_source}\n{partial_source}\n{package_source}\n{app_source}"
+    # package.json is deliberately excluded: one shared manifest carries both
+    # htmx transport extensions, so it cannot satisfy a per-transport check.
+    return f"{frontend_source}\n{template_source}\n{partial_source}\n{app_source}"
 
 
 def test_htmx_realtime_examples_use_transport_specific_frontend_features() -> None:
     for name, config in EXAMPLE_VARIANTS.items():
         example_root = EXAMPLES_ROOT / name
-        script_source = (example_root / "scripts" / "external_publisher.py").read_text()
-        assert "from __future__ import annotations" not in script_source
-
-        combined_source = _assert_canonical_frontend(example_root)
+        combined_source = _assert_canonical_frontend(example_root, str(config["transport"]))
         transport_config = cast("dict[str, tuple[str, ...]]", TRANSPORT_MARKERS[str(config["transport"])])
 
         for marker in transport_config["expected_markers"]:
@@ -228,7 +241,7 @@ def test_htmx_realtime_examples_use_transport_specific_frontend_features() -> No
 
 
 def test_htmx_realtime_examples_use_litestar_asset_commands_and_current_packages() -> None:
-    for name, config in EXAMPLE_VARIANTS.items():
+    for name in EXAMPLE_VARIANTS:
         example_root = EXAMPLES_ROOT / name
         readme_source = (example_root / "README.md").read_text()
         assert "uv run litestar assets install" in readme_source
@@ -236,18 +249,16 @@ def test_htmx_realtime_examples_use_litestar_asset_commands_and_current_packages
         assert "npm install" not in readme_source
         assert "bun install" not in readme_source
 
-        package = json.loads((example_root / "package.json").read_text())
-        assert package["name"] == config["package"]
-        assert package["dependencies"]["htmx.org"] == "^2.0.10"
-        if config["transport"] == "sse":
-            assert package["dependencies"]["htmx-ext-sse"] == "^2.2.4"
-            assert "htmx-ext-ws" not in package["dependencies"]
-        else:
-            assert package["dependencies"]["htmx-ext-ws"] == "^2.0.4"
-            assert "htmx-ext-sse" not in package["dependencies"]
-        assert package["devDependencies"]["litestar-vite-plugin"] == "^0.26.1"
-        assert package["devDependencies"]["vite"] == "^8.1.3"
-        assert package["devDependencies"]["typescript"] == "^6.0.3"
+    # One manifest, one install. It carries both htmx transport extensions
+    # because the single bundle has an entry point for each.
+    package = json.loads((SHARED_ROOT / "package.json").read_text())
+    assert package["name"] == "litestar-queues-htmx-realtime-examples"
+    assert package["dependencies"]["htmx.org"] == "^2.0.10"
+    assert package["dependencies"]["htmx-ext-sse"] == "^2.2.4"
+    assert package["dependencies"]["htmx-ext-ws"] == "^2.0.4"
+    assert package["devDependencies"]["litestar-vite-plugin"] == "^0.26.1"
+    assert package["devDependencies"]["vite"] == "^8.1.3"
+    assert package["devDependencies"]["typescript"] == "^6.0.3"
 
     gitignore_source = (ROOT / ".gitignore").read_text()
     assert "examples/**/node_modules/" in gitignore_source
@@ -291,11 +302,12 @@ def test_htmx_realtime_examples_discover_routes_and_active_vite_integration() ->
 def test_htmx_realtime_docs_import_from_runnable_example() -> None:
     docs_source = (ROOT / "docs" / "usage" / "event-streams.rst").read_text()
     assert "examples/htmx_realtime_websocket/app.py" in docs_source
-    assert "examples/htmx_realtime_websocket/resources/main.ts" in docs_source
-    assert "examples/htmx_realtime_websocket/templates/index.html" in docs_source
+    assert "examples/shared/resources/main-ws.ts" in docs_source
+    assert "examples/shared/templates/partials/stream_mount_ws.html" in docs_source
     assert "examples/htmx_realtime_sse/app.py" in docs_source
-    assert "examples/htmx_realtime_sse/resources/main.ts" in docs_source
-    assert "examples/htmx_realtime_sse/templates/index.html" in docs_source
+    assert "examples/shared/resources/main-sse.ts" in docs_source
+    assert "examples/shared/templates/partials/stream_mount_sse.html" in docs_source
+    assert "examples/shared/templates/index.html" in docs_source
     for transport in TRANSPORT_MARKERS:
         assert f"examples/htmx_realtime_{transport}_sqlspec" in docs_source
         assert f"examples/htmx_realtime_{transport}_advanced_alchemy" in docs_source

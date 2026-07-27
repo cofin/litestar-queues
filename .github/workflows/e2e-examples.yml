@@ -5,7 +5,7 @@ on:
     paths:
       - ".github/workflows/e2e-examples.yml"
       - "examples/htmx_realtime_*/**"
-      - "src/tests/e2e/**"
+      - "src/tests/integration/e2e/**"
       - "pyproject.toml"
       - "uv.lock"
       - "Makefile"
@@ -21,17 +21,17 @@ jobs:
       matrix:
         include:
           - suite: example-server
-            pytest_args: src/tests/e2e/test_example_server.py
+            pytest_args: src/tests/integration/e2e/test_example_server.py
           - suite: sse-contract
-            pytest_args: src/tests/e2e/test_realtime_browser.py -k test_sse_browser_contract
+            pytest_args: src/tests/integration/e2e/test_realtime_browser.py -k test_sse_browser_contract
           - suite: websocket-contract
-            pytest_args: src/tests/e2e/test_realtime_browser.py -k test_websocket_browser_contract
+            pytest_args: src/tests/integration/e2e/test_realtime_browser.py -k test_websocket_browser_contract
           - suite: sse-reconnect
-            pytest_args: src/tests/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and sse"
+            pytest_args: src/tests/integration/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and sse"
           - suite: websocket-reconnect
-            pytest_args: src/tests/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and websocket"
+            pytest_args: src/tests/integration/e2e/test_realtime_browser.py -k "test_replacing_stream_mount_reconnects_cleanly and websocket"
           - suite: topology
-            pytest_args: src/tests/e2e/test_realtime_topology.py
+            pytest_args: src/tests/integration/e2e/test_realtime_topology.py
     steps:
       - name: Check out repository
         uses: actions/checkout@v7

@@ -12,8 +12,10 @@ MAKEFLAGS += --no-print-directory
 PYTHON_VERSION ?= 3.10
 UV_SYNC_ARGS ?= --all-extras --dev
 INFRA_ARGS ?=
-EXAMPLE_APPS := $(wildcard examples/htmx_realtime_*/)
-EXAMPLE_APP_MODULES := $(addsuffix .app:app, $(subst /,.,$(patsubst %/,%,$(EXAMPLE_APPS))))
+EXAMPLE_APP_FILES := $(wildcard examples/htmx_realtime_*/app.py)
+EXAMPLE_APP_MODULES := $(subst /,.,$(patsubst %/app.py,%.app:app,$(EXAMPLE_APP_FILES)))
+# Every example app shares one Vite project, so assets install and build once.
+EXAMPLE_ASSETS_APP := examples.htmx_realtime_sse.app:app
 
 # Detect Rodete and configure index URLs for Python tools
 ifneq ($(shell grep -s -q "rodete" /etc/os-release && echo "yes"),)
@@ -66,23 +68,19 @@ install: destroy clean setup-env                    ## Install the project, depe
 	@echo "${OK} Installation complete! 🎉"
 
 .PHONY: install-examples-assets
-install-examples-assets:                              ## Install frontend assets for bundled example apps
-	@if [ -n "$(EXAMPLE_APP_MODULES)" ]; then \
-		for app in $(EXAMPLE_APP_MODULES); do \
-			echo "${INFO} Installing frontend assets for $$app... ⚡"; \
-			LITESTAR_APP=$$app uv run litestar assets install; \
-		done; \
+install-examples-assets:                              ## Install frontend assets shared by the example apps
+	@if [ -n "$(EXAMPLE_APP_FILES)" ]; then \
+		echo "${INFO} Installing frontend assets shared by the example apps... ⚡"; \
+		LITESTAR_APP=$(EXAMPLE_ASSETS_APP) uv run litestar assets install; \
 	else \
 		echo "${WARN} No example apps matched examples/htmx_realtime_*"; \
 	fi
 
 .PHONY: build-examples-assets
-build-examples-assets:                               ## Build frontend assets for bundled example apps
-	@if [ -n "$(EXAMPLE_APP_MODULES)" ]; then \
-		for app in $(EXAMPLE_APP_MODULES); do \
-			echo "${INFO} Building frontend assets for $$app... 📦"; \
-			LITESTAR_APP=$$app uv run litestar assets build; \
-		done; \
+build-examples-assets:                               ## Build frontend assets shared by the example apps
+	@if [ -n "$(EXAMPLE_APP_FILES)" ]; then \
+		echo "${INFO} Building frontend assets shared by the example apps... 📦"; \
+		LITESTAR_APP=$(EXAMPLE_ASSETS_APP) uv run litestar assets build; \
 	else \
 		echo "${WARN} No example apps matched examples/htmx_realtime_*"; \
 	fi
@@ -228,7 +226,7 @@ test-examples-e2e: install-e2e                       ## Install Chromium and run
 	@echo "${INFO} Installing Chromium for browser E2E tests... ⚡"
 	@uv run playwright install chromium
 	@echo "${INFO} Running browser E2E tests... 🧪"
-	@uv run pytest src/tests/e2e -m e2e
+	@uv run pytest src/tests/integration/e2e -m e2e
 	@echo "${OK} Browser E2E tests complete 🧪"
 
 # -----------------------------------------------------------------------------

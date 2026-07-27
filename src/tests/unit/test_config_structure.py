@@ -24,24 +24,17 @@ _APPROVED_NESTED_IMPORTS = {
     "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
     "backends/sqlspec/stores/spanner.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
     "backends/valkey/backend.py": {"valkey"},
+    # The signature namespace carries only the injectable dependencies, so the
+    # config surface no longer reaches for optional adapters at startup.
     "config.py": {
         "litestar.di",
         "litestar_queues.backends",
-        "litestar_queues.backends.advanced_alchemy",
-        "litestar_queues.backends.redis",
-        "litestar_queues.backends.sqlspec",
-        "litestar_queues.backends.valkey",
         "litestar_queues.events",
-        "litestar_queues.exceptions",
         "litestar_queues.execution",
-        "litestar_queues.maintenance",
-        "litestar_queues.models",
-        "litestar_queues.observability",
         "litestar_queues.service",
-        "litestar_queues.task",
-        "litestar_queues.worker",
     },
     "events/__init__.py": {"litestar_queues.events.channels_sink"},
+    "execution/__init__.py": {"litestar_queues.execution"},
     "plugin.py": {
         "litestar_queues._cli",
         "litestar_queues.backends.ephemeral.server",

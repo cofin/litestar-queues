@@ -8,12 +8,15 @@ __all__ = ("example_worker_config",)
 
 
 def example_worker_config() -> WorkerConfig:
-    """Return worker configuration for an in-process or standalone example worker.
+    """Return worker configuration for the selected example placement.
 
-    The examples run a worker inside each ASGI process so a single
-    ``uvicorn``/``granian`` command is enough to see live events. Set
-    ``LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER=0`` to run ``litestar queues run``
-    as a separate process instead.
+    The examples default to an ASGI-owned worker so their process-local
+    Channels backend can display live events. Set
+    ``LITESTAR_QUEUES_EXAMPLE_PLACEMENT`` to ``server``, ``asgi``, or
+    ``external`` when exercising another topology.
     """
-    in_process = os.getenv("LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER") != "0"
-    return WorkerConfig(placement="asgi" if in_process else "external", graceful_shutdown_timeout=5)
+    placement = os.getenv("LITESTAR_QUEUES_EXAMPLE_PLACEMENT", "asgi")
+    if placement not in {"server", "asgi", "external"}:
+        msg = "LITESTAR_QUEUES_EXAMPLE_PLACEMENT must be server, asgi, or external"
+        raise ValueError(msg)
+    return WorkerConfig(placement=placement, graceful_shutdown_timeout=5)

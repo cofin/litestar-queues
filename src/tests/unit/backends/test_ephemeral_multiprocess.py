@@ -186,4 +186,10 @@ def test_only_composed_base_methods_are_inherited_unchanged() -> "None":
     memory = {name for name in vars(InMemoryQueueBackend) if not name.startswith("_")}
     ephemeral = {name for name in vars(EphemeralQueueBackend) if not name.startswith("_")}
 
-    assert sorted(base - memory - ephemeral) == ["claim_next", "config", "notify_new_tasks", "wait_for_completion"]
+    assert sorted(base - memory - ephemeral) == [
+        "acquire_worker_lock",
+        "claim_next",
+        "config",
+        "notify_new_tasks",
+        "wait_for_completion",
+    ]

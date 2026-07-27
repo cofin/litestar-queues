@@ -19,13 +19,19 @@ from pytest import MonkeyPatch
 
 from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.worker import invocation
 from litestar_queues.worker.runtime import _WorkerStage, _WorkerStageError
 from litestar_queues.worker.supervisor import (
+    _POSIX_SIGKILL,
+    _WINDOWS_CONTROL_C_EXIT,
     ServerWorkerSupervisor,
     _apply_launch_spec,
     _build_launch_spec,
     _force_stop_process,
+    _kill_windows_process_tree,
     _parent_loss_bridge,
+    _QueueProcessCleanupError,
+    _request_server_shutdown,
     _reset_child_logging,
     _resolve_queue_plugin,
     _run_child,
@@ -67,6 +73,11 @@ def _restored_logging_state() -> "Iterator[None]":
             for handler in handlers:
                 logger.addHandler(handler)
             logger.setLevel(level)
+
+
+def _patch_posix_child_session(monkeypatch: "MonkeyPatch", callback: "Callable[[], None]") -> "None":
+    monkeypatch.setattr("litestar_queues.worker.supervisor._os_name", lambda: "posix")
+    monkeypatch.setattr(os, "setsid", callback, raising=False)
 
 
 class _FakeConnection:
@@ -310,7 +321,7 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
     fake_environment: dict[str, str] = {"STALE": "value"}
     monkeypatch.setattr(os, "environ", fake_environment)
     monkeypatch.setattr(sys, "path", ["stale"])
-    monkeypatch.setattr(os, "setsid", lambda: order.append("setsid"))
+    _patch_posix_child_session(monkeypatch, lambda: order.append("setsid"))
     monkeypatch.setattr("multiprocessing.parent_process", lambda: SimpleNamespace(sentinel=1, close=lambda: None))
 
     def from_env(app_path: str, app_dir: Path) -> object:
@@ -344,10 +355,16 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
     _worker_process_main(_spec(), stop, connection)  # type: ignore[arg-type]
 
     assert captured == {
-        "environment": {"SECRET_TOKEN": "credential", "LITESTAR_APP": "example:app"},
+        "environment": {
+            "SECRET_TOKEN": "credential",
+            "LITESTAR_APP": "example:app",
+            "LITESTAR_QUEUES_PROCESS_ROLE": "server-worker",
+        },
         "sys_path": ("/tmp/example",),
         "app_path": "example:app",
-        "app_dir": "/tmp/example",
+        # The child hands Litestar a Path, so the round-tripped string picks up
+        # the host separator; sys_path is passed through untouched.
+        "app_dir": str(Path("/tmp/example")),
     }
     assert stop.set_calls == 1
     assert connection.closed is True
@@ -419,7 +436,7 @@ def test_child_sanitizes_runner_stage_error(monkeypatch: MonkeyPatch) -> None:
         return _server_placement_plugin()
 
     monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
-    monkeypatch.setattr(os, "setsid", lambda: None)
+    _patch_posix_child_session(monkeypatch, lambda: None)
     monkeypatch.setattr("multiprocessing.parent_process", fake_parent)
     monkeypatch.setattr(LitestarEnv, "from_env", fake_environment)
     monkeypatch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore)
@@ -441,7 +458,7 @@ def test_missing_parent_process_is_sanitized_bootstrap_failure(monkeypatch: Monk
         return None
 
     monkeypatch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
-    monkeypatch.setattr(os, "setsid", lambda: None)
+    _patch_posix_child_session(monkeypatch, lambda: None)
     monkeypatch.setattr("multiprocessing.parent_process", no_parent)
     connection = _FakeConnection()
 
@@ -570,7 +587,7 @@ def test_watchdog_creation_failure_stops_child_and_closes_handles() -> None:
         supervisor.start()
 
     assert context.stop_event.is_set() is True
-    assert process.terminated is True
+    assert process.terminated is True or process.killed is True
     assert process.closed is True
     assert context.receive.closed is True
 
@@ -628,14 +645,79 @@ def test_join_timeout_terminates_then_kills(monkeypatch: MonkeyPatch) -> None:
     process = _FakeProcess()
     process.stop_after_terminate_join = False
     supervisor, _ = _supervisor(process=process, messages=[("ready", process.pid)])
-    monkeypatch.setattr("litestar_queues.worker.supervisor.os.name", "nt")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._os_name", lambda: "nt")
+    monkeypatch.setattr("litestar_queues.worker.supervisor._kill_windows_process_tree", lambda process: process.kill())
     supervisor.start()
 
     supervisor.close()
 
-    assert process.terminated is True
+    assert process.terminated is False
     assert process.killed is True
-    assert process.join_timeouts == [1.2, 5.0, 5.0]
+    assert process.join_timeouts == [1.2, 5.0]
+
+
+def test_windows_tree_cleanup_uses_bounded_taskkill() -> None:
+    process = _FakeProcess(pid=81)
+    calls: "list[tuple[list[str], bool, bool, float]]" = []
+
+    def run(command: list[str], *, check: bool, capture_output: bool, timeout: float) -> "Any":
+        calls.append((command, check, capture_output, timeout))
+        process.alive = False
+        return SimpleNamespace(returncode=0)
+
+    _kill_windows_process_tree(cast("Any", process), _which=lambda _name: "C:/Windows/taskkill.exe", _run=run)
+
+    assert calls == [(["C:/Windows/taskkill.exe", "/PID", "81", "/T", "/F"], False, True, 5.0)]
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "status"])
+def test_windows_tree_cleanup_failure_is_sanitized_and_never_claimed_clean(failure: str) -> None:
+    process = _FakeProcess(pid=82)
+
+    def run(command: list[str], **kwargs: "Any") -> "Any":
+        command_name = "taskkill"
+        del command, kwargs
+        if failure == "missing":
+            raise FileNotFoundError
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command_name, 5)
+        return SimpleNamespace(returncode=1)
+
+    with pytest.raises(_QueueProcessCleanupError, match="Windows process-tree cleanup failed"):
+        _kill_windows_process_tree(cast("Any", process), _which=lambda _name: None, _run=run)
+
+    assert process.killed is True
+
+
+def test_windows_force_stop_joins_after_tree_cleanup_failure(monkeypatch: MonkeyPatch) -> None:
+    process = _FakeProcess(pid=83)
+    message = "Windows process-tree cleanup failed"
+
+    def fail_tree_cleanup(process: object) -> None:
+        del process
+        raise _QueueProcessCleanupError(message)
+
+    monkeypatch.setattr("litestar_queues.worker.supervisor._kill_windows_process_tree", fail_tree_cleanup)
+
+    with pytest.raises(_QueueProcessCleanupError, match="Windows process-tree cleanup failed"):
+        _force_stop_process(cast("Any", process), _platform="nt")
+
+    assert process.join_timeouts == [5.0]
+
+
+def test_server_shutdown_request_is_portable(monkeypatch: MonkeyPatch) -> None:
+    signals: "list[tuple[str, int]]" = []
+    monkeypatch.setattr(
+        "litestar_queues.worker.supervisor.signal.raise_signal", lambda sig: signals.append(("raise", sig))
+    )
+    monkeypatch.setattr("litestar_queues.worker.supervisor.os.kill", lambda _pid, sig: signals.append(("kill", sig)))
+
+    monkeypatch.setattr("litestar_queues.worker.supervisor._sys_platform", lambda: "win32")
+    _request_server_shutdown()
+    monkeypatch.setattr("litestar_queues.worker.supervisor._sys_platform", lambda: "linux")
+    _request_server_shutdown()
+
+    assert signals == [("raise", signal.SIGINT), ("kill", signal.SIGTERM)]
 
 
 def test_posix_force_stop_uses_verified_group_term_then_stops_when_child_exits() -> None:
@@ -660,12 +742,12 @@ def test_posix_force_stop_uses_group_term_then_group_kill() -> None:
 
     def killpg(pgid: int, sig: int) -> None:
         signals.append((pgid, sig))
-        if sig == signal.SIGKILL:
+        if sig == _POSIX_SIGKILL:
             process.alive = False
 
     _force_stop_process(cast("Any", process), _platform="posix", _getpgid=lambda pid: pid, _killpg=killpg)
 
-    assert signals == [(74, signal.SIGTERM), (74, signal.SIGKILL)]
+    assert signals == [(74, signal.SIGTERM), (74, _POSIX_SIGKILL)]
     assert process.terminated is False
     assert process.killed is False
     assert process.join_timeouts == [5.0, 5.0]
@@ -771,6 +853,43 @@ def test_expected_exit_after_close_never_requests_shutdown() -> None:
     supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
 
     assert requests == []
+
+
+def test_a_console_control_exit_never_escalates_to_a_parent_shutdown(caplog: pytest.LogCaptureFixture) -> None:
+    """Ctrl+C and Ctrl+Break reach the whole console process group on Windows.
+
+    The child has no handler for it and dies with STATUS_CONTROL_C_EXIT, which is
+    an ordinary console shutdown rather than a crash. Escalating tore the server
+    down before it could unwind its lifespan, leaking the private ephemeral
+    database it was supposed to remove on the way out.
+    """
+    requests: list[str] = []
+    process = _FakeProcess(alive=False)
+    process.exitcode = _WINDOWS_CONTROL_C_EXIT
+    supervisor, _ = _supervisor(
+        process=process, messages=[("ready", process.pid)], request_shutdown=lambda: requests.append("shutdown")
+    )
+    supervisor.start()
+
+    supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
+
+    assert requests == []
+    assert "unexpectedly" not in caplog.text
+
+
+def test_a_crashed_child_still_escalates_to_a_parent_shutdown() -> None:
+    """Only the console-control exit is exempt; a real crash still takes the server down."""
+    requests: list[str] = []
+    process = _FakeProcess(alive=False)
+    process.exitcode = 8
+    supervisor, _ = _supervisor(
+        process=process, messages=[("ready", process.pid)], request_shutdown=lambda: requests.append("shutdown")
+    )
+    supervisor.start()
+
+    supervisor._watch_child()  # pyright: ignore[reportPrivateUsage]
+
+    assert requests == ["shutdown"]
 
 
 def test_parent_sentinel_bridge_requests_graceful_stop_once() -> None:
@@ -972,20 +1091,20 @@ def test_posix_group_cleanup_requires_child_owned_process_group() -> None:
 
     unverified = _verified_kill_process_group(
         cast("Any", process),
-        signal.SIGKILL,
+        _POSIX_SIGKILL,
         _getpgid=lambda pid: pid + 1,
         _killpg=lambda pgid, sig: killed.append((pgid, sig)),
     )
     verified = _verified_kill_process_group(
         cast("Any", process),
-        signal.SIGKILL,
+        _POSIX_SIGKILL,
         _getpgid=lambda pid: pid,
         _killpg=lambda pgid, sig: killed.append((pgid, sig)),
     )
 
     assert unverified is False
     assert verified is True
-    assert killed == [(73, signal.SIGKILL)]
+    assert killed == [(73, _POSIX_SIGKILL)]
 
 
 def test_logging_reset_stops_queue_listeners_and_leaves_one_direct_stderr_handler() -> None:
@@ -1055,7 +1174,7 @@ def test_child_validate_stage_rejects_a_non_server_application(config: QueueConf
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("litestar_queues.worker.supervisor._apply_launch_spec", ignore)
-        patch.setattr(os, "setsid", lambda: None)
+        _patch_posix_child_session(patch, lambda: None)
         patch.setattr("multiprocessing.parent_process", lambda: SimpleNamespace(sentinel=1))
         patch.setattr(LitestarEnv, "from_env", lambda *_: SimpleNamespace(app=object()))
         patch.setattr("litestar_queues.worker.supervisor._reset_child_logging", ignore)
@@ -1069,3 +1188,39 @@ def test_child_validate_stage_rejects_a_non_server_application(config: QueueConf
 
     assert started is False
     assert connection.sent == [("error", "validate", "QueueConfigurationError")]
+
+
+_SPARE_SIGNAL = signal.SIGBREAK if os.name == "nt" else signal.SIGUSR1  # type: ignore[attr-defined]
+
+
+def test_a_console_break_unwinds_the_server_instead_of_killing_it(monkeypatch: MonkeyPatch) -> None:
+    """Ctrl+Break has to leave the interpreter alive long enough to unwind.
+
+    Uvicorn re-raises the signal that stopped it once it has restored the handler
+    that was installed before it. Windows leaves SIGBREAK on the C default, which
+    terminates the process on the spot with exit code 3, so every context manager
+    wrapped around the server -- including the one that removes this invocation's
+    private database -- is skipped.
+    """
+    monkeypatch.setattr(invocation, "_sys_platform", lambda: "win32")
+    monkeypatch.setattr(signal, "SIGBREAK", _SPARE_SIGNAL, raising=False)
+    original = signal.getsignal(_SPARE_SIGNAL)
+
+    with invocation.console_break_unwinds():
+        installed = signal.getsignal(_SPARE_SIGNAL)
+        assert callable(installed)
+        with pytest.raises(KeyboardInterrupt):
+            installed(int(_SPARE_SIGNAL), None)
+
+    assert signal.getsignal(_SPARE_SIGNAL) is original
+
+
+def test_console_break_handling_is_left_alone_off_windows(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(invocation, "_sys_platform", lambda: "linux")
+    monkeypatch.setattr(signal, "SIGBREAK", _SPARE_SIGNAL, raising=False)
+    original = signal.getsignal(_SPARE_SIGNAL)
+
+    with invocation.console_break_unwinds():
+        assert signal.getsignal(_SPARE_SIGNAL) is original
+
+    assert signal.getsignal(_SPARE_SIGNAL) is original

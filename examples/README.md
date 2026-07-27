@@ -9,14 +9,14 @@ using files from the test suite.
 ### `htmx_realtime_websocket/`
 
 Litestar + HTMX + `litestar-vite` app for queue event streams over the
-plugin-owned WebSocket endpoints. It runs with the default memory queue backend
-and a memory Channels backend in one process.
+plugin-owned WebSocket endpoints. It explicitly uses the memory queue backend,
+ASGI placement, and a memory Channels backend in one process.
 
 ### `htmx_realtime_sse/`
 
 Litestar + HTMX + `litestar-vite` app for queue event streams over the
-plugin-owned SSE endpoints. It runs with the default memory queue backend and a
-memory Channels backend in one process.
+plugin-owned SSE endpoints. It explicitly uses the memory queue backend, ASGI
+placement, and a memory Channels backend in one process.
 
 ## Backend Copies
 
@@ -39,10 +39,10 @@ notifications can wake a worker, but they do not share the browser stream. To
 run the worker in another process, configure a shared Channels backend
 explicitly. Selecting a Redis or Valkey queue backend is not enough.
 
-All demos use the `QueueConfig` default and run the worker in the web process.
-The Redis and Valkey copies accept
-`LITESTAR_QUEUES_EXAMPLE_IN_APP_WORKER=0` only with their documented shared
-web-and-worker setup.
+All demos select ASGI placement so the worker shares their process-local live
+event transport. Set `LITESTAR_QUEUES_EXAMPLE_PLACEMENT` to `server`, `asgi`,
+or `external` only with a queue and Channels backend appropriate for that
+process topology.
 
 Start with the README in the directory you want to run. Every example uses the
 `examples` dev dependency group (`uv sync --group examples --group dev`) and

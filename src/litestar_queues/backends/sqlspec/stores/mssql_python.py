@@ -1,6 +1,6 @@
 """mssql-python SQLSpec queue store."""
 
-from litestar_queues.backends.sqlspec.stores._families import MssqlQueueStore
+from litestar_queues.backends.sqlspec.stores._dialects import MssqlQueueStore
 
 __all__ = ("MssqlPythonQueueStore",)
 

@@ -6,6 +6,41 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+Unreleased
+==========
+
+**Breaking changes:**
+
+* ``stream_queue_events_hardened``, ``stream_queue_events_sse``, and
+  ``build_stream_router`` are now private, with no aliases. They were rendered
+  into the API reference but were never re-exported, documented, or shown in an
+  example, and the plugin is their only caller. Configure streaming through
+  :class:`EventStreamConfig`, which owns the path, transports, guards, channel
+  authorizer, scopes, heartbeat interval, and replay limit. ``StreamMetrics``
+  stays public, since it describes the stream observability surface.
+* Ephemeral storage is no longer restricted by worker placement. Configuring
+  ``queue_backend="ephemeral"`` with ``placement="asgi"`` or
+  ``placement="external"``, or with ``execution_backend="immediate"``, was
+  rejected at startup; the backend already refuses to open when no private
+  database has been prepared, so an embedder that creates one itself may now use
+  any placement. Process-local ``"memory"`` storage is still rejected under
+  ``placement="server"``.
+
+**Fixed:**
+
+* Worker fleet coordination is now actually fenced. ``acquire_worker_lock``
+  returned true unconditionally, so stale recovery, expiry sweeps, and external
+  reconciliation ran on every worker at once instead of one at a time.
+* External reconciliation checks its interval before taking the fleet lock. It
+  previously wrote a coordination record on every worker loop iteration and
+  discarded it at the interval check.
+* Applications no longer import every installed queue adapter at startup. The
+  Litestar signature namespace carried the whole public API, which defeated the
+  package's lazy imports and charged applications for extras they never selected.
+* Queue backends that fail to implement a required method now raise instead of
+  silently succeeding. Two of those defaults returned an unpersisted record, so a
+  gap dropped execution references rather than reporting itself.
+
 0.6.0 - 2026-07-25
 ==================
 
@@ -54,6 +89,9 @@ configure.
 * ``litestar queues run`` now runs alongside whatever the application already
   starts, so adding worker processes does not require changing application
   configuration. It refuses only storage it genuinely cannot reach.
+* The default synchronous-task thread-pool size now follows the process-usable
+  CPU count plus four, capped at 32. Linux cgroup quotas and CPU affinity
+  constrain the default; an explicit ``sync_thread_pool_size`` remains exact.
 * Selecting one queue backend no longer imports another backend's package, so an
   application with only ``asyncpg`` installed starts cleanly.
 * Worker modules are grouped into one ``litestar_queues.worker`` package split by
@@ -130,7 +168,7 @@ deprecations, or compatibility shims for the replaced pre-release surface.
 **Fixed:**
 
 * Preserved standalone Redis and Valkey example worker settings while allowing the
-  CI topology runner to disable in-app workers.
+  CI topology runner to select external placement.
 * Trusted the self-signed SQL Server certificate in the ``mssql-python`` test
   adapter, and handled wrapped Advanced Alchemy integrity errors during concurrent
   task reservation.

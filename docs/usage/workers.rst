@@ -30,7 +30,10 @@ fails immediately rather than serving traffic against a queue nothing drains.
 
 The default database is deliberately ephemeral. It is created when the server
 starts and removed when it stops, so queued work does not survive a restart.
-Choose a backend from :doc:`backends` as soon as you need it to.
+It has no listener or configurable path, cannot be attached by standalone CLI
+commands, and is unsupported on network storage. A hard parent crash may leave
+one random private directory that no later invocation reuses. Choose a backend
+from :doc:`backends` as soon as you need durability.
 
 One worker per ASGI process
 ===========================
@@ -132,9 +135,14 @@ Shutdown
 ========
 
 The first termination signal stops new claims and gives running tasks time to
-finish. A second signal cancels them. The CLI returns ``0`` for a clean
-shutdown, ``1`` for a worker error, and ``2`` when the graceful timeout ends
-and cancellation begins.
+finish. A second signal cancels them. Server placement must become ready within
+``startup_timeout``. Shutdown then allows ``graceful_shutdown_timeout``, uses
+``final_cancel_timeout`` for cancellation, and finally escalates to bounded
+process-tree termination if the child cannot exit. The standalone CLI returns
+``0`` for a clean shutdown, ``1`` for a worker error, and ``2`` when the
+graceful timeout ends and cancellation begins. Windows uses console Ctrl+C or
+Ctrl+Break semantics. Focused topology smoke tests run on macOS and Windows in
+native CI jobs.
 
 See :doc:`worker-wakeups` for idle waiting and :doc:`worker-recovery` for
 heartbeats and stale work.

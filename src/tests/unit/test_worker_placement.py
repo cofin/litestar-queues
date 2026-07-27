@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,13 +52,15 @@ def test_worker_placement_is_publicly_exported() -> "None":
 
     assert litestar_queues.WorkerPlacement is WorkerPlacement
     assert "WorkerPlacement" in litestar_queues.__all__
-    assert "WorkerPlacement" in QueueConfig().signature_namespace
 
 
 # --------------------------------------------------------------------------- matrix
 
 _VALID = [
     ("ephemeral", "local", "server"),
+    ("ephemeral", "local", "asgi"),
+    ("ephemeral", "local", "external"),
+    ("ephemeral", "immediate", "external"),
     ("memory", "local", "asgi"),
     ("memory", "immediate", "external"),
     ("memory", "local", "external"),
@@ -67,9 +70,8 @@ _VALID = [
 ]
 
 _INVALID = [
-    ("ephemeral", "local", "asgi"),
-    ("ephemeral", "local", "external"),
     ("ephemeral", "immediate", "server"),
+    ("ephemeral", "immediate", "asgi"),
     ("memory", "local", "server"),
     ("memory", "immediate", "server"),
     ("memory", "immediate", "asgi"),
@@ -94,6 +96,23 @@ def test_invalid_placement_combinations(backend: "str", execution: "str", placem
 def test_unknown_placement_is_rejected() -> "None":
     with pytest.raises(QueueConfigurationError):
         WorkerConfig(placement="inline")  # type: ignore[arg-type]
+
+
+async def test_ephemeral_backend_refuses_to_open_without_a_prepared_database() -> "None":
+    """Placement does not decide whether an ephemeral database exists.
+
+    The database is created by whatever entered
+    :class:`EphemeralServerContext`, so the backend's own open path is what
+    enforces its presence. Rejecting a placement at configuration time
+    restated that check as a proxy and blocked embedders that create the
+    database themselves.
+    """
+    from litestar_queues.backends.ephemeral import EphemeralQueueBackend
+
+    config = QueueConfig(queue_backend="ephemeral", worker=WorkerConfig(placement="external"))
+
+    with pytest.raises(QueueConfigurationError, match="Litestar CLI server lifespan"):
+        await EphemeralQueueBackend(config).open()
 
 
 def test_validation_uses_backend_names_not_backend_instances() -> "None":
@@ -359,6 +378,32 @@ def test_non_server_placements_own_no_supervisor(fake_supervisor: "type[_FakeSup
         pass
 
     assert fake_supervisor.events == []
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+def test_server_placement_routes_a_console_break_through_the_interpreter(
+    fake_supervisor: "type[_FakeSupervisor]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """The storage teardown only runs if Ctrl+Break leaves the interpreter unwinding.
+
+    Uvicorn re-raises the signal that stopped it, and the Windows default for a
+    console break terminates the process without unwinding, taking the private
+    database removal with it.
+    """
+    from litestar_queues.worker import invocation
+
+    spare = signal.SIGBREAK if os.name == "nt" else signal.SIGUSR1  # type: ignore[attr-defined]
+    monkeypatch.setattr(invocation, "_sys_platform", lambda: "win32")
+    monkeypatch.setattr(signal, "SIGBREAK", spare, raising=False)
+    original = signal.getsignal(spare)
+    plugin = QueuePlugin(QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="server")))
+    app = Litestar(plugins=[plugin], route_handlers=[])
+
+    with plugin.server_lifespan(app):
+        installed = signal.getsignal(spare)
+
+    assert installed is invocation._raise_keyboard_interrupt
+    assert signal.getsignal(spare) is original
 
 
 @pytest.mark.usefixtures("clean_proof_environment")

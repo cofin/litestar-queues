@@ -32,6 +32,12 @@ before reading a later state. Persistent backends return a new record object
 instead of changing the original object in place. Call ``refresh()`` so the
 same code works with every backend.
 
+Lifecycle events are notifications, not replacement result objects. The queue
+stores a completed result before it publishes ``task.completed`` (and stores a
+terminal error before the corresponding final failure event), but an existing
+``TaskResult`` remains a cache. Refresh it after receiving a terminal event
+before reading ``status``, ``result``, or ``error``.
+
 Result ownership
 ================
 
