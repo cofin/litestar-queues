@@ -544,3 +544,49 @@ async def test_a_cancelled_consumer_reports_no_outcome_at_all() -> "None":
     assert stored is not None
     assert stored.status == "running"
     assert stored.heartbeat_at is None
+
+
+async def test_two_consumers_racing_one_record_run_the_task_once() -> "None":
+    """At-least-once delivery is the transport's contract; running once is the queue's.
+
+    Two consumer processes genuinely can hold the same delivery -- a response
+    the transport never saw is re-sent while the first attempt is still
+    running. Only one may execute the body and reach a terminal state; the
+    other has to find out it lost and say so without touching the record.
+    """
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    executions: "list[int]" = []
+
+    @task("tasks.consumer_race")
+    async def consumer_race() -> "None":
+        executions.append(1)
+        started.set()
+        await release.wait()
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(consumer_race.using(execution_backend="cloudrun"))
+        winner = asyncio.create_task(consume_one(service, result.id))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        # The second delivery arrives while the first is mid-flight.
+        loser_code = await consume_one(service, result.id)
+        release.set()
+        winner_code = await asyncio.wait_for(winner, timeout=2)
+        stored = await queue_backend.get_task(result.id)
+
+    assert executions == [1]
+    assert winner_code == TaskExitCode.SUCCESS
+    assert loser_code == TaskExitCode.CLAIM_LOST
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.retry_count == 0
+    # The winner's cleanup ran even though a second consumer was interleaved
+    # with it, so stale recovery has nothing to reconsider.
+    assert stored.heartbeat_at is None
