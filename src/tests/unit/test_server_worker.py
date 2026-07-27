@@ -19,6 +19,7 @@ from pytest import MonkeyPatch
 
 from litestar_queues import QueueConfig, WorkerConfig
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.worker import invocation
 from litestar_queues.worker.runtime import _WorkerStage, _WorkerStageError
 from litestar_queues.worker.supervisor import (
     _POSIX_SIGKILL,
@@ -1187,3 +1188,39 @@ def test_child_validate_stage_rejects_a_non_server_application(config: QueueConf
 
     assert started is False
     assert connection.sent == [("error", "validate", "QueueConfigurationError")]
+
+
+_SPARE_SIGNAL = signal.SIGBREAK if os.name == "nt" else signal.SIGUSR1  # type: ignore[attr-defined]
+
+
+def test_a_console_break_unwinds_the_server_instead_of_killing_it(monkeypatch: MonkeyPatch) -> None:
+    """Ctrl+Break has to leave the interpreter alive long enough to unwind.
+
+    Uvicorn re-raises the signal that stopped it once it has restored the handler
+    that was installed before it. Windows leaves SIGBREAK on the C default, which
+    terminates the process on the spot with exit code 3, so every context manager
+    wrapped around the server -- including the one that removes this invocation's
+    private database -- is skipped.
+    """
+    monkeypatch.setattr(invocation, "_sys_platform", lambda: "win32")
+    monkeypatch.setattr(signal, "SIGBREAK", _SPARE_SIGNAL, raising=False)
+    original = signal.getsignal(_SPARE_SIGNAL)
+
+    with invocation.console_break_unwinds():
+        installed = signal.getsignal(_SPARE_SIGNAL)
+        assert callable(installed)
+        with pytest.raises(KeyboardInterrupt):
+            installed(int(_SPARE_SIGNAL), None)
+
+    assert signal.getsignal(_SPARE_SIGNAL) is original
+
+
+def test_console_break_handling_is_left_alone_off_windows(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(invocation, "_sys_platform", lambda: "linux")
+    monkeypatch.setattr(signal, "SIGBREAK", _SPARE_SIGNAL, raising=False)
+    original = signal.getsignal(_SPARE_SIGNAL)
+
+    with invocation.console_break_unwinds():
+        assert signal.getsignal(_SPARE_SIGNAL) is original
+
+    assert signal.getsignal(_SPARE_SIGNAL) is original

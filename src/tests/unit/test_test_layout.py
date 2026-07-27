@@ -25,3 +25,19 @@ def test_shared_test_helpers_use_the_single_helpers_tree() -> None:
     assert (TESTS / "helpers" / "_timing.py").is_file()
     assert (TESTS / "helpers" / "queue_tasks.py").is_file()
     assert (TESTS / "helpers" / "support" / "server_worker_app.py").is_file()
+
+
+def test_the_standard_test_job_leaves_the_browser_suites_to_their_own_workflow() -> None:
+    """The end-to-end suites need an installer the standard test job never runs.
+
+    They live under ``src/tests/integration`` now, which that job sweeps wholesale.
+    Collecting them there starts example servers against an environment with no
+    Chromium and no frontend assets, and those servers run ``uv`` against the very
+    virtualenv the session is importing from.
+    """
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+
+    commands = [line.strip() for line in workflow.splitlines() if "uv run pytest" in line]
+
+    assert commands
+    assert all('-m "not e2e"' in command for command in commands)

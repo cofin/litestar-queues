@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import secrets
+import signal
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -31,8 +33,16 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from types import FrameType
 
-__all__ = ("MARKER_ENV_VAR", "MARKER_VERSION", "NONCE_ENV_VAR", "server_context", "server_context_active")
+__all__ = (
+    "MARKER_ENV_VAR",
+    "MARKER_VERSION",
+    "NONCE_ENV_VAR",
+    "console_break_unwinds",
+    "server_context",
+    "server_context_active",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +92,49 @@ def _remove(directory: "Path", marker: "Path") -> "None":
             time.sleep(_CLEANUP_RETRY)
             continue
         return
+
+
+def _sys_platform() -> "str":
+    return sys.platform
+
+
+def _raise_keyboard_interrupt(signum: "int", frame: "FrameType | None") -> "None":
+    """Handle a console break the way Python already handles a console interrupt.
+
+    Raises:
+        KeyboardInterrupt: Always.
+    """
+    del signum, frame
+    raise KeyboardInterrupt
+
+
+@contextmanager
+def console_break_unwinds() -> "Generator[None]":
+    """Let Ctrl+Break unwind the server process instead of killing it outright.
+
+    Uvicorn re-raises whichever signal shut it down once it has restored the
+    handler that was installed before it, so the console gets the exit status it
+    expects. Python installs a handler for ``SIGINT`` but leaves ``SIGBREAK`` on
+    the C default, and that default terminates the process on the spot with exit
+    code 3. Everything wrapped around the server is then skipped, including the
+    context that removes this invocation's private database.
+
+    Giving ``SIGBREAK`` the same handler ``SIGINT`` already has turns Uvicorn's
+    re-raise back into an ordinary unwind. Ctrl+C is unaffected: it arrives as
+    ``SIGINT``, which was never the broken case.
+
+    Yields:
+        None: with Ctrl+Break routed through the interpreter.
+    """
+    console_break = getattr(signal, "SIGBREAK", None)
+    if _sys_platform() != "win32" or console_break is None:
+        yield
+        return
+    previous = signal.signal(console_break, _raise_keyboard_interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(console_break, previous)
 
 
 @contextmanager

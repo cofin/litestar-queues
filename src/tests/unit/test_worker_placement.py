@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -377,6 +378,32 @@ def test_non_server_placements_own_no_supervisor(fake_supervisor: "type[_FakeSup
         pass
 
     assert fake_supervisor.events == []
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
+def test_server_placement_routes_a_console_break_through_the_interpreter(
+    fake_supervisor: "type[_FakeSupervisor]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """The storage teardown only runs if Ctrl+Break leaves the interpreter unwinding.
+
+    Uvicorn re-raises the signal that stopped it, and the Windows default for a
+    console break terminates the process without unwinding, taking the private
+    database removal with it.
+    """
+    from litestar_queues.worker import invocation
+
+    spare = signal.SIGBREAK if os.name == "nt" else signal.SIGUSR1  # type: ignore[attr-defined]
+    monkeypatch.setattr(invocation, "_sys_platform", lambda: "win32")
+    monkeypatch.setattr(signal, "SIGBREAK", spare, raising=False)
+    original = signal.getsignal(spare)
+    plugin = QueuePlugin(QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="server")))
+    app = Litestar(plugins=[plugin], route_handlers=[])
+
+    with plugin.server_lifespan(app):
+        installed = signal.getsignal(spare)
+
+    assert installed is invocation._raise_keyboard_interrupt
+    assert signal.getsignal(spare) is original
 
 
 @pytest.mark.usefixtures("clean_proof_environment")
