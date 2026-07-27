@@ -68,11 +68,15 @@ class ServerProcess:
         self.workers = workers
         self.process: "subprocess.Popen[bytes] | None" = None
         self.forced_shutdown = False
+        self.returncode: "int | None" = None
         self._output: "Any" = None
         self._descendants: "dict[int, psutil.Process]" = {}
 
     def log_tail(self, limit: int = 2048) -> "str":
-        return self.output_path.read_text(encoding="utf-8", errors="replace")[-limit:]
+        tail = self.output_path.read_text(encoding="utf-8", errors="replace")[-limit:]
+        # 0xC000013A is STATUS_CONTROL_C_EXIT: the console handler tore the
+        # process down instead of letting it unwind, so no teardown ran.
+        return f"exit code {self.returncode} (forced={self.forced_shutdown})\n{tail}"
 
     @property
     def base_url(self) -> "str":
@@ -187,6 +191,7 @@ class ServerProcess:
                     self.forced_shutdown = True
                     process.kill()
                     process.wait(timeout=5)
+            self.returncode = process.poll()
             self._reap_descendants(assert_clean=assert_clean)
             with pytest.raises(psutil.NoSuchProcess):
                 psutil.Process(process.pid)

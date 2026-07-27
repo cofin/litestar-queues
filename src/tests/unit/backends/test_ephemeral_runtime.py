@@ -275,9 +275,7 @@ def test_a_sharing_violation_on_the_database_is_retried_and_bounded(
     path.parent.rmdir()
 
 
-def test_one_stuck_file_does_not_consume_the_retry_budget_of_the_others(
-    monkeypatch: "pytest.MonkeyPatch",
-) -> "None":
+def test_one_stuck_file_does_not_consume_the_retry_budget_of_the_others(monkeypatch: "pytest.MonkeyPatch") -> "None":
     """Each target gets its own deadline.
 
     A single shared budget let the database exhaust it, so the write-ahead log and
