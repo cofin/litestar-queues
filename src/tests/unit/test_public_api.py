@@ -160,6 +160,26 @@ def test_public_exports() -> "None":
     assert callable(task)
 
 
+def test_cloud_tasks_execution_surface_is_publicly_exported() -> "None":
+    """Choosing Cloud Tasks is application setup code, so the typed config is a root export.
+
+    The backend itself stays lazy: naming it here must not import
+    ``google-cloud-tasks``, which is an extra.
+    """
+    import litestar_queues
+    from litestar_queues import (
+        CloudTasksExecutionBackend,
+        CloudTasksExecutionConfig,
+        get_execution_backend_class,
+        list_execution_backends,
+    )
+
+    assert {"CloudTasksExecutionBackend", "CloudTasksExecutionConfig"}.issubset(set(litestar_queues.__all__))
+    assert CloudTasksExecutionConfig.backend_name == "cloudtasks"
+    assert get_execution_backend_class("cloudtasks") is CloudTasksExecutionBackend
+    assert "cloudtasks" in list_execution_backends()
+
+
 def test_enqueue_many_uses_task_request_vocabulary() -> "None":
     """Bulk enqueue parameters describe submitted task requests."""
     from litestar_queues.backends import BaseQueueBackend
