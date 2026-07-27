@@ -29,7 +29,7 @@ from litestar.testing import AsyncTestClient
 from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig, task
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Iterator
 
     from litestar.connection import ASGIConnection
     from litestar.handlers.base import BaseRouteHandler
@@ -148,8 +148,41 @@ class Delivery:
 
 
 @pytest.fixture
+def shared_store() -> "Iterator[str]":
+    """Register a backend name whose every construction is the same store.
+
+    Cloud Run runs several consumer instances against one database, and each of
+    them builds its own backend object. Returning one instance is how a
+    single-process test can tell "two applications, one queue" apart from "two
+    applications, two queues".
+
+    Yields:
+        The registered queue backend name.
+    """
+    from litestar_queues.backends.factory import _queue_backend_registry
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+
+    class _SharedStandIn(InMemoryQueueBackend):
+        """The store itself. Unslotted so a test can patch a method onto it."""
+
+    store = _SharedStandIn()
+
+    class _OneStore(_SharedStandIn):
+        """Hands back the one store. Never initialized: it is not an instance of itself."""
+
+        def __new__(cls, *args: "Any", **kwargs: "Any") -> "_SharedStandIn":  # type: ignore[misc]
+            del args, kwargs
+            return store
+
+    name = "selftest-one-store"
+    _queue_backend_registry[name] = _OneStore
+    yield name
+    _queue_backend_registry.pop(name, None)
+
+
+@pytest.fixture
 async def delivery(
-    shared_storage: "str",
+    shared_store: "str",
     cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]",
     monkeypatch: "pytest.MonkeyPatch",
 ) -> "AsyncIterator[Callable[..., Any]]":
@@ -172,6 +205,7 @@ async def delivery(
         execution_backend: "Any" = None,
         app_guards: "tuple[Any, ...]" = (),
         queue_backend: "str | None" = None,
+        initialize_schedules: "bool" = True,
         **overrides: "Any",
     ) -> "Delivery":
         tasks = FakeCloudTasksClient()
@@ -183,9 +217,10 @@ async def delivery(
         execution = cloud_tasks_config(**overrides) if execution_backend is None else execution_backend
         plugin = QueuePlugin(
             QueueConfig(
-                queue_backend=queue_backend or shared_storage,
+                queue_backend=queue_backend or shared_store,
                 execution_backend=execution,
                 worker=WorkerConfig(placement="external"),
+                initialize_schedules=initialize_schedules,
             )
         )
         app = Litestar(plugins=[plugin], guards=list(app_guards))
@@ -515,3 +550,114 @@ async def test_a_retryable_response_carries_no_diagnostic_text(
     assert b"hunter2" not in response.content
     assert b"10.0.0.4" not in response.content
     assert response.content in {b"", b"null"}
+
+
+# --------------------------------------------------------------------------- lifecycle
+
+
+async def test_a_consumer_application_starts_no_worker(delivery: "Callable[..., Any]") -> "None":
+    """The whole point of this topology is that nothing polls.
+
+    A worker here would poll the queue from inside the web container, which is
+    the always-on cost the managed transport exists to remove -- and it would
+    race Cloud Tasks for every record.
+    """
+    from litestar_queues.config import _WORKER_STATE_KEY
+
+    live = await delivery()
+
+    assert _WORKER_STATE_KEY not in live.http.app.state
+    assert live.plugin._worker is None
+    assert live.plugin._worker_task is None
+
+
+async def test_recurring_schedules_are_created_without_a_worker(delivery: "Callable[..., Any]") -> "None":
+    """Schedules normally belong to the worker, and there is no worker to give them to.
+
+    Somebody still has to write the first occurrence and hand it to the
+    transport, and on this topology the web process is the only candidate.
+    """
+    every_minute = "cloudtasks.route_every_minute"
+
+    @task(every_minute, interval=60)
+    async def recurring() -> "None":
+        executions.append(every_minute)
+
+    live = await delivery()
+    scheduled = await live.service.get_queue_backend().get_task_by_key(f"scheduled:{every_minute}")
+
+    assert scheduled is not None
+    assert scheduled.task_name == every_minute
+    # Written and delivered: a schedule record nobody handed to Google is a
+    # record that never runs.
+    assert scheduled.execution_ref is not None
+    assert [call.name for call in live.tasks.create_calls] == [scheduled.execution_ref]
+
+
+async def test_an_application_that_opts_out_writes_no_schedule(delivery: "Callable[..., Any]") -> "None":
+    every_minute = "cloudtasks.route_opted_out"
+
+    @task(every_minute, interval=60)
+    async def recurring() -> "None":
+        executions.append(every_minute)
+
+    live = await delivery(initialize_schedules=False)
+    scheduled = await live.service.get_queue_backend().get_task_by_key(f"scheduled:{every_minute}")
+
+    assert scheduled is None
+    assert live.tasks.create_calls == []
+
+
+async def test_two_consumer_instances_share_one_authoritative_occurrence(delivery: "Callable[..., Any]") -> "None":
+    """Cloud Run runs several instances, and they all start against one database.
+
+    Each writes the schedule at startup, so without deduplication on the
+    schedule key every instance would create its own occurrence and the task
+    would run once per instance.
+    """
+    every_minute = "cloudtasks.route_two_instances"
+
+    @task(every_minute, interval=60)
+    async def recurring() -> "None":
+        executions.append(every_minute)
+
+    first = await delivery()
+    second = await delivery()
+
+    scheduled = await second.service.get_queue_backend().get_task_by_key(f"scheduled:{every_minute}")
+    assert scheduled is not None
+    # The second instance found the first instance's record and left it alone.
+    assert len(first.tasks.create_calls) == 1
+    assert second.tasks.create_calls == []
+    assert (await first.service.get_task(scheduled.id)) is not None
+
+
+async def test_the_delivery_client_is_released_when_the_application_stops(
+    shared_store: "str",
+    cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    """The producer client is opened once per application and closed with it."""
+    from litestar_queues.execution.cloudtasks import backend as cloud_tasks_backend
+    from tests.unit.execution.cloudtasks._fakes import FakeCloudTasksClient
+
+    tasks = FakeCloudTasksClient()
+    monkeypatch.setattr(
+        cloud_tasks_backend, "import_module", lambda _module_path: SimpleNamespace(CloudTasksAsyncClient=lambda: tasks)
+    )
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend=shared_store,
+            execution_backend=cloud_tasks_config(),
+            worker=WorkerConfig(placement="external"),
+        )
+    )
+
+    async with AsyncTestClient(app=Litestar(plugins=[plugin])) as http:
+        await plugin.get_service().enqueue(succeeds)
+        assert (
+            await http.post("/_litestar-queues/cloud-tasks", json={"version": 1, "task_id": str(uuid4())})
+        ).status_code == HTTP_NO_CONTENT
+        assert tasks.close_calls == 0
+
+    assert tasks.close_calls == 1

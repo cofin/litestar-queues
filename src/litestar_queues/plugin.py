@@ -389,12 +389,17 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         if self._config.events is not None and effective_channels is not None:
             app.state[_EVENT_CHANNELS_STATE_KEY] = effective_channels
 
-        # Schedules belong to whichever process owns a worker. Server and
-        # external placements initialize them from that owner instead, so an
-        # enqueue-only ASGI process never writes schedule records.
+        # Schedules belong to whichever process owns a worker, so an enqueue-only
+        # ASGI process never writes schedule records: server and external
+        # placements initialize them from that owner instead. A transport that
+        # schedules its own deliveries has no such owner anywhere, so this
+        # process writes the first occurrence and hands it over -- and still
+        # starts no worker. Instances racing each other are settled by the
+        # schedule key: the first record written is the one they all keep.
+        owns_schedules = placement == "asgi" or self._service.get_execution_backend().schedules_on_enqueue
+        if owns_schedules and self._config.initialize_schedules:
+            await self._service.initialize_schedules()
         if placement == "asgi":
-            if self._config.initialize_schedules:
-                await self._service.initialize_schedules()
             self._worker = Worker(self._service, self._config.worker)
             self._worker_task = asyncio.create_task(self._worker.start())
             self._worker_task.add_done_callback(self._log_worker_task_result)
