@@ -1,8 +1,16 @@
 """Registration, export surface, and the optional-dependency import boundary.
 
-``google-cloud-tasks`` is an extra. Selecting, validating, or even importing the
-Cloud Tasks surface must therefore work on an installation that never asked for
-it -- the same lazy boundary the Cloud Run backend already holds.
+``google-cloud-tasks`` is an extra, which makes two separate promises:
+
+* when it is installed, nothing imports it until a client is actually built, and
+* when it is absent, importing, selecting, configuring, and validating the
+  backend all still work.
+
+The development environment syncs ``--all-extras``, so the package is present
+here and the first promise is what the ``sys.modules`` assertions test. The
+second is only observable with the module unavailable, so
+:func:`_run_without_cloud_tasks` blocks it in a fresh interpreter rather than
+relying on it happening not to be installed.
 """
 
 import subprocess
@@ -25,6 +33,32 @@ def _run(code: "str") -> "None":
     """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False, timeout=_TIMEOUT)
     assert result.returncode == 0, result.stderr.decode()
+
+
+_BLOCK_CLOUD_TASKS = """
+import sys
+
+
+class _Blocked:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "google.cloud.tasks_v2" or fullname.startswith("google.cloud.tasks_v2."):
+            msg = "simulated missing extra"
+            raise ImportError(msg)
+        return None
+
+
+sys.meta_path.insert(0, _Blocked())
+assert "google.cloud.tasks_v2" not in sys.modules
+"""
+
+
+def _run_without_cloud_tasks(code: "str") -> "None":
+    """Execute an assertion in an interpreter where the extra cannot be imported.
+
+    Simulated rather than assumed: the development environment installs every
+    extra, so an installation without this one is not otherwise reachable here.
+    """
+    _run(_BLOCK_CLOUD_TASKS + code)
 
 
 # --------------------------------------------------------------------------- packaging
@@ -105,4 +139,52 @@ def test_the_cloud_tasks_surface_does_not_pull_in_click() -> "None":
         "import sys\n"
         "import litestar_queues.execution.cloudtasks\n"
         "assert 'click' not in sys.modules, sorted(m for m in sys.modules if 'click' in m)\n"
+    )
+
+
+# --------------------------------------------------------------------------- extra absent
+
+
+def test_the_backend_is_importable_and_configurable_without_the_extra() -> "None":
+    """An application that never asked for Cloud Tasks still has to import cleanly."""
+    _run_without_cloud_tasks(
+        "from litestar_queues.execution import get_execution_backend_class\n"
+        "from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig\n"
+        "assert get_execution_backend_class('cloudtasks') is CloudTasksExecutionBackend\n"
+        "config = CloudTasksExecutionConfig(\n"
+        "    project_id='example-project',\n"
+        "    location='us-central1',\n"
+        "    queue_id='queue-consumer',\n"
+        "    service_url='https://consumer.example.run.app',\n"
+        "    service_account_email='queues@example-project.iam.gserviceaccount.com',\n"
+        "    trust_platform_auth=True,\n"
+        ")\n"
+        "assert config.target_url == 'https://consumer.example.run.app/_litestar-queues/cloud-tasks'\n"
+        "assert CloudTasksExecutionBackend(execution_config=config).is_external is True\n"
+    )
+
+
+def test_building_a_client_without_the_extra_names_the_install_target() -> "None":
+    """The only operation that needs the package says which extra to install."""
+    _run_without_cloud_tasks(
+        "import asyncio\n"
+        "from litestar_queues.exceptions import MissingDependencyError\n"
+        "from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig\n"
+        "backend = CloudTasksExecutionBackend(\n"
+        "    execution_config=CloudTasksExecutionConfig(\n"
+        "        project_id='example-project',\n"
+        "        location='us-central1',\n"
+        "        queue_id='queue-consumer',\n"
+        "        service_url='https://consumer.example.run.app',\n"
+        "        service_account_email='queues@example-project.iam.gserviceaccount.com',\n"
+        "        trust_platform_auth=True,\n"
+        "    )\n"
+        ")\n"
+        "try:\n"
+        "    asyncio.run(backend._get_client())\n"
+        "except MissingDependencyError as exc:\n"
+        "    assert 'cloud-tasks' in str(exc), str(exc)\n"
+        "    assert 'google-cloud-tasks' in str(exc), str(exc)\n"
+        "else:\n"
+        "    raise AssertionError('expected MissingDependencyError')\n"
     )
