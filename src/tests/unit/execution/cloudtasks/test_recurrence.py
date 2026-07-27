@@ -35,6 +35,7 @@ pytestmark = pytest.mark.anyio
 
 BEYOND_HORIZON = timedelta(days=40)
 REJECTED_PHASE = "cloudtasks.schedule_rejected"
+DEFAULT_TASK_TIMEOUT = 1740.0
 
 
 class Harness:
@@ -191,6 +192,43 @@ async def test_a_first_occurrence_beyond_the_horizon_is_refused_before_anything_
     assert (await live.service.get_queue_backend().get_statistics()).total == 0
 
 
+async def test_an_occurrence_carries_the_delivery_budget_it_will_be_run_under(harness: "Callable[..., Any]") -> "None":
+    """A recurrence never passes through ``enqueue``, so nothing else would give it one.
+
+    Without a budget the consumer runs the task unbounded, and it can still be
+    working when the deadline the transport is holding open for it expires --
+    at which point Cloud Tasks redelivers work that is already in flight.
+    """
+
+    @task("cloudtasks.recurrence.budget", interval=60)
+    async def probe() -> "None":
+        return None
+
+    live = await harness()
+
+    records = await live.service.initialize_schedules()
+
+    assert records[0].metadata["timeout"] == DEFAULT_TASK_TIMEOUT
+
+
+async def test_a_recurring_task_that_cannot_fit_the_budget_is_refused_at_startup(
+    harness: "Callable[..., Any]",
+) -> "None":
+    """Startup is the operator's feedback loop; a task this slow can never finish in time."""
+
+    @task("cloudtasks.recurrence.too_slow", interval=60, timeout=DEFAULT_TASK_TIMEOUT * 2)
+    async def probe() -> "None":
+        return None
+
+    live = await harness()
+
+    with pytest.raises(QueueConfigurationError):
+        await live.service.initialize_schedules()
+
+    assert live.client.create_calls == []
+    assert (await live.service.get_queue_backend().get_statistics()).total == 0
+
+
 # --------------------------------------------------------------------------- recurrence
 
 
@@ -215,6 +253,31 @@ async def test_completing_an_occurrence_delivers_the_next_one(harness: "Callable
     assert following is not None
     assert following.id != first.id
     assert live.deliveries_for(following) != []
+
+
+async def test_the_next_occurrence_inherits_the_delivery_budget(harness: "Callable[..., Any]") -> "None":
+    """Occurrences copy metadata forward, so settling the first one settles the chain."""
+
+    @task("cloudtasks.recurrence.inherited", interval=60)
+    async def probe() -> "None":
+        return None
+
+    live = await harness()
+    first = await live.service.get_queue_backend().enqueue(
+        "cloudtasks.recurrence.inherited",
+        key="scheduled:cloudtasks.recurrence.inherited",
+        execution_backend="cloudtasks",
+        metadata={
+            "schedule": get_scheduled_tasks()["cloudtasks.recurrence.inherited"].as_metadata(),
+            "timeout": DEFAULT_TASK_TIMEOUT,
+        },
+    )
+
+    await live.service.execute_record(await live.claim(first))
+
+    following = await live.service.get_queue_backend().get_task_by_key("scheduled:cloudtasks.recurrence.inherited")
+    assert following is not None
+    assert following.metadata["timeout"] == DEFAULT_TASK_TIMEOUT
 
 
 async def test_a_next_occurrence_beyond_the_horizon_stops_the_chain(harness: "Callable[..., Any]") -> "None":

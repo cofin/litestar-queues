@@ -922,10 +922,11 @@ class QueueService:
                 records.append(active)
                 continue
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
-            # Checked before the cancellation below: refusing a schedule the
-            # transport cannot hold must not first retire the occurrence that
-            # is currently in flight.
+            # Both resolved before the cancellation below: refusing a schedule
+            # the transport cannot deliver must not first retire the occurrence
+            # that is currently in flight.
             self._reject_beyond_scheduling_horizon(task_name, scheduled_at)
+            metadata = self._metadata_with_schedule_default(task_obj, schedule_metadata, scheduled_at)
             if active is not None:
                 await queue_backend.cancel_task(active.id)
             records.append(
@@ -941,7 +942,7 @@ class QueueService:
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
-                    metadata=self._metadata_with_schedule_default(task_obj, schedule_metadata),
+                    metadata=metadata,
                 )
             )
         return records
@@ -984,10 +985,31 @@ class QueueService:
         raise QueueConfigurationError(msg)
 
     def _metadata_with_schedule_default(
-        self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]"
+        self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]", scheduled_at: "datetime | None"
     ) -> "dict[str, Any]":
+        """Build the metadata one occurrence of a recurring schedule runs under.
+
+        Returns:
+            The occurrence metadata.
+        """
         metadata = task_obj.metadata({"schedule": schedule_metadata})
         self._apply_log_success_default(metadata)
+        configured_execution = execution_backend_name(self._config.execution_backend)
+        record_execution = task_obj.execution_backend or configured_execution
+        if _CLOUD_TASKS_BACKEND in {configured_execution, record_execution}:
+            # A recurrence never passes through enqueue, so without this the
+            # occurrence reaches the consumer carrying no budget at all and can
+            # still be working when the deadline the transport is holding open
+            # for it expires -- at which point the delivery is redelivered on
+            # top of work already in flight. Later occurrences copy this
+            # metadata forward, so settling the first one settles the chain.
+            metadata["timeout"] = self._validate_cloud_tasks_record(
+                configured_execution=configured_execution,
+                record_execution=record_execution,
+                task_obj=task_obj,
+                timeout=None,
+                scheduled_at=scheduled_at,
+            )
         return metadata
 
     def _apply_log_success_default(self, metadata: "dict[str, Any]") -> "None":
