@@ -459,6 +459,22 @@ class QueueService:
             metadata["unique_until"] = task_obj.unique_until
         return metadata
 
+    async def _schedule_persisted(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        """Hand an already-persisted record to a self-scheduling execution backend.
+
+        A no-op for every polled backend, so persistence paths can call it
+        unconditionally. The record is reloaded afterwards because the backend
+        may have written a delivery reference the caller would otherwise miss.
+
+        Returns:
+            The live record.
+        """
+        backend = self._execution_backend_for_name(record.execution_backend)
+        if not backend.schedules_on_enqueue:
+            return record
+        await backend.schedule(self, record)
+        return await self.get_queue_backend().get_task(record.id) or record
+
     def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
         if name == execution_backend_name(self._config.execution_backend):
             return self.get_execution_backend()

@@ -19,6 +19,7 @@ import click
 
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.consumer import run_task
+from litestar_queues.execution import get_execution_backend
 from litestar_queues.maintenance import QueueMaintenanceService
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
@@ -83,6 +84,26 @@ def _reject_inline_execution(plugin: "QueuePlugin") -> "None":
         raise click.ClickException(msg)
 
 
+def _reject_self_dispatching_execution(plugin: "QueuePlugin") -> "None":
+    """Fail when the transport already schedules every record it is given.
+
+    Asks the resolved backend rather than matching a name, so a future managed
+    transport is covered the moment it declares the capability.
+
+    Raises:
+        click.ClickException: If the execution backend schedules on enqueue.
+    """
+    backend = get_execution_backend(plugin.config.execution_backend, config=plugin.config)
+    if backend.schedules_on_enqueue:
+        name = execution_backend_name(plugin.config.execution_backend)
+        msg = (
+            f"execution_backend={name!r} schedules delivery when a record is persisted, so a "
+            f"standalone worker would dispatch it a second time. Run this deployment with no "
+            f"worker process."
+        )
+        raise click.ClickException(msg)
+
+
 @click.group(name="queues", help="litestar-queues operations.")
 def queues_group() -> "None":
     pass
@@ -113,6 +134,7 @@ def run_command(
     if queue_backend_name(config.queue_backend) == "memory":
         raise click.ClickException(_MEMORY_UNREACHABLE)
     _reject_inline_execution(plugin)
+    _reject_self_dispatching_execution(plugin)
 
     effective_concurrency = max_concurrency or config.worker.max_concurrency
     effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker.graceful_shutdown_timeout

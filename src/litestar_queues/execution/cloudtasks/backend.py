@@ -45,6 +45,11 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         return True
 
     @property
+    def schedules_on_enqueue(self) -> "bool":
+        """Whether the backend schedules a persisted record without a Worker."""
+        return True
+
+    @property
     def execution_config(self) -> "CloudTasksExecutionConfig":
         """Resolved Cloud Tasks execution config."""
         if self._execution_config is not None:

@@ -26,6 +26,25 @@ class BaseExecutionBackend:
         """Whether this backend dispatches records to another process."""
         return False
 
+    @property
+    def schedules_on_enqueue(self) -> "bool":
+        """Whether the backend schedules a persisted record without a Worker.
+
+        Deliberately separate from :attr:`is_external`. Cloud Run Jobs and the
+        broker backends are external but still rely on a worker loop noticing a
+        pending record; only a managed transport that accepts the record itself
+        answers true here.
+        """
+        return False
+
+    async def schedule(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
+        """Schedule one already-persisted record for external delivery.
+
+        Returns:
+            The external delivery reference, if one was created.
+        """
+        return await self.dispatch(service, record)
+
     async def open(self) -> "bool":
         """Open execution resources.
 
