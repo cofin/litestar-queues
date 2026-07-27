@@ -43,7 +43,7 @@ _APPROVED_NESTED_IMPORTS = {
         "litestar_queues.worker",
         "litestar_queues.worker.invocation",
     },
-    "service.py": {"litestar_queues.observability"},
+    "service.py": {"litestar_queues.execution.cloudtasks", "litestar_queues.observability"},
     "task.py": {"litestar_queues.config", "litestar_queues.service"},
 }
 

@@ -348,6 +348,26 @@ class QueueConfig:
                 f"Use execution_backend='local', or placement='external'."
             )
             raise QueueConfigurationError(msg)
+        if execution == "cloudtasks":
+            if isinstance(self.execution_backend, str):
+                msg = (
+                    "execution_backend='cloudtasks' has no defaults for the project, queue, "
+                    "delivery target, or audience. Configure it as "
+                    "execution_backend=CloudTasksExecutionConfig(...)."
+                )
+                raise QueueConfigurationError(msg)
+            if placement != "external":
+                msg = (
+                    "execution_backend='cloudtasks' schedules work itself and requires "
+                    "WorkerConfig(placement='external')."
+                )
+                raise QueueConfigurationError(msg)
+            if backend in {"memory", "ephemeral"}:
+                msg = (
+                    "execution_backend='cloudtasks' delivers each record to a separate process, "
+                    "which cannot reach process-local storage. Use a shared persistent queue backend."
+                )
+                raise QueueConfigurationError(msg)
         # Ephemeral storage is deliberately unconstrained by placement. Placement
         # does not decide whether the private database exists: whatever entered
         # EphemeralServerContext created it, and the backend refuses to open when

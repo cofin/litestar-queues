@@ -16,14 +16,13 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.execution import BaseExecutionBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
-_SHARED_STORAGE = "selftest-shared-storage"
 _SELF_SCHEDULING = "selftest-self-scheduling"
 
 scheduled: "list[Any]" = []
@@ -54,43 +53,12 @@ def _reset_scheduled() -> "Iterator[None]":
 
 
 @pytest.fixture
-def shared_storage() -> "Iterator[str]":
-    """Register an in-process backend whose name is not process-local.
-
-    Cloud Tasks rejects ``memory`` and ``ephemeral``, so the placement matrix
-    needs a name it treats as shared without requiring a live server.
-
-    Yields:
-        The registered queue backend name.
-    """
-    from litestar_queues.backends.factory import _queue_backend_registry
-    from litestar_queues.backends.memory import InMemoryQueueBackend
-
-    _queue_backend_registry[_SHARED_STORAGE] = type("SharedStandInBackend", (InMemoryQueueBackend,), {})
-    yield _SHARED_STORAGE
-    _queue_backend_registry.pop(_SHARED_STORAGE, None)
-
-
-@pytest.fixture
 def self_scheduling_execution() -> "Iterator[str]":
     from litestar_queues.execution.factory import _execution_backend_registry
 
     _execution_backend_registry[_SELF_SCHEDULING] = _SelfSchedulingBackend
     yield _SELF_SCHEDULING
     _execution_backend_registry.pop(_SELF_SCHEDULING, None)
-
-
-def _cloud_tasks_config() -> "CloudTasksExecutionConfig":
-    from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
-
-    return CloudTasksExecutionConfig(
-        project_id="example-project",
-        location="us-central1",
-        queue_id="queue-consumer",
-        service_url="https://queue-consumer-abcdef-uc.a.run.app",
-        service_account_email="queues@example-project.iam.gserviceaccount.com",
-        trust_platform_auth=True,
-    )
 
 
 # --------------------------------------------------------------------------- capability seam
@@ -208,7 +176,9 @@ async def test_run_once_refuses_a_self_dispatching_backend(
             await Worker(service).run_once()
 
 
-def test_the_standalone_worker_command_rejects_a_self_dispatching_backend() -> "None":
+def test_the_standalone_worker_command_rejects_a_self_dispatching_backend(
+    cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]",
+) -> "None":
     """``litestar queues run`` is the user-facing guard, so it fails with a clear message."""
     import click
 
@@ -217,7 +187,7 @@ def test_the_standalone_worker_command_rejects_a_self_dispatching_backend() -> "
 
     plugin = QueuePlugin(
         QueueConfig(
-            queue_backend="redis", execution_backend=_cloud_tasks_config(), worker=WorkerConfig(placement="external")
+            queue_backend="redis", execution_backend=cloud_tasks_config(), worker=WorkerConfig(placement="external")
         )
     )
 
@@ -239,7 +209,9 @@ def test_the_standalone_worker_command_accepts_a_polled_backend() -> "None":
 # --------------------------------------------------------------------------- single-backend rule
 
 
-async def test_a_cloud_tasks_queue_rejects_a_different_execution_override(shared_storage: "str") -> "None":
+async def test_a_cloud_tasks_queue_rejects_a_different_execution_override(
+    shared_storage: "str", cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]"
+) -> "None":
     """There is no worker for a ``local`` record on a Cloud Tasks queue.
 
     Rejecting at enqueue is the only place this is visible; accepting it writes a
@@ -253,7 +225,7 @@ async def test_a_cloud_tasks_queue_rejects_a_different_execution_override(shared
     async with QueueService(
         QueueConfig(
             queue_backend=shared_storage,
-            execution_backend=_cloud_tasks_config(),
+            execution_backend=cloud_tasks_config(),
             worker=WorkerConfig(placement="external"),
         )
     ) as service:
@@ -261,7 +233,9 @@ async def test_a_cloud_tasks_queue_rejects_a_different_execution_override(shared
             await service.enqueue(probe, execution_backend="local")
 
 
-async def test_a_cloud_tasks_queue_rejects_a_decorator_execution_override(shared_storage: "str") -> "None":
+async def test_a_cloud_tasks_queue_rejects_a_decorator_execution_override(
+    shared_storage: "str", cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]"
+) -> "None":
     @task("cloudtasks.decorated_probe", execution_backend="cloudrun")
     async def probe() -> "None":
         return None
@@ -269,7 +243,7 @@ async def test_a_cloud_tasks_queue_rejects_a_decorator_execution_override(shared
     async with QueueService(
         QueueConfig(
             queue_backend=shared_storage,
-            execution_backend=_cloud_tasks_config(),
+            execution_backend=cloud_tasks_config(),
             worker=WorkerConfig(placement="external"),
         )
     ) as service:

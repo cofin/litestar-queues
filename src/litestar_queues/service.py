@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -45,6 +46,21 @@ if TYPE_CHECKING:
 __all__ = ("QueueService",)
 
 logger = logging.getLogger(__name__)
+
+_CLOUD_TASKS_BACKEND = "cloudtasks"
+
+
+def _utc_now() -> "datetime":
+    """Return the current UTC instant.
+
+    One indirection so a single operation reads the clock once and boundary
+    checks can be tested without racing it.
+
+    Returns:
+        The current time in UTC.
+    """
+    return datetime.now(timezone.utc)
+
 
 _LOG_LEVELS = {
     "critical": logging.CRITICAL,
@@ -348,6 +364,16 @@ class QueueService:
         effective_metadata.update(identity_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
 
+        configured_execution = execution_backend_name(self._config.execution_backend)
+        if _CLOUD_TASKS_BACKEND in {configured_execution, effective_execution_backend}:
+            effective_metadata["timeout"] = self._validate_cloud_tasks_record(
+                configured_execution=configured_execution,
+                record_execution=effective_execution_backend,
+                task_obj=task_obj,
+                timeout=timeout,
+                scheduled_at=effective_scheduled_at,
+            )
+
         reserved_id: "UUID | None" = None
         if task_obj.unique_until == "forever" and effective_key is not None:
             reserved_id = uuid4()
@@ -458,6 +484,72 @@ class QueueService:
         if task_obj.unique_until != "terminal":
             metadata["unique_until"] = task_obj.unique_until
         return metadata
+
+    def _validate_cloud_tasks_record(
+        self,
+        *,
+        configured_execution: "str",
+        record_execution: "str",
+        task_obj: "Task[Any, Any]",
+        timeout: "float | None",
+        scheduled_at: "datetime | None",
+    ) -> "float":
+        """Reject a record a Cloud Tasks queue could never deliver.
+
+        Cloud Tasks owns delivery once it accepts a task, so a budget or
+        schedule it cannot honour has to fail here, before any reservation or
+        record is written.
+
+        Returns:
+            The effective task timeout to persist onto the record.
+
+        Raises:
+            QueueConfigurationError: If the record mixes execution backends, or
+                its timeout or schedule falls outside what the queue accepts.
+        """
+        from litestar_queues.execution.cloudtasks import CLOUD_TASKS_MAX_SCHEDULE_HORIZON, CloudTasksExecutionConfig
+
+        cloud_tasks = self._config.execution_backend
+        if not isinstance(cloud_tasks, CloudTasksExecutionConfig):
+            msg = (
+                f"execution_backend={record_execution!r} needs a typed CloudTasksExecutionConfig on "
+                f"the queue; this queue is configured for {configured_execution!r}, which carries no "
+                f"project, queue, delivery target, or audience."
+            )
+            raise QueueConfigurationError(msg)
+        if record_execution != _CLOUD_TASKS_BACKEND:
+            msg = (
+                f"execution_backend={record_execution!r} cannot be mixed into a Cloud Tasks queue: "
+                f"no worker polls it, so the record would never run. Remove the override."
+            )
+            raise QueueConfigurationError(msg)
+
+        effective_timeout = timeout if timeout is not None else task_obj.timeout
+        if effective_timeout is None:
+            effective_timeout = cloud_tasks.default_task_timeout
+        if (
+            isinstance(effective_timeout, bool)
+            or not isinstance(effective_timeout, (int, float))
+            or not math.isfinite(effective_timeout)
+            or effective_timeout <= 0
+        ):
+            msg = "Cloud Tasks task timeout must be a finite positive number of seconds."
+            raise QueueConfigurationError(msg)
+        if effective_timeout + cloud_tasks.response_margin > cloud_tasks.dispatch_deadline:
+            msg = (
+                f"Cloud Tasks task timeout {effective_timeout} plus the "
+                f"{cloud_tasks.response_margin}s response margin exceeds the "
+                f"{cloud_tasks.dispatch_deadline}s delivery budget."
+            )
+            raise QueueConfigurationError(msg)
+
+        if scheduled_at is not None and scheduled_at > _utc_now() + CLOUD_TASKS_MAX_SCHEDULE_HORIZON:
+            msg = (
+                f"Cloud Tasks schedules at most {CLOUD_TASKS_MAX_SCHEDULE_HORIZON.days} days ahead; "
+                f"the create call would be refused."
+            )
+            raise QueueConfigurationError(msg)
+        return effective_timeout
 
     async def _schedule_persisted(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         """Hand an already-persisted record to a self-scheduling execution backend.
