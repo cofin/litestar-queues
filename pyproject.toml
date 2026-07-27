@@ -175,6 +175,10 @@ tests = [
   "prometheus-client",
   # Real-service fixtures for the integration tier
   "pytest-databases[postgres,mysql,mssql,oracle,redis,valkey,cockroachdb,spanner]>=0.19.0",
+  # Pulled in only transitively by the spanner fixtures, which left it free to
+  # resolve to a 2022 release that imports pkg_resources. setuptools no longer
+  # ships that module, so collection failed before any test ran.
+  "google-cloud-spanner>=3.47.0",
   # Redis + Valkey clients used directly by integration tests
   "redis>=5.0.0",
   "valkey>=6.0.0",
