@@ -151,7 +151,9 @@ def test_cloud_tasks_requires_external_placement(placement: "str") -> "None":
     """Cloud Tasks schedules delivery itself, so a managed worker would double-dispatch."""
     with pytest.raises(QueueConfigurationError):
         QueueConfig(
-            queue_backend="redis", execution_backend=_cloud_tasks_config(), worker=WorkerConfig(placement=placement)
+            queue_backend="redis",
+            execution_backend=_cloud_tasks_config(),
+            worker=WorkerConfig(placement=placement),  # type: ignore[arg-type]
         )
 
 
