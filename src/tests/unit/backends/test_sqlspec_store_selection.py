@@ -43,12 +43,26 @@ _RETURNING_CLAIM = {"asyncpg", "psqlpy", "psycopg"}
 def _fake_config(adapter: "str", *, is_async: "bool" = True, dialect: "str | None" = None) -> "Any":
     """Build a stand-in SQLSpec adapter config that only carries its module path."""
     module_name = f"sqlspec.adapters.{adapter}.config"
-    sys.modules.setdefault(module_name, types.ModuleType(module_name))
     config_type = type(f"{'Async' if is_async else 'Sync'}Config", (), {"__module__": module_name})
     config = config_type()
     config.statement_config = types.SimpleNamespace(dialect=dialect)
     config.extension_config = {}
     return config
+
+
+def test_a_stand_in_config_never_shadows_the_real_adapter_module(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Resolution reads ``__module__`` as text, so nothing here has to be importable.
+
+    A stand-in left behind in ``sys.modules`` carries no ``__file__``, and every
+    later import of that adapter resolves to it instead of the installed package.
+    Which tests that breaks depends only on the order the workers happen to run in.
+    """
+    module_name = "sqlspec.adapters.sqlite.config"
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    _adapter_store_type(_fake_config("sqlite"))
+
+    assert module_name not in sys.modules
 
 
 @pytest.mark.parametrize("adapter", sorted(_ADAPTER_BEHAVIOR))
