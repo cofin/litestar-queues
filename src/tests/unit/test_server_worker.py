@@ -360,7 +360,9 @@ def test_child_applies_environment_and_sys_path_before_loading_app(monkeypatch: 
         },
         "sys_path": ("/tmp/example",),
         "app_path": "example:app",
-        "app_dir": "/tmp/example",
+        # The child hands Litestar a Path, so the round-tripped string picks up
+        # the host separator; sys_path is passed through untouched.
+        "app_dir": str(Path("/tmp/example")),
     }
     assert stop.set_calls == 1
     assert connection.closed is True
