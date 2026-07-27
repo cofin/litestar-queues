@@ -758,6 +758,10 @@ class QueueService:
         )
         if updated.status == "failed":
             await self._reschedule_if_needed(updated)
+        elif updated.status == "pending":
+            # A retry on a queue with no worker needs its own delivery, and the
+            # claim this handler owns is the only thing that knows one is due.
+            updated = await self._schedule_persisted(updated)
         telemetry.finish(updated.status)
         return updated
 
@@ -897,21 +901,27 @@ class QueueService:
             schedule_metadata = schedule.as_metadata()
             schedule_key = f"scheduled:{task_name}"
             existing = await queue_backend.get_task_by_key(schedule_key)
-            if existing is not None and not existing.is_terminal:
-                if existing.metadata.get("schedule") == schedule_metadata:
-                    records.append(existing)
-                    continue
-                await queue_backend.cancel_task(existing.id)
+            active = existing if existing is not None and not existing.is_terminal else None
+            if active is not None and active.metadata.get("schedule") == schedule_metadata:
+                records.append(active)
+                continue
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
-            expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
+            # Checked before the cancellation below: refusing a schedule the
+            # transport cannot hold must not first retire the occurrence that
+            # is currently in flight.
+            self._reject_beyond_scheduling_horizon(task_name, scheduled_at)
+            if active is not None:
+                await queue_backend.cancel_task(active.id)
             records.append(
-                await queue_backend.enqueue(
+                await self._persist_scheduled_record(
                     task_name,
                     key=schedule_key,
                     max_retries=0,
                     priority=task_obj.priority,
                     scheduled_at=scheduled_at,
-                    expires_at=expires_at,
+                    expires_at=_resolve_expires_at(
+                        task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at
+                    ),
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
@@ -919,6 +929,43 @@ class QueueService:
                 )
             )
         return records
+
+    async def _persist_scheduled_record(self, task_name: "str", **enqueue_kwargs: "Any") -> "QueuedTaskRecord":
+        """Persist one occurrence of a recurring schedule and hand it to the transport.
+
+        The single funnel for both schedule paths, so a queue that dispatches
+        without a worker cannot end up with an occurrence nothing delivers.
+
+        Returns:
+            The persisted occurrence, refreshed after scheduling.
+        """
+        record = await self.get_queue_backend().enqueue(task_name, **enqueue_kwargs)
+        return await self._schedule_persisted(record)
+
+    def _beyond_scheduling_horizon(self, scheduled_at: "datetime | None") -> "bool":
+        """Whether the configured transport would refuse to hold a delivery this far out.
+
+        Returns:
+            True when the schedule is past the backend's ceiling.
+        """
+        horizon = self.get_execution_backend().max_schedule_horizon
+        return horizon is not None and scheduled_at is not None and scheduled_at > _utc_now() + horizon
+
+    def _reject_beyond_scheduling_horizon(self, task_name: "str", scheduled_at: "datetime | None") -> "None":
+        """Refuse a recurrence the configured transport could never deliver.
+
+        Raises:
+            QueueConfigurationError: If the schedule is past the backend's ceiling.
+        """
+        if not self._beyond_scheduling_horizon(scheduled_at):
+            return
+        horizon = self.get_execution_backend().max_schedule_horizon
+        msg = (
+            f"Schedule for {task_name!r} is due beyond the {horizon} that "
+            f"{execution_backend_name(self._config.execution_backend)!r} will hold a delivery, "
+            f"so the occurrence would never run."
+        )
+        raise QueueConfigurationError(msg)
 
     def _metadata_with_schedule_default(
         self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]"
@@ -958,8 +1005,14 @@ class QueueService:
         )
         task_obj = self.resolve_task(record.task_name)
         scheduled_at = schedule.get_next_run(record.completed_at)
+        if self._beyond_scheduling_horizon(scheduled_at):
+            # The occurrence that just ran stays terminal and this chain ends
+            # here. Writing the next one would persist work nothing delivers,
+            # and every later occurrence would be further out still.
+            await self._publish_schedule_rejected(record)
+            return
         expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
-        await self.get_queue_backend().enqueue(
+        await self._persist_scheduled_record(
             record.task_name,
             key=record.key,
             queue=record.queue,
@@ -970,6 +1023,33 @@ class QueueService:
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
             metadata={**record.metadata, "schedule": schedule.as_metadata()},
+        )
+
+    async def _publish_schedule_rejected(self, record: "QueuedTaskRecord") -> "None":
+        """Report a recurrence that stops because the transport cannot hold it.
+
+        The phase names the backend that refused rather than repeating its
+        configuration: the event travels wherever sinks go, and the delivery
+        target and calling identity are not part of the news.
+        """
+        payload = {"phase": f"{record.execution_backend}.schedule_rejected"}
+        await self.get_event_publisher().publish(
+            QueueEvent(
+                type="task.event",
+                scope="task",
+                task_id=str(record.id),
+                task_name=record.task_name,
+                queue=record.queue,
+                execution_backend=record.execution_backend,
+                execution_profile=record.execution_profile,
+                attempt=record.retry_count + 1,
+                level="warning",
+                message="Recurring schedule stopped: the next run is beyond the delivery horizon",
+                payload=payload,
+            )
+        )
+        self._log_task_event(
+            "Recurring schedule stopped beyond the delivery horizon", record, level=logging.WARNING, payload=payload
         )
 
     async def _current_or_claimed(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":

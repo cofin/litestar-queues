@@ -72,6 +72,11 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         return True
 
     @property
+    def max_schedule_horizon(self) -> "timedelta":
+        """How far ahead Cloud Tasks will hold a scheduled delivery."""
+        return CLOUD_TASKS_MAX_SCHEDULE_HORIZON
+
+    @property
     def execution_config(self) -> "CloudTasksExecutionConfig":
         """Resolved Cloud Tasks execution config."""
         if self._execution_config is not None:

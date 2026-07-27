@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 from typing_extensions import Self
 
 if TYPE_CHECKING:
+    from datetime import timedelta
     from types import TracebackType
 
     from litestar_queues.config import QueueConfig
@@ -36,6 +37,17 @@ class BaseExecutionBackend:
         answers true here.
         """
         return False
+
+    @property
+    def max_schedule_horizon(self) -> "timedelta | None":
+        """How far ahead this backend will hold a scheduled delivery.
+
+        ``None`` means unbounded, which is every backend that keeps due records
+        in the queue store. A managed transport that takes ownership of the
+        record has its own ceiling, and a schedule past it is not a call that
+        fails once -- it is a recurrence that can never run.
+        """
+        return None
 
     async def schedule(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
         """Schedule one already-persisted record for external delivery.
