@@ -26,7 +26,7 @@ from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 
 if TYPE_CHECKING:
-    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
+    from litestar_queues.backends.sqlspec.typing import SQLSpecConfig
 
 DATABASE_ENV_VAR = "LITESTAR_QUEUES_TEST_DB"
 

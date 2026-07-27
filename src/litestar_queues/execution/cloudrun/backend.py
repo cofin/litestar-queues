@@ -11,7 +11,11 @@ from uuid import uuid4
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
-from litestar_queues.execution.base import BaseExecutionBackend
+from litestar_queues.execution.base import (
+    BaseExecutionBackend,
+    _queue_metric_attributes,
+    _queue_observability_attributes,
+)
 from litestar_queues.execution.cloudrun.config import CloudRunExecutionConfig, _execution_config_from_queue_config
 
 if TYPE_CHECKING:
@@ -102,7 +106,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         runtime = service.observability_runtime
         attributes = _queue_observability_attributes("dispatch", record)
         attributes["messaging.message.id"] = str(record.id)
-        metric_attributes = _queue_metric_attributes(attributes)
+        metric_attributes = _queue_metric_attributes(record)
         span = runtime.start_span("litestar_queues.dispatch", kind="producer", attributes=attributes)
         reservation_ref = (
             f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}{int(time.time() + _DISPATCH_RESERVATION_LEASE_SECONDS)}:{uuid4()}"
@@ -192,7 +196,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         runtime = service.observability_runtime
         attributes = _queue_observability_attributes("reconcile", record)
         attributes["messaging.message.id"] = str(record.id)
-        metric_attributes = _queue_metric_attributes(attributes)
+        metric_attributes = _queue_metric_attributes(record)
         span = runtime.start_span("litestar_queues.reconcile", kind="consumer", attributes=attributes)
         try:
             status = await self.check_execution_status(record.execution_ref)
@@ -407,28 +411,6 @@ def _execution_error(execution: "CloudRunExecutionLike") -> "str | None":
         if message:
             return str(message)
     return None
-
-
-def _queue_observability_attributes(operation: "str", record: "QueuedTaskRecord") -> "dict[str, object]":
-    attributes: "dict[str, object]" = {
-        "messaging.system": "litestar_queues",
-        "messaging.operation.name": operation,
-        "messaging.destination.name": record.queue,
-        "queue.task.name": record.task_name,
-        "queue.execution.backend": record.execution_backend,
-    }
-    if record.execution_profile:
-        attributes["queue.execution.profile"] = record.execution_profile
-    return attributes
-
-
-def _queue_metric_attributes(attributes: "Mapping[str, object]") -> "dict[str, str]":
-    return {
-        "messaging.destination.name": str(attributes["messaging.destination.name"]),
-        "queue.task.name": str(attributes["queue.task.name"]),
-        "queue.execution.backend": str(attributes["queue.execution.backend"]),
-        "queue.execution.profile": str(attributes.get("queue.execution.profile", "")),
-    }
 
 
 def _record_reconcile_result(

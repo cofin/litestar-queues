@@ -1,8 +1,14 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
 __all__ = (
     "JobCancelledError",
     "MissingDependencyError",
     "NonRetryableError",
     "QueueConfigurationError",
+    "QueueDispatchError",
     "QueueError",
     "QueueEventBufferFull",
     "QueueWarning",
@@ -23,6 +29,27 @@ class QueueWarning(UserWarning):
 
 class QueueConfigurationError(QueueError):
     """Raised when queue backend configuration is invalid."""
+
+
+class QueueDispatchError(QueueError):
+    """Raised when a persisted record could not be handed to its transport.
+
+    ``committed`` is the part callers act on. A committed record is durable and
+    a repair sweep can retry its dispatch; an uncommitted one never reached
+    storage, so the caller owns retrying the whole enqueue.
+    """
+
+    def __init__(self, message: "str", *, task_id: "UUID", committed: "bool") -> "None":
+        """Initialize dispatch error.
+
+        Args:
+            message: Human-readable description of the dispatch failure.
+            task_id: Identifier of the record that failed to dispatch.
+            committed: Whether the record is durably persisted.
+        """
+        super().__init__(message)
+        self.task_id = task_id
+        self.committed = committed
 
 
 class TaskIdentityError(QueueError):

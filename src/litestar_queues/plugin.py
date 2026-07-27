@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events import QueueEventPublisher
-    from litestar_queues.typing import ChannelsLike
+    from litestar_queues.events.typing import ChannelsLike
 
 __all__ = ("QueuePlugin",)
 
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 _UNKNOWN = object()
 _APP_PATH_ENV_VAR = "LITESTAR_APP"
+_CLOUD_TASKS_BACKEND = "cloudtasks"
 _PROCESS_LOCAL_CHANNELS_BACKENDS = frozenset({"MemoryChannelsBackend"})
 
 _MISSING_SERVER_CONTEXT_ERROR = (
@@ -184,6 +185,12 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             app_config.route_handlers.append(
                 _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
+        if execution_backend_name(self._config.execution_backend) == _CLOUD_TASKS_BACKEND:
+            # Imported here so an ordinary application never loads the delivery
+            # route, its request type, or anything the Cloud Tasks extra brings.
+            from litestar_queues.execution.cloudtasks.routes import build_cloud_tasks_route
+
+            app_config.route_handlers.append(build_cloud_tasks_route(self._config))
         app_config.state.update(state)
         # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
         # hooks): Litestar runs on_shutdown hooks AFTER exiting every lifespan manager,
@@ -382,12 +389,17 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         if self._config.events is not None and effective_channels is not None:
             app.state[_EVENT_CHANNELS_STATE_KEY] = effective_channels
 
-        # Schedules belong to whichever process owns a worker. Server and
-        # external placements initialize them from that owner instead, so an
-        # enqueue-only ASGI process never writes schedule records.
+        # Schedules belong to whichever process owns a worker, so an enqueue-only
+        # ASGI process never writes schedule records: server and external
+        # placements initialize them from that owner instead. A transport that
+        # schedules its own deliveries has no such owner anywhere, so this
+        # process writes the first occurrence and hands it over -- and still
+        # starts no worker. Instances racing each other are settled by the
+        # schedule key: the first record written is the one they all keep.
+        owns_schedules = placement == "asgi" or self._service.get_execution_backend().schedules_on_enqueue
+        if owns_schedules and self._config.initialize_schedules:
+            await self._service.initialize_schedules()
         if placement == "asgi":
-            if self._config.initialize_schedules:
-                await self._service.initialize_schedules()
             self._worker = Worker(self._service, self._config.worker)
             self._worker_task = asyncio.create_task(self._worker.start())
             self._worker_task.add_done_callback(self._log_worker_task_result)

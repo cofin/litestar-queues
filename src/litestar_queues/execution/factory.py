@@ -17,6 +17,7 @@ _execution_backend_registry: "dict[str, type[BaseExecutionBackend]]" = {}
 
 _BUILTIN_BACKENDS: "dict[str, str]" = {
     "cloudrun": "litestar_queues.execution.cloudrun:CloudRunExecutionBackend",
+    "cloudtasks": "litestar_queues.execution.cloudtasks:CloudTasksExecutionBackend",
     "immediate": "litestar_queues.execution.immediate:ImmediateExecutionBackend",
     "local": "litestar_queues.execution.local:LocalExecutionBackend",
 }

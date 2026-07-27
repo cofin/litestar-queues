@@ -9,7 +9,7 @@ from litestar_queues.backends.sqlspec.extension import configure_queue_migration
 from litestar_queues.events import EventHistoryConfig, QueueEventsConfig
 
 if TYPE_CHECKING:
-    from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
+    from litestar_queues.backends.sqlspec.typing import SQLSpecConfig
 
 
 async def bootstrap_queue_schema(

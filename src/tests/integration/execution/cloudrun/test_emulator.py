@@ -24,7 +24,7 @@ from tests.integration.execution.cloudrun.helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from litestar_queues.execution.cloudrun._typing import CloudRunJobsClient
+    from litestar_queues.execution.cloudrun.typing import CloudRunJobsClient
     from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult
 
 pytestmark = pytest.mark.anyio

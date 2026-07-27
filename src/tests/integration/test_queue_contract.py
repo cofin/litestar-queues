@@ -129,6 +129,41 @@ async def test_backend_contract_persists_execution_metadata_and_filters_claims(
     assert stored_local.status == "pending"
 
 
+async def test_backend_contract_lists_active_external_records_awaiting_delivery(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    """Records holding a delivery reference count as external before anyone claims them.
+
+    A worker-dispatched record is running by the time it has a reference, but a
+    transport that schedules the record itself reserves one while the record is
+    still pending or scheduled -- and those are exactly the records whose
+    delivery can go missing with nothing polling to notice. A zero budget has to
+    come back empty for the same reason: it is what a caller passes once repair
+    has already spent the pass.
+    """
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    pending = await queue_backend.enqueue("tasks.awaiting.pending", execution_backend="cloudtasks")
+    scheduled = await queue_backend.enqueue(
+        "tasks.awaiting.scheduled", execution_backend="cloudtasks", scheduled_at=later
+    )
+    undelivered = await queue_backend.enqueue("tasks.awaiting.undelivered", execution_backend="cloudtasks")
+    await queue_backend.set_execution_ref(pending.id, "cloudtasks", "queues/example/tasks/lq-pending")
+    await queue_backend.set_execution_ref(scheduled.id, "cloudtasks", "queues/example/tasks/lq-scheduled")
+
+    listed = await queue_backend.list_running_external()
+    bounded = await queue_backend.list_running_external(limit=1)
+    spent = await queue_backend.list_running_external(limit=0)
+
+    assert {record.id for record in listed} == {pending.id, scheduled.id}
+    assert undelivered.id not in {record.id for record in listed}
+    assert all(record.execution_ref is not None for record in listed)
+    # Which one a partial budget returns is the neighbouring test's business;
+    # here it only matters that the budget is honoured exactly.
+    assert len(bounded) == 1
+    assert bounded[0].id in {pending.id, scheduled.id}
+    assert spent == []
+
+
 async def test_backend_contract_bounds_external_reconciliation_deterministically(
     queue_backend: "BaseQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
@@ -707,3 +742,35 @@ async def test_backend_contract_finalized_dispatch_claims_after_queue_deadline(
     from tests.integration._expiry_contract import assert_finalized_dispatch_claims_after_queue_deadline
 
     await assert_finalized_dispatch_claims_after_queue_deadline(queue_backend)
+
+
+async def test_backend_contract_retires_a_record_whose_task_name_is_unknown(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    """A name this process cannot resolve ends the record on every backend.
+
+    Redelivering will not teach the process a task it does not have, so the
+    record has to reach a terminal state. That failure is a write, and every
+    persistent backend only accepts one over a record that is running and owned
+    at the retry count the writer claimed -- which is why the claim has to be
+    taken before the name is looked up. The in-memory backend accepts the write
+    either way, so it is the one place this ordering mistake stays invisible.
+    """
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    clear_task_registry()
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"
+    )
+    record = await queue_backend.enqueue("contract.consumer.never_registered", max_retries=0)
+
+    async with QueueService(config, queue_backend=queue_backend) as service:
+        exit_code = await consume_one(service, record.id)
+        stored = await queue_backend.get_task(record.id)
+
+    assert exit_code == TaskExitCode.UNKNOWN_TASK
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.is_terminal
+    assert stored.error is not None
+    assert "contract.consumer.never_registered" in stored.error

@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -45,6 +46,21 @@ if TYPE_CHECKING:
 __all__ = ("QueueService",)
 
 logger = logging.getLogger(__name__)
+
+_CLOUD_TASKS_BACKEND = "cloudtasks"
+
+
+def _utc_now() -> "datetime":
+    """Return the current UTC instant.
+
+    One indirection so a single operation reads the clock once and boundary
+    checks can be tested without racing it.
+
+    Returns:
+        The current time in UTC.
+    """
+    return datetime.now(timezone.utc)
+
 
 _LOG_LEVELS = {
     "critical": logging.CRITICAL,
@@ -348,6 +364,16 @@ class QueueService:
         effective_metadata.update(identity_metadata)
         effective_queue = queue if queue is not None else task_obj.queue
 
+        configured_execution = execution_backend_name(self._config.execution_backend)
+        if _CLOUD_TASKS_BACKEND in {configured_execution, effective_execution_backend}:
+            effective_metadata["timeout"] = self._validate_cloud_tasks_record(
+                configured_execution=configured_execution,
+                record_execution=effective_execution_backend,
+                task_obj=task_obj,
+                timeout=timeout,
+                scheduled_at=effective_scheduled_at,
+            )
+
         reserved_id: "UUID | None" = None
         if task_obj.unique_until == "forever" and effective_key is not None:
             reserved_id = uuid4()
@@ -409,15 +435,24 @@ class QueueService:
             expired = await self.expire_overdue_tasks()
             record = next((candidate for candidate in expired if candidate.id == record.id), record)
 
-        result = TaskResult(record.id, task_obj.name, service=self, record=record)
+        # After expiry, never before: a record that is already dead should not be
+        # handed to a transport that would deliver it days from now.
+        record = await self._schedule_persisted(record)
 
-        if record.execution_backend == "immediate" and record.status == "pending":
-            execution_backend_impl = self._execution_backend_for_name(record.execution_backend)
-            if not execution_backend_impl.is_external:
-                claimed, _ = await self.claim_task(record.id)
-                if claimed is not None:
-                    await execution_backend_impl.execute(self, claimed)
+        result = TaskResult(record.id, task_obj.name, service=self, record=record)
+        await self._run_immediate(record)
         return result
+
+    async def _run_immediate(self, record: "QueuedTaskRecord") -> "None":
+        """Run an immediate-mode record inline, before ``enqueue`` returns."""
+        if record.execution_backend != "immediate" or record.status != "pending":
+            return
+        backend = self._execution_backend_for_name(record.execution_backend)
+        if backend.is_external:
+            return
+        claimed, _ = await self.claim_task(record.id)
+        if claimed is not None:
+            await backend.execute(self, claimed)
 
     def _resolve_identity(
         self, task_obj: "Task[Any, Any]", key: "str | None", args: "tuple[Any, ...]", kwargs: "dict[str, Any]"
@@ -458,6 +493,93 @@ class QueueService:
         if task_obj.unique_until != "terminal":
             metadata["unique_until"] = task_obj.unique_until
         return metadata
+
+    def _validate_cloud_tasks_record(
+        self,
+        *,
+        configured_execution: "str",
+        record_execution: "str",
+        task_obj: "Task[Any, Any]",
+        timeout: "float | None",
+        scheduled_at: "datetime | None",
+    ) -> "float":
+        """Reject a record a Cloud Tasks queue could never deliver.
+
+        Cloud Tasks owns delivery once it accepts a task, so a budget or
+        schedule it cannot honour has to fail here, before any reservation or
+        record is written.
+
+        Returns:
+            The effective task timeout to persist onto the record.
+
+        Raises:
+            QueueConfigurationError: If the record mixes execution backends, or
+                its timeout or schedule falls outside what the queue accepts.
+        """
+        from litestar_queues.execution.cloudtasks import CLOUD_TASKS_MAX_SCHEDULE_HORIZON, CloudTasksExecutionConfig
+
+        cloud_tasks = self._config.execution_backend
+        if not isinstance(cloud_tasks, CloudTasksExecutionConfig):
+            msg = (
+                f"execution_backend={record_execution!r} needs a typed CloudTasksExecutionConfig on "
+                f"the queue; this queue is configured for {configured_execution!r}, which carries no "
+                f"project, queue, delivery target, or audience."
+            )
+            raise QueueConfigurationError(msg)
+        if record_execution != _CLOUD_TASKS_BACKEND:
+            msg = (
+                f"execution_backend={record_execution!r} cannot be mixed into a Cloud Tasks queue: "
+                f"no worker polls it, so the record would never run. Remove the override."
+            )
+            raise QueueConfigurationError(msg)
+
+        effective_timeout = timeout if timeout is not None else task_obj.timeout
+        if effective_timeout is None:
+            effective_timeout = cloud_tasks.default_task_timeout
+        if (
+            isinstance(effective_timeout, bool)
+            or not isinstance(effective_timeout, (int, float))
+            or not math.isfinite(effective_timeout)
+            or effective_timeout <= 0
+        ):
+            msg = "Cloud Tasks task timeout must be a finite positive number of seconds."
+            raise QueueConfigurationError(msg)
+        if effective_timeout + cloud_tasks.response_margin > cloud_tasks.dispatch_deadline:
+            msg = (
+                f"Cloud Tasks task timeout {effective_timeout} plus the "
+                f"{cloud_tasks.response_margin}s response margin exceeds the "
+                f"{cloud_tasks.dispatch_deadline}s delivery budget."
+            )
+            raise QueueConfigurationError(msg)
+
+        if scheduled_at is not None and scheduled_at > _utc_now() + CLOUD_TASKS_MAX_SCHEDULE_HORIZON:
+            msg = (
+                f"Cloud Tasks schedules at most {CLOUD_TASKS_MAX_SCHEDULE_HORIZON.days} days ahead; "
+                f"the create call would be refused."
+            )
+            raise QueueConfigurationError(msg)
+        return effective_timeout
+
+    async def _schedule_persisted(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        """Hand an already-persisted record to a self-scheduling execution backend.
+
+        A no-op for every polled backend, so persistence paths can call it
+        unconditionally. The record is reloaded afterwards because the backend
+        may have written a delivery reference the caller would otherwise miss.
+
+        Self-scheduling is a property of the queue, not of one record: a backend
+        that dispatches without a worker refuses to share a queue with backends
+        that need one. Reading the configured backend therefore answers the
+        question, and keeps a per-record lookup off the enqueue path.
+
+        Returns:
+            The live record.
+        """
+        backend = self.get_execution_backend()
+        if not backend.schedules_on_enqueue:
+            return record
+        await backend.schedule(self, record)
+        return await self.get_queue_backend().get_task(record.id) or record
 
     def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
         if name == execution_backend_name(self._config.execution_backend):
@@ -636,6 +758,10 @@ class QueueService:
         )
         if updated.status == "failed":
             await self._reschedule_if_needed(updated)
+        elif updated.status == "pending":
+            # A retry on a queue with no worker needs its own delivery, and the
+            # claim this handler owns is the only thing that knows one is due.
+            updated = await self._schedule_persisted(updated)
         telemetry.finish(updated.status)
         return updated
 
@@ -649,14 +775,30 @@ class QueueService:
     async def reconcile_external(self, limit: "int | None" = None) -> "int":
         """Reconcile externally dispatched records against their executor.
 
-        Lists running external records (bounded by ``limit`` when provided),
-        reconciles each against its execution backend, and records a metric for
-        every record that reached a terminal queue status. Records that name an
-        unknown execution backend are skipped with a warning.
+        A bounded call first asks the configured backend to repair deliveries
+        its transport lost, then spends what is left of the budget on ordinary
+        reconciliation, so one maintenance pass stays finite however the two
+        divide the work. The worker's unbounded sweep skips repair: it has no
+        ceiling to respect, and repair is a maintenance responsibility.
 
         Args:
-            limit: When provided, reconcile at most this many external records.
-                ``None`` reconciles every outstanding external record.
+            limit: When provided, examine at most this many external records
+                across both halves. ``None`` reconciles every outstanding
+                external record and repairs nothing.
+
+        Returns:
+            Number of records repaired or brought to a terminal queue status.
+        """
+        if limit is None:
+            return await self._reconcile_external_records(limit=None)
+        repair = await self.get_execution_backend().repair(self, limit=limit)
+        return repair.changed + await self._reconcile_external_records(limit=max(0, limit - repair.examined))
+
+    async def _reconcile_external_records(self, *, limit: "int | None") -> "int":
+        """Reconcile outstanding external records against their execution backends.
+
+        Records a metric for every record that reached a terminal queue status.
+        Records naming an unknown execution backend are skipped with a warning.
 
         Returns:
             Number of records that reached a terminal queue status.
@@ -775,34 +917,99 @@ class QueueService:
             schedule_metadata = schedule.as_metadata()
             schedule_key = f"scheduled:{task_name}"
             existing = await queue_backend.get_task_by_key(schedule_key)
-            if existing is not None and not existing.is_terminal:
-                if existing.metadata.get("schedule") == schedule_metadata:
-                    records.append(existing)
-                    continue
-                await queue_backend.cancel_task(existing.id)
+            active = existing if existing is not None and not existing.is_terminal else None
+            if active is not None and active.metadata.get("schedule") == schedule_metadata:
+                records.append(active)
+                continue
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
-            expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
+            # Both resolved before the cancellation below: refusing a schedule
+            # the transport cannot deliver must not first retire the occurrence
+            # that is currently in flight.
+            self._reject_beyond_scheduling_horizon(task_name, scheduled_at)
+            metadata = self._metadata_with_schedule_default(task_obj, schedule_metadata, scheduled_at)
+            if active is not None:
+                await queue_backend.cancel_task(active.id)
             records.append(
-                await queue_backend.enqueue(
+                await self._persist_scheduled_record(
                     task_name,
                     key=schedule_key,
                     max_retries=0,
                     priority=task_obj.priority,
                     scheduled_at=scheduled_at,
-                    expires_at=expires_at,
+                    expires_at=_resolve_expires_at(
+                        task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at
+                    ),
                     execution_backend=task_obj.execution_backend
                     or execution_backend_name(self._config.execution_backend),
                     execution_profile=task_obj.execution_profile,
-                    metadata=self._metadata_with_schedule_default(task_obj, schedule_metadata),
+                    metadata=metadata,
                 )
             )
         return records
 
+    async def _persist_scheduled_record(self, task_name: "str", **enqueue_kwargs: "Any") -> "QueuedTaskRecord":
+        """Persist one occurrence of a recurring schedule and hand it to the transport.
+
+        The single funnel for both schedule paths, so a queue that dispatches
+        without a worker cannot end up with an occurrence nothing delivers.
+
+        Returns:
+            The persisted occurrence, refreshed after scheduling.
+        """
+        record = await self.get_queue_backend().enqueue(task_name, **enqueue_kwargs)
+        return await self._schedule_persisted(record)
+
+    def _beyond_scheduling_horizon(self, scheduled_at: "datetime | None") -> "bool":
+        """Whether the configured transport would refuse to hold a delivery this far out.
+
+        Returns:
+            True when the schedule is past the backend's ceiling.
+        """
+        horizon = self.get_execution_backend().max_schedule_horizon
+        return horizon is not None and scheduled_at is not None and scheduled_at > _utc_now() + horizon
+
+    def _reject_beyond_scheduling_horizon(self, task_name: "str", scheduled_at: "datetime | None") -> "None":
+        """Refuse a recurrence the configured transport could never deliver.
+
+        Raises:
+            QueueConfigurationError: If the schedule is past the backend's ceiling.
+        """
+        if not self._beyond_scheduling_horizon(scheduled_at):
+            return
+        horizon = self.get_execution_backend().max_schedule_horizon
+        msg = (
+            f"Schedule for {task_name!r} is due beyond the {horizon} that "
+            f"{execution_backend_name(self._config.execution_backend)!r} will hold a delivery, "
+            f"so the occurrence would never run."
+        )
+        raise QueueConfigurationError(msg)
+
     def _metadata_with_schedule_default(
-        self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]"
+        self, task_obj: "Task[Any, Any]", schedule_metadata: "dict[str, Any]", scheduled_at: "datetime | None"
     ) -> "dict[str, Any]":
+        """Build the metadata one occurrence of a recurring schedule runs under.
+
+        Returns:
+            The occurrence metadata.
+        """
         metadata = task_obj.metadata({"schedule": schedule_metadata})
         self._apply_log_success_default(metadata)
+        configured_execution = execution_backend_name(self._config.execution_backend)
+        record_execution = task_obj.execution_backend or configured_execution
+        if _CLOUD_TASKS_BACKEND in {configured_execution, record_execution}:
+            # A recurrence never passes through enqueue, so without this the
+            # occurrence reaches the consumer carrying no budget at all and can
+            # still be working when the deadline the transport is holding open
+            # for it expires -- at which point the delivery is redelivered on
+            # top of work already in flight. Later occurrences copy this
+            # metadata forward, so settling the first one settles the chain.
+            metadata["timeout"] = self._validate_cloud_tasks_record(
+                configured_execution=configured_execution,
+                record_execution=record_execution,
+                task_obj=task_obj,
+                timeout=None,
+                scheduled_at=scheduled_at,
+            )
         return metadata
 
     def _apply_log_success_default(self, metadata: "dict[str, Any]") -> "None":
@@ -836,8 +1043,14 @@ class QueueService:
         )
         task_obj = self.resolve_task(record.task_name)
         scheduled_at = schedule.get_next_run(record.completed_at)
+        if self._beyond_scheduling_horizon(scheduled_at):
+            # The occurrence that just ran stays terminal and this chain ends
+            # here. Writing the next one would persist work nothing delivers,
+            # and every later occurrence would be further out still.
+            await self._publish_schedule_rejected(record)
+            return
         expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
-        await self.get_queue_backend().enqueue(
+        await self._persist_scheduled_record(
             record.task_name,
             key=record.key,
             queue=record.queue,
@@ -848,6 +1061,33 @@ class QueueService:
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
             metadata={**record.metadata, "schedule": schedule.as_metadata()},
+        )
+
+    async def _publish_schedule_rejected(self, record: "QueuedTaskRecord") -> "None":
+        """Report a recurrence that stops because the transport cannot hold it.
+
+        The phase names the backend that refused rather than repeating its
+        configuration: the event travels wherever sinks go, and the delivery
+        target and calling identity are not part of the news.
+        """
+        payload = {"phase": f"{record.execution_backend}.schedule_rejected"}
+        await self.get_event_publisher().publish(
+            QueueEvent(
+                type="task.event",
+                scope="task",
+                task_id=str(record.id),
+                task_name=record.task_name,
+                queue=record.queue,
+                execution_backend=record.execution_backend,
+                execution_profile=record.execution_profile,
+                attempt=record.retry_count + 1,
+                level="warning",
+                message="Recurring schedule stopped: the next run is beyond the delivery horizon",
+                payload=payload,
+            )
+        )
+        self._log_task_event(
+            "Recurring schedule stopped beyond the delivery horizon", record, level=logging.WARNING, payload=payload
         )
 
     async def _current_or_claimed(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":

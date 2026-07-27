@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from litestar_queues.config import WorkerConfig, execution_backend_name
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 if TYPE_CHECKING:
@@ -298,8 +299,19 @@ class Worker:
 
         Returns:
             Number of claimed task records.
+
+        Raises:
+            QueueConfigurationError: If the execution backend schedules its own
+                delivery, leaving a worker nothing it may safely claim.
         """
         execution_backend = self._service.get_execution_backend()
+        if execution_backend.schedules_on_enqueue:
+            msg = (
+                f"execution_backend={execution_backend_name(self._service.config.execution_backend)!r} "
+                f"schedules delivery when a record is persisted, so a worker would dispatch it a "
+                f"second time. Run this deployment with no worker process."
+            )
+            raise QueueConfigurationError(msg)
         available = min(self._batch_size, max(0, self._max_concurrency - len(self._running_tasks)))
         if available <= 0:
             return 0

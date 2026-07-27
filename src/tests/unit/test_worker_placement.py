@@ -16,6 +16,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
+
 pytestmark = pytest.mark.anyio
 
 
@@ -126,6 +128,60 @@ def test_validation_uses_backend_names_not_backend_instances() -> "None":
     with pytest.raises(QueueConfigurationError):
         QueueConfig(queue_backend=_Selector(), worker=WorkerConfig(placement="server"))  # type: ignore[arg-type]
     assert not {name for name in set(sys.modules) - before if name.startswith(("redis", "sqlspec"))}
+
+
+# --------------------------------------------------------------------------- self-dispatching execution
+
+
+def _cloud_tasks_config() -> "CloudTasksExecutionConfig":
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
+
+    return CloudTasksExecutionConfig(
+        project_id="example-project",
+        location="us-central1",
+        queue_id="queue-consumer",
+        service_url="https://queue-consumer-abcdef-uc.a.run.app",
+        service_account_email="queues@example-project.iam.gserviceaccount.com",
+        trust_platform_auth=True,
+    )
+
+
+@pytest.mark.parametrize("placement", ["server", "asgi"])
+def test_cloud_tasks_requires_external_placement(placement: "str") -> "None":
+    """Cloud Tasks schedules delivery itself, so a managed worker would double-dispatch."""
+    with pytest.raises(QueueConfigurationError):
+        QueueConfig(
+            queue_backend="redis",
+            execution_backend=_cloud_tasks_config(),
+            worker=WorkerConfig(placement=placement),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("backend", ["memory", "ephemeral"])
+def test_cloud_tasks_requires_shared_persistent_storage(backend: "str") -> "None":
+    """Delivery arrives in a different process, which cannot see process-local storage."""
+    with pytest.raises(QueueConfigurationError):
+        QueueConfig(
+            queue_backend=backend, execution_backend=_cloud_tasks_config(), worker=WorkerConfig(placement="external")
+        )
+
+
+def test_cloud_tasks_with_shared_storage_and_external_placement_is_valid() -> "None":
+    config = QueueConfig(
+        queue_backend="redis", execution_backend=_cloud_tasks_config(), worker=WorkerConfig(placement="external")
+    )
+
+    assert config.worker.placement == "external"
+
+
+def test_cloud_tasks_placement_validation_imports_no_google_package() -> "None":
+    """The rule is keyed on the selector name, so the extra stays optional."""
+    import sys
+
+    before = set(sys.modules)
+    with pytest.raises(QueueConfigurationError):
+        QueueConfig(queue_backend="redis", execution_backend="cloudtasks", worker=WorkerConfig(placement="server"))
+    assert not {name for name in set(sys.modules) - before if name.startswith("google.cloud.tasks")}
 
 
 # --------------------------------------------------------------------------- invocation marker

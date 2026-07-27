@@ -1,4 +1,11 @@
-"""Public typing helpers for optional observability support and event sinks."""
+"""Public typing helpers for optional observability support.
+
+The supported import location for :mod:`litestar_queues._typing`. Each package
+publishes its own facade over its own private module -- this one does not
+re-export a nested package's types, so event backend protocols live in
+:mod:`litestar_queues.events.typing` and adapter protocols beside their
+adapter.
+"""
 
 from litestar_queues._correlation import SQLSPEC_INSTALLED, sqlspec_correlation_context
 from litestar_queues._typing import (
@@ -19,28 +26,12 @@ from litestar_queues._typing import (
     otel_trace,
     prometheus_default_registry,
 )
-from litestar_queues.events._typing import (
-    ChannelsLike,
-    ChannelsPublishBackend,
-    ChannelsPublishManyBackend,
-    ChannelsStreamBackend,
-    ChannelsSubscriber,
-    ChannelsSubscriptionBackend,
-    ChannelsWaitPublishedBackend,
-)
 from litestar_queues.task import TaskUniqueBy, TaskUniqueUntil
 
 __all__ = (
     "OPENTELEMETRY_INSTALLED",
     "PROMETHEUS_INSTALLED",
     "SQLSPEC_INSTALLED",
-    "ChannelsLike",
-    "ChannelsPublishBackend",
-    "ChannelsPublishManyBackend",
-    "ChannelsStreamBackend",
-    "ChannelsSubscriber",
-    "ChannelsSubscriptionBackend",
-    "ChannelsWaitPublishedBackend",
     "OtelMeter",
     "OtelSpan",
     "OtelSpanKind",

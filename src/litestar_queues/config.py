@@ -13,13 +13,13 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.events import QueueEventProducer, QueueEventPublisher, QueueEventsConfig, TaskExecutionContext
+    from litestar_queues.events.typing import ChannelsLike
     from litestar_queues.execution import BaseExecutionBackend
     from litestar_queues.maintenance import QueueMaintenanceConfig
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.observability import ObservabilityConfig
     from litestar_queues.service import QueueService
     from litestar_queues.task import Task
-    from litestar_queues.typing import ChannelsLike
 
 __all__ = (
     "ExecutionBackendConfig",
@@ -348,6 +348,26 @@ class QueueConfig:
                 f"Use execution_backend='local', or placement='external'."
             )
             raise QueueConfigurationError(msg)
+        if execution == "cloudtasks":
+            if isinstance(self.execution_backend, str):
+                msg = (
+                    "execution_backend='cloudtasks' has no defaults for the project, queue, "
+                    "delivery target, or audience. Configure it as "
+                    "execution_backend=CloudTasksExecutionConfig(...)."
+                )
+                raise QueueConfigurationError(msg)
+            if placement != "external":
+                msg = (
+                    "execution_backend='cloudtasks' schedules work itself and requires "
+                    "WorkerConfig(placement='external')."
+                )
+                raise QueueConfigurationError(msg)
+            if backend in {"memory", "ephemeral"}:
+                msg = (
+                    "execution_backend='cloudtasks' delivers each record to a separate process, "
+                    "which cannot reach process-local storage. Use a shared persistent queue backend."
+                )
+                raise QueueConfigurationError(msg)
         # Ephemeral storage is deliberately unconstrained by placement. Placement
         # does not decide whether the private database exists: whatever entered
         # EphemeralServerContext created it, and the backend refuses to open when

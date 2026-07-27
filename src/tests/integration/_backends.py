@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from litestar_queues.backends import BaseQueueBackend
-    from litestar_queues.backends.sqlspec._typing import SQLSpecStoreConfig
+    from litestar_queues.backends.sqlspec.typing import SQLSpecStoreConfig
 
 
 class PostgresService(Protocol):

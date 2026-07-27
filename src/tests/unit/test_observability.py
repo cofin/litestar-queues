@@ -9,7 +9,7 @@ from litestar_queues import QueueConfig, QueueService, Worker, WorkerConfig, tas
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from litestar_queues.execution.cloudrun._typing import CloudRunExecutionLike, CloudRunOperation
+    from litestar_queues.execution.cloudrun.typing import CloudRunExecutionLike, CloudRunOperation
     from litestar_queues.observability import ObservabilityConfig
 
 pytestmark = pytest.mark.anyio
@@ -737,3 +737,73 @@ def test_counter_prometheus_names_are_unchanged_by_the_instrument_rename() -> "N
     assert _counter_name("litestar_queues.enqueue", None) == "litestar_queues_enqueue"
     assert _counter_name("litestar_queues.worker.loop.error", None) == "litestar_queues_worker_loop_error"
     assert _counter_name("litestar_queues.stale_recovery", None) == "litestar_queues_stale_recovery"
+
+
+async def test_two_label_sets_on_one_metric_name_break_the_collector() -> "None":
+    """The hazard every execution backend has to design around.
+
+    A collector is registered once per registry with fixed label names, so a
+    second emitter using the same metric name with a different label set does not
+    produce a second series -- it raises, and takes the recording call with it.
+    """
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    registry = prometheus_client.CollectorRegistry()
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry))
+
+    runtime.record_counter("litestar_queues.collision", attributes={"queue.task.status": "completed"})
+
+    with pytest.raises(ValueError, match="label"):
+        runtime.record_counter("litestar_queues.collision", attributes={"queue.other.outcome": "recreated"})
+
+
+async def test_execution_backends_never_share_a_metric_name_with_different_labels() -> "None":
+    """Cloud Run reconciliation and Cloud Tasks repair coexist in one process.
+
+    They are separate operations with separate vocabularies, so they are separate
+    metric families. Folding repair into ``execution.reconcile`` would have made
+    whichever backend recorded second raise.
+    """
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    registry = prometheus_client.CollectorRegistry()
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry))
+    shared = {
+        "messaging.destination.name": "default",
+        "queue.task.name": "probe",
+        "queue.execution.backend": "cloudrun",
+        "queue.execution.profile": "",
+    }
+
+    runtime.record_counter(
+        "litestar_queues.execution.dispatch", attributes={**shared, "queue.execution.status": "dispatched"}
+    )
+    runtime.record_counter(
+        "litestar_queues.execution.reconcile", attributes={**shared, "queue.task.status": "completed"}
+    )
+    runtime.record_counter(
+        "litestar_queues.execution.dispatch",
+        attributes={**shared, "queue.execution.backend": "cloudtasks", "queue.execution.status": "scheduled"},
+    )
+    runtime.record_counter(
+        "litestar_queues.execution.repair",
+        attributes={**shared, "queue.execution.backend": "cloudtasks", "queue.repair.outcome": "recreated"},
+    )
+
+    assert (
+        registry.get_sample_value(
+            "litestar_queues_execution_dispatch_total", labels={**shared, "queue.execution.status": "dispatched"}
+        )
+        == 1.0
+    )
+    assert (
+        registry.get_sample_value(
+            "litestar_queues_execution_repair_total",
+            labels={**shared, "queue.execution.backend": "cloudtasks", "queue.repair.outcome": "recreated"},
+        )
+        == 1.0
+    )

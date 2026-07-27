@@ -40,7 +40,7 @@ license = { text = "MIT" }
 name = "litestar-queues"
 readme = "README.md"
 requires-python = ">=3.10"
-version = "0.6.0"
+version = "0.7.0"
 
 [project.urls]
 Changelog = "https://cofin.github.io/litestar-queues/changelog"
@@ -55,6 +55,7 @@ queues = "litestar_queues._cli:queues_group"
 
 [project.optional-dependencies]
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
+cloud-tasks = ["google-cloud-tasks>=2.23.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
@@ -83,7 +84,7 @@ allow-direct-references = true
 allow_dirty = true
 commit = false
 commit_args = "--no-verify"
-current_version = "0.6.0"
+current_version = "0.7.0"
 ignore_missing_files = false
 ignore_missing_version = false
 message = "chore(release): bump to v{new_version}"

@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.events.stream_config import EventStreamConfig
+    from litestar_queues.events.typing import ChannelsLike, ChannelsStreamBackend, ChannelsSubscriptionBackend
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
-    from litestar_queues.typing import ChannelsLike, ChannelsStreamBackend, ChannelsSubscriptionBackend
 
 __all__ = ("StreamMetrics",)
 
