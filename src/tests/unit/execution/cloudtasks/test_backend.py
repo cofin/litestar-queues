@@ -24,7 +24,7 @@ from tests.unit.execution.cloudtasks._fakes import AlreadyExists, FakeCloudTasks
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-    from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -40,7 +40,7 @@ class Harness:
     def __init__(
         self,
         service: "QueueService",
-        backend: "Any",
+        backend: "CloudTasksExecutionBackend",
         client: "FakeCloudTasksClient",
         execution_config: "CloudTasksExecutionConfig",
         events: "InMemoryQueueEventSink",
@@ -101,7 +101,9 @@ async def harness(
                 queue_backend=shared_storage,
                 execution_backend=execution_config,
                 worker=WorkerConfig(placement="external"),
-                events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,))),
+                # Unbuffered: these tests assert on what one call published, and
+                # the default producer buffer only flushes at close.
+                events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
             ),
             execution_backend=backend,
         )
