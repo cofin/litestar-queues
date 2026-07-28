@@ -66,6 +66,18 @@ def test_build_stream_router_sse_only_registers_no_websocket_routes() -> None:
     assert _stream_paths(router) == {"/queues/events/sse/tasks/{task_id:str}"}
 
 
+def test_build_stream_router_names_handlers_from_namespace() -> None:
+    router = _build_stream_router(
+        QueueConfig(namespace="dma", worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        EventStreamConfig(scopes={"task"}),
+    )
+
+    assert _stream_handler(router, "/tasks/{task_id:str}").name == "dma_event_stream_task"
+    sse_route = next(route for route in router.routes if "/sse/tasks/{task_id:str}" in route.path)
+    sse_handler = sse_route.route_handlers[0]
+    assert sse_handler.name == "dma_event_sse_task"
+
+
 def test_stream_config_with_both_transports_disabled_raises_at_app_init() -> None:
     from litestar_queues.exceptions import QueueConfigurationError
 

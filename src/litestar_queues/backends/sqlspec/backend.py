@@ -181,6 +181,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._event_channel = worker_wakeups.channel if worker_wakeups is not None else None
         self._owns_event_channel = self._event_channel is None
         self._wakeup_channel = worker_wakeups.channel_name if worker_wakeups is not None else None
+        if self._wakeup_channel is None and config is not None:
+            self._wakeup_channel = config.names.database_channel("tasks")
         self._wakeup_transport = worker_wakeups.transport if worker_wakeups is not None else None
         self._event_history_table_name = (
             validate_table_name(backend_config.event_history_table_name)

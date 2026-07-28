@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, get_args, runtime_checkable
 
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import DEFAULT_NAMESPACE, QueueNamespace
 
 if TYPE_CHECKING:
     from litestar.datastructures import State
@@ -28,6 +29,7 @@ __all__ = (
     "QueueBackendConfig",
     "QueueBackendConfigProtocol",
     "QueueConfig",
+    "QueueNamespace",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "WorkerConfig",
@@ -266,6 +268,9 @@ class WorkerConfig:
 class QueueConfig:
     """Configuration for QueuePlugin."""
 
+    namespace: "str" = DEFAULT_NAMESPACE
+    """Root used to derive package-owned runtime identifiers."""
+
     queue_backend: "QueueBackendConfig" = "ephemeral"
     """Queue-record persistence backend selector or typed backend configuration."""
 
@@ -281,11 +286,11 @@ class QueueConfig:
     worker: "WorkerConfig" = field(default_factory=WorkerConfig)
     """Shared configuration for in-app and standalone workers."""
 
-    service_dependency_key: "str" = "queue_service"
-    """Litestar dependency key for the injected queue service."""
+    service_dependency_key: "str | None" = None
+    """Litestar dependency key for the injected queue service; ``None`` derives it from the namespace."""
 
-    events_dependency_key: "str" = "queue_events"
-    """Litestar dependency key for the injected queue event producer."""
+    events_dependency_key: "str | None" = None
+    """Litestar dependency key for the event producer; ``None`` derives it from the namespace."""
 
     events: "QueueEventsConfig | None" = None
     """Task-event capabilities; ``None`` disables delivery, streams, and history."""
@@ -309,11 +314,11 @@ class QueueConfig:
     Threads are created on demand, so this is a ceiling rather than a startup cost.
     """
 
-    sync_thread_name_prefix: "str" = "litestar-queues"
-    """Thread-name prefix for the synchronous task thread pool."""
+    sync_thread_name_prefix: "str | None" = None
+    """Thread-name prefix for synchronous tasks; ``None`` derives it from the namespace."""
 
-    scheduler_canary_task: "str" = "scheduler.heartbeat"
-    """Registered task name used by the scheduler-health command."""
+    scheduler_canary_task: "str | None" = None
+    """Scheduler-health task name; ``None`` derives the package-owned default."""
 
     maintenance: "QueueMaintenanceConfig | None" = None
     """Automatic maintenance policy; ``None`` disables the maintenance loop."""
@@ -321,8 +326,20 @@ class QueueConfig:
     max_argument_identity_bytes: "int | None" = None
     """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
 
+    names: "QueueNamespace" = field(init=False)
+    """Validated format-specific runtime-name renderer."""
+
     def __post_init__(self) -> "None":
         """Validate the synchronous task thread pool and the placement matrix."""
+        self.names = QueueNamespace(self.namespace)
+        if self.service_dependency_key is None:
+            self.service_dependency_key = self.names.registration("service")
+        if self.events_dependency_key is None:
+            self.events_dependency_key = self.names.registration("events")
+        if self.sync_thread_name_prefix is None:
+            self.sync_thread_name_prefix = self.names.resource()
+        if self.scheduler_canary_task is None:
+            self.scheduler_canary_task = self.names.package_task("scheduler", "heartbeat")
         if self.sync_thread_pool_size <= 0:
             msg = "QueueConfig.sync_thread_pool_size must be greater than 0."
             raise QueueConfigurationError(msg)
@@ -422,9 +439,39 @@ class QueueConfig:
         from litestar.di import Provide
 
         return {
-            self.service_dependency_key: Provide(self.provide_service_dependency),
-            self.events_dependency_key: Provide(self.provide_event_producer_dependency),
+            cast("str", self.service_dependency_key): Provide(self.provide_service_dependency),
+            cast("str", self.events_dependency_key): Provide(self.provide_event_producer_dependency),
         }
+
+    @property
+    def service_state_key(self) -> "str":
+        """Litestar state key holding the queue service."""
+        return self.names.registration("service")
+
+    @property
+    def worker_state_key(self) -> "str":
+        """Litestar state key holding the in-process worker."""
+        return self.names.registration("worker")
+
+    @property
+    def event_publisher_state_key(self) -> "str":
+        """Litestar state key holding the event publisher."""
+        return self.names.registration("event", "publisher")
+
+    @property
+    def event_channels_state_key(self) -> "str":
+        """Litestar state key holding the resolved channels backend."""
+        return self.names.registration("event", "channels")
+
+    @property
+    def observability_runtime_state_key(self) -> "str":
+        """Litestar state key holding the observability runtime."""
+        return self.names.registration("observability", "runtime")
+
+    @property
+    def maintenance_name(self) -> "str":
+        """Distributed maintenance coordination name."""
+        return self.names.coordination("maintenance")
 
     def get_service(self, state: "State | None" = None) -> "QueueService":
         """Return a QueueService for this configuration."""
@@ -433,19 +480,20 @@ class QueueConfig:
         if state is None:
             return QueueService(self)
 
-        if _SERVICE_STATE_KEY not in state:
+        state_key = self.service_state_key
+        if state_key not in state:
             msg = (
-                f"QueueService is not available in app state under {_SERVICE_STATE_KEY!r}; "
+                f"QueueService is not available in app state under {state_key!r}; "
                 "ensure QueuePlugin startup has completed before resolving the queue service."
             )
             raise RuntimeError(msg)
 
-        cached = state[_SERVICE_STATE_KEY]
+        cached = state[state_key]
         if isinstance(cached, QueueService):
             return cached
 
         msg = (
-            f"QueueService has not been opened in app state under {_SERVICE_STATE_KEY!r}; "
+            f"QueueService has not been opened in app state under {state_key!r}; "
             f"found {type(cached).__name__}."
         )
         raise RuntimeError(msg)
@@ -486,7 +534,7 @@ class QueueConfig:
         events_config = self.events
         if events_config is None or events_config.delivery is None:
             sink: "QueueEventSink" = NoopQueueEventSink()
-            return QueueEventPublisher(sink)
+            return QueueEventPublisher(sink, namespace=self.names)
         delivery = events_config.delivery
         sinks: "list[QueueEventSink]" = []
         live_backend = events_config.channels if events_config.channels is not None else channels_backend
@@ -511,6 +559,7 @@ class QueueConfig:
             publish_task_channel=delivery.publish_task_channel,
             publish_queue_channel=delivery.publish_queue_channel,
             publish_global_lifecycle=delivery.publish_global_lifecycle,
+            namespace=self.names,
         )
 
     async def provide_service_dependency(self, state: "State") -> 'AsyncIterator["QueueService"]':
@@ -521,11 +570,12 @@ class QueueConfig:
         """Yield the application-scoped QueueEventProducer for Litestar dependency injection."""
         from litestar_queues.events import QueueEventProducer
 
-        if _EVENT_PUBLISHER_STATE_KEY not in state:
+        state_key = self.event_publisher_state_key
+        if state_key not in state:
             msg = (
                 "Queue event publisher is not available in app state under "
-                f"{_EVENT_PUBLISHER_STATE_KEY!r}; ensure QueuePlugin startup has completed before "
+                f"{state_key!r}; ensure QueuePlugin startup has completed before "
                 "resolving queue events."
             )
             raise RuntimeError(msg)
-        yield QueueEventProducer(state[_EVENT_PUBLISHER_STATE_KEY])
+        yield QueueEventProducer(state[state_key])

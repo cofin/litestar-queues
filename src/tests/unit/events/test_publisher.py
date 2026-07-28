@@ -53,6 +53,13 @@ def test_queue_channels_normalize_parts_deterministically() -> "None":
     assert QueueChannels.custom("tenant:acme") == "litestar_queues:custom:tenant:acme:events"
 
 
+def test_queue_event_publisher_uses_custom_namespace() -> "None":
+    publisher = QueueEventPublisher(namespace="dma")
+    event = QueueEvent(type="task.started", scope="task", task_id="task-1")
+
+    assert publisher.resolve_channels(event) == ("dma:task:task-1:events",)
+
+
 async def test_queue_event_publisher_targets_configured_channels() -> "None":
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink, publish_queue_channel=True, publish_global_lifecycle=True)

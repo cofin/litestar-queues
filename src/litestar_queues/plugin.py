@@ -8,17 +8,7 @@ from typing import TYPE_CHECKING
 from litestar.channels import ChannelsPlugin
 from litestar.plugins import CLIPlugin, InitPlugin
 
-from litestar_queues.config import (
-    _EVENT_CHANNELS_STATE_KEY,
-    _EVENT_PUBLISHER_STATE_KEY,
-    _OBSERVABILITY_RUNTIME_STATE_KEY,
-    _SERVICE_STATE_KEY,
-    _WORKER_STATE_KEY,
-    MigrationConfiguringBackend,
-    QueueConfig,
-    execution_backend_name,
-    queue_backend_name,
-)
+from litestar_queues.config import MigrationConfiguringBackend, QueueConfig, execution_backend_name, queue_backend_name
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules, set_default_service
@@ -161,9 +151,12 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         self._event_publisher = self._config.get_event_publisher(channels_backend=self._auto_channels_backend)
         app_config.dependencies.update(self._config.dependencies)
         app_config.signature_namespace.update(self._config.signature_namespace)
-        state = {_SERVICE_STATE_KEY: self._config, _EVENT_PUBLISHER_STATE_KEY: self._event_publisher}
+        state = {
+            self._config.service_state_key: self._config,
+            self._config.event_publisher_state_key: self._event_publisher,
+        }
         if self._config.events is not None and self._effective_channels_backend() is not None:
-            state[_EVENT_CHANNELS_STATE_KEY] = self._effective_channels_backend()
+            state[self._config.event_channels_state_key] = self._effective_channels_backend()
         stream_config = self._config.events.stream if self._config.events is not None else None
         if stream_config is not None:
             from litestar_queues.events.streaming import _build_stream_router
@@ -373,7 +366,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
 
             observability_runtime = create_observability_runtime(observability_config, app=app)
         if observability_runtime is not None:
-            app.state[_OBSERVABILITY_RUNTIME_STATE_KEY] = observability_runtime
+            app.state[self._config.observability_runtime_state_key] = observability_runtime
 
         self._service = QueueService(
             self._config,
@@ -383,11 +376,11 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         )
         await self._service.open()
         set_default_service(self._service)
-        app.state[_SERVICE_STATE_KEY] = self._service
-        app.state[_EVENT_PUBLISHER_STATE_KEY] = self._service.get_event_publisher()
+        app.state[self._config.service_state_key] = self._service
+        app.state[self._config.event_publisher_state_key] = self._service.get_event_publisher()
         effective_channels = self._effective_channels_backend()
         if self._config.events is not None and effective_channels is not None:
-            app.state[_EVENT_CHANNELS_STATE_KEY] = effective_channels
+            app.state[self._config.event_channels_state_key] = effective_channels
 
         # Schedules belong to whichever process owns a worker, so an enqueue-only
         # ASGI process never writes schedule records: server and external
@@ -404,7 +397,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             self._worker_task = asyncio.create_task(self._worker.start())
             self._worker_task.add_done_callback(self._log_worker_task_result)
             await asyncio.sleep(0)
-            app.state[_WORKER_STATE_KEY] = self._worker
+            app.state[self._config.worker_state_key] = self._worker
 
         try:
             yield

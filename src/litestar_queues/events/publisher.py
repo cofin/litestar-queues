@@ -8,6 +8,7 @@ from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, default_publish_many
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -84,6 +85,7 @@ class QueueEventPublisher:
         "_event_log",
         "_event_log_strict",
         "_live_failure_signature",
+        "_namespace",
         "_sink",
         "publish_global_lifecycle",
         "publish_queue_channel",
@@ -102,6 +104,7 @@ class QueueEventPublisher:
         publish_task_channel: "bool" = True,
         publish_queue_channel: "bool" = True,
         publish_global_lifecycle: "bool" = False,
+        namespace: "QueueNamespace | str | None" = None,
     ) -> "None":
         self._sink = sink or NoopQueueEventSink()
         self._event_log = event_log
@@ -116,6 +119,7 @@ class QueueEventPublisher:
         self.publish_queue_channel = publish_queue_channel
         self.publish_global_lifecycle = publish_global_lifecycle
         self._live_failure_signature: "tuple[str, str] | None" = None
+        self._namespace = namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
 
     @property
     def sink(self) -> "QueueEventSink":
@@ -228,22 +232,22 @@ class QueueEventPublisher:
         """Return canonical publish channels for an event plus explicit extras."""
         resolved: "list[str]" = []
         if self.publish_task_channel and event.task_id is not None:
-            resolved.append(QueueChannels.task(event.task_id))
+            resolved.append(QueueChannels.task(event.task_id, namespace=self._namespace))
         if event.scope == "queue" and event.scope_key is not None:
-            resolved.append(QueueChannels.queue(event.scope_key))
+            resolved.append(QueueChannels.queue(event.scope_key, namespace=self._namespace))
         if self.publish_queue_channel and event.queue is not None:
-            resolved.append(QueueChannels.queue(event.queue))
+            resolved.append(QueueChannels.queue(event.queue, namespace=self._namespace))
         if event.scope == "worker" and event.worker_id is not None:
-            resolved.append(QueueChannels.worker(event.worker_id))
+            resolved.append(QueueChannels.worker(event.worker_id, namespace=self._namespace))
         if event.scope == "global":
-            resolved.append(QueueChannels.global_channel())
+            resolved.append(QueueChannels.global_channel(namespace=self._namespace))
         if event.scope == "custom" and event.scope_key is not None:
-            resolved.append(QueueChannels.custom(event.scope_key))
+            resolved.append(QueueChannels.custom(event.scope_key, namespace=self._namespace))
         if self.publish_global_lifecycle and event.type in _LIFECYCLE_EVENT_TYPES:
-            resolved.append(QueueChannels.global_channel())
+            resolved.append(QueueChannels.global_channel(namespace=self._namespace))
         if channels:
             resolved.extend(channels)
-        return _dedupe(resolved or [QueueChannels.global_channel()])
+        return _dedupe(resolved or [QueueChannels.global_channel(namespace=self._namespace)])
 
 
 def _dedupe(channels: "Sequence[str]") -> "tuple[str, ...]":

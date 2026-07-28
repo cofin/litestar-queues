@@ -705,9 +705,22 @@ class RedisQueueBackend(BaseQueueBackend):
         self._client: "ClientLike | None" = cast("ClientLike | None", backend_config.client)
         self._owns_client = self._client is None
         self._url = backend_config.url
-        self._key_prefix = backend_config.key_prefix.rstrip(":")
+        key_prefix = (
+            backend_config.key_prefix
+            if backend_config.key_prefix is not None
+            else config.names.root
+            if config is not None
+            else "litestar_queues"
+        )
+        self._key_prefix = key_prefix.rstrip(":")
         self._notifications = backend_config.worker_wakeups
-        self._wakeup_channel = backend_config.wakeup_channel
+        self._wakeup_channel = (
+            backend_config.wakeup_channel
+            if backend_config.wakeup_channel is not None
+            else config.names.channel("worker_wakeups")
+            if config is not None
+            else "litestar_queues:worker_wakeups"
+        )
         self._pubsub: "PubSubLike | None" = None
         self._pending_read = PendingNativeRead()
         self._event_log: "RedisQueueEventLog | None" = None

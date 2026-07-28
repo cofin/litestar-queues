@@ -121,6 +121,24 @@ def test_queue_config_get_service_requires_opened_app_state_service() -> "None":
     assert config.get_service(app_config.state) is service
 
 
+def test_custom_namespace_registers_disjoint_dependencies_and_state() -> "None":
+    from litestar.config.app import AppConfig
+
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    alpha = QueueConfig(namespace="alpha", worker=WorkerConfig(placement="external"), queue_backend="memory")
+    beta = QueueConfig(namespace="beta", worker=WorkerConfig(placement="external"), queue_backend="memory")
+    app_config = AppConfig()
+
+    QueuePlugin(alpha).on_app_init(app_config)
+    QueuePlugin(beta).on_app_init(app_config)
+
+    assert {"alpha_service", "alpha_events", "beta_service", "beta_events"} <= app_config.dependencies.keys()
+    assert app_config.state["alpha_service"] is alpha
+    assert app_config.state["beta_service"] is beta
+    assert "queue_service" not in app_config.state
+
+
 async def test_plugin_worker_receives_configured_poll_backoff_settings() -> "None":
     """Backoff settings are passed explicitly into the plugin-started worker, not read from config in the loop."""
     from litestar_queues import QueueConfig, QueuePlugin

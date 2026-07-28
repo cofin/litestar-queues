@@ -78,6 +78,50 @@ backends in one process legitimately record the same metrics.
 """
 
 
+@dataclass(frozen=True, slots=True)
+class _TransportMetricSpec:
+    kind: str
+    unit: str
+    attributes: frozenset[str]
+
+
+_TRANSPORT_METRIC_SPECS = {
+    "litestar_queues.enqueue.batch.size": _TransportMetricSpec("histogram", "records", frozenset({"queue.backend", "queue.operation"})),
+    "litestar_queues.wakeup.emitted": _TransportMetricSpec("counter", "hints", frozenset({"queue.backend", "queue.transport"})),
+    "litestar_queues.wakeup.coalesced": _TransportMetricSpec("counter", "hints", frozenset({"queue.backend", "queue.transport"})),
+    "litestar_queues.worker.poll.empty": _TransportMetricSpec("counter", "polls", frozenset({"queue.backend"})),
+    "litestar_queues.worker.poll.delay": _TransportMetricSpec("histogram", "s", frozenset({"queue.backend", "worker.wait.kind"})),
+    "litestar_queues.worker.wait.duration": _TransportMetricSpec("duration", "s", frozenset({"queue.backend", "worker.wait.kind"})),
+    "litestar_queues.worker.wakeup_to_claim.duration": _TransportMetricSpec("duration", "s", frozenset({"queue.backend", "queue.transport"})),
+    "litestar_queues.listener.reconnect": _TransportMetricSpec("counter", "reconnects", frozenset({"queue.backend", "queue.transport"})),
+    "litestar_queues.listener.error": _TransportMetricSpec("counter", "errors", frozenset({"queue.backend", "queue.transport", "queue.outcome"})),
+    "litestar_queues.claim.batch.size": _TransportMetricSpec("histogram", "records", frozenset({"queue.backend", "queue.operation"})),
+    "litestar_queues.event.flush.size": _TransportMetricSpec("histogram", "events", frozenset({"queue.transport", "queue.outcome"})),
+    "litestar_queues.event.flush.duration": _TransportMetricSpec("duration", "s", frozenset({"queue.transport", "queue.outcome"})),
+    "litestar_queues.event.dropped": _TransportMetricSpec("counter", "events", frozenset({"queue.transport", "queue.outcome"})),
+}
+_VALUE_HISTOGRAM_BUCKETS = (1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0)
+
+
+def _validate_transport_metric(name: str, *, kind: str, unit: str, attributes: "Mapping[str, str]") -> None:
+    spec = _TRANSPORT_METRIC_SPECS.get(name)
+    if spec is None:
+        return
+    if spec.kind != kind:
+        msg = f"Transport metric {name!r} requires kind {spec.kind!r}, not {kind!r}."
+        raise ValueError(msg)
+    if spec.unit != unit:
+        msg = f"Transport metric {name!r} requires unit {spec.unit!r}, not {unit!r}."
+        raise ValueError(msg)
+    actual = frozenset(attributes)
+    if actual != spec.attributes:
+        msg = (
+            f"Transport metric {name!r} requires attributes {sorted(spec.attributes)!r}, "
+            f"not {sorted(actual)!r}."
+        )
+        raise ValueError(msg)
+
+
 @dataclass(slots=True)
 class ObservabilityConfig:
     """Configuration for optional queue-domain observability."""
@@ -225,6 +269,12 @@ class QueueObservabilityRuntimeProtocol(Protocol):
         """Record a duration sample."""
         ...
 
+    def record_histogram(
+        self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]"
+    ) -> "None":
+        """Record a value histogram sample."""
+        ...
+
 
 class _SpanHandle:
     """A started span plus the context token that made it current."""
@@ -244,6 +294,7 @@ class QueueObservabilityRuntime:
         "_counters",
         "_durations",
         "_gauges",
+        "_histograms",
         "_meter",
         "_otel_enabled",
         "_prometheus_enabled",
@@ -267,6 +318,7 @@ class QueueObservabilityRuntime:
         self._counters: "dict[str, Any]" = {}
         self._durations: "dict[str, Any]" = {}
         self._gauges: "dict[str, Any]" = {}
+        self._histograms: "dict[tuple[str, str], Any]" = {}
 
     @property
     def sqlcommenter_enabled(self) -> "bool":
@@ -409,6 +461,30 @@ class QueueObservabilityRuntime:
             )
             collector.labels(**dict(attributes)).observe(seconds)
 
+    def record_histogram(
+        self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]"
+    ) -> "None":
+        """Record a non-duration histogram sample for enabled metric sinks."""
+        if not self.enabled:
+            return
+        _validate_transport_metric(name, kind="histogram", unit=unit, attributes=attributes)
+        if self._otel_enabled:
+            key = (name, unit)
+            histogram = self._histograms.get(key)
+            if histogram is None:
+                histogram = self.get_meter().create_histogram(name, unit=unit)
+                self._histograms[key] = histogram
+            histogram.record(value, attributes=dict(attributes))
+        if self._prometheus_enabled:
+            collector = self._prometheus_collector(
+                PrometheusHistogram,
+                name,
+                _histogram_name(name, unit, self._config),
+                attributes,
+                buckets=_VALUE_HISTOGRAM_BUCKETS,
+            )
+            collector.labels(**dict(attributes)).observe(value)
+
     def _prometheus_collector(
         self,
         collector_type: "Any",
@@ -521,3 +597,8 @@ def _duration_name(name: "str", config: "ObservabilityConfig | None") -> "str":
     if not base.endswith("_seconds"):
         base = f"{base}_seconds"
     return f"{prefix}_{base}"
+
+
+def _histogram_name(name: "str", unit: "str", config: "ObservabilityConfig | None") -> "str":
+    prefix, base = _base_name(name, config)
+    return f"{prefix}_{base}_{unit}"

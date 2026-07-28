@@ -19,14 +19,14 @@ class RedisBackendConfig:
     url: "str" = "redis://localhost:6379/0"
     """Redis connection URL used when no client is injected."""
 
-    key_prefix: "str" = "litestar_queues"
-    """Prefix applied to every queue key stored in Redis."""
+    key_prefix: "str | None" = None
+    """Prefix applied to every queue key; ``None`` derives it from ``QueueConfig.namespace``."""
 
     worker_wakeups: "bool" = True
     """Whether workers subscribe for Redis wakeup hints between polling passes."""
 
-    wakeup_channel: "str" = DEFAULT_WAKEUP_CHANNEL
-    """Redis pub/sub channel used for worker wakeup hints."""
+    wakeup_channel: "str | None" = None
+    """Worker-wakeup pub/sub channel; ``None`` derives it from ``QueueConfig.namespace``."""
 
     client: "Redis | None" = None
     """Injected async Redis client; ``None`` creates one from ``url``."""

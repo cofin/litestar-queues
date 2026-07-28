@@ -107,7 +107,13 @@ class SQLAlchemyBackend(BaseQueueBackend):
             self._resolve_task_reservation_model_classes(backend_config.task_reservation_model_class)
         )
         self._notifications = backend_config.worker_wakeups
-        self._wakeup_channel = backend_config.wakeup_channel
+        self._wakeup_channel = (
+            backend_config.wakeup_channel
+            if backend_config.wakeup_channel is not None
+            else config.names.database_channel("tasks")
+            if config is not None
+            else "litestar_queues_tasks"
+        )
         self._event_poll_interval = backend_config.wakeup_poll_interval
         self._notification_listener: "NotificationListener | None" = None
         self._observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None

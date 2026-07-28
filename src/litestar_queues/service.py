@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable, iscoroutinefunction
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from typing_extensions import Self
@@ -240,7 +240,7 @@ class QueueService:
             if self._sync_executor is None:
                 self._sync_executor = ThreadPoolExecutor(
                     max_workers=self._config.sync_thread_pool_size,
-                    thread_name_prefix=self._config.sync_thread_name_prefix,
+                    thread_name_prefix=cast("str", self._config.sync_thread_name_prefix),
                 )
                 opened.append(_RESOURCE_SYNC_EXECUTOR)
         except BaseException:

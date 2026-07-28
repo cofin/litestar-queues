@@ -59,8 +59,8 @@ class SQLAlchemyBackendConfig:
     worker_wakeups: "bool" = False
     """Whether workers listen for database wakeup hints between polling passes."""
 
-    wakeup_channel: "str" = "litestar_queues_tasks"
-    """Database notification channel used for worker wakeup hints."""
+    wakeup_channel: "str | None" = None
+    """Database notification channel; ``None`` derives it from ``QueueConfig.namespace``."""
 
     wakeup_poll_interval: "float | None" = None
     """Wakeup-listener fallback poll interval in seconds; ``None`` uses the backend default."""
