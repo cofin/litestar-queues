@@ -52,6 +52,13 @@ The queue backend stores task records. ``local`` runs work in a worker process.
 does not store the queue. Backend notifications wake workers, but they do not
 send task events to browsers.
 
+Batch claims are also a persistence capability, not an execution-placement
+choice. Memory claims a batch under its process-local lock. SQLSpec uses a
+single returning claim on capable stores, and Advanced Alchemy uses a native
+PostgreSQL batch claim. Every backend inherits a safe single-record loop when
+its storage cannot preserve bounded ordering and ownership in one batch;
+Redis and Valkey intentionally use that fallback.
+
 Install extras
 ==============
 

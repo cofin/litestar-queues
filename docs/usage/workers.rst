@@ -131,6 +131,13 @@ for running records and checks external work. ``Worker.run_once()`` returns
 after it schedules claimed tasks; it does not wait for them to finish. Use
 :doc:`results` when a caller must observe the final state.
 
+``batch_size`` is the maximum requested claim size, not a promise that every
+backend performs one storage operation. Memory, capable SQLSpec stores, and
+PostgreSQL Advanced Alchemy have native bounded batch paths. Other stores use
+the safe ``claim_next`` loop and may return a shorter batch as soon as no
+eligible record remains. Both paths preserve exclusive ownership and the same
+queue/execution filters.
+
 Shutdown
 ========
 

@@ -99,6 +99,12 @@ and known scheduled or retry work clamps the wait to its due time. Set
 ``poll_backoff_max=None`` to retain fixed-interval polling when latency matters
 more than idle load.
 
+Validation requires ``poll_interval > 0``,
+``poll_backoff_max >= poll_interval`` when a maximum is set,
+``poll_backoff_multiplier >= 1.0``, and ``0.0 <= poll_jitter <= 1.0``. The
+stored interval resets to ``poll_interval`` on startup, claimed work, a native
+notification, and recoverable backend or listener errors.
+
 Defaults favor zero-configuration background execution: ephemeral SQLite,
 local execution, and one server-owned worker started by ``litestar run``.
 Choose persistent storage and placement explicitly for durable deployments.
