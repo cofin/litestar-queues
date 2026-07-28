@@ -268,6 +268,30 @@ come from the configured built-in vocabulary; arbitrary channel names, payload
 fields, task arguments, record identifiers, and exception messages never become
 metric labels.
 
+Controlled transport benchmark
+------------------------------
+
+Maintainers can compare the instrumented control paths without external
+services:
+
+.. code-block:: bash
+
+   uv run python tools/benchmark_queue_transports.py \
+       --tasks 1000 --batch-size 100 --pretty \
+       --output transport-benchmark.json
+
+The versioned JSON records environment metadata, parameters, operation counts,
+duration, throughput, and latency percentiles where latency is meaningful. The
+idle scenario compares fixed and adaptive backend calls, the notification
+scenario measures notification-to-claim latency and reconciliation calls, and
+the batch scenarios compare sequential claims and event publication with their
+native batched equivalents.
+
+This is a controlled fake-operation microbenchmark for architectural
+comparisons, not an end-to-end backend result or a CI performance gate. Use
+``tools/benchmark_queues.py`` for service-backed measurements, and do not
+publish numbers from a dirty or unreviewed local run as release claims.
+
 That constraint is why re-checking lost deliveries reports into
 ``litestar_queues.execution.repair`` rather than joining
 ``litestar_queues.execution.reconcile``. Both describe bringing a record back in
