@@ -173,6 +173,49 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         assert 'placement="asgi"' in single_process_app, name
 
 
+def test_realtime_examples_and_guides_lock_task_context_lifecycle_semantics() -> None:
+    examples_readme = (EXAMPLES_ROOT / "README.md").read_text()
+    events_guide = (ROOT / "docs" / "usage" / "events.rst").read_text()
+    tasks_guide = (ROOT / "docs" / "usage" / "tasks.rst").read_text()
+
+    for name in EXAMPLE_VARIANTS:
+        app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
+        assert "ctx.beat(" not in app_source, name
+        assert (
+            "ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={\"line\": message})"
+            in app_source
+        ), name
+        assert '"crawl.page_discovered",' in app_source, name
+        assert 'payload={"url": DISCOVERED_PAGE_URL},' in app_source, name
+        assert 'return {"task_id": ctx.task_id, "status": "complete"}' in app_source, name
+        assert 'ctx.event("task.completed"' not in app_source, name
+        assert 'ctx.event("task.failed"' not in app_source, name
+
+    for marker in (
+        "Automatic heartbeats keep active jobs live",
+        "ctx.beat(detail)",
+        "ctx.progress(current=..., total=..., message=..., payload=...)",
+        "ctx.event(name, message=..., payload=..., immediate=False)",
+        "Returning completes the task",
+        "Raising follows retry policy",
+    ):
+        assert marker in examples_readme
+    for marker in (
+        "ctx.progress(",
+        "current=3,",
+        "total=6,",
+        "message=\"3/6 pages\",",
+        "payload={\"page\": 3},",
+        "ctx.event(",
+        "\"crawl.page_discovered\",",
+        "immediate=False,",
+    ):
+        assert marker in events_guide
+    assert "does not update progress or terminal task state" in " ".join(events_guide.split())
+    assert "A return value becomes the completed result" in tasks_guide
+    assert "A raised exception follows the configured retry policy" in tasks_guide
+
+
 def test_htmx_realtime_examples_keep_live_channels_process_local_by_default() -> None:
     for name in EXAMPLE_VARIANTS:
         app_source = (EXAMPLES_ROOT / name / "app.py").read_text()

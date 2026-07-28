@@ -42,6 +42,21 @@ The task module must still be imported before execution. Set
 ``QueueConfig(task_modules=("myapp.tasks",))`` or call
 :func:`~litestar_queues.discover_tasks` during startup.
 
+Completion and failure
+======================
+
+A return value becomes the completed result stored on the queue record, and
+the queue publishes the automatic ``task.completed`` lifecycle event when live
+delivery is configured. A raised exception follows the configured retry policy.
+An attempt that will retry publishes ``task.failed`` with
+``will_retry=true`` and returns the record to pending; the final exhausted
+attempt leaves it failed with ``will_retry=false``.
+
+Consumers should use lifecycle events for timely notification, then refresh
+the :class:`~litestar_queues.TaskResult` for the authoritative result, error,
+and terminal status. Task functions do not publish their own completed or
+failed events.
+
 Choose where defaults live
 ==========================
 

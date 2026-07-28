@@ -44,6 +44,25 @@ event transport. Set `LITESTAR_QUEUES_EXAMPLE_PLACEMENT` to `server`, `asgi`,
 or `external` only with a queue and Channels backend appropriate for that
 process topology.
 
+## Task context contract
+
+Every app uses the same runnable task semantics:
+
+- Automatic heartbeats keep active jobs live; the basic loop does not call
+  `ctx.beat()`. Use `ctx.beat(detail)` only to replace the short diagnostic
+  detail written by the next heartbeat.
+- `ctx.progress(current=..., total=..., message=..., payload=...)` publishes
+  standardized progress for status and UI consumers.
+- `ctx.event(name, message=..., payload=..., immediate=False)` publishes an
+  application event. It does not change progress or terminal task state.
+- Returning completes the task, stores the returned result, and produces the
+  queue-owned `task.completed` event. Raising follows retry policy:
+  `task.failed` carries `will_retry`, and another `task.started` can follow for
+  the next attempt.
+
+The demo payloads are intentionally small. Store large pages, files, or model
+artifacts outside the queue and publish a stable reference.
+
 Start with the README in the directory you want to run. Every example uses the
 `examples` dev dependency group (`uv sync --group examples --group dev`) and
 local frontend dependencies from its own `package.json`.
