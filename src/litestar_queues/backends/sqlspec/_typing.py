@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+    from sqlspec.adapters.sqlite import SqliteConfig
+
 
 DatetimeParam: TypeAlias = datetime | str
 
@@ -70,3 +73,10 @@ class SQLSpecDriver(Protocol):
     async def select_one_or_none(self, statement: Any, *parameters: Any, **kwargs: Any) -> Any | None: ...
 
     def select_stream(self, statement: Any, *, chunk_size: int | None = None) -> "AsyncIterator[Any] | Any": ...
+
+
+if TYPE_CHECKING:
+    _sync_config_contract: SQLSpecConfig = SqliteConfig()
+    _async_config_contract: SQLSpecConfig = AsyncpgConfig()
+    _sync_session_contract: SQLSpecSessionConfig = SqliteConfig()
+    _async_session_contract: SQLSpecSessionConfig = AsyncpgConfig()

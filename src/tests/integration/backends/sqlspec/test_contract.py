@@ -20,7 +20,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import uuid4
 
 import pytest
@@ -2114,7 +2114,7 @@ class _UniqueViolationDriver:
 
 
 class _FakeSyncConfig:
-    is_async = False
+    is_async: ClassVar[bool] = False
 
 
 class _FakeSyncSQLSpec:
