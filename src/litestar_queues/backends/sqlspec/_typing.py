@@ -10,9 +10,6 @@ if TYPE_CHECKING:
     from sqlspec.adapters.sqlite import SqliteConfig
 
 
-DatetimeParam: TypeAlias = datetime | str
-
-
 class SQLSpecConfig(Protocol):
     """Structural subset used from SQLSpec adapter configs."""
 
@@ -80,3 +77,6 @@ if TYPE_CHECKING:
     _async_config_contract: SQLSpecConfig = AsyncpgConfig()
     _sync_session_contract: SQLSpecSessionConfig = SqliteConfig()
     _async_session_contract: SQLSpecSessionConfig = AsyncpgConfig()
+
+
+DatetimeParam: TypeAlias = datetime | str
