@@ -36,6 +36,7 @@ class LiveEventBuffer:
     __slots__ = (
         "_condition",
         "_config",
+        "_logger",
         "_order",
         "_pending",
         "_record_drop",
@@ -46,9 +47,15 @@ class LiveEventBuffer:
     )
 
     def __init__(
-        self, config: "EventBufferConfig", *, sink_publish: "SinkPublish", record_drop: "RecordDrop"
+        self,
+        config: "EventBufferConfig",
+        *,
+        sink_publish: "SinkPublish",
+        record_drop: "RecordDrop",
+        runtime_logger: "logging.Logger | None" = None,
     ) -> "None":
         self._config = config
+        self._logger = runtime_logger or logger
         self._sink_publish = sink_publish
         self._record_drop = record_drop
         self._condition = asyncio.Condition()
@@ -166,7 +173,7 @@ class LiveEventBuffer:
         if self._warned_drop:
             return
         self._warned_drop = True
-        logger.warning(
+        self._logger.warning(
             "Queue event buffer full; dropping event",
             extra={"queue_event_scope": event.scope, "queue_event_type": event.type},
         )

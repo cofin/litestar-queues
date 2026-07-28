@@ -175,7 +175,7 @@ async def test_consume_one_claims_dispatched_record_after_queue_deadline() -> "N
     assert result.result == "completed"
 
 
-async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":
+async def test_run_task_loads_factory_before_neutral_task_id() -> "None":
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.consumer import TaskExitCode, run_task
     from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
@@ -201,8 +201,8 @@ async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":
 
             exit_code = await run_task(
                 env={
-                    "LITESTAR_QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
-                    "PREFIX_TASK_ID": str(record.id),
+                    "QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
+                    "QUEUES_TASK_ID": str(record.id),
                 }
             )
             await result.refresh()
@@ -217,7 +217,7 @@ async def test_run_task_loads_factory_before_prefixed_task_id() -> "None":
 async def test_run_task_requires_config_factory() -> "None":
     from litestar_queues.consumer import TaskExitCode, run_task
 
-    exit_code = await run_task(env={"LITESTAR_QUEUES_TASK_ID": str(uuid4())})
+    exit_code = await run_task(env={"QUEUES_TASK_ID": str(uuid4())})
 
     assert exit_code == TaskExitCode.MISSING_CONFIG_FACTORY
 
@@ -279,7 +279,7 @@ async def test_run_task_missing_and_invalid_task_id() -> "None":
 
     async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
         missing = await run_task(service=service, env={})
-        invalid = await run_task(service=service, env={"LITESTAR_QUEUES_TASK_ID": "not-a-uuid"})
+        invalid = await run_task(service=service, env={"QUEUES_TASK_ID": "not-a-uuid"})
 
     assert missing == TaskExitCode.MISSING_TASK_ID
     assert invalid == TaskExitCode.INVALID_TASK_ID

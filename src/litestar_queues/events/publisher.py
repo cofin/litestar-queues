@@ -17,8 +17,6 @@ if TYPE_CHECKING:
 
 __all__ = ("EventBufferConfig", "QueueEventPublisher")
 
-logger = logging.getLogger(__name__)
-
 
 class _QueueEventHistoryWriter(Protocol):
     async def publish_event(self, event: "QueueEvent") -> "None":
@@ -85,6 +83,7 @@ class QueueEventPublisher:
         "_event_log",
         "_event_log_strict",
         "_live_failure_signature",
+        "_logger",
         "_namespace",
         "_sink",
         "publish_global_lifecycle",
@@ -106,11 +105,18 @@ class QueueEventPublisher:
         publish_global_lifecycle: "bool" = False,
         namespace: "QueueNamespace | str | None" = None,
     ) -> "None":
+        self._namespace = namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
+        self._logger = logging.getLogger(self._namespace.logger("events", "publisher"))
         self._sink = sink or NoopQueueEventSink()
         self._event_log = event_log
         self._event_log_strict = event_log_strict
         self._buffer = (
-            LiveEventBuffer(buffer_config, sink_publish=self._deliver_live_many, record_drop=_ignore_buffer_drop)
+            LiveEventBuffer(
+                buffer_config,
+                sink_publish=self._deliver_live_many,
+                record_drop=_ignore_buffer_drop,
+                runtime_logger=self._logger,
+            )
             if buffer_config is not None
             else None
         )
@@ -119,7 +125,6 @@ class QueueEventPublisher:
         self.publish_queue_channel = publish_queue_channel
         self.publish_global_lifecycle = publish_global_lifecycle
         self._live_failure_signature: "tuple[str, str] | None" = None
-        self._namespace = namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
 
     @property
     def sink(self) -> "QueueEventSink":
@@ -143,7 +148,7 @@ class QueueEventPublisher:
             except Exception:
                 if self.strict:
                     raise
-                logger.warning(
+                self._logger.warning(
                     "Queue event buffer publish failed",
                     exc_info=True,
                     extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -155,7 +160,7 @@ class QueueEventPublisher:
             except Exception:
                 if self.strict:
                     raise
-                logger.warning(
+                self._logger.warning(
                     "Queue event buffer flush failed",
                     exc_info=True,
                     extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -183,7 +188,7 @@ class QueueEventPublisher:
         except Exception:
             if self.strict:
                 raise
-            logger.warning(
+            self._logger.warning(
                 "Queue event publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -209,10 +214,10 @@ class QueueEventPublisher:
         # spamming a WARNING per batch. Reset happens on the next successful delivery.
         signature = (type(exc).__name__, str(exc))
         if signature == self._live_failure_signature:
-            logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
+            self._logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
             return
         self._live_failure_signature = signature
-        logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
+        self._logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
 
     async def _record_event(self, event: "QueueEvent") -> "None":
         if self._event_log is None:
@@ -222,7 +227,7 @@ class QueueEventPublisher:
         except Exception:
             if self._event_log_strict:
                 raise
-            logger.warning(
+            self._logger.warning(
                 "Queue event history publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},

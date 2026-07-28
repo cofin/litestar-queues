@@ -105,8 +105,8 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
         queue_backend=queue_backend,
     )
     sys.modules[factory_module.__name__] = factory_module
-    monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
-    monkeypatch.setenv("LITESTAR_QUEUES_TASK_ID", str(task_id))
+    monkeypatch.setenv("QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
+    monkeypatch.setenv("QUEUES_TASK_ID", str(task_id))
     try:
         result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "run-task"], monkeypatch)
     finally:

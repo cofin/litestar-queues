@@ -312,6 +312,7 @@ class SQLSpecQueueEventLog:
         "_datetime_serializer",
         "_flush_lock",
         "_last_flush",
+        "_logger",
         "_pending",
         "_session_factory",
         "_store",
@@ -324,6 +325,7 @@ class SQLSpecQueueEventLog:
         datetime_serializer: "Callable[[datetime], datetime | str]",
         config: "EventHistoryConfig",
         store: "SQLSpecQueueEventLogStore",
+        runtime_logger: "logging.Logger | None" = None,
     ) -> "None":
         self._session_factory = session_factory
         self._datetime_serializer = datetime_serializer
@@ -332,6 +334,7 @@ class SQLSpecQueueEventLog:
         self._pending: "list[dict[str, Any]]" = []
         self._last_flush = time.monotonic()
         self._flush_lock = asyncio.Lock()
+        self._logger = runtime_logger or logger
 
     async def publish_event(self, event: "QueueEvent") -> "None":
         """Buffer a queue event and flush when configured thresholds are reached."""
@@ -361,7 +364,7 @@ class SQLSpecQueueEventLog:
             except Exception:
                 if self._config.strict:
                     raise
-                logger.warning("SQLSpec queue event history flush failed", exc_info=True)
+                self._logger.warning("SQLSpec queue event history flush failed", exc_info=True)
                 return
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()

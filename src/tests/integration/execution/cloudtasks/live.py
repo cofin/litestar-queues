@@ -45,7 +45,7 @@ __all__ = (
 LIVE_FLAG_ENV = "LITESTAR_QUEUES_GCP_LIVE"
 """Set to exactly ``1`` to opt in. Anything else is an operator saying no."""
 
-CONFIG_FACTORY_ENV = "LITESTAR_QUEUES_CONFIG_FACTORY"
+CONFIG_FACTORY_ENV = "QUEUES_CONFIG_FACTORY"
 """Import path to the queue configuration both processes share.
 
 Deliberately the package's own consumer seam rather than a set of topology

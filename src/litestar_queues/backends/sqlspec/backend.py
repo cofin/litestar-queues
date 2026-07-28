@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable, iscoroutinefunction
-from logging import getLogger
 from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID, uuid4
 
@@ -254,6 +253,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 datetime_serializer=self._serialize_datetime,
                 config=config,
                 store=self._get_event_log_store(),
+                runtime_logger=self._logger,
             )
         return self._event_log
 
@@ -291,7 +291,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if replace is None or getattr(statement_config, "enable_sqlcommenter", False):
             return
         attributes = dict(getattr(statement_config, "sqlcommenter_attributes", None) or {})
-        attributes.setdefault("framework", "litestar-queues")
+        attributes.setdefault(
+            "framework", self.config.names.resource() if self.config is not None else "litestar-queues"
+        )
         config.statement_config = replace(
             enable_sqlcommenter=True,
             sqlcommenter_attributes=attributes,
@@ -1843,6 +1845,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             sqlspec_config,
             skip_explicit_begin=store.skip_explicit_begin,
             skip_cleanup_rollback=store.skip_cleanup_rollback,
+            thread_name_prefix=(
+                self.config.names.resource("sqlspec", "sync") if self.config is not None else "litestar-queues-sqlspec-sync"
+            ),
         ) as driver:
             yield driver
 
@@ -1867,6 +1872,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 cast("SQLSpecManager", self._sqlspec),
                 cast("SQLSpecSessionConfig", self._heartbeat_pool_config),
                 skip_cleanup_rollback=self._get_store().skip_cleanup_rollback,
+                thread_name_prefix=(
+                    self.config.names.resource("sqlspec", "sync")
+                    if self.config is not None
+                    else "litestar-queues-sqlspec-sync"
+                ),
             ) as driver:
                 yield driver
         else:
@@ -1887,7 +1897,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             try:
                 cast("Any", self._get_or_create_sqlspec()).add_config(self._heartbeat_pool_config)
             except Exception:
-                getLogger("litestar_queues").warning(
+                self._logger.warning(
                     "SQLSpecQueueBackend heartbeat pool registration failed; "
                     "falling back to main pool for heartbeat writes.",
                     exc_info=True,
@@ -1905,7 +1915,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 if isawaitable(close_result):
                     await close_result
             except Exception:
-                getLogger("litestar_queues").debug("SQLSpecQueueBackend heartbeat pool close failed.", exc_info=True)
+                self._logger.debug("SQLSpecQueueBackend heartbeat pool close failed.", exc_info=True)
             self._heartbeat_pool_registered = False
 
     async def _select_pending_rows(
@@ -2254,6 +2264,7 @@ async def _bridge_session(
     *,
     skip_explicit_begin: "bool" = False,
     skip_cleanup_rollback: "bool" = False,
+    thread_name_prefix: "str" = "litestar-queues-sqlspec-sync",
 ) -> "AsyncIterator[SQLSpecDriver]":
     """Yield a SQLSpec driver regardless of sync/async config.
 
@@ -2271,7 +2282,7 @@ async def _bridge_session(
         async with session_cm as driver:
             yield cast("SQLSpecDriver", driver)
     else:
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="litestar-queues-sqlspec-sync")
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix)
         driver = await async_(session_cm.__enter__, executor=executor)()
         managed_driver = _ManagedAsyncDriver(driver, executor, skip_explicit_begin=skip_explicit_begin)
         try:

@@ -211,7 +211,7 @@ Cloud Run Job worker
 
 The Cloud Run Job executes the queued task. Run it with ``litestar queues
 run-task``. The command reads the task id and
-``LITESTAR_QUEUES_CONFIG_FACTORY`` from the container environment, resolves the
+``QUEUES_CONFIG_FACTORY`` from the container environment, resolves the
 shared queue service, re-fetches the saved record, claims it, runs the task, and
 exits with a defined code.
 
@@ -231,7 +231,7 @@ prefix changes everywhere.
    * - Env var
      - Required
      - Meaning
-   * - ``LITESTAR_QUEUES_CONFIG_FACTORY``
+   * - ``QUEUES_CONFIG_FACTORY``
      - Yes
      - ``module:attr`` or dotted path returning the shared-DB ``QueueConfig``
        or ``QueueService``. Without it, the consumer cannot rebuild the queue
@@ -240,7 +240,7 @@ prefix changes everywhere.
      - Recommended
      - Comma-separated modules to import so ``@task`` registrations exist.
        The consumer merges these with ``config.task_modules``.
-   * - ``LITESTAR_QUEUES_TASK_ID``
+   * - ``QUEUES_TASK_ID``
      - Injected
      - The id (UUID) of the queued record to run. The dispatcher sets this
        automatically through container overrides. The consumer re-fetches the
@@ -287,7 +287,7 @@ Example job command:
      --command litestar \
      --args queues,run-task \
      --set-cloudsql-instances my-project:my-region:my-db \
-     --set-env-vars LITESTAR_QUEUES_CONFIG_FACTORY=myapp.queues:create_config,\
+     --set-env-vars QUEUES_CONFIG_FACTORY=myapp.queues:create_config,\
      LITESTAR_QUEUES_TASK_MODULES=myapp.tasks \
      --task-timeout 3600s
 

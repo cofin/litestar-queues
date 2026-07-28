@@ -8,6 +8,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from litestar_queues._environment import TASK_ID_ENV
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
@@ -32,7 +33,6 @@ __all__ = ("CloudRunExecutionBackend", "CloudRunExecutionStatus")
 
 _GOOGLE_CLOUD_RUN_PACKAGE = "google-cloud-run"
 _CLOUDRUN_EXTRA = "cloudrun"
-_TASK_ID_ENV_SUFFIX = "TASK_ID"
 _DISPATCH_RESERVATION_LEASE_SECONDS = 15 * 60
 _DISPATCH_OWNERSHIP_LOST_ERROR = "Cloud Run dispatch reservation ownership was lost before finalization"
 _HTTP_NOT_FOUND = 404
@@ -279,7 +279,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         except Exception as exc:
             if _is_not_found_error(exc):
                 return CloudRunExecutionStatus(running=False, failed=True, error="Cloud Run execution not found")
-            logger.warning(
+            self._logger.warning(
                 "Cloud Run status probe failed", exc_info=True, extra={"cloudrun_execution_ref": execution_ref}
             )
             return CloudRunExecutionStatus(running=True, error=str(exc))
@@ -319,14 +319,14 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         """Build the single-value task environment for a Cloud Run task process.
 
         The record travels as its id in one prefix-aware environment variable
-        (``LITESTAR_QUEUES_TASK_ID`` by default); the consumer re-fetches the
+        (``QUEUES_TASK_ID``); the consumer re-fetches the
         live record by that id. Adopter ``extra_env`` values are merged in.
 
         Returns:
             Environment variables for the Cloud Run task process.
         """
         config = self.execution_config
-        env = {config.env_name(_TASK_ID_ENV_SUFFIX): str(record.id)}
+        env = {TASK_ID_ENV: str(record.id)}
         env.update(config.extra_env)
         return env
 
@@ -352,7 +352,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         self, service: "QueueService", record: "QueuedTaskRecord", exc: "BaseException"
     ) -> "None":
         fallback = self.execution_config.fallback_execution_backend
-        logger.warning(
+        self._logger.warning(
             "Cloud Run dispatch failed",
             exc_info=(type(exc), exc, exc.__traceback__),
             extra={
@@ -385,7 +385,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
                 )
             )
         except Exception:
-            logger.warning(
+            self._logger.warning(
                 "Cloud Run dispatch failure event publish failed",
                 exc_info=True,
                 extra={"queue_task_id": str(record.id)},

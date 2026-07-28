@@ -139,7 +139,9 @@ The delivery route
 ==================
 
 A queue configured for Cloud Tasks registers one route on your application at
-``/_litestar-queues/cloud-tasks``. Set ``route_path`` to move it. You do not
+``/_litestar-queues/cloud-tasks`` by default, or the equivalent path derived
+from ``QueueConfig.namespace`` (for example ``/_dma/cloud-tasks``). Set
+``route_path`` to move it. You do not
 write it, mount it, or wire it up.
 
 It is never open by default. Either assert Cloud Run's own IAM with

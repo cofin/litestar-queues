@@ -9,6 +9,7 @@ from litestar_queues._correlation import (
     reset_correlation_id,
 )
 from litestar_queues.exceptions import MissingDependencyError
+from litestar_queues.namespace import DEFAULT_NAMESPACE, QueueNamespace
 from litestar_queues.typing import (
     OPENTELEMETRY_INSTALLED,
     PROMETHEUS_INSTALLED,
@@ -135,11 +136,11 @@ class ObservabilityConfig:
     enable_sqlcommenter: "bool | None" = None
     """SQLCommenter policy; ``None`` follows resolved queue telemetry."""
 
-    tracer_name: "str" = "litestar_queues"
-    """Instrumentation name used to obtain the OpenTelemetry tracer."""
+    tracer_name: "str | None" = None
+    """Instrumentation name; ``None`` uses ``QueueConfig.namespace``."""
 
-    meter_name: "str" = "litestar_queues"
-    """Instrumentation name used to obtain the OpenTelemetry meter."""
+    meter_name: "str | None" = None
+    """Instrumentation name; ``None`` uses ``QueueConfig.namespace``."""
 
     tracer_provider: "Any | None" = None
     """Explicit OpenTelemetry tracer provider; ``None`` uses the global provider."""
@@ -150,8 +151,8 @@ class ObservabilityConfig:
     prometheus_registry: "Any | None" = None
     """Explicit Prometheus registry; ``None`` uses the client default registry."""
 
-    metric_prefix: "str" = "litestar_queues"
-    """Prefix applied to package queue metric names."""
+    metric_prefix: "str | None" = None
+    """Prometheus prefix; ``None`` uses ``QueueConfig.namespace``."""
 
     duration_buckets: "tuple[float, ...]" = field(default=DEFAULT_DURATION_BUCKETS)
     """Prometheus histogram buckets, in seconds, for queue duration metrics."""
@@ -296,6 +297,7 @@ class QueueObservabilityRuntime:
         "_gauges",
         "_histograms",
         "_meter",
+        "_namespace",
         "_otel_enabled",
         "_prometheus_enabled",
         "_registry",
@@ -304,8 +306,17 @@ class QueueObservabilityRuntime:
         "enabled",
     )
 
-    def __init__(self, config: "ObservabilityConfig | None", *, app: "Litestar | None" = None) -> "None":
+    def __init__(
+        self,
+        config: "ObservabilityConfig | None",
+        *,
+        app: "Litestar | None" = None,
+        namespace: "QueueNamespace | str | None" = None,
+    ) -> "None":
         self._config = config
+        self._namespace = (
+            namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or DEFAULT_NAMESPACE)
+        )
         self._otel_enabled = config.should_enable_otel(app) if config is not None else False
         self._prometheus_enabled = config.should_enable_prometheus(app) if config is not None else False
         self._sqlcommenter_enabled = config.should_enable_sqlcommenter(app) if config is not None else False
@@ -333,7 +344,9 @@ class QueueObservabilityRuntime:
         """
         if self._tracer is None:
             config = self._require_config()
-            self._tracer = otel_trace.get_tracer(config.tracer_name, tracer_provider=config.tracer_provider)
+            self._tracer = otel_trace.get_tracer(
+                config.tracer_name or self._namespace.root, tracer_provider=config.tracer_provider
+            )
         return self._tracer
 
     def get_meter(self) -> "Any":
@@ -344,7 +357,9 @@ class QueueObservabilityRuntime:
         """
         if self._meter is None:
             config = self._require_config()
-            self._meter = otel_metrics.get_meter(config.meter_name, meter_provider=config.meter_provider)
+            self._meter = otel_metrics.get_meter(
+                config.meter_name or self._namespace.root, meter_provider=config.meter_provider
+            )
         return self._meter
 
     def start_span(
@@ -369,8 +384,14 @@ class QueueObservabilityRuntime:
             if kind == "consumer"
             else OtelSpanKind.INTERNAL
         )
+        runtime_attributes = dict(attributes)
+        if runtime_attributes.get("messaging.system") == DEFAULT_NAMESPACE:
+            runtime_attributes["messaging.system"] = self._namespace.root
         span = self.get_tracer().start_span(
-            name, context=cast("Any", parent), kind=span_kind, attributes=cast("Any", dict(attributes))
+            self._runtime_name(name),
+            context=cast("Any", parent),
+            kind=span_kind,
+            attributes=cast("Any", runtime_attributes),
         )
         token = otel_context.attach(otel_trace.set_span_in_context(span))
         return _SpanHandle(span, token)
@@ -422,6 +443,7 @@ class QueueObservabilityRuntime:
 
     def record_counter(self, name: "str", value: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
         """Record a counter value for enabled metrics sinks."""
+        name = self._runtime_name(name)
         if self._otel_enabled:
             counter = self._counters.get(name)
             if counter is None:
@@ -430,12 +452,13 @@ class QueueObservabilityRuntime:
             counter.add(value, attributes=dict(attributes))
         if self._prometheus_enabled:
             collector = self._prometheus_collector(
-                PrometheusCounter, name, _counter_name(name, self._config), attributes
+                PrometheusCounter, name, _counter_name(name, self._metric_prefix()), attributes
             )
             collector.labels(**dict(attributes)).inc(value)
 
     def record_gauge_delta(self, name: "str", delta: "int" = 1, *, attributes: "Mapping[str, str]") -> "None":
         """Record a gauge delta for enabled metrics sinks."""
+        name = self._runtime_name(name)
         if self._otel_enabled:
             key = f"updown:{name}"
             gauge = self._gauges.get(key)
@@ -444,11 +467,14 @@ class QueueObservabilityRuntime:
                 self._gauges[key] = gauge
             gauge.add(delta, attributes=dict(attributes))
         if self._prometheus_enabled:
-            collector = self._prometheus_collector(PrometheusGauge, name, _gauge_name(name, self._config), attributes)
+            collector = self._prometheus_collector(
+                PrometheusGauge, name, _gauge_name(name, self._metric_prefix()), attributes
+            )
             collector.labels(**dict(attributes)).inc(delta)
 
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         """Record a duration for enabled metrics sinks."""
+        name = self._runtime_name(name)
         if self._otel_enabled:
             histogram = self._durations.get(name)
             if histogram is None:
@@ -457,7 +483,11 @@ class QueueObservabilityRuntime:
             histogram.record(seconds, attributes=dict(attributes))
         if self._prometheus_enabled:
             collector = self._prometheus_collector(
-                PrometheusHistogram, name, _duration_name(name, self._config), attributes, buckets=self._buckets()
+                PrometheusHistogram,
+                name,
+                _duration_name(name, self._metric_prefix()),
+                attributes,
+                buckets=self._buckets(),
             )
             collector.labels(**dict(attributes)).observe(seconds)
 
@@ -467,7 +497,10 @@ class QueueObservabilityRuntime:
         """Record a non-duration histogram sample for enabled metric sinks."""
         if not self.enabled:
             return
-        _validate_transport_metric(name, kind="histogram", unit=unit, attributes=attributes)
+        _validate_transport_metric(
+            self._canonical_name(name), kind="histogram", unit=unit, attributes=attributes
+        )
+        name = self._runtime_name(name)
         if self._otel_enabled:
             key = (name, unit)
             histogram = self._histograms.get(key)
@@ -479,7 +512,7 @@ class QueueObservabilityRuntime:
             collector = self._prometheus_collector(
                 PrometheusHistogram,
                 name,
-                _histogram_name(name, unit, self._config),
+                _histogram_name(name, unit, self._metric_prefix()),
                 attributes,
                 buckets=_VALUE_HISTOGRAM_BUCKETS,
             )
@@ -522,16 +555,32 @@ class QueueObservabilityRuntime:
             raise RuntimeError(msg)
         return self._config
 
+    def _runtime_name(self, name: "str") -> "str":
+        suffix = name.removeprefix(f"{DEFAULT_NAMESPACE}.")
+        return self._namespace.metric(suffix) if suffix != name else name
+
+    def _canonical_name(self, name: "str") -> "str":
+        suffix = name.removeprefix(f"{self._namespace.root}.")
+        return f"{DEFAULT_NAMESPACE}.{suffix}" if suffix != name else name
+
+    def _metric_prefix(self) -> "str":
+        if self._config is not None and self._config.metric_prefix is not None:
+            return self._config.metric_prefix
+        return self._namespace.root
+
 
 def create_observability_runtime(
-    config: "ObservabilityConfig | None", *, app: "Litestar | None" = None
+    config: "ObservabilityConfig | None",
+    *,
+    app: "Litestar | None" = None,
+    namespace: "QueueNamespace | str | None" = None,
 ) -> "QueueObservabilityRuntime":
     """Create the queue observability runtime for a service.
 
     Returns:
         Queue observability runtime instance.
     """
-    return QueueObservabilityRuntime(config, app=app)
+    return QueueObservabilityRuntime(config, app=app, namespace=namespace)
 
 
 def _has_otel_plugin(app: "Litestar") -> "bool":
@@ -559,12 +608,12 @@ def _has_prometheus_middleware(app: "Litestar") -> "bool":
     return False
 
 
-def _base_name(name: "str", config: "ObservabilityConfig | None") -> "tuple[str, str]":
-    prefix = config.metric_prefix if config is not None else "litestar_queues"
-    return prefix, name.removeprefix("litestar_queues.").replace(".", "_")
+def _base_name(name: "str", prefix: "str | None") -> "tuple[str, str]":
+    prefix = prefix or DEFAULT_NAMESPACE
+    return prefix, name.removeprefix(f"{prefix}.").replace(".", "_")
 
 
-def _counter_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+def _counter_name(name: "str", prefix: "str | None") -> "str":
     """Build the Prometheus counter name.
 
     Counter instruments carry no ``.count`` suffix -- the instrument type already
@@ -573,32 +622,32 @@ def _counter_name(name: "str", config: "ObservabilityConfig | None") -> "str":
     Returns:
         The Prometheus collector name for this counter.
     """
-    prefix, base = _base_name(name, config)
+    prefix, base = _base_name(name, prefix)
     return f"{prefix}_{base}"
 
 
-def _gauge_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+def _gauge_name(name: "str", prefix: "str") -> "str":
     """Build the Prometheus gauge name.
 
     Returns:
         The Prometheus collector name for this gauge.
     """
-    prefix, base = _base_name(name, config)
+    prefix, base = _base_name(name, prefix)
     return f"{prefix}_{base}"
 
 
-def _duration_name(name: "str", config: "ObservabilityConfig | None") -> "str":
+def _duration_name(name: "str", prefix: "str") -> "str":
     """Build the Prometheus histogram name, carrying the conventional unit suffix.
 
     Returns:
         The Prometheus collector name for this duration histogram.
     """
-    prefix, base = _base_name(name, config)
+    prefix, base = _base_name(name, prefix)
     if not base.endswith("_seconds"):
         base = f"{base}_seconds"
     return f"{prefix}_{base}"
 
 
-def _histogram_name(name: "str", unit: "str", config: "ObservabilityConfig | None") -> "str":
-    prefix, base = _base_name(name, config)
+def _histogram_name(name: "str", unit: "str", prefix: "str") -> "str":
+    prefix, base = _base_name(name, prefix)
     return f"{prefix}_{base}_{unit}"

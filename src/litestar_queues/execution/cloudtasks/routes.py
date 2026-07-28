@@ -114,13 +114,14 @@ async def _run_delivered_record(service: "QueueService", task_id: "UUID") -> "Re
         An empty acknowledgement, or an empty retryable response.
     """
     runtime = service.observability_runtime
+    runtime_logger = logging.getLogger(service.config.names.logger("execution", "cloudtasks", "delivery"))
     try:
         exit_code = await consume_one(service, task_id)
     except QueueDispatchError:
         # Already reported with a sanitized payload where it was raised. The
         # record is durable and active; this same delivery arriving again is
         # what gives it a new Cloud Task.
-        logger.warning(
+        runtime_logger.warning(
             "Cloud Tasks delivery could not schedule the next attempt", extra={"queue_task_id": str(task_id)}
         )
         _record_delivery(runtime, _OUTCOME_TRANSIENT_ERROR)
@@ -129,7 +130,7 @@ async def _run_delivered_record(service: "QueueService", task_id: "UUID") -> "Re
         # Task failures never reach here -- the service records those durably.
         # What is left is the queue itself being unreachable or broken, which
         # says nothing about the task, so the delivery has to survive it.
-        logger.exception("Cloud Tasks delivery failed", extra={"queue_task_id": str(task_id)})
+        runtime_logger.exception("Cloud Tasks delivery failed", extra={"queue_task_id": str(task_id)})
         _record_delivery(runtime, _OUTCOME_TRANSIENT_ERROR)
         return Response(content=None, status_code=_REDELIVER)
 

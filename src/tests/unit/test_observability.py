@@ -126,9 +126,13 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     seen_apps: "list[Litestar | None]" = []
 
     def create_runtime(
-        config: "ObservabilityConfig | None", *, app: "Litestar | None" = None
+        config: "ObservabilityConfig | None",
+        *,
+        app: "Litestar | None" = None,
+        namespace: "object | None" = None,
     ) -> "FakeObservabilityRuntime":
         assert config is not None
+        assert namespace is not None
         seen_apps.append(app)
         return runtime
 
@@ -238,6 +242,22 @@ async def test_runtime_records_gauge_delta_with_prometheus_gauge() -> "None":
     runtime.record_gauge_delta("litestar_queues.worker.active", -1, attributes={"scope": "worker"})
 
     assert registry.get_sample_value("litestar_queues_worker_active", labels={"scope": "worker"}) == 1.0
+
+
+async def test_runtime_rewrites_package_metric_names_from_queue_namespace() -> "None":
+    prometheus_client = pytest.importorskip("prometheus_client")
+
+    from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
+
+    registry = prometheus_client.CollectorRegistry()
+    runtime = QueueObservabilityRuntime(
+        ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry),
+        namespace="dma",
+    )
+
+    runtime.record_counter("litestar_queues.wakeup.emitted", attributes={"queue.backend": "memory"})
+
+    assert registry.get_sample_value("dma_wakeup_emitted_total", labels={"queue.backend": "memory"}) == 1.0
 
 
 async def test_runtime_records_and_caches_value_histograms_with_explicit_units(

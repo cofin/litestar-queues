@@ -194,7 +194,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
             QueueConfigurationError: If no server lifespan created the database,
                 or the location, schema, or nonce does not match this invocation.
         """
-        resolved = read_environment()
+        resolved = read_environment(self.config.names if self.config is not None else None)
         if resolved is None:
             raise QueueConfigurationError(_NOT_OPEN_ERROR)
         path, nonce = resolved

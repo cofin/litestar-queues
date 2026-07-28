@@ -18,8 +18,6 @@ if TYPE_CHECKING:
 
 __all__ = ("Worker",)
 
-logger = logging.getLogger(__name__)
-
 
 def _clamp(value: "float", *, low: "float", high: "float") -> "float":
     """Clamp a value between inclusive bounds.
@@ -78,6 +76,7 @@ class Worker:
         "_last_expiry_check_at",
         "_last_reconcile_at",
         "_last_stale_check_at",
+        "_logger",
         "_max_concurrency",
         "_poll_backoff_max",
         "_poll_backoff_multiplier",
@@ -105,6 +104,7 @@ class Worker:
         """
         worker_config = config or WorkerConfig()
         self._service = service
+        self._logger = logging.getLogger(service.config.names.logger("worker"))
         self._batch_size = worker_config.batch_size
         self._poll_interval = worker_config.poll_interval
         self._poll_backoff_max = worker_config.poll_backoff_max
@@ -260,7 +260,7 @@ class Worker:
                     raise
                 except Exception as exc:
                     self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
-                    logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
+                    self._logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
                     self._reset_poll_backoff()
                     await self._backoff_after_loop_error()
                     continue
@@ -541,7 +541,7 @@ class Worker:
             # the listener from a clean state. The backoff resets so a stale
             # listener does not compound into a longer discovery delay.
             self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
-            logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
+            self._logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
             self._reset_poll_backoff()
             await self._backoff_after_loop_error()
             return None

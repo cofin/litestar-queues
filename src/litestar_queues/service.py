@@ -45,8 +45,6 @@ if TYPE_CHECKING:
 
 __all__ = ("QueueService",)
 
-logger = logging.getLogger(__name__)
-
 _CLOUD_TASKS_BACKEND = "cloudtasks"
 
 
@@ -126,6 +124,7 @@ class QueueService:
         "_event_publisher",
         "_execution_backend",
         "_is_open",
+        "_logger",
         "_observability_runtime",
         "_opened_resources",
         "_queue_backend",
@@ -143,6 +142,7 @@ class QueueService:
     ) -> "None":
         """Initialize the queue service."""
         self._config = config
+        self._logger = logging.getLogger(config.names.logger("service"))
         self._queue_backend = queue_backend
         self._execution_backend = execution_backend
         self._event_log: "QueueEventLog | None" = None
@@ -152,7 +152,7 @@ class QueueService:
         if observability_runtime is None and config.observability is not None:
             from litestar_queues.observability import create_observability_runtime
 
-            observability_runtime = create_observability_runtime(config.observability)
+            observability_runtime = create_observability_runtime(config.observability, namespace=config.names)
         self._observability_runtime = observability_runtime
         self._sync_executor: "ThreadPoolExecutor | None" = None
         if queue_backend is not None:
@@ -210,7 +210,9 @@ class QueueService:
         if self._observability_runtime is None:
             from litestar_queues.observability import create_observability_runtime
 
-            self._observability_runtime = create_observability_runtime(self._config.observability)
+            self._observability_runtime = create_observability_runtime(
+                self._config.observability, namespace=self._config.names
+            )
         return self._observability_runtime
 
     async def open(self) -> "Self":
@@ -818,7 +820,7 @@ class QueueService:
                     else get_execution_backend(record.execution_backend, config=self._config)
                 )
             except ValueError:
-                logger.warning(
+                self._logger.warning(
                     "Skipping external queue record with unknown execution backend",
                     extra={"task_id": str(record.id), "execution_backend": record.execution_backend},
                 )
@@ -1204,7 +1206,7 @@ class QueueService:
     def _log_task_event(
         self, message: "str", record: "QueuedTaskRecord", *, level: "int", payload: "Mapping[str, object] | None" = None
     ) -> "None":
-        logger.log(
+        self._logger.log(
             level,
             message,
             extra={
@@ -1231,7 +1233,7 @@ class QueueService:
         try:
             task_obj = self.resolve_task(record.task_name)
         except KeyError:
-            logger.warning(
+            self._logger.warning(
                 "Queue task stale failure hook skipped for unknown task",
                 extra={"queue_task_id": str(record.id), "queue_task_name": record.task_name},
             )

@@ -29,8 +29,6 @@ if TYPE_CHECKING:
 
 __all__ = ("QueuePlugin",)
 
-logger = logging.getLogger(__name__)
-
 _UNKNOWN = object()
 _APP_PATH_ENV_VAR = "LITESTAR_APP"
 _CLOUD_TASKS_BACKEND = "cloudtasks"
@@ -86,6 +84,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         "_auto_channels_backend",
         "_config",
         "_event_publisher",
+        "_logger",
         "_queue_backend",
         "_service",
         "_worker",
@@ -95,6 +94,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the queue plugin."""
         self._config = config or QueueConfig()
+        self._logger = logging.getLogger(self._config.names.logger("plugin"))
         self._service: "QueueService | None" = None
         self._queue_backend: "BaseQueueBackend | None" = None
         self._event_publisher: "QueueEventPublisher | None" = None
@@ -174,7 +174,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
                 )
                 if stream_config.unauthenticated_access == "error":
                     raise QueueConfigurationError(message)
-                logger.warning(message)
+                self._logger.warning(message)
             app_config.route_handlers.append(
                 _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
@@ -315,7 +315,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             return contextlib.nullcontext()
         from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 
-        return EphemeralServerContext(nonce=nonce)
+        return EphemeralServerContext(nonce=nonce, namespace=self._config.names)
 
     @contextmanager
     def server_lifespan(self, app: "Litestar") -> "Generator[None]":
@@ -337,7 +337,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         from litestar_queues.worker import supervisor
         from litestar_queues.worker.invocation import console_break_unwinds, server_context
 
-        with console_break_unwinds(), server_context() as nonce, self._storage_context(nonce):
+        with console_break_unwinds(), server_context(self._config.names) as nonce, self._storage_context(nonce):
             server_worker = supervisor.ServerWorkerSupervisor.from_plugin(self)
             server_worker.start()
             try:
@@ -353,7 +353,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             # traffic against a queue whose worker was never started.
             from litestar_queues.worker.invocation import server_context_active
 
-            if not server_context_active():
+            if not server_context_active(self._config.names):
                 raise QueueConfigurationError(_MISSING_SERVER_CONTEXT_ERROR)
         self._validate_channels_shutdown_order(app)
         if self._config.task_modules:
@@ -364,7 +364,9 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         if observability_config is not None:
             from litestar_queues.observability import create_observability_runtime
 
-            observability_runtime = create_observability_runtime(observability_config, app=app)
+            observability_runtime = create_observability_runtime(
+                observability_config, app=app, namespace=self._config.names
+            )
         if observability_runtime is not None:
             app.state[self._config.observability_runtime_state_key] = observability_runtime
 
@@ -419,6 +421,6 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         exception = task.exception()
         if exception is None:
             return
-        logger.error(
+        self._logger.error(
             "In-app queue worker stopped unexpectedly", exc_info=(type(exception), exception, exception.__traceback__)
         )

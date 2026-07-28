@@ -233,6 +233,26 @@ def test_server_context_sets_two_separate_variables_and_clears_them() -> "None":
 
 
 @pytest.mark.usefixtures("clean_proof_environment")
+def test_server_context_derives_private_environment_and_resource_names() -> "None":
+    from litestar_queues import QueueNamespace
+    from litestar_queues.worker.invocation import server_context, server_context_active
+
+    names = QueueNamespace("dma")
+    nonce_env = names.environment("server", "nonce")
+    marker_env = names.environment("server", "marker")
+
+    with server_context(names) as nonce:
+        marker = Path(os.environ[marker_env])
+        assert os.environ[nonce_env] == nonce
+        assert marker.parent.name.startswith("dma-server-")
+        assert server_context_active(names) is True
+
+    assert nonce_env not in os.environ
+    assert marker_env not in os.environ
+    assert server_context_active(names) is False
+
+
+@pytest.mark.usefixtures("clean_proof_environment")
 def test_marker_holds_the_exact_json_shape() -> "None":
     from litestar_queues.worker.invocation import MARKER_ENV_VAR, server_context
 

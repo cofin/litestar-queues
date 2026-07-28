@@ -156,7 +156,10 @@ class SQLAlchemyBackend(BaseQueueBackend):
         """Return Advanced Alchemy-managed queue event history when enabled."""
         if self._event_log is None:
             self._event_log = AdvancedAlchemyQueueEventLog(
-                config=config, service_factory=self._event_log_service, transaction_factory=self._event_log_operation
+                config=config,
+                service_factory=self._event_log_service,
+                transaction_factory=self._event_log_operation,
+                runtime_logger=self._logger,
             )
         return self._event_log
 
@@ -577,11 +580,16 @@ class SQLAlchemyBackend(BaseQueueBackend):
         if amount == 0 or self.config is None or self.config.observability is None:
             return
         if self._observability_runtime is None:
-            self._observability_runtime = create_observability_runtime(self.config.observability)
+            self._observability_runtime = create_observability_runtime(
+                self.config.observability, namespace=self.config.names
+            )
         self._observability_runtime.record_counter(
             f"litestar_queues.queue.{name}",
             int(amount),
-            attributes={"messaging.system": "litestar_queues", "backend": "advanced-alchemy"},
+            attributes={
+                "messaging.system": self.config.names.root,
+                "backend": "advanced-alchemy",
+            },
         )
 
     def _resolve_model_classes(

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from litestar_queues.exceptions import QueueError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -61,15 +62,16 @@ def _classify(error: "sqlite3.DatabaseError") -> "str | None":
     return UNREADABLE_ERROR
 
 
-def read_environment() -> "tuple[str, str] | None":
+def read_environment(namespace: "QueueNamespace | None" = None) -> "tuple[str, str] | None":
     """Return the active database path and invocation nonce.
 
     Returns:
         The ``(path, nonce)`` pair when both private variables are set and the
         path is absolute, otherwise ``None``.
     """
-    path = os.environ.get(PATH_ENV_VAR)
-    nonce = os.environ.get(NONCE_ENV_VAR)
+    names = namespace or QueueNamespace()
+    path = os.environ.get(names.environment("ephemeral", "path"))
+    nonce = os.environ.get(names.environment("ephemeral", "nonce"))
     if not path or not nonce or not Path(path).is_absolute():
         return None
     return path, nonce

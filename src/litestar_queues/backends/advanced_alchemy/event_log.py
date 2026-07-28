@@ -23,7 +23,15 @@ logger = logging.getLogger(__name__)
 class AdvancedAlchemyQueueEventLog:
     """Buffered Advanced Alchemy event-history writer and query interface."""
 
-    __slots__ = ("_config", "_flush_lock", "_last_flush", "_pending", "_service_factory", "_transaction_factory")
+    __slots__ = (
+        "_config",
+        "_flush_lock",
+        "_last_flush",
+        "_logger",
+        "_pending",
+        "_service_factory",
+        "_transaction_factory",
+    )
 
     def __init__(
         self,
@@ -31,6 +39,7 @@ class AdvancedAlchemyQueueEventLog:
         config: "EventHistoryConfig",
         service_factory: 'Callable[[], AbstractAsyncContextManager["QueueEventLogService"]]',
         transaction_factory: 'Callable[[], AbstractAsyncContextManager["QueueEventLogService"]]',
+        runtime_logger: "logging.Logger | None" = None,
     ) -> "None":
         self._config = config
         self._service_factory = service_factory
@@ -38,6 +47,7 @@ class AdvancedAlchemyQueueEventLog:
         self._pending: "list[QueueEventLogRecord]" = []
         self._last_flush = time.monotonic()
         self._flush_lock = asyncio.Lock()
+        self._logger = runtime_logger or logger
 
     async def publish_event(self, event: "QueueEvent") -> "None":
         """Buffer a queue event and flush when configured thresholds are reached."""
@@ -60,7 +70,7 @@ class AdvancedAlchemyQueueEventLog:
             except Exception:
                 if self._config.strict:
                     raise
-                logger.warning("Advanced Alchemy queue event history flush failed", exc_info=True)
+                self._logger.warning("Advanced Alchemy queue event history flush failed", exc_info=True)
                 return
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()

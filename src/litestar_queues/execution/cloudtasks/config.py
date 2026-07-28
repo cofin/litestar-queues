@@ -1,10 +1,11 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlsplit
 
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from litestar.types import Guard
@@ -33,6 +34,7 @@ route cannot drift apart while both still look correct on their own.
 
 _MIN_DISPATCH_DEADLINE = 15
 _MAX_DISPATCH_DEADLINE = 1800
+_DEFAULT_ROUTE_PATH = cast("str", object())
 
 
 def _require_finite_positive(name: "str", value: "Any") -> "None":
@@ -74,8 +76,10 @@ class CloudTasksExecutionConfig:
     audience: "str | None" = None
     """OIDC audience; ``None`` resolves to the :attr:`service_url` origin."""
 
-    route_path: "str" = "/_litestar-queues/cloud-tasks"
+    route_path: "str" = _DEFAULT_ROUTE_PATH
     """Path the consumer route is mounted on."""
+
+    _route_path_derived: "bool" = field(init=False, repr=False)
 
     dispatch_deadline: "int" = 1800
     """Seconds Cloud Tasks waits for a delivery response before abandoning it."""
@@ -102,6 +106,9 @@ class CloudTasksExecutionConfig:
         accepted it and will keep retrying a request that can never succeed. So
         every rule runs before the first record is persisted.
         """
+        self._route_path_derived = self.route_path is _DEFAULT_ROUTE_PATH
+        if self._route_path_derived:
+            self.route_path = "/_litestar-queues/cloud-tasks"
         self._validate_identifiers()
         self._validate_delivery_target()
         self._validate_budgets()
@@ -214,6 +221,13 @@ class CloudTasksExecutionConfig:
         """Absolute URL Cloud Tasks posts each record to."""
         return f"{self.service_url.rstrip('/')}{self.route_path}"
 
+    def resolve(self, namespace: "QueueNamespace | None" = None) -> "CloudTasksExecutionConfig":
+        """Resolve namespace-owned defaults without mutating this reusable config."""
+        if not self._route_path_derived:
+            return self
+        names = namespace or QueueNamespace()
+        return replace(self, route_path=f"/_{names.resource()}/cloud-tasks")
+
     @property
     def queue_path(self) -> "str":
         """Fully qualified Cloud Tasks queue resource name."""
@@ -230,7 +244,7 @@ def _execution_config_from_queue_config(config: "QueueConfig | None") -> "CloudT
         QueueConfigurationError: If no typed Cloud Tasks config is available.
     """
     if config is not None and isinstance(config.execution_backend, CloudTasksExecutionConfig):
-        return config.execution_backend
+        return config.execution_backend.resolve(config.names)
 
     msg = (
         "Cloud Tasks execution requires QueueConfig.execution_backend with a "

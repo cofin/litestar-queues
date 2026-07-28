@@ -551,7 +551,11 @@ class QueueConfig:
         if not sinks:
             msg = "EventDeliveryConfig requires events.channels, an app ChannelsPlugin, or at least one custom sink."
             raise QueueConfigurationError(msg)
-        sink = sinks[0] if len(sinks) == 1 else CompositeQueueEventSink(sinks, strict=delivery.strict)
+        sink = (
+            sinks[0]
+            if len(sinks) == 1
+            else CompositeQueueEventSink(sinks, strict=delivery.strict, namespace=self.names)
+        )
         return QueueEventPublisher(
             sink,
             buffer_config=delivery.buffer,

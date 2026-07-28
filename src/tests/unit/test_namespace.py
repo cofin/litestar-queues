@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -158,3 +159,46 @@ def test_sqlspec_wakeup_channel_derives_without_changing_tables() -> None:
 
     assert backend._wakeup_channel == "dma_tasks"
     assert backend._queue_table_name == "jobs"
+
+
+def test_runtime_components_use_namespace_logger_hierarchy() -> None:
+    from litestar_queues import QueuePlugin, QueueService
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.events import QueueEventPublisher
+    from litestar_queues.worker import Worker
+    from litestar_queues.worker.supervisor import ServerWorkerSupervisor
+
+    config = QueueConfig(namespace="dma", queue_backend="memory", worker=WorkerConfig(placement="external"))
+    service = QueueService(config)
+    worker = Worker(service)
+
+    assert service._logger.name == "dma.service"
+    assert worker._logger.name == "dma.worker"
+    assert QueuePlugin(config)._logger.name == "dma.plugin"
+    assert QueueEventPublisher(namespace=config.names)._logger.name == "dma.events.publisher"
+    assert InMemoryQueueBackend(config)._logger.name == "dma.backends.InMemoryQueueBackend"
+    assert ServerWorkerSupervisor(config)._logger.name == "dma.worker.supervisor"
+
+
+def test_runtime_resource_drift_gate_keeps_legacy_literals_out_of_live_paths() -> None:
+    package_root = Path(__file__).parents[2] / "litestar_queues"
+    supervisor = (package_root / "worker" / "supervisor.py").read_text()
+    invocation = (package_root / "worker" / "invocation.py").read_text()
+    ephemeral = (package_root / "backends" / "ephemeral" / "server.py").read_text()
+
+    assert 'name="litestar-queues-' not in supervisor
+    assert "os.environ[_PROCESS_ROLE_ENV_VAR]" not in supervisor
+    assert "tempfile.mkdtemp(prefix=_DIRECTORY_PREFIX)" not in invocation
+    assert "tempfile.mkdtemp(prefix=_DIRECTORY_PREFIX)" not in ephemeral
+
+
+def test_cloudrun_environment_defaults_derive_from_namespace_and_explicit_prefix_wins() -> None:
+    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+
+    derived = CloudRunExecutionConfig(project_id="project", job_name="worker")
+    explicit = CloudRunExecutionConfig(project_id="project", job_name="worker", env_prefix="WORK")
+    namespace = QueueNamespace("dma")
+
+    assert derived.env_name("TASK_ID", namespace=namespace) == "QUEUES_TASK_ID"
+    assert explicit.env_name("TASK_ID", namespace=namespace) == "QUEUES_TASK_ID"
+    assert derived.env_name("TASK_ID") == "QUEUES_TASK_ID"

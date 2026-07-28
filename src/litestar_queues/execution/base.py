@@ -1,7 +1,10 @@
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from typing_extensions import Self
+
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -71,11 +74,13 @@ class DispatchRepairResult:
 class BaseExecutionBackend:
     """Base class for queue execution backends."""
 
-    __slots__ = ("config",)
+    __slots__ = ("_logger", "config")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the execution backend."""
         self.config = config
+        names = config.names if config is not None else QueueNamespace()
+        self._logger = logging.getLogger(names.logger("execution", type(self).__name__))
 
     @property
     def is_external(self) -> "bool":

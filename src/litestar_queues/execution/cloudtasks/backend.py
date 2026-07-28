@@ -155,7 +155,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
     def execution_config(self) -> "CloudTasksExecutionConfig":
         """Resolved Cloud Tasks execution config."""
         if self._execution_config is not None:
-            return self._execution_config
+            return self._execution_config.resolve(self.config.names if self.config is not None else None)
         return _execution_config_from_queue_config(self.config)
 
     async def schedule(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
@@ -409,7 +409,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         both.
         """
         message = operation.failure_message
-        logger.warning(
+        self._logger.warning(
             message,
             exc_info=(type(exc), exc, exc.__traceback__),
             extra={
@@ -437,7 +437,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                 )
             )
         except Exception:
-            logger.warning(
+            self._logger.warning(
                 "Cloud Tasks delivery failure event publish failed",
                 exc_info=True,
                 extra={"queue_task_id": str(record.id)},

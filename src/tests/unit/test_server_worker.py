@@ -278,7 +278,14 @@ def test_process_context_never_selects_fork(methods: list[str], expected: str) -
 def test_launch_spec_contains_only_primitive_data_and_hides_environment() -> None:
     spec = _spec("postgres://user:credential@example")
 
-    assert tuple(item.name for item in fields(spec)) == ("app_path", "app_dir", "sys_path", "environment", "log_level")
+    assert tuple(item.name for item in fields(spec)) == (
+        "app_path",
+        "app_dir",
+        "sys_path",
+        "environment",
+        "log_level",
+        "namespace",
+    )
     assert "credential" not in repr(spec)
     assert all(
         isinstance(value, (str, int, tuple))

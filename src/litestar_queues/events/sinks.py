@@ -6,6 +6,8 @@ import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING, Protocol
 
+from litestar_queues.namespace import QueueNamespace
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -80,12 +82,20 @@ class NoopQueueEventSink:
 class CompositeQueueEventSink:
     """Deliver events to multiple sinks in deterministic order."""
 
-    __slots__ = ("_opened_sinks", "_sinks", "_strict")
+    __slots__ = ("_logger", "_opened_sinks", "_sinks", "_strict")
 
-    def __init__(self, sinks: "Sequence[QueueEventSink]", *, strict: "bool" = False) -> "None":
+    def __init__(
+        self,
+        sinks: "Sequence[QueueEventSink]",
+        *,
+        strict: "bool" = False,
+        namespace: "QueueNamespace | str | None" = None,
+    ) -> "None":
+        names = namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
         self._sinks = tuple(sinks)
         self._strict = strict
         self._opened_sinks: "tuple[QueueEventSink, ...]" = ()
+        self._logger = logging.getLogger(names.logger("events", "sinks"))
 
     @property
     def sinks(self) -> "tuple[QueueEventSink, ...]":
@@ -106,7 +116,7 @@ class CompositeQueueEventSink:
                 try:
                     await _call_optional_lifecycle(sink, "close")
                 except BaseException:  # noqa: PERF203
-                    logger.warning("Queue event sink rollback failed", exc_info=True)
+                    self._logger.warning("Queue event sink rollback failed", exc_info=True)
             raise
         self._opened_sinks = tuple(opened)
 
@@ -121,7 +131,7 @@ class CompositeQueueEventSink:
             except BaseException as exc:  # noqa: PERF203
                 errors.append(exc)
                 if not self._strict and isinstance(exc, Exception):
-                    logger.warning("Queue event sink close failed", exc_info=True)
+                    self._logger.warning("Queue event sink close failed", exc_info=True)
         error = _select_lifecycle_error(errors)
         if error is not None and (self._strict or not isinstance(error, Exception)):
             raise error
@@ -142,7 +152,7 @@ class CompositeQueueEventSink:
         except Exception:
             if self._strict:
                 raise
-            logger.warning("Queue event sink publish failed", exc_info=True)
+            self._logger.warning("Queue event sink publish failed", exc_info=True)
 
     async def _publish_batch_to_sink(
         self, sink: "QueueEventSink", batch: "Sequence[tuple[QueueEvent, Sequence[str]]]"
@@ -156,7 +166,7 @@ class CompositeQueueEventSink:
         except Exception:
             if self._strict:
                 raise
-            logger.warning("Queue event sink batch publish failed", exc_info=True)
+            self._logger.warning("Queue event sink batch publish failed", exc_info=True)
 
 
 class InMemoryQueueEventSink:

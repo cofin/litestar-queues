@@ -1050,10 +1050,10 @@ async def test_plugin_logs_when_app_worker_task_dies(monkeypatch: "pytest.Monkey
         messages.append((message, kwargs))
 
     monkeypatch.setattr(plugin_module, "Worker", _FailingWorker)
-    monkeypatch.setattr(plugin_module.logger, "error", log_error)
     plugin = QueuePlugin(
         QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="asgi"), execution_backend="local")
     )
+    monkeypatch.setattr(plugin._logger, "error", log_error)
     app = Litestar(plugins=[plugin])
 
     async with plugin._lifespan(app):

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from litestar_queues.models import (
     QueueStatistics,
     StaleTaskRecoveryResult,
 )
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -31,11 +33,13 @@ STALE_REQUEUE_PRIORITY = 4
 class BaseQueueBackend:
     """Base class for queue persistence backends."""
 
-    __slots__ = ("config",)
+    __slots__ = ("_logger", "config")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the queue backend."""
         self.config = config
+        names = config.names if config is not None else QueueNamespace()
+        self._logger = logging.getLogger(names.logger("backends", type(self).__name__))
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
