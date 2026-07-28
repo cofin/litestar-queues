@@ -172,7 +172,9 @@ class QueueService:
 
     def _configure_backend_observability(self, backend: "BaseQueueBackend") -> "None":
         runtime = self._observability_runtime
-        backend.set_transport_observability_runtime(runtime if runtime is not None and runtime.enabled else None)
+        backend._set_transport_observability_runtime(  # noqa: SLF001
+            runtime if runtime is not None and runtime.enabled else None
+        )
         configure = getattr(backend, "_set_package_observability_enabled", None)
         if configure is not None:
             configure(bool(runtime is not None and runtime.enabled))

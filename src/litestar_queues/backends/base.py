@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from typing_extensions import Self
 
+from litestar_queues.config import queue_backend_name
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
@@ -43,13 +44,11 @@ class BaseQueueBackend:
         names = config.names if config is not None else QueueNamespace()
         self._logger = logging.getLogger(names.logger("backends", type(self).__name__))
 
-    def set_transport_observability_runtime(self, runtime: "QueueObservabilityRuntimeProtocol | None") -> "None":
+    def _set_transport_observability_runtime(self, runtime: "QueueObservabilityRuntimeProtocol | None") -> "None":
         """Attach the package runtime used for backend-owned transport metrics."""
         self._transport_observability_runtime = runtime
 
     def _transport_metric_attributes(self) -> "dict[str, str]":
-        from litestar_queues.config import queue_backend_name
-
         backend = queue_backend_name(self.config.queue_backend) if self.config is not None else "custom"
         return {"queue.backend": backend, "queue.transport": self.capabilities.wakeup_backend or "polling"}
 
