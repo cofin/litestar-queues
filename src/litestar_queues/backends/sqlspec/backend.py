@@ -465,6 +465,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         self._increment_queue_metric("enqueue", float(len(to_insert)))
         await self.notify_new_tasks(to_insert)
+        self._record_enqueue_batch(len(requests))
         return results
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -1576,6 +1577,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     {"event_type": "litestar_queues.task_available"},
                 )
             self._increment_queue_metric("notify")
+            self._record_wakeup_emitted()
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for a SQLSpec event when queue notifications are configured.

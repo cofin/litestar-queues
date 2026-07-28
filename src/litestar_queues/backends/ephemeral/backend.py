@@ -345,6 +345,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
         records = await self._transaction(operation)
         await self.notify_new_tasks(records)
+        self._record_enqueue_batch(len(requests))
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -1035,6 +1036,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         """Signal same-instance waiters that due work exists."""
         if record.status in _ACTIVE_STATUSES and record.is_due:
             self._notification_event.set()
+            self._record_wakeup_emitted()
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for due work using bounded SQLite existence polling.

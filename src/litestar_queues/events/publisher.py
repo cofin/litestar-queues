@@ -1,6 +1,7 @@
 """Queue event publisher."""
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from litestar_queues.events.models import QueueEvent
+    from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("EventBufferConfig", "QueueEventPublisher")
 
@@ -85,7 +87,9 @@ class QueueEventPublisher:
         "_live_failure_signature",
         "_logger",
         "_namespace",
+        "_observability_runtime",
         "_sink",
+        "_transport",
         "publish_global_lifecycle",
         "publish_queue_channel",
         "publish_task_channel",
@@ -104,19 +108,23 @@ class QueueEventPublisher:
         publish_queue_channel: "bool" = True,
         publish_global_lifecycle: "bool" = False,
         namespace: "QueueNamespace | str | None" = None,
+        observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None,
+        transport: "str | None" = None,
     ) -> "None":
         self._namespace = (
             namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
         )
         self._logger = logging.getLogger(self._namespace.logger("events", "publisher"))
         self._sink = sink or NoopQueueEventSink()
+        self._observability_runtime = observability_runtime
+        self._transport = transport or _event_transport(self._sink)
         self._event_log = event_log
         self._event_log_strict = event_log_strict
         self._buffer = (
             LiveEventBuffer(
                 buffer_config,
                 sink_publish=self._deliver_live_many,
-                record_drop=_ignore_buffer_drop,
+                record_drop=self._record_buffer_drop,
                 runtime_logger=self._logger,
             )
             if buffer_config is not None
@@ -137,6 +145,10 @@ class QueueEventPublisher:
         """Attach backend-owned durable event history to this publisher."""
         self._event_log = event_log
         self._event_log_strict = strict
+
+    def set_observability_runtime(self, runtime: "QueueObservabilityRuntimeProtocol") -> "None":
+        """Attach the service-owned runtime used for live delivery metrics."""
+        self._observability_runtime = runtime
 
     async def publish(
         self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None, immediate: "bool" = False
@@ -197,17 +209,38 @@ class QueueEventPublisher:
             )
 
     async def _deliver_live_many(self, batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> "None":
+        started_at = time.perf_counter()
+        outcome = "success"
         try:
             if isinstance(self._sink, _QueueEventBatchSink):
                 await self._sink.publish_many(batch)
             else:
                 await default_publish_many(self._sink, batch)
         except Exception as exc:
+            outcome = "failed"
             if self.strict:
                 raise
             self._log_batch_delivery_failure(exc, len(batch))
+        else:
+            self._live_failure_signature = None
+        finally:
+            self._record_live_batch(len(batch), time.perf_counter() - started_at, outcome=outcome)
+
+    def _record_buffer_drop(self, _scope: "str") -> "None":
+        runtime = self._observability_runtime
+        if runtime is not None:
+            runtime.record_counter(
+                "litestar_queues.event.dropped",
+                attributes={"queue.transport": self._transport, "queue.outcome": "overflow"},
+            )
+
+    def _record_live_batch(self, size: "int", seconds: "float", *, outcome: "str") -> "None":
+        runtime = self._observability_runtime
+        if runtime is None:
             return
-        self._live_failure_signature = None
+        attributes = {"queue.transport": self._transport, "queue.outcome": outcome}
+        runtime.record_histogram("litestar_queues.event.flush.size", size, unit="events", attributes=attributes)
+        runtime.record_duration("litestar_queues.event.flush.duration", seconds, attributes=attributes)
 
     def _log_batch_delivery_failure(self, exc: "BaseException", count: "int") -> "None":
         # Warn-once dampener: the first failure logs at WARNING with a traceback; consecutive
@@ -268,5 +301,10 @@ def _dedupe(channels: "Sequence[str]") -> "tuple[str, ...]":
     return tuple(resolved)
 
 
-def _ignore_buffer_drop(_scope: "str") -> "None":
-    return None
+def _event_transport(sink: "QueueEventSink") -> "str":
+    return {
+        "ChannelsQueueEventSink": "channels",
+        "CompositeQueueEventSink": "composite",
+        "InMemoryQueueEventSink": "memory",
+        "NoopQueueEventSink": "none",
+    }.get(type(sink).__name__, "custom")

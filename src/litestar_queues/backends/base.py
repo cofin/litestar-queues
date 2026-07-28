@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from typing_extensions import Self
 
+from litestar_queues.config import queue_backend_name
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
+    from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("EXTERNAL_DISPATCH_RESERVATION_PREFIX", "BaseQueueBackend", "is_external_dispatch_reservation")
 
@@ -33,13 +35,48 @@ STALE_REQUEUE_PRIORITY = 4
 class BaseQueueBackend:
     """Base class for queue persistence backends."""
 
-    __slots__ = ("_logger", "config")
+    __slots__ = ("_logger", "_transport_observability_runtime", "config")
 
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the queue backend."""
         self.config = config
+        self._transport_observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None
         names = config.names if config is not None else QueueNamespace()
         self._logger = logging.getLogger(names.logger("backends", type(self).__name__))
+
+    def _set_transport_observability_runtime(self, runtime: "QueueObservabilityRuntimeProtocol | None") -> "None":
+        """Attach the package runtime used for backend-owned transport metrics."""
+        self._transport_observability_runtime = runtime
+
+    def _transport_metric_attributes(self) -> "dict[str, str]":
+        backend = queue_backend_name(self.config.queue_backend) if self.config is not None else "custom"
+        return {"queue.backend": backend, "queue.transport": self.capabilities.wakeup_backend or "polling"}
+
+    def _record_enqueue_batch(self, size: "int") -> "None":
+        runtime = self._transport_observability_runtime
+        if runtime is None:
+            return
+        attributes = self._transport_metric_attributes()
+        runtime.record_histogram(
+            "litestar_queues.enqueue.batch.size",
+            size,
+            unit="records",
+            attributes={"queue.backend": attributes["queue.backend"], "queue.operation": "enqueue_many"},
+        )
+
+    def _record_wakeup_emitted(self) -> "None":
+        runtime = self._transport_observability_runtime
+        if runtime is None or not self.capabilities.supports_worker_wakeups:
+            return
+        runtime.record_counter("litestar_queues.wakeup.emitted", attributes=self._transport_metric_attributes())
+
+    def _record_wakeup_coalesced(self, count: "int") -> "None":
+        runtime = self._transport_observability_runtime
+        if runtime is None or count <= 0 or not self.capabilities.supports_worker_wakeups:
+            return
+        runtime.record_counter(
+            "litestar_queues.wakeup.coalesced", count, attributes=self._transport_metric_attributes()
+        )
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
@@ -116,6 +153,7 @@ class BaseQueueBackend:
             for request in requests
         ]
         await self.notify_new_tasks(records)
+        self._record_enqueue_batch(len(requests))
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -525,6 +563,7 @@ class BaseQueueBackend:
         due = tuple(record for record in records if record.status in {"pending", "scheduled"} and record.is_due)
         if due:
             await self.notify_new_task(due[0])
+            self._record_wakeup_coalesced(len(due) - 1)
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait until backend notification arrives.

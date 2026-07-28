@@ -62,6 +62,7 @@ async def test_enqueue_uses_observability_runtime_for_producer_span_and_context(
     assert result.record is not None
     assert result.record.metadata["_otel_context"] == {"traceparent": "00-test"}
     assert runtime.counters == [
+        ("litestar_queues.wakeup.emitted", 1, {"queue.backend": "memory", "queue.transport": "asyncio-event"}),
         (
             "litestar_queues.enqueue",
             1,
@@ -71,7 +72,7 @@ async def test_enqueue_uses_observability_runtime_for_producer_span_and_context(
                 "queue.execution.backend": "local",
                 "queue.execution.profile": "heavy",
             },
-        )
+        ),
     ]
     assert runtime.durations[0][0] == "litestar_queues.enqueue.duration"
 
