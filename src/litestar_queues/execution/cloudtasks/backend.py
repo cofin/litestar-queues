@@ -45,7 +45,6 @@ __all__ = ("CloudTasksExecutionBackend",)
 _GOOGLE_CLOUD_TASKS_PACKAGE = "google-cloud-tasks"
 _CLOUD_TASKS_EXTRA = "cloud-tasks"
 _BACKEND_NAME = CLOUD_TASKS_BACKEND_NAME
-_DELIVERY_PREFIX = "lq-"
 _HTTP_CONFLICT = 409
 _HTTP_NOT_FOUND = 404
 # A record a consumer already holds is excluded: Cloud Tasks keeps that delivery
@@ -155,7 +154,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
     def execution_config(self) -> "CloudTasksExecutionConfig":
         """Resolved Cloud Tasks execution config."""
         if self._execution_config is not None:
-            return self._execution_config
+            return self._execution_config.resolve(self.config.names if self.config is not None else None)
         return _execution_config_from_queue_config(self.config)
 
     async def schedule(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
@@ -409,7 +408,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         both.
         """
         message = operation.failure_message
-        logger.warning(
+        self._logger.warning(
             message,
             exc_info=(type(exc), exc, exc.__traceback__),
             extra={
@@ -437,7 +436,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                 )
             )
         except Exception:
-            logger.warning(
+            self._logger.warning(
                 "Cloud Tasks delivery failure event publish failed",
                 exc_info=True,
                 extra={"queue_task_id": str(record.id)},
@@ -500,7 +499,8 @@ def _delivery_name(config: "CloudTasksExecutionConfig", record: "QueuedTaskRecor
 
 
 def _delivery_name_prefix(config: "CloudTasksExecutionConfig", record: "QueuedTaskRecord") -> "str":
-    return f"{config.queue_path}/tasks/{_DELIVERY_PREFIX}{record.id.hex}-r{record.retry_count}-"
+    delivery_name_prefix = config.delivery_name_prefix or "lq-"
+    return f"{config.queue_path}/tasks/{delivery_name_prefix}{record.id.hex}-r{record.retry_count}-"
 
 
 def _is_current_delivery_name(name: "str", config: "CloudTasksExecutionConfig", record: "QueuedTaskRecord") -> "bool":

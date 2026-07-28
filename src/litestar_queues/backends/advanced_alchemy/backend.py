@@ -107,7 +107,13 @@ class SQLAlchemyBackend(BaseQueueBackend):
             self._resolve_task_reservation_model_classes(backend_config.task_reservation_model_class)
         )
         self._notifications = backend_config.worker_wakeups
-        self._wakeup_channel = backend_config.wakeup_channel
+        self._wakeup_channel = (
+            backend_config.wakeup_channel
+            if backend_config.wakeup_channel is not None
+            else config.names.database_channel("tasks")
+            if config is not None
+            else "litestar_queues_tasks"
+        )
         self._event_poll_interval = backend_config.wakeup_poll_interval
         self._notification_listener: "NotificationListener | None" = None
         self._observability_runtime: "QueueObservabilityRuntimeProtocol | None" = None
@@ -150,7 +156,10 @@ class SQLAlchemyBackend(BaseQueueBackend):
         """Return Advanced Alchemy-managed queue event history when enabled."""
         if self._event_log is None:
             self._event_log = AdvancedAlchemyQueueEventLog(
-                config=config, service_factory=self._event_log_service, transaction_factory=self._event_log_operation
+                config=config,
+                service_factory=self._event_log_service,
+                transaction_factory=self._event_log_operation,
+                runtime_logger=self._logger,
             )
         return self._event_log
 
@@ -571,11 +580,13 @@ class SQLAlchemyBackend(BaseQueueBackend):
         if amount == 0 or self.config is None or self.config.observability is None:
             return
         if self._observability_runtime is None:
-            self._observability_runtime = create_observability_runtime(self.config.observability)
+            self._observability_runtime = create_observability_runtime(
+                self.config.observability, namespace=self.config.names
+            )
         self._observability_runtime.record_counter(
             f"litestar_queues.queue.{name}",
             int(amount),
-            attributes={"messaging.system": "litestar_queues", "backend": "advanced-alchemy"},
+            attributes={"messaging.system": self.config.names.root, "backend": "advanced-alchemy"},
         )
 
     def _resolve_model_classes(

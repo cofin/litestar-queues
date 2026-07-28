@@ -56,6 +56,32 @@ def test_enabled_stream_config_respects_configured_scopes() -> None:
     assert _stream_paths(app) == {"/events/tasks/{task_id:str}", "/events/sse/tasks/{task_id:str}"}
 
 
+def test_namespaced_plugins_register_disjoint_default_stream_paths() -> None:
+    channels = _channels_arbitrary()
+    plugins = [
+        QueuePlugin(
+            QueueConfig(
+                namespace=namespace,
+                worker=WorkerConfig(placement="external"),
+                queue_backend="memory",
+                events=QueueEventsConfig(
+                    channels=channels, delivery=EventDeliveryConfig(), stream=EventStreamConfig(scopes={"task"})
+                ),
+            )
+        )
+        for namespace in ("alpha", "beta")
+    ]
+
+    app = Litestar(plugins=[channels, *plugins], openapi_config=None)
+
+    assert _stream_paths(app) == {
+        "/alpha/events/tasks/{task_id:str}",
+        "/alpha/events/sse/tasks/{task_id:str}",
+        "/beta/events/tasks/{task_id:str}",
+        "/beta/events/sse/tasks/{task_id:str}",
+    }
+
+
 def test_disabled_stream_config_registers_no_routes() -> None:
     sys.modules.pop("litestar_queues.events.streaming", None)
     default_app = Litestar(
@@ -189,7 +215,7 @@ def test_bare_channels_plugin_without_arbitrary_channels_raises() -> None:
 
 
 def _stream_paths(app: Litestar) -> set[str]:
-    return {route.path for route in app.routes if route.path.startswith(("/queues/events", "/events"))}
+    return {route.path for route in app.routes}
 
 
 def _channels_arbitrary() -> ChannelsPlugin:

@@ -23,7 +23,6 @@ from litestar.exceptions import PermissionDeniedException, WebSocketException
 from litestar.params import FromPath
 from litestar.response import ServerSentEvent
 
-from litestar_queues.config import _OBSERVABILITY_RUNTIME_STATE_KEY
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.models import QueueEvent, QueueEventScope
 
@@ -35,6 +34,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events.stream_config import EventStreamConfig
     from litestar_queues.events.typing import ChannelsLike, ChannelsStreamBackend, ChannelsSubscriptionBackend
+    from litestar_queues.namespace import QueueNamespace
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("StreamMetrics",)
@@ -290,7 +290,7 @@ def _resolve_observability_runtime(
     state = getattr(app, "state", None)
     if state is None:
         return None
-    key = _OBSERVABILITY_RUNTIME_STATE_KEY
+    key = config.observability_runtime_state_key
     with contextlib.suppress(KeyError, TypeError):
         runtime = state[key]
         if runtime is not None:
@@ -327,6 +327,7 @@ def _build_stream_router(
         A router containing one handler per recognized configured scope for each
         enabled transport (WebSocket and/or SSE).
     """
+    stream_config = stream_config.resolve(config.names)
     authorizer = stream_config.channel_authorizer
     history = stream_config.replay_limit
     configured_channels_backend = _configured_stream_channels_backend(config, channels_backend)
@@ -385,17 +386,17 @@ def _build_stream_router(
 
     handlers: list[Any] = []
     if "websocket" in stream_config.transports:
-        _append_task_handler(handlers, stream_config.scopes, _relay)
-        _append_queue_handler(handlers, stream_config.scopes, _relay)
-        _append_worker_handler(handlers, stream_config.scopes, _relay)
-        _append_global_handler(handlers, stream_config.scopes, _relay)
-        _append_custom_handler(handlers, stream_config.scopes, _relay)
+        _append_task_handler(handlers, stream_config.scopes, _relay, config.names)
+        _append_queue_handler(handlers, stream_config.scopes, _relay, config.names)
+        _append_worker_handler(handlers, stream_config.scopes, _relay, config.names)
+        _append_global_handler(handlers, stream_config.scopes, _relay, config.names)
+        _append_custom_handler(handlers, stream_config.scopes, _relay, config.names)
     if "sse" in stream_config.transports:
-        _append_sse_task_handler(handlers, stream_config.scopes, _sse)
-        _append_sse_queue_handler(handlers, stream_config.scopes, _sse)
-        _append_sse_worker_handler(handlers, stream_config.scopes, _sse)
-        _append_sse_global_handler(handlers, stream_config.scopes, _sse)
-        _append_sse_custom_handler(handlers, stream_config.scopes, _sse)
+        _append_sse_task_handler(handlers, stream_config.scopes, _sse, config.names)
+        _append_sse_queue_handler(handlers, stream_config.scopes, _sse, config.names)
+        _append_sse_worker_handler(handlers, stream_config.scopes, _sse, config.names)
+        _append_sse_global_handler(handlers, stream_config.scopes, _sse, config.names)
+        _append_sse_custom_handler(handlers, stream_config.scopes, _sse, config.names)
 
     return Router(
         path=stream_config.path,
@@ -514,111 +515,139 @@ def _sse_frame(
     return {"event": event.type, "data": event.to_json().decode("utf-8")}
 
 
-def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace") -> None:
     if "task" not in scopes:
         return
 
-    @websocket("/tasks/{task_id:str}", name="queue_event_stream_task")
+    @websocket("/tasks/{task_id:str}", name=namespace.registration("event", "stream", "task"))
     async def task_stream(socket: "WebSocket", task_id: FromPath[str]) -> None:
-        await relay(socket, "task", task_id, QueueChannels.task(task_id))
+        await relay(socket, "task", task_id, QueueChannels.task(task_id, namespace=namespace))
 
     handlers.append(task_stream)
 
 
-def _append_sse_task_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_sse_task_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "task" not in scopes:
         return
 
-    @get("/sse/tasks/{task_id:str}", name="queue_event_sse_task", media_type="text/event-stream")
+    @get(
+        "/sse/tasks/{task_id:str}", name=namespace.registration("event", "sse", "task"), media_type="text/event-stream"
+    )
     async def task_sse(request: Request, task_id: FromPath[str]) -> Any:
-        return await relay(request, "task", task_id, QueueChannels.task(task_id))
+        return await relay(request, "task", task_id, QueueChannels.task(task_id, namespace=namespace))
 
     handlers.append(task_sse)
 
 
-def _append_queue_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_queue_handler(handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace") -> None:
     if "queue" not in scopes:
         return
 
-    @websocket("/queues/{queue:str}", name="queue_event_stream_queue")
+    @websocket("/queues/{queue:str}", name=namespace.registration("event", "stream", "queue"))
     async def queue_stream(socket: "WebSocket", queue: FromPath[str]) -> None:
-        await relay(socket, "queue", queue, QueueChannels.queue(queue))
+        await relay(socket, "queue", queue, QueueChannels.queue(queue, namespace=namespace))
 
     handlers.append(queue_stream)
 
 
-def _append_sse_queue_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_sse_queue_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "queue" not in scopes:
         return
 
-    @get("/sse/queues/{queue:str}", name="queue_event_sse_queue", media_type="text/event-stream")
+    @get(
+        "/sse/queues/{queue:str}", name=namespace.registration("event", "sse", "queue"), media_type="text/event-stream"
+    )
     async def queue_sse(request: Request, queue: FromPath[str]) -> Any:
-        return await relay(request, "queue", queue, QueueChannels.queue(queue))
+        return await relay(request, "queue", queue, QueueChannels.queue(queue, namespace=namespace))
 
     handlers.append(queue_sse)
 
 
-def _append_worker_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_worker_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "worker" not in scopes:
         return
 
-    @websocket("/workers/{worker_id:str}", name="queue_event_stream_worker")
+    @websocket("/workers/{worker_id:str}", name=namespace.registration("event", "stream", "worker"))
     async def worker_stream(socket: "WebSocket", worker_id: FromPath[str]) -> None:
-        await relay(socket, "worker", worker_id, QueueChannels.worker(worker_id))
+        await relay(socket, "worker", worker_id, QueueChannels.worker(worker_id, namespace=namespace))
 
     handlers.append(worker_stream)
 
 
-def _append_sse_worker_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_sse_worker_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "worker" not in scopes:
         return
 
-    @get("/sse/workers/{worker_id:str}", name="queue_event_sse_worker", media_type="text/event-stream")
+    @get(
+        "/sse/workers/{worker_id:str}",
+        name=namespace.registration("event", "sse", "worker"),
+        media_type="text/event-stream",
+    )
     async def worker_sse(request: Request, worker_id: FromPath[str]) -> Any:
-        return await relay(request, "worker", worker_id, QueueChannels.worker(worker_id))
+        return await relay(request, "worker", worker_id, QueueChannels.worker(worker_id, namespace=namespace))
 
     handlers.append(worker_sse)
 
 
-def _append_global_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_global_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "global" not in scopes:
         return
 
-    @websocket("/global", name="queue_event_stream_global")
+    @websocket("/global", name=namespace.registration("event", "stream", "global"))
     async def global_stream(socket: "WebSocket") -> None:
-        await relay(socket, "global", None, QueueChannels.global_channel())
+        await relay(socket, "global", None, QueueChannels.global_channel(namespace=namespace))
 
     handlers.append(global_stream)
 
 
-def _append_sse_global_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_sse_global_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "global" not in scopes:
         return
 
-    @get("/sse/global", name="queue_event_sse_global", media_type="text/event-stream")
+    @get("/sse/global", name=namespace.registration("event", "sse", "global"), media_type="text/event-stream")
     async def global_sse(request: Request) -> Any:
-        return await relay(request, "global", None, QueueChannels.global_channel())
+        return await relay(request, "global", None, QueueChannels.global_channel(namespace=namespace))
 
     handlers.append(global_sse)
 
 
-def _append_custom_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_custom_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "custom" not in scopes:
         return
 
-    @websocket("/custom/{scope_key:str}", name="queue_event_stream_custom")
+    @websocket("/custom/{scope_key:str}", name=namespace.registration("event", "stream", "custom"))
     async def custom_stream(socket: "WebSocket", scope_key: FromPath[str]) -> None:
-        await relay(socket, "custom", scope_key, QueueChannels.custom(scope_key))
+        await relay(socket, "custom", scope_key, QueueChannels.custom(scope_key, namespace=namespace))
 
     handlers.append(custom_stream)
 
 
-def _append_sse_custom_handler(handlers: list[Any], scopes: Container[str], relay: Any) -> None:
+def _append_sse_custom_handler(
+    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
+) -> None:
     if "custom" not in scopes:
         return
 
-    @get("/sse/custom/{scope_key:str}", name="queue_event_sse_custom", media_type="text/event-stream")
+    @get(
+        "/sse/custom/{scope_key:str}",
+        name=namespace.registration("event", "sse", "custom"),
+        media_type="text/event-stream",
+    )
     async def custom_sse(request: Request, scope_key: FromPath[str]) -> Any:
-        return await relay(request, "custom", scope_key, QueueChannels.custom(scope_key))
+        return await relay(request, "custom", scope_key, QueueChannels.custom(scope_key, namespace=namespace))
 
     handlers.append(custom_sse)

@@ -193,6 +193,10 @@ class RecordingRuntime:
         """Record one duration sample."""
         self.durations.append((name, seconds, dict(attributes)))
 
+    def record_histogram(self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]") -> "None":
+        """Accept value histograms that are outside this test's assertions."""
+        del name, value, unit, attributes
+
     def samples(self, metric: "str") -> "list[dict[str, str]]":
         """Every attribute set recorded under ``metric``.
 

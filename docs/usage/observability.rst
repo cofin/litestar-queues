@@ -110,7 +110,7 @@ CLI workers should load a config factory that returns the same settings:
 
 .. code-block:: bash
 
-   LITESTAR_QUEUES_CONFIG_FACTORY=app.queue:create_queue_config litestar queues run
+   QUEUES_CONFIG_FACTORY=app.queue:create_queue_config litestar queues run
 
 Trace Context
 =============

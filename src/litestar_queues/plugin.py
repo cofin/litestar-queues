@@ -8,17 +8,7 @@ from typing import TYPE_CHECKING
 from litestar.channels import ChannelsPlugin
 from litestar.plugins import CLIPlugin, InitPlugin
 
-from litestar_queues.config import (
-    _EVENT_CHANNELS_STATE_KEY,
-    _EVENT_PUBLISHER_STATE_KEY,
-    _OBSERVABILITY_RUNTIME_STATE_KEY,
-    _SERVICE_STATE_KEY,
-    _WORKER_STATE_KEY,
-    MigrationConfiguringBackend,
-    QueueConfig,
-    execution_backend_name,
-    queue_backend_name,
-)
+from litestar_queues.config import MigrationConfiguringBackend, QueueConfig, execution_backend_name, queue_backend_name
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.service import QueueService
 from litestar_queues.task import load_task_modules, set_default_service
@@ -38,8 +28,6 @@ if TYPE_CHECKING:
     from litestar_queues.events.typing import ChannelsLike
 
 __all__ = ("QueuePlugin",)
-
-logger = logging.getLogger(__name__)
 
 _UNKNOWN = object()
 _APP_PATH_ENV_VAR = "LITESTAR_APP"
@@ -96,6 +84,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         "_auto_channels_backend",
         "_config",
         "_event_publisher",
+        "_logger",
         "_queue_backend",
         "_service",
         "_worker",
@@ -105,6 +94,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize the queue plugin."""
         self._config = config or QueueConfig()
+        self._logger = logging.getLogger(self._config.names.logger("plugin"))
         self._service: "QueueService | None" = None
         self._queue_backend: "BaseQueueBackend | None" = None
         self._event_publisher: "QueueEventPublisher | None" = None
@@ -161,9 +151,12 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         self._event_publisher = self._config.get_event_publisher(channels_backend=self._auto_channels_backend)
         app_config.dependencies.update(self._config.dependencies)
         app_config.signature_namespace.update(self._config.signature_namespace)
-        state = {_SERVICE_STATE_KEY: self._config, _EVENT_PUBLISHER_STATE_KEY: self._event_publisher}
+        state = {
+            self._config.service_state_key: self._config,
+            self._config.event_publisher_state_key: self._event_publisher,
+        }
         if self._config.events is not None and self._effective_channels_backend() is not None:
-            state[_EVENT_CHANNELS_STATE_KEY] = self._effective_channels_backend()
+            state[self._config.event_channels_state_key] = self._effective_channels_backend()
         stream_config = self._config.events.stream if self._config.events is not None else None
         if stream_config is not None:
             from litestar_queues.events.streaming import _build_stream_router
@@ -181,7 +174,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
                 )
                 if stream_config.unauthenticated_access == "error":
                     raise QueueConfigurationError(message)
-                logger.warning(message)
+                self._logger.warning(message)
             app_config.route_handlers.append(
                 _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
@@ -322,7 +315,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             return contextlib.nullcontext()
         from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 
-        return EphemeralServerContext(nonce=nonce)
+        return EphemeralServerContext(nonce=nonce, namespace=self._config.names)
 
     @contextmanager
     def server_lifespan(self, app: "Litestar") -> "Generator[None]":
@@ -344,7 +337,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         from litestar_queues.worker import supervisor
         from litestar_queues.worker.invocation import console_break_unwinds, server_context
 
-        with console_break_unwinds(), server_context() as nonce, self._storage_context(nonce):
+        with console_break_unwinds(), server_context(self._config.names) as nonce, self._storage_context(nonce):
             server_worker = supervisor.ServerWorkerSupervisor.from_plugin(self)
             server_worker.start()
             try:
@@ -360,7 +353,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             # traffic against a queue whose worker was never started.
             from litestar_queues.worker.invocation import server_context_active
 
-            if not server_context_active():
+            if not server_context_active(self._config.names):
                 raise QueueConfigurationError(_MISSING_SERVER_CONTEXT_ERROR)
         self._validate_channels_shutdown_order(app)
         if self._config.task_modules:
@@ -371,9 +364,11 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         if observability_config is not None:
             from litestar_queues.observability import create_observability_runtime
 
-            observability_runtime = create_observability_runtime(observability_config, app=app)
+            observability_runtime = create_observability_runtime(
+                observability_config, app=app, namespace=self._config.names
+            )
         if observability_runtime is not None:
-            app.state[_OBSERVABILITY_RUNTIME_STATE_KEY] = observability_runtime
+            app.state[self._config.observability_runtime_state_key] = observability_runtime
 
         self._service = QueueService(
             self._config,
@@ -383,11 +378,11 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         )
         await self._service.open()
         set_default_service(self._service)
-        app.state[_SERVICE_STATE_KEY] = self._service
-        app.state[_EVENT_PUBLISHER_STATE_KEY] = self._service.get_event_publisher()
+        app.state[self._config.service_state_key] = self._service
+        app.state[self._config.event_publisher_state_key] = self._service.get_event_publisher()
         effective_channels = self._effective_channels_backend()
         if self._config.events is not None and effective_channels is not None:
-            app.state[_EVENT_CHANNELS_STATE_KEY] = effective_channels
+            app.state[self._config.event_channels_state_key] = effective_channels
 
         # Schedules belong to whichever process owns a worker, so an enqueue-only
         # ASGI process never writes schedule records: server and external
@@ -404,7 +399,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             self._worker_task = asyncio.create_task(self._worker.start())
             self._worker_task.add_done_callback(self._log_worker_task_result)
             await asyncio.sleep(0)
-            app.state[_WORKER_STATE_KEY] = self._worker
+            app.state[self._config.worker_state_key] = self._worker
 
         try:
             yield
@@ -426,6 +421,6 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         exception = task.exception()
         if exception is None:
             return
-        logger.error(
+        self._logger.error(
             "In-app queue worker stopped unexpectedly", exc_info=(type(exception), exception, exception.__traceback__)
         )

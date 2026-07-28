@@ -64,6 +64,33 @@ def test_baseline_configuration_is_accepted() -> "None":
     assert config.api_timeout == 10.0
 
 
+def test_default_route_path_resolves_from_queue_namespace_without_mutating_config() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend
+
+    execution = _config()
+    queue_config = QueueConfig(
+        namespace="dma", queue_backend="redis", execution_backend=execution, worker=WorkerConfig(placement="external")
+    )
+
+    assert CloudTasksExecutionBackend(queue_config).execution_config.route_path == "/_dma/cloud-tasks"
+    assert CloudTasksExecutionBackend(queue_config).execution_config.delivery_name_prefix == "dma-"
+    assert execution.route_path == "/_litestar-queues/cloud-tasks"
+    assert execution.delivery_name_prefix is None
+
+
+def test_explicit_delivery_name_prefix_wins_over_queue_namespace() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend
+
+    execution = _config(delivery_name_prefix="custom-")
+    queue_config = QueueConfig(
+        namespace="dma", queue_backend="redis", execution_backend=execution, worker=WorkerConfig(placement="external")
+    )
+
+    assert CloudTasksExecutionBackend(queue_config).execution_config.delivery_name_prefix == "custom-"
+
+
 # --------------------------------------------------------------------------- target url
 
 
@@ -106,6 +133,12 @@ def test_explicit_audience_is_preserved() -> "None":
 def test_blank_identifiers_are_rejected(field: "str", value: "str") -> "None":
     with pytest.raises(QueueConfigurationError):
         _config(**{field: value})
+
+
+@pytest.mark.parametrize("delivery_name_prefix", ["", "dma/", "dma prefix", "dma."])
+def test_invalid_delivery_name_prefix_is_rejected(delivery_name_prefix: "str") -> "None":
+    with pytest.raises(QueueConfigurationError, match="delivery_name_prefix"):
+        _config(delivery_name_prefix=delivery_name_prefix)
 
 
 # --------------------------------------------------------------------------- service url

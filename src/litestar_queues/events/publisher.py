@@ -8,6 +8,7 @@ from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, default_publish_many
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -15,8 +16,6 @@ if TYPE_CHECKING:
     from litestar_queues.events.models import QueueEvent
 
 __all__ = ("EventBufferConfig", "QueueEventPublisher")
-
-logger = logging.getLogger(__name__)
 
 
 class _QueueEventHistoryWriter(Protocol):
@@ -84,6 +83,8 @@ class QueueEventPublisher:
         "_event_log",
         "_event_log_strict",
         "_live_failure_signature",
+        "_logger",
+        "_namespace",
         "_sink",
         "publish_global_lifecycle",
         "publish_queue_channel",
@@ -102,12 +103,22 @@ class QueueEventPublisher:
         publish_task_channel: "bool" = True,
         publish_queue_channel: "bool" = True,
         publish_global_lifecycle: "bool" = False,
+        namespace: "QueueNamespace | str | None" = None,
     ) -> "None":
+        self._namespace = (
+            namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
+        )
+        self._logger = logging.getLogger(self._namespace.logger("events", "publisher"))
         self._sink = sink or NoopQueueEventSink()
         self._event_log = event_log
         self._event_log_strict = event_log_strict
         self._buffer = (
-            LiveEventBuffer(buffer_config, sink_publish=self._deliver_live_many, record_drop=_ignore_buffer_drop)
+            LiveEventBuffer(
+                buffer_config,
+                sink_publish=self._deliver_live_many,
+                record_drop=_ignore_buffer_drop,
+                runtime_logger=self._logger,
+            )
             if buffer_config is not None
             else None
         )
@@ -139,7 +150,7 @@ class QueueEventPublisher:
             except Exception:
                 if self.strict:
                     raise
-                logger.warning(
+                self._logger.warning(
                     "Queue event buffer publish failed",
                     exc_info=True,
                     extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -151,7 +162,7 @@ class QueueEventPublisher:
             except Exception:
                 if self.strict:
                     raise
-                logger.warning(
+                self._logger.warning(
                     "Queue event buffer flush failed",
                     exc_info=True,
                     extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -179,7 +190,7 @@ class QueueEventPublisher:
         except Exception:
             if self.strict:
                 raise
-            logger.warning(
+            self._logger.warning(
                 "Queue event publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -205,10 +216,10 @@ class QueueEventPublisher:
         # spamming a WARNING per batch. Reset happens on the next successful delivery.
         signature = (type(exc).__name__, str(exc))
         if signature == self._live_failure_signature:
-            logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
+            self._logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})
             return
         self._live_failure_signature = signature
-        logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
+        self._logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
 
     async def _record_event(self, event: "QueueEvent") -> "None":
         if self._event_log is None:
@@ -218,7 +229,7 @@ class QueueEventPublisher:
         except Exception:
             if self._event_log_strict:
                 raise
-            logger.warning(
+            self._logger.warning(
                 "Queue event history publish failed",
                 exc_info=True,
                 extra={"queue_event_type": event.type, "queue_event_id": event.id},
@@ -228,22 +239,22 @@ class QueueEventPublisher:
         """Return canonical publish channels for an event plus explicit extras."""
         resolved: "list[str]" = []
         if self.publish_task_channel and event.task_id is not None:
-            resolved.append(QueueChannels.task(event.task_id))
+            resolved.append(QueueChannels.task(event.task_id, namespace=self._namespace))
         if event.scope == "queue" and event.scope_key is not None:
-            resolved.append(QueueChannels.queue(event.scope_key))
+            resolved.append(QueueChannels.queue(event.scope_key, namespace=self._namespace))
         if self.publish_queue_channel and event.queue is not None:
-            resolved.append(QueueChannels.queue(event.queue))
+            resolved.append(QueueChannels.queue(event.queue, namespace=self._namespace))
         if event.scope == "worker" and event.worker_id is not None:
-            resolved.append(QueueChannels.worker(event.worker_id))
+            resolved.append(QueueChannels.worker(event.worker_id, namespace=self._namespace))
         if event.scope == "global":
-            resolved.append(QueueChannels.global_channel())
+            resolved.append(QueueChannels.global_channel(namespace=self._namespace))
         if event.scope == "custom" and event.scope_key is not None:
-            resolved.append(QueueChannels.custom(event.scope_key))
+            resolved.append(QueueChannels.custom(event.scope_key, namespace=self._namespace))
         if self.publish_global_lifecycle and event.type in _LIFECYCLE_EVENT_TYPES:
-            resolved.append(QueueChannels.global_channel())
+            resolved.append(QueueChannels.global_channel(namespace=self._namespace))
         if channels:
             resolved.extend(channels)
-        return _dedupe(resolved or [QueueChannels.global_channel()])
+        return _dedupe(resolved or [QueueChannels.global_channel(namespace=self._namespace)])
 
 
 def _dedupe(channels: "Sequence[str]") -> "tuple[str, ...]":

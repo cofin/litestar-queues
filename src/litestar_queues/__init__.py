@@ -94,6 +94,7 @@ if TYPE_CHECKING:
         TaskReservation,
         TaskStatus,
     )
+    from litestar_queues.namespace import QueueNamespace
     from litestar_queues.plugin import QueuePlugin
     from litestar_queues.service import QueueService
     from litestar_queues.task import (
@@ -153,6 +154,7 @@ __all__ = (
     "QueueMaintenancePhaseResult",
     "QueueMaintenanceService",
     "QueueMaintenanceSummary",
+    "QueueNamespace",
     "QueuePlugin",
     "QueueService",
     "QueueStatistics",
@@ -246,6 +248,7 @@ _EXPORTS = {
     "QueueMaintenancePhaseResult": "litestar_queues.maintenance",
     "QueueMaintenanceService": "litestar_queues.maintenance",
     "QueueMaintenanceSummary": "litestar_queues.maintenance",
+    "QueueNamespace": "litestar_queues.namespace",
     "QueuePlugin": "litestar_queues.plugin",
     "QueueService": "litestar_queues.service",
     "QueueStatistics": "litestar_queues.models",

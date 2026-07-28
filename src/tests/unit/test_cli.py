@@ -105,8 +105,8 @@ def test_queues_run_task_consumes_record_via_config_factory(monkeypatch: "pytest
         queue_backend=queue_backend,
     )
     sys.modules[factory_module.__name__] = factory_module
-    monkeypatch.setenv("LITESTAR_QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
-    monkeypatch.setenv("LITESTAR_QUEUES_TASK_ID", str(task_id))
+    monkeypatch.setenv("QUEUES_CONFIG_FACTORY", f"{factory_module.__name__}:create_service")
+    monkeypatch.setenv("QUEUES_TASK_ID", str(task_id))
     try:
         result = _runner_invoke("tests.helpers.support.cli_app:app", ["queues", "run-task"], monkeypatch)
     finally:
@@ -582,7 +582,7 @@ def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: 
         service = plugin.get_service()
         await service.open()
         try:
-            canary_task = get_task_registry()[config.scheduler_canary_task]
+            canary_task = get_task_registry()[cast("str", config.scheduler_canary_task)]
             record = await service.enqueue(canary_task)
             await service.get_queue_backend().complete_task(record.id, result=None)
         finally:

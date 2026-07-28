@@ -177,7 +177,7 @@ def scheduler_health_command(ctx: "click.Context", minutes: "int") -> "None":
 @queues_group.command(
     name="run-task",
     help="Run one queued record by id (external-executor consumer). By default reads the task id "
-    "(LITESTAR_QUEUES_TASK_ID) and LITESTAR_QUEUES_CONFIG_FACTORY from the environment; the options below "
+    "QUEUES_TASK_ID and QUEUES_CONFIG_FACTORY from the environment; the options below "
     "override those defaults so a job can be run by hand.",
 )
 @click.option("--task-id", default=None, help="Run the queued record with this id (local one-shot).")
@@ -374,7 +374,7 @@ async def _run_worker(
         # text: connection strings and credentials routinely appear in backend
         # errors. The full traceback still reaches the configured log handlers.
         click.echo(f"error: queue worker failed during {_failure_detail(exc)}", err=True)
-        logger.exception("Standalone queue worker failed")
+        logging.getLogger(config.names.logger("cli")).exception("Standalone queue worker failed")
         return int(WorkerRunResult.CRASHED)
     return int(result)
 

@@ -92,21 +92,21 @@ async def harness(
     opened: "list[QueueService]" = []
 
     async def build(**config_overrides: "Any") -> "Harness":
+        queue_namespace = config_overrides.pop("queue_namespace", "litestar_queues")
         execution_config = cloud_tasks_config(**config_overrides)
         client = FakeCloudTasksClient()
-        backend = CloudTasksExecutionBackend(execution_config=execution_config, client=client)
         events = InMemoryQueueEventSink()
-        service = QueueService(
-            QueueConfig(
-                queue_backend=shared_storage,
-                execution_backend=execution_config,
-                worker=WorkerConfig(placement="external"),
-                # Unbuffered: these tests assert on what one call published, and
-                # the default producer buffer only flushes at close.
-                events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
-            ),
-            execution_backend=backend,
+        queue_config = QueueConfig(
+            namespace=queue_namespace,
+            queue_backend=shared_storage,
+            execution_backend=execution_config,
+            worker=WorkerConfig(placement="external"),
+            # Unbuffered: these tests assert on what one call published, and
+            # the default producer buffer only flushes at close.
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
         )
+        backend = CloudTasksExecutionBackend(config=queue_config, execution_config=execution_config, client=client)
+        service = QueueService(queue_config, execution_backend=backend)
         await service.open()
         opened.append(service)
         return Harness(service, backend, client, execution_config, events)
@@ -284,6 +284,16 @@ async def test_the_delivery_name_is_random_and_encodes_the_record_and_attempt(ha
     suffix = name[len(prefix) :]
     assert len(suffix) == 32
     assert suffix != record.id.hex
+
+
+async def test_the_delivery_name_prefix_derives_from_queue_namespace(harness: "Callable[..., Any]") -> "None":
+    live = await harness(queue_namespace="dma")
+    record = await live.enqueue()
+
+    name = await live.schedule(record)
+
+    assert name is not None
+    assert name.startswith(f"{live.execution_config.queue_path}/tasks/dma-{record.id.hex}-r0-")
 
 
 async def test_two_records_never_share_a_delivery_name(harness: "Callable[..., Any]") -> "None":

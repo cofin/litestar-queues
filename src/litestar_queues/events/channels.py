@@ -4,6 +4,8 @@ import re
 import unicodedata
 from typing import ClassVar
 
+from litestar_queues.namespace import QueueNamespace
+
 __all__ = ("QueueChannels",)
 
 _INVALID_CHARS = re.compile(r"[^a-z0-9_.:-]+")
@@ -17,29 +19,39 @@ class QueueChannels:
     prefix: "ClassVar[str]" = "litestar_queues"
 
     @classmethod
-    def task(cls, task_id: "str", *, topic: "str" = "events") -> "str":
+    def task(cls, task_id: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None) -> "str":
         """Return the channel for task-scoped events."""
-        return f"{cls.prefix}:task:{_normalize_part(task_id)}:{_normalize_part(topic)}"
+        return f"{_prefix(namespace)}:task:{_normalize_part(task_id)}:{_normalize_part(topic)}"
 
     @classmethod
-    def queue(cls, queue: "str", *, topic: "str" = "events") -> "str":
+    def queue(cls, queue: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None) -> "str":
         """Return the channel for queue-scoped events."""
-        return f"{cls.prefix}:queue:{_normalize_part(queue)}:{_normalize_part(topic)}"
+        return f"{_prefix(namespace)}:queue:{_normalize_part(queue)}:{_normalize_part(topic)}"
 
     @classmethod
-    def worker(cls, worker_id: "str", *, topic: "str" = "events") -> "str":
+    def worker(
+        cls, worker_id: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None
+    ) -> "str":
         """Return the channel for worker-scoped events."""
-        return f"{cls.prefix}:worker:{_normalize_part(worker_id)}:{_normalize_part(topic)}"
+        return f"{_prefix(namespace)}:worker:{_normalize_part(worker_id)}:{_normalize_part(topic)}"
 
     @classmethod
-    def global_channel(cls, *, topic: "str" = "events") -> "str":
+    def global_channel(cls, *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None) -> "str":
         """Return the global queue event channel."""
-        return f"{cls.prefix}:global:{_normalize_part(topic)}"
+        return f"{_prefix(namespace)}:global:{_normalize_part(topic)}"
 
     @classmethod
-    def custom(cls, scope_key: "str", *, topic: "str" = "events") -> "str":
+    def custom(
+        cls, scope_key: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None
+    ) -> "str":
         """Return a custom queue event channel."""
-        return f"{cls.prefix}:custom:{_normalize_part(scope_key, allow_colon=True)}:{_normalize_part(topic)}"
+        return f"{_prefix(namespace)}:custom:{_normalize_part(scope_key, allow_colon=True)}:{_normalize_part(topic)}"
+
+
+def _prefix(namespace: "QueueNamespace | str | None") -> str:
+    if namespace is None:
+        return QueueChannels.prefix
+    return namespace.root if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace).root
 
 
 def _normalize_part(value: "str", *, allow_colon: "bool" = False) -> "str":

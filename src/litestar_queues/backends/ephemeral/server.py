@@ -12,8 +12,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from litestar_queues.backends.ephemeral.schema import NONCE_ENV_VAR, PATH_ENV_VAR, initialize_database
+from litestar_queues.backends.ephemeral.schema import initialize_database
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -25,7 +26,6 @@ __all__ = ("DATABASE_NAME", "EphemeralServerContext")
 logger = logging.getLogger(__name__)
 
 DATABASE_NAME = "queue.sqlite3"
-_DIRECTORY_PREFIX = "litestar-queues-"
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _CLEANUP_DEADLINE = 5.0
@@ -40,12 +40,17 @@ _CLEANUP_FILE_WARNING = "Could not remove the private ephemeral queue files (%s)
 class EphemeralServerContext:
     """Own one private temporary SQLite database for a server invocation."""
 
-    __slots__ = ("_directory", "_nonce", "_path")
+    __slots__ = ("_directory", "_logger", "_nonce", "_nonce_env_var", "_path", "_path_env_var", "_resource_prefix")
 
-    def __init__(self, *, nonce: "str") -> "None":
+    def __init__(self, *, nonce: "str", namespace: "QueueNamespace | None" = None) -> "None":
+        names = namespace or QueueNamespace()
         self._nonce = nonce
         self._directory: "Path | None" = None
         self._path: "Path | None" = None
+        self._path_env_var = names.environment("ephemeral", "path")
+        self._nonce_env_var = names.environment("ephemeral", "nonce")
+        self._resource_prefix = f"{names.resource()}-"
+        self._logger = logging.getLogger(names.logger("backends", "ephemeral"))
 
     @property
     def path(self) -> "Path":
@@ -71,13 +76,13 @@ class EphemeralServerContext:
         Raises:
             QueueConfigurationError: If the private environment already exists.
         """
-        if os.environ.get(PATH_ENV_VAR) or os.environ.get(NONCE_ENV_VAR):
+        if os.environ.get(self._path_env_var) or os.environ.get(self._nonce_env_var):
             raise QueueConfigurationError(_PREEXISTING_ERROR)
-        directory = Path(tempfile.mkdtemp(prefix=_DIRECTORY_PREFIX))
+        directory = Path(tempfile.mkdtemp(prefix=self._resource_prefix))
         try:
             directory.chmod(_DIRECTORY_MODE)
         except OSError:
-            logger.debug("Could not restrict ephemeral queue directory permissions.")
+            self._logger.debug("Could not restrict ephemeral queue directory permissions.")
         path = directory / DATABASE_NAME
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, _FILE_MODE)
         os.close(descriptor)
@@ -88,8 +93,8 @@ class EphemeralServerContext:
             raise
         self._directory = directory
         self._path = path
-        os.environ[PATH_ENV_VAR] = str(path)
-        os.environ[NONCE_ENV_VAR] = self._nonce
+        os.environ[self._path_env_var] = str(path)
+        os.environ[self._nonce_env_var] = self._nonce
         return self
 
     def __exit__(
@@ -100,8 +105,8 @@ class EphemeralServerContext:
     ) -> "None":
         """Remove the environment, database files, and private directory."""
         del exc_type, exc_value, traceback
-        os.environ.pop(PATH_ENV_VAR, None)
-        os.environ.pop(NONCE_ENV_VAR, None)
+        os.environ.pop(self._path_env_var, None)
+        os.environ.pop(self._nonce_env_var, None)
         directory, path = self._directory, self._path
         self._directory = self._path = None
         if directory is None or path is None:
@@ -112,8 +117,8 @@ class EphemeralServerContext:
         targets = (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm"))
         survivors = [target.name for target in targets if not _unlink_within_deadline(target)]
         if survivors:
-            logger.warning(_CLEANUP_FILE_WARNING, ", ".join(survivors))
-        _remove_directory_within_deadline(directory)
+            self._logger.warning(_CLEANUP_FILE_WARNING, ", ".join(survivors))
+        _remove_directory_within_deadline(directory, runtime_logger=self._logger)
 
 
 def _unlink_within_deadline(target: "Path") -> "bool":
@@ -141,7 +146,7 @@ def _unlink_within_deadline(target: "Path") -> "bool":
         return True
 
 
-def _remove_directory_within_deadline(directory: "Path") -> "None":
+def _remove_directory_within_deadline(directory: "Path", *, runtime_logger: "logging.Logger" = logger) -> "None":
     """Remove the private directory once it is empty, or warn and leave it."""
     deadline = time.monotonic() + _CLEANUP_DEADLINE
     while True:
@@ -151,7 +156,7 @@ def _remove_directory_within_deadline(directory: "Path") -> "None":
             return
         except OSError:
             if time.monotonic() >= deadline:
-                logger.warning(_CLEANUP_WARNING)
+                runtime_logger.warning(_CLEANUP_WARNING)
                 return
             time.sleep(_CLEANUP_RETRY)
             continue

@@ -25,10 +25,11 @@ async def test_plugin_startup_publishes_observability_runtime_on_state(monkeypat
     runtime = _FakeObservabilityRuntime()
 
     def create_runtime(
-        config: "ObservabilityConfig | None", *, app: Litestar | None = None
+        config: "ObservabilityConfig | None", *, app: Litestar | None = None, namespace: object | None = None
     ) -> "_FakeObservabilityRuntime":
         assert config is not None
         assert app is not None
+        assert namespace is not None
         return runtime
 
     monkeypatch.setattr("litestar_queues.observability.create_observability_runtime", create_runtime)

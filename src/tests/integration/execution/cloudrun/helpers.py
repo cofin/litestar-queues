@@ -112,4 +112,4 @@ def task_id_from_request(request: "RunJobRequest") -> "str":
     Returns:
         The queued record id the request dispatches.
     """
-    return env_map(request)["LITESTAR_QUEUES_TASK_ID"]
+    return env_map(request)["QUEUES_TASK_ID"]

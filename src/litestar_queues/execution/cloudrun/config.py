@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
+from litestar_queues._environment import TASK_ID_ENV
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
+    from litestar_queues.namespace import QueueNamespace
 
 __all__ = ("CloudRunExecutionConfig",)
 
@@ -29,8 +31,8 @@ class CloudRunExecutionConfig:
     timeout: "int" = 300
     """Cloud Run API operation timeout in seconds."""
 
-    env_prefix: "str" = "LITESTAR_QUEUES"
-    """Prefix used for environment variables passed to Cloud Run jobs."""
+    env_prefix: "str | None" = None
+    """Explicit environment prefix; ``None`` derives it from ``QueueConfig.namespace``."""
 
     extra_env: "dict[str, str]" = field(default_factory=dict)
     """Additional environment variables passed to every Cloud Run execution."""
@@ -56,10 +58,13 @@ class CloudRunExecutionConfig:
         msg = "CloudRunExecutionConfig requires job_name or profiles['default']."
         raise QueueConfigurationError(msg)
 
-    def env_name(self, suffix: "str") -> "str":
+    def env_name(self, suffix: "str", *, namespace: "QueueNamespace | None" = None) -> "str":
         """Return an environment variable name using the configured prefix."""
-        normalized = suffix.upper().removeprefix(f"{self.env_prefix}_")
-        return f"{self.env_prefix}_{normalized}"
+        if suffix.upper() == "TASK_ID":
+            return TASK_ID_ENV
+        prefix = self.env_prefix or (namespace.root.upper() if namespace is not None else "LITESTAR_QUEUES")
+        normalized = suffix.upper().removeprefix(f"{prefix}_")
+        return f"{prefix}_{normalized}"
 
 
 def _execution_config_from_queue_config(config: "QueueConfig | None") -> "CloudRunExecutionConfig":

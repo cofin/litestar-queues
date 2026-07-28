@@ -233,8 +233,9 @@ class QueueMaintenanceService:
             raise QueueConfigurationError(msg)
 
         token = uuid4().hex
+        maintenance_name = getattr(getattr(self._service, "config", None), "maintenance_name", MAINTENANCE_NAME)
         acquired = await backend.acquire_maintenance(
-            MAINTENANCE_NAME, token, ttl=timedelta(seconds=self._config.coordination_timeout)
+            maintenance_name, token, ttl=timedelta(seconds=self._config.coordination_timeout)
         )
         if not acquired:
             results = [QueueMaintenancePhaseResult(phase=phase, status="skipped") for phase in selected]
@@ -259,7 +260,7 @@ class QueueMaintenanceService:
                     continue
                 results.append(await self._run_phase(phase, cutoffs))
         finally:
-            await backend.release_maintenance(MAINTENANCE_NAME, token)
+            await backend.release_maintenance(maintenance_name, token)
 
         return QueueMaintenanceSummary(
             outcome=self._final_outcome(results),

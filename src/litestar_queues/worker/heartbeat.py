@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from litestar_queues.models import HeartbeatTouch
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -87,6 +88,7 @@ class WorkerHeartbeatManager:
         "_beats",
         "_interval",
         "_jitter_fraction",
+        "_logger",
         "_miss_threshold",
         "_registrations",
         "_service",
@@ -105,6 +107,9 @@ class WorkerHeartbeatManager:
         jitter_fraction: "float" = 0.1,
     ) -> "None":
         self._service = service
+        config = getattr(service, "config", None)
+        names = getattr(config, "names", QueueNamespace())
+        self._logger = logging.getLogger(names.logger("worker", "heartbeat"))
         self._interval = interval
         self._miss_threshold = max(1, miss_threshold)
         self._worker_id = worker_id
@@ -259,7 +264,9 @@ class WorkerHeartbeatManager:
                 1,
                 attributes={**self._metric_attributes(), "worker.error.type": type(exc).__name__},
             )
-        logger.warning(message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id})
+        self._logger.warning(
+            message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id}
+        )
 
     def _record_gauge_delta(self, name: "str", delta: "int") -> "None":
         self._service.observability_runtime.record_gauge_delta(name, delta, attributes=self._metric_attributes())

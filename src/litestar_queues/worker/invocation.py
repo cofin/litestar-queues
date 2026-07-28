@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -52,7 +53,6 @@ MARKER_VERSION = 1
 
 _MARKER_NAME = "server.json"
 _MARKER_FIELDS = frozenset({"version", "owner_pid", "nonce"})
-_DIRECTORY_PREFIX = "litestar-queues-server-"
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _NONCE_BYTES = 16
@@ -68,7 +68,7 @@ _CLEANUP_WARNING = "Could not remove the private queue server marker directory; 
 _ACTIVE_SERVER_CONTEXTS: "set[str]" = set()
 
 
-def _remove(directory: "Path", marker: "Path") -> "None":
+def _remove(directory: "Path", marker: "Path", *, runtime_logger: "logging.Logger" = logger) -> "None":
     """Unlink the marker and its private directory, retrying a bounded number of times."""
     deadline = time.monotonic() + _CLEANUP_DEADLINE
     while True:
@@ -87,7 +87,7 @@ def _remove(directory: "Path", marker: "Path") -> "None":
             return
         except OSError:
             if time.monotonic() >= deadline:
-                logger.warning(_CLEANUP_WARNING)
+                runtime_logger.warning(_CLEANUP_WARNING)
                 return
             time.sleep(_CLEANUP_RETRY)
             continue
@@ -138,7 +138,7 @@ def console_break_unwinds() -> "Generator[None]":
 
 
 @contextmanager
-def server_context() -> "Generator[str]":
+def server_context(namespace: "QueueNamespace | None" = None) -> "Generator[str]":
     """Mark this process tree as owned for the lifetime of a server invocation.
 
     Yields:
@@ -147,14 +147,18 @@ def server_context() -> "Generator[str]":
     Raises:
         QueueConfigurationError: If a marker is already present in the environment.
     """
-    if os.environ.get(NONCE_ENV_VAR) or os.environ.get(MARKER_ENV_VAR):
+    names = namespace or QueueNamespace()
+    nonce_env_var = names.environment("server", "nonce")
+    marker_env_var = names.environment("server", "marker")
+    runtime_logger = logging.getLogger(names.logger("worker", "invocation"))
+    if os.environ.get(nonce_env_var) or os.environ.get(marker_env_var):
         raise QueueConfigurationError(_PREEXISTING_ERROR)
     nonce = secrets.token_hex(_NONCE_BYTES)
-    directory = Path(tempfile.mkdtemp(prefix=_DIRECTORY_PREFIX))
+    directory = Path(tempfile.mkdtemp(prefix=f"{names.resource('server')}-"))
     try:
         directory.chmod(_DIRECTORY_MODE)
     except OSError:
-        logger.debug("Could not restrict the private queue server marker directory permissions.")
+        runtime_logger.debug("Could not restrict the private queue server marker directory permissions.")
     marker = directory / _MARKER_NAME
     document = json.dumps({"version": MARKER_VERSION, "owner_pid": os.getpid(), "nonce": nonce})
     try:
@@ -162,18 +166,18 @@ def server_context() -> "Generator[str]":
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(document)
     except BaseException:
-        _remove(directory, marker)
+        _remove(directory, marker, runtime_logger=runtime_logger)
         raise
-    os.environ[NONCE_ENV_VAR] = nonce
-    os.environ[MARKER_ENV_VAR] = str(marker)
+    os.environ[nonce_env_var] = nonce
+    os.environ[marker_env_var] = str(marker)
     _ACTIVE_SERVER_CONTEXTS.add(nonce)
     try:
         yield nonce
     finally:
         _ACTIVE_SERVER_CONTEXTS.discard(nonce)
-        os.environ.pop(NONCE_ENV_VAR, None)
-        os.environ.pop(MARKER_ENV_VAR, None)
-        _remove(directory, marker)
+        os.environ.pop(nonce_env_var, None)
+        os.environ.pop(marker_env_var, None)
+        _remove(directory, marker, runtime_logger=runtime_logger)
 
 
 def _read_marker(marker: "Path") -> "dict[str, object] | None":
@@ -194,15 +198,16 @@ def _read_marker(marker: "Path") -> "dict[str, object] | None":
     return document
 
 
-def server_context_active() -> "bool":
+def server_context_active(namespace: "QueueNamespace | None" = None) -> "bool":
     """Return whether this process belongs to an invocation that owns a queue worker.
 
     Returns:
         True when both private variables are present and the marker file they
         name matches this invocation exactly.
     """
-    nonce = os.environ.get(NONCE_ENV_VAR)
-    path = os.environ.get(MARKER_ENV_VAR)
+    names = namespace or QueueNamespace()
+    nonce = os.environ.get(names.environment("server", "nonce"))
+    path = os.environ.get(names.environment("server", "marker"))
     if not nonce or not path:
         return False
     marker = Path(path)

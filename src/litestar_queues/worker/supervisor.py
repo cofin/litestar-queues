@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, Protocol, cast
 
 from litestar_queues.exceptions import QueueConfigurationError, QueueError
+from litestar_queues.namespace import DEFAULT_NAMESPACE, QueueNamespace
 from litestar_queues.worker.runtime import WorkerRunResult, _WorkerStageError
 from litestar_queues.worker.runtime import run_worker as _run_worker
 
@@ -40,7 +41,6 @@ _ERROR_MESSAGE_LENGTH = 3
 _RUNNER_STAGES = frozenset(("load_tasks", "open_service", "initialize_schedules", "start_worker"))
 _BOOTSTRAP_STAGES = frozenset(("bootstrap", "load_app", "resolve_plugin", "validate"))
 _SAFE_STAGES = _RUNNER_STAGES | _BOOTSTRAP_STAGES
-_PROCESS_ROLE_ENV_VAR = "LITESTAR_QUEUES_PROCESS_ROLE"
 _WINDOWS_CLEANUP_ERROR = "Windows process-tree cleanup failed."
 _POSIX_SIGKILL = cast("int", getattr(signal, "SIGKILL", 9))
 # STATUS_CONTROL_C_EXIT: Windows terminates a console process with this status
@@ -99,6 +99,7 @@ class _WorkerLaunchSpec:
     sys_path: "tuple[str, ...]"
     environment: "tuple[tuple[str, str], ...]" = field(repr=False)
     log_level: "int"
+    namespace: "str" = DEFAULT_NAMESPACE
 
 
 def _select_process_context(
@@ -110,7 +111,7 @@ def _select_process_context(
     return _get_context("forkserver" if "forkserver" in methods else "spawn")
 
 
-def _build_launch_spec(*, log_level: "int" = logging.INFO) -> "_WorkerLaunchSpec":
+def _build_launch_spec(*, log_level: "int" = logging.INFO, namespace: "str" = DEFAULT_NAMESPACE) -> "_WorkerLaunchSpec":
     try:
         app_path = os.environ["LITESTAR_APP"]
     except KeyError as exc:
@@ -125,6 +126,7 @@ def _build_launch_spec(*, log_level: "int" = logging.INFO) -> "_WorkerLaunchSpec
         sys_path=tuple(sys.path),
         environment=tuple(os.environ.items()),
         log_level=log_level,
+        namespace=namespace,
     )
 
 
@@ -204,7 +206,7 @@ def _validate_child_plugin(plugin: "QueuePlugin") -> "None":
         raise QueueConfigurationError(msg)
     if backend != "ephemeral":
         return
-    resolved = read_environment()
+    resolved = read_environment(config.names)
     if resolved is None:
         msg = "The server-owned ephemeral queue database is not available to this worker process."
         raise QueueConfigurationError(msg)
@@ -268,11 +270,12 @@ async def _run_child(
         nonlocal parent_bridge
         _safe_send(connection, ("ready", child_pid))
         loop = asyncio.get_running_loop()
+        names = getattr(plugin.config, "names", QueueNamespace())
         parent_bridge = _thread_factory(
             target=_parent_loss_bridge,
             args=(parent, loop, graceful_stop, bridge_completed),
             kwargs={"_wait": _parent_wait},
-            name="litestar-queues-parent-watch",
+            name=names.resource("parent", "watch"),
             daemon=True,
         )
         parent_bridge.start()
@@ -328,7 +331,9 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
     stage = "bootstrap"
     try:
         _apply_launch_spec(spec)
-        os.environ[_PROCESS_ROLE_ENV_VAR] = "server-worker"
+        names = QueueNamespace(spec.namespace)
+        process_role_env_var = names.environment("process", "role")
+        os.environ[process_role_env_var] = "server-worker"
         if _os_name() == "posix":
             os.setsid()
         parent = _get_parent_process()
@@ -348,7 +353,7 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
         else:
             _safe_send(connection, ("error", stage, type(exc).__name__))
     finally:
-        os.environ.pop(_PROCESS_ROLE_ENV_VAR, None)
+        os.environ.pop(QueueNamespace(spec.namespace).environment("process", "role"), None)
         with contextlib.suppress(BaseException):
             stop_event.set()
         with contextlib.suppress(BaseException):
@@ -472,6 +477,7 @@ class ServerWorkerSupervisor:
         "_expected_stop",
         "_launch_spec",
         "_lock",
+        "_logger",
         "_process",
         "_request_parent_shutdown",
         "_send_connection",
@@ -502,6 +508,7 @@ class ServerWorkerSupervisor:
         self._expected_stop = threading.Event()
         self._shutdown_requested = threading.Event()
         self._lock = threading.Lock()
+        self._logger = logging.getLogger(config.names.logger("worker", "supervisor"))
         self._start_attempted = False
         self._process: "_ProcessLike | None" = None
         self._connection: "Connection | None" = None
@@ -568,9 +575,9 @@ class ServerWorkerSupervisor:
                 # console shutdown, not a crash: the server is already on its way
                 # down and escalating would kill it before it unwinds its
                 # lifespan, leaking the private database it removes on exit.
-                logger.debug("Server queue worker stopped with the console; leaving shutdown to the server.")
+                self._logger.debug("Server queue worker stopped with the console; leaving shutdown to the server.")
                 return
-            logger.error("Server queue worker exited unexpectedly with exit code %s.", exit_code)
+            self._logger.error("Server queue worker exited unexpectedly with exit code %s.", exit_code)
             with contextlib.suppress(BaseException):
                 self._request_parent_shutdown()
         finally:
@@ -584,7 +591,7 @@ class ServerWorkerSupervisor:
                 raise QueueConfigurationError(msg)
             self._start_attempted = True
             context = self._context or _select_process_context()
-            spec = self._launch_spec or _build_launch_spec()
+            spec = self._launch_spec or _build_launch_spec(namespace=self._config.namespace)
             receive_connection, send_connection = context.Pipe(duplex=False)
             self._connection = receive_connection
             self._send_connection = send_connection
@@ -593,7 +600,7 @@ class ServerWorkerSupervisor:
                 process = cast("Any", context).Process(
                     target=_worker_process_main,
                     args=(spec, stop_event, send_connection),
-                    name="litestar-queues-server-worker",
+                    name=self._config.names.resource("server", "worker"),
                 )
             except BaseException:
                 self._close_handles()
@@ -616,7 +623,7 @@ class ServerWorkerSupervisor:
                 raise
             try:
                 watchdog = self._thread_factory(
-                    target=self._watch_child, name="litestar-queues-child-watch", daemon=True
+                    target=self._watch_child, name=self._config.names.resource("child", "watch"), daemon=True
                 )
                 self._watchdog = watchdog
                 watchdog.start()

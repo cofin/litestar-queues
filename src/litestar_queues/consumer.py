@@ -17,6 +17,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
+from litestar_queues._environment import CONFIG_FACTORY_ENV, TASK_ID_ENV
 from litestar_queues.config import QueueConfig
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
 from litestar_queues.exceptions import QueueConfigurationError
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     ServiceFactory = Callable[[], QueueConfig | QueueService | AbstractAsyncContextManager[QueueService]]
 
 __all__ = ("TaskExitCode", "consume_one", "run_task")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("queues.consumer")
 
 _TASK_ID_ENV_SUFFIX = "TASK_ID"
 
@@ -140,7 +141,7 @@ async def run_task(
     ) and not _has_config_factory(config, environ):
         if not has_task_id_override and not environ.get(_env_name(config, _TASK_ID_ENV_SUFFIX)):
             return TaskExitCode.MISSING_TASK_ID
-        logger.error("External consumer process missing CONFIG_FACTORY")
+        _runtime_logger(config=config, service=service).error("External consumer process missing CONFIG_FACTORY")
         return TaskExitCode.MISSING_CONFIG_FACTORY
 
     async with contextlib.AsyncExitStack() as stack:
@@ -151,11 +152,15 @@ async def run_task(
         except QueueConfigurationError:
             # Process-local storage cannot be reached from a separate consumer
             # process. That is a configuration fault, not a missing factory.
-            logger.exception("External consumer process cannot attach to the configured queue backend")
+            _runtime_logger(config=config, service=service).exception(
+                "External consumer process cannot attach to the configured queue backend"
+            )
             return TaskExitCode.MISSING_CONFIG_FACTORY
         except Exception:
             if _requires_config_factory(config=config, service=service, service_factory=service_factory):
-                logger.exception("External consumer process could not load CONFIG_FACTORY")
+                _runtime_logger(config=config, service=service).exception(
+                    "External consumer process could not load CONFIG_FACTORY"
+                )
                 return TaskExitCode.MISSING_CONFIG_FACTORY
             raise
 
@@ -278,11 +283,13 @@ def _requires_config_factory(
 
 
 def _has_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "bool":
-    return bool(env.get(_env_name(config, "CONFIG_FACTORY")))
+    del config
+    return bool(env.get(CONFIG_FACTORY_ENV))
 
 
 def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "ServiceFactory | None":
-    import_path = env.get(_env_name(config, "CONFIG_FACTORY"))
+    del config
+    import_path = env.get(CONFIG_FACTORY_ENV)
     if not import_path:
         return None
     return _import_factory(import_path)
@@ -312,8 +319,19 @@ def _load_configured_task_modules(
 
 
 def _env_name(config: "QueueConfig | None", suffix: "str") -> "str":
+    if suffix == _TASK_ID_ENV_SUFFIX:
+        return TASK_ID_ENV
     raw_config = config.execution_backend if config is not None else None
     env_name = getattr(raw_config, "env_name", None)
     if callable(env_name):
-        return str(env_name(suffix))
-    return f"LITESTAR_QUEUES_{suffix}"
+        return str(env_name(suffix, namespace=cast("QueueConfig", config).names))
+    if config is not None:
+        return config.names.environment(suffix.lower())
+    return f"QUEUES_{suffix}"
+
+
+def _runtime_logger(*, config: "QueueConfig | None" = None, service: "QueueService | None" = None) -> "logging.Logger":
+    resolved_config = service.config if service is not None else config
+    if resolved_config is None:
+        return logger
+    return logging.getLogger(resolved_config.names.logger("consumer"))

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class RedisQueueEventLog:
     """Buffered Redis-protocol event-history writer and query interface."""
 
-    __slots__ = ("_backend", "_config", "_flush_lock", "_last_flush", "_pending")
+    __slots__ = ("_backend", "_config", "_flush_lock", "_last_flush", "_logger", "_pending")
 
     def __init__(self, *, backend: "RedisQueueBackend", config: "EventHistoryConfig") -> "None":
         self._backend = backend
@@ -42,6 +42,7 @@ class RedisQueueEventLog:
         self._pending: "list[dict[str, str]]" = []
         self._last_flush = time.monotonic()
         self._flush_lock = asyncio.Lock()
+        self._logger = backend._logger
 
     async def publish_event(self, event: "QueueEvent") -> "None":
         """Buffer a queue event and flush when configured thresholds are reached."""
@@ -64,7 +65,7 @@ class RedisQueueEventLog:
             except Exception:
                 if self._config.strict:
                     raise
-                logger.warning("Redis queue event history flush failed", exc_info=True)
+                self._logger.warning("Redis queue event history flush failed", exc_info=True)
                 return
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()

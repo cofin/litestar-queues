@@ -44,7 +44,7 @@ here is the part that needs Google, because there is no local Cloud Tasks API.
 
 ```bash
 export LITESTAR_QUEUES_GCP_LIVE=1
-export LITESTAR_QUEUES_CONFIG_FACTORY="your_app.queue:config"
+export QUEUES_CONFIG_FACTORY="your_app.queue:config"
 export LITESTAR_QUEUES_GCP_EVIDENCE_PATH="$PWD/cloud-tasks-evidence.json"   # optional
 export LITESTAR_QUEUES_GCP_TIMEOUT=180                                      # optional
 
