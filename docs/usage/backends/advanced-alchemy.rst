@@ -90,10 +90,16 @@ database lifecycle as the queue model.
 Wakeups and heartbeats
 ======================
 
-``worker_wakeups=True`` enables direct PostgreSQL wakeup hints when the dialect
-supports them. The task table remains the source of truth, so workers keep
-polling. ``heartbeat_session_maker`` may use a separate session for heartbeat
-writes. The application owns and closes its engine.
+``worker_wakeups=True`` enables transient PostgreSQL ``LISTEN``/``NOTIFY``
+hints for both ``postgresql+asyncpg`` and ``postgresql+psycopg``. The marker has
+no task payload and is not durable: it only asks the worker to reconcile the
+task table. SQLite, MySQL, and Oracle remain polling-only; Advanced Alchemy does
+not expose SQLSpec's Oracle AQ or TxEventQ transports.
+
+PostgreSQL also uses a native bounded batch claim. Other dialects use the safe
+single-record fallback while preserving ordering and ownership semantics.
+``heartbeat_session_maker`` may use a separate session for heartbeat writes.
+The application owns and closes its engine.
 
 This direct PostgreSQL hint is not task storage and not browser delivery. See
 :doc:`../worker-wakeups` and :doc:`../event-streams`.

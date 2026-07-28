@@ -16,6 +16,19 @@ When moving from memory to a persistent backend:
 See :doc:`backends` for the current support matrix and :doc:`event-history`
 for event-history ownership.
 
+SQLSpec worker-wakeup transport names
+=====================================
+
+.. retired-sqlspec-transport-names-start
+
+Pre-release SQLSpec wakeup configuration used ``listen_notify``,
+``listen_notify_durable``, and ``table_queue``. Replace them with ``notify``,
+``notify_queue``, and ``poll_queue`` respectively. These retired spellings are
+accepted nowhere in current configuration and appear only in this migration
+paragraph.
+
+.. retired-sqlspec-transport-names-end
+
 Forever-uniqueness reservations
 ===============================
 

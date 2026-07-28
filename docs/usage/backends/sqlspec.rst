@@ -117,14 +117,26 @@ adapter capability; an adapter without a push transport continues interval
 polling.
 
 Overrides remain available under ``worker_wakeups``: ``transport`` pins a
-specific SQLSpec transport, ``channel_name`` sets the LISTEN/NOTIFY channel
-(default ``litestar_queues_tasks``), and ``poll_interval`` controls durable
-queue polling in seconds. Oracle can opt in to explicitly provisioned ``aq`` or
-``txeventq`` queues through ``transport`` and ``settings``. Oracle stays on
-polling by default because Advanced Queuing requires provisioning that the
-backend does not create.
+specific native SQLSpec transport. The canonical names are ``notify``,
+``notify_queue``, ``poll_queue``, ``aq``, and ``txeventq``. ``channel_name``
+sets the LISTEN/NOTIFY channel (default ``litestar_queues_tasks``), and
+``poll_interval`` controls durable queue polling in seconds. Oracle can opt in
+to explicitly provisioned ``aq`` or ``txeventq`` queues through ``transport``
+and ``settings``. The application or database operator owns queue creation,
+startup, privileges, payload type, and retention; Litestar Queues only opens
+the configured SQLSpec event channel. Oracle stays on interval polling by
+default because the backend does not provision Advanced Queuing.
 Durable queue transports are competing-consumer queues; do not use them as
 multi-process browser fan-out. See :doc:`../worker-wakeups`.
+
+Batch claiming
+==============
+
+SQLSpec stores that advertise a returning claim use one bounded
+``UPDATE ... RETURNING`` operation for ``claim_many``. Stores without that
+primitive inherit the backend-neutral single-record claim loop. Both paths
+preserve the same priority, filtering, ownership, and actual-short-batch
+contract; only the number of database operations differs.
 
 Heartbeat isolation
 ===================

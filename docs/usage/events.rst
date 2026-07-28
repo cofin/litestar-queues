@@ -58,21 +58,58 @@ Tasks do not need to call ``beat()`` to remain alive, and a progress update
 should not also be copied into a generic custom event. Use ``beat(detail)``
 only when a short, last-value diagnostic helps recovery or operations.
 
+The context methods make those boundaries explicit:
+
 .. code-block:: python
 
    from litestar_queues import task
-   from litestar_queues.events import publish_task_log, publish_task_progress
+   from litestar_queues.events import TaskExecutionContext
 
 
-   @task("imports.process", timeout=300)
-   async def process_import(path: str) -> None:
-       await publish_task_log("Import started", payload={"path": path})
-       await publish_task_progress(current=50, total=100, message="Halfway")
+   @task("crawl.run", timeout=300)
+   async def crawl(*, _task_context: TaskExecutionContext) -> dict[str, int]:
+       ctx = _task_context
+
+       # Standardized progress state for status pages and UI consumers.
+       await ctx.progress(
+           current=3,
+           total=6,
+           message="3/6 pages",
+           payload={"page": 3},
+       )
+
+       # An application occurrence; it does not update progress or terminal
+       # task state. False keeps ordinary events eligible for buffering.
+       await ctx.event(
+           "crawl.page_discovered",
+           message="Discovered the queue guide",
+           payload={"url": "https://example.invalid/queues"},
+           immediate=False,
+       )
+
+       # Optional last-value diagnostic for the next automatic heartbeat.
+       ctx.beat("Parsing the final page")
+       return {"pages": 6}
+
+``ctx.progress(current=..., total=..., message=..., payload=...)`` publishes
+``task.progress`` and derives a percentage when ``current`` and ``total`` are
+available. ``ctx.event(name, message=..., payload=..., immediate=False)``
+publishes the supplied application event name. A custom event does not update
+progress or terminal task state. Set ``immediate=True`` only when that event
+must bypass the ordinary live-event buffer.
+
+Automatic worker heartbeats keep active jobs live. ``ctx.beat(detail)`` is an
+optional, last-value-wins detail update for the next heartbeat write; it is not
+a liveness requirement and does not publish a task event by itself.
 
 The active task context adds the task ID, task name, queue, worker ID, attempt,
 execution backend, and sequence. Use ``publish_task_event()`` for a custom
 event type. Accept ``_task_context`` when you prefer to call the context
 methods directly.
+
+Keep payloads small and JSON-serializable. Put large files, crawled documents,
+and model artifacts in external storage and send a stable reference in the
+payload.
 
 Buffering and external producers
 ================================
@@ -89,6 +126,13 @@ failure are separate terminal paths; consumers should not infer persisted
 result data from the event payload alone. After any terminal event, refresh the
 :class:`~litestar_queues.TaskResult` when the record, result, or error is
 needed.
+
+Returning normally stores the return value and publishes ``task.completed``.
+Raising follows the task's retry policy: ``task.failed`` reports
+``will_retry=true`` when the record was requeued, and a later attempt publishes
+another ``task.started``. With no retry remaining, the record and event are
+terminally failed. Task code should not publish its own completed or failed
+lifecycle event.
 
 Code outside a worker should use this context manager:
 
