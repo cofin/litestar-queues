@@ -14,7 +14,7 @@ from typing_extensions import Self
 
 from litestar_queues._correlation import bind_correlation_id, capture_correlation_id, reset_correlation_id
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
-from litestar_queues.config import execution_backend_name
+from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
 from litestar_queues.events.producer import QueueEventProducer
@@ -172,6 +172,7 @@ class QueueService:
 
     def _configure_backend_observability(self, backend: "BaseQueueBackend") -> "None":
         runtime = self._observability_runtime
+        backend.set_transport_observability_runtime(runtime if runtime is not None and runtime.enabled else None)
         configure = getattr(backend, "_set_package_observability_enabled", None)
         if configure is not None:
             configure(bool(runtime is not None and runtime.enabled))
@@ -189,6 +190,7 @@ class QueueService:
         """Return the configured event publisher."""
         if self._event_publisher is None:
             self._event_publisher = self._config.get_event_publisher()
+        self._event_publisher.set_observability_runtime(self.observability_runtime)
         return self._event_publisher
 
     def get_event_producer(self) -> "QueueEventProducer":
@@ -888,6 +890,15 @@ class QueueService:
         """
         claimed, expired = await self.get_queue_backend().claim_many_with_expired(
             limit=limit, queues=queues, execution_backend=execution_backend
+        )
+        self.observability_runtime.record_histogram(
+            "litestar_queues.claim.batch.size",
+            len(claimed),
+            unit="records",
+            attributes={
+                "queue.backend": queue_backend_name(self._config.queue_backend),
+                "queue.operation": "claim_many",
+            },
         )
         for record in expired:
             await self._publish_expired_event(record, worker_id=worker_id)

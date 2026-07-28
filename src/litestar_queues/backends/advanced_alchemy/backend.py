@@ -220,6 +220,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             records = await service.enqueue_many(requests)
         self._increment_queue_metric("enqueue", float(len(records)))
         await self.notify_new_tasks(records)
+        self._record_enqueue_batch(len(requests))
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -427,13 +428,14 @@ class SQLAlchemyBackend(BaseQueueBackend):
             return
         await self._send_notification_marker()
         self._increment_queue_metric("notify")
+        self._record_wakeup_emitted()
 
     async def notify_new_tasks(self, records: "Sequence[QueuedTaskRecord]") -> "None":
         """Coalesce a batch of task records into at most one wakeup marker."""
-        for record in records:
-            if record.status in {"pending", "scheduled"} and record.is_due:
-                await self.notify_new_task(record)
-                return
+        due = tuple(record for record in records if record.status in {"pending", "scheduled"} and record.is_due)
+        if due:
+            await self.notify_new_task(due[0])
+            self._record_wakeup_coalesced(len(due) - 1)
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for a PostgreSQL worker wakeup marker when configured.

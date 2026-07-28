@@ -7,7 +7,7 @@ import time
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from litestar_queues.config import WorkerConfig, execution_backend_name
+from litestar_queues.config import WorkerConfig, execution_backend_name, queue_backend_name
 from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
@@ -76,6 +76,7 @@ class Worker:
         "_last_expiry_check_at",
         "_last_reconcile_at",
         "_last_stale_check_at",
+        "_listener_reconnect_pending",
         "_logger",
         "_max_concurrency",
         "_poll_backoff_max",
@@ -92,6 +93,7 @@ class Worker:
         "_startup_completion",
         "_startup_error",
         "_stop_event",
+        "_wakeup_started_at",
         "_worker_id",
     )
 
@@ -138,6 +140,8 @@ class Worker:
         self._last_reconcile_at = -float("inf")
         self._last_expiry_check_at = -float("inf")
         self._last_stale_check_at = -float("inf")
+        self._listener_reconnect_pending = False
+        self._wakeup_started_at: "float | None" = None
 
     @property
     def is_running(self) -> "bool":
@@ -317,10 +321,14 @@ class Worker:
             return 0
         if execution_backend.is_external:
             records = await self._list_pending(limit=available)
-            return await self._dispatch_external(records)
+            dispatched = await self._dispatch_external(records)
+            if not dispatched:
+                self._record_empty_poll()
+            return dispatched
 
         claimed_records = await self._claim_available(limit=available)
         if not claimed_records:
+            self._record_empty_poll()
             return 0
 
         self._record_claimed(claimed_records)
@@ -330,9 +338,18 @@ class Worker:
 
     async def _claim_available(self, *, limit: "int") -> "list[QueuedTaskRecord]":
         execution_backend_name_ = execution_backend_name(self._service.config.execution_backend)
-        return await self._service.claim_tasks(
+        claimed = await self._service.claim_tasks(
             limit=limit, queues=self._queues, execution_backend=execution_backend_name_, worker_id=self._worker_id
         )
+        wakeup_started_at = self._wakeup_started_at
+        self._wakeup_started_at = None
+        if claimed and wakeup_started_at is not None:
+            self._service.observability_runtime.record_duration(
+                "litestar_queues.worker.wakeup_to_claim.duration",
+                time.perf_counter() - wakeup_started_at,
+                attributes=self._transport_metric_attributes(),
+            )
+        return claimed
 
     async def _list_pending(self, *, limit: "int") -> "list[QueuedTaskRecord]":
         queue_backend = self._service.get_queue_backend()
@@ -507,6 +524,15 @@ class Worker:
         queue_backend = self._service.get_queue_backend()
         started_at = time.perf_counter()
         timeout = await self._current_wait_timeout()
+        wait_attributes = {"queue.backend": self._queue_backend_name(), "worker.wait.kind": self._wait_kind()}
+        self._service.observability_runtime.record_histogram(
+            "litestar_queues.worker.poll.delay", timeout, unit="s", attributes=wait_attributes
+        )
+        if self._listener_reconnect_pending:
+            self._service.observability_runtime.record_counter(
+                "litestar_queues.listener.reconnect", attributes=self._transport_metric_attributes()
+            )
+            self._listener_reconnect_pending = False
         notification_task = asyncio.create_task(queue_backend.wait_for_wakeups(timeout=timeout))
         stop_task = asyncio.create_task(self._stop_event.wait())
         completion_task = asyncio.create_task(self._completion_event.wait())
@@ -521,9 +547,15 @@ class Worker:
         outcome: "bool | None" = None
         if notification_task in done:
             outcome = await self._consume_wait_task(notification_task)
+            if outcome:
+                self._wakeup_started_at = time.perf_counter()
+        elapsed = time.perf_counter() - started_at
+        self._service.observability_runtime.record_duration(
+            "litestar_queues.worker.wait.duration", elapsed, attributes=wait_attributes
+        )
         self._service.observability_runtime.record_duration(
             "litestar_queues.worker.idle.duration",
-            time.perf_counter() - started_at,
+            elapsed,
             attributes={**self._worker_metric_base_attributes(), "worker.wakeup": str(notification_task in done)},
         )
         return outcome
@@ -541,6 +573,11 @@ class Worker:
             # the listener from a clean state. The backoff resets so a stale
             # listener does not compound into a longer discovery delay.
             self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
+            self._service.observability_runtime.record_counter(
+                "litestar_queues.listener.error",
+                attributes={**self._transport_metric_attributes(), "queue.outcome": "read_failed"},
+            )
+            self._listener_reconnect_pending = True
             self._logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
             self._reset_poll_backoff()
             await self._backoff_after_loop_error()
@@ -571,6 +608,24 @@ class Worker:
             counts[record.queue] = counts.get(record.queue, 0) + 1
         for queue, count in counts.items():
             self._record_counter("litestar_queues.worker.claim", {"messaging.destination.name": queue}, value=count)
+
+    def _record_empty_poll(self) -> "None":
+        self._service.observability_runtime.record_counter(
+            "litestar_queues.worker.poll.empty", attributes={"queue.backend": self._queue_backend_name()}
+        )
+
+    def _queue_backend_name(self) -> "str":
+        return queue_backend_name(self._service.config.queue_backend)
+
+    def _transport_metric_attributes(self) -> "dict[str, str]":
+        capabilities = self._service.get_queue_backend().capabilities
+        return {
+            "queue.backend": self._queue_backend_name(),
+            "queue.transport": capabilities.wakeup_backend or "polling",
+        }
+
+    def _wait_kind(self) -> "str":
+        return "native" if self._service.get_queue_backend().capabilities.supports_worker_wakeups else "polling"
 
     def _record_counter(self, name: "str", attributes: "dict[str, str]", *, value: "int" = 1) -> "None":
         self._service.observability_runtime.record_counter(

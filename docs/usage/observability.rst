@@ -176,6 +176,10 @@ values. This prevents unbounded label counts:
 - ``queue.task.status``
 - ``queue.task.attempt``
 - ``queue.backend``
+- ``queue.operation`` on batch-size histograms, currently ``enqueue_many`` or
+  ``claim_many``
+- ``queue.transport`` on wakeup, listener, and event-delivery metrics
+- ``queue.outcome`` on listener and event-delivery metrics
 - ``queue.execution.backend``
 - ``queue.execution.profile``
 - ``queue.execution.status`` on dispatch metrics, one of ``dispatched``,
@@ -189,6 +193,8 @@ values. This prevents unbounded label counts:
   ``failed``, ``skipped``, or ``handler_needed``
 - ``queue.expiry.outcome`` on the expiry metric, currently ``expired``
 - ``worker.error.type``
+- ``worker.wait.kind`` on worker delay and wait metrics, either ``native`` or
+  ``polling``
 - ``queue.worker.id`` on spans only, when a worker id already exists
 - ``scope`` on plugin-owned stream metrics
 - ``reason`` on stream authorization-denial metrics only
@@ -202,6 +208,65 @@ Each metric name has exactly one emitter. Dispatch, reconcile, and repair
 counters belong to the execution backend, and the heartbeat failure counter
 belongs to the heartbeat manager, so a single metric never arrives with two
 different label sets.
+
+Queue transport metrics
+-----------------------
+
+Transport instrumentation is emitted at logical ownership boundaries rather
+than once per record. Batch sizes are actual batch sizes, wakeup counters belong
+to the backend notification method, wait timing belongs to the worker, and
+event flush timing belongs to the event publisher:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Metric
+     - Labels
+     - Meaning
+   * - ``litestar_queues.enqueue.batch.size``
+     - ``queue.backend``, ``queue.operation``
+     - Records accepted by one ``enqueue_many`` call.
+   * - ``litestar_queues.wakeup.emitted``
+     - ``queue.backend``, ``queue.transport``
+     - Wakeup hints actually sent by a backend.
+   * - ``litestar_queues.wakeup.coalesced``
+     - ``queue.backend``, ``queue.transport``
+     - Per-record hints avoided by a coalesced notification.
+   * - ``litestar_queues.worker.poll.empty``
+     - ``queue.backend``
+     - Worker cycles that found no local or externally claimed work.
+   * - ``litestar_queues.worker.poll.delay``
+     - ``queue.backend``, ``worker.wait.kind``
+     - Configured delay before the next polling or native wait cycle.
+   * - ``litestar_queues.worker.wait.duration``
+     - ``queue.backend``, ``worker.wait.kind``
+     - Time actually spent waiting for work.
+   * - ``litestar_queues.worker.wakeup_to_claim.duration``
+     - ``queue.backend``, ``queue.transport``
+     - Time from a native notification to the following claim attempt.
+   * - ``litestar_queues.listener.reconnect``
+     - ``queue.backend``, ``queue.transport``
+     - Native listener reconnection attempts after a read failure.
+   * - ``litestar_queues.listener.error``
+     - ``queue.backend``, ``queue.transport``, ``queue.outcome``
+     - Native listener failures; the current outcome is ``read_failed``.
+   * - ``litestar_queues.claim.batch.size``
+     - ``queue.backend``, ``queue.operation``
+     - Actual records returned by one ``claim_many`` call.
+   * - ``litestar_queues.event.flush.size``
+     - ``queue.transport``, ``queue.outcome``
+     - Events in one successful or failed live-delivery attempt.
+   * - ``litestar_queues.event.flush.duration``
+     - ``queue.transport``, ``queue.outcome``
+     - Time spent in one live-delivery attempt.
+   * - ``litestar_queues.event.dropped``
+     - ``queue.transport``, ``queue.outcome``
+     - Buffered events dropped with the bounded ``overflow`` outcome.
+
+Event flush outcomes are ``success`` or ``failed``. Transport and backend names
+come from the configured built-in vocabulary; arbitrary channel names, payload
+fields, task arguments, record identifiers, and exception messages never become
+metric labels.
 
 That constraint is why re-checking lost deliveries reports into
 ``litestar_queues.execution.repair`` rather than joining

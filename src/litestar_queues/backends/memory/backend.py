@@ -165,6 +165,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 records.append(record)
 
         await self.notify_new_tasks(records)
+        self._record_enqueue_batch(len(requests))
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -637,6 +638,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
         if record.status in {"pending", "scheduled"} and record.is_due:
             self._notification_event.set()
+            self._record_wakeup_emitted()
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         if not self._pending_read.has_pending and self._notification_event.is_set():

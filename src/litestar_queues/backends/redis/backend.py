@@ -862,6 +862,7 @@ class RedisQueueBackend(BaseQueueBackend):
         if unkeyed_records:
             await self._save_new_records(unkeyed_records, publish=False)
         await self.notify_new_tasks(results)
+        self._record_enqueue_batch(len(requests))
         return results
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
@@ -1603,6 +1604,7 @@ class RedisQueueBackend(BaseQueueBackend):
             payload = _json_dumps({"event": "task_available"})
             client = await self._get_client()
             await client.publish(self._wakeup_channel, payload)
+            self._record_wakeup_emitted()
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
         """Wait for a Redis-protocol pub/sub message when notifications are enabled.
