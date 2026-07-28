@@ -105,7 +105,9 @@ class QueueEventPublisher:
         publish_global_lifecycle: "bool" = False,
         namespace: "QueueNamespace | str | None" = None,
     ) -> "None":
-        self._namespace = namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
+        self._namespace = (
+            namespace if isinstance(namespace, QueueNamespace) else QueueNamespace(namespace or "litestar_queues")
+        )
         self._logger = logging.getLogger(self._namespace.logger("events", "publisher"))
         self._sink = sink or NoopQueueEventSink()
         self._event_log = event_log

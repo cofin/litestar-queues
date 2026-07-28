@@ -146,9 +146,7 @@ def _unlink_within_deadline(target: "Path") -> "bool":
         return True
 
 
-def _remove_directory_within_deadline(
-    directory: "Path", *, runtime_logger: "logging.Logger" = logger
-) -> "None":
+def _remove_directory_within_deadline(directory: "Path", *, runtime_logger: "logging.Logger" = logger) -> "None":
     """Remove the private directory once it is empty, or warn and leave it."""
     deadline = time.monotonic() + _CLEANUP_DEADLINE
     while True:

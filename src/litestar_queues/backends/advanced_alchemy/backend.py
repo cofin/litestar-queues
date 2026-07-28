@@ -586,10 +586,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self._observability_runtime.record_counter(
             f"litestar_queues.queue.{name}",
             int(amount),
-            attributes={
-                "messaging.system": self.config.names.root,
-                "backend": "advanced-alchemy",
-            },
+            attributes={"messaging.system": self.config.names.root, "backend": "advanced-alchemy"},
         )
 
     def _resolve_model_classes(

@@ -244,7 +244,7 @@ async def test_cloudrun_dispatch_env_excludes_large_and_sensitive_task_args() ->
     assert remote_sensitive_args.name not in serialized_request
 
 
-async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
+async def test_cloudrun_dispatch_env_uses_stable_bootstrap_name_with_custom_prefix() -> "None":
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
     @task("tasks.remote")
@@ -269,8 +269,8 @@ async def test_cloudrun_dispatch_env_respects_custom_prefix() -> "None":
 
     env = env_map(jobs_client.requests[0])
 
-    assert "PREFIX_TASK_ID" in env
-    assert "QUEUES_TASK_ID" not in env
+    assert set(env) == {"QUEUES_TASK_ID"}
+    assert task_id_from_request(jobs_client.requests[0]) == str(record.id)
 
 
 async def test_cloudrun_dispatch_returns_without_waiting_for_operation_result() -> "None":

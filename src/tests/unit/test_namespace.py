@@ -73,8 +73,7 @@ def test_explicit_package_owned_names_override_namespace_defaults() -> None:
 
 
 @pytest.mark.parametrize(
-    "namespace",
-    ["", "DMA", " dma", "dma ", "_dma", "dma_", "dma__queues", "dma.queues", "dma-queues", "1dma"],
+    "namespace", ["", "DMA", " dma", "dma ", "_dma", "dma_", "dma__queues", "dma.queues", "dma-queues", "1dma"]
 )
 def test_namespace_rejects_ambiguous_roots(namespace: str) -> None:
     with pytest.raises(QueueConfigurationError, match=r"QueueConfig\.namespace"):
@@ -84,10 +83,7 @@ def test_namespace_rejects_ambiguous_roots(namespace: str) -> None:
 def test_namespace_does_not_change_user_task_or_queue_names() -> None:
     worker = WorkerConfig(placement="external", queues=("critical", "reports"))
     config = QueueConfig(
-        namespace="dma",
-        queue_backend="memory",
-        worker=worker,
-        scheduler_canary_task="app.scheduler.healthcheck",
+        namespace="dma", queue_backend="memory", worker=worker, scheduler_canary_task="app.scheduler.healthcheck"
     )
 
     assert config.worker.queues == ("critical", "reports")
@@ -125,11 +121,7 @@ def test_redis_runtime_keys_derive_from_namespace_and_explicit_values_win() -> N
     from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 
     derived = RedisQueueBackend(
-        QueueConfig(
-            namespace="dma",
-            queue_backend=RedisBackendConfig(),
-            worker=WorkerConfig(placement="external"),
-        ),
+        QueueConfig(namespace="dma", queue_backend=RedisBackendConfig(), worker=WorkerConfig(placement="external")),
         backend_config=RedisBackendConfig(),
     )
     explicit = RedisQueueBackend(
@@ -149,11 +141,7 @@ def test_sqlspec_wakeup_channel_derives_without_changing_tables() -> None:
 
     backend_config = SQLSpecBackendConfig(queue_table_name="jobs")
     backend = SQLSpecQueueBackend(
-        QueueConfig(
-            namespace="dma",
-            queue_backend=backend_config,
-            worker=WorkerConfig(placement="external"),
-        ),
+        QueueConfig(namespace="dma", queue_backend=backend_config, worker=WorkerConfig(placement="external")),
         backend_config=backend_config,
     )
 

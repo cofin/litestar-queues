@@ -264,7 +264,9 @@ class WorkerHeartbeatManager:
                 1,
                 attributes={**self._metric_attributes(), "worker.error.type": type(exc).__name__},
             )
-        self._logger.warning(message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id})
+        self._logger.warning(
+            message, exc_info=(type(exc), exc, exc.__traceback__), extra={"worker_id": self._worker_id}
+        )
 
     def _record_gauge_delta(self, name: "str", delta: "int") -> "None":
         self._service.observability_runtime.record_gauge_delta(name, delta, attributes=self._metric_attributes())

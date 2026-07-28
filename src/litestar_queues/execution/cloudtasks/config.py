@@ -81,6 +81,9 @@ class CloudTasksExecutionConfig:
 
     _route_path_derived: "bool" = field(init=False, repr=False)
 
+    delivery_name_prefix: "str | None" = None
+    """Cloud Tasks task-name prefix; ``None`` derives it from ``QueueConfig.namespace``."""
+
     dispatch_deadline: "int" = 1800
     """Seconds Cloud Tasks waits for a delivery response before abandoning it."""
 
@@ -135,6 +138,12 @@ class CloudTasksExecutionConfig:
             if not isinstance(value, str) or not value.strip():
                 msg = f"CloudTasksExecutionConfig.{name} must be a non-empty value."
                 raise QueueConfigurationError(msg)
+        if self.delivery_name_prefix is not None and (
+            not self.delivery_name_prefix
+            or not all(character.isalnum() or character in {"-", "_"} for character in self.delivery_name_prefix)
+        ):
+            msg = "CloudTasksExecutionConfig.delivery_name_prefix must contain only letters, digits, '-' and '_'."
+            raise QueueConfigurationError(msg)
 
     def _validate_delivery_target(self) -> "None":
         """Reject a service origin or route path Cloud Tasks cannot deliver to.
@@ -223,10 +232,14 @@ class CloudTasksExecutionConfig:
 
     def resolve(self, namespace: "QueueNamespace | None" = None) -> "CloudTasksExecutionConfig":
         """Resolve namespace-owned defaults without mutating this reusable config."""
-        if not self._route_path_derived:
+        if not self._route_path_derived and self.delivery_name_prefix is not None:
             return self
         names = namespace or QueueNamespace()
-        return replace(self, route_path=f"/_{names.resource()}/cloud-tasks")
+        route_path = self.route_path if not self._route_path_derived else f"/_{names.resource()}/cloud-tasks"
+        delivery_name_prefix = self.delivery_name_prefix
+        if delivery_name_prefix is None:
+            delivery_name_prefix = "lq-" if names.is_default else f"{names.resource()}-"
+        return replace(self, route_path=route_path, delivery_name_prefix=delivery_name_prefix)
 
     @property
     def queue_path(self) -> "str":

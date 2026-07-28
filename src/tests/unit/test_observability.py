@@ -126,10 +126,7 @@ async def test_plugin_startup_resolves_runtime_with_litestar_app(monkeypatch: "p
     seen_apps: "list[Litestar | None]" = []
 
     def create_runtime(
-        config: "ObservabilityConfig | None",
-        *,
-        app: "Litestar | None" = None,
-        namespace: "object | None" = None,
+        config: "ObservabilityConfig | None", *, app: "Litestar | None" = None, namespace: "object | None" = None
     ) -> "FakeObservabilityRuntime":
         assert config is not None
         assert namespace is not None
@@ -251,8 +248,7 @@ async def test_runtime_rewrites_package_metric_names_from_queue_namespace() -> "
 
     registry = prometheus_client.CollectorRegistry()
     runtime = QueueObservabilityRuntime(
-        ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry),
-        namespace="dma",
+        ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry), namespace="dma"
     )
 
     runtime.record_counter("litestar_queues.wakeup.emitted", attributes={"queue.backend": "memory"})
@@ -278,18 +274,11 @@ async def test_runtime_records_and_caches_value_histograms_with_explicit_units(
 
     runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_otel=True))
     attributes = {"queue.backend": "memory", "queue.operation": "enqueue_many"}
-    runtime.record_histogram(
-        "litestar_queues.enqueue.batch.size", 5, unit="records", attributes=attributes
-    )
-    runtime.record_histogram(
-        "litestar_queues.enqueue.batch.size", 2, unit="records", attributes=attributes
-    )
+    runtime.record_histogram("litestar_queues.enqueue.batch.size", 5, unit="records", attributes=attributes)
+    runtime.record_histogram("litestar_queues.enqueue.batch.size", 2, unit="records", attributes=attributes)
 
     assert meter.created_histograms == [("litestar_queues.enqueue.batch.size", "records")]
-    assert meter.histogram.samples == [
-        (5, attributes),
-        (2, attributes),
-    ]
+    assert meter.histogram.samples == [(5, attributes), (2, attributes)]
 
 
 async def test_value_histogram_uses_unit_specific_prometheus_name_and_buckets() -> "None":
@@ -298,26 +287,20 @@ async def test_value_histogram_uses_unit_specific_prometheus_name_and_buckets() 
     from litestar_queues.observability import ObservabilityConfig, QueueObservabilityRuntime
 
     registry = prometheus_client.CollectorRegistry()
-    runtime = QueueObservabilityRuntime(
-        ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry)
-    )
+    runtime = QueueObservabilityRuntime(ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry))
     attributes = {"queue.backend": "memory", "queue.operation": "enqueue_many"}
 
-    runtime.record_histogram(
-        "litestar_queues.enqueue.batch.size", 25, unit="records", attributes=attributes
-    )
+    runtime.record_histogram("litestar_queues.enqueue.batch.size", 25, unit="records", attributes=attributes)
 
     assert (
         registry.get_sample_value(
-            "litestar_queues_enqueue_batch_size_records_bucket",
-            labels={**attributes, "le": "25.0"},
+            "litestar_queues_enqueue_batch_size_records_bucket", labels={**attributes, "le": "25.0"}
         )
         == 1.0
     )
     assert (
         registry.get_sample_value(
-            "litestar_queues_enqueue_batch_size_records_bucket",
-            labels={**attributes, "le": "10.0"},
+            "litestar_queues_enqueue_batch_size_records_bucket", labels={**attributes, "le": "10.0"}
         )
         == 0.0
     )
@@ -327,32 +310,12 @@ def test_transport_metric_contract_locks_kind_unit_and_exact_attributes() -> "No
     from litestar_queues.observability import _TRANSPORT_METRIC_SPECS
 
     expected = {
-        "litestar_queues.enqueue.batch.size": (
-            "histogram",
-            "records",
-            frozenset({"queue.backend", "queue.operation"}),
-        ),
-        "litestar_queues.wakeup.emitted": (
-            "counter",
-            "hints",
-            frozenset({"queue.backend", "queue.transport"}),
-        ),
-        "litestar_queues.wakeup.coalesced": (
-            "counter",
-            "hints",
-            frozenset({"queue.backend", "queue.transport"}),
-        ),
+        "litestar_queues.enqueue.batch.size": ("histogram", "records", frozenset({"queue.backend", "queue.operation"})),
+        "litestar_queues.wakeup.emitted": ("counter", "hints", frozenset({"queue.backend", "queue.transport"})),
+        "litestar_queues.wakeup.coalesced": ("counter", "hints", frozenset({"queue.backend", "queue.transport"})),
         "litestar_queues.worker.poll.empty": ("counter", "polls", frozenset({"queue.backend"})),
-        "litestar_queues.worker.poll.delay": (
-            "histogram",
-            "s",
-            frozenset({"queue.backend", "worker.wait.kind"}),
-        ),
-        "litestar_queues.worker.wait.duration": (
-            "duration",
-            "s",
-            frozenset({"queue.backend", "worker.wait.kind"}),
-        ),
+        "litestar_queues.worker.poll.delay": ("histogram", "s", frozenset({"queue.backend", "worker.wait.kind"})),
+        "litestar_queues.worker.wait.duration": ("duration", "s", frozenset({"queue.backend", "worker.wait.kind"})),
         "litestar_queues.worker.wakeup_to_claim.duration": (
             "duration",
             "s",
@@ -368,53 +331,26 @@ def test_transport_metric_contract_locks_kind_unit_and_exact_attributes() -> "No
             "errors",
             frozenset({"queue.backend", "queue.transport", "queue.outcome"}),
         ),
-        "litestar_queues.claim.batch.size": (
-            "histogram",
-            "records",
-            frozenset({"queue.backend", "queue.operation"}),
-        ),
-        "litestar_queues.event.flush.size": (
-            "histogram",
-            "events",
-            frozenset({"queue.transport", "queue.outcome"}),
-        ),
-        "litestar_queues.event.flush.duration": (
-            "duration",
-            "s",
-            frozenset({"queue.transport", "queue.outcome"}),
-        ),
-        "litestar_queues.event.dropped": (
-            "counter",
-            "events",
-            frozenset({"queue.transport", "queue.outcome"}),
-        ),
+        "litestar_queues.claim.batch.size": ("histogram", "records", frozenset({"queue.backend", "queue.operation"})),
+        "litestar_queues.event.flush.size": ("histogram", "events", frozenset({"queue.transport", "queue.outcome"})),
+        "litestar_queues.event.flush.duration": ("duration", "s", frozenset({"queue.transport", "queue.outcome"})),
+        "litestar_queues.event.dropped": ("counter", "events", frozenset({"queue.transport", "queue.outcome"})),
     }
 
-    assert {
-        name: (spec.kind, spec.unit, spec.attributes)
-        for name, spec in _TRANSPORT_METRIC_SPECS.items()
-    } == expected
+    assert {name: (spec.kind, spec.unit, spec.attributes) for name, spec in _TRANSPORT_METRIC_SPECS.items()} == expected
 
 
 @pytest.mark.parametrize(
-    "extra_attribute",
-    ["queue.task.id", "queue.channel", "queue.payload", "db.statement", "url.full", "error.message"],
+    "extra_attribute", ["queue.task.id", "queue.channel", "queue.payload", "db.statement", "url.full", "error.message"]
 )
 def test_transport_metric_contract_rejects_unbounded_attributes(extra_attribute: "str") -> "None":
     from litestar_queues.observability import _validate_transport_metric
 
-    attributes = {
-        "queue.backend": "memory",
-        "queue.operation": "enqueue_many",
-        extra_attribute: "unbounded-value",
-    }
+    attributes = {"queue.backend": "memory", "queue.operation": "enqueue_many", extra_attribute: "unbounded-value"}
 
     with pytest.raises(ValueError, match="attributes"):
         _validate_transport_metric(
-            "litestar_queues.enqueue.batch.size",
-            kind="histogram",
-            unit="records",
-            attributes=attributes,
+            "litestar_queues.enqueue.batch.size", kind="histogram", unit="records", attributes=attributes
         )
 
 
@@ -450,10 +386,7 @@ def test_disabled_runtime_skips_histogram_validation_and_instrument_allocation()
     runtime = QueueObservabilityRuntime(None)
 
     runtime.record_histogram(
-        "litestar_queues.enqueue.batch.size",
-        1,
-        unit="records",
-        attributes={"unbounded": "ignored"},
+        "litestar_queues.enqueue.batch.size", 1, unit="records", attributes={"unbounded": "ignored"}
     )
 
     assert runtime._histograms == {}
@@ -566,6 +499,9 @@ class FakeObservabilityRuntime:
 
     def record_duration(self, name: "str", seconds: "float", *, attributes: "Mapping[str, str]") -> "None":
         self.durations.append((name, seconds, dict(attributes)))
+
+    def record_histogram(self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]") -> "None":
+        del name, value, unit, attributes
 
 
 class _FakeOtelMetric:

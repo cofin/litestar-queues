@@ -1846,7 +1846,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             skip_explicit_begin=store.skip_explicit_begin,
             skip_cleanup_rollback=store.skip_cleanup_rollback,
             thread_name_prefix=(
-                self.config.names.resource("sqlspec", "sync") if self.config is not None else "litestar-queues-sqlspec-sync"
+                self.config.names.resource("sqlspec", "sync")
+                if self.config is not None
+                else "litestar-queues-sqlspec-sync"
             ),
         ) as driver:
             yield driver

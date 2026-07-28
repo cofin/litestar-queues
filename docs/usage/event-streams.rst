@@ -26,6 +26,12 @@ Use SSE for server-to-browser updates with automatic browser reconnection. Use
 WebSockets when the connection also needs bidirectional application messages.
 Both deliver the same JSON ``QueueEvent`` envelope.
 
+The default path follows :attr:`~litestar_queues.QueueConfig.namespace`: the
+legacy namespace uses ``/queues/events``, while
+``QueueConfig(namespace="dma")`` uses ``/dma/events``. Set
+``EventStreamConfig(path="/events")`` when the application owns an explicit
+path; explicit paths are never rewritten.
+
 When ``QueueEventsConfig.channels`` is set, generated stream routes use that
 same Channels source even if the application registers another
 ``ChannelsPlugin``. Without an explicit source, the routes use the registered

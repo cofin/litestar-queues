@@ -87,19 +87,43 @@ class _TransportMetricSpec:
 
 
 _TRANSPORT_METRIC_SPECS = {
-    "litestar_queues.enqueue.batch.size": _TransportMetricSpec("histogram", "records", frozenset({"queue.backend", "queue.operation"})),
-    "litestar_queues.wakeup.emitted": _TransportMetricSpec("counter", "hints", frozenset({"queue.backend", "queue.transport"})),
-    "litestar_queues.wakeup.coalesced": _TransportMetricSpec("counter", "hints", frozenset({"queue.backend", "queue.transport"})),
+    "litestar_queues.enqueue.batch.size": _TransportMetricSpec(
+        "histogram", "records", frozenset({"queue.backend", "queue.operation"})
+    ),
+    "litestar_queues.wakeup.emitted": _TransportMetricSpec(
+        "counter", "hints", frozenset({"queue.backend", "queue.transport"})
+    ),
+    "litestar_queues.wakeup.coalesced": _TransportMetricSpec(
+        "counter", "hints", frozenset({"queue.backend", "queue.transport"})
+    ),
     "litestar_queues.worker.poll.empty": _TransportMetricSpec("counter", "polls", frozenset({"queue.backend"})),
-    "litestar_queues.worker.poll.delay": _TransportMetricSpec("histogram", "s", frozenset({"queue.backend", "worker.wait.kind"})),
-    "litestar_queues.worker.wait.duration": _TransportMetricSpec("duration", "s", frozenset({"queue.backend", "worker.wait.kind"})),
-    "litestar_queues.worker.wakeup_to_claim.duration": _TransportMetricSpec("duration", "s", frozenset({"queue.backend", "queue.transport"})),
-    "litestar_queues.listener.reconnect": _TransportMetricSpec("counter", "reconnects", frozenset({"queue.backend", "queue.transport"})),
-    "litestar_queues.listener.error": _TransportMetricSpec("counter", "errors", frozenset({"queue.backend", "queue.transport", "queue.outcome"})),
-    "litestar_queues.claim.batch.size": _TransportMetricSpec("histogram", "records", frozenset({"queue.backend", "queue.operation"})),
-    "litestar_queues.event.flush.size": _TransportMetricSpec("histogram", "events", frozenset({"queue.transport", "queue.outcome"})),
-    "litestar_queues.event.flush.duration": _TransportMetricSpec("duration", "s", frozenset({"queue.transport", "queue.outcome"})),
-    "litestar_queues.event.dropped": _TransportMetricSpec("counter", "events", frozenset({"queue.transport", "queue.outcome"})),
+    "litestar_queues.worker.poll.delay": _TransportMetricSpec(
+        "histogram", "s", frozenset({"queue.backend", "worker.wait.kind"})
+    ),
+    "litestar_queues.worker.wait.duration": _TransportMetricSpec(
+        "duration", "s", frozenset({"queue.backend", "worker.wait.kind"})
+    ),
+    "litestar_queues.worker.wakeup_to_claim.duration": _TransportMetricSpec(
+        "duration", "s", frozenset({"queue.backend", "queue.transport"})
+    ),
+    "litestar_queues.listener.reconnect": _TransportMetricSpec(
+        "counter", "reconnects", frozenset({"queue.backend", "queue.transport"})
+    ),
+    "litestar_queues.listener.error": _TransportMetricSpec(
+        "counter", "errors", frozenset({"queue.backend", "queue.transport", "queue.outcome"})
+    ),
+    "litestar_queues.claim.batch.size": _TransportMetricSpec(
+        "histogram", "records", frozenset({"queue.backend", "queue.operation"})
+    ),
+    "litestar_queues.event.flush.size": _TransportMetricSpec(
+        "histogram", "events", frozenset({"queue.transport", "queue.outcome"})
+    ),
+    "litestar_queues.event.flush.duration": _TransportMetricSpec(
+        "duration", "s", frozenset({"queue.transport", "queue.outcome"})
+    ),
+    "litestar_queues.event.dropped": _TransportMetricSpec(
+        "counter", "events", frozenset({"queue.transport", "queue.outcome"})
+    ),
 }
 _VALUE_HISTOGRAM_BUCKETS = (1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0)
 
@@ -116,10 +140,7 @@ def _validate_transport_metric(name: str, *, kind: str, unit: str, attributes: "
         raise ValueError(msg)
     actual = frozenset(attributes)
     if actual != spec.attributes:
-        msg = (
-            f"Transport metric {name!r} requires attributes {sorted(spec.attributes)!r}, "
-            f"not {sorted(actual)!r}."
-        )
+        msg = f"Transport metric {name!r} requires attributes {sorted(spec.attributes)!r}, not {sorted(actual)!r}."
         raise ValueError(msg)
 
 
@@ -270,9 +291,7 @@ class QueueObservabilityRuntimeProtocol(Protocol):
         """Record a duration sample."""
         ...
 
-    def record_histogram(
-        self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]"
-    ) -> "None":
+    def record_histogram(self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]") -> "None":
         """Record a value histogram sample."""
         ...
 
@@ -491,15 +510,11 @@ class QueueObservabilityRuntime:
             )
             collector.labels(**dict(attributes)).observe(seconds)
 
-    def record_histogram(
-        self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]"
-    ) -> "None":
+    def record_histogram(self, name: "str", value: "float", *, unit: "str", attributes: "Mapping[str, str]") -> "None":
         """Record a non-duration histogram sample for enabled metric sinks."""
         if not self.enabled:
             return
-        _validate_transport_metric(
-            self._canonical_name(name), kind="histogram", unit=unit, attributes=attributes
-        )
+        _validate_transport_metric(self._canonical_name(name), kind="histogram", unit=unit, attributes=attributes)
         name = self._runtime_name(name)
         if self._otel_enabled:
             key = (name, unit)

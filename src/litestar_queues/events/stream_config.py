@@ -1,11 +1,12 @@
 """Configuration for plugin-owned queue event streaming endpoints."""
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from litestar_queues.events.models import QueueEventScope
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from litestar.connection import ASGIConnection
@@ -24,6 +25,7 @@ EventStreamTransport = Literal["sse", "websocket"]
 UnauthenticatedAccess = Literal["warn", "allow", "error"]
 
 _DEFAULT_STREAM_SCOPES: "tuple[QueueEventScope, ...]" = ("task", "queue", "worker", "global", "custom")
+_DEFAULT_STREAM_PATH = cast("str", object())
 
 
 def _default_stream_scopes() -> "set[QueueEventScope]":
@@ -37,8 +39,10 @@ class EventStreamConfig:
     transports: "set[EventStreamTransport]" = field(default_factory=lambda: {"sse", "websocket"})
     """Enabled browser stream transports."""
 
-    path: "str" = "/queues/events"
+    path: "str" = _DEFAULT_STREAM_PATH
     """Leading-slash route path shared by configured stream transports."""
+
+    _path_derived: "bool" = field(init=False, repr=False)
 
     guards: list[Guard] | None = None
     """Litestar route guards applied to stream endpoints; ``None`` adds none."""
@@ -66,6 +70,9 @@ class EventStreamConfig:
 
     def __post_init__(self) -> "None":
         """Validate stream routing, authorization, and replay bounds."""
+        self._path_derived = self.path is _DEFAULT_STREAM_PATH
+        if self._path_derived:
+            self.path = "/queues/events"
         if not self.transports or not self.transports <= {"sse", "websocket"}:
             msg = "EventStreamConfig.transports must contain sse and/or websocket."
             raise QueueConfigurationError(msg)
@@ -81,3 +88,12 @@ class EventStreamConfig:
         if self.replay_limit < 0:
             msg = "EventStreamConfig.replay_limit must be greater than or equal to 0."
             raise QueueConfigurationError(msg)
+
+    def resolve(self, namespace: "QueueNamespace | None" = None) -> "EventStreamConfig":
+        """Resolve the namespace-owned default path without mutating this reusable config."""
+        if not self._path_derived:
+            return self
+        names = namespace or QueueNamespace()
+        if names.is_default:
+            return self
+        return replace(self, path=f"/{names.resource()}/events")

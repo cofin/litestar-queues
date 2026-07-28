@@ -72,10 +72,18 @@ def test_build_stream_router_names_handlers_from_namespace() -> None:
         EventStreamConfig(scopes={"task"}),
     )
 
-    assert _stream_handler(router, "/tasks/{task_id:str}").name == "dma_event_stream_task"
-    sse_route = next(route for route in router.routes if "/sse/tasks/{task_id:str}" in route.path)
-    sse_handler = sse_route.route_handlers[0]
-    assert sse_handler.name == "dma_event_sse_task"
+    assert _stream_handler_name(router, "/tasks/{task_id:str}") == "dma_event_stream_task"
+    assert _stream_handler_name(router, "/sse/tasks/{task_id:str}") == "dma_event_sse_task"
+    assert _stream_paths(router) == {"/dma/events/tasks/{task_id:str}", "/dma/events/sse/tasks/{task_id:str}"}
+
+
+def test_build_stream_router_preserves_explicit_path_with_custom_namespace() -> None:
+    router = _build_stream_router(
+        QueueConfig(namespace="dma", worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        EventStreamConfig(path="/events", scopes={"task"}),
+    )
+
+    assert _stream_paths(router) == {"/events/tasks/{task_id:str}", "/events/sse/tasks/{task_id:str}"}
 
 
 def test_stream_config_with_both_transports_disabled_raises_at_app_init() -> None:
@@ -173,7 +181,7 @@ async def test_task_stream_prefers_configured_channels_backend_to_connection_plu
 
 def _stream_paths(router: Any) -> "set[str]":
     app = Litestar(route_handlers=[router], openapi_config=None)
-    return {route.path for route in app.routes if route.path.startswith("/queues/events")}
+    return {route.path for route in app.routes}
 
 
 def _stream_handler(router: Any, path: str) -> "WebsocketRouteHandler":
@@ -181,6 +189,19 @@ def _stream_handler(router: Any, path: str) -> "WebsocketRouteHandler":
         handler = route.route_handler
         if path in handler.paths:
             return cast("WebsocketRouteHandler", handler)
+    msg = f"No stream handler registered for {path!r}."
+    raise AssertionError(msg)
+
+
+def _stream_handler_name(router: Any, path: str) -> "str | None":
+    for route in router.routes:
+        handlers = getattr(route, "route_handlers", None)
+        if handlers is None:
+            handler = getattr(route, "route_handler", None)
+            handlers = () if handler is None else (handler,)
+        for handler in handlers:
+            if path in handler.paths:
+                return cast("str | None", handler.name)
     msg = f"No stream handler registered for {path!r}."
     raise AssertionError(msg)
 

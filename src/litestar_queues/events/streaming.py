@@ -327,6 +327,7 @@ def _build_stream_router(
         A router containing one handler per recognized configured scope for each
         enabled transport (WebSocket and/or SSE).
     """
+    stream_config = stream_config.resolve(config.names)
     authorizer = stream_config.channel_authorizer
     history = stream_config.replay_limit
     configured_channels_backend = _configured_stream_channels_backend(config, channels_backend)
@@ -514,9 +515,7 @@ def _sse_frame(
     return {"event": event.type, "data": event.to_json().decode("utf-8")}
 
 
-def _append_task_handler(
-    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
-) -> None:
+def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace") -> None:
     if "task" not in scopes:
         return
 
@@ -534,9 +533,7 @@ def _append_sse_task_handler(
         return
 
     @get(
-        "/sse/tasks/{task_id:str}",
-        name=namespace.registration("event", "sse", "task"),
-        media_type="text/event-stream",
+        "/sse/tasks/{task_id:str}", name=namespace.registration("event", "sse", "task"), media_type="text/event-stream"
     )
     async def task_sse(request: Request, task_id: FromPath[str]) -> Any:
         return await relay(request, "task", task_id, QueueChannels.task(task_id, namespace=namespace))
@@ -544,9 +541,7 @@ def _append_sse_task_handler(
     handlers.append(task_sse)
 
 
-def _append_queue_handler(
-    handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace"
-) -> None:
+def _append_queue_handler(handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace") -> None:
     if "queue" not in scopes:
         return
 
@@ -564,9 +559,7 @@ def _append_sse_queue_handler(
         return
 
     @get(
-        "/sse/queues/{queue:str}",
-        name=namespace.registration("event", "sse", "queue"),
-        media_type="text/event-stream",
+        "/sse/queues/{queue:str}", name=namespace.registration("event", "sse", "queue"), media_type="text/event-stream"
     )
     async def queue_sse(request: Request, queue: FromPath[str]) -> Any:
         return await relay(request, "queue", queue, QueueChannels.queue(queue, namespace=namespace))

@@ -45,7 +45,6 @@ __all__ = ("CloudTasksExecutionBackend",)
 _GOOGLE_CLOUD_TASKS_PACKAGE = "google-cloud-tasks"
 _CLOUD_TASKS_EXTRA = "cloud-tasks"
 _BACKEND_NAME = CLOUD_TASKS_BACKEND_NAME
-_DELIVERY_PREFIX = "lq-"
 _HTTP_CONFLICT = 409
 _HTTP_NOT_FOUND = 404
 # A record a consumer already holds is excluded: Cloud Tasks keeps that delivery
@@ -500,7 +499,8 @@ def _delivery_name(config: "CloudTasksExecutionConfig", record: "QueuedTaskRecor
 
 
 def _delivery_name_prefix(config: "CloudTasksExecutionConfig", record: "QueuedTaskRecord") -> "str":
-    return f"{config.queue_path}/tasks/{_DELIVERY_PREFIX}{record.id.hex}-r{record.retry_count}-"
+    delivery_name_prefix = config.delivery_name_prefix or "lq-"
+    return f"{config.queue_path}/tasks/{delivery_name_prefix}{record.id.hex}-r{record.retry_count}-"
 
 
 def _is_current_delivery_name(name: "str", config: "CloudTasksExecutionConfig", record: "QueuedTaskRecord") -> "bool":

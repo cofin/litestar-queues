@@ -492,10 +492,7 @@ class QueueConfig:
         if isinstance(cached, QueueService):
             return cached
 
-        msg = (
-            f"QueueService has not been opened in app state under {state_key!r}; "
-            f"found {type(cached).__name__}."
-        )
+        msg = f"QueueService has not been opened in app state under {state_key!r}; found {type(cached).__name__}."
         raise RuntimeError(msg)
 
     def get_queue_backend(self) -> "BaseQueueBackend":

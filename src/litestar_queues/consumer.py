@@ -330,9 +330,7 @@ def _env_name(config: "QueueConfig | None", suffix: "str") -> "str":
     return f"QUEUES_{suffix}"
 
 
-def _runtime_logger(
-    *, config: "QueueConfig | None" = None, service: "QueueService | None" = None
-) -> "logging.Logger":
+def _runtime_logger(*, config: "QueueConfig | None" = None, service: "QueueService | None" = None) -> "logging.Logger":
     resolved_config = service.config if service is not None else config
     if resolved_config is None:
         return logger

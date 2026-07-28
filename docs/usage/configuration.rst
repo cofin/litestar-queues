@@ -117,8 +117,10 @@ That one value produces names such as ``dma.wakeups`` for telemetry,
 ``dma.worker`` for loggers, ``dma:worker_wakeups`` for channels and Redis or
 Valkey keys, ``dma_service`` for Litestar state and dependency registration,
 ``DMA_SERVER_NONCE`` for private process coordination, and ``dma-worker`` for
-process, thread, and temporary-resource names. Multiple queue plugins can use
-different namespaces without mutating process-global naming state.
+process, thread, and temporary-resource names. Default event streams mount
+under ``/dma/events`` and Cloud Tasks delivery resources begin with ``dma-``.
+Multiple queue plugins can use different namespaces without mutating
+process-global naming state.
 
 Explicit component settings still win. User-authored task and queue names are
 never rewritten. SQL table names and Advanced Alchemy model classes also remain

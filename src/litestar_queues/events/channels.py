@@ -19,16 +19,12 @@ class QueueChannels:
     prefix: "ClassVar[str]" = "litestar_queues"
 
     @classmethod
-    def task(
-        cls, task_id: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None
-    ) -> "str":
+    def task(cls, task_id: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None) -> "str":
         """Return the channel for task-scoped events."""
         return f"{_prefix(namespace)}:task:{_normalize_part(task_id)}:{_normalize_part(topic)}"
 
     @classmethod
-    def queue(
-        cls, queue: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None
-    ) -> "str":
+    def queue(cls, queue: "str", *, topic: "str" = "events", namespace: "QueueNamespace | str | None" = None) -> "str":
         """Return the channel for queue-scoped events."""
         return f"{_prefix(namespace)}:queue:{_normalize_part(queue)}:{_normalize_part(topic)}"
 

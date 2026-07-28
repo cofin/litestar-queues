@@ -582,7 +582,7 @@ def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: 
         service = plugin.get_service()
         await service.open()
         try:
-            canary_task = get_task_registry()[config.scheduler_canary_task]
+            canary_task = get_task_registry()[cast("str", config.scheduler_canary_task)]
             record = await service.enqueue(canary_task)
             await service.get_queue_backend().complete_task(record.id, result=None)
         finally:
