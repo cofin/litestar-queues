@@ -1,10 +1,13 @@
 """Internal typing helpers for the SQLSpec queue backend."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+    from sqlspec.adapters.sqlite import SqliteConfig
 
 
 DatetimeParam: TypeAlias = datetime | str
@@ -16,9 +19,7 @@ class SQLSpecConfig(Protocol):
     statement_config: Any
     extension_config: Any
     migration_config: Any
-
-    @property
-    def is_async(self) -> bool: ...
+    is_async: ClassVar[bool]
 
     def close_pool(self) -> Any: ...
 
@@ -41,8 +42,7 @@ class SQLSpecStoreConfig(Protocol):
 class SQLSpecSessionConfig(Protocol):
     """Structural subset needed to obtain a SQLSpec session."""
 
-    @property
-    def is_async(self) -> bool: ...
+    is_async: ClassVar[bool]
 
 
 class SQLSpecManager(Protocol):
@@ -73,3 +73,10 @@ class SQLSpecDriver(Protocol):
     async def select_one_or_none(self, statement: Any, *parameters: Any, **kwargs: Any) -> Any | None: ...
 
     def select_stream(self, statement: Any, *, chunk_size: int | None = None) -> "AsyncIterator[Any] | Any": ...
+
+
+if TYPE_CHECKING:
+    _sync_config_contract: SQLSpecConfig = SqliteConfig()
+    _async_config_contract: SQLSpecConfig = AsyncpgConfig()
+    _sync_session_contract: SQLSpecSessionConfig = SqliteConfig()
+    _async_session_contract: SQLSpecSessionConfig = AsyncpgConfig()
