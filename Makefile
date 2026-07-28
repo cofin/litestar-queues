@@ -304,6 +304,16 @@ prek:                                               ## Run prek hooks
 	@uvx prek run --show-diff-on-failure --color=always --all-files
 	@echo "${OK} prek checks passed ✨"
 
+.PHONY: zizmor
+zizmor:                                             ## Run zizmor workflow security scanner
+	@echo "${INFO} Running zizmor workflow security checks... 🛡️"
+	@if [ -d ".github/workflows" ]; then \
+		uvx zizmor .github/workflows; \
+	else \
+		echo "${WARN} No .github/workflows directory found"; \
+	fi
+	@echo "${OK} zizmor workflow checks passed ✨"
+
 .PHONY: slotscheck
 slotscheck:                                         ## Run slotscheck
 	@echo "${INFO} Running slots check... 🔍"
@@ -318,7 +328,7 @@ fix:                                                ## Fix linting issues
 	@echo "${OK} Linting issues fixed ✨"
 
 .PHONY: lint
-lint: prek type-check slotscheck                    ## Run all linting checks
+lint: prek type-check slotscheck zizmor             ## Run all linting checks
 
 .PHONY: check-all
 check-all: lint test-all coverage docs docs-audit docs-linkcheck build ## Run complete validation suite
