@@ -1,7 +1,7 @@
 """Internal typing helpers for the SQLSpec queue backend."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -16,9 +16,7 @@ class SQLSpecConfig(Protocol):
     statement_config: Any
     extension_config: Any
     migration_config: Any
-
-    @property
-    def is_async(self) -> bool: ...
+    is_async: ClassVar[bool]
 
     def close_pool(self) -> Any: ...
 
@@ -41,8 +39,7 @@ class SQLSpecStoreConfig(Protocol):
 class SQLSpecSessionConfig(Protocol):
     """Structural subset needed to obtain a SQLSpec session."""
 
-    @property
-    def is_async(self) -> bool: ...
+    is_async: ClassVar[bool]
 
 
 class SQLSpecManager(Protocol):
