@@ -59,6 +59,75 @@ PostgreSQL batch claim. Every backend inherits a safe single-record loop when
 its storage cannot preserve bounded ordering and ownership in one batch;
 Redis and Valkey intentionally use that fallback.
 
+Worker-wakeup capability matrix
+================================
+
+This matrix is checked against the runtime's explicit SQLSpec adapter mapping,
+canonical transport set, and Advanced Alchemy driver set:
+
+.. transport-capability-matrix-start
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 18 22 10 28
+
+   * - Backend or adapter
+     - Enabling setting
+     - Effective strategy
+     - Durable wakeup
+     - Ownership
+
+   * - Memory
+     - Always
+     - asyncio-event
+     - No
+     - Process-local hint
+   * - SQLSpec: asyncpg, psycopg, psqlpy
+     - Default
+     - notify_queue
+     - Yes
+     - Durable queue plus PostgreSQL push
+   * - SQLSpec: DuckDB
+     - Default
+     - poll_queue
+     - Yes
+     - Durable embedded queue
+   * - SQLSpec: other adapters
+     - Default
+     - Polling
+     - N/A
+     - Durable task-state polling
+   * - SQLSpec: Oracle
+     - Explicit only
+     - aq or txeventq
+     - Yes
+     - Application-provisioned Oracle queue
+   * - Advanced Alchemy: asyncpg, psycopg
+     - worker_wakeups=True
+     - postgres-listen-notify
+     - No
+     - Transient marker
+   * - Advanced Alchemy: other drivers
+     - Any
+     - Polling
+     - N/A
+     - Durable task-state polling
+   * - Redis
+     - Default
+     - Redis pub/sub
+     - No
+     - Transient marker
+   * - Valkey
+     - Default
+     - Valkey pub/sub
+     - No
+     - Transient marker
+
+.. transport-capability-matrix-end
+
+``Durable wakeup`` describes the notification transport, not the queue record.
+Queue records remain authoritative in every row.
+
 Install extras
 ==============
 

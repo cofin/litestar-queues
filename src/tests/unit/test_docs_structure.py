@@ -1,9 +1,19 @@
 import ast
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 DOCS = ROOT / "docs"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.docs_audit import (  # noqa: E402
+    CANONICAL_SQLSPEC_TRANSPORTS,
+    SQLSPEC_DEFAULT_WAKEUP_TRANSPORTS,
+    capability_matrix_errors,
+    retired_transport_errors,
+)
 
 
 def _quickstart_python_block() -> str:
@@ -94,3 +104,54 @@ def test_event_config_modules_have_one_canonical_reference_location() -> None:
         "litestar_queues.events.stream_config",
     ):
         assert reference_source.count(f".. automodule:: {module}\n") == 1
+
+
+def test_transport_capability_matrix_matches_runtime_sources() -> None:
+    from litestar_queues.backends.advanced_alchemy._notifications import SUPPORTED_NOTIFY_DRIVERS
+    from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport
+    from litestar_queues.backends.sqlspec.config import WAKEUP_TRANSPORTS
+
+    assert frozenset(WAKEUP_TRANSPORTS) - {"polling"} == CANONICAL_SQLSPEC_TRANSPORTS
+    assert frozenset({"postgresql+asyncpg", "postgresql+psycopg"}) == SUPPORTED_NOTIFY_DRIVERS
+    assert {
+        adapter: _adapter_wakeup_transport(adapter) for adapter in SQLSPEC_DEFAULT_WAKEUP_TRANSPORTS
+    } == SQLSPEC_DEFAULT_WAKEUP_TRANSPORTS
+    assert capability_matrix_errors(DOCS) == []
+
+
+def test_retired_transport_names_are_limited_to_migration_paragraph(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    usage = docs / "usage"
+    usage.mkdir(parents=True)
+    migration = usage / "migration.rst"
+    migration.write_text(
+        """
+.. retired-sqlspec-transport-names-start
+
+Map ``listen_notify`` to ``notify``, ``listen_notify_durable`` to
+``notify_queue``, and ``table_queue`` to ``poll_queue``.
+
+.. retired-sqlspec-transport-names-end
+""",
+        encoding="utf-8",
+    )
+    page = usage / "worker-wakeups.rst"
+    page.write_text("Canonical transport names only.\n", encoding="utf-8")
+
+    assert retired_transport_errors(docs) == []
+
+    for term in ("listen_notify", "listen_notify_durable", "table_queue"):
+        page.write_text(f"Retired outside migration: ``{term}``.\n", encoding="utf-8")
+        errors = retired_transport_errors(docs)
+        assert len(errors) == 1
+        assert term in errors[0]
+        page.write_text("Canonical transport names only.\n", encoding="utf-8")
+
+        migration.write_text(
+            migration.read_text(encoding="utf-8") + f"\nRetired outside the allowed paragraph: ``{term}``.\n",
+            encoding="utf-8",
+        )
+        errors = retired_transport_errors(docs)
+        assert len(errors) == 1
+        assert term in errors[0]
+        migration.write_text(migration.read_text(encoding="utf-8").rsplit("\n", 2)[0] + "\n", encoding="utf-8")

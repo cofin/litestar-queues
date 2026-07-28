@@ -182,8 +182,7 @@ def test_realtime_examples_and_guides_lock_task_context_lifecycle_semantics() ->
         app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
         assert "ctx.beat(" not in app_source, name
         assert (
-            "ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={\"line\": message})"
-            in app_source
+            'ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={"line": message})' in app_source
         ), name
         assert '"crawl.page_discovered",' in app_source, name
         assert 'payload={"url": DISCOVERED_PAGE_URL},' in app_source, name
@@ -204,10 +203,10 @@ def test_realtime_examples_and_guides_lock_task_context_lifecycle_semantics() ->
         "ctx.progress(",
         "current=3,",
         "total=6,",
-        "message=\"3/6 pages\",",
-        "payload={\"page\": 3},",
+        'message="3/6 pages",',
+        'payload={"page": 3},',
         "ctx.event(",
-        "\"crawl.page_discovered\",",
+        '"crawl.page_discovered",',
         "immediate=False,",
     ):
         assert marker in events_guide

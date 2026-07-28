@@ -16,6 +16,31 @@ CANONICAL_TERMS = ("queue backend", "execution backend", "worker wakeup", "task 
 OLD_TRANSPORT_TERMS = ("listen_notify", "listen_notify_durable", "table_queue")
 OBSOLETE_HISTORY_TERMS = ("SQLiteQueueEventSink", "standalone SQLite", "queue-events.db")
 QUICKSTART_DUPLICATE_THRESHOLD = 4
+CANONICAL_SQLSPEC_TRANSPORTS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
+SQLSPEC_DEFAULT_WAKEUP_TRANSPORTS = {
+    "asyncpg": "notify_queue",
+    "psycopg": "notify_queue",
+    "psqlpy": "notify_queue",
+    "duckdb": "poll_queue",
+    "aiosqlite": "polling",
+    "asyncmy": "polling",
+    "oracledb": "polling",
+}
+TRANSPORT_CAPABILITY_MATRIX_ROWS = (
+    ("Memory", "Always", "asyncio-event", "No", "Process-local hint"),
+    ("SQLSpec: asyncpg, psycopg, psqlpy", "Default", "notify_queue", "Yes", "Durable queue plus PostgreSQL push"),
+    ("SQLSpec: DuckDB", "Default", "poll_queue", "Yes", "Durable embedded queue"),
+    ("SQLSpec: other adapters", "Default", "Polling", "N/A", "Durable task-state polling"),
+    ("SQLSpec: Oracle", "Explicit only", "aq or txeventq", "Yes", "Application-provisioned Oracle queue"),
+    ("Advanced Alchemy: asyncpg, psycopg", "worker_wakeups=True", "postgres-listen-notify", "No", "Transient marker"),
+    ("Advanced Alchemy: other drivers", "Any", "Polling", "N/A", "Durable task-state polling"),
+    ("Redis", "Default", "Redis pub/sub", "No", "Transient marker"),
+    ("Valkey", "Default", "Valkey pub/sub", "No", "Transient marker"),
+)
+RETIRED_TRANSPORT_START = ".. retired-sqlspec-transport-names-start"
+RETIRED_TRANSPORT_END = ".. retired-sqlspec-transport-names-end"
+CAPABILITY_MATRIX_START = ".. transport-capability-matrix-start"
+CAPABILITY_MATRIX_END = ".. transport-capability-matrix-end"
 
 
 @dataclass(slots=True)
@@ -89,6 +114,8 @@ def audit(docs_root: Path, readme: Path) -> int:
         if member == "no":
             errors.append(f"page is not in a toctree: {page.relative_path}")
         errors.extend(_literalinclude_errors(page, docs_root))
+    errors.extend(retired_transport_errors(docs_root))
+    errors.extend(capability_matrix_errors(docs_root))
 
     print("\nReview prompts")
     prompts = [f"{page.relative_path}: {prompt}" for page in pages for prompt in page.prompts]
@@ -109,6 +136,74 @@ def audit(docs_root: Path, readme: Path) -> int:
     for error in errors or ["none"]:
         print(f"- {error}")
     return 1 if errors else 0
+
+
+def retired_transport_errors(docs_root: Path) -> list[str]:
+    """Return retired SQLSpec transport occurrences outside one migration paragraph."""
+    errors: list[str] = []
+    migration_path = docs_root / "usage" / "migration.rst"
+    for path in sorted(docs_root.rglob("*.rst")):
+        source = path.read_text(encoding="utf-8")
+        searchable = source
+        if path == migration_path:
+            start_count = source.count(RETIRED_TRANSPORT_START)
+            end_count = source.count(RETIRED_TRANSPORT_END)
+            if start_count != 1 or end_count != 1:
+                errors.append("migration.rst must contain exactly one retired-transport paragraph boundary")
+            else:
+                before, remainder = source.split(RETIRED_TRANSPORT_START, 1)
+                allowed, after = remainder.split(RETIRED_TRANSPORT_END, 1)
+                errors.extend(
+                    f"migration retired-transport paragraph must map {term} exactly once"
+                    for term in OLD_TRANSPORT_TERMS
+                    if len(_exact_term_matches(allowed, term)) != 1
+                )
+                searchable = f"{before}\n{after}"
+        for term in OLD_TRANSPORT_TERMS:
+            for match in _exact_term_matches(searchable, term):
+                line = searchable.count("\n", 0, match.start()) + 1
+                errors.append(f"retired SQLSpec transport outside migration paragraph: {path}:{line}:{term}")
+    return errors
+
+
+def capability_matrix_errors(docs_root: Path) -> list[str]:
+    """Return drift between the explicit matrix data and its delimited RST block."""
+    path = docs_root / "usage" / "backends.rst"
+    source = path.read_text(encoding="utf-8")
+    if source.count(CAPABILITY_MATRIX_START) != 1 or source.count(CAPABILITY_MATRIX_END) != 1:
+        return ["backends.rst must contain exactly one transport capability matrix boundary"]
+    rendered = source.split(CAPABILITY_MATRIX_START, 1)[1].split(CAPABILITY_MATRIX_END, 1)[0].strip()
+    expected = render_transport_capability_matrix_rows().strip()
+    return [] if rendered == expected else ["backends.rst transport capability matrix differs from explicit audit data"]
+
+
+def render_transport_capability_matrix_rows() -> str:
+    """Render the machine-checked public RST list-table."""
+    lines = [
+        ".. list-table::",
+        "   :header-rows: 1",
+        "   :widths: 28 18 22 10 28",
+        "",
+        "   * - Backend or adapter",
+        "     - Enabling setting",
+        "     - Effective strategy",
+        "     - Durable wakeup",
+        "     - Ownership",
+        "",
+    ]
+    for component, setting, transport, durable, ownership in TRANSPORT_CAPABILITY_MATRIX_ROWS:
+        lines.extend((
+            f"   * - {component}",
+            f"     - {setting}",
+            f"     - {transport}",
+            f"     - {durable}",
+            f"     - {ownership}",
+        ))
+    return "\n".join(lines)
+
+
+def _exact_term_matches(source: str, term: str) -> list[re.Match[str]]:
+    return list(re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", source))
 
 
 def _headings(source: str) -> list[tuple[int, str]]:
