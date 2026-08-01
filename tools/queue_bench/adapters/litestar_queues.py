@@ -17,7 +17,11 @@ async def run(request: AdapterRequest) -> AdapterResult:
     """
     backend_config = _backend_config(request)
     try:
-        if request.profile in {"heartbeat", "events", "uniqueness"}:
+        if request.profile == "maintenance":
+            from tools.queue_bench.adapters.litestar_maintenance import run as run_maintenance
+
+            result = await run_maintenance(request, backend_config)
+        elif request.profile in {"heartbeat", "events", "uniqueness"}:
             from tools.queue_bench.adapters.litestar_features import run as run_feature
 
             result = await run_feature(request, backend_config)

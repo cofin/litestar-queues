@@ -100,6 +100,8 @@ def _default_scenarios(profile: str) -> tuple[str, ...]:
         return (profile,)
     if profile == "uniqueness":
         return ("enqueue",)
+    if profile == "maintenance":
+        return ("terminal-retention", "event-retention", "lease-contention")
     return ("enqueue", "roundtrip")
 
 

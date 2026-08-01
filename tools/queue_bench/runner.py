@@ -19,6 +19,7 @@ from tools.queue_bench.profiles import (
     COMPETITOR_SCENARIOS,
     CORE_SCENARIOS,
     FEATURE_SCENARIOS,
+    MAINTENANCE_SCENARIOS,
     BackendVariant,
     ProfileName,
     parse_backend_variant,
@@ -94,7 +95,7 @@ def validate_run_config(config: RunConfig) -> None:
     if unknown_backends:
         msg = f"unsupported backends: {', '.join(sorted(unknown_backends))}"
         raise ValueError(msg)
-    unknown_scenarios = set(config.scenarios) - {*CORE_SCENARIOS, *FEATURE_SCENARIOS}
+    unknown_scenarios = set(config.scenarios) - {*CORE_SCENARIOS, *FEATURE_SCENARIOS, *MAINTENANCE_SCENARIOS}
     if unknown_scenarios:
         msg = f"unsupported scenarios: {', '.join(sorted(unknown_scenarios))}"
         raise ValueError(msg)
@@ -102,6 +103,7 @@ def validate_run_config(config: RunConfig) -> None:
         "heartbeat": frozenset({"heartbeat"}),
         "events": frozenset({"events"}),
         "uniqueness": frozenset({"enqueue"}),
+        "maintenance": frozenset(MAINTENANCE_SCENARIOS),
     }
     expected_scenarios = profile_scenarios.get(config.profile, frozenset(CORE_SCENARIOS))
     mismatched_scenarios = set(config.scenarios) - expected_scenarios
@@ -135,7 +137,9 @@ def validate_run_config(config: RunConfig) -> None:
 
 
 def _validate_litestar_queues_only(config: RunConfig, expanded_scenarios: set[str]) -> None:
-    if (expanded_scenarios or config.profile == "uniqueness") and config.systems != ("litestar-queues",):
+    if (expanded_scenarios or config.profile in {"uniqueness", "maintenance"}) and config.systems != (
+        "litestar-queues",
+    ):
         msg = "selected Litestar Queues profile or scenarios require --system litestar-queues"
         raise ValueError(msg)
 

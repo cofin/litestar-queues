@@ -41,7 +41,8 @@ CORE_SCENARIOS: tuple[str, ...] = (
     "idle",
 )
 FEATURE_SCENARIOS: tuple[str, ...] = ("heartbeat", "events")
-SCENARIOS: tuple[str, ...] = (*CORE_SCENARIOS, *FEATURE_SCENARIOS)
+MAINTENANCE_SCENARIOS: tuple[str, ...] = ("terminal-retention", "event-retention", "lease-contention")
+SCENARIOS: tuple[str, ...] = (*CORE_SCENARIOS, *FEATURE_SCENARIOS, *MAINTENANCE_SCENARIOS)
 COMPETITOR_SCENARIOS: tuple[str, ...] = ("enqueue", "roundtrip")
 
 # Scenario-owning child tasks extend these allowlists when they add parameters.
@@ -127,6 +128,8 @@ def validate_profile_parameters(profile: ProfileName, parameters: Mapping[str, A
         _validate_events_parameters(decoded)
     elif profile == "uniqueness":
         _validate_uniqueness_parameters(decoded)
+    elif profile == "maintenance":
+        _validate_maintenance_parameters(decoded)
     return cast("dict[str, Any]", decoded)
 
 
@@ -174,11 +177,20 @@ def _validate_uniqueness_parameters(parameters: Mapping[str, Any]) -> None:
         raise ValueError(msg)
 
 
+def _validate_maintenance_parameters(parameters: Mapping[str, Any]) -> None:
+    for name in ("limit", "record_count"):
+        value = parameters.get(name)
+        if value is not None and (type(value) is not int or value < 1):
+            msg = f"{name} must be an integer of at least 1"
+            raise ValueError(msg)
+
+
 __all__ = (
     "BACKEND_VARIANTS",
     "COMPETITOR_SCENARIOS",
     "CORE_SCENARIOS",
     "FEATURE_SCENARIOS",
+    "MAINTENANCE_SCENARIOS",
     "PROFILE_NAMES",
     "SCENARIOS",
     "BackendVariant",

@@ -46,7 +46,7 @@ async def execute(request: AdapterRequest) -> RawSample:
         scenario=request.scenario,
         sample_index=request.sample_index,
         duration_seconds=result.duration_seconds,
-        operations=request.operations,
+        operations=result.effective_operations if result.effective_operations is not None else request.operations,
         valid=valid,
         counters=counters,
         measurements=result.measurements,

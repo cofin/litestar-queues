@@ -59,6 +59,7 @@ class AdapterRequest:
 class AdapterResult:
     duration_seconds: float
     counters: dict[str, int]
+    effective_operations: int | None = None
     measurements: dict[str, int | float | str | bool | None] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -107,6 +108,39 @@ def _expected_counters(request: AdapterRequest) -> dict[str, int]:
             "retried": 0,
             "deduplicated": operations - distinct_records,
             "remaining": distinct_records,
+        }
+    if request.profile == "maintenance":
+        record_count = int(request.parameters.get("record_count", operations))
+        if request.scenario == "lease-contention":
+            return {
+                "requests": 1,
+                "records": 0,
+                "started": 0,
+                "completed": 0,
+                "failed": 0,
+                "retried": 0,
+                "remaining": 0,
+                "changed": 0,
+                "maintenance_invocations": 1,
+                "continuation_count": 0,
+                "first_batch_changed": 0,
+                "lease_denied": 1,
+            }
+        limit = int(request.parameters.get("limit", 1000))
+        invocations = math.ceil(record_count / limit)
+        return {
+            "requests": invocations,
+            "records": record_count,
+            "started": 0,
+            "completed": 0,
+            "failed": 0,
+            "retried": 0,
+            "remaining": 0,
+            "changed": record_count,
+            "maintenance_invocations": invocations,
+            "continuation_count": max(0, invocations - 1),
+            "first_batch_changed": min(record_count, limit),
+            "lease_denied": 0,
         }
     if request.scenario in {"enqueue", "enqueue-concurrent"}:
         return {**terminal, "started": 0, "completed": 0, "remaining": operations}
