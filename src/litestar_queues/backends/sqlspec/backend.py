@@ -743,9 +743,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if limit <= 0:
             return [], []
         store = self._get_store()
-        if type(store).supports_returning_claim:
-            return await super().claim_many_with_expired(
-                limit=limit, queues=queues, execution_backend=execution_backend
+        if type(store).supports_combined_expiry_claim:
+            return await self._claim_many_postgres_with_expired(
+                store, limit=limit, queues=queues, execution_backend=execution_backend
             )
 
         expired = await self.expire_overdue()
@@ -773,6 +773,40 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         expired.extend(await self.expire_overdue())
         unique_expired = {record.id: record for record in expired}
         return claimed, list(unique_expired.values())
+
+    async def _claim_many_postgres_with_expired(
+        self, store: "SQLSpecQueueStore", *, limit: "int", queues: "tuple[str, ...]", execution_backend: "str | None"
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        now = _utc_now()
+        parameters: "dict[str, Any]" = {
+            "now": self._serialize_datetime(now),
+            "expires_now": self._serialize_datetime(now),
+            "completed_at": self._serialize_datetime(now),
+            "started_at": self._serialize_datetime(now),
+            "heartbeat_at": self._serialize_datetime(now),
+            "limit": limit,
+            "reservation_prefix": f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%",
+        }
+        for index, queue in enumerate(queues):
+            parameters[f"queue_{index}"] = queue
+        if execution_backend is not None:
+            parameters["execution_backend"] = execution_backend
+        sql_text = store.claim_batch_with_expired_returning_sql(
+            queue_count=len(queues), filter_execution_backend=execution_backend is not None
+        )
+        with self._observe_queue_operation("claim", execution_backend=execution_backend):
+            async with self._session() as driver:
+                rows = await self._select_rows(driver, sql_text, parameters)
+        claimed: "list[QueuedTaskRecord]" = []
+        expired: "list[QueuedTaskRecord]" = []
+        for row in rows:
+            record_row = dict(row)
+            outcome = str(record_row.pop("_claim_outcome"))
+            record = self._record_from_row(record_row)
+            (expired if outcome == "expired" else claimed).append(record)
+        if claimed:
+            self._increment_queue_metric("claim", float(len(claimed)))
+        return claimed, expired
 
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None

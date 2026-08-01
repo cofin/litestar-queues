@@ -561,6 +561,22 @@ def test_sqlspec_claim_batch_returning_sql_shape() -> "None":
     assert '"execution_backend" = :execution_backend' not in unfiltered
 
 
+def test_postgres_claim_with_expired_sql_is_one_tagged_statement() -> "None":
+    """PostgreSQL expiry and claim share one statement with disjoint locked candidates."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    sql = store.claim_batch_with_expired_returning_sql(queue_count=1, filter_execution_backend=True)
+
+    assert sql.startswith("WITH expired_candidates AS")
+    assert sql.count("FOR UPDATE SKIP LOCKED") == 2
+    assert '"id" NOT IN (SELECT "id" FROM expired_candidates)' in sql
+    assert "UNION ALL" in sql
+    assert "'expired' AS \"_claim_outcome\"" in sql
+    assert "'claimed' AS \"_claim_outcome\"" in sql
+    assert '"queue" IN (:queue_0)' in sql
+    assert '"execution_backend" = :execution_backend' in sql
+
+
 def test_sqlspec_complete_returning_sql_clears_heartbeat_and_fences() -> "None":
     """The completion statement clears the heartbeat and fences on running status."""
     store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
@@ -1742,6 +1758,28 @@ async def test_sqlspec_postgres_claim_many_single_statement_orders_and_fences(
             claimed_ids.extend(record.id for record in straggler)
         assert len(claimed_ids) == len(set(claimed_ids))
         assert set(claimed_ids) == concurrent_ids
+
+
+async def test_sqlspec_postgres_claim_many_returns_owned_expirations(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """The combined PostgreSQL statement returns disjoint expired and claimed rows."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_claim_expired") as backend:
+        expired_record = await backend.enqueue(
+            "tasks.claim.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+        high = await backend.enqueue("tasks.claim.high", priority=10)
+        low = await backend.enqueue("tasks.claim.low", priority=1)
+
+        claimed, expired = await backend.claim_many_with_expired(limit=2)
+
+        assert [record.id for record in claimed] == [high.id, low.id]
+        assert [record.id for record in expired] == [expired_record.id]
+        assert expired[0].status == "expired"
+        assert expired[0].execution_ref is None
+        claimed_again, expired_again = await backend.claim_many_with_expired(limit=2)
+        assert claimed_again == []
+        assert expired_again == []
 
 
 async def test_sqlspec_postgres_complete_clears_heartbeat_single_statement(

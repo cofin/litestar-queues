@@ -135,6 +135,7 @@ def validate_run_config(config: RunConfig) -> None:
     if mismatched_scenarios:
         msg = f"profile {config.profile!r} does not support scenarios: {', '.join(sorted(mismatched_scenarios))}"
         raise ValueError(msg)
+    _validate_pickup_scenarios(config)
     _validate_managed_google_profile(config)
     expanded_scenarios = set(config.scenarios) - set(COMPETITOR_SCENARIOS)
     _validate_litestar_queues_only(config, expanded_scenarios)
@@ -161,6 +162,15 @@ def validate_run_config(config: RunConfig) -> None:
         if missing:
             msg = f"remote runs require --dsn for: {', '.join(sorted(missing))}"
             raise ValueError(msg)
+
+
+def _validate_pickup_scenarios(config: RunConfig) -> None:
+    if "cold-start" in config.scenarios and config.operations != 1:
+        msg = "cold-start requires exactly one operation"
+        raise ValueError(msg)
+    if "steady-idle-pickup" in config.scenarios and config.profile != "rich":
+        msg = "steady-idle-pickup requires the rich profile for native wakeup proof"
+        raise ValueError(msg)
 
 
 def _validate_litestar_queues_only(config: RunConfig, expanded_scenarios: set[str]) -> None:

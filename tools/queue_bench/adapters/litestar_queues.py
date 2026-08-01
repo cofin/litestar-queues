@@ -6,7 +6,12 @@ import time
 from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
-from tools.queue_bench.measurements import SampleMeasurementCollector, summarize_pickup_latency
+from tools.queue_bench.measurements import (
+    SampleMeasurementCollector,
+    summarize_durations,
+    summarize_pickup_latency,
+    summarize_task_phases,
+)
 
 
 async def run(request: AdapterRequest) -> AdapterResult:
@@ -44,7 +49,7 @@ async def run(request: AdapterRequest) -> AdapterResult:
     return result
 
 
-async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
+async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  # noqa: C901, PLR0915
     from litestar_queues import QueueConfig, QueueService, TaskRequest, Worker, WorkerConfig, task
     from litestar_queues.observability import ObservabilityConfig
 
@@ -81,7 +86,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         log_success=False,
         observability=ObservabilityConfig(
             enable_otel=False,
-            enable_prometheus=True,
+            enable_prometheus=request.profile == "rich",
             enable_sqlcommenter=False,
             prometheus_registry=measurement_collector.registry,
         ),
@@ -92,7 +97,9 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             queues=(request.namespace,),
         ),
     )
+    startup_started_at = time.perf_counter()
     async with QueueService(config) as service:
+        service_startup_seconds = time.perf_counter() - startup_started_at
         if request.backend == "postgres" and request.profile != "advanced-alchemy":
             from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
@@ -112,12 +119,21 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         )
         worker_task = (
             await _start_worker(worker)
-            if request.scenario in {"roundtrip", "delayed-lateness", "retry-once", "idle"}
+            if request.scenario
+            in {
+                "roundtrip",
+                "cold-start",
+                "steady-idle-pickup",
+                "backlog-throughput",
+                "delayed-lateness",
+                "retry-once",
+                "idle",
+            }
             else None
         )
         try:
             cpu_started, started_at = measurement_collector.snapshot_cpu(), time.perf_counter()
-            results, record_count, request_count = await _execute_scenario(
+            results, record_count, request_count, enqueue_durations = await _execute_scenario(
                 request,
                 service=service,
                 task_request_type=TaskRequest,
@@ -127,7 +143,19 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             )
             duration = time.perf_counter() - started_at
             measurements = measurement_collector.finish(cpu_started)
+            if request.profile == "core":
+                measurements["prometheus.available"] = False
+            measurements.update(summarize_durations("queue.enqueue_call", enqueue_durations))
             measurements.update(_scenario_pickup_measurements(request.scenario, results))
+            if request.scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput"}:
+                measurements.update(summarize_task_phases([result.record for result in results], _utc_now()))
+            if request.scenario == "steady-idle-pickup":
+                native_count = measurements.get(
+                    "prometheus.litestar_queues_worker_wakeup_to_claim_duration_seconds_count"
+                )
+                if not isinstance(native_count, int | float) or native_count < request.operations:
+                    msg = "steady-idle-pickup did not prove native wakeup-to-claim for every observed job"
+                    raise ValueError(msg)
             statistics = await service.get_queue_backend().get_statistics()
             completed, failed = (
                 sum(result.status == "completed" for result in results),
@@ -137,7 +165,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             counters = {
                 "requests": request_count,
                 "records": record_count,
-                "started": started_count,
+                "started": started_count - 1 if request.scenario == "steady-idle-pickup" else started_count,
                 "completed": completed,
                 "failed": failed,
                 "retried": retried,
@@ -169,13 +197,14 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             "driver": _driver_name(request),
             "namespace": request.namespace,
             "comparison_class": _comparison_class(request.scenario),
+            "service_startup_seconds": service_startup_seconds,
         },
     )
 
 
 def _scenario_pickup_measurements(scenario: str, results: list[Any]) -> dict[str, int | float | str | bool | None]:
     records = [result.record for result in results]
-    if scenario in {"roundtrip", "delayed-lateness"}:
+    if scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput", "delayed-lateness"}:
         return summarize_pickup_latency(records)
     if scenario == "retry-once":
         return summarize_pickup_latency(records, unavailable_reason="retry_overwrites_first_started_at")
@@ -194,18 +223,18 @@ async def _start_worker(worker: Any) -> asyncio.Task[None]:
     return worker_task
 
 
-async def _execute_scenario(
+async def _execute_scenario(  # noqa: C901
     request: AdapterRequest, *, service: Any, task_request_type: Any, noop: Any, delayed: Any, retry_once: Any
-) -> tuple[list[Any], int, int]:
+) -> tuple[list[Any], int, int, list[float]]:
     if request.scenario == "enqueue":
         results = [await service.enqueue(noop, request.payload) for _ in range(request.operations)]
-        return results, len(results), len(results)
+        return results, len(results), len(results), []
     if request.scenario == "enqueue-concurrent":
         producer_concurrency = int(request.parameters.get("producer_concurrency", 32))
         results = await gather_bounded(
             (service.enqueue(noop, request.payload) for _ in range(request.operations)), limit=producer_concurrency
         )
-        return results, len(results), len(results)
+        return results, len(results), len(results), []
     if request.scenario == "enqueue-many":
         batch_size = int(request.parameters.get("batch_size", 100))
         pending_requests = [
@@ -216,26 +245,55 @@ async def _execute_scenario(
             pending_requests[offset : offset + batch_size] for offset in range(0, len(pending_requests), batch_size)
         ]
         records = [record for batch in batches for record in await service.get_queue_backend().enqueue_many(batch)]
-        return [], len(records), len(batches)
+        return [], len(records), len(batches), []
     if request.scenario == "roundtrip":
         results = [await service.enqueue(noop, request.payload) for _ in range(request.operations)]
         await _wait_for_results(results, request)
-        return results, len(results), len(results)
+        return results, len(results), len(results), []
+    if request.scenario == "cold-start":
+        started_at = time.perf_counter()
+        result = await service.enqueue(noop, request.payload)
+        enqueue_seconds = time.perf_counter() - started_at
+        await result.wait(timeout=request.timeout_seconds, poll_interval=0.01)
+        return [result], 1, 1, [enqueue_seconds]
+    if request.scenario == "steady-idle-pickup":
+        warmup = await service.enqueue(noop, request.payload)
+        await warmup.wait(timeout=request.timeout_seconds, poll_interval=0.01)
+        spacing = float(request.parameters.get("spacing_seconds", 0.05))
+        results = []
+        enqueue_durations = []
+        for _ in range(request.operations):
+            await asyncio.sleep(spacing)
+            enqueue_started_at = time.perf_counter()
+            result = await service.enqueue(noop, request.payload)
+            enqueue_durations.append(time.perf_counter() - enqueue_started_at)
+            await result.wait(timeout=request.timeout_seconds, poll_interval=0.01)
+            results.append(result)
+        return results, len(results), len(results), enqueue_durations
+    if request.scenario == "backlog-throughput":
+        results = []
+        enqueue_durations = []
+        for _ in range(request.operations):
+            enqueue_started_at = time.perf_counter()
+            results.append(await service.enqueue(noop, request.payload))
+            enqueue_durations.append(time.perf_counter() - enqueue_started_at)
+        await _wait_for_results(results, request)
+        return results, len(results), len(results), enqueue_durations
     if request.scenario == "delayed-lateness":
         delay_seconds = float(request.parameters.get("delay_seconds", 1.0))
         results = [
             await service.enqueue(delayed, request.payload, run_after=delay_seconds) for _ in range(request.operations)
         ]
         await _wait_for_results(results, request)
-        return results, len(results), len(results)
+        return results, len(results), len(results), []
     if request.scenario == "retry-once":
         results = [await service.enqueue(retry_once, index, request.payload) for index in range(request.operations)]
         await _wait_for_results(results, request)
-        return results, len(results), len(results)
+        return results, len(results), len(results), []
     if request.scenario == "idle":
         idle_duration = float(request.parameters.get("idle_duration_seconds", 60.0))
         await asyncio.wait_for(asyncio.sleep(idle_duration), timeout=request.timeout_seconds)
-        return [], 0, 0
+        return [], 0, 0, []
     msg = f"unsupported Litestar Queues scenario {request.scenario!r}"
     raise ValueError(msg)
 
@@ -243,7 +301,14 @@ async def _execute_scenario(
 def _comparison_class(scenario: str) -> str:
     if scenario == "enqueue-many":
         return "feature-advantaged"
-    if scenario in {"roundtrip", "delayed-lateness", "retry-once"}:
+    if scenario in {
+        "roundtrip",
+        "cold-start",
+        "steady-idle-pickup",
+        "backlog-throughput",
+        "delayed-lateness",
+        "retry-once",
+    }:
         return "feature-cost"
     if scenario == "idle":
         return "no-counterpart"
@@ -255,6 +320,12 @@ async def _wait_for_results(results: list[Any], request: AdapterRequest) -> None
         (result.wait(timeout=request.timeout_seconds, poll_interval=0.01) for result in results),
         limit=request.concurrency,
     )
+
+
+def _utc_now() -> Any:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
 
 
 def _backend_config(request: AdapterRequest) -> Any:

@@ -36,6 +36,9 @@ CORE_SCENARIOS: tuple[str, ...] = (
     "enqueue-concurrent",
     "enqueue-many",
     "roundtrip",
+    "cold-start",
+    "steady-idle-pickup",
+    "backlog-throughput",
     "delayed-lateness",
     "retry-once",
     "idle",
@@ -44,12 +47,24 @@ FEATURE_SCENARIOS: tuple[str, ...] = ("heartbeat", "events")
 MAINTENANCE_SCENARIOS: tuple[str, ...] = ("terminal-retention", "event-retention", "lease-contention")
 MANAGED_GOOGLE_SCENARIOS: tuple[str, ...] = ("cloud-tasks-delivery", "cloud-run-job-dispatch")
 SCENARIOS: tuple[str, ...] = (*CORE_SCENARIOS, *FEATURE_SCENARIOS, *MAINTENANCE_SCENARIOS, *MANAGED_GOOGLE_SCENARIOS)
-COMPETITOR_SCENARIOS: tuple[str, ...] = ("enqueue", "roundtrip")
+COMPETITOR_SCENARIOS: tuple[str, ...] = (
+    "enqueue",
+    "roundtrip",
+    "cold-start",
+    "steady-idle-pickup",
+    "backlog-throughput",
+)
 
 # Scenario-owning child tasks extend these allowlists when they add parameters.
 _PROFILE_PARAMETER_KEYS: dict[ProfileName, frozenset[str]] = {
     "core": frozenset({"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}),
-    "rich": frozenset({"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}),
+    "rich": frozenset({
+        "batch_size",
+        "delay_seconds",
+        "idle_duration_seconds",
+        "producer_concurrency",
+        "spacing_seconds",
+    }),
     "heartbeat": frozenset({"heartbeat_interval", "observation_seconds"}),
     "events": frozenset({"mode"}),
     "uniqueness": frozenset({"mode"}),
@@ -145,7 +160,7 @@ def _validate_core_parameters(parameters: Mapping[str, Any]) -> None:
     ):
         msg = "producer_concurrency must be an integer from 1 through 32"
         raise ValueError(msg)
-    for name in ("delay_seconds", "idle_duration_seconds"):
+    for name in ("delay_seconds", "idle_duration_seconds", "spacing_seconds"):
         value = parameters.get(name)
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0

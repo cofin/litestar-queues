@@ -825,6 +825,30 @@ async def test_correlation_id_round_trips_through_record_metadata() -> "None":
     reset_correlation_id(empty)
 
 
+async def test_service_open_preloads_sqlspec_correlation_context(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Service startup owns the optional SQLSpec import cost."""
+    pytest.importorskip("sqlspec")
+
+    import litestar_queues._correlation as correlation
+
+    correlation.sqlspec_correlation_context.cache_clear()
+    imported: "list[str]" = []
+    original_import_module = correlation.import_module
+
+    def tracked_import_module(name: str) -> "Any":
+        imported.append(name)
+        return original_import_module(name)
+
+    monkeypatch.setattr(correlation, "import_module", tracked_import_module)
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ):
+        assert imported == ["sqlspec.utils.correlation"]
+        correlation.capture_correlation_id({})
+        correlation.bind_correlation_id({})
+        assert imported == ["sqlspec.utils.correlation"]
+
+
 def test_core_imports_stay_free_of_optional_telemetry() -> "None":
     """Importing core queue APIs must not drag in OTel, Prometheus, or SQLSpec."""
     import subprocess

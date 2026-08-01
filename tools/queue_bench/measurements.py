@@ -19,6 +19,7 @@ class PickupRecord(Protocol):
     created_at: datetime
     scheduled_at: datetime | None
     started_at: datetime | None
+    completed_at: datetime | None
 
 
 # Package-owned transport and heartbeat instruments. Exported histogram buckets
@@ -156,6 +157,65 @@ def summarize_pickup_latency(
     return measurements
 
 
+def summarize_task_phases(records: list[PickupRecord | None], observed_at: datetime) -> dict[str, MeasurementValue]:
+    """Summarize persisted execution and observer-return phases."""
+    execution: list[float] = []
+    observation: list[float] = []
+    for record in records:
+        if record is None or record.started_at is None or record.completed_at is None:
+            continue
+        execution_seconds = (record.completed_at - record.started_at).total_seconds()
+        observation_seconds = (observed_at - record.completed_at).total_seconds()
+        if execution_seconds < 0 or observation_seconds < 0:
+            msg = "persisted task phase timestamps are out of order"
+            raise ValueError(msg)
+        execution.append(execution_seconds)
+        observation.append(observation_seconds)
+    if not execution:
+        return {"queue.execution.available": False, "queue.observer_return.available": False}
+    values: dict[str, MeasurementValue] = {
+        "queue.execution.available": True,
+        "queue.observer_return.available": True,
+        "queue.observer_return.timestamp_source": "child_wall_clock_utc",
+    }
+    values.update(_latency_summary("queue.execution.started_to_completed", execution))
+    values.update(_latency_summary("queue.observer_return.completed_to_return", observation))
+    return values
+
+
+def summarize_durations(prefix: str, values: list[float]) -> dict[str, MeasurementValue]:
+    """Summarize a non-empty collection of monotonic operation durations."""
+    if not values:
+        return {f"{prefix}.available": False}
+    return {f"{prefix}.available": True, **_latency_summary(prefix, values)}
+
+
+def summarize_saq_pickup(jobs: list[object]) -> dict[str, MeasurementValue]:
+    """Summarize SAQ's persisted millisecond queued-to-started timestamps."""
+    values: list[float] = []
+    for job in jobs:
+        queued = getattr(job, "queued", None)
+        started = getattr(job, "started", None)
+        if queued is None or started is None:
+            continue
+        duration = (float(started) - float(queued)) / 1000.0
+        if duration < 0:
+            msg = "SAQ persisted started timestamp precedes queued timestamp"
+            raise ValueError(msg)
+        values.append(duration)
+    if not values:
+        return _unavailable_pickup_measurements(len(jobs), "no_saq_persisted_queued_started")
+    measurements: dict[str, MeasurementValue] = {
+        "queue.pickup.available": True,
+        "queue.pickup.observed_count": len(values),
+        "queue.pickup.missing_count": len(jobs) - len(values),
+        "queue.pickup.unavailable_reason": None,
+        "queue.pickup.timestamp_source": "saq_persisted_queued_started_ms",
+    }
+    measurements.update(_latency_summary("queue.pickup.ready_to_started", values))
+    return measurements
+
+
 def _latency_summary(prefix: str, values: list[float]) -> dict[str, MeasurementValue]:
     return {
         f"{prefix}.min_seconds": min(values),
@@ -194,4 +254,11 @@ def _collect_allowed_series(registry: CollectorRegistry) -> dict[str, float]:
     return totals
 
 
-__all__ = ("MeasurementValue", "SampleMeasurementCollector", "summarize_pickup_latency")
+__all__ = (
+    "MeasurementValue",
+    "SampleMeasurementCollector",
+    "summarize_durations",
+    "summarize_pickup_latency",
+    "summarize_saq_pickup",
+    "summarize_task_phases",
+)

@@ -672,13 +672,18 @@ def test_package_never_parses_server_command_flags() -> "None":
 
 
 @pytest.mark.usefixtures("clean_proof_environment")
-async def test_server_placement_opens_the_service_but_owns_no_asgi_worker() -> "None":
+async def test_server_placement_opens_the_service_but_owns_no_asgi_worker(monkeypatch: "pytest.MonkeyPatch") -> "None":
     """With a valid marker the ASGI process enqueues only; the worker lives elsewhere."""
     from litestar.testing import AsyncTestClient
 
     from litestar_queues import QueueService
+    from litestar_queues.backends.redis import RedisQueueBackend
     from litestar_queues.worker.invocation import server_context
 
+    async def skip_redis_readiness(_self: "RedisQueueBackend") -> "None":
+        return None
+
+    monkeypatch.setattr(RedisQueueBackend, "_require_maintenance_indexes", skip_redis_readiness)
     plugin = QueuePlugin(QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="server")))
     app = Litestar(plugins=[plugin], route_handlers=[])
 

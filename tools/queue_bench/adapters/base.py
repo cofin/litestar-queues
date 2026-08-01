@@ -111,7 +111,7 @@ class AdapterResult:
         return True, None
 
 
-def _expected_counters(request: AdapterRequest) -> dict[str, int]:
+def _expected_counters(request: AdapterRequest) -> dict[str, int]:  # noqa: C901
     operations = request.operations
     if request.profile in {"cloud-tasks", "cloud-run-jobs"}:
         return {
@@ -197,6 +197,9 @@ def _expected_counters(request: AdapterRequest) -> dict[str, int]:
         return {**terminal, "scheduled": operations, "not_early": operations}
     if request.scenario == "retry-once":
         return {**terminal, "started": operations * 2, "retried": operations}
+    terminal_scenarios = {"cold-start", "steady-idle-pickup", "backlog-throughput"}
+    if request.scenario in terminal_scenarios:
+        return terminal
     if request.scenario == "idle":
         return {
             "requests": 0,

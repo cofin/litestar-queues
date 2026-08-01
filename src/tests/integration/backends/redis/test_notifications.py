@@ -63,6 +63,23 @@ async def test_redis_backend_wait_for_completion_wakes_on_terminal(redis_backend
     assert await redis_backend.wait_for_completion(uuid4(), timeout=0.05) is False
 
 
+async def test_redis_backend_shares_completion_subscription_between_waiters(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    record = await redis_backend.enqueue("tasks.awaited.concurrent")
+    claimed = await redis_backend.claim_task(record.id)
+    assert claimed is not None
+
+    first = asyncio.create_task(redis_backend.wait_for_completion(record.id, timeout=2.0))
+    second = asyncio.create_task(redis_backend.wait_for_completion(record.id, timeout=2.0))
+    await wait_for_channel_subscribers(redis_backend, redis_backend._completion_channel, expected=1)
+    completed = await redis_backend.complete_task(record.id)
+
+    assert completed is not None
+    assert await asyncio.gather(first, second) == [True, True]
+    assert redis_backend._completion_reader_task is not None
+
+
 async def test_redis_backend_reuses_subscription_after_timeout(redis_backend: "RedisQueueBackend") -> "None":
     assert await redis_backend.wait_for_wakeups(timeout=0.1) is False
     pubsub = redis_backend._pubsub

@@ -23,6 +23,7 @@ __all__ = (
     "SQLSPEC_INSTALLED",
     "bind_correlation_id",
     "capture_correlation_id",
+    "preload_correlation_context",
     "reset_correlation_id",
     "sqlspec_correlation_context",
 )
@@ -49,6 +50,11 @@ def sqlspec_correlation_context() -> "Any | None":
         return import_module("sqlspec.utils.correlation").CorrelationContext
     except ImportError:  # pragma: no cover - guards a partial SQLSpec install
         return None
+
+
+def preload_correlation_context() -> "None":
+    """Resolve the optional SQLSpec correlation bridge during service startup."""
+    sqlspec_correlation_context()
 
 
 def capture_correlation_id(metadata: "dict[str, Any]") -> "None":

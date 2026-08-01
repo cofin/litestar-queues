@@ -88,6 +88,7 @@ class SQLSpecQueueStore:
     bind_datetime_as_naive_utc: "ClassVar[bool]" = False
     supports_dml_returning: "ClassVar[bool]" = False
     supports_returning_claim: "ClassVar[bool]" = False
+    supports_combined_expiry_claim: "ClassVar[bool]" = False
 
     def __init__(
         self,
@@ -289,6 +290,10 @@ class SQLSpecQueueStore:
             )
 
         return self._cached(cache_key, build)
+
+    def claim_batch_with_expired_returning_sql(self, *, queue_count: "int", filter_execution_backend: "bool") -> "str":
+        """Return a tagged expiry-and-claim statement for capable stores."""
+        raise NotImplementedError
 
     def complete_returning_sql(self, *, fence_retry_count: "bool") -> "str":
         """Return a cached fenced ``UPDATE ... RETURNING`` that completes a running task.
