@@ -38,6 +38,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dsn", action="append", default=[], metavar="BACKEND=URL")
     run.add_argument("--pull-images", action="store_true")
     run.add_argument("--remote", action="store_true")
+    run.add_argument("--acknowledge-cost", action="store_true")
+    run.add_argument("--managed-namespace")
+    run.add_argument("--google-project")
+    credentials = run.add_mutually_exclusive_group()
+    credentials.add_argument("--google-credentials-file", type=Path)
+    credentials.add_argument("--google-adc", action="store_true")
+    run.add_argument("--cold-state-evidence", type=Path)
+    run.add_argument("--cloud-tasks-location")
+    run.add_argument("--cloud-tasks-queue")
+    run.add_argument("--cloud-tasks-service-url")
+    run.add_argument("--cloud-tasks-service-account")
+    run.add_argument("--cloud-tasks-audience")
+    run.add_argument("--cloud-run-region")
+    run.add_argument("--cloud-run-job")
     run.add_argument("--timeout", type=float, default=120.0, dest="timeout_seconds")
     run.add_argument("--output", type=Path, required=True)
 
@@ -73,6 +87,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dsn_overrides=tuple(args.dsn),
                 pull_images=args.pull_images,
                 remote=args.remote,
+                acknowledge_cost=args.acknowledge_cost,
+                managed_namespace=args.managed_namespace,
+                google_project=args.google_project,
+                google_credentials_file=args.google_credentials_file,
+                google_adc=args.google_adc,
+                cold_state_evidence=args.cold_state_evidence,
+                cloud_tasks_location=args.cloud_tasks_location,
+                cloud_tasks_queue=args.cloud_tasks_queue,
+                cloud_tasks_service_url=args.cloud_tasks_service_url,
+                cloud_tasks_service_account=args.cloud_tasks_service_account,
+                cloud_tasks_audience=args.cloud_tasks_audience,
+                cloud_run_region=args.cloud_run_region,
+                cloud_run_job=args.cloud_run_job,
                 timeout_seconds=args.timeout_seconds,
             )
             result = run_benchmarks(config, root=Path.cwd())
@@ -96,6 +123,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _default_scenarios(profile: str) -> tuple[str, ...]:
+    if profile == "cloud-tasks":
+        return ("cloud-tasks-delivery",)
+    if profile == "cloud-run-jobs":
+        return ("cloud-run-job-dispatch",)
     if profile in {"heartbeat", "events"}:
         return (profile,)
     if profile == "uniqueness":

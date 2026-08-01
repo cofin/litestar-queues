@@ -1842,6 +1842,8 @@ valkey = [
 benchmarks = [
     { name = "advanced-alchemy" },
     { name = "asyncpg" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-tasks" },
     { name = "hiredis" },
     { name = "prometheus-client" },
     { name = "psutil" },
@@ -1975,6 +1977,8 @@ provides-extras = ["advanced-alchemy", "cloud-tasks", "cloudrun", "otel", "prome
 benchmarks = [
     { name = "advanced-alchemy", specifier = ">=1.10.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "google-cloud-run", specifier = ">=0.10.0" },
+    { name = "google-cloud-tasks", specifier = ">=2.23.0" },
     { name = "hiredis" },
     { name = "prometheus-client" },
     { name = "psutil" },

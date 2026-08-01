@@ -42,7 +42,8 @@ CORE_SCENARIOS: tuple[str, ...] = (
 )
 FEATURE_SCENARIOS: tuple[str, ...] = ("heartbeat", "events")
 MAINTENANCE_SCENARIOS: tuple[str, ...] = ("terminal-retention", "event-retention", "lease-contention")
-SCENARIOS: tuple[str, ...] = (*CORE_SCENARIOS, *FEATURE_SCENARIOS, *MAINTENANCE_SCENARIOS)
+MANAGED_GOOGLE_SCENARIOS: tuple[str, ...] = ("cloud-tasks-delivery", "cloud-run-job-dispatch")
+SCENARIOS: tuple[str, ...] = (*CORE_SCENARIOS, *FEATURE_SCENARIOS, *MAINTENANCE_SCENARIOS, *MANAGED_GOOGLE_SCENARIOS)
 COMPETITOR_SCENARIOS: tuple[str, ...] = ("enqueue", "roundtrip")
 
 # Scenario-owning child tasks extend these allowlists when they add parameters.
@@ -191,6 +192,7 @@ __all__ = (
     "CORE_SCENARIOS",
     "FEATURE_SCENARIOS",
     "MAINTENANCE_SCENARIOS",
+    "MANAGED_GOOGLE_SCENARIOS",
     "PROFILE_NAMES",
     "SCENARIOS",
     "BackendVariant",

@@ -15,6 +15,10 @@ async def run(request: AdapterRequest) -> AdapterResult:
     Returns:
         Timed result and correctness counters.
     """
+    if request.profile in {"cloud-tasks", "cloud-run-jobs"}:
+        from tools.queue_bench.adapters.litestar_managed_google import run as run_managed_google
+
+        return await run_managed_google(request)
     if request.profile == "advanced-alchemy":
         from tools.queue_bench.adapters.litestar_advanced_alchemy import run as run_advanced_alchemy
 
@@ -298,7 +302,7 @@ async def _cleanup(request: AdapterRequest, backend_config: Any) -> None:
         from redis.asyncio import Redis
 
         client = Redis.from_url(request.dsn)
-        keys = [key async for key in client.scan_iter(match=f"{request.namespace}*")]
+        keys = await _namespace_keys(client, request.namespace)
         if keys:
             await client.delete(*keys)
         await client.aclose()
@@ -307,7 +311,7 @@ async def _cleanup(request: AdapterRequest, backend_config: Any) -> None:
         from valkey.asyncio import Valkey
 
         client = Valkey.from_url(request.dsn)
-        keys = [key async for key in client.scan_iter(match=f"{request.namespace}*")]
+        keys = await _namespace_keys(client, request.namespace)
         if keys:
             await client.delete(*keys)
         await client.aclose()
@@ -342,6 +346,13 @@ async def _cleanup(request: AdapterRequest, backend_config: Any) -> None:
                 await cursor.execute(
                     sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(*table_name.split(".")))
                 )
+
+
+async def _namespace_keys(client: Any, namespace: str) -> list[Any]:
+    keys = {key async for key in client.scan_iter(match=f"{namespace}:*")}
+    if await client.exists(namespace):
+        keys.add(namespace)
+    return list(keys)
 
 
 __all__ = ("run",)
