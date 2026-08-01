@@ -1,6 +1,7 @@
 """Benchmark profile and backend-variant contracts."""
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
@@ -29,6 +30,17 @@ PROFILE_NAMES: tuple[ProfileName, ...] = (
     "cloud-run-jobs",
 )
 BACKEND_VARIANTS: tuple[BackendVariant, ...] = ("default", "psycopg", "asyncpg")
+MAX_PRODUCER_CONCURRENCY = 32
+CORE_SCENARIOS: tuple[str, ...] = (
+    "enqueue",
+    "enqueue-concurrent",
+    "enqueue-many",
+    "roundtrip",
+    "delayed-lateness",
+    "retry-once",
+    "idle",
+)
+COMPETITOR_SCENARIOS: tuple[str, ...] = ("enqueue", "roundtrip")
 
 # Scenario-owning child tasks extend these allowlists when they add parameters.
 _PROFILE_PARAMETER_KEYS: dict[ProfileName, frozenset[str]] = {
@@ -38,9 +50,7 @@ _PROFILE_PARAMETER_KEYS: dict[ProfileName, frozenset[str]] = {
     "events": frozenset({"mode"}),
     "uniqueness": frozenset({"mode"}),
     "maintenance": frozenset({"limit", "record_count"}),
-    "advanced-alchemy": frozenset(
-        {"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}
-    ),
+    "advanced-alchemy": frozenset({"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}),
     "cloud-tasks": frozenset(),
     "cloud-run-jobs": frozenset(),
 }
@@ -107,11 +117,35 @@ def validate_profile_parameters(profile: ProfileName, parameters: Mapping[str, A
     if not isinstance(decoded, dict):  # pragma: no cover - dict input guarantees this branch is unreachable.
         msg = "profile parameters must be a mapping"
         raise TypeError(msg)
+    if profile in {"core", "rich", "advanced-alchemy"}:
+        _validate_core_parameters(decoded)
     return cast("dict[str, Any]", decoded)
+
+
+def _validate_core_parameters(parameters: Mapping[str, Any]) -> None:
+    batch_size = parameters.get("batch_size")
+    if batch_size is not None and (type(batch_size) is not int or batch_size < 1):
+        msg = "batch_size must be an integer of at least 1"
+        raise ValueError(msg)
+    producer_concurrency = parameters.get("producer_concurrency")
+    if producer_concurrency is not None and (
+        type(producer_concurrency) is not int or not 1 <= producer_concurrency <= MAX_PRODUCER_CONCURRENCY
+    ):
+        msg = "producer_concurrency must be an integer from 1 through 32"
+        raise ValueError(msg)
+    for name in ("delay_seconds", "idle_duration_seconds"):
+        value = parameters.get(name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0
+        ):
+            msg = f"{name} must be a positive finite number"
+            raise ValueError(msg)
 
 
 __all__ = (
     "BACKEND_VARIANTS",
+    "COMPETITOR_SCENARIOS",
+    "CORE_SCENARIOS",
     "PROFILE_NAMES",
     "BackendVariant",
     "ProfileName",

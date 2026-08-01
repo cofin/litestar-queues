@@ -16,6 +16,8 @@ from tools.queue_bench.environment import capture_environment, redact_data
 from tools.queue_bench.infra import parse_dsn_overrides, select_local_services
 from tools.queue_bench.models import BenchmarkResult, RawSample, ScenarioAggregate
 from tools.queue_bench.profiles import (
+    COMPETITOR_SCENARIOS,
+    CORE_SCENARIOS,
     BackendVariant,
     ProfileName,
     parse_backend_variant,
@@ -91,9 +93,13 @@ def validate_run_config(config: RunConfig) -> None:
     if unknown_backends:
         msg = f"unsupported backends: {', '.join(sorted(unknown_backends))}"
         raise ValueError(msg)
-    unknown_scenarios = set(config.scenarios) - {"enqueue", "roundtrip"}
+    unknown_scenarios = set(config.scenarios) - set(CORE_SCENARIOS)
     if unknown_scenarios:
         msg = f"unsupported scenarios: {', '.join(sorted(unknown_scenarios))}"
+        raise ValueError(msg)
+    expanded_scenarios = set(config.scenarios) - set(COMPETITOR_SCENARIOS)
+    if expanded_scenarios and (config.profile not in {"core", "rich"} or config.systems != ("litestar-queues",)):
+        msg = "expanded core scenarios require --system litestar-queues and --profile core or rich"
         raise ValueError(msg)
     if backend_variant != "default" and any(backend != "postgres" for backend in config.backends):
         msg = "non-default backend variants require PostgreSQL-only runs"
@@ -220,7 +226,11 @@ def run_benchmarks(
         samples=samples,
         aggregates=aggregates,
         comparisons=_comparisons(samples, seed=config.seed),
-        annotations=[*_architecture_annotations(config), *_unsupported_annotations(config)],
+        annotations=[
+            *_architecture_annotations(config),
+            *_scenario_annotations(config),
+            *_unsupported_annotations(config),
+        ],
     )
 
 
@@ -293,7 +303,7 @@ def _invalid_sample(request: dict[str, Any], error: str) -> RawSample:
         duration_seconds=0.0,
         operations=int(request["operations"]),
         valid=False,
-        counters={"enqueued": 0, "started": 0, "completed": 0, "remaining": 0},
+        counters={"requests": 0, "records": 0, "started": 0, "completed": 0, "failed": 0, "retried": 0, "remaining": 0},
         error=error,
         metadata={
             "profile": request["profile"],
@@ -363,6 +373,20 @@ def _unsupported_annotations(config: RunConfig) -> list[dict[str, Any]]:
                 "detail": f"{system} does not provide a supported {backend} broker for this comparison.",
             })
     return annotations
+
+
+def _scenario_annotations(config: RunConfig) -> list[dict[str, Any]]:
+    if "enqueue-many" not in config.scenarios:
+        return []
+    return [
+        {
+            "system": "litestar-queues",
+            "backend": "all",
+            "scenario": "enqueue-many",
+            "comparison_class": "feature-advantaged",
+            "detail": "Uses the public native enqueue_many(TaskRequest) backend API; it is not equivalent to repeated single enqueue.",
+        }
+    ]
 
 
 def _comparisons(samples: list[RawSample], *, seed: int) -> list[dict[str, Any]]:

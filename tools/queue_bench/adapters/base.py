@@ -1,6 +1,7 @@
 """Shared adapter request and correctness contracts."""
 
 import asyncio
+import math
 from collections.abc import Awaitable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,20 +61,66 @@ class AdapterResult:
     counters: dict[str, int]
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def normalized_counters(self) -> dict[str, int]:
+        """Return the common counter schema, including legacy adapter aliases."""
+        counters = dict(self.counters)
+        legacy_enqueued = counters.pop("enqueued", None)
+        if legacy_enqueued is not None:
+            counters.setdefault("requests", legacy_enqueued)
+            counters.setdefault("records", legacy_enqueued)
+            counters.setdefault("failed", 0)
+            counters.setdefault("retried", 0)
+        return counters
+
     def validate(self, request: AdapterRequest) -> tuple[bool, str | None]:
-        expected = request.operations
-        if self.counters.get("enqueued") != expected:
-            return False, f"expected {expected} enqueued, got {self.counters.get('enqueued', 0)}"
-        if request.scenario == "roundtrip":
-            if self.counters.get("started") != expected:
-                return False, f"expected {expected} started, got {self.counters.get('started', 0)}"
-            if self.counters.get("completed") != expected:
-                return False, f"expected {expected} completed, got {self.counters.get('completed', 0)}"
-            if self.counters.get("remaining") != 0:
-                return False, f"expected no remaining jobs, got {self.counters.get('remaining', 0)}"
-        elif self.counters.get("remaining") != expected:
-            return False, f"expected {expected} remaining jobs, got {self.counters.get('remaining', 0)}"
+        counters = self.normalized_counters()
+        expected = _expected_counters(request)
+        for name, count in expected.items():
+            if name not in counters:
+                return False, f"required counter {name!r} is missing"
+            if counters.get(name) != count:
+                return False, f"expected {count} {name}, got {counters.get(name, 0)}"
         return True, None
+
+
+def _expected_counters(request: AdapterRequest) -> dict[str, int]:
+    operations = request.operations
+    terminal = {
+        "requests": operations,
+        "records": operations,
+        "started": operations,
+        "completed": operations,
+        "failed": 0,
+        "retried": 0,
+        "remaining": 0,
+    }
+    if request.scenario in {"enqueue", "enqueue-concurrent"}:
+        return {**terminal, "started": 0, "completed": 0, "remaining": operations}
+    if request.scenario == "enqueue-many":
+        batch_size = int(request.parameters.get("batch_size", 100))
+        return {
+            **terminal,
+            "requests": math.ceil(operations / batch_size),
+            "started": 0,
+            "completed": 0,
+            "remaining": operations,
+        }
+    if request.scenario == "delayed-lateness":
+        return {**terminal, "scheduled": operations, "not_early": operations}
+    if request.scenario == "retry-once":
+        return {**terminal, "started": operations * 2, "retried": operations}
+    if request.scenario == "idle":
+        return {
+            "requests": 0,
+            "records": 0,
+            "started": 0,
+            "completed": 0,
+            "failed": 0,
+            "retried": 0,
+            "remaining": 0,
+            "idle_observations": 1,
+        }
+    return terminal
 
 
 async def gather_bounded(awaitables: Iterable[Awaitable[Any]], *, limit: int) -> list[Any]:

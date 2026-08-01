@@ -33,6 +33,7 @@ async def execute(request: AdapterRequest) -> RawSample:
     module = import_module(ADAPTER_MODULES[request.system])
     result = await module.run(request)
     valid, error = result.validate(request)
+    counters = result.normalized_counters()
     metadata: dict[str, Any] = dict(result.metadata)
     metadata["packages"] = {
         distribution.metadata["Name"]: distribution.version
@@ -47,7 +48,7 @@ async def execute(request: AdapterRequest) -> RawSample:
         duration_seconds=result.duration_seconds,
         operations=request.operations,
         valid=valid,
-        counters=result.counters,
+        counters=counters,
         error=error,
         metadata=metadata,
     )

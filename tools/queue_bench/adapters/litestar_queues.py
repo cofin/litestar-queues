@@ -26,10 +26,31 @@ async def run(request: AdapterRequest) -> AdapterResult:
 
 
 async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
-    from litestar_queues import QueueConfig, QueueService, Worker, WorkerConfig, task
+    from litestar_queues import QueueConfig, QueueService, TaskRequest, Worker, WorkerConfig, task
+
+    attempts: dict[int, int] = {}
+    started_count = 0
 
     @task(f"queue_bench_noop_{request.namespace}", queue=request.namespace)
     async def noop(payload: str) -> int:
+        nonlocal started_count
+        started_count += 1
+        return len(payload)
+
+    @task(f"queue_bench_delayed_{request.namespace}", queue=request.namespace)
+    async def delayed(payload: str) -> int:
+        nonlocal started_count
+        started_count += 1
+        return len(payload)
+
+    @task(f"queue_bench_retry_{request.namespace}", queue=request.namespace, retries=1)
+    async def retry_once(index: int, payload: str) -> int:
+        nonlocal started_count
+        started_count += 1
+        attempts[index] = attempts.get(index, 0) + 1
+        if attempts[index] == 1:
+            msg = "intentional benchmark retry"
+            raise RuntimeError(msg)
         return len(payload)
 
     config = QueueConfig(
@@ -62,30 +83,51 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
                 queues=(request.namespace,),
             ),
         )
-        worker_task: asyncio.Task[None] | None = None
-        if request.scenario == "roundtrip":
-            worker_task = asyncio.create_task(worker.start())
-            await asyncio.sleep(0.05)
-        started_at = time.perf_counter()
-        results = [await service.enqueue(noop, request.payload) for _ in range(request.operations)]
-        if request.scenario == "roundtrip":
-            await gather_bounded(
-                (result.wait(timeout=request.timeout_seconds, poll_interval=0.01) for result in results),
-                limit=request.concurrency,
+        worker_task = (
+            await _start_worker(worker)
+            if request.scenario in {"roundtrip", "delayed-lateness", "retry-once", "idle"}
+            else None
+        )
+        try:
+            started_at = time.perf_counter()
+            results, record_count, request_count = await _execute_scenario(
+                request,
+                service=service,
+                task_request_type=TaskRequest,
+                noop=noop,
+                delayed=delayed,
+                retry_once=retry_once,
             )
-        duration = time.perf_counter() - started_at
-        statistics = await service.get_queue_backend().get_statistics()
-        completed = sum(result.status == "completed" for result in results)
-        counters = {
-            "enqueued": len(results),
-            "started": completed if request.scenario == "roundtrip" else 0,
-            "completed": completed,
-            "remaining": statistics.pending + statistics.scheduled + statistics.running,
-        }
-        if worker_task is not None:
-            await worker.stop()
-            with contextlib.suppress(asyncio.CancelledError):
-                await worker_task
+            duration = time.perf_counter() - started_at
+            statistics = await service.get_queue_backend().get_statistics()
+            completed = sum(result.status == "completed" for result in results)
+            failed = sum(result.status == "failed" for result in results)
+            retried = sum(result.record.retry_count for result in results if result.record is not None)
+            counters = {
+                "requests": request_count,
+                "records": record_count,
+                "started": started_count,
+                "completed": completed,
+                "failed": failed,
+                "retried": retried,
+                "remaining": statistics.pending + statistics.scheduled + statistics.running,
+            }
+            if request.scenario == "delayed-lateness":
+                not_early = sum(
+                    result.record is not None
+                    and result.record.scheduled_at is not None
+                    and result.record.started_at is not None
+                    and result.record.started_at >= result.record.scheduled_at
+                    for result in results
+                )
+                counters.update({"scheduled": record_count, "not_early": not_early})
+            elif request.scenario == "idle":
+                counters["idle_observations"] = 1
+        finally:
+            if worker_task is not None:
+                await worker.stop()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
     return AdapterResult(
         duration_seconds=duration,
         counters=counters,
@@ -94,7 +136,83 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             "backend_config": type(backend_config).__name__,
             "driver": _driver_name(request),
             "namespace": request.namespace,
+            "comparison_class": _comparison_class(request.scenario),
         },
+    )
+
+
+async def _start_worker(worker: Any) -> asyncio.Task[None]:
+    worker_task = asyncio.create_task(worker.start())
+    try:
+        await worker.wait_started()
+    except BaseException:
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_task
+        raise
+    return worker_task
+
+
+async def _execute_scenario(
+    request: AdapterRequest, *, service: Any, task_request_type: Any, noop: Any, delayed: Any, retry_once: Any
+) -> tuple[list[Any], int, int]:
+    if request.scenario == "enqueue":
+        results = [await service.enqueue(noop, request.payload) for _ in range(request.operations)]
+        return results, len(results), len(results)
+    if request.scenario == "enqueue-concurrent":
+        producer_concurrency = int(request.parameters.get("producer_concurrency", 32))
+        results = await gather_bounded(
+            (service.enqueue(noop, request.payload) for _ in range(request.operations)), limit=producer_concurrency
+        )
+        return results, len(results), len(results)
+    if request.scenario == "enqueue-many":
+        batch_size = int(request.parameters.get("batch_size", 100))
+        pending_requests = [
+            task_request_type(task_name=noop.name, args=(request.payload,), queue=request.namespace)
+            for _ in range(request.operations)
+        ]
+        batches = [
+            pending_requests[offset : offset + batch_size] for offset in range(0, len(pending_requests), batch_size)
+        ]
+        records = [record for batch in batches for record in await service.get_queue_backend().enqueue_many(batch)]
+        return [], len(records), len(batches)
+    if request.scenario == "roundtrip":
+        results = [await service.enqueue(noop, request.payload) for _ in range(request.operations)]
+        await _wait_for_results(results, request)
+        return results, len(results), len(results)
+    if request.scenario == "delayed-lateness":
+        delay_seconds = float(request.parameters.get("delay_seconds", 1.0))
+        results = [
+            await service.enqueue(delayed, request.payload, run_after=delay_seconds) for _ in range(request.operations)
+        ]
+        await _wait_for_results(results, request)
+        return results, len(results), len(results)
+    if request.scenario == "retry-once":
+        results = [await service.enqueue(retry_once, index, request.payload) for index in range(request.operations)]
+        await _wait_for_results(results, request)
+        return results, len(results), len(results)
+    if request.scenario == "idle":
+        idle_duration = float(request.parameters.get("idle_duration_seconds", 60.0))
+        await asyncio.wait_for(asyncio.sleep(idle_duration), timeout=request.timeout_seconds)
+        return [], 0, 0
+    msg = f"unsupported Litestar Queues scenario {request.scenario!r}"
+    raise ValueError(msg)
+
+
+def _comparison_class(scenario: str) -> str:
+    if scenario == "enqueue-many":
+        return "feature-advantaged"
+    if scenario in {"roundtrip", "delayed-lateness", "retry-once"}:
+        return "feature-cost"
+    if scenario == "idle":
+        return "no-counterpart"
+    return "equivalent"
+
+
+async def _wait_for_results(results: list[Any], request: AdapterRequest) -> None:
+    await gather_bounded(
+        (result.wait(timeout=request.timeout_seconds, poll_interval=0.01) for result in results),
+        limit=request.concurrency,
     )
 
 

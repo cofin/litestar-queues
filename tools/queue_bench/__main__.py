@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tools.dev_infra import InfraError
 from tools.queue_bench.models import BenchmarkResult
-from tools.queue_bench.profiles import BACKEND_VARIANTS, PROFILE_NAMES, parse_parameter_overrides
+from tools.queue_bench.profiles import BACKEND_VARIANTS, CORE_SCENARIOS, PROFILE_NAMES, parse_parameter_overrides
 from tools.queue_bench.report import render_markdown
 from tools.queue_bench.runner import DEFAULT_SYSTEMS, SYSTEM_BACKENDS, RunConfig, run_benchmarks
 
@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run benchmark samples")
     run.add_argument("--system", action="append", choices=sorted(SYSTEM_BACKENDS))
     run.add_argument("--backend", action="append", choices=("redis", "postgres", "valkey"))
-    run.add_argument("--scenario", action="append", choices=("enqueue", "roundtrip"))
+    run.add_argument("--scenario", action="append", choices=CORE_SCENARIOS)
     run.add_argument("--profile", choices=PROFILE_NAMES, default="core")
     run.add_argument("--backend-variant", choices=BACKEND_VARIANTS, default="default")
     run.add_argument("--parameter", action="append", default=[], metavar="KEY=JSON")
