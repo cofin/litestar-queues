@@ -95,6 +95,19 @@ def _expected_counters(request: AdapterRequest) -> dict[str, int]:
         "retried": 0,
         "remaining": 0,
     }
+    if request.profile == "uniqueness":
+        mode = str(request.parameters["mode"])
+        distinct_records = 1 if mode in {"explicit-key", "unique-by-task"} else operations
+        return {
+            "requests": operations,
+            "records": distinct_records,
+            "started": 0,
+            "completed": 0,
+            "failed": 0,
+            "retried": 0,
+            "deduplicated": operations - distinct_records,
+            "remaining": distinct_records,
+        }
     if request.scenario in {"enqueue", "enqueue-concurrent"}:
         return {**terminal, "started": 0, "completed": 0, "remaining": operations}
     if request.scenario == "enqueue-many":

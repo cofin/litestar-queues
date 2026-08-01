@@ -10,7 +10,7 @@ from tools.queue_bench.measurements import SampleMeasurementCollector
 
 
 async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
-    """Run one heartbeat or event feature sample.
+    """Run one heartbeat, event, or uniqueness feature sample.
 
     Returns:
         Timed result, exact correctness counters, and bounded measurements.
@@ -19,6 +19,8 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
     from litestar_queues.events import beat
 
     measurement_collector = SampleMeasurementCollector.create()
+    if request.profile == "uniqueness":
+        return await _run_uniqueness_sample(request, backend_config, measurement_collector)
     started_count = 0
     beats_called = 0
     all_started = asyncio.Event()
@@ -93,12 +95,92 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         counters=counters,
         measurements=measurements,
         metadata={
-            "task_body": "public heartbeat observation" if request.scenario == "heartbeat" else "lifecycle events",
+            "task_body": _task_body(request),
             "backend_config": type(backend_config).__name__,
             "namespace": request.namespace,
             "comparison_class": "feature-cost",
         },
     )
+
+
+async def _run_uniqueness_sample(
+    request: AdapterRequest, backend_config: Any, measurement_collector: SampleMeasurementCollector
+) -> AdapterResult:
+    from litestar_queues import QueueService, WorkerConfig, task
+
+    @task(f"queue_bench_unique_none_{request.namespace}", queue=request.namespace)
+    async def unique_none_task(index: int, payload: str) -> int:
+        return index + len(payload)
+
+    @task(f"queue_bench_unique_task_{request.namespace}", queue=request.namespace, unique_by="task")
+    async def unique_by_task(index: int, payload: str) -> int:
+        return index + len(payload)
+
+    @task(f"queue_bench_unique_arguments_{request.namespace}", queue=request.namespace, unique_by="arguments")
+    async def unique_by_arguments(index: int, payload: str) -> int:
+        return index + len(payload)
+
+    mode = str(request.parameters["mode"])
+    worker_config = WorkerConfig(queues=(request.namespace,))
+    config = _queue_config(backend_config, worker_config, None, measurement_collector.registry)
+    async with QueueService(config) as service:
+        await _create_postgres_schema(request, service)
+        cpu_started, started_at = measurement_collector.snapshot_cpu(), time.perf_counter()
+        if mode == "none":
+            results = [
+                await service.enqueue(unique_none_task, index, request.payload) for index in range(request.operations)
+            ]
+        elif mode == "explicit-key":
+            key = f"{request.namespace}:explicit"
+            results = [
+                await service.enqueue(unique_none_task, index, request.payload, key=key)
+                for index in range(request.operations)
+            ]
+        elif mode == "unique-by-task":
+            results = [
+                await service.enqueue(unique_by_task, index, request.payload) for index in range(request.operations)
+            ]
+        else:
+            results = [
+                await service.enqueue(unique_by_arguments, index, request.payload)
+                for index in range(request.operations)
+            ]
+        duration = time.perf_counter() - started_at
+        measurements = measurement_collector.finish(cpu_started)
+        measurements["uniqueness.mode"] = mode
+        distinct_records = len({result.id for result in results})
+        statistics = await service.get_queue_backend().get_statistics()
+        counters = {
+            "requests": request.operations,
+            "records": distinct_records,
+            "started": 0,
+            "completed": 0,
+            "failed": 0,
+            "retried": 0,
+            "deduplicated": request.operations - distinct_records,
+            "remaining": statistics.pending + statistics.scheduled + statistics.running,
+        }
+    return AdapterResult(
+        duration_seconds=duration,
+        counters=counters,
+        measurements=measurements,
+        metadata={
+            "task_body": "public enqueue identity resolution",
+            "backend_config": type(backend_config).__name__,
+            "namespace": request.namespace,
+            "comparison_class": "no-counterpart",
+            "uniqueness_mode": mode,
+            "identity_lifetime": "terminal",
+        },
+    )
+
+
+def _task_body(request: AdapterRequest) -> str:
+    if request.profile == "heartbeat":
+        return "public heartbeat observation"
+    if request.profile == "events":
+        return "lifecycle events"
+    return "lifecycle events"
 
 
 async def _run_heartbeat(

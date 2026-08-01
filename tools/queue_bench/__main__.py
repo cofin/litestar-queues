@@ -98,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _default_scenarios(profile: str) -> tuple[str, ...]:
     if profile in {"heartbeat", "events"}:
         return (profile,)
+    if profile == "uniqueness":
+        return ("enqueue",)
     return ("enqueue", "roundtrip")
 
 

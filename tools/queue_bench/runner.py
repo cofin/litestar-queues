@@ -101,6 +101,7 @@ def validate_run_config(config: RunConfig) -> None:
     profile_scenarios = {
         "heartbeat": frozenset({"heartbeat"}),
         "events": frozenset({"events"}),
+        "uniqueness": frozenset({"enqueue"}),
     }
     expected_scenarios = profile_scenarios.get(config.profile, frozenset(CORE_SCENARIOS))
     mismatched_scenarios = set(config.scenarios) - expected_scenarios
@@ -108,9 +109,7 @@ def validate_run_config(config: RunConfig) -> None:
         msg = f"profile {config.profile!r} does not support scenarios: {', '.join(sorted(mismatched_scenarios))}"
         raise ValueError(msg)
     expanded_scenarios = set(config.scenarios) - set(COMPETITOR_SCENARIOS)
-    if expanded_scenarios and config.systems != ("litestar-queues",):
-        msg = "expanded Litestar Queues scenarios require --system litestar-queues"
-        raise ValueError(msg)
+    _validate_litestar_queues_only(config, expanded_scenarios)
     if backend_variant != "default" and any(backend != "postgres" for backend in config.backends):
         msg = "non-default backend variants require PostgreSQL-only runs"
         raise ValueError(msg)
@@ -133,6 +132,12 @@ def validate_run_config(config: RunConfig) -> None:
         if missing:
             msg = f"remote runs require --dsn for: {', '.join(sorted(missing))}"
             raise ValueError(msg)
+
+
+def _validate_litestar_queues_only(config: RunConfig, expanded_scenarios: set[str]) -> None:
+    if (expanded_scenarios or config.profile == "uniqueness") and config.systems != ("litestar-queues",):
+        msg = "selected Litestar Queues profile or scenarios require --system litestar-queues"
+        raise ValueError(msg)
 
 
 def compatible_pairs(*, systems: Sequence[str], backends: Sequence[str]) -> tuple[tuple[str, str], ...]:

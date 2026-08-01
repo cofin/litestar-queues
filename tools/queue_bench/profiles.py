@@ -125,6 +125,8 @@ def validate_profile_parameters(profile: ProfileName, parameters: Mapping[str, A
         _validate_heartbeat_parameters(decoded)
     elif profile == "events":
         _validate_events_parameters(decoded)
+    elif profile == "uniqueness":
+        _validate_uniqueness_parameters(decoded)
     return cast("dict[str, Any]", decoded)
 
 
@@ -162,6 +164,13 @@ def _validate_events_parameters(parameters: Mapping[str, Any]) -> None:
     mode = parameters.get("mode")
     if mode is not None and mode not in {"disabled", "live-only", "durable-history"}:
         msg = "mode must be one of: disabled, live-only, durable-history"
+        raise ValueError(msg)
+
+
+def _validate_uniqueness_parameters(parameters: Mapping[str, Any]) -> None:
+    mode = parameters.get("mode")
+    if mode not in {"none", "explicit-key", "unique-by-task", "unique-by-arguments"}:
+        msg = "mode must be one of: none, explicit-key, unique-by-task, unique-by-arguments"
         raise ValueError(msg)
 
 
