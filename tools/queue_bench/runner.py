@@ -50,7 +50,15 @@ COMPETITOR_SCRIPTS = {
     "celery": "run_celery",
 }
 SYSTEM_PACKAGES = {
-    "litestar-queues": ["litestar-queues", "redis", "sqlspec", "asyncpg", "psycopg"],
+    "litestar-queues": [
+        "litestar-queues",
+        "advanced-alchemy",
+        "sqlalchemy",
+        "redis",
+        "sqlspec",
+        "asyncpg",
+        "psycopg",
+    ],
     "litestar-saq": ["litestar-saq", "saq", "redis", "psycopg"],
     "raw-saq": ["saq", "redis", "psycopg"],
     "arq": ["arq", "redis"],
@@ -112,6 +120,7 @@ def validate_run_config(config: RunConfig) -> None:
         raise ValueError(msg)
     expanded_scenarios = set(config.scenarios) - set(COMPETITOR_SCENARIOS)
     _validate_litestar_queues_only(config, expanded_scenarios)
+    _validate_advanced_alchemy_profile(config, backend_variant)
     if backend_variant != "default" and any(backend != "postgres" for backend in config.backends):
         msg = "non-default backend variants require PostgreSQL-only runs"
         raise ValueError(msg)
@@ -141,6 +150,17 @@ def _validate_litestar_queues_only(config: RunConfig, expanded_scenarios: set[st
         "litestar-queues",
     ):
         msg = "selected Litestar Queues profile or scenarios require --system litestar-queues"
+        raise ValueError(msg)
+
+
+def _validate_advanced_alchemy_profile(config: RunConfig, backend_variant: BackendVariant) -> None:
+    if config.profile != "advanced-alchemy":
+        return
+    if config.systems != ("litestar-queues",) or config.backends != ("postgres",):
+        msg = "advanced-alchemy profile requires exactly --system litestar-queues and --backend postgres"
+        raise ValueError(msg)
+    if backend_variant not in {"psycopg", "asyncpg"}:
+        msg = "advanced-alchemy profile requires explicit --backend-variant psycopg or asyncpg"
         raise ValueError(msg)
 
 

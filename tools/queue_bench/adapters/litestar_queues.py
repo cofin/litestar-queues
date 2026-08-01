@@ -15,6 +15,11 @@ async def run(request: AdapterRequest) -> AdapterResult:
     Returns:
         Timed result and correctness counters.
     """
+    if request.profile == "advanced-alchemy":
+        from tools.queue_bench.adapters.litestar_advanced_alchemy import run as run_advanced_alchemy
+
+        return await run_advanced_alchemy(request)
+
     backend_config = _backend_config(request)
     try:
         if request.profile == "maintenance":
@@ -84,7 +89,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         ),
     )
     async with QueueService(config) as service:
-        if request.backend == "postgres":
+        if request.backend == "postgres" and request.profile != "advanced-alchemy":
             from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
 
             sqlspec_backend = service.get_queue_backend()
@@ -282,6 +287,8 @@ def _backend_config(request: AdapterRequest) -> Any:
 
 def _driver_name(request: AdapterRequest) -> str:
     if request.backend == "postgres":
+        if request.profile == "advanced-alchemy":
+            return f"advanced-alchemy-{request.backend_variant}"
         return "sqlspec-asyncpg" if request.backend_variant == "asyncpg" else "sqlspec-psycopg"
     return "valkey-asyncio" if request.backend == "valkey" else "redis-asyncio"
 

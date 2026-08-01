@@ -1840,12 +1840,14 @@ valkey = [
 
 [package.dev-dependencies]
 benchmarks = [
+    { name = "advanced-alchemy" },
     { name = "asyncpg" },
     { name = "hiredis" },
     { name = "prometheus-client" },
     { name = "psutil" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "redis" },
+    { name = "sqlalchemy" },
     { name = "sqlspec", extra = ["mypyc", "performance"] },
     { name = "valkey" },
 ]
@@ -1971,12 +1973,14 @@ provides-extras = ["advanced-alchemy", "cloud-tasks", "cloudrun", "otel", "prome
 
 [package.metadata.requires-dev]
 benchmarks = [
+    { name = "advanced-alchemy", specifier = ">=1.10.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "hiredis" },
     { name = "prometheus-client" },
     { name = "psutil" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.0" },
     { name = "redis", specifier = ">=5.0.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "sqlspec", extras = ["mypyc", "performance"], specifier = ">=0.56.0" },
     { name = "valkey", specifier = ">=6.0.0" },
 ]
