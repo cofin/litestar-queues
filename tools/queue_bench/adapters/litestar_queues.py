@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
-from tools.queue_bench.measurements import SampleMeasurementCollector
+from tools.queue_bench.measurements import SampleMeasurementCollector, summarize_pickup_latency
 
 
 async def run(request: AdapterRequest) -> AdapterResult:
@@ -127,9 +127,12 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             )
             duration = time.perf_counter() - started_at
             measurements = measurement_collector.finish(cpu_started)
+            measurements.update(_scenario_pickup_measurements(request.scenario, results))
             statistics = await service.get_queue_backend().get_statistics()
-            completed = sum(result.status == "completed" for result in results)
-            failed = sum(result.status == "failed" for result in results)
+            completed, failed = (
+                sum(result.status == "completed" for result in results),
+                sum(result.status == "failed" for result in results),
+            )
             retried = sum(result.record.retry_count for result in results if result.record is not None)
             counters = {
                 "requests": request_count,
@@ -168,6 +171,15 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             "comparison_class": _comparison_class(request.scenario),
         },
     )
+
+
+def _scenario_pickup_measurements(scenario: str, results: list[Any]) -> dict[str, int | float | str | bool | None]:
+    records = [result.record for result in results]
+    if scenario in {"roundtrip", "delayed-lateness"}:
+        return summarize_pickup_latency(records)
+    if scenario == "retry-once":
+        return summarize_pickup_latency(records, unavailable_reason="retry_overwrites_first_started_at")
+    return {}
 
 
 async def _start_worker(worker: Any) -> asyncio.Task[None]:

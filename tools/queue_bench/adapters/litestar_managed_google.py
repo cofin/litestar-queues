@@ -12,7 +12,7 @@ from typing import Any
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult
 from tools.queue_bench.adapters.litestar_queues import _backend_config, _cleanup
 from tools.queue_bench.managed_tasks import managed_noop
-from tools.queue_bench.measurements import SampleMeasurementCollector
+from tools.queue_bench.measurements import SampleMeasurementCollector, summarize_pickup_latency
 
 CredentialsLoader = Callable[[AdapterRequest], Any]
 ClientFactory = Callable[[Any], Any]
@@ -249,6 +249,7 @@ async def _observe_dispatches(
     duration = time.perf_counter() - started_at
     subsequent = observation_seconds[1:]
     measurements = collector.finish(cpu_started)
+    measurements.update(summarize_pickup_latency([result.record for result in results]))
     measurements.update({
         "managed.first_observation_seconds": observation_seconds[0],
         "managed.subsequent_observation_count": len(subsequent),

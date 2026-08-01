@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
-from tools.queue_bench.measurements import SampleMeasurementCollector
+from tools.queue_bench.measurements import SampleMeasurementCollector, summarize_pickup_latency
 
 
 async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
@@ -70,7 +70,7 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
                 raise ValueError(msg)
             duration = time.perf_counter() - started_at
             measurements = measurement_collector.finish(cpu_started)
-            measurements.update(feature_measurements)
+            measurements.update(_completed_feature_measurements(results, feature_measurements))
             statistics = await service.get_queue_backend().get_statistics()
             completed = sum(result.status == "completed" for result in results)
             failed = sum(result.status == "failed" for result in results)
@@ -101,6 +101,12 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             "comparison_class": "feature-cost",
         },
     )
+
+
+def _completed_feature_measurements(
+    results: list[Any], feature_measurements: dict[str, int | float | str | bool | None]
+) -> dict[str, int | float | str | bool | None]:
+    return {**feature_measurements, **summarize_pickup_latency([result.record for result in results])}
 
 
 async def _run_uniqueness_sample(

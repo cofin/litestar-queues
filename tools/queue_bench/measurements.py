@@ -1,11 +1,25 @@
 """Bounded, sample-local benchmark measurements."""
 
+import statistics
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
 
 import psutil  # type: ignore[import-untyped]
 from prometheus_client import CollectorRegistry
 
+from tools.queue_bench.statistics import percentile
+
 MeasurementValue = int | float | str | bool | None
+
+
+class PickupRecord(Protocol):
+    """Persisted timestamps needed to measure backend claim latency."""
+
+    created_at: datetime
+    scheduled_at: datetime | None
+    started_at: datetime | None
+
 
 # Package-owned transport and heartbeat instruments. Exported histogram buckets
 # and ``_created`` series are intentionally excluded to keep every sample bounded.
@@ -88,12 +102,83 @@ class SampleMeasurementCollector:
             "backend.operations.available": False,
             "backend.operations": None,
         }
+        values.update(_unavailable_pickup_measurements(0, "scenario_does_not_observe_worker_claims"))
         observed = _collect_allowed_series(self.registry)
         for series_name in _PROMETHEUS_SERIES:
             key = f"prometheus.{series_name}"
             values[f"{key}.available"] = series_name in observed
             values[key] = observed.get(series_name)
         return values
+
+
+def summarize_pickup_latency(
+    records: list[PickupRecord | None], *, unavailable_reason: str | None = None
+) -> dict[str, MeasurementValue]:
+    """Summarize persisted enqueue-to-claim and ready-to-claim timestamps.
+
+    ``started_at`` is written by queue backends when a worker successfully
+    claims a job. Ready time is the later of creation and an explicit schedule,
+    so scheduled delay is not attributed to worker pickup.
+
+    Returns:
+        Scalar measurements suitable for one raw benchmark sample.
+    """
+    if unavailable_reason is not None:
+        return _unavailable_pickup_measurements(len(records), unavailable_reason)
+
+    enqueue_latencies: list[float] = []
+    ready_latencies: list[float] = []
+    for record in records:
+        if record is None or record.started_at is None:
+            continue
+        ready_at = max(record.created_at, record.scheduled_at or record.created_at)
+        enqueue_latency = (record.started_at - record.created_at).total_seconds()
+        ready_latency = (record.started_at - ready_at).total_seconds()
+        if enqueue_latency < 0 or ready_latency < 0:
+            msg = "persisted worker claim timestamp precedes task eligibility"
+            raise ValueError(msg)
+        enqueue_latencies.append(enqueue_latency)
+        ready_latencies.append(ready_latency)
+
+    observed_count = len(enqueue_latencies)
+    missing_count = len(records) - observed_count
+    if not enqueue_latencies:
+        return _unavailable_pickup_measurements(len(records), "no_persisted_started_at")
+    measurements: dict[str, MeasurementValue] = {
+        "queue.pickup.available": True,
+        "queue.pickup.observed_count": observed_count,
+        "queue.pickup.missing_count": missing_count,
+        "queue.pickup.unavailable_reason": None,
+        "queue.pickup.timestamp_source": "persisted_backend_claim",
+    }
+    measurements.update(_latency_summary("queue.pickup.enqueue_to_started", enqueue_latencies))
+    measurements.update(_latency_summary("queue.pickup.ready_to_started", ready_latencies))
+    return measurements
+
+
+def _latency_summary(prefix: str, values: list[float]) -> dict[str, MeasurementValue]:
+    return {
+        f"{prefix}.min_seconds": min(values),
+        f"{prefix}.mean_seconds": statistics.fmean(values),
+        f"{prefix}.p50_seconds": percentile(values, 50),
+        f"{prefix}.p95_seconds": percentile(values, 95),
+        f"{prefix}.p99_seconds": percentile(values, 99),
+        f"{prefix}.max_seconds": max(values),
+    }
+
+
+def _unavailable_pickup_measurements(expected_count: int, reason: str) -> dict[str, MeasurementValue]:
+    values: dict[str, MeasurementValue] = {
+        "queue.pickup.available": False,
+        "queue.pickup.observed_count": 0,
+        "queue.pickup.missing_count": expected_count,
+        "queue.pickup.unavailable_reason": reason,
+        "queue.pickup.timestamp_source": "persisted_backend_claim",
+    }
+    for prefix in ("queue.pickup.enqueue_to_started", "queue.pickup.ready_to_started"):
+        for statistic in ("min", "mean", "p50", "p95", "p99", "max"):
+            values[f"{prefix}.{statistic}_seconds"] = None
+    return values
 
 
 def _collect_allowed_series(registry: CollectorRegistry) -> dict[str, float]:
@@ -109,4 +194,4 @@ def _collect_allowed_series(registry: CollectorRegistry) -> dict[str, float]:
     return totals
 
 
-__all__ = ("MeasurementValue", "SampleMeasurementCollector")
+__all__ = ("MeasurementValue", "SampleMeasurementCollector", "summarize_pickup_latency")
