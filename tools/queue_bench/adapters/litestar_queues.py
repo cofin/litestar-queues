@@ -79,6 +79,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
         return len(payload)
 
     measurement_collector = SampleMeasurementCollector.create()
+    worker_poll_interval = 60.0 if request.scenario == "steady-idle-pickup" else 0.01
     config = QueueConfig(
         queue_backend=backend_config,
         execution_backend="local",
@@ -93,7 +94,8 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
         worker=WorkerConfig(
             batch_size=max(10, request.concurrency),
             max_concurrency=request.concurrency,
-            poll_interval=0.01,
+            poll_interval=worker_poll_interval,
+            poll_backoff_max=max(5.0, worker_poll_interval),
             queues=(request.namespace,),
         ),
     )
@@ -113,7 +115,8 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
             WorkerConfig(
                 batch_size=max(10, request.concurrency),
                 max_concurrency=request.concurrency,
-                poll_interval=0.01,
+                poll_interval=worker_poll_interval,
+                poll_backoff_max=max(5.0, worker_poll_interval),
                 queues=(request.namespace,),
             ),
         )
@@ -132,6 +135,12 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
             else None
         )
         try:
+            native_wakeup_count_before = 0.0
+            if request.scenario == "steady-idle-pickup":
+                await _prepare_steady_idle(service, noop, request)
+                native_wakeup_count_before = measurement_collector.prometheus_value(
+                    "litestar_queues_worker_wakeup_to_claim_duration_seconds_count"
+                )
             cpu_started, started_at = measurement_collector.snapshot_cpu(), time.perf_counter()
             results, record_count, request_count, enqueue_durations = await _execute_scenario(
                 request,
@@ -150,10 +159,16 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
             if request.scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput"}:
                 measurements.update(summarize_task_phases([result.record for result in results], _utc_now()))
             if request.scenario == "steady-idle-pickup":
-                native_count = measurements.get(
+                native_count_after = measurements.get(
                     "prometheus.litestar_queues_worker_wakeup_to_claim_duration_seconds_count"
                 )
-                if not isinstance(native_count, int | float) or native_count < request.operations:
+                native_count = (
+                    float(native_count_after) - native_wakeup_count_before
+                    if isinstance(native_count_after, int | float)
+                    else 0.0
+                )
+                measurements["queue.native_wakeup_claim_count"] = native_count
+                if native_count < request.operations:
                     msg = "steady-idle-pickup did not prove native wakeup-to-claim for every observed job"
                     raise ValueError(msg)
             statistics = await service.get_queue_backend().get_statistics()
@@ -257,8 +272,6 @@ async def _execute_scenario(  # noqa: C901
         await result.wait(timeout=request.timeout_seconds, poll_interval=0.01)
         return [result], 1, 1, [enqueue_seconds]
     if request.scenario == "steady-idle-pickup":
-        warmup = await service.enqueue(noop, request.payload)
-        await warmup.wait(timeout=request.timeout_seconds, poll_interval=0.01)
         spacing = float(request.parameters.get("spacing_seconds", 0.05))
         results = []
         enqueue_durations = []
@@ -320,6 +333,31 @@ async def _wait_for_results(results: list[Any], request: AdapterRequest) -> None
         (result.wait(timeout=request.timeout_seconds, poll_interval=0.01) for result in results),
         limit=request.concurrency,
     )
+
+
+async def _prepare_steady_idle(service: Any, noop: Any, request: AdapterRequest) -> None:
+    """Complete worker warmup and listener arming outside measured phases."""
+    warmup = await service.enqueue(noop, request.payload)
+    await warmup.wait(timeout=request.timeout_seconds, poll_interval=0.01)
+    await _wait_for_native_wakeup_arm(service, timeout=request.timeout_seconds)
+
+
+async def _wait_for_native_wakeup_arm(service: Any, *, timeout: float) -> None:
+    """Wait until the worker owns a retained native read before timed idle jobs."""
+    backend = service.get_queue_backend()
+    pending_read = getattr(backend, "_pending_read", None)
+    if pending_read is None:
+        await asyncio.sleep(0.05)
+        return
+    deadline = asyncio.get_running_loop().time() + min(timeout, 1.0)
+    while not pending_read.has_pending:
+        if asyncio.get_running_loop().time() >= deadline:
+            msg = "steady-idle-pickup worker did not arm its native wakeup read"
+            raise TimeoutError(msg)
+        await asyncio.sleep(0)
+    # SQLSpec currently exposes no subscription-readiness awaitable. Give the
+    # retained driver read one untimed settling window before measured work.
+    await asyncio.sleep(0.25)
 
 
 def _utc_now() -> Any:

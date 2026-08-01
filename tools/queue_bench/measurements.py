@@ -111,6 +111,13 @@ class SampleMeasurementCollector:
             values[key] = observed.get(series_name)
         return values
 
+    def prometheus_value(self, series_name: str) -> float:
+        """Return the current value of one allowlisted Prometheus series."""
+        if series_name not in _PROMETHEUS_SERIES:
+            msg = f"Prometheus series is not allowlisted: {series_name}"
+            raise ValueError(msg)
+        return _collect_allowed_series(self.registry).get(series_name, 0.0)
+
 
 def summarize_pickup_latency(
     records: list[PickupRecord | None], *, unavailable_reason: str | None = None
