@@ -6,8 +6,8 @@ import statistics
 import subprocess
 import time
 import uuid
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +15,13 @@ from tools.dev_infra import ContainerRuntime, InfraManager
 from tools.queue_bench.environment import capture_environment, redact_data
 from tools.queue_bench.infra import parse_dsn_overrides, select_local_services
 from tools.queue_bench.models import BenchmarkResult, RawSample, ScenarioAggregate
+from tools.queue_bench.profiles import (
+    BackendVariant,
+    ProfileName,
+    parse_backend_variant,
+    parse_profile_name,
+    validate_profile_parameters,
+)
 from tools.queue_bench.statistics import bootstrap_paired_ratio_interval, is_material_difference
 
 DEFAULT_SYSTEMS = ("litestar-queues", "litestar-saq", "arq", "taskiq")
@@ -57,6 +64,9 @@ class RunConfig:
     systems: tuple[str, ...] = DEFAULT_SYSTEMS
     backends: tuple[str, ...] = ("redis", "postgres")
     scenarios: tuple[str, ...] = ("enqueue", "roundtrip")
+    profile: ProfileName = "core"
+    backend_variant: BackendVariant = "default"
+    parameters: Mapping[str, Any] = field(default_factory=dict)
     warmups: int = 3
     samples: int = 10
     operations: int = 100
@@ -71,6 +81,8 @@ class RunConfig:
 
 def validate_run_config(config: RunConfig) -> None:
     """Reject invalid or ambiguous run inputs."""
+    profile = parse_profile_name(config.profile)
+    backend_variant = parse_backend_variant(config.backend_variant)
     unknown_systems = set(config.systems) - SYSTEM_BACKENDS.keys()
     if unknown_systems:
         msg = f"unsupported systems: {', '.join(sorted(unknown_systems))}"
@@ -83,6 +95,10 @@ def validate_run_config(config: RunConfig) -> None:
     if unknown_scenarios:
         msg = f"unsupported scenarios: {', '.join(sorted(unknown_scenarios))}"
         raise ValueError(msg)
+    if backend_variant != "default" and any(backend != "postgres" for backend in config.backends):
+        msg = "non-default backend variants require PostgreSQL-only runs"
+        raise ValueError(msg)
+    validate_profile_parameters(profile, config.parameters)
     for label, value in (
         ("samples", config.samples),
         ("operations", config.operations),
@@ -141,7 +157,10 @@ def run_benchmarks(
         runtime = runtime_factory()
         InfraManager(runtime, services).start(pull=config.pull_images, recreate=False)
     service_by_key = {service.key: service for service in services}
-    dsns = {backend: overrides.get(backend, service_by_key[backend].url) for backend in config.backends}
+    dsns = {
+        backend: overrides[backend] if backend in overrides else service_by_key[backend].url
+        for backend in config.backends
+    }
     network_class = (
         "remote" if config.remote or len(overrides) == len(config.backends) else "mixed" if overrides else "local"
     )
@@ -154,6 +173,9 @@ def run_benchmarks(
         "systems": list(config.systems),
         "backends": list(config.backends),
         "scenarios": list(config.scenarios),
+        "profile": config.profile,
+        "backend_variant": config.backend_variant,
+        "parameters": validate_profile_parameters(config.profile, config.parameters),
         "warmups": config.warmups,
         "samples": config.samples,
         "operations": config.operations,
@@ -175,6 +197,9 @@ def run_benchmarks(
                     "backend": backend,
                     "dsn": dsns[backend],
                     "scenario": scenario,
+                    "profile": config.profile,
+                    "backend_variant": config.backend_variant,
+                    "parameters": validate_profile_parameters(config.profile, config.parameters),
                     "operations": config.operations,
                     "payload_size": config.payload_size,
                     "concurrency": config.concurrency,
@@ -223,6 +248,9 @@ def _invoke_child(
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         return _invalid_sample(request, f"invalid child output: {exc}")
     metadata = dict(sample.metadata)
+    metadata["profile"] = request["profile"]
+    metadata["backend_variant"] = request["backend_variant"]
+    metadata["parameters"] = dict(request["parameters"])
     metadata["process_elapsed_seconds"] = process_elapsed_seconds
     metadata["stdout"] = _child_log_output(result.stdout)
     metadata["stderr"] = result.stderr
@@ -267,6 +295,11 @@ def _invalid_sample(request: dict[str, Any], error: str) -> RawSample:
         valid=False,
         counters={"enqueued": 0, "started": 0, "completed": 0, "remaining": 0},
         error=error,
+        metadata={
+            "profile": request["profile"],
+            "backend_variant": request["backend_variant"],
+            "parameters": dict(request["parameters"]),
+        },
     )
 
 

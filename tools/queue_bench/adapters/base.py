@@ -1,9 +1,17 @@
 """Shared adapter request and correctness contracts."""
 
 import asyncio
-from collections.abc import Awaitable, Iterable
+from collections.abc import Awaitable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from tools.queue_bench.profiles import (
+    BackendVariant,
+    ProfileName,
+    parse_backend_variant,
+    parse_profile_name,
+    validate_profile_parameters,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,11 +20,14 @@ class AdapterRequest:
     backend: str
     dsn: str
     scenario: str
+    profile: ProfileName
+    backend_variant: BackendVariant
     operations: int
     payload_size: int
     concurrency: int
     namespace: str
     sample_index: int
+    parameters: Mapping[str, Any] = field(default_factory=dict)
     timeout_seconds: float = 60.0
 
     @property
@@ -25,16 +36,20 @@ class AdapterRequest:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "AdapterRequest":
+        profile = parse_profile_name(str(value["profile"]))
         return cls(
             system=str(value["system"]),
             backend=str(value["backend"]),
             dsn=str(value["dsn"]),
             scenario=str(value["scenario"]),
+            profile=profile,
+            backend_variant=parse_backend_variant(str(value["backend_variant"])),
             operations=int(value["operations"]),
             payload_size=int(value["payload_size"]),
             concurrency=int(value["concurrency"]),
             namespace=str(value["namespace"]),
             sample_index=int(value["sample_index"]),
+            parameters=validate_profile_parameters(profile, dict(value.get("parameters", {}))),
             timeout_seconds=float(value.get("timeout_seconds", 60.0)),
         )
 
