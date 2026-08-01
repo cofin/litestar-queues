@@ -17,7 +17,12 @@ async def run(request: AdapterRequest) -> AdapterResult:
     """
     backend_config = _backend_config(request)
     try:
-        result = await _run(request, backend_config)
+        if request.scenario in {"heartbeat", "events"}:
+            from tools.queue_bench.adapters.litestar_features import run as run_feature
+
+            result = await run_feature(request, backend_config)
+        else:
+            result = await _run(request, backend_config)
     except BaseException:
         with contextlib.suppress(Exception):
             await _cleanup(request, backend_config)

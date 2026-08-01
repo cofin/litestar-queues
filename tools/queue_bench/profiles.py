@@ -40,13 +40,15 @@ CORE_SCENARIOS: tuple[str, ...] = (
     "retry-once",
     "idle",
 )
+FEATURE_SCENARIOS: tuple[str, ...] = ("heartbeat", "events")
+SCENARIOS: tuple[str, ...] = (*CORE_SCENARIOS, *FEATURE_SCENARIOS)
 COMPETITOR_SCENARIOS: tuple[str, ...] = ("enqueue", "roundtrip")
 
 # Scenario-owning child tasks extend these allowlists when they add parameters.
 _PROFILE_PARAMETER_KEYS: dict[ProfileName, frozenset[str]] = {
     "core": frozenset({"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}),
     "rich": frozenset({"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}),
-    "heartbeat": frozenset({"observation_seconds", "task_count"}),
+    "heartbeat": frozenset({"heartbeat_interval", "observation_seconds"}),
     "events": frozenset({"mode"}),
     "uniqueness": frozenset({"mode"}),
     "maintenance": frozenset({"limit", "record_count"}),
@@ -119,6 +121,10 @@ def validate_profile_parameters(profile: ProfileName, parameters: Mapping[str, A
         raise TypeError(msg)
     if profile in {"core", "rich", "advanced-alchemy"}:
         _validate_core_parameters(decoded)
+    elif profile == "heartbeat":
+        _validate_heartbeat_parameters(decoded)
+    elif profile == "events":
+        _validate_events_parameters(decoded)
     return cast("dict[str, Any]", decoded)
 
 
@@ -142,11 +148,30 @@ def _validate_core_parameters(parameters: Mapping[str, Any]) -> None:
             raise ValueError(msg)
 
 
+def _validate_heartbeat_parameters(parameters: Mapping[str, Any]) -> None:
+    for name in ("heartbeat_interval", "observation_seconds"):
+        value = parameters.get(name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0
+        ):
+            msg = f"{name} must be a positive finite number"
+            raise ValueError(msg)
+
+
+def _validate_events_parameters(parameters: Mapping[str, Any]) -> None:
+    mode = parameters.get("mode")
+    if mode is not None and mode not in {"disabled", "live-only", "durable-history"}:
+        msg = "mode must be one of: disabled, live-only, durable-history"
+        raise ValueError(msg)
+
+
 __all__ = (
     "BACKEND_VARIANTS",
     "COMPETITOR_SCENARIOS",
     "CORE_SCENARIOS",
+    "FEATURE_SCENARIOS",
     "PROFILE_NAMES",
+    "SCENARIOS",
     "BackendVariant",
     "ProfileName",
     "parse_backend_variant",

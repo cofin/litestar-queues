@@ -7,8 +7,8 @@ from prometheus_client import CollectorRegistry
 
 MeasurementValue = int | float | str | bool | None
 
-# The 13 package-owned transport instruments. Exported histogram buckets and
-# ``_created`` series are intentionally excluded to keep every sample bounded.
+# Package-owned transport and heartbeat instruments. Exported histogram buckets
+# and ``_created`` series are intentionally excluded to keep every sample bounded.
 _PROMETHEUS_INSTRUMENT_SERIES = {
     "litestar_queues.enqueue.batch.size": (
         "litestar_queues_enqueue_batch_size_records_count",
@@ -44,6 +44,14 @@ _PROMETHEUS_INSTRUMENT_SERIES = {
         "litestar_queues_event_flush_duration_seconds_sum",
     ),
     "litestar_queues.event.dropped": ("litestar_queues_event_dropped_total",),
+    "litestar_queues.heartbeat.active": ("litestar_queues_heartbeat_active",),
+    "litestar_queues.heartbeat.flush": ("litestar_queues_heartbeat_flush_total",),
+    "litestar_queues.heartbeat.flush.duration": (
+        "litestar_queues_heartbeat_flush_duration_seconds_count",
+        "litestar_queues_heartbeat_flush_duration_seconds_sum",
+    ),
+    "litestar_queues.heartbeat.missed": ("litestar_queues_heartbeat_missed_total",),
+    "litestar_queues.heartbeat.failure": ("litestar_queues_heartbeat_failure_total",),
 }
 _PROMETHEUS_SERIES = tuple(
     series_name for instrument_series in _PROMETHEUS_INSTRUMENT_SERIES.values() for series_name in instrument_series

@@ -121,6 +121,26 @@ def _expected_counters(request: AdapterRequest) -> dict[str, int]:
             "remaining": 0,
             "idle_observations": 1,
         }
+    if request.scenario == "heartbeat":
+        return {
+            **terminal,
+            "beats_called": operations,
+            "heartbeat_touched": operations,
+            "observed_running": operations,
+        }
+    if request.scenario == "events":
+        mode = str(request.parameters.get("mode", "disabled"))
+        lifecycle_events = operations * 2 if mode != "disabled" else 0
+        durable_events = lifecycle_events if mode == "durable-history" else 0
+        return {
+            **terminal,
+            "lifecycle_events": lifecycle_events,
+            "started_events": operations if mode != "disabled" else 0,
+            "completed_events": operations if mode != "disabled" else 0,
+            "live_events": lifecycle_events,
+            "history_events": durable_events,
+            "event_parity": durable_events,
+        }
     return terminal
 
 

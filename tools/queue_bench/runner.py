@@ -18,6 +18,7 @@ from tools.queue_bench.models import BenchmarkResult, RawSample, ScenarioAggrega
 from tools.queue_bench.profiles import (
     COMPETITOR_SCENARIOS,
     CORE_SCENARIOS,
+    FEATURE_SCENARIOS,
     BackendVariant,
     ProfileName,
     parse_backend_variant,
@@ -93,13 +94,22 @@ def validate_run_config(config: RunConfig) -> None:
     if unknown_backends:
         msg = f"unsupported backends: {', '.join(sorted(unknown_backends))}"
         raise ValueError(msg)
-    unknown_scenarios = set(config.scenarios) - set(CORE_SCENARIOS)
+    unknown_scenarios = set(config.scenarios) - {*CORE_SCENARIOS, *FEATURE_SCENARIOS}
     if unknown_scenarios:
         msg = f"unsupported scenarios: {', '.join(sorted(unknown_scenarios))}"
         raise ValueError(msg)
+    profile_scenarios = {
+        "heartbeat": frozenset({"heartbeat"}),
+        "events": frozenset({"events"}),
+    }
+    expected_scenarios = profile_scenarios.get(config.profile, frozenset(CORE_SCENARIOS))
+    mismatched_scenarios = set(config.scenarios) - expected_scenarios
+    if mismatched_scenarios:
+        msg = f"profile {config.profile!r} does not support scenarios: {', '.join(sorted(mismatched_scenarios))}"
+        raise ValueError(msg)
     expanded_scenarios = set(config.scenarios) - set(COMPETITOR_SCENARIOS)
-    if expanded_scenarios and (config.profile not in {"core", "rich"} or config.systems != ("litestar-queues",)):
-        msg = "expanded core scenarios require --system litestar-queues and --profile core or rich"
+    if expanded_scenarios and config.systems != ("litestar-queues",):
+        msg = "expanded Litestar Queues scenarios require --system litestar-queues"
         raise ValueError(msg)
     if backend_variant != "default" and any(backend != "postgres" for backend in config.backends):
         msg = "non-default backend variants require PostgreSQL-only runs"
