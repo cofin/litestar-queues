@@ -102,8 +102,7 @@ def _validate_request_contract(request: AdapterRequest) -> None:
         msg = "managed Google adapter requires exactly one credential source"
         raise ValueError(msg)
     if request.google_credentials_file is not None and (
-        not Path(request.google_credentials_file).is_file()
-        or not os.access(request.google_credentials_file, os.R_OK)
+        not Path(request.google_credentials_file).is_file() or not os.access(request.google_credentials_file, os.R_OK)
     ):
         msg = "managed Google credential file must be readable"
         raise ValueError(msg)

@@ -55,15 +55,7 @@ COMPETITOR_SCRIPTS = {
     "celery": "run_celery",
 }
 SYSTEM_PACKAGES = {
-    "litestar-queues": [
-        "litestar-queues",
-        "advanced-alchemy",
-        "sqlalchemy",
-        "redis",
-        "sqlspec",
-        "asyncpg",
-        "psycopg",
-    ],
+    "litestar-queues": ["litestar-queues", "advanced-alchemy", "sqlalchemy", "redis", "sqlspec", "asyncpg", "psycopg"],
     "litestar-saq": ["litestar-saq", "saq", "redis", "psycopg"],
     "raw-saq": ["saq", "redis", "psycopg"],
     "arq": ["arq", "redis"],

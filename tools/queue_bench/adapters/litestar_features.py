@@ -300,10 +300,7 @@ def _queue_config(backend_config: Any, worker_config: Any, events_config: Any, r
         initialize_schedules=False,
         log_success=False,
         observability=ObservabilityConfig(
-            enable_otel=False,
-            enable_prometheus=True,
-            enable_sqlcommenter=False,
-            prometheus_registry=registry,
+            enable_otel=False, enable_prometheus=True, enable_sqlcommenter=False, prometheus_registry=registry
         ),
         worker=worker_config,
     )

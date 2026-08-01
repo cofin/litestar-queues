@@ -1,7 +1,5 @@
 """Advanced Alchemy benchmark adapter with adopter-owned queue models."""
 
-from __future__ import annotations
-
 import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -16,7 +14,7 @@ if TYPE_CHECKING:
 _POSTGRES_IDENTIFIER_MAX_LENGTH = 63
 
 
-async def run(request: AdapterRequest) -> AdapterResult:
+async def run(request: "AdapterRequest") -> "AdapterResult":
     """Run one core sample through the Advanced Alchemy queue backend.
 
     Returns:
@@ -55,7 +53,7 @@ async def run(request: AdapterRequest) -> AdapterResult:
             await engine.dispose()
 
 
-def _validate_request(request: AdapterRequest) -> None:
+def _validate_request(request: "AdapterRequest") -> None:
     if request.system != "litestar-queues" or request.backend != "postgres":
         msg = "advanced-alchemy profile requires Litestar Queues with PostgreSQL"
         raise ValueError(msg)
@@ -71,8 +69,8 @@ def _validate_request(request: AdapterRequest) -> None:
 
 
 def _build_backend(
-    request: AdapterRequest,
-) -> tuple[SQLAlchemyAsyncConfig, MetaData, tuple[type[object], type[object], type[object], type[object]]]:
+    request: "AdapterRequest",
+) -> "tuple[SQLAlchemyAsyncConfig, MetaData, tuple[type[object], type[object], type[object], type[object]]]":
     from advanced_alchemy.base import UUIDAuditBase, create_registry
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
     from sqlalchemy.engine import make_url
@@ -110,16 +108,11 @@ def _build_backend(
     return (
         sqlalchemy_config,
         model_registry.metadata,
-        (
-            BenchmarkQueueTask,
-            BenchmarkQueueEventHistory,
-            BenchmarkQueueMaintenance,
-            BenchmarkQueueTaskReservation,
-        ),
+        (BenchmarkQueueTask, BenchmarkQueueEventHistory, BenchmarkQueueMaintenance, BenchmarkQueueTaskReservation),
     )
 
 
-async def _create_schema(engine: AsyncEngine, schema: str, metadata: MetaData) -> None:
+async def _create_schema(engine: "AsyncEngine", schema: str, metadata: "MetaData") -> None:
     from sqlalchemy.schema import CreateSchema
 
     async with engine.begin() as connection:
@@ -127,7 +120,7 @@ async def _create_schema(engine: AsyncEngine, schema: str, metadata: MetaData) -
         await connection.run_sync(metadata.create_all)
 
 
-async def _drop_schema(engine: AsyncEngine, schema: str) -> None:
+async def _drop_schema(engine: "AsyncEngine", schema: str) -> None:
     from sqlalchemy.schema import DropSchema
 
     async with engine.begin() as connection:

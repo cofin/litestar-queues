@@ -35,9 +35,7 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
     )
     events_config = (
         QueueEventsConfig(
-            history=EventHistoryConfig(
-                batch_size=max(1, min(record_count, 1000)), flush_interval=3600.0, strict=True
-            )
+            history=EventHistoryConfig(batch_size=max(1, min(record_count, 1000)), flush_interval=3600.0, strict=True)
         )
         if request.scenario == "event-retention"
         else None
@@ -50,10 +48,7 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         log_success=False,
         maintenance=maintenance_config,
         observability=ObservabilityConfig(
-            enable_otel=False,
-            enable_prometheus=True,
-            enable_sqlcommenter=False,
-            prometheus_registry=collector.registry,
+            enable_otel=False, enable_prometheus=True, enable_sqlcommenter=False, prometheus_registry=collector.registry
         ),
         worker=WorkerConfig(queues=(request.namespace,)),
     )
@@ -130,9 +125,7 @@ async def _seed_terminal_records(request: AdapterRequest, service: Any, record_c
     return max(completed_at)
 
 
-async def _seed_events(
-    request: AdapterRequest, service: Any, record_count: int, occurred_at: datetime
-) -> None:
+async def _seed_events(request: AdapterRequest, service: Any, record_count: int, occurred_at: datetime) -> None:
     from litestar_queues.events import QueueEvent
 
     event_log = service.get_event_log()
@@ -262,8 +255,10 @@ async def _run_lease_contention(
     if not released:
         msg = "benchmark lease holder could not release maintenance ownership"
         raise RuntimeError(msg)
-    if summary.outcome != "already_running" or summary.acquired or any(
-        phase.status != "skipped" for phase in summary.phases
+    if (
+        summary.outcome != "already_running"
+        or summary.acquired
+        or any(phase.status != "skipped" for phase in summary.phases)
     ):
         msg = f"maintenance lease denial contract failed: {summary.to_payload()}"
         raise RuntimeError(msg)

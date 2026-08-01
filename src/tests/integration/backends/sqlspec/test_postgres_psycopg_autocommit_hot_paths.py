@@ -90,7 +90,7 @@ async def test_enqueue_many_uses_execute_many_and_preserves_key_semantics(
     store = psycopg_backend._get_store()
     config = psycopg_backend._get_sqlspec_config()
 
-    assert type(config).supports_native_arrow_import is True
+    assert getattr(type(config), "supports_native_arrow_import", False) is True
     assert store.supports_native_bulk_ingest is False
 
     active = await psycopg_backend.enqueue("tasks.bulk", key="bulk:active", kwargs={"v": 1})
