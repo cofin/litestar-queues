@@ -83,25 +83,15 @@ async def test_enqueue_keyed_dedupes_active_and_replaces_terminal_key(psycopg_ba
     assert refetched.id == replacement.id
 
 
-async def test_enqueue_many_bulk_insert_dedupes_active_and_replaces_terminal_keys(
-    psycopg_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+async def test_enqueue_many_uses_execute_many_and_preserves_key_semantics(
+    psycopg_backend: "SQLSpecQueueBackend",
 ) -> "None":
-    """``enqueue_many``'s explicit ``driver.begin()`` bulk insert must dedupe/replace keys.
-
-    Forces the universal ``execute_many`` bulk tier. psycopg's native
-    ``load_from_records`` Arrow-COPY tier cannot adapt this store's native JSON
-    columns (``kwargs_json``/``args_json``/``metadata_json``/``result_json`` are
-    passed as raw Python dicts for normal parameterized INSERTs, which psycopg
-    adapts to ``jsonb`` automatically) -- the COPY writer receives the same raw
-    dicts and rejects them with ``cannot adapt type 'dict' using placeholder
-    '%t'``. That failure reproduces identically with and without
-    ``autocommit``, so it is an unrelated pre-existing SQLSpec/psycopg
-    bulk-ingest gap, not something this Bead's autocommit change causes; this
-    test routes around it to certify what it actually owns, the transaction
-    envelope around the bulk insert.
-    """
+    """Psycopg must use the safe ``execute_many`` tier until SQLSpec issue 663 is fixed."""
     store = psycopg_backend._get_store()
-    monkeypatch.setattr(type(store), "supports_native_bulk_ingest", property(lambda _store: False))
+    config = psycopg_backend._get_sqlspec_config()
+
+    assert type(config).supports_native_arrow_import is True
+    assert store.supports_native_bulk_ingest is False
 
     active = await psycopg_backend.enqueue("tasks.bulk", key="bulk:active", kwargs={"v": 1})
     terminal = await psycopg_backend.enqueue("tasks.bulk", key="bulk:terminal", kwargs={"v": 1})
