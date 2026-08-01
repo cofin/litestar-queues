@@ -59,6 +59,7 @@ class AdapterRequest:
 class AdapterResult:
     duration_seconds: float
     counters: dict[str, int]
+    measurements: dict[str, int | float | str | bool | None] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def normalized_counters(self) -> dict[str, int]:

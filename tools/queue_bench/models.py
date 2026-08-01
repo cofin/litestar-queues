@@ -18,6 +18,7 @@ class RawSample:
     operations: int
     valid: bool
     counters: dict[str, int]
+    measurements: dict[str, int | float | str | bool | None] = field(default_factory=dict)
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -38,6 +39,11 @@ class RawSample:
             operations=int(value["operations"]),
             valid=bool(value["valid"]),
             counters={str(key): int(count) for key, count in dict(value["counters"]).items()},
+            measurements={
+                str(key): measurement
+                for key, measurement in dict(value.get("measurements", {})).items()
+                if measurement is None or isinstance(measurement, (int, float, str, bool))
+            },
             error=str(value["error"]) if value.get("error") is not None else None,
             metadata=dict(value.get("metadata", {})),
         )

@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
+from tools.queue_bench.measurements import SampleMeasurementCollector
 
 
 async def run(request: AdapterRequest) -> AdapterResult:
@@ -27,6 +28,7 @@ async def run(request: AdapterRequest) -> AdapterResult:
 
 async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
     from litestar_queues import QueueConfig, QueueService, TaskRequest, Worker, WorkerConfig, task
+    from litestar_queues.observability import ObservabilityConfig
 
     attempts: dict[int, int] = {}
     started_count = 0
@@ -53,11 +55,18 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             raise RuntimeError(msg)
         return len(payload)
 
+    measurement_collector = SampleMeasurementCollector.create()
     config = QueueConfig(
         queue_backend=backend_config,
         execution_backend="local",
         initialize_schedules=False,
         log_success=False,
+        observability=ObservabilityConfig(
+            enable_otel=False,
+            enable_prometheus=True,
+            enable_sqlcommenter=False,
+            prometheus_registry=measurement_collector.registry,
+        ),
         worker=WorkerConfig(
             batch_size=max(10, request.concurrency),
             max_concurrency=request.concurrency,
@@ -89,7 +98,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             else None
         )
         try:
-            started_at = time.perf_counter()
+            cpu_started, started_at = measurement_collector.snapshot_cpu(), time.perf_counter()
             results, record_count, request_count = await _execute_scenario(
                 request,
                 service=service,
@@ -99,6 +108,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
                 retry_once=retry_once,
             )
             duration = time.perf_counter() - started_at
+            measurements = measurement_collector.finish(cpu_started)
             statistics = await service.get_queue_backend().get_statistics()
             completed = sum(result.status == "completed" for result in results)
             failed = sum(result.status == "failed" for result in results)
@@ -131,6 +141,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
     return AdapterResult(
         duration_seconds=duration,
         counters=counters,
+        measurements=measurements,
         metadata={
             "task_body": "return payload byte length",
             "backend_config": type(backend_config).__name__,

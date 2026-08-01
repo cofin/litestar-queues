@@ -1842,6 +1842,7 @@ valkey = [
 benchmarks = [
     { name = "asyncpg" },
     { name = "hiredis" },
+    { name = "prometheus-client" },
     { name = "psutil" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "redis" },
@@ -1972,6 +1973,7 @@ provides-extras = ["advanced-alchemy", "cloud-tasks", "cloudrun", "otel", "prome
 benchmarks = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "hiredis" },
+    { name = "prometheus-client" },
     { name = "psutil" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.0" },
     { name = "redis", specifier = ">=5.0.0" },

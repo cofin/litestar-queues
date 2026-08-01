@@ -49,6 +49,7 @@ async def execute(request: AdapterRequest) -> RawSample:
         operations=request.operations,
         valid=valid,
         counters=counters,
+        measurements=result.measurements,
         error=error,
         metadata=metadata,
     )
@@ -89,6 +90,7 @@ def _sample_dict(sample: RawSample) -> dict[str, Any]:
         "operations": sample.operations,
         "valid": sample.valid,
         "counters": sample.counters,
+        "measurements": sample.measurements,
         "error": sample.error,
         "metadata": sample.metadata,
     }

@@ -273,6 +273,7 @@ def _invoke_child(
         operations=sample.operations,
         valid=sample.valid,
         counters=sample.counters,
+        measurements=sample.measurements,
         error=sample.error,
         metadata=redact_data(metadata),
     )
@@ -304,6 +305,7 @@ def _invalid_sample(request: dict[str, Any], error: str) -> RawSample:
         operations=int(request["operations"]),
         valid=False,
         counters={"requests": 0, "records": 0, "started": 0, "completed": 0, "failed": 0, "retried": 0, "remaining": 0},
+        measurements={},
         error=error,
         metadata={
             "profile": request["profile"],
