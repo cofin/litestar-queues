@@ -208,3 +208,5 @@ test-build
 opencode.json
 .playwright-mcp
 .python-version
+# Queue benchmark results are local evidence and must never be committed.
+/benchmarks/baselines/

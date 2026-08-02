@@ -123,18 +123,20 @@ def _pickup_rows(result: BenchmarkResult) -> list[str]:
         observed = sum(int(item.get("queue.pickup.observed_count") or 0) for item in measurements)
         rows.append(
             f"| {system} | {backend} | {driver} | {scenario} | {len(measurements)} | {observed} | "
-            f"{enqueue_p50 * 1_000:.2f} | {ready_p50 * 1_000:.2f} | "
-            f"{ready_p95 * 1_000:.2f} | {ready_p99 * 1_000:.2f} |"
+            f"{_format_milliseconds(enqueue_p50)} | {_format_milliseconds(ready_p50)} | "
+            f"{_format_milliseconds(ready_p95)} | {_format_milliseconds(ready_p99)} |"
         )
     return rows
 
 
-def _median_measurement(measurements: list[dict[str, int | float | str | bool | None]], key: str) -> float:
+def _median_measurement(measurements: list[dict[str, int | float | str | bool | None]], key: str) -> float | None:
     values = [float(value) for item in measurements if isinstance((value := item.get(key)), (int, float))]
-    if not values:
-        msg = f"pickup measurement {key!r} is unavailable"
-        raise ValueError(msg)
-    return float(statistics.median(values))
+    return float(statistics.median(values)) if values else None
+
+
+def _format_milliseconds(value: float | None) -> str:
+    """Format an optional seconds measurement as milliseconds."""
+    return "-" if value is None else f"{value * 1_000:.2f}"
 
 
 __all__ = ("render_markdown",)

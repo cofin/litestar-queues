@@ -3,10 +3,10 @@
 # dependencies = [
 #   "litestar-saq[psycopg]==0.8.0",
 #   "redis==7.4.1",
-#   "saq[postgres,redis]==0.26.4",
+#   "saq[postgres,redis]",
 # ]
 # ///
-"""Run the shared benchmark child in the pinned SAQ environment."""
+"""Run the shared benchmark child against the latest available SAQ release."""
 
 import sys
 from pathlib import Path

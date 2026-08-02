@@ -60,7 +60,7 @@ cloudrun = ["google-cloud-run>=0.10.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 redis = ["redis>=5.0.0"]
-sqlspec = ["sqlspec>=0.56.0"]
+sqlspec = ["sqlspec>=0.58.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -129,7 +129,7 @@ version = "{current_version}"
 # Environment Setup #
 #####################
 [dependency-groups]
-benchmarks = ["advanced-alchemy>=1.10.0", "asyncpg>=0.30.0", "google-cloud-run>=0.10.0", "google-cloud-tasks>=2.23.0", "hiredis", "libvalkey>=4.0.1", "prometheus-client", "psutil", "psycopg[binary,pool]>=3.2.0", "redis>=5.0.0", "sqlalchemy>=2.0.0", "sqlspec[mypyc,performance]>=0.56.0", "valkey>=6.0.0"]
+benchmarks = ["advanced-alchemy>=1.10.0", "asyncpg>=0.30.0", "google-cloud-run>=0.10.0", "google-cloud-tasks>=2.23.0", "hiredis", "libvalkey>=4.0.1", "prometheus-client", "psutil", "psycopg[binary,pool]>=3.2.0", "redis>=5.0.0", "sqlalchemy>=2.0.0", "sqlspec[mypyc,performance]>=0.58.0", "valkey>=6.0.0"]
 build = ["bump-my-version"]
 dev = [
   "litestar[standard,attrs,pydantic]",
@@ -190,7 +190,7 @@ tests = [
   "numpy",
   "advanced-alchemy>=1.10.0",
   # SQLSpec adapters covered by the default integration matrix
-  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.56.0",
+  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.58.0",
 ]
 
 #####################
@@ -237,29 +237,28 @@ source = ["src/litestar_queues"]
 # Tools             #
 #####################
 [tool.uv]
-exclude-newer = "2026-07-19T00:00:00Z"
-preview-features = ["index-exclude-newer"]
+exclude-newer = "7 days"
 
 [tool.uv.exclude-newer-package]
-advanced-alchemy = "2099-01-01T00:00:00Z"
-litestar = "2099-01-01T00:00:00Z"
-litestar-asyncapi = "2099-01-01T00:00:00Z"
-litestar-asyncpg = "2099-01-01T00:00:00Z"
-litestar-autowire = "2099-01-01T00:00:00Z"
-litestar-email = "2099-01-01T00:00:00Z"
-litestar-granian = "2099-01-01T00:00:00Z"
-litestar-htmx = "2099-01-01T00:00:00Z"
-litestar-mcp = "2099-01-01T00:00:00Z"
-litestar-oracledb = "2099-01-01T00:00:00Z"
-litestar-queues = "2099-01-01T00:00:00Z"
-litestar-saq = "2099-01-01T00:00:00Z"
-litestar-security = "2099-01-01T00:00:00Z"
-litestar-vite = "2099-01-01T00:00:00Z"
-polyfactory = "2099-01-01T00:00:00Z"
-pytest-databases = "2099-01-01T00:00:00Z"
-sqlglot = "2099-01-01T00:00:00Z"
-sqlglotc = "2099-01-01T00:00:00Z"
-sqlspec = "2099-01-01T00:00:00Z"
+advanced-alchemy = false
+litestar = false
+litestar-asyncapi = false
+litestar-asyncpg = false
+litestar-autowire = false
+litestar-email = false
+litestar-granian = false
+litestar-htmx = false
+litestar-mcp = false
+litestar-oracledb = false
+litestar-queues = false
+litestar-saq = false
+litestar-security = false
+litestar-vite = false
+polyfactory = false
+pytest-databases = false
+sqlglot = false
+sqlglotc = false
+sqlspec = false
 
 [tool.ruff]
 exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build"]
