@@ -129,7 +129,7 @@ version = "{current_version}"
 # Environment Setup #
 #####################
 [dependency-groups]
-benchmarks = ["advanced-alchemy>=1.10.0", "asyncpg>=0.30.0", "google-cloud-run>=0.10.0", "google-cloud-tasks>=2.23.0", "hiredis", "prometheus-client", "psutil", "psycopg[binary,pool]>=3.2.0", "redis>=5.0.0", "sqlalchemy>=2.0.0", "sqlspec[mypyc,performance]>=0.56.0", "valkey>=6.0.0"]
+benchmarks = ["advanced-alchemy>=1.10.0", "asyncpg>=0.30.0", "google-cloud-run>=0.10.0", "google-cloud-tasks>=2.23.0", "hiredis", "libvalkey>=4.0.1", "prometheus-client", "psutil", "psycopg[binary,pool]>=3.2.0", "redis>=5.0.0", "sqlalchemy>=2.0.0", "sqlspec[mypyc,performance]>=0.56.0", "valkey>=6.0.0"]
 build = ["bump-my-version"]
 dev = [
   "litestar[standard,attrs,pydantic]",
@@ -181,6 +181,8 @@ tests = [
   # ships that module, so collection failed before any test ran.
   "google-cloud-spanner>=3.47.0",
   # Redis + Valkey clients used directly by integration tests
+  "hiredis",
+  "libvalkey>=4.0.1",
   "redis>=5.0.0",
   "valkey>=6.0.0",
   "adbc-driver-sqlite",

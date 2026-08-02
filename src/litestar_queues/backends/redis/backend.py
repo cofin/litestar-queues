@@ -1666,11 +1666,12 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         if not self._notifications:
             return False
-        await self._ensure_completion_subscriber()
         loop = asyncio.get_running_loop()
-        waiter = loop.create_future()
+        waiter: "asyncio.Future[bool]" = loop.create_future()
         target = str(task_id)
-        self._completion_waiters.setdefault(target, set()).add(waiter)
+        async with self._completion_lock:
+            await self._ensure_completion_subscriber()
+            self._completion_waiters.setdefault(target, set()).add(waiter)
         try:
             record = await self.get_task(task_id)
             if record is not None and record.status in _TERMINAL_STATUSES:
@@ -1682,32 +1683,31 @@ class RedisQueueBackend(BaseQueueBackend):
             except asyncio.TimeoutError:
                 return False
         finally:
-            waiters = self._completion_waiters.get(target)
-            if waiters is not None:
-                waiters.discard(waiter)
-                if not waiters:
-                    self._completion_waiters.pop(target, None)
+            async with self._completion_lock:
+                waiters = self._completion_waiters.get(target)
+                if waiters is not None:
+                    waiters.discard(waiter)
+                    if not waiters:
+                        self._completion_waiters.pop(target, None)
 
     async def _ensure_completion_subscriber(self) -> "None":
+        """Create the subscriber while ``_completion_lock`` is held."""
         if self._completion_reader_task is not None and not self._completion_reader_task.done():
             return
-        async with self._completion_lock:
-            if self._completion_reader_task is not None and not self._completion_reader_task.done():
-                return
-            client = await self._get_client()
-            pubsub = client.pubsub()
-            subscribe = pubsub.subscribe(self._completion_channel)
-            if inspect.isawaitable(subscribe):
-                await subscribe
-            self._completion_pubsub = pubsub
-            self._completion_reader_task = asyncio.create_task(
-                self._read_completion_messages(pubsub), name=f"{self._backend_name}-queue-completions"
-            )
+        client = await self._get_client()
+        pubsub = client.pubsub()
+        subscribe = pubsub.subscribe(self._completion_channel)
+        if inspect.isawaitable(subscribe):
+            await subscribe
+        self._completion_pubsub = pubsub
+        self._completion_reader_task = asyncio.create_task(
+            self._read_completion_messages(pubsub), name=f"{self._backend_name}-queue-completions"
+        )
 
     async def _read_completion_messages(self, pubsub: "PubSubLike") -> "None":
         try:
             while True:
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=None)
                 if message is None:
                     continue
                 target = str(_decode(message.get("data")))
@@ -1721,14 +1721,18 @@ class RedisQueueBackend(BaseQueueBackend):
                         waiter.set_result(False)
 
     async def _close_completion_subscriber(self) -> "None":
-        reader = self._completion_reader_task
-        self._completion_reader_task = None
+        async with self._completion_lock:
+            reader, self._completion_reader_task = self._completion_reader_task, None
+            pubsub, self._completion_pubsub = self._completion_pubsub, None
+        await self._stop_completion_subscriber(reader, pubsub)
+
+    async def _stop_completion_subscriber(
+        self, reader: "asyncio.Task[None] | None", pubsub: "PubSubLike | None"
+    ) -> "None":
         if reader is not None:
             reader.cancel()
             with suppress(asyncio.CancelledError):
                 await reader
-        pubsub = self._completion_pubsub
-        self._completion_pubsub = None
         if pubsub is not None:
             await _close_pubsub(pubsub, self._completion_channel)
 

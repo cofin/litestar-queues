@@ -79,7 +79,7 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
         return len(payload)
 
     measurement_collector = SampleMeasurementCollector.create()
-    worker_poll_interval = 60.0 if request.scenario == "steady-idle-pickup" else 0.01
+    poll_interval_seconds = 60.0 if request.scenario == "steady-idle-pickup" else 0.01
     config = QueueConfig(
         queue_backend=backend_config,
         execution_backend="local",
@@ -94,8 +94,8 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
         worker=WorkerConfig(
             batch_size=max(10, request.concurrency),
             max_concurrency=request.concurrency,
-            poll_interval=worker_poll_interval,
-            poll_backoff_max=max(5.0, worker_poll_interval),
+            poll_interval=poll_interval_seconds,
+            poll_backoff_max=max(5.0, poll_interval_seconds),
             queues=(request.namespace,),
         ),
     )
@@ -115,8 +115,8 @@ async def _run(request: AdapterRequest, backend_config: Any) -> AdapterResult:  
             WorkerConfig(
                 batch_size=max(10, request.concurrency),
                 max_concurrency=request.concurrency,
-                poll_interval=worker_poll_interval,
-                poll_backoff_max=max(5.0, worker_poll_interval),
+                poll_interval=poll_interval_seconds,
+                poll_backoff_max=max(5.0, poll_interval_seconds),
                 queues=(request.namespace,),
             ),
         )

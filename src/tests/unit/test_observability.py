@@ -833,7 +833,7 @@ async def test_service_open_preloads_sqlspec_correlation_context(monkeypatch: "p
 
     correlation.sqlspec_correlation_context.cache_clear()
     imported: "list[str]" = []
-    original_import_module = correlation.import_module
+    original_import_module = correlation.import_module  # type: ignore[attr-defined]
 
     def tracked_import_module(name: str) -> "Any":
         imported.append(name)
