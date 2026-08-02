@@ -33,6 +33,7 @@ async def execute(request: AdapterRequest) -> RawSample:
     module = import_module(ADAPTER_MODULES[request.system])
     result = await module.run(request)
     valid, error = result.validate(request)
+    counters = result.normalized_counters()
     metadata: dict[str, Any] = dict(result.metadata)
     metadata["packages"] = {
         distribution.metadata["Name"]: distribution.version
@@ -45,9 +46,10 @@ async def execute(request: AdapterRequest) -> RawSample:
         scenario=request.scenario,
         sample_index=request.sample_index,
         duration_seconds=result.duration_seconds,
-        operations=request.operations,
+        operations=result.effective_operations if result.effective_operations is not None else request.operations,
         valid=valid,
-        counters=result.counters,
+        counters=counters,
+        measurements=result.measurements,
         error=error,
         metadata=metadata,
     )
@@ -88,6 +90,7 @@ def _sample_dict(sample: RawSample) -> dict[str, Any]:
         "operations": sample.operations,
         "valid": sample.valid,
         "counters": sample.counters,
+        "measurements": sample.measurements,
         "error": sample.error,
         "metadata": sample.metadata,
     }

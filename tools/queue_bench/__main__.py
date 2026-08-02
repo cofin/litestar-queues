@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tools.dev_infra import InfraError
 from tools.queue_bench.models import BenchmarkResult
+from tools.queue_bench.profiles import BACKEND_VARIANTS, PROFILE_NAMES, SCENARIOS, parse_parameter_overrides
 from tools.queue_bench.report import render_markdown
 from tools.queue_bench.runner import DEFAULT_SYSTEMS, SYSTEM_BACKENDS, RunConfig, run_benchmarks
 
@@ -24,8 +25,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run benchmark samples")
     run.add_argument("--system", action="append", choices=sorted(SYSTEM_BACKENDS))
     run.add_argument("--backend", action="append", choices=("redis", "postgres", "valkey"))
-    run.add_argument("--scenario", action="append", choices=("enqueue", "roundtrip"))
-    run.add_argument("--profile", choices=("core",), default="core")
+    run.add_argument("--scenario", action="append", choices=SCENARIOS)
+    run.add_argument("--profile", choices=PROFILE_NAMES, default="core")
+    run.add_argument("--backend-variant", choices=BACKEND_VARIANTS, default="default")
+    run.add_argument("--parameter", action="append", default=[], metavar="KEY=JSON")
     run.add_argument("--warmups", type=int, default=3)
     run.add_argument("--samples", type=int, default=10)
     run.add_argument("--operations", type=int, default=100)
@@ -35,6 +38,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dsn", action="append", default=[], metavar="BACKEND=URL")
     run.add_argument("--pull-images", action="store_true")
     run.add_argument("--remote", action="store_true")
+    run.add_argument("--acknowledge-cost", action="store_true")
+    run.add_argument("--managed-namespace")
+    run.add_argument("--google-project")
+    credentials = run.add_mutually_exclusive_group()
+    credentials.add_argument("--google-credentials-file", type=Path)
+    credentials.add_argument("--google-adc", action="store_true")
+    run.add_argument("--cold-state-evidence", type=Path)
+    run.add_argument("--cloud-tasks-location")
+    run.add_argument("--cloud-tasks-queue")
+    run.add_argument("--cloud-tasks-service-url")
+    run.add_argument("--cloud-tasks-service-account")
+    run.add_argument("--cloud-tasks-audience")
+    run.add_argument("--cloud-run-region")
+    run.add_argument("--cloud-run-job")
     run.add_argument("--timeout", type=float, default=120.0, dest="timeout_seconds")
     run.add_argument("--output", type=Path, required=True)
 
@@ -57,7 +74,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = RunConfig(
                 systems=tuple(args.system or DEFAULT_SYSTEMS),
                 backends=tuple(args.backend or ("redis", "postgres")),
-                scenarios=tuple(args.scenario or ("enqueue", "roundtrip")),
+                scenarios=tuple(args.scenario or _default_scenarios(args.profile)),
+                profile=args.profile,
+                backend_variant=args.backend_variant,
+                parameters=parse_parameter_overrides(args.parameter),
                 warmups=args.warmups,
                 samples=args.samples,
                 operations=args.operations,
@@ -67,6 +87,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dsn_overrides=tuple(args.dsn),
                 pull_images=args.pull_images,
                 remote=args.remote,
+                acknowledge_cost=args.acknowledge_cost,
+                managed_namespace=args.managed_namespace,
+                google_project=args.google_project,
+                google_credentials_file=args.google_credentials_file,
+                google_adc=args.google_adc,
+                cold_state_evidence=args.cold_state_evidence,
+                cloud_tasks_location=args.cloud_tasks_location,
+                cloud_tasks_queue=args.cloud_tasks_queue,
+                cloud_tasks_service_url=args.cloud_tasks_service_url,
+                cloud_tasks_service_account=args.cloud_tasks_service_account,
+                cloud_tasks_audience=args.cloud_tasks_audience,
+                cloud_run_region=args.cloud_run_region,
+                cloud_run_job=args.cloud_run_job,
                 timeout_seconds=args.timeout_seconds,
             )
             result = run_benchmarks(config, root=Path.cwd())
@@ -87,6 +120,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     else:
         return 0
+
+
+def _default_scenarios(profile: str) -> tuple[str, ...]:
+    if profile == "cloud-tasks":
+        return ("cloud-tasks-delivery",)
+    if profile == "cloud-run-jobs":
+        return ("cloud-run-job-dispatch",)
+    if profile in {"heartbeat", "events"}:
+        return (profile,)
+    if profile == "uniqueness":
+        return ("enqueue",)
+    if profile == "maintenance":
+        return ("terminal-retention", "event-retention", "lease-contention")
+    return ("enqueue", "roundtrip")
 
 
 if __name__ == "__main__":

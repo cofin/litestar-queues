@@ -48,6 +48,15 @@ raises a configuration error instead of silently using generic SQL.
    These are consumer choices; litestar-queues does not require or install
    them on your behalf.
 
+Typical PostgreSQL pickup time
+==============================
+
+On a local development machine with an idle worker already running, 95 out of
+100 tasks started within about **5.5 ms with asyncpg** and **9.5 ms with
+psycopg**. Other SQLSpec adapters use different notification or polling paths,
+so do not apply these PostgreSQL times to SQLite, MySQL, Oracle, or other
+databases. Network distance and database load can also increase pickup time.
+
 
 Schema ownership
 ================

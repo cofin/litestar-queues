@@ -1,5 +1,7 @@
 """Human-readable benchmark reports."""
 
+import statistics
+
 from tools.queue_bench.models import BenchmarkResult
 
 
@@ -34,6 +36,24 @@ def render_markdown(result: BenchmarkResult) -> str:
         )
         for aggregate in sorted(result.aggregates, key=lambda item: (item.backend, item.scenario, item.system))
     )
+    pickup_rows = _pickup_rows(result)
+    if pickup_rows:
+        lines.extend([
+            "",
+            "## Worker pickup latency",
+            "",
+            (
+                "Timestamps come from persisted backend claims. Values are medians of each sample's "
+                "job-level percentile; ready-to-claim excludes intentional scheduling delay."
+            ),
+            "",
+            (
+                "| System | Backend | Driver | Scenario | Samples | Jobs | Enqueue to claim p50 (ms) | "
+                "Ready to claim p50 (ms) | Ready to claim p95 (ms) | Ready to claim p99 (ms) |"
+            ),
+            "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+        ])
+        lines.extend(pickup_rows)
     if result.comparisons:
         lines.extend([
             "",
@@ -86,6 +106,35 @@ def render_markdown(result: BenchmarkResult) -> str:
             for sample in invalid
         )
     return "\n".join(lines) + "\n"
+
+
+def _pickup_rows(result: BenchmarkResult) -> list[str]:
+    grouped: dict[tuple[str, str, str, str], list[dict[str, int | float | str | bool | None]]] = {}
+    for sample in result.samples:
+        if sample.valid and sample.measurements.get("queue.pickup.available") is True:
+            driver = str(sample.metadata.get("driver") or "-")
+            grouped.setdefault((sample.system, sample.backend, driver, sample.scenario), []).append(sample.measurements)
+    rows: list[str] = []
+    for (system, backend, driver, scenario), measurements in sorted(grouped.items(), key=lambda item: item[0]):
+        enqueue_p50 = _median_measurement(measurements, "queue.pickup.enqueue_to_started.p50_seconds")
+        ready_p50 = _median_measurement(measurements, "queue.pickup.ready_to_started.p50_seconds")
+        ready_p95 = _median_measurement(measurements, "queue.pickup.ready_to_started.p95_seconds")
+        ready_p99 = _median_measurement(measurements, "queue.pickup.ready_to_started.p99_seconds")
+        observed = sum(int(item.get("queue.pickup.observed_count") or 0) for item in measurements)
+        rows.append(
+            f"| {system} | {backend} | {driver} | {scenario} | {len(measurements)} | {observed} | "
+            f"{enqueue_p50 * 1_000:.2f} | {ready_p50 * 1_000:.2f} | "
+            f"{ready_p95 * 1_000:.2f} | {ready_p99 * 1_000:.2f} |"
+        )
+    return rows
+
+
+def _median_measurement(measurements: list[dict[str, int | float | str | bool | None]], key: str) -> float:
+    values = [float(value) for item in measurements if isinstance((value := item.get(key)), (int, float))]
+    if not values:
+        msg = f"pickup measurement {key!r} is unavailable"
+        raise ValueError(msg)
+    return float(statistics.median(values))
 
 
 __all__ = ("render_markdown",)

@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
+from tools.queue_bench.statistics import percentile
 
 
 async def noop(ctx: dict[str, Any], payload: str) -> int:
@@ -61,13 +62,24 @@ async def _run(request: AdapterRequest) -> AdapterResult:
     await queue.connect()
     worker = Worker(queue, functions=[noop], concurrency=request.concurrency, dequeue_timeout=0.01, poll_interval=0.01)
     worker_task: asyncio.Task[None] | None = None
-    if request.scenario == "roundtrip":
+    if request.scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput"}:
         worker_task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.05)
+        if request.scenario != "cold-start":
+            await asyncio.sleep(0.05)
     started_at = time.perf_counter()
-    jobs = [await queue.enqueue("noop", payload=request.payload) for _ in range(request.operations)]
+    if request.scenario == "steady-idle-pickup":
+        warmup = await queue.enqueue("noop", payload=request.payload)
+        if warmup is not None:
+            await warmup.refresh(until_complete=request.timeout_seconds)
+        jobs = []
+        spacing = float(request.parameters.get("spacing_seconds", 0.05))
+        for _ in range(request.operations):
+            await asyncio.sleep(spacing)
+            jobs.append(await queue.enqueue("noop", payload=request.payload))
+    else:
+        jobs = [await queue.enqueue("noop", payload=request.payload) for _ in range(request.operations)]
     accepted = [job for job in jobs if job is not None]
-    if request.scenario == "roundtrip":
+    if request.scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput"}:
         await gather_bounded(
             (job.refresh(until_complete=request.timeout_seconds) for job in accepted), limit=request.concurrency
         )
@@ -76,7 +88,9 @@ async def _run(request: AdapterRequest) -> AdapterResult:
     remaining = await queue.count("queued") + await queue.count("active")
     counters = {
         "enqueued": len(accepted),
-        "started": completed if request.scenario == "roundtrip" else 0,
+        "started": completed
+        if request.scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput"}
+        else 0,
         "completed": completed,
         "remaining": remaining,
     }
@@ -89,12 +103,41 @@ async def _run(request: AdapterRequest) -> AdapterResult:
     return AdapterResult(
         duration_seconds=duration,
         counters=counters,
+        measurements=_summarize_saq_pickup(accepted)
+        if request.scenario in {"roundtrip", "cold-start", "steady-idle-pickup", "backlog-throughput"}
+        else {},
         metadata={
             "task_body": "return payload byte length",
             "driver": "psycopg-async" if request.backend == "postgres" else "redis-asyncio",
             "plugin_startup_seconds": plugin_startup_seconds,
         },
     )
+
+
+def _summarize_saq_pickup(jobs: list[Any]) -> dict[str, int | float | str | bool | None]:
+    values: list[float] = []
+    for job in jobs:
+        queued = getattr(job, "queued", None)
+        started = getattr(job, "started", None)
+        if queued is None or started is None:
+            continue
+        duration = (float(started) - float(queued)) / 1000.0
+        if duration < 0:
+            msg = "SAQ persisted started timestamp precedes queued timestamp"
+            raise ValueError(msg)
+        values.append(duration)
+    measurements: dict[str, int | float | str | bool | None] = {
+        "queue.pickup.available": bool(values),
+        "queue.pickup.observed_count": len(values),
+        "queue.pickup.missing_count": len(jobs) - len(values),
+        "queue.pickup.unavailable_reason": None if values else "no_saq_persisted_queued_started",
+        "queue.pickup.timestamp_source": "saq_persisted_queued_started_ms",
+    }
+    for statistic, percentage in (("p50", 50), ("p95", 95), ("p99", 99)):
+        measurements[f"queue.pickup.ready_to_started.{statistic}_seconds"] = (
+            percentile(values, percentage) if values else None
+        )
+    return measurements
 
 
 def _saq_options(request: AdapterRequest) -> dict[str, Any]:

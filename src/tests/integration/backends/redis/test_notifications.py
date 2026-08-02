@@ -22,6 +22,13 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
+def test_redis_test_profile_uses_accelerated_parser() -> "None":
+    from redis.asyncio import connection
+
+    assert connection.HIREDIS_AVAILABLE is True  # type: ignore[attr-defined]
+    assert connection.DefaultParser.__name__ == "_AsyncHiredisParser"
+
+
 async def test_redis_backend_pubsub_notifications_wake_waiters(redis_backend: "RedisQueueBackend") -> "None":
     waiter = asyncio.create_task(redis_backend.wait_for_wakeups(timeout=2.0))
     await wait_for_channel_subscribers(redis_backend, redis_backend._wakeup_channel)
@@ -61,6 +68,38 @@ async def test_redis_backend_wait_for_completion_wakes_on_terminal(redis_backend
     assert completed is not None
     assert await waiter is True
     assert await redis_backend.wait_for_completion(uuid4(), timeout=0.05) is False
+
+
+async def test_redis_backend_shares_completion_subscription_between_waiters(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    record = await redis_backend.enqueue("tasks.awaited.concurrent")
+    claimed = await redis_backend.claim_task(record.id)
+    assert claimed is not None
+
+    first = asyncio.create_task(redis_backend.wait_for_completion(record.id, timeout=2.0))
+    second = asyncio.create_task(redis_backend.wait_for_completion(record.id, timeout=2.0))
+    await wait_for_channel_subscribers(redis_backend, redis_backend._completion_channel, expected=1)
+    completed = await redis_backend.complete_task(record.id)
+
+    assert completed is not None
+    first_result, second_result = await asyncio.gather(first, second)
+    assert first_result is True
+    assert second_result is True
+    assert redis_backend._completion_reader_task is not None
+    assert redis_backend._completion_pubsub is not None
+    assert not redis_backend._completion_waiters
+
+
+async def test_redis_backend_completion_timeout_retains_subscription(redis_backend: "RedisQueueBackend") -> "None":
+    assert await redis_backend.wait_for_completion(uuid4(), timeout=0.05) is False
+    pubsub = redis_backend._completion_pubsub
+
+    assert redis_backend._completion_reader_task is not None
+    assert pubsub is not None
+    assert not redis_backend._completion_waiters
+    assert await redis_backend.wait_for_completion(uuid4(), timeout=0.05) is False
+    assert redis_backend._completion_pubsub is pubsub
 
 
 async def test_redis_backend_reuses_subscription_after_timeout(redis_backend: "RedisQueueBackend") -> "None":

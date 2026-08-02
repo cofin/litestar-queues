@@ -156,6 +156,56 @@ class PostgresQueueStore(SQLSpecQueueStore):
     supports_bulk_touch_heartbeats: "ClassVar[bool]" = True
     supports_dml_returning: "ClassVar[bool]" = True
     supports_returning_claim: "ClassVar[bool]" = True
+    supports_combined_expiry_claim: "ClassVar[bool]" = True
+
+    def claim_batch_with_expired_returning_sql(self, *, queue_count: "int", filter_execution_backend: "bool") -> "str":
+        """Return one PostgreSQL statement that expires and claims due records."""
+        cache_key = f"claim_batch_with_expired:{queue_count}:{int(filter_execution_backend)}"
+
+        def build() -> "str":
+            table = self._quoted_table_name()
+            id_col = self._quoted_col("id")
+            status_col = self._quoted_col("status")
+            scheduled_col = self._quoted_col("scheduled_at")
+            expires_col = self._quoted_col("expires_at")
+            execution_ref_col = self._quoted_col("execution_ref")
+            queue_col = self._quoted_col("queue")
+            eb_col = self._quoted_col("execution_backend")
+            priority_col = self._quoted_col("priority")
+            created_col = self._quoted_col("created_at")
+            claim_conditions = [
+                f"{status_col} IN ('pending', 'scheduled')",
+                f"({scheduled_col} IS NULL OR {scheduled_col} <= :now)",
+                f"({expires_col} IS NULL OR {expires_col} > :expires_now)",
+                f"({execution_ref_col} IS NULL OR {execution_ref_col} NOT LIKE :reservation_prefix)",
+                f"{id_col} NOT IN (SELECT {id_col} FROM expired_candidates)",  # noqa: S608
+            ]
+            if queue_count:
+                placeholders = ", ".join(f":queue_{index}" for index in range(queue_count))
+                claim_conditions.append(f"{queue_col} IN ({placeholders})")
+            if filter_execution_backend:
+                claim_conditions.append(f"{eb_col} = :execution_backend")
+            claim_where = " AND ".join(claim_conditions)
+            returned = self._prefixed_returning_columns_sql("t")
+            return (
+                f"WITH expired_candidates AS (SELECT {id_col} FROM {table} "  # noqa: S608
+                f"WHERE {status_col} IN ('pending', 'scheduled') AND {execution_ref_col} IS NULL "
+                f"AND {expires_col} IS NOT NULL AND {expires_col} <= :expires_now "
+                f"ORDER BY {expires_col} ASC, {created_col} ASC, {id_col} ASC FOR UPDATE SKIP LOCKED), "
+                f"expired AS (UPDATE {table} AS t SET {status_col} = 'expired', "
+                f"{self._quoted_col('completed_at')} = :completed_at, {self._quoted_col('heartbeat_at')} = NULL "
+                f"FROM expired_candidates AS e WHERE t.{id_col} = e.{id_col} RETURNING {returned}), "
+                f"claim_candidates AS (SELECT {id_col} FROM {table} WHERE {claim_where} "
+                f"ORDER BY {priority_col} DESC, {created_col} ASC "
+                f"FOR UPDATE SKIP LOCKED LIMIT :limit), "
+                f"claimed AS (UPDATE {table} AS t SET {status_col} = 'running', "
+                f"{self._quoted_col('started_at')} = :started_at, {self._quoted_col('heartbeat_at')} = :heartbeat_at "
+                f"FROM claim_candidates AS c WHERE t.{id_col} = c.{id_col} RETURNING {returned}) "
+                f"SELECT 'expired' AS \"_claim_outcome\", expired.* FROM expired "
+                f"UNION ALL SELECT 'claimed' AS \"_claim_outcome\", claimed.* FROM claimed"
+            )
+
+        return self._cached(cache_key, build)
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Postgres-family queue artifacts."""
@@ -226,6 +276,7 @@ class CockroachQueueStore(PostgresQueueStore):
     data_dictionary_dialect: "ClassVar[str | None]" = "cockroachdb"
     table_storage_parameters: "ClassVar[bool]" = False
     supports_returning_claim: "ClassVar[bool]" = False
+    supports_combined_expiry_claim: "ClassVar[bool]" = False
 
     @property
     def supports_skip_locked(self) -> "bool":

@@ -160,6 +160,9 @@ class _FailingPipeline:
 
 
 class _FailingRedisClient:
+    def eval(self, _script: "str", _numkeys: "int", *_keys_and_args: "str") -> "list[str]":
+        return ["2"]
+
     def pipeline(self, *, transaction: "bool" = False) -> "_FailingPipeline":
         del transaction
         return _FailingPipeline()

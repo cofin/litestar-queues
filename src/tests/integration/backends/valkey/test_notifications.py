@@ -21,6 +21,13 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
+def test_valkey_test_profile_uses_accelerated_parser() -> "None":
+    from valkey.asyncio import connection
+
+    assert connection.LIBVALKEY_AVAILABLE is True  # type: ignore[attr-defined]
+    assert connection.DefaultParser.__name__ == "_AsyncLibvalkeyParser"
+
+
 async def test_valkey_backend_pubsub_notifications_wake_waiters(valkey_backend: "ValkeyQueueBackend") -> "None":
     waiter = asyncio.create_task(valkey_backend.wait_for_wakeups(timeout=2.0))
     await wait_for_channel_subscribers(valkey_backend, valkey_backend._wakeup_channel)
@@ -60,6 +67,38 @@ async def test_valkey_backend_wait_for_completion_wakes_on_terminal(valkey_backe
     assert completed is not None
     assert await waiter is True
     assert await valkey_backend.wait_for_completion(uuid4(), timeout=0.05) is False
+
+
+async def test_valkey_backend_shares_completion_subscription_between_waiters(
+    valkey_backend: "ValkeyQueueBackend",
+) -> "None":
+    record = await valkey_backend.enqueue("tasks.awaited.concurrent")
+    claimed = await valkey_backend.claim_task(record.id)
+    assert claimed is not None
+
+    first = asyncio.create_task(valkey_backend.wait_for_completion(record.id, timeout=2.0))
+    second = asyncio.create_task(valkey_backend.wait_for_completion(record.id, timeout=2.0))
+    await wait_for_channel_subscribers(valkey_backend, valkey_backend._completion_channel, expected=1)
+    completed = await valkey_backend.complete_task(record.id)
+
+    assert completed is not None
+    first_result, second_result = await asyncio.gather(first, second)
+    assert first_result is True
+    assert second_result is True
+    assert valkey_backend._completion_reader_task is not None
+    assert valkey_backend._completion_pubsub is not None
+    assert not valkey_backend._completion_waiters
+
+
+async def test_valkey_backend_completion_timeout_retains_subscription(valkey_backend: "ValkeyQueueBackend") -> "None":
+    assert await valkey_backend.wait_for_completion(uuid4(), timeout=0.05) is False
+    pubsub = valkey_backend._completion_pubsub
+
+    assert valkey_backend._completion_reader_task is not None
+    assert pubsub is not None
+    assert not valkey_backend._completion_waiters
+    assert await valkey_backend.wait_for_completion(uuid4(), timeout=0.05) is False
+    assert valkey_backend._completion_pubsub is pubsub
 
 
 async def test_valkey_backend_reuses_subscription_after_timeout(valkey_backend: "ValkeyQueueBackend") -> "None":

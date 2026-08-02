@@ -363,16 +363,11 @@ local score = ARGV[5]
 local channel = ARGV[6]
 local notify_payload = ARGV[7]
 local publish = ARGV[8]
-local maintenance_version = ARGV[9]
+local expires_score = tonumber(ARGV[9]) or 0
 local hkey = prefix .. ':task:' .. task_id
-local maintenance_version_key = prefix .. ':maintenance:index-version'
-if not redis.call('GET', maintenance_version_key) and redis.call('SCARD', prefix .. ':tasks') == 0 then
-    redis.call('SET', maintenance_version_key, maintenance_version)
-end
 redis.call('HSET', hkey, unpack(ARGV, 10))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
-local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
 if expires_score > 0 then
     redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
 end
@@ -398,7 +393,7 @@ local channel = ARGV[6]
 local notify_payload = ARGV[7]
 local publish = ARGV[8]
 local dedup_key = ARGV[9]
-local maintenance_version = ARGV[10]
+local expires_score = tonumber(ARGV[10]) or 0
 local keys_hash = prefix .. ':keys'
 local existing_id = redis.call('HGET', keys_hash, dedup_key)
 if existing_id then
@@ -409,14 +404,9 @@ if existing_id then
 end
 redis.call('HSET', keys_hash, dedup_key, task_id)
 local hkey = prefix .. ':task:' .. task_id
-local maintenance_version_key = prefix .. ':maintenance:index-version'
-if not redis.call('GET', maintenance_version_key) and redis.call('SCARD', prefix .. ':tasks') == 0 then
-    redis.call('SET', maintenance_version_key, maintenance_version)
-end
 redis.call('HSET', hkey, unpack(ARGV, 11))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
-local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
 if expires_score > 0 then
     redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
 end
@@ -687,6 +677,10 @@ class RedisQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_client",
+        "_completion_lock",
+        "_completion_pubsub",
+        "_completion_reader_task",
+        "_completion_waiters",
         "_event_log",
         "_key_prefix",
         "_notifications",
@@ -723,6 +717,10 @@ class RedisQueueBackend(BaseQueueBackend):
         )
         self._pubsub: "PubSubLike | None" = None
         self._pending_read = PendingNativeRead()
+        self._completion_lock = asyncio.Lock()
+        self._completion_pubsub: "PubSubLike | None" = None
+        self._completion_reader_task: "asyncio.Task[None] | None" = None
+        self._completion_waiters: "dict[str, set[asyncio.Future[bool]]]" = {}
         self._event_log: "RedisQueueEventLog | None" = None
 
     @property
@@ -745,6 +743,7 @@ class RedisQueueBackend(BaseQueueBackend):
         if self._client is None:
             self._client = self._create_client(self._url)
             self._owns_client = True
+        await self._require_maintenance_indexes()
         return True
 
     async def close(self) -> "None":
@@ -752,6 +751,7 @@ class RedisQueueBackend(BaseQueueBackend):
         if self._event_log is not None:
             await self._event_log.flush_events()
         await self._pending_read.aclose()
+        await self._close_completion_subscriber()
         if self._pubsub is not None:
             await _close_pubsub(self._pubsub, self._wakeup_channel)
             self._pubsub = None
@@ -1666,25 +1666,74 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         if not self._notifications:
             return False
+        loop = asyncio.get_running_loop()
+        waiter: "asyncio.Future[bool]" = loop.create_future()
+        target = str(task_id)
+        async with self._completion_lock:
+            await self._ensure_completion_subscriber()
+            self._completion_waiters.setdefault(target, set()).add(waiter)
+        try:
+            record = await self.get_task(task_id)
+            if record is not None and record.status in _TERMINAL_STATUSES:
+                return True
+            if timeout is None:
+                return await waiter
+            try:
+                return await asyncio.wait_for(waiter, timeout=timeout)
+            except asyncio.TimeoutError:
+                return False
+        finally:
+            async with self._completion_lock:
+                waiters = self._completion_waiters.get(target)
+                if waiters is not None:
+                    waiters.discard(waiter)
+                    if not waiters:
+                        self._completion_waiters.pop(target, None)
+
+    async def _ensure_completion_subscriber(self) -> "None":
+        """Create the subscriber while ``_completion_lock`` is held."""
+        if self._completion_reader_task is not None and not self._completion_reader_task.done():
+            return
         client = await self._get_client()
         pubsub = client.pubsub()
         subscribe = pubsub.subscribe(self._completion_channel)
         if inspect.isawaitable(subscribe):
             await subscribe
+        self._completion_pubsub = pubsub
+        self._completion_reader_task = asyncio.create_task(
+            self._read_completion_messages(pubsub), name=f"{self._backend_name}-queue-completions"
+        )
+
+    async def _read_completion_messages(self, pubsub: "PubSubLike") -> "None":
         try:
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout if timeout is not None else None
-            target = str(task_id)
             while True:
-                remaining = None if deadline is None else max(0.0, deadline - loop.time())
-                if remaining is not None and remaining <= 0.0:
-                    return False
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining)
-                if message is not None and str(_decode(message.get("data"))) == target:
-                    return True
-                if deadline is None and message is None:
-                    return False
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=None)
+                if message is None:
+                    continue
+                target = str(_decode(message.get("data")))
+                for waiter in tuple(self._completion_waiters.get(target, ())):
+                    if not waiter.done():
+                        waiter.set_result(True)
         finally:
+            for waiters in tuple(self._completion_waiters.values()):
+                for waiter in tuple(waiters):
+                    if not waiter.done():
+                        waiter.set_result(False)
+
+    async def _close_completion_subscriber(self) -> "None":
+        async with self._completion_lock:
+            reader, self._completion_reader_task = self._completion_reader_task, None
+            pubsub, self._completion_pubsub = self._completion_pubsub, None
+        await self._stop_completion_subscriber(reader, pubsub)
+
+    async def _stop_completion_subscriber(
+        self, reader: "asyncio.Task[None] | None", pubsub: "PubSubLike | None"
+    ) -> "None":
+        if reader is not None:
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
+        if pubsub is not None:
             await _close_pubsub(pubsub, self._completion_channel)
 
     def _create_client(self, url: "str") -> "ClientLike":
@@ -1807,7 +1856,10 @@ class RedisQueueBackend(BaseQueueBackend):
         )
 
     async def _save_new_record(self, record: "QueuedTaskRecord", *, publish: "bool") -> "None":
-        await self._save_new_records([record], publish=publish)
+        client = await self._get_client()
+        await _eval_script(
+            client, _ENQUEUE_SCRIPT, [self._ready_key, self._scheduled_key], self._enqueue_args(record, publish=publish)
+        )
 
     async def _save_new_records(self, records: "Sequence[QueuedTaskRecord]", *, publish: "bool") -> "None":
         if not records:
@@ -1831,7 +1883,7 @@ class RedisQueueBackend(BaseQueueBackend):
             self._wakeup_channel,
             _json_dumps({"event": "task_available"}),
             "1" if publish and self._notifications else "0",
-            _MAINTENANCE_INDEX_VERSION,
+            repr(_maintenance_score(record.expires_at)),
         ]
         for field, value in self._record_to_mapping(record).items():
             args.append(field)

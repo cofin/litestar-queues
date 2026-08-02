@@ -12,7 +12,12 @@ from uuid import uuid4
 
 from typing_extensions import Self
 
-from litestar_queues._correlation import bind_correlation_id, capture_correlation_id, reset_correlation_id
+from litestar_queues._correlation import (
+    bind_correlation_id,
+    capture_correlation_id,
+    preload_correlation_context,
+    reset_correlation_id,
+)
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
@@ -229,6 +234,7 @@ class QueueService:
             return self
         opened: "list[str]" = []
         try:
+            preload_correlation_context()
             queue_backend = self.get_queue_backend()
             opened.append(_RESOURCE_QUEUE_BACKEND)
             await queue_backend.open()
