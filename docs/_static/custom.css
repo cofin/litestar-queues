@@ -381,16 +381,6 @@ html.dark .only-light {
 }
 
 /* -----------------------------------------------------------------------------
-   Mermaid Diagrams (Dark Mode Fix)
-   ----------------------------------------------------------------------------- */
-html.dark .mermaid svg,
-html[data-theme="dark"] .mermaid svg {
-  background-color: white;
-  padding: 1em;
-  border-radius: 8px;
-}
-
-/* -----------------------------------------------------------------------------
    Responsive Breakpoints
    ----------------------------------------------------------------------------- */
 @media (min-width: 1400px) {
@@ -498,4 +488,42 @@ html[data-theme="dark"] .mermaid svg {
 
 .sy-foot {
   padding-bottom: 2rem;
+}
+
+/* -----------------------------------------------------------------------------
+   Mermaid Diagrams
+   ----------------------------------------------------------------------------- */
+
+/* Shibuya inverts the whole diagram in dark mode
+   (`.dark pre.mermaid > svg { filter: brightness(.8) invert(.82) contrast(1.2) }`),
+   which assumes mermaid always renders a light diagram. sphinxcontrib-mermaid
+   renders a real dark theme instead, so the two corrections stack and the brand
+   gold paints out blue. Drop the filter and colour the diagram directly. */
+html.dark pre.mermaid > svg {
+  filter: none;
+}
+
+pre.mermaid {
+  margin: 1.5rem 0;
+  text-align: center;
+  background: transparent;
+}
+
+/* The invert hack was also hiding mermaid's white diagram plate. Mermaid's
+   colour pipeline rejects a "transparent" background and substitutes white, so
+   clear it here instead and let the page show through in both modes. */
+pre.mermaid > svg {
+  background: transparent !important;
+}
+
+/* Edge labels and notes sit on the page background rather than on the gold node
+   fill, so they are the parts that have to follow the toggle. Driving them from
+   the theme's own custom property keeps one rule correct in both modes. */
+pre.mermaid .edgeLabel,
+pre.mermaid .edgeLabel p,
+pre.mermaid .edgeLabel span,
+pre.mermaid .edgeLabel foreignObject div {
+  color: var(--sy-c-text) !important;
+  background: transparent !important;
+  fill: var(--sy-c-text) !important;
 }
