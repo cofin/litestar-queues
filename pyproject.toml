@@ -148,7 +148,7 @@ benchmarks = [{ include-group = "benchmark-backends" }, { include-group = "bench
 build = ["bump-my-version"]
 dev = [
   { include-group = "lint" },
-  { include-group = "test-core" },
+  { include-group = "tests" },
   { include-group = "docs" },
   { include-group = "build" },
   { include-group = "examples" },
