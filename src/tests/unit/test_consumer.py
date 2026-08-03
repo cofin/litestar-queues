@@ -82,10 +82,12 @@ class _MultiTouchRecordingBackend(InMemoryQueueBackend):
 
 class _DelayedClaimBackend(InMemoryQueueBackend):
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         await asyncio.sleep(0.1)
-        return await super().claim_task_with_expired(task_id)
+        return await super().claim_task_with_expired(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
 
 
 async def test_consume_one_claims_and_executes_persisted_record() -> "None":
@@ -110,6 +112,31 @@ async def test_consume_one_claims_and_executes_persisted_record() -> "None":
     assert exit_code == TaskExitCode.SUCCESS
     assert result.status == "completed"
     assert result.result == 42
+
+
+async def test_consume_one_rejects_stale_external_attempt() -> "None":
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    @task("tasks.fenced-consumer")
+    async def fenced_consumer() -> "None":
+        return None
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(fenced_consumer.using(execution_backend="cloudrun"))
+        reserved = await queue_backend.reserve_external_dispatch(
+            result.id, "cloudrun", "sqs:1:1000:attempt", expected_retry_count=0
+        )
+        assert reserved is not None
+        exit_code = await consume_one(
+            service, result.id, expected_retry_count=1, expected_execution_ref="sqs:1:1000:attempt"
+        )
+
+    assert exit_code == TaskExitCode.CLAIM_LOST
 
 
 async def test_consume_one_publishes_expiration_when_deadline_crosses_during_claim() -> "None":

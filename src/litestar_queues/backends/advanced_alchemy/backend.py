@@ -250,15 +250,21 @@ class SQLAlchemyBackend(BaseQueueBackend):
             return None
         return max((next_at - _utc_now()).total_seconds(), 0.0)
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
-            return await service.claim_task(task_id)
+            return await service.claim_task(
+                task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+            )
 
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         async with self._operation() as service:
-            return await service.claim_task_with_expired(task_id)
+            return await service.claim_task_with_expired(
+                task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+            )
 
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
@@ -375,10 +381,32 @@ class SQLAlchemyBackend(BaseQueueBackend):
         reservation_ref: "str",
         *,
         execution_profile: "str | None" = None,
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
             return await service.reserve_external_dispatch(
-                task_id, execution_backend, reservation_ref, execution_profile=execution_profile
+                task_id,
+                execution_backend,
+                reservation_ref,
+                execution_profile=execution_profile,
+                expected_retry_count=expected_retry_count,
+            )
+
+    async def clear_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            record = await service.clear_execution_ref(task_id, expected_retry_count, expected_execution_ref)
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def replace_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        async with self._operation() as service:
+            return await service.replace_execution_ref(
+                task_id, expected_retry_count, expected_execution_ref, execution_ref
             )
 
     async def release_external_dispatch(

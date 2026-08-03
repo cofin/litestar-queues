@@ -60,7 +60,13 @@ class TaskExitCode(IntEnum):
     MISSING_CONFIG_FACTORY = 8
 
 
-async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
+async def consume_one(
+    queue: "QueueService",
+    task_id: "UUID",
+    *,
+    expected_retry_count: "int | None" = None,
+    expected_execution_ref: "str | None" = None,
+) -> "TaskExitCode":
     """Claim, execute, and report one queued record identified by its id.
 
     The live record in the queue backend is authoritative; the id only locates
@@ -77,7 +83,9 @@ async def consume_one(queue: "QueueService", task_id: "UUID") -> "TaskExitCode":
     if record is None:
         return TaskExitCode.MISSING_RECORD
 
-    claimed, expired = await queue.claim_task(record.id)
+    claimed, expired = await queue.claim_task(
+        record.id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+    )
     if expired is not None:
         return TaskExitCode.CLAIM_LOST
     if claimed is None:

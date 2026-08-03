@@ -63,6 +63,24 @@ async def test_redis_external_dispatch_reservation_is_fenced(redis_backend: "Red
     await assert_external_dispatch_reservation_is_fenced(redis_backend)
 
 
+async def test_redis_external_attempt_operations_require_retry_and_reference_fences(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    record = await redis_backend.enqueue("tasks.redis.sqs-fences", execution_backend="sqs")
+    first_ref = f"sqs:{record.retry_count}:1:{record.id}"
+    second_ref = f"sqs:{record.retry_count}:2:{record.id}"
+
+    assert await redis_backend.reserve_external_dispatch(record.id, "sqs", first_ref, expected_retry_count=1) is None
+    assert await redis_backend.reserve_external_dispatch(record.id, "sqs", first_ref, expected_retry_count=0)
+    assert await redis_backend.claim_task(record.id, expected_execution_ref=second_ref) is None
+    assert await redis_backend.clear_execution_ref(record.id, 1, first_ref) is None
+    assert await redis_backend.replace_execution_ref(record.id, 0, second_ref, first_ref) is None
+    replaced = await redis_backend.replace_execution_ref(record.id, 0, first_ref, second_ref)
+    assert replaced is not None and replaced.execution_ref == second_ref
+    cleared = await redis_backend.clear_execution_ref(record.id, 0, second_ref)
+    assert cleared is not None and cleared.execution_ref is None
+
+
 async def test_redis_claim_many_preserves_expired_dispatch_reservation(
     redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":

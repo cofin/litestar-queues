@@ -345,30 +345,37 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         result = await self.repository.session.execute(statement)
         return _coerce_datetime(result.scalar())
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
-        claimed, _ = await self.claim_task_with_expired(task_id)
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
         return claimed
 
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         """Claim one task and identify a claim-time expiry owned by this call."""
         now = _utc_now()
         model_type = self.model_type
+        criteria = [
+            model_type.id == task_id,
+            model_type.status.in_(_DUE_STATUSES),
+            or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+            or_(model_type.expires_at.is_(None), model_type.expires_at > now, model_type.execution_ref.is_not(None)),
+            or_(
+                model_type.execution_ref.is_(None),
+                model_type.execution_ref.not_like(f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%"),
+            ),
+        ]
+        if expected_retry_count is not None:
+            criteria.append(model_type.retry_count == expected_retry_count)
+        if expected_execution_ref is not None:
+            criteria.append(model_type.execution_ref == expected_execution_ref)
         result = await self.repository.session.execute(
             update(model_type)
-            .where(
-                model_type.id == task_id,
-                model_type.status.in_(_DUE_STATUSES),
-                or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
-                or_(
-                    model_type.expires_at.is_(None), model_type.expires_at > now, model_type.execution_ref.is_not(None)
-                ),
-                or_(
-                    model_type.execution_ref.is_(None),
-                    model_type.execution_ref.not_like(f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%"),
-                ),
-            )
+            .where(*criteria)
             .values(_update_values(model_type, {"status": "running", "started_at": now, "heartbeat_at": now}, now=now))
         )
         if result.rowcount != 1:
@@ -991,19 +998,28 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def reserve_external_dispatch(
-        self, task_id: "UUID", execution_backend: "str", reservation_ref: "str", *, execution_profile: "str | None"
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        reservation_ref: "str",
+        *,
+        execution_profile: "str | None",
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
         now = _utc_now()
         model_type = self.model_type
+        criteria = [
+            model_type.id == task_id,
+            model_type.status.in_(_DUE_STATUSES),
+            or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
+            or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+            model_type.execution_ref.is_(None),
+        ]
+        if expected_retry_count is not None:
+            criteria.append(model_type.retry_count == expected_retry_count)
         result = await self.repository.session.execute(
             update(model_type)
-            .where(
-                model_type.id == task_id,
-                model_type.status.in_(_DUE_STATUSES),
-                or_(model_type.scheduled_at.is_(None), model_type.scheduled_at <= now),
-                or_(model_type.expires_at.is_(None), model_type.expires_at > now),
-                model_type.execution_ref.is_(None),
-            )
+            .where(*criteria)
             .values(
                 _update_values(
                     model_type,
@@ -1015,6 +1031,46 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                     now=now,
                 )
             )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
+    async def clear_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.status.in_(_DUE_STATUSES),
+                model_type.retry_count == expected_retry_count,
+                model_type.execution_ref == expected_execution_ref,
+            )
+            .values(_update_values(model_type, {"execution_ref": None}))
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
+    async def replace_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.status.in_(_DUE_STATUSES),
+                model_type.retry_count == expected_retry_count,
+                model_type.execution_ref == expected_execution_ref,
+            )
+            .values(_update_values(model_type, {"execution_ref": execution_ref}))
             .execution_options(synchronize_session=False)
         )
         if result.rowcount != 1:

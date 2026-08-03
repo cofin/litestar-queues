@@ -913,14 +913,25 @@ class QueueService:
         return claimed
 
     async def claim_task(
-        self, task_id: "UUID", *, worker_id: "str | None" = None
+        self,
+        task_id: "UUID",
+        *,
+        worker_id: "str | None" = None,
+        expected_retry_count: "int | None" = None,
+        expected_execution_ref: "str | None" = None,
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         """Claim one task and publish its claim-time expiration event.
 
         Returns:
             The claimed record and the expired record, at most one of which is set.
         """
-        claimed, expired = await self.get_queue_backend().claim_task_with_expired(task_id)
+        backend = self.get_queue_backend()
+        if expected_retry_count is None and expected_execution_ref is None:
+            claimed, expired = await backend.claim_task_with_expired(task_id)
+        else:
+            claimed, expired = await backend.claim_task_with_expired(
+                task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+            )
         if expired is not None:
             await self._publish_expired_event(expired, worker_id=worker_id)
         return claimed, expired

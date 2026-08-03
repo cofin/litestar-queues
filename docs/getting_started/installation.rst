@@ -29,6 +29,8 @@ Install only the integration your application uses:
      - Valkey queue persistence and worker wakeups.
    * - ``pip install "litestar-queues[cloudrun]"``
      - Google Cloud Run Jobs execution.
+   * - ``pip install "litestar-queues[sqs]"``
+     - Amazon SQS execution dispatch and consumers.
    * - ``pip install "litestar-queues[otel]"``
      - OpenTelemetry instrumentation.
    * - ``pip install "litestar-queues[prometheus]"``

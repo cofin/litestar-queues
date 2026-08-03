@@ -1676,9 +1676,13 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
                 return claimed
         return None
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         self.claim_task_calls.append(task_id)
-        return await super().claim_task(task_id)
+        return await super().claim_task(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None

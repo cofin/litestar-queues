@@ -574,12 +574,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
-        claimed, _ = await self.claim_task_with_expired(task_id)
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
         return claimed
 
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         """Claim one task and identify a claim-time expiry owned by this call."""
         claimed: "QueuedTaskRecord | None" = None
@@ -633,6 +637,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                             due_at=self._serialize_datetime(now),
                             heartbeat_at=self._serialize_datetime(now),
                             started_at=self._serialize_datetime(now),
+                            expected_retry_count=expected_retry_count,
+                            expected_execution_ref=expected_execution_ref,
                         )
                     )
                     if self._resolve_rows_affected(result) == 0:
@@ -1343,6 +1349,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         reservation_ref: "str",
         *,
         execution_profile: "str | None" = None,
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
         async with self._session() as driver:
             await driver.begin()
@@ -1354,6 +1361,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         execution_profile=execution_profile,
                         execution_ref=reservation_ref,
                         now=self._serialize_datetime(_utc_now()),
+                        expected_retry_count=expected_retry_count,
                     )
                 )
                 row = await self._select_task(driver, task_id) if self._resolve_rows_affected(result) else None
@@ -1364,6 +1372,67 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         record = self._record_from_row(row) if row is not None else None
         return record if record is not None and record.execution_ref == reservation_ref else None
+
+    async def clear_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            current_row = await self._select_task(driver, task_id)
+            current = self._record_from_row(current_row) if current_row is not None else None
+            if (
+                current is None
+                or current.status not in {"pending", "scheduled"}
+                or current.retry_count != expected_retry_count
+                or current.execution_ref != expected_execution_ref
+            ):
+                await driver.rollback()
+                return None
+            result = await driver.execute(
+                self._get_store().clear_execution_ref(
+                    task_id=str(task_id),
+                    expected_retry_count=expected_retry_count,
+                    expected_execution_ref=expected_execution_ref,
+                )
+            )
+            rows_affected = self._resolve_rows_affected(result)
+            row = await self._select_task(driver, task_id) if rows_affected == 1 or rows_affected < 0 else None
+            await driver.commit()
+        record = self._record_from_row(row) if row is not None else None
+        if record is not None and record.execution_ref is not None:
+            return None
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def replace_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            current_row = await self._select_task(driver, task_id)
+            current = self._record_from_row(current_row) if current_row is not None else None
+            if (
+                current is None
+                or current.status not in {"pending", "scheduled"}
+                or current.retry_count != expected_retry_count
+                or current.execution_ref != expected_execution_ref
+            ):
+                await driver.rollback()
+                return None
+            result = await driver.execute(
+                self._get_store().replace_execution_ref(
+                    task_id=str(task_id),
+                    expected_retry_count=expected_retry_count,
+                    expected_execution_ref=expected_execution_ref,
+                    execution_ref=execution_ref,
+                )
+            )
+            rows_affected = self._resolve_rows_affected(result)
+            row = await self._select_task(driver, task_id) if rows_affected == 1 or rows_affected < 0 else None
+            await driver.commit()
+        record = self._record_from_row(row) if row is not None else None
+        return record if record is not None and record.execution_ref == execution_ref else None
 
     async def release_external_dispatch(
         self,

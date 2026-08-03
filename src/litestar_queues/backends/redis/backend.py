@@ -222,12 +222,16 @@ local task_id = ARGV[2]
 local now_ms = tonumber(ARGV[3])
 local now_iso = ARGV[4]
 local reservation_prefix = ARGV[5]
+local expected_retry = ARGV[6]
+local expected_ref = ARGV[7]
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'pending' and status ~= 'scheduled' then
     return {0}
 end
 local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+if expected_retry ~= '' and redis.call('HGET', hkey, 'retry_count') ~= expected_retry then return {0} end
+if expected_ref ~= '' and execution_ref ~= expected_ref then return {0} end
 if execution_ref and string.sub(execution_ref, 1, string.len(reservation_prefix)) == reservation_prefix then
     return {0}
 end
@@ -266,6 +270,24 @@ if execution_ref and execution_ref ~= '' then
 else
     redis.call('ZREM', prefix .. ':maintenance:external', task_id)
 end
+return {1}
+"""
+
+_CLEAR_EXECUTION_REF_SCRIPT = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'pending' and status ~= 'scheduled' then return {0} end
+if redis.call('HGET', KEYS[1], 'retry_count') ~= ARGV[1] then return {0} end
+if redis.call('HGET', KEYS[1], 'execution_ref') ~= ARGV[2] then return {0} end
+redis.call('HSET', KEYS[1], 'execution_ref', '')
+return {1}
+"""
+
+_REPLACE_EXECUTION_REF_SCRIPT = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'pending' and status ~= 'scheduled' then return {0} end
+if redis.call('HGET', KEYS[1], 'retry_count') ~= ARGV[1] then return {0} end
+if redis.call('HGET', KEYS[1], 'execution_ref') ~= ARGV[2] then return {0} end
+redis.call('HSET', KEYS[1], 'execution_ref', ARGV[3])
 return {1}
 """
 _COMPLETE_SCRIPT = """
@@ -568,6 +590,9 @@ local now = tonumber(ARGV[2])
 local scheduled = tonumber(redis.call('HGET', hkey, 'scheduled_score')) or 0
 local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
 local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+if ARGV[6] ~= '' and redis.call('HGET', hkey, 'retry_count') ~= ARGV[6] then
+    return {0}
+end
 if scheduled > now or (expires > 0 and expires <= now)
         or (execution_ref and execution_ref ~= '') then
     return {0}
@@ -901,12 +926,16 @@ class RedisQueueBackend(BaseQueueBackend):
         due_records.sort(key=lambda record: (-record.priority, record.created_at))
         return due_records[:limit]
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
-        claimed, _ = await self.claim_task_with_expired(task_id)
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
         return claimed
 
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         """Atomically claim a pending task via a single fenced script.
 
@@ -925,6 +954,8 @@ class RedisQueueBackend(BaseQueueBackend):
                 repr(_maintenance_score(now)),
                 _serialize_datetime(now),
                 EXTERNAL_DISPATCH_RESERVATION_PREFIX,
+                "" if expected_retry_count is None else str(expected_retry_count),
+                expected_execution_ref or "",
             ],
         )
         if not outcome:
@@ -1282,6 +1313,7 @@ class RedisQueueBackend(BaseQueueBackend):
         reservation_ref: "str",
         *,
         execution_profile: "str | None" = None,
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
         client = await self._get_client()
         outcome = await _eval_script(
@@ -1294,7 +1326,39 @@ class RedisQueueBackend(BaseQueueBackend):
                 execution_backend,
                 execution_profile or "",
                 reservation_ref,
+                "" if expected_retry_count is None else str(expected_retry_count),
             ],
+        )
+        if not outcome or int(outcome[0]) != 1:
+            return None
+        return await self.get_task(task_id)
+
+    async def clear_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        client = await self._get_client()
+        outcome = await _eval_script(
+            client,
+            _CLEAR_EXECUTION_REF_SCRIPT,
+            [self._task_key(task_id)],
+            [str(expected_retry_count), expected_execution_ref],
+        )
+        if not outcome or int(outcome[0]) != 1:
+            return None
+        record = await self.get_task(task_id)
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def replace_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        client = await self._get_client()
+        outcome = await _eval_script(
+            client,
+            _REPLACE_EXECUTION_REF_SCRIPT,
+            [self._task_key(task_id)],
+            [str(expected_retry_count), expected_execution_ref, execution_ref],
         )
         if not outcome or int(outcome[0]) != 1:
             return None

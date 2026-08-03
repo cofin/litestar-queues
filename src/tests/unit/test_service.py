@@ -49,10 +49,12 @@ class _LifecycleQueueBackend(InMemoryQueueBackend):
 
 class _DelayedClaimBackend(InMemoryQueueBackend):
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         await asyncio.sleep(0.1)
-        return await super().claim_task_with_expired(task_id)
+        return await super().claim_task_with_expired(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
 
 
 class _LifecycleExecutionBackend(BaseExecutionBackend):

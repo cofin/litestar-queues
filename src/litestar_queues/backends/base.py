@@ -170,12 +170,14 @@ class BaseQueueBackend:
         """Return due pending or scheduled tasks ordered for execution."""
         raise NotImplementedError
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
         """Atomically claim a pending task."""
         raise NotImplementedError
 
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         """Claim one task and report when this call expires that task.
 
@@ -183,7 +185,9 @@ class BaseQueueBackend:
             The claimed record and the expired record, at most one of which is set.
         """
         expired = await self.expire_overdue()
-        claimed = await self.claim_task(task_id)
+        claimed = await self.claim_task(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
         expired.extend(await self.expire_overdue())
         expired_record = next((record for record in expired if record.id == task_id), None)
         return claimed, expired_record
@@ -420,6 +424,7 @@ class BaseQueueBackend:
         reservation_ref: "str",
         *,
         execution_profile: "str | None" = None,
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
         """Atomically reserve a due, unexpired task for external dispatch.
 
@@ -427,6 +432,18 @@ class BaseQueueBackend:
         protect the external side effect.
         """
         return None
+
+    async def clear_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        """Clear an exact pending external attempt and wake dispatchers."""
+        raise NotImplementedError
+
+    async def replace_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        """Atomically rotate an exact pending external attempt reference."""
+        raise NotImplementedError
 
     async def release_external_dispatch(
         self,

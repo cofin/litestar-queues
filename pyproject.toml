@@ -57,6 +57,7 @@ queues = "litestar_queues._cli:queues_group"
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloud-tasks = ["google-cloud-tasks>=2.23.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
+sqs = ["aiobotocore>=3.8.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
 redis = ["redis>=5.0.0"]

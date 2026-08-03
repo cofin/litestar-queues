@@ -1,6 +1,6 @@
-==========================
+======================
 Cloud Tasks Deployment
-==========================
+======================
 
 Cloud Tasks holds each queued record and calls your consumer service when it is
 due. Nothing polls, so nothing has to stay running: both your API and your
@@ -11,18 +11,18 @@ This is the topology to reach for when your background work is HTTP-shaped and
 finishes in minutes rather than hours. If it does not, read
 :ref:`cloud-tasks-when-not-to` before going further.
 
-.. code-block:: text
+.. mermaid::
 
-   ┌─────────────┐  enqueue()   ┌──────────────┐   creates    ┌──────────────┐
-   │ Your API    │─────────────▶│ Queue store  │              │ Cloud Tasks  │
-   │ (any proc)  │  writes the  │ (shared DB)  │  a delivery  │ holds it     │
-   └─────────────┘  record      └──────────────┘◀────────────▶└──────┬───────┘
-                                       ▲                              │ POST
-                                       │ claims, runs, settles        ▼
-                                       │                     ┌──────────────┐
-                                       └─────────────────────│ Consumer     │
-                                                             │ (Cloud Run)  │
-                                                             └──────────────┘
+   flowchart LR
+       api["Your API<br/>(any process)"]
+       store[("Queue store<br/>(shared DB)")]
+       tasks["Cloud Tasks<br/>holds the delivery"]
+       consumer["Consumer<br/>(Cloud Run)"]
+
+       api -- "enqueue() writes the record" --> store
+       store -- "creates a delivery" --> tasks
+       tasks -- "POST" --> consumer
+       consumer -- "claims, runs, settles" --> store
 
 The delivery carries one thing: the record's id. Arguments, metadata, and
 results never cross the network — the consumer re-reads all of it from the queue

@@ -67,6 +67,17 @@ Cloud Tasks
 
 .. automodule:: litestar_queues.execution.cloudtasks.routes
    :members:
+
+Amazon SQS
+==========
+
+.. automodule:: litestar_queues.execution.sqs.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.sqs.backend
+   :members:
    :undoc-members:
    :show-inheritance:
 
