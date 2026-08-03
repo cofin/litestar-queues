@@ -6,8 +6,6 @@ DockerService/docker_service API. Remove this module once the official
 pytest_databases.docker.localstack provider is released.
 """
 
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any

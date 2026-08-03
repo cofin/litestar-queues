@@ -119,7 +119,9 @@ async def test_dispatch_retains_only_ambiguous_send_reservations(error: "Excepti
 
 async def test_visibility_extension_targets_only_the_active_receipt(monkeypatch: "pytest.MonkeyPatch") -> "None":
     client = FakeSqsClient()
-    config = SqsExecutionConfig(queue_url="http://sqs.test/queue", visibility_timeout=2, visibility_extension_interval=1)
+    config = SqsExecutionConfig(
+        queue_url="http://sqs.test/queue", visibility_timeout=2, visibility_extension_interval=1
+    )
     backend = SqsExecutionBackend(execution_config=config, client=client)
     first_sleep = True
     parked = asyncio.Event()
@@ -140,9 +142,5 @@ async def test_visibility_extension_targets_only_the_active_receipt(monkeypatch:
     await asyncio.gather(task, return_exceptions=True)
 
     assert client.visibility_changes == [
-        {
-            "QueueUrl": config.queue_url,
-            "ReceiptHandle": "receipt-1",
-            "VisibilityTimeout": config.visibility_timeout,
-        }
+        {"QueueUrl": config.queue_url, "ReceiptHandle": "receipt-1", "VisibilityTimeout": config.visibility_timeout}
     ]

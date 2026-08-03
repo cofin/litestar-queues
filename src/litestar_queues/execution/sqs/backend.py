@@ -73,7 +73,6 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
                 return None
             await self._send(service, reserved, attempt_ref)
             _record_metric(service, record, "dispatch", "dispatched")
-            return attempt_ref
         except asyncio.CancelledError:
             _record_metric(service, record, "dispatch", "cancelled")
             raise
@@ -81,6 +80,8 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
             runtime.set_status_error(span, "sqs.dispatch_failed")
             _record_metric(service, record, "dispatch", "error")
             raise
+        else:
+            return attempt_ref
         finally:
             runtime.end_span(span)
 
@@ -218,39 +219,56 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
                 await asyncio.gather(*done, *pending, return_exceptions=True)
             raise
 
+    async def _resolve_delivery(
+        self, service: "QueueService", message: "dict[str, Any]", receipt: "str | None"
+    ) -> "tuple[UUID, int, str, QueuedTaskRecord] | None":
+        """Validate a raw delivery and load its record.
+
+        Returns ``None`` when the delivery cannot be acted on. Undeliverable
+        messages are acknowledged so they stop redelivering; a storage failure
+        deliberately leaves the delivery unacknowledged so SQS retries it.
+        """
+        attempt = message.get("MessageAttributes", {}).get(ATTEMPT_ATTRIBUTE, {}).get("StringValue")
+        parsed = _parse_attempt(attempt)
+        try:
+            task_id = UUID(message.get("Body", ""))
+        except (ValueError, TypeError, AttributeError):
+            task_id = None
+        if task_id is None or parsed is None:
+            _record_delivery_metric(service, "poison")
+            if receipt:
+                await self._delete(receipt)
+            return None
+        retry_count, _attempt_ms = parsed
+        try:
+            current = await service.get_task(task_id)
+        except Exception:  # noqa: BLE001 -- storage failures must leave the delivery unacknowledged
+            _record_delivery_metric(service, "storage_error")
+            return None
+        if current is None:
+            _record_delivery_metric(service, "missing")
+            if receipt:
+                await self._delete(receipt)
+            return None
+        return task_id, retry_count, attempt, current
+
     async def _consume_message(
         self, service: "QueueService", message: "dict[str, Any]", semaphore: "asyncio.Semaphore"
     ) -> "None":
         async with semaphore:
             receipt = message.get("ReceiptHandle")
-            attempt = message.get("MessageAttributes", {}).get(ATTEMPT_ATTRIBUTE, {}).get("StringValue")
-            parsed = _parse_attempt(attempt)
-            try:
-                task_id = UUID(message.get("Body", ""))
-            except (ValueError, TypeError, AttributeError):
-                task_id = None
-            if task_id is None or parsed is None:
-                _record_delivery_metric(service, "poison")
-                if receipt:
-                    await self._delete(receipt)
+            resolved = await self._resolve_delivery(service, message, receipt)
+            if resolved is None:
                 return
-            retry_count, _attempt_ms = parsed
-            try:
-                current = await service.get_task(task_id)
-            except Exception:
-                _record_delivery_metric(service, "storage_error")
-                return
-            if current is None:
-                _record_delivery_metric(service, "missing")
-                if receipt:
-                    await self._delete(receipt)
-                return
+            task_id, retry_count, attempt, current = resolved
             runtime = service.observability_runtime
             attributes = _queue_observability_attributes("deliver", current)
             attributes["messaging.message.id"] = str(task_id)
             span = runtime.start_span("litestar_queues.deliver", kind="consumer", attributes=attributes)
             visibility_task = (
-                asyncio.create_task(self._extend_visibility(receipt)) if receipt and self.execution_config.visibility_timeout else None
+                asyncio.create_task(self._extend_visibility(receipt))
+                if receipt and self.execution_config.visibility_timeout
+                else None
             )
             try:
                 outcome = await consume_one(
@@ -269,12 +287,12 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
                     await asyncio.gather(visibility_task, return_exceptions=True)
                 runtime.end_span(span)
             if outcome == TaskExitCode.FAILURE:
-                current = await service.get_task(task_id)
-                if current is None:
+                latest = await service.get_task(task_id)
+                if latest is None:
                     return
-                if not current.is_terminal:
+                if not latest.is_terminal:
                     cleared = await service.get_queue_backend().clear_execution_ref(
-                        task_id, current.retry_count, attempt
+                        task_id, latest.retry_count, attempt
                     )
                     if cleared is None:
                         _record_delivery_metric(service, "retry_clear_lost")
@@ -332,18 +350,14 @@ def _parse_attempt(value: "object") -> "tuple[int, int] | None":
     return (retry_count, timestamp) if retry_count >= 0 and timestamp >= 0 else None
 
 
-def _record_metric(
-    service: "QueueService", record: "QueuedTaskRecord", operation: "str", outcome: "str"
-) -> "None":
+def _record_metric(service: "QueueService", record: "QueuedTaskRecord", operation: "str", outcome: "str") -> "None":
     label = "queue.repair.outcome" if operation == "repair" else "queue.execution.status"
     service.observability_runtime.record_counter(
         f"litestar_queues.execution.{operation}", attributes={**_queue_metric_attributes(record), label: outcome}
     )
 
 
-def _consumer_task_done(
-    running: "set[asyncio.Task[None]]", completed: "asyncio.Task[None]", logger: "Any"
-) -> "None":
+def _consumer_task_done(running: "set[asyncio.Task[None]]", completed: "asyncio.Task[None]", logger: "Any") -> "None":
     running.discard(completed)
     if completed.cancelled():
         return
