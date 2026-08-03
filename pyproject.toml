@@ -40,7 +40,7 @@ license = { text = "MIT" }
 name = "litestar-queues"
 readme = "README.md"
 requires-python = ">=3.10"
-version = "0.7.0"
+version = "0.8.0"
 
 [project.urls]
 Changelog = "https://cofin.github.io/litestar-queues/changelog"
@@ -85,7 +85,7 @@ allow-direct-references = true
 allow_dirty = true
 commit = false
 commit_args = "--no-verify"
-current_version = "0.7.0"
+current_version = "0.8.0"
 ignore_missing_files = false
 ignore_missing_version = false
 message = "chore(release): bump to v{new_version}"
