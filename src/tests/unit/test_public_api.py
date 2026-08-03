@@ -447,7 +447,18 @@ def test_observability_optional_extras_are_declared() -> "None":
     assert optional_dependencies["prometheus"] == ["prometheus-client"]
     assert "observability" not in optional_dependencies
 
-    tests_dependencies = pyproject["dependency-groups"]["tests"]
+    dependency_groups: dict[str, list[str | dict[str, str]]] = pyproject["dependency-groups"]
+
+    def resolve_group(name: str) -> set[str]:
+        dependencies: set[str] = set()
+        for dependency in dependency_groups[name]:
+            if isinstance(dependency, str):
+                dependencies.add(dependency)
+            elif included_group := dependency.get("include-group"):
+                dependencies.update(resolve_group(included_group))
+        return dependencies
+
+    tests_dependencies = resolve_group("tests")
     assert "opentelemetry-api" in tests_dependencies
     assert "opentelemetry-sdk" in tests_dependencies
     assert "prometheus-client" in tests_dependencies
