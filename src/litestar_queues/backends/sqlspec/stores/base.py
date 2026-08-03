@@ -430,10 +430,17 @@ class SQLSpecQueueStore:
         )
 
     def claim_task(
-        self, *, task_id: "str", due_at: "DatetimeParam", started_at: "DatetimeParam", heartbeat_at: "DatetimeParam"
+        self,
+        *,
+        task_id: "str",
+        due_at: "DatetimeParam",
+        started_at: "DatetimeParam",
+        heartbeat_at: "DatetimeParam",
+        expected_retry_count: "int | None" = None,
+        expected_execution_ref: "str | None" = None,
     ) -> "Update":
         """Return an UPDATE statement that claims a due task."""
-        return (
+        statement = (
             sql
             .update(self.table_name)
             .set(**self._mapped_values({"status": "running", "started_at": started_at, "heartbeat_at": heartbeat_at}))
@@ -450,6 +457,11 @@ class SQLSpecQueueStore:
                 reservation_prefix=f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}%",
             )
         )
+        if expected_retry_count is not None:
+            statement = statement.where_eq(self._col("retry_count"), expected_retry_count)
+        if expected_execution_ref is not None:
+            statement = statement.where_eq(self._col("execution_ref"), expected_execution_ref)
+        return statement
 
     def claim_tasks(
         self,
@@ -836,9 +848,10 @@ RETURNING {target}.{id_col} AS id
         execution_ref: "str",
         execution_profile: "str | None",
         now: "DatetimeParam",
+        expected_retry_count: "int | None" = None,
     ) -> "Update":
         """Return the fenced external-dispatch reservation update."""
-        return (
+        statement = (
             sql
             .update(self.table_name)
             .set(
@@ -855,6 +868,35 @@ RETURNING {target}.{id_col} AS id
             )
             .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :expires_now", expires_now=now)
             .where(f"{self._col('execution_ref')} IS NULL")
+        )
+        if expected_retry_count is not None:
+            statement = statement.where_eq(self._col("retry_count"), expected_retry_count)
+        return statement
+
+    def clear_execution_ref(
+        self, *, task_id: "str", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "Update":
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"execution_ref": None}))
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where_eq(self._col("retry_count"), expected_retry_count)
+            .where_eq(self._col("execution_ref"), expected_execution_ref)
+        )
+
+    def replace_execution_ref(
+        self, *, task_id: "str", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "Update":
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"execution_ref": execution_ref}))
+            .where_eq(self._col("id"), task_id)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where_eq(self._col("retry_count"), expected_retry_count)
+            .where_eq(self._col("execution_ref"), expected_execution_ref)
         )
 
     def release_external_dispatch(

@@ -6,8 +6,64 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
-Unreleased
-==========
+0.8.0 - 2026-08-03
+==================
+
+Amazon SQS joins Google Cloud Tasks as a managed execution transport, and
+steady-state pickup latency drops on every persistent backend. Like Cloud Tasks,
+SQS carries nothing but a record's id, so arguments, results, and the queue's
+schema stay out of the transport entirely.
+
+**Added:**
+
+* Amazon SQS is available as an optional execution backend, installed with
+  ``pip install "litestar-queues[sqs]"``. Configure it with
+  :class:`SqsExecutionConfig` and run one dispatcher alongside any number of
+  long-polling consumers against the same persistent queue backend. SQS is an
+  execution transport and never owns queue state: only the task's id is
+  published, while arguments, task names, results, retries, schedules, and
+  leases stay in queue storage. Standard queues are the default and ``fifo=True``
+  selects a FIFO queue. See :doc:`usage/deployment/sqs`.
+* ``litestar queues run-consumer --backend sqs`` starts a continuous broker
+  consumer, with ``--max-concurrency`` and ``--drain-timeout`` to bound in-flight
+  deliveries and shutdown.
+* Every SQS delivery is fenced to the exact persisted retry generation and
+  dispatch attempt through a private message attribute, so a delivery that
+  outlives its record cannot execute a later attempt. ``consume_one`` accepts
+  ``expected_retry_count`` and ``expected_execution_ref`` to express the same
+  fence directly.
+* SQS joins the managed-transport observability and repair surface introduced in
+  0.7.0, reporting the same ``litestar_queues.execution`` metrics with the same
+  fixed outcome vocabulary, and having its lost deliveries repaired by bounded
+  maintenance.
+
+**Breaking changes:**
+
+* Queue backends gained ``clear_execution_ref`` and ``replace_execution_ref``,
+  and ``claim_task`` gained ``expected_retry_count`` and
+  ``expected_execution_ref``. The shipped backends implement all of them; a
+  custom backend only needs them to serve an external transport, and raises
+  rather than silently mis-settling a record if it does not.
+
+**Changed:**
+
+* Steady-state pickup is materially faster on every persistent backend. Redis
+  and Valkey no longer make extra enqueue and index round trips, PostgreSQL
+  performs expiry and ordered claim in a single transactional statement, and
+  optional SQLSpec correlation state is prepared during service startup instead
+  of on the first task. Fencing, expiration, heartbeat, maintenance, event, and
+  persisted-record guarantees are unchanged.
+* Completion subscription registration and shutdown are race-safe, so a
+  persistent completion reader no longer contends with task execution.
+* The SQLSpec extra now requires ``sqlspec>=0.58.0`` to pick up its native
+  psycopg hot-path behavior.
+
+0.7.0 - 2026-07-28
+==================
+
+Google Cloud Tasks arrives as an execution backend that needs no worker process
+anywhere, queued work gains not-started deadlines, and every runtime name the
+package owns can be moved under a namespace of your choosing.
 
 **Added:**
 
@@ -22,6 +78,20 @@ Unreleased
   when the execution backend is Cloud Tasks. It requires either Cloud Run's own
   IAM asserted explicitly or your guards, and never treats a delivery header as
   authentication.
+* Queued work can carry a not-started deadline through ``expires_in`` or
+  ``expires_at``, and a record that passes it without being claimed settles in
+  the terminal ``expired`` state. The deadline is enforced atomically by every
+  backend, and ``expired`` is reported through task results, events, metrics,
+  CLI status, recurring schedules, and cleanup. It is distinct from user
+  cancellation and from a runtime failure.
+* ``QueueConfig(namespace=...)`` names the runtime identity the package owns.
+  It derives Litestar state, dependency and route registrations, default stream
+  paths, event channels, maintenance coordination, Redis and Valkey keys,
+  backend wakeups, Cloud Tasks delivery resources, telemetry, and logger
+  hierarchies, so two independent queue runtimes can share a process without
+  colliding. Explicit component settings stay authoritative, and SQL table
+  names, ORM model classes, task names, and queue names are untouched. The
+  default namespace preserves every existing identifier.
 * Bounded maintenance now repairs deliveries a managed transport has lost. On a
   queue nobody polls, a delivery that disappears would otherwise leave its record
   waiting forever with no error raised. Repair shares the existing external

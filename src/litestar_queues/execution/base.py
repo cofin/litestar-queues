@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
-__all__ = ("BaseExecutionBackend", "DispatchRepairResult")
+__all__ = ("BaseConsumerExecutionBackend", "BaseExecutionBackend", "DispatchRepairResult")
 
 _MESSAGING_SYSTEM = "litestar_queues"
 
@@ -188,3 +188,13 @@ class BaseExecutionBackend:
         exc_tb: "TracebackType | None",  # noqa: PYI036
     ) -> "None":
         await self.close()
+
+
+class BaseConsumerExecutionBackend(BaseExecutionBackend):
+    """Base for external backends that continuously receive broker deliveries."""
+
+    __slots__ = ()
+
+    async def run_consumer(self, service: "QueueService", *, max_concurrency: "int", drain_timeout: "float") -> "None":
+        """Receive and execute deliveries until cancelled."""
+        raise NotImplementedError

@@ -20,6 +20,7 @@ import click
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.consumer import run_task
 from litestar_queues.execution import get_execution_backend
+from litestar_queues.execution.base import BaseConsumerExecutionBackend
 from litestar_queues.maintenance import QueueMaintenanceService
 from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
@@ -34,6 +35,7 @@ __all__ = (
     "queues_group",
     "register",
     "run_command",
+    "run_consumer_command",
     "run_maintenance_command",
     "run_task_command",
     "scheduler_health_command",
@@ -144,6 +146,62 @@ def run_command(
     # identically for this command and for the server-started worker child.
     exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues))
     ctx.exit(exit_code)
+
+
+@queues_group.command(name="run-consumer", help="Start a continuous external broker consumer.")
+@click.option("--backend", type=click.Choice(["sqs"]), required=True, help="Configured broker backend to consume.")
+@click.option("--max-concurrency", type=click.IntRange(min=1), default=None)
+@click.option("--drain-timeout", type=click.FloatRange(min=0), default=None)
+def run_consumer_command(
+    ctx: "click.Context", backend: "str", max_concurrency: "int | None", drain_timeout: "float | None"
+) -> "None":
+    env = _ensure_env(ctx)
+    plugin = _resolve_plugin(env)
+    _reject_ephemeral_storage(plugin, "run-consumer")
+    if queue_backend_name(plugin.config.queue_backend) == "memory":
+        raise click.ClickException(_MEMORY_UNREACHABLE.replace("queues run", "queues run-consumer"))
+    configured = execution_backend_name(plugin.config.execution_backend)
+    if configured != backend:
+        msg = f"--backend {backend!r} does not match configured execution backend {configured!r}."
+        raise click.ClickException(msg)
+    consumer = get_execution_backend(plugin.config.execution_backend, config=plugin.config)
+    if not isinstance(consumer, BaseConsumerExecutionBackend):
+        msg = f"execution backend {configured!r} does not support run-consumer."
+        raise click.ClickException(msg)
+    concurrency = max_concurrency or plugin.config.worker.max_concurrency
+    timeout = drain_timeout if drain_timeout is not None else plugin.config.worker.graceful_shutdown_timeout
+    ctx.exit(asyncio.run(_run_consumer(plugin, consumer, concurrency, timeout)))
+
+
+async def _run_consumer(
+    plugin: "QueuePlugin", backend: "BaseConsumerExecutionBackend", max_concurrency: "int", drain_timeout: "float"
+) -> "int":
+    service = _open_service(plugin)
+    await service.open()
+    task = asyncio.create_task(
+        backend.run_consumer(service, max_concurrency=max_concurrency, drain_timeout=drain_timeout)
+    )
+    loop = asyncio.get_running_loop()
+    stop_count = 0
+
+    def stop() -> "None":
+        nonlocal stop_count
+        stop_count += 1
+        task.cancel()
+
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, stop)
+    except NotImplementedError:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: stop())
+    try:
+        await task
+    except asyncio.CancelledError:
+        return 2 if stop_count > 1 else 0
+    finally:
+        await service.close()
+    return 0
 
 
 @queues_group.command(name="status", help="Show queue status counts.")

@@ -8,7 +8,7 @@ imports an optional adapter or requires its extra to be installed.
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.execution.base import BaseExecutionBackend
+from litestar_queues.execution.base import BaseConsumerExecutionBackend, BaseExecutionBackend
 from litestar_queues.execution.factory import (
     execution_backend,
     get_execution_backend,
@@ -25,8 +25,10 @@ if TYPE_CHECKING:
         CloudRunExecutionStatus,
     )
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig
+    from litestar_queues.execution.sqs import SqsExecutionBackend, SqsExecutionConfig
 
 __all__ = (
+    "BaseConsumerExecutionBackend",
     "BaseExecutionBackend",
     "CloudRunExecutionBackend",
     "CloudRunExecutionConfig",
@@ -35,6 +37,8 @@ __all__ = (
     "CloudTasksExecutionConfig",
     "ImmediateExecutionBackend",
     "LocalExecutionBackend",
+    "SqsExecutionBackend",
+    "SqsExecutionConfig",
     "execution_backend",
     "get_execution_backend",
     "get_execution_backend_class",
@@ -47,6 +51,8 @@ _LAZY_EXPORTS: "dict[str, str]" = {
     "CloudRunExecutionStatus": "cloudrun",
     "CloudTasksExecutionBackend": "cloudtasks",
     "CloudTasksExecutionConfig": "cloudtasks",
+    "SqsExecutionBackend": "sqs",
+    "SqsExecutionConfig": "sqs",
 }
 
 

@@ -150,4 +150,5 @@ Choose production options
    dependency-resolver
    deployment/cloud-run
    deployment/cloud-tasks
+   deployment/sqs
    migration

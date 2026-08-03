@@ -58,6 +58,36 @@ _PG_NOTIFY_DRIVERS = (
 )
 
 
+async def test_advanced_alchemy_external_attempt_operations_require_retry_and_reference_fences(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    record = await advanced_alchemy_backend.enqueue("tasks.aa.sqs-fences", execution_backend="sqs")
+    first_ref = f"sqs:{record.retry_count}:1:{record.id}"
+    second_ref = f"sqs:{record.retry_count}:2:{record.id}"
+
+    assert (
+        await advanced_alchemy_backend.reserve_external_dispatch(
+            record.id, "sqs", first_ref, expected_retry_count=record.retry_count + 1
+        )
+        is None
+    )
+    assert await advanced_alchemy_backend.reserve_external_dispatch(
+        record.id, "sqs", first_ref, expected_retry_count=record.retry_count
+    )
+    assert await advanced_alchemy_backend.claim_task(record.id, expected_execution_ref=second_ref) is None
+    assert await advanced_alchemy_backend.clear_execution_ref(record.id, record.retry_count + 1, first_ref) is None
+    assert (
+        await advanced_alchemy_backend.replace_execution_ref(record.id, record.retry_count, second_ref, first_ref)
+        is None
+    )
+    replaced = await advanced_alchemy_backend.replace_execution_ref(
+        record.id, record.retry_count, first_ref, second_ref
+    )
+    assert replaced is not None and replaced.execution_ref == second_ref
+    cleared = await advanced_alchemy_backend.clear_execution_ref(record.id, record.retry_count, second_ref)
+    assert cleared is not None and cleared.execution_ref is None
+
+
 def _pg_notify_config(driver: "str", service: "PostgresService") -> "SQLAlchemyAsyncConfig":
     return SQLAlchemyAsyncConfig(
         connection_string=(

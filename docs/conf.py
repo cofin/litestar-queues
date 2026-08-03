@@ -43,7 +43,44 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
     "sphinx_design",
+    "sphinxcontrib.mermaid",
 ]
+
+# Mermaid renders client-side. The extension detects shibuya's dark mode from the
+# ``dark``/``light`` class it sets on <html>, and re-renders on the theme toggle,
+# so only the palette needs configuring here. Anything that has to follow that
+# toggle -- the diagram plate and the text on it -- lives in custom.css instead:
+# values set below go through mermaid's colour pipeline, which rejects both
+# "transparent" and var() references and substitutes a derived colour, so one
+# static palette cannot cover both modes from this file.
+mermaid_version = "11.12.1"
+mermaid_light_theme = "base"
+mermaid_dark_theme = "base"
+# The extension otherwise pins every diagram to a fixed 500px-tall <svg>, which
+# leaves a large empty band under short diagrams.
+mermaid_height = "auto"
+mermaid_init_config = {
+    "startOnLoad": False,
+    "flowchart": {"useMaxWidth": True, "htmlLabels": True, "curve": "basis", "padding": 12},
+    "themeVariables": {
+        # Node fill and its label. Gold reads against both the white and the
+        # navy page background, and navy-on-gold stays legible in both, so these
+        # do not need to change with the colour mode.
+        "primaryColor": "#edb641",
+        "primaryTextColor": "#202235",
+        "primaryBorderColor": "#d4a438",
+        # A mid grey holds up against either background.
+        "lineColor": "#94a3b8",
+        # Pinned because the base theme otherwise builds an edge label
+        # background by hue-rotating primaryColor, which turns the gold purple.
+        "edgeLabelBackground": "transparent",
+        # Must name the real stack, not "inherit". Mermaid measures label widths
+        # during layout, so a font that only resolves at paint time produces
+        # boxes sized for the wrong metrics and clips every label.
+        "fontFamily": '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif',
+        "fontSize": "15px",
+    },
+}
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),

@@ -408,12 +408,16 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
         return await self._run(operation)
 
-    async def claim_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
-        claimed, _ = await self.claim_task_with_expired(task_id)
+    async def claim_task(
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
+    ) -> "QueuedTaskRecord | None":
+        claimed, _ = await self.claim_task_with_expired(
+            task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
+        )
         return claimed
 
     async def claim_task_with_expired(
-        self, task_id: "UUID"
+        self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
         """Claim one task and return an expiry transitioned in the transaction."""
 
@@ -426,6 +430,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 record.status not in _ACTIVE_STATUSES
                 or not record.is_due
                 or is_external_dispatch_reservation(record.execution_ref)
+                or (expected_retry_count is not None and record.retry_count != expected_retry_count)
+                or (expected_execution_ref is not None and record.execution_ref != expected_execution_ref)
             ):
                 return None, None
             now = _utc_now()
@@ -538,6 +544,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         reservation_ref: "str",
         *,
         execution_profile: "str | None" = None,
+        expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
@@ -545,7 +552,12 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 return None
             record = _decode(row)
             now = _utc_now()
-            if record.status not in _ACTIVE_STATUSES or not record.is_due or record.execution_ref is not None:
+            if (
+                record.status not in _ACTIVE_STATUSES
+                or not record.is_due
+                or record.execution_ref is not None
+                or (expected_retry_count is not None and record.retry_count != expected_retry_count)
+            ):
                 return None
             if record.expires_at is not None and record.expires_at <= now:
                 _expire_record(record, now)
@@ -554,6 +566,49 @@ class EphemeralQueueBackend(BaseQueueBackend):
             record.execution_backend = execution_backend
             record.execution_profile = execution_profile
             record.execution_ref = reservation_ref
+            _write(connection, record)
+            return record
+
+        return await self._transaction(operation)
+
+    async def clear_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if (
+                record.status not in _ACTIVE_STATUSES
+                or record.retry_count != expected_retry_count
+                or record.execution_ref != expected_execution_ref
+            ):
+                return None
+            record.execution_ref = None
+            _write(connection, record)
+            return record
+
+        record = await self._transaction(operation)
+        if record is not None:
+            await self.notify_new_task(record)
+        return record
+
+    async def replace_execution_ref(
+        self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if (
+                record.status not in _ACTIVE_STATUSES
+                or record.retry_count != expected_retry_count
+                or record.execution_ref != expected_execution_ref
+            ):
+                return None
+            record.execution_ref = execution_ref
             _write(connection, record)
             return record
 

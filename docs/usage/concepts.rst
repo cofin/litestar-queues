@@ -8,16 +8,25 @@ that runs it. You can change the deployment without changing the task API.
 The task flow
 =============
 
-.. code-block:: text
+.. mermaid::
 
-   enqueue -> pending/scheduled record -> worker wakeup or polling
-                                  |              |
-                                  | overdue      | claim
-                                  v              v
-                              expired         running -> retry or terminal state
-                                  \______________|______________/
-                                                 v
-                                      optional task event delivery
+   stateDiagram-v2
+       direction LR
+       state "pending / scheduled" as Pending
+       state "expired" as Expired
+       state "running" as Running
+       state "terminal" as Terminal
+
+       [*] --> Pending: enqueue
+       Pending --> Expired: overdue
+       Pending --> Running: claim
+       Running --> Pending: retry
+       Running --> Terminal
+
+       note right of Terminal
+           Each state change can emit an
+           optional task event.
+       end note
 
 ``expired`` means the record passed its not-started deadline before a worker
 claimed it. It is distinct from user cancellation and from a runtime failure.

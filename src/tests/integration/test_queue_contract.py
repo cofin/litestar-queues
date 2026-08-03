@@ -164,6 +164,38 @@ async def test_backend_contract_lists_active_external_records_awaiting_delivery(
     assert spent == []
 
 
+async def test_backend_contract_external_dispatch_fences_and_reference_rotation(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    record = await queue_backend.enqueue("tasks.external.fenced", execution_backend="sqs")
+    first_ref = f"sqs:{record.retry_count}:1:00000000-0000-0000-0000-000000000001"
+    second_ref = f"sqs:{record.retry_count}:2:00000000-0000-0000-0000-000000000002"
+
+    assert (
+        await queue_backend.reserve_external_dispatch(
+            record.id, "sqs", first_ref, expected_retry_count=record.retry_count + 1
+        )
+        is None
+    )
+    reserved = await queue_backend.reserve_external_dispatch(
+        record.id, "sqs", first_ref, expected_retry_count=record.retry_count
+    )
+    assert reserved is not None
+
+    assert await queue_backend.claim_task(record.id, expected_retry_count=record.retry_count + 1) is None
+    assert await queue_backend.claim_task(record.id, expected_execution_ref=second_ref) is None
+    assert await queue_backend.clear_execution_ref(record.id, record.retry_count + 1, first_ref) is None
+    assert await queue_backend.clear_execution_ref(record.id, record.retry_count, second_ref) is None
+    assert await queue_backend.replace_execution_ref(record.id, record.retry_count, second_ref, first_ref) is None
+
+    replaced = await queue_backend.replace_execution_ref(record.id, record.retry_count, first_ref, second_ref)
+    assert replaced is not None
+    assert replaced.execution_ref == second_ref
+    cleared = await queue_backend.clear_execution_ref(record.id, record.retry_count, second_ref)
+    assert cleared is not None
+    assert cleared.execution_ref is None
+
+
 async def test_backend_contract_bounds_external_reconciliation_deterministically(
     queue_backend: "BaseQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":

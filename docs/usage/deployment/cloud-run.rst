@@ -48,19 +48,18 @@ The core model
 
 A Cloud Run deployment has three separate responsibilities:
 
-.. code-block:: text
+.. mermaid::
 
-   ┌─────────────┐   enqueue()    ┌──────────────┐   dispatch()   ┌───────────────┐
-   │ Web service │───────────────▶│ Queue store  │◀──────────────▶│ Dispatcher    │
-   │ (your API)  │  writes a      │ (shared DB)  │   a running    │ worker loop   │
-   └─────────────┘  pending row   └──────────────┘   worker reads  └───────┬───────┘
-                                                            pending rows    │
-                                                                             │ run_job
-                                                                             ▼
-                                                                     ┌───────────────┐
-                                                                     │ Cloud Run Job │
-                                                                     │ executes task │
-                                                                     └───────────────┘
+   flowchart LR
+       web["Web service<br/>(your API)"]
+       store[("Queue store<br/>(shared DB)")]
+       dispatcher["Dispatcher<br/>worker loop"]
+       job["Cloud Run Job<br/>executes task"]
+
+       web -- "enqueue() writes a pending row" --> store
+       store -- "a running worker reads pending rows" --> dispatcher
+       dispatcher -- "run_job" --> job
+       dispatcher -. "dispatch()" .-> store
 
 Each part has one job:
 
