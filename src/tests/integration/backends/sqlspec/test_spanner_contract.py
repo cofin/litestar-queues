@@ -12,9 +12,7 @@ pytest.importorskip("google.cloud.spanner_v1")
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import DefaultCredentialsError
-
-# google-cloud-spanner ships no stub exposing this namespace-package attribute.
-from google.cloud import spanner  # type: ignore[attr-defined]
+from google.cloud import spanner
 from sqlspec.adapters.spanner import SpannerSyncConfig, spanner_json
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
@@ -109,7 +107,7 @@ def _spanner_env_connection_config() -> "dict[str, object]":
     }
 
 
-def _builtin_metrics_kwargs() -> "dict[str, object]":
+def _builtin_metrics_kwargs() -> "dict[str, Any]":
     """Return the metrics opt-out only when the installed client still accepts it.
 
     ``google-cloud-spanner`` removed ``disable_builtin_metrics`` in 3.59; against

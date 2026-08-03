@@ -14,11 +14,6 @@ class PsycopgSyncQueueStore(PostgresQueueStore):
 
     table_storage_parameters: "ClassVar[bool]" = True
 
-    @property
-    def supports_native_bulk_ingest(self) -> "bool":
-        """Disable native ingest until SQLSpec issue 663 supports JSON values."""
-        return False
-
 
 class PsycopgAsyncQueueStore(PostgresQueueStore):
     """psycopg async SQLSpec queue statement store."""
@@ -26,8 +21,3 @@ class PsycopgAsyncQueueStore(PostgresQueueStore):
     __slots__ = ()
 
     table_storage_parameters: "ClassVar[bool]" = True
-
-    @property
-    def supports_native_bulk_ingest(self) -> "bool":
-        """Disable native ingest until SQLSpec issue 663 supports JSON values."""
-        return False

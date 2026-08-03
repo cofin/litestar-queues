@@ -83,15 +83,15 @@ async def test_enqueue_keyed_dedupes_active_and_replaces_terminal_key(psycopg_ba
     assert refetched.id == replacement.id
 
 
-async def test_enqueue_many_uses_execute_many_and_preserves_key_semantics(
+async def test_enqueue_many_uses_native_bulk_ingest_and_preserves_key_semantics(
     psycopg_backend: "SQLSpecQueueBackend",
 ) -> "None":
-    """Psycopg must use the safe ``execute_many`` tier until SQLSpec issue 663 is fixed."""
+    """Psycopg uses SQLSpec's native Arrow COPY tier while preserving queue semantics."""
     store = psycopg_backend._get_store()
     config = psycopg_backend._get_sqlspec_config()
 
     assert getattr(type(config), "supports_native_arrow_import", False) is True
-    assert store.supports_native_bulk_ingest is False
+    assert store.supports_native_bulk_ingest is True
 
     active = await psycopg_backend.enqueue("tasks.bulk", key="bulk:active", kwargs={"v": 1})
     terminal = await psycopg_backend.enqueue("tasks.bulk", key="bulk:terminal", kwargs={"v": 1})

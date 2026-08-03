@@ -57,6 +57,7 @@ class Topology:
 
     def __init__(
         self,
+        *,
         service: "QueueService",
         backend: "CloudTasksExecutionBackend",
         client: "Any",
@@ -162,7 +163,14 @@ async def topology(evidence: "Evidence") -> "AsyncIterator[Topology]":
         assert isinstance(backend, CloudTasksExecutionBackend), "the configured queue does not run on Cloud Tasks"
         client = await backend._get_client()
         async with DeliveryJanitor(client) as janitor:
-            yield Topology(service, backend, client, janitor, evidence, live_timeout(os.environ))
+            yield Topology(
+                service=service,
+                backend=backend,
+                client=client,
+                janitor=janitor,
+                evidence=evidence,
+                timeout=live_timeout(os.environ),
+            )
 
 
 # --------------------------------------------------------------------------- the topology
