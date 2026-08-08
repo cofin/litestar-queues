@@ -11,7 +11,10 @@ import "./styles.css"
 // htmx's own boot listener misses that window, so process the DOM explicitly.
 ;(window as unknown as { htmx: typeof htmx }).htmx = htmx
 registerHtmxExtension()
-void import("htmx-ext-sse").then(() => htmx.process(document.body))
+void import("htmx-ext-sse").then(() => {
+  htmx.process(document.body)
+  ;(window as unknown as { queueHtmxReady: boolean }).queueHtmxReady = true
+})
 // docs: htmx-extension-end
 
 const MAX_LINES = 40

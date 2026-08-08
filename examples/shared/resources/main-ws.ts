@@ -12,7 +12,10 @@ import "./styles.css"
 // DOM explicitly.
 ;(window as unknown as { htmx: typeof htmx }).htmx = htmx
 registerHtmxExtension()
-void import("htmx-ext-ws").then(() => htmx.process(document.body))
+void import("htmx-ext-ws").then(() => {
+  htmx.process(document.body)
+  ;(window as unknown as { queueHtmxReady: boolean }).queueHtmxReady = true
+})
 // docs: htmx-extension-end
 
 const MAX_LINES = 40

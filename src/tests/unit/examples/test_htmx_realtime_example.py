@@ -248,6 +248,7 @@ def _assert_canonical_frontend(example_root: Path, transport: str) -> str:
     assert 'import htmx from "htmx.org"' in frontend_source
     assert "registerHtmxExtension()" in frontend_source
     assert "window as unknown" in frontend_source
+    assert "queueHtmxReady" in frontend_source
     assert "task.completed" in frontend_source
     assert '"ping"' in frontend_source
     assert "queue-demo:started" in frontend_source

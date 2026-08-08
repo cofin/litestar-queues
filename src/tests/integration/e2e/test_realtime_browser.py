@@ -84,6 +84,7 @@ def _assert_common_page(page: Any, base_url: str) -> None:
 
 
 def _start_mission(page: Any, base_url: str) -> str:
+    page.wait_for_function("() => window.queueHtmxReady === true")
     with page.expect_response(
         lambda response: response.request.method == "POST" and response.url == f"{base_url}/demo/restart"
     ) as response_info:
