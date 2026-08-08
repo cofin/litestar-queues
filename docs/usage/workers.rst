@@ -92,6 +92,15 @@ standalone workers to any placement:
 They all claim from the same backend, so the total worker count is the built-in
 one plus however many you start.
 
+Heartbeat timing
+================
+
+``WorkerConfig.heartbeat_interval`` sets the base interval between running-task
+heartbeat writes, while ``heartbeat_miss_threshold`` controls how many
+consecutive misses are tolerated. ``heartbeat_jitter_fraction`` adds up to that
+fraction of positive random delay to each interval so a fleet does not write in
+lockstep. It defaults to ``0.1``; set it to ``0.0`` for an exact fixed interval.
+
 Choosing a placement
 ====================
 

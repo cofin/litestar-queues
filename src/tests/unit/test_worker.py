@@ -762,6 +762,17 @@ async def test_worker_heartbeat_miss_threshold_comes_from_config() -> "None":
     assert worker._heartbeat_manager._miss_threshold == 3
 
 
+async def test_worker_heartbeat_jitter_comes_from_config() -> "None":
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
+    assert config.worker.heartbeat_jitter_fraction == 0.1
+
+    custom_config = WorkerConfig(heartbeat_jitter_fraction=0.0)
+    async with QueueService(config) as service:
+        worker = Worker(service, custom_config)
+
+    assert worker._heartbeat_manager._jitter_fraction == 0.0
+
+
 async def test_plugin_worker_uses_configured_heartbeat_miss_threshold() -> "None":
     plugin = QueuePlugin(
         QueueConfig(

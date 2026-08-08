@@ -128,6 +128,7 @@ class Worker:
             interval=worker_config.heartbeat_interval,
             miss_threshold=worker_config.heartbeat_miss_threshold,
             worker_id=self._worker_id,
+            jitter_fraction=worker_config.heartbeat_jitter_fraction,
         )
         self._queues = worker_config.queues
         self._running_tasks: "set[asyncio.Task[None]]" = set()

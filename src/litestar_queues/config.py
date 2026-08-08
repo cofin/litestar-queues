@@ -199,6 +199,9 @@ class WorkerConfig:
     heartbeat_interval: "float" = 30
     """Interval between bulk heartbeat writes in seconds."""
 
+    heartbeat_jitter_fraction: "float" = 0.1
+    """Positive heartbeat delay jitter ratio from zero through one."""
+
     heartbeat_miss_threshold: "int" = 2
     """Consecutive heartbeat misses tolerated before claim loss."""
 
@@ -255,6 +258,9 @@ class WorkerConfig:
             raise QueueConfigurationError(msg)
         if not 0.0 <= self.poll_jitter <= 1.0:
             msg = "WorkerConfig.poll_jitter must be between 0.0 and 1.0, inclusive."
+            raise QueueConfigurationError(msg)
+        if not 0.0 <= self.heartbeat_jitter_fraction <= 1.0:
+            msg = "WorkerConfig.heartbeat_jitter_fraction must be between 0.0 and 1.0, inclusive."
             raise QueueConfigurationError(msg)
         if self.stale_after is not None and self.stale_after <= 0:
             msg = "WorkerConfig.stale_after must be greater than 0 when set."
