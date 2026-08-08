@@ -620,6 +620,28 @@ class QueueService:
         """Return a queued task record by ID."""
         return await self.get_queue_backend().get_task(task_id)
 
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+        """Cancel one queued task and publish its terminal lifecycle event.
+
+        Args:
+            task_id: Identifier of the task to cancel.
+            include_running: Whether a running task may transition to cancelled.
+
+        Returns:
+            ``True`` only for the caller that wins the durable state transition.
+        """
+        backend = self.get_queue_backend()
+        if not await backend.cancel_task(task_id, include_running=include_running):
+            return False
+        record = await backend.get_task(task_id)
+        if record is None:
+            return True
+        payload = {"status": record.status, "retry_count": record.retry_count}
+        task_context = _task_execution_context(record, worker_id=None, event_publisher=self.get_event_publisher())
+        await task_context.lifecycle("task.cancelled", payload=payload)
+        self._log_task_event("Queue task cancelled", record, level=logging.INFO, payload=payload)
+        return True
+
     async def reset_task_identity(self, key: "str") -> "bool":
         """Delete a ``unique_until="forever"`` reservation by its exact effective key.
 
@@ -670,8 +692,8 @@ class QueueService:
             self._log_task_event("Queue task cancelled", record, level=logging.WARNING)
             telemetry.finish(final_status)
             raise
-        except JobCancelledError as exc:
-            cancelled = await self.get_queue_backend().cancel_task(record.id, include_running=True)
+        except JobCancelledError:
+            cancelled = await self.cancel_task(record.id, include_running=True)
             if not cancelled:
                 final_status = "claim_lost"
                 current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
@@ -679,9 +701,6 @@ class QueueService:
                 return current
             cancelled_record = await self._current_or_claimed(record)
             final_status = cancelled_record.status
-            payload = {"status": cancelled_record.status, "retry_count": cancelled_record.retry_count}
-            await task_context.lifecycle("task.cancelled", message=str(exc), payload=payload)
-            self._log_task_event("Queue task cancelled", cancelled_record, level=logging.INFO, payload=payload)
             telemetry.finish(final_status)
             return cancelled_record
         except NonRetryableError as exc:
