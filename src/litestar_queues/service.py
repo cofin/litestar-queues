@@ -805,7 +805,7 @@ class QueueService:
         )
         if updated is None:
             return await self._finish_claim_lost_observability(record, task_context, telemetry)
-        payload = {
+        payload: "dict[str, Any]" = {
             "status": updated.status,
             "retry_count": updated.retry_count,
             "will_retry": updated.status in {"pending", "scheduled"},

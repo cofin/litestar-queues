@@ -176,6 +176,6 @@ async def _requeue_and_claim_on_driver(
     store = backend._get_store()
     now = backend._serialize_datetime(datetime.now(timezone.utc))
     await driver.execute(
-        store.retry_task(task_id=str(task_id), error="Task heartbeat stale", retry_count=retry_count + 1)
+        store.retry_task(task_id=str(task_id), error="Task heartbeat stale", retry_count=retry_count + 1, queued_at=now)
     )
     await driver.execute(store.claim_task(task_id=str(task_id), due_at=now, started_at=now, heartbeat_at=now))

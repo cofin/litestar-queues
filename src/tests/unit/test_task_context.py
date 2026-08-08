@@ -38,9 +38,9 @@ async def test_task_context_cooperative_cancellation_helpers() -> "None":
     try:
         _cancel_task_context(context.task_id)
         await context.wait_cancelled()
-        assert context.is_cancelled is True
         with pytest.raises(JobCancelledError):
             context.raise_if_cancelled()
+        assert context.is_cancelled is True
     finally:
         _reset_task_context(token)
 

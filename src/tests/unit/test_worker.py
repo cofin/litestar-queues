@@ -27,7 +27,7 @@ from litestar_queues.execution import BaseExecutionBackend
 from tests.helpers._timing import wait_until
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from uuid import UUID
 
     from litestar_queues.events import TaskExecutionContext
@@ -1693,15 +1693,27 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
         self.list_pending_calls: "list[tuple[int, str | None, str | None]]" = []
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> 'list["QueuedTaskRecord"]':
-        return await BaseQueueBackend.claim_many(self, limit=limit, queues=queues, execution_backend=execution_backend)
+        return await BaseQueueBackend.claim_many(
+            self, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> 'tuple[list["QueuedTaskRecord"], list["QueuedTaskRecord"]]':
         return await BaseQueueBackend.claim_many_with_expired(
-            self, limit=limit, queues=queues, execution_backend=execution_backend
+            self, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
         )
 
     async def claim_next(
@@ -1742,7 +1754,12 @@ class _ClaimManyRecordingInMemoryQueueBackend(_ClaimNextRecordingInMemoryQueueBa
         self.claim_many_calls: "list[tuple[int, tuple[str, ...], str | None]]" = []
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> 'list["QueuedTaskRecord"]':
         self.claim_many_calls.append((limit, queues, execution_backend))
         records: 'list["QueuedTaskRecord"]' = []

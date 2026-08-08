@@ -88,7 +88,7 @@ build-examples-assets:                               ## Build frontend assets sh
 .PHONY: install-test-adapters
 install-test-adapters:                              ## Install test dependencies for the full integration matrix
 	@echo "${INFO} Installing test dependencies... ⚡"
-	@uv sync --group tests $(UV_SYNC_ARGS)
+	@uv sync --group tests $(UV_SYNC_ARGS) --no-binary-package sqlspec --reinstall-package sqlspec
 	@echo "${OK} Test dependencies installed 🎉"
 
 .PHONY: install-e2e
