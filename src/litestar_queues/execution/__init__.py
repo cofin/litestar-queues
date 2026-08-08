@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         CloudRunExecutionStatus,
     )
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig
+    from litestar_queues.execution.pubsub import PubSubExecutionBackend, PubSubExecutionConfig
     from litestar_queues.execution.rabbitmq import RabbitMQExecutionBackend, RabbitMQExecutionConfig
     from litestar_queues.execution.sqs import SqsExecutionBackend, SqsExecutionConfig
 
@@ -38,6 +39,8 @@ __all__ = (
     "CloudTasksExecutionConfig",
     "ImmediateExecutionBackend",
     "LocalExecutionBackend",
+    "PubSubExecutionBackend",
+    "PubSubExecutionConfig",
     "RabbitMQExecutionBackend",
     "RabbitMQExecutionConfig",
     "SqsExecutionBackend",
@@ -54,6 +57,8 @@ _LAZY_EXPORTS: "dict[str, str]" = {
     "CloudRunExecutionStatus": "cloudrun",
     "CloudTasksExecutionBackend": "cloudtasks",
     "CloudTasksExecutionConfig": "cloudtasks",
+    "PubSubExecutionBackend": "pubsub",
+    "PubSubExecutionConfig": "pubsub",
     "RabbitMQExecutionBackend": "rabbitmq",
     "RabbitMQExecutionConfig": "rabbitmq",
     "SqsExecutionBackend": "sqs",
