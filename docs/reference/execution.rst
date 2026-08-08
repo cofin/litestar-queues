@@ -81,6 +81,19 @@ Amazon SQS
    :undoc-members:
    :show-inheritance:
 
+RabbitMQ
+========
+
+.. automodule:: litestar_queues.execution.rabbitmq.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.rabbitmq.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Consumer
 ========
 

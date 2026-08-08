@@ -301,7 +301,8 @@ type-check: mypy pyright                            ## Run all type checking
 .PHONY: prek
 prek:                                               ## Run prek hooks
 	@echo "${INFO} Running prek checks... 🔍"
-	@uvx prek run --show-diff-on-failure --color=always --all-files
+	@git ls-files --cached --others --exclude-standard -z | \
+		xargs -0 uvx prek run --show-diff-on-failure --color=always --files
 	@echo "${OK} prek checks passed ✨"
 
 .PHONY: zizmor
