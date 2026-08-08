@@ -38,6 +38,7 @@ _TASK_COLUMNS = (
     "execution_backend",
     "execution_profile",
     "execution_ref",
+    "worker_id",
     "status",
     "priority",
     "max_retries",
@@ -45,6 +46,7 @@ _TASK_COLUMNS = (
     "scheduled_at",
     "expires_at",
     "created_at",
+    "queued_at",
     "started_at",
     "completed_at",
     "heartbeat_at",
@@ -265,6 +267,7 @@ class SQLSpecQueueStore:
             queue_col = self._quoted_col("queue")
             eb_col = self._quoted_col("execution_backend")
             priority_col = self._quoted_col("priority")
+            queued_col = self._quoted_col("queued_at")
             created_col = self._quoted_col("created_at")
             conditions = [
                 f"{status_col} IN ('pending', 'scheduled')",
@@ -283,7 +286,7 @@ class SQLSpecQueueStore:
                 f"SET {status_col} = 'running', {self._quoted_col('started_at')} = :started_at, "
                 f"{self._quoted_col('heartbeat_at')} = :heartbeat_at "
                 f"FROM (SELECT {id_col} FROM {table} WHERE {where} "
-                f"ORDER BY {priority_col} DESC, {created_col} ASC "
+                f"ORDER BY {priority_col} DESC, {queued_col} ASC, {created_col} ASC, {id_col} ASC "
                 f"FOR UPDATE SKIP LOCKED LIMIT :limit) AS sub "
                 f"WHERE t.{id_col} = sub.{id_col} "
                 f"RETURNING {self._prefixed_returning_columns_sql('t')}"
@@ -337,8 +340,13 @@ class SQLSpecQueueStore:
             return (
                 f"UPDATE {self._quoted_table_name()} SET "  # noqa: S608
                 f"{self._quoted_col('error')} = :error, "
-                f"{self._quoted_col('status')} = CASE WHEN {can_retry} THEN 'pending' ELSE 'failed' END, "
+                f"{self._quoted_col('status')} = CASE WHEN {can_retry} THEN "
+                f"CASE WHEN :retry_at IS NULL THEN 'pending' ELSE 'scheduled' END ELSE 'failed' END, "
                 f"{retry_count_col} = CASE WHEN {can_retry} THEN {retry_count_col} + 1 ELSE {retry_count_col} END, "
+                f"{self._quoted_col('queued_at')} = CASE WHEN {can_retry} THEN :queued_at "
+                f"ELSE {self._quoted_col('queued_at')} END, "
+                f"{self._quoted_col('scheduled_at')} = CASE WHEN {can_retry} THEN :retry_at "
+                f"ELSE {self._quoted_col('scheduled_at')} END, "
                 f"{self._quoted_col('started_at')} = CASE WHEN {can_retry} THEN NULL "
                 f"ELSE {self._quoted_col('started_at')} END, "
                 f"{self._quoted_col('completed_at')} = CASE WHEN {can_retry} THEN NULL "
@@ -393,7 +401,10 @@ class SQLSpecQueueStore:
         if execution_backend is not None:
             statement = statement.where_eq(self._col("execution_backend"), execution_backend)
         return statement.order_by(
-            _raw_order(f"{self._col('priority')} DESC"), _raw_order(f"{self._col('created_at')} ASC")
+            _raw_order(f"{self._col('priority')} DESC"),
+            _raw_order(f"{self._col('queued_at')} ASC"),
+            _raw_order(f"{self._col('created_at')} ASC"),
+            _raw_order(f"{self._col('id')} ASC"),
         ).limit(limit)
 
     def next_scheduled_at(self, *, now: "DatetimeParam", queues: "Sequence[str]" = ()) -> "Select":
@@ -621,11 +632,15 @@ class SQLSpecQueueStore:
         expected_retry_count: "int | None" = None,
         heartbeat_cutoff: "DatetimeParam | None" = None,
         priority: "int | None" = None,
+        retry_at: "DatetimeParam | None" = None,
+        queued_at: "DatetimeParam | None" = None,
     ) -> "Update":
         """Return an UPDATE statement that schedules a retry."""
         values = {
-            "status": "pending",
+            "status": "scheduled" if retry_at is not None else "pending",
             "retry_count": retry_count,
+            "queued_at": queued_at,
+            "scheduled_at": retry_at,
             "started_at": None,
             "heartbeat_at": None,
             "error": self.serialize_error(error),
@@ -976,6 +991,16 @@ RETURNING {target}.{id_col} AS id
         """Return a SELECT statement for all queue records."""
         return self._select_all()
 
+    def statistics(self, *, queue: "str | None" = None) -> "Select":
+        """Return grouped status counts, optionally scoped to one queue."""
+        status = self._col("status")
+        statement = sql.select(
+            self._select_column("status"), sql.raw(f"COUNT(*) AS {self._quote_identifier('total')}")
+        ).from_(self.table_name)
+        if queue is not None:
+            statement = statement.where_eq(self._col("queue"), queue)
+        return statement.group_by(status)
+
     def list_completed_by_task(
         self, *, task_name: "str", since: "DatetimeParam | None" = None, limit: "int" = 10
     ) -> "Select":
@@ -1106,6 +1131,7 @@ RETURNING {target}.{id_col} AS id
             .column(self._col("execution_backend"), self._indexed_text_type(), not_null=True)
             .column(self._col("execution_profile"), self._indexed_text_type())
             .column(self._col("execution_ref"), self._indexed_text_type())
+            .column(self._col("worker_id"), self._indexed_text_type())
             .column(self._col("status"), self._indexed_text_type(), not_null=True)
             .column(self._col("priority"), self._integer_type(), not_null=True)
             .column(self._col("max_retries"), self._integer_type(), not_null=True)
@@ -1117,6 +1143,7 @@ RETURNING {target}.{id_col} AS id
         return (
             statement
             .column(self._col("created_at"), self._timestamp_type(), not_null=True)
+            .column(self._col("queued_at"), self._timestamp_type(), not_null=True)
             .column(self._col("started_at"), self._timestamp_type())
             .column(self._col("completed_at"), self._timestamp_type())
             .column(self._col("heartbeat_at"), self._timestamp_type())
@@ -1145,7 +1172,7 @@ RETURNING {target}.{id_col} AS id
         pending_columns = ["status", "queue", "execution_backend", "scheduled_at"]
         if include_expiration:
             pending_columns.append("expires_at")
-        pending_columns.extend(("priority", "created_at"))
+        pending_columns.extend(("priority", "queued_at", "created_at"))
         return [
             self._to_sql(
                 sql

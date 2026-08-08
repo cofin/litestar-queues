@@ -228,13 +228,13 @@ def test_status_subcommand_json(monkeypatch: "pytest.MonkeyPatch") -> "None":
     assert all(isinstance(payload[key], int) for key in expected_keys)
 
 
-def test_status_subcommand_advisory_queue_filter(monkeypatch: "pytest.MonkeyPatch") -> "None":
+def test_status_subcommand_enforces_queue_filter_without_advisory(monkeypatch: "pytest.MonkeyPatch") -> "None":
     result = _runner_invoke(
         "tests.helpers.support.cli_app:app", ["queues", "status", "--queue", "billing"], monkeypatch
     )
 
     assert result.exit_code == 0, result.stderr
-    assert "advisory" in result.stderr.lower()
+    assert result.stderr == ""
 
 
 def test_scheduler_health_returns_4_when_no_canary_runs(monkeypatch: "pytest.MonkeyPatch") -> "None":

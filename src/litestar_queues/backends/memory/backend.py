@@ -8,6 +8,7 @@ from litestar_queues.backends.base import (
     BaseQueueBackend,
     is_external_dispatch_reservation,
     record_matches_filters,
+    retry_schedule,
     stale_requeue_error,
     stale_requeue_priority,
 )
@@ -98,6 +99,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     if existing is not None and not existing.is_terminal:
                         return existing
 
+            now = _utc_now()
             record = QueuedTaskRecord(
                 task_name=task_name,
                 args=args,
@@ -112,6 +114,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 expires_at=expires_at,
                 key=key,
                 metadata=dict(metadata or {}),
+                created_at=now,
+                queued_at=now,
             )
             if id is not None:
                 record.id = id
@@ -142,6 +146,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                             records.append(existing)
                             continue
 
+                record_now = _utc_now()
                 record = QueuedTaskRecord(
                     task_name=request.task_name,
                     args=request.args,
@@ -158,6 +163,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     expires_at=request.expires_at,
                     key=request.key,
                     metadata=dict(request.metadata or {}),
+                    created_at=record_now,
+                    queued_at=record_now,
                 )
                 self._records[record.id] = record
                 if request.key is not None:
@@ -177,6 +184,23 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return None
         return self._records.get(task_id)
 
+    async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
+        return [record for task_id in task_ids if (record := self._records.get(task_id)) is not None]
+
+    async def notify_worker_control(self, worker_id: "str") -> "None":
+        del worker_id
+        self._notification_event.set()
+
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        async with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.status != "running" or record.retry_count != expected_retry_count:
+                return None
+            record.worker_id = worker_id
+            return record
+
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
@@ -190,7 +214,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
-        due_records.sort(key=lambda record: (-record.priority, record.created_at))
+        due_records.sort(key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int))
         return due_records[:limit]
 
     async def claim_task(
@@ -226,7 +250,12 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return record, None
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks under a single lock acquisition.
 
@@ -239,11 +268,18 @@ class InMemoryQueueBackend(BaseQueueBackend):
         Returns:
             Claimed task records in claim order.
         """
-        claimed, _ = await self.claim_many_with_expired(limit=limit, queues=queues, execution_backend=execution_backend)
+        claimed, _ = await self.claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
         return claimed
 
-    async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    async def claim_many_with_expired(  # noqa: C901
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and return overdue records expired under the same lock."""
         if limit <= 0:
@@ -268,13 +304,20 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 if record.scheduled_at is not None and record.scheduled_at > now:
                     continue
                 eligible.append(record)
-            eligible.sort(key=lambda record: (-record.priority, record.created_at))
+            eligible.sort(key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int))
             claimed: "list[QueuedTaskRecord]" = []
-            for record in eligible[:limit]:
+            remaining = dict(queue_limits or {})
+            for record in eligible:
+                if len(claimed) >= limit:
+                    break
+                if record.queue in remaining and remaining[record.queue] <= 0:
+                    continue
                 record.status = "running"
                 record.started_at = now
                 record.heartbeat_at = now
                 claimed.append(record)
+                if record.queue in remaining:
+                    remaining[record.queue] -= 1
             return claimed, expired
 
     async def complete_task(
@@ -297,7 +340,14 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return record
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         async with self._lock:
             record = self._records.get(task_id)
@@ -310,8 +360,11 @@ class InMemoryQueueBackend(BaseQueueBackend):
 
             record.error = error
             if retry and record.retry_count < record.max_retries:
+                now = queued_at or _utc_now()
                 record.retry_count += 1
-                record.status = "pending"
+                record.queued_at = now
+                record.scheduled_at = retry_at
+                record.status = "scheduled" if retry_at is not None and retry_at > now else "pending"
                 record.started_at = None
                 record.heartbeat_at = None
                 return record
@@ -332,6 +385,28 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.completed_at = _utc_now()
             record.heartbeat_at = None
             return True
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        async with self._lock:
+            record = self._records.get(task_id)
+            if (
+                record is None
+                or record.status != "running"
+                or record.retry_count != expected_retry_count
+                or record.worker_id != worker_id
+            ):
+                return None
+            record.status = "pending"
+            record.queued_at = queued_at
+            record.scheduled_at = None
+            record.started_at = None
+            record.heartbeat_at = None
+            record.completed_at = None
+            record.execution_ref = None
+            record.worker_id = None
+            return record
 
     async def cancel_tasks(
         self,
@@ -405,7 +480,10 @@ class InMemoryQueueBackend(BaseQueueBackend):
             for record in candidates:
                 requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                 if requeue_on_stale and record.retry_count < record.max_retries:
-                    record.status = "pending"
+                    queued_at, retry_at = retry_schedule(record)
+                    record.status = "scheduled" if retry_at is not None else "pending"
+                    record.queued_at = queued_at
+                    record.scheduled_at = retry_at
                     record.priority = stale_requeue_priority(record.priority)
                     record.started_at = None
                     record.heartbeat_at = None
@@ -573,9 +651,11 @@ class InMemoryQueueBackend(BaseQueueBackend):
         records.sort(key=lambda record: (record.started_at or record.created_at, str(record.id)))
         return records[:limit] if limit is not None else records
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         statistics = QueueStatistics()
         for record in self._records.values():
+            if queue is not None and record.queue != queue:
+                continue
             setattr(statistics, record.status, getattr(statistics, record.status) + 1)
         return statistics
 

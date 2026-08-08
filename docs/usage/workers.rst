@@ -147,8 +147,17 @@ the safe ``claim_next`` loop and may return a shorter batch as soon as no
 eligible record remains. Both paths preserve exclusive ownership and the same
 queue/execution filters.
 
+``max_concurrency`` remains the worker-wide ceiling. Use
+``queue_concurrency={"email": 1, "reports": 2}`` for per-worker queue caps.
+These are local limits, not distributed fleet semaphores.
+
 Shutdown
 ========
+
+By default, unfinished work remains ``running`` for stale recovery. Set
+``WorkerConfig.requeue_on_shutdown=True`` to return an attempt to ``pending``
+after its coroutine accepts cancellation and unwinds. Tasks can override this
+with ``@task(requeue_on_shutdown=True)`` or ``False`` and must be idempotent.
 
 The first termination signal stops new claims and gives running tasks time to
 finish. A second signal cancels them. Server placement must become ready within

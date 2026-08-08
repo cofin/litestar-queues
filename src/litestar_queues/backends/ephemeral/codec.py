@@ -27,8 +27,8 @@ __all__ = (
     "record_to_payload",
 )
 
-MAGIC = b"LQEP\x02"
-SCHEMA_VERSION = 2
+MAGIC = b"LQEP\x03"
+SCHEMA_VERSION = 3
 
 _SERIALIZATION_ERROR = (
     "The ephemeral SQLite backend requires JSON-serializable task arguments, metadata, events, and results."
@@ -42,6 +42,7 @@ _RECORD_FIELDS = (
     "execution_backend",
     "execution_profile",
     "execution_ref",
+    "worker_id",
     "status",
     "priority",
     "max_retries",
@@ -49,6 +50,7 @@ _RECORD_FIELDS = (
     "scheduled_at",
     "expires_at",
     "created_at",
+    "queued_at",
     "started_at",
     "completed_at",
     "heartbeat_at",
@@ -57,7 +59,15 @@ _RECORD_FIELDS = (
     "key",
     "metadata",
 )
-_RECORD_DATETIMES = ("scheduled_at", "expires_at", "created_at", "started_at", "completed_at", "heartbeat_at")
+_RECORD_DATETIMES = (
+    "scheduled_at",
+    "expires_at",
+    "created_at",
+    "queued_at",
+    "started_at",
+    "completed_at",
+    "heartbeat_at",
+)
 _EVENT_FIELDS = (
     "event_id",
     "event_type",
@@ -137,7 +147,7 @@ def _parse_datetime(value: "object") -> "datetime | None":
 
 
 def record_to_payload(record: "QueuedTaskRecord") -> "bytes":
-    """Encode one queue record as a canonical schema-2 mapping.
+    """Encode one queue record as a canonical schema-3 mapping.
 
     Returns:
         The encoded payload blob.
@@ -152,6 +162,7 @@ def record_to_payload(record: "QueuedTaskRecord") -> "bytes":
         "execution_backend": record.execution_backend,
         "execution_profile": record.execution_profile,
         "execution_ref": record.execution_ref,
+        "worker_id": record.worker_id,
         "status": record.status,
         "priority": record.priority,
         "max_retries": record.max_retries,
@@ -167,7 +178,7 @@ def record_to_payload(record: "QueuedTaskRecord") -> "bytes":
 
 
 def record_from_payload(payload: "bytes") -> "QueuedTaskRecord":
-    """Rebuild a queue record from its schema-2 payload.
+    """Rebuild a queue record from its schema-3 payload.
 
     Returns:
         The reconstructed record.
@@ -196,6 +207,7 @@ def record_from_payload(payload: "bytes") -> "QueuedTaskRecord":
         execution_backend=decoded["execution_backend"],
         execution_profile=decoded["execution_profile"],
         execution_ref=decoded["execution_ref"],
+        worker_id=decoded["worker_id"],
         status=decoded["status"],
         priority=decoded["priority"],
         max_retries=decoded["max_retries"],

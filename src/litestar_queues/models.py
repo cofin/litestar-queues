@@ -148,6 +148,7 @@ class QueuedTaskRecord:
     execution_backend: "str" = "local"
     execution_profile: "str | None" = None
     execution_ref: "str | None" = None
+    worker_id: "str | None" = None
     status: "TaskStatus" = "pending"
     priority: "int" = 0
     max_retries: "int" = 0
@@ -155,6 +156,7 @@ class QueuedTaskRecord:
     scheduled_at: "datetime | None" = None
     expires_at: "datetime | None" = None
     created_at: "datetime" = field(default_factory=lambda: datetime.now(timezone.utc))
+    queued_at: "datetime" = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: "datetime | None" = None
     completed_at: "datetime | None" = None
     heartbeat_at: "datetime | None" = None
@@ -164,6 +166,8 @@ class QueuedTaskRecord:
     metadata: "dict[str, Any]" = field(default_factory=dict)
 
     def __post_init__(self) -> "None":
+        self.created_at = _ensure_utc_datetime(self.created_at)
+        self.queued_at = _ensure_utc_datetime(self.queued_at)
         if self.scheduled_at is not None:
             self.scheduled_at = _ensure_utc_datetime(self.scheduled_at)
         if self.expires_at is not None:

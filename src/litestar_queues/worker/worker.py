@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import WorkerConfig, execution_backend_name, queue_backend_name
-from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
+from litestar_queues.events.context import _bind_beat_sink, _cancel_task_context, _reset_beat_sink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
@@ -66,6 +66,7 @@ class Worker:
 
     __slots__ = (
         "_batch_size",
+        "_cancellation_poll_interval",
         "_completion_event",
         "_current_poll_interval",
         "_expiry_check_interval",
@@ -73,6 +74,7 @@ class Worker:
         "_graceful_shutdown_timeout",
         "_heartbeat_manager",
         "_is_running",
+        "_last_cancellation_check_at",
         "_last_expiry_check_at",
         "_last_reconcile_at",
         "_last_stale_check_at",
@@ -83,8 +85,10 @@ class Worker:
         "_poll_backoff_multiplier",
         "_poll_interval",
         "_poll_jitter",
+        "_queue_concurrency",
         "_queues",
         "_reconcile_interval",
+        "_requeue_on_shutdown",
         "_running_tasks",
         "_service",
         "_stale_after",
@@ -108,13 +112,16 @@ class Worker:
         self._service = service
         self._logger = logging.getLogger(service.config.names.logger("worker"))
         self._batch_size = worker_config.batch_size
+        self._cancellation_poll_interval = worker_config.cancellation_poll_interval
         self._poll_interval = worker_config.poll_interval
         self._poll_backoff_max = worker_config.poll_backoff_max
         self._poll_backoff_multiplier = worker_config.poll_backoff_multiplier
         self._poll_jitter = worker_config.poll_jitter
         self._current_poll_interval = worker_config.poll_interval
         self._max_concurrency = worker_config.max_concurrency
+        self._queue_concurrency = dict(worker_config.queue_concurrency)
         self._reconcile_interval = worker_config.reconcile_interval
+        self._requeue_on_shutdown = worker_config.requeue_on_shutdown
         self._expiry_check_interval = worker_config.expiry_check_interval
         self._stale_after = (
             timedelta(seconds=worker_config.stale_after) if worker_config.stale_after is not None else None
@@ -131,7 +138,7 @@ class Worker:
             jitter_fraction=worker_config.heartbeat_jitter_fraction,
         )
         self._queues = worker_config.queues
-        self._running_tasks: "set[asyncio.Task[None]]" = set()
+        self._running_tasks: "dict[asyncio.Task[None], QueuedTaskRecord]" = {}
         self._stop_event = asyncio.Event()
         self._completion_event = asyncio.Event()
         self._startup_completion: "asyncio.Future[BaseException | None] | None" = None
@@ -140,6 +147,7 @@ class Worker:
         self._is_running = False
         self._last_reconcile_at = -float("inf")
         self._last_expiry_check_at = -float("inf")
+        self._last_cancellation_check_at = -float("inf")
         self._last_stale_check_at = -float("inf")
         self._listener_reconnect_pending = False
         self._wakeup_started_at: "float | None" = None
@@ -309,6 +317,7 @@ class Worker:
             QueueConfigurationError: If the execution backend schedules its own
                 delivery, leaving a worker nothing it may safely claim.
         """
+        await self._maybe_cancel_running()
         execution_backend = self._service.get_execution_backend()
         if execution_backend.schedules_on_enqueue:
             msg = (
@@ -339,9 +348,28 @@ class Worker:
 
     async def _claim_available(self, *, limit: "int") -> "list[QueuedTaskRecord]":
         execution_backend_name_ = execution_backend_name(self._service.config.execution_backend)
+        active_by_queue: "dict[str, int]" = {}
+        for record in self._running_tasks.values():
+            active_by_queue[record.queue] = active_by_queue.get(record.queue, 0) + 1
+        queue_limits = {
+            queue: max(0, cap - active_by_queue.get(queue, 0)) for queue, cap in self._queue_concurrency.items()
+        }
         claimed = await self._service.claim_tasks(
-            limit=limit, queues=self._queues, execution_backend=execution_backend_name_, worker_id=self._worker_id
+            limit=limit,
+            queues=self._queues,
+            execution_backend=execution_backend_name_,
+            worker_id=self._worker_id,
+            queue_limits=queue_limits or None,
         )
+        owned: "list[QueuedTaskRecord]" = []
+        backend = self._service.get_queue_backend()
+        for record in claimed:
+            assigned = await backend.assign_worker(
+                record.id, worker_id=self._worker_id, expected_retry_count=record.retry_count
+            )
+            if assigned is not None:
+                owned.append(assigned)
+        claimed = owned
         wakeup_started_at = self._wakeup_started_at
         self._wakeup_started_at = None
         if claimed and wakeup_started_at is not None:
@@ -377,13 +405,31 @@ class Worker:
 
     def _track_execution(self, record: "QueuedTaskRecord") -> "asyncio.Task[None]":
         task = asyncio.create_task(self._execute_claimed(record))
-        self._running_tasks.add(task)
+        self._running_tasks[task] = record
         task.add_done_callback(self._on_execution_done)
         return task
 
     def _on_execution_done(self, task: "asyncio.Task[None]") -> "None":
-        self._running_tasks.discard(task)
+        self._running_tasks.pop(task, None)
         self._completion_event.set()
+
+    async def _maybe_cancel_running(self) -> "None":
+        if not self._running_tasks:
+            return
+        now = asyncio.get_running_loop().time()
+        if now - self._last_cancellation_check_at < self._cancellation_poll_interval:
+            return
+        self._last_cancellation_check_at = now
+        by_id = {record.id: task for task, record in self._running_tasks.items()}
+        records = await self._service.get_queue_backend().get_tasks(tuple(by_id))
+        for record in records:
+            if record.status != "cancelled":
+                continue
+            task = by_id.get(record.id)
+            if task is None or task.done():
+                continue
+            _cancel_task_context(str(record.id))
+            task.cancel()
 
     async def reconcile_external(self, *, limit: "int | None" = None) -> "int":
         """Reconcile externally dispatched records by delegating to the service.
@@ -403,6 +449,12 @@ class Worker:
         beat_token = _bind_beat_sink(self._heartbeat_manager)
         try:
             await self._service.get_execution_backend().execute(self._service, record, worker_id=self._worker_id)
+        except asyncio.CancelledError:
+            task_setting = record.metadata.get("requeue_on_shutdown")
+            should_requeue = self._requeue_on_shutdown if task_setting is None else task_setting is True
+            if self._stop_event.is_set() and should_requeue:
+                await self._service.interrupt_task(record, worker_id=self._worker_id)
+            raise
         finally:
             _reset_beat_sink(beat_token)
             try:

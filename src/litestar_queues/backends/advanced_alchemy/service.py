@@ -21,6 +21,7 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     record_matches_filters,
+    retry_schedule,
     stale_requeue_error,
     stale_requeue_priority,
 )
@@ -276,6 +277,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             expires_at=expires_at,
             key=key,
             metadata=dict(metadata),
+            created_at=now,
+            queued_at=now,
         )
         if id is not None:
             record.id = id
@@ -661,7 +664,14 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool", expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool",
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         model = await self._select_task(task_id)
         if model is None:
@@ -676,6 +686,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         retry_fence = expected_retry_count if expected_retry_count is not None else int(model.retry_count)
         criteria = [model_type.id == task_id, model_type.status == "running", model_type.retry_count == retry_fence]
         if retry and int(model.retry_count) < int(model.max_retries):
+            now = queued_at or _utc_now()
             update_result = await self.repository.session.execute(
                 update(model_type)
                 .where(*criteria)
@@ -683,7 +694,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                     _update_values(
                         model_type,
                         {
-                            "status": "pending",
+                            "status": "scheduled" if retry_at is not None else "pending",
+                            "queued_at": now,
+                            "scheduled_at": retry_at,
                             "started_at": None,
                             "heartbeat_at": None,
                             "retry_count": int(model.retry_count) + 1,
@@ -922,6 +935,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             if use_heartbeat_cutoff:
                 update_criteria.append(stale_heartbeat)
             if requeue_on_stale and int(model.retry_count) < int(model.max_retries):
+                queued_at, retry_at = retry_schedule(self.record_from_model(model))
                 update_result = await self.repository.session.execute(
                     update(model_type)
                     .where(*update_criteria)
@@ -929,7 +943,9 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                         _update_values(
                             model_type,
                             {
-                                "status": "pending",
+                                "status": "scheduled" if retry_at is not None else "pending",
+                                "queued_at": queued_at,
+                                "scheduled_at": retry_at,
                                 "started_at": None,
                                 "heartbeat_at": None,
                                 "retry_count": int(model.retry_count) + 1,
@@ -1167,11 +1183,12 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         model_type = self.model_type
-        result = await self.repository.session.execute(
-            select(model_type.status, func.count()).group_by(model_type.status)
-        )
+        statement = select(model_type.status, func.count()).group_by(model_type.status)
+        if queue is not None:
+            statement = statement.where(model_type.queue == queue)
+        result = await self.repository.session.execute(statement)
         statistics = QueueStatistics()
         for status, count in result.all():
             coerced = _coerce_status(status)
@@ -1230,6 +1247,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
             execution_ref=record.execution_ref,
+            worker_id=record.worker_id,
             status=record.status,
             priority=record.priority,
             max_retries=record.max_retries,
@@ -1237,6 +1255,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             scheduled_at=record.scheduled_at,
             expires_at=record.expires_at,
             created_at=record.created_at,
+            queued_at=record.queued_at,
             started_at=record.started_at,
             completed_at=record.completed_at,
             heartbeat_at=record.heartbeat_at,
@@ -1265,6 +1284,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             execution_backend=model.execution_backend,
             execution_profile=model.execution_profile,
             execution_ref=model.execution_ref,
+            worker_id=model.worker_id,
             status=_coerce_status(model.status),
             priority=int(model.priority),
             max_retries=int(model.max_retries),
@@ -1272,6 +1292,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             scheduled_at=_coerce_datetime(model.scheduled_at),
             expires_at=_coerce_datetime(model.expires_at),
             created_at=cast("datetime", _coerce_datetime(model.created_at)),
+            queued_at=cast("datetime", _coerce_datetime(model.queued_at)),
             started_at=_coerce_datetime(model.started_at),
             completed_at=_coerce_datetime(model.completed_at),
             heartbeat_at=_coerce_datetime(model.heartbeat_at),
@@ -1362,7 +1383,11 @@ def _build_claim_candidate_statement(
         criteria.append(model_type.queue == queue)
     if execution_backend is not None:
         criteria.append(model_type.execution_backend == execution_backend)
-    statement = select(model_type).where(and_(*criteria)).order_by(desc(model_type.priority), model_type.created_at)
+    statement = (
+        select(model_type)
+        .where(and_(*criteria))
+        .order_by(desc(model_type.priority), model_type.queued_at, model_type.created_at, model_type.id)
+    )
     if limit is not None:
         statement = statement.limit(limit)
     if skip_locked:

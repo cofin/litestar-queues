@@ -83,8 +83,7 @@ Prints queue status counts.
 
 Options:
 
-* ``--queue NAME`` (advisory) — backend-side filtering is not yet
-  enforced; flag is logged to ``stderr``.
+* ``--queue NAME`` — count only records belonging to that queue.
 * ``--json`` — emit a single JSON object with the eight keys
   (``pending``, ``scheduled``, ``running``, ``completed``, ``failed``,
   ``cancelled``, ``expired``, ``total``). Output uses

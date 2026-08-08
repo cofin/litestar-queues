@@ -13,6 +13,7 @@ from litestar_queues import (
     QueueConfig,
     QueuedTaskRecord,
     QueueService,
+    RetryBackoff,
     ScheduleConfig,
     Task,
     TaskExecutionContext,
@@ -514,3 +515,24 @@ async def test_using_preserves_sync_to_thread() -> "None":
 
     assert sync_task.sync_to_thread is False
     assert sync_task.using(priority=5).sync_to_thread is False
+
+
+def test_retry_backoff_is_normalized_into_task_metadata_and_using() -> None:
+    policy = RetryBackoff(initial_delay=1.0, multiplier=2.0, max_delay=30.0)
+
+    @task("tasks.retry_policy", retries=4, retry_backoff=policy)
+    async def retry_policy() -> None:
+        return None
+
+    assert retry_policy.retry_backoff == policy
+    assert retry_policy.metadata()["retry_backoff"] == {"initial_delay": 1.0, "multiplier": 2.0, "max_delay": 30.0}
+    assert retry_policy.using(retry_backoff=5.0).retry_backoff == RetryBackoff(initial_delay=5.0)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"initial_delay": -1.0}, {"initial_delay": 1.0, "multiplier": 0.5}, {"initial_delay": 2.0, "max_delay": 1.0}],
+)
+def test_retry_backoff_rejects_invalid_policy(kwargs: dict[str, float]) -> None:
+    with pytest.raises(ValueError, match="RetryBackoff"):
+        RetryBackoff(**kwargs)

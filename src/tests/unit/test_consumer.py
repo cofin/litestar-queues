@@ -13,6 +13,7 @@ from litestar_queues.backends import InMemoryQueueBackend
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
     from uuid import UUID
 
     from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord
@@ -476,12 +477,26 @@ class _RunningOnlyFailureBackend(InMemoryQueueBackend):
     """
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         current = await self.get_task(task_id)
         if current is None or current.status != "running":
             return None
-        return await super().fail_task(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+        return await super().fail_task(
+            task_id,
+            error,
+            retry=retry,
+            expected_retry_count=expected_retry_count,
+            retry_at=retry_at,
+            queued_at=queued_at,
+        )
 
 
 async def test_an_unregistered_task_fails_durably_on_a_backend_that_needs_the_claim() -> "None":

@@ -18,6 +18,10 @@ An ordinary exception is retried while attempts remain. ``non_retryable()``
 raises :class:`~litestar_queues.NonRetryableError` and moves directly to a
 terminal failure. Inspect ``TaskResult.error`` after refreshing the result.
 
+Use ``retry_backoff=5`` for a fixed delay, or
+``RetryBackoff(initial_delay=1, multiplier=2, max_delay=30)`` for capped
+exponential backoff. A retry receives a fresh queue timestamp.
+
 Cancel pending work
 ===================
 
@@ -40,6 +44,10 @@ include_running=True)`` also permits the durable state transition for a running
 record. The default remains ``False`` so an ordinary cancellation call cannot
 silently overwrite active work. Running cancellation is cooperative: the task
 must check for cancellation and release its resources safely.
+
+Inside a task, ``current_task_context().is_cancelled`` exposes the cooperative
+token; ``wait_cancelled()`` waits for it and ``raise_if_cancelled()`` raises
+``JobCancelledError``. Threaded synchronous work must use these checkpoints.
 
 Timeouts use normal failure handling. Make external calls cancellable and safe
 to repeat so a retry does not corrupt partially completed work.

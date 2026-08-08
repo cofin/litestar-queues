@@ -1023,6 +1023,38 @@ async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> "None":
     assert result.status == "running"
 
 
+async def test_worker_reconciles_durable_running_cancellation() -> "None":
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    @task("tasks.external_cancel")
+    async def external_cancel() -> "None":
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopped.set()
+            raise
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(external_cancel)
+        worker = Worker(
+            service, WorkerConfig(poll_interval=0.01, poll_backoff_max=None, cancellation_poll_interval=0.01)
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        assert await service.cancel_task(result.id, include_running=True) is True
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        await worker.stop()
+        await asyncio.wait_for(worker_task, timeout=1)
+        await result.refresh()
+
+    assert result.status == "cancelled"
+
+
 async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
     started = asyncio.Event()
     release = asyncio.Event()

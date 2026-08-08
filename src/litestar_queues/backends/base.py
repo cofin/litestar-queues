@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -16,7 +17,6 @@ from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from datetime import datetime, timedelta
     from types import TracebackType
     from uuid import UUID
 
@@ -25,11 +25,29 @@ if TYPE_CHECKING:
     from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
-__all__ = ("EXTERNAL_DISPATCH_RESERVATION_PREFIX", "BaseQueueBackend", "is_external_dispatch_reservation")
+__all__ = (
+    "EXTERNAL_DISPATCH_RESERVATION_PREFIX",
+    "BaseQueueBackend",
+    "is_external_dispatch_reservation",
+    "retry_schedule",
+)
 
 EXTERNAL_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
 STALE_REQUEUE_PRIORITY = 4
+
+
+def retry_schedule(record: "QueuedTaskRecord", *, now: "datetime | None" = None) -> "tuple[datetime, datetime | None]":
+    """Return refreshed queue and optional due timestamps for a retry."""
+    queued_at = now or datetime.now(timezone.utc)
+    value = record.metadata.get("retry_backoff")
+    if not isinstance(value, dict):
+        return queued_at, None
+    delay = float(value.get("initial_delay", 0.0)) * float(value.get("multiplier", 1.0)) ** record.retry_count
+    max_delay = value.get("max_delay")
+    if max_delay is not None:
+        delay = min(delay, float(max_delay))
+    return queued_at, queued_at + timedelta(seconds=delay) if delay > 0 else None
 
 
 class BaseQueueBackend:
@@ -164,6 +182,24 @@ class BaseQueueBackend:
         """Return a queued task by deduplication key."""
         raise NotImplementedError
 
+    async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
+        """Return existing records for the supplied identifiers."""
+        records = await asyncio.gather(*(self.get_task(task_id) for task_id in task_ids))
+        return [record for record in records if record is not None]
+
+    async def notify_worker_control(self, worker_id: "str") -> "None":
+        """Publish a best-effort worker-control hint."""
+
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        """Persist the owner of a running retry generation."""
+        record = await self.get_task(task_id)
+        if record is None or record.status != "running" or record.retry_count != expected_retry_count:
+            return None
+        record.worker_id = worker_id
+        return record
+
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
@@ -211,8 +247,13 @@ class BaseQueueBackend:
                 return claimed
         return None
 
-    async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+    async def claim_many(  # noqa: C901
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks across the requested queues.
 
@@ -225,15 +266,54 @@ class BaseQueueBackend:
             Claimed task records.
         """
         records: "list[QueuedTaskRecord]" = []
+        remaining = dict(queue_limits or {})
         for _ in range(max(0, limit)):
-            claimed = await self.claim_next(queues=queues, execution_backend=execution_backend)
+            if queue_limits is not None:
+                candidates: "list[QueuedTaskRecord]" = []
+                if queues:
+                    for queue in queues:
+                        if remaining.get(queue, 1) <= 0:
+                            continue
+                        candidates.extend(
+                            await self.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
+                        )
+                else:
+                    candidates = await self.list_pending(
+                        limit=max(1000, limit * 10), execution_backend=execution_backend
+                    )
+                    candidates = [record for record in candidates if remaining.get(record.queue, 1) > 0]
+                candidates.sort(
+                    key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int)
+                )
+                claimed = None
+                for candidate in candidates:
+                    claimed = await self.claim_task(candidate.id)
+                    if claimed is not None:
+                        break
+                if claimed is None:
+                    break
+                records.append(claimed)
+                if claimed.queue in remaining:
+                    remaining[claimed.queue] -= 1
+                continue
+            eligible_queues = tuple(queue for queue in queues if remaining.get(queue, 1) > 0)
+            if queues and not eligible_queues:
+                break
+            claimed = await self.claim_next(queues=eligible_queues or queues, execution_backend=execution_backend)
             if claimed is None:
                 break
             records.append(claimed)
+            if claimed.queue in remaining:
+                remaining[claimed.queue] -= 1
         return records
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report overdue records transitioned while claiming.
 
@@ -241,7 +321,12 @@ class BaseQueueBackend:
             Claimed records and records expired by this call.
         """
         expired = await self.expire_overdue()
-        claimed = await self.claim_many(limit=limit, queues=queues, execution_backend=execution_backend)
+        if queue_limits is None:
+            claimed = await self.claim_many(limit=limit, queues=queues, execution_backend=execution_backend)
+        else:
+            claimed = await self.claim_many(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         expired.extend(await self.expire_overdue())
         unique = {record.id: record for record in expired}
         return claimed, list(unique.values())
@@ -260,7 +345,14 @@ class BaseQueueBackend:
         raise NotImplementedError
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         """Mark a task as failed or retry it.
 
@@ -270,6 +362,8 @@ class BaseQueueBackend:
             retry: Whether retry policy may requeue the task.
             expected_retry_count: When provided, update only if the record is
                 still running with this retry count.
+            retry_at: Scheduled eligibility timestamp for a delayed retry.
+            queued_at: Queue ordering timestamp for the new retry attempt.
         """
         raise NotImplementedError
 
@@ -282,6 +376,12 @@ class BaseQueueBackend:
                 cooperative cancellation path. Default behavior only cancels
                 pending or scheduled records.
         """
+        raise NotImplementedError
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        """Return an owned running attempt to pending after interruption."""
         raise NotImplementedError
 
     async def cancel_tasks(
@@ -489,7 +589,7 @@ class BaseQueueBackend:
         """
         raise NotImplementedError
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         """Return queue status counts.
 
         Raises:
