@@ -27,9 +27,7 @@ async def test_dispatch_consume_and_complete(rabbitmq_service: "RabbitMQService"
         amqp_url=rabbitmq_service.amqp_url, queue_name=f"litestar-queues-{uuid4()}"
     )
     config = QueueConfig(
-        queue_backend="memory",
-        execution_backend=execution_config,
-        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend=execution_config, worker=WorkerConfig(placement="external")
     )
     queue_backend = InMemoryQueueBackend()
     backend = RabbitMQExecutionBackend(config, execution_config=execution_config)

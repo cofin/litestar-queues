@@ -76,9 +76,7 @@ class RabbitMQExecutionBackend(BaseConsumerExecutionBackend):
         )
         try:
             confirmed = await asyncio.wait_for(
-                channel.default_exchange.publish(
-                    message, routing_key=self.execution_config.queue_name, mandatory=True
-                ),
+                channel.default_exchange.publish(message, routing_key=self.execution_config.queue_name, mandatory=True),
                 timeout=self.execution_config.api_timeout,
             )
         except asyncio.CancelledError:
@@ -163,13 +161,11 @@ class RabbitMQExecutionBackend(BaseConsumerExecutionBackend):
         arguments: "dict[str, object]" = {"x-queue-type": "quorum"}
         config = self.execution_config
         if config.delayed_retry_type != "disabled":
-            arguments.update(
-                {
-                    "x-delayed-retry-type": config.delayed_retry_type,
-                    "x-delayed-retry-min": config.delayed_retry_min_ms,
-                    "x-delayed-retry-max": config.delayed_retry_max_ms,
-                }
-            )
+            arguments.update({
+                "x-delayed-retry-type": config.delayed_retry_type,
+                "x-delayed-retry-min": config.delayed_retry_min_ms,
+                "x-delayed-retry-max": config.delayed_retry_max_ms,
+            })
         if config.consumer_timeout_ms is not None:
             arguments["x-consumer-timeout"] = config.consumer_timeout_ms
         return await channel.declare_queue(

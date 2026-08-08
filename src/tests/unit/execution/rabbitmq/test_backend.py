@@ -75,8 +75,10 @@ async def test_dispatch_publishes_persistent_uuid_with_attempt_and_priority() ->
     connection = FakeConnection()
     execution_config = RabbitMQExecutionConfig(amqp_url="amqp://guest:guest@localhost/")
     config = QueueConfig(
-        namespace="tests", queue_backend="memory", execution_backend=execution_config,
-        worker=WorkerConfig(placement="external")
+        namespace="tests",
+        queue_backend="memory",
+        execution_backend=execution_config,
+        worker=WorkerConfig(placement="external"),
     )
     queue_backend = InMemoryQueueBackend()
     backend = RabbitMQExecutionBackend(config, execution_config=execution_config, connection=connection)
