@@ -120,6 +120,12 @@ Choose production options
 
       Run queued work with nothing left running between deliveries.
 
+   .. grid-item-card:: Dispatch through RabbitMQ
+      :link: deployment/rabbitmq
+      :link-type: doc
+
+      Route task identifiers through a RabbitMQ 4.3 quorum queue.
+
 .. toctree::
    :hidden:
    :maxdepth: 2
@@ -151,4 +157,5 @@ Choose production options
    deployment/cloud-run
    deployment/cloud-tasks
    deployment/sqs
+   deployment/rabbitmq
    migration
