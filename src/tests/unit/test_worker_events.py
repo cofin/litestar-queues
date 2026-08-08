@@ -107,7 +107,7 @@ async def test_worker_emits_cancelled_event_for_cancelled_attempt() -> "None":
         with pytest.raises(asyncio.CancelledError):
             await runner
 
-    assert [event.type for event in sink.events] == ["task.started", "task.cancelled"]
+    assert [event.type for event in sink.events] == ["task.started"]
 
 
 async def test_worker_marks_job_cancelled_error_terminal_without_retry() -> "None":

@@ -162,6 +162,24 @@ async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle()
     assert (await backend.get_task(scheduled.id)) is scheduled
 
 
+async def test_memory_backend_statistics_can_filter_by_queue() -> "None":
+    backend = InMemoryQueueBackend()
+    billing = await backend.enqueue("tasks.billing", queue="billing")
+    await backend.enqueue("tasks.reports", queue="reports")
+    claimed = await backend.claim_task(billing.id)
+    assert claimed is not None
+    await backend.complete_task(billing.id)
+
+    global_statistics = await backend.get_statistics()
+    billing_statistics = await backend.get_statistics(queue="billing")
+    missing_statistics = await backend.get_statistics(queue="missing")
+
+    assert global_statistics.total == 2
+    assert billing_statistics.completed == 1
+    assert billing_statistics.total == 1
+    assert missing_statistics.total == 0
+
+
 async def test_memory_backend_fail_task_retries_then_fails_permanently() -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("tasks.flaky", max_retries=1)
@@ -180,6 +198,38 @@ async def test_memory_backend_fail_task_retries_then_fails_permanently() -> "Non
     assert failed.status == "failed"
     assert failed.error == "second failure"
     assert failed.completed_at is not None
+
+
+async def test_memory_backend_retry_refreshes_queue_order_and_respects_delay() -> "None":
+    backend = InMemoryQueueBackend()
+    first = await backend.enqueue("tasks.first", max_retries=1)
+    claimed = await backend.claim_task(first.id)
+    assert claimed is not None
+    waiting = await backend.enqueue("tasks.waiting")
+    queued_at = datetime.now(timezone.utc)
+    retry_at = queued_at + timedelta(minutes=1)
+
+    retried = await backend.fail_task(first.id, "retry", queued_at=queued_at, retry_at=retry_at)
+
+    assert retried is first
+    assert retried.status == "scheduled"
+    assert retried.queued_at == queued_at
+    assert await backend.claim_next() is waiting
+    assert await backend.claim_task(first.id) is None
+
+
+async def test_memory_backend_zero_delay_retry_sorts_behind_waiting_work() -> "None":
+    backend = InMemoryQueueBackend()
+    first = await backend.enqueue("tasks.first", max_retries=1)
+    claimed = await backend.claim_task(first.id)
+    assert claimed is not None
+    waiting = await backend.enqueue("tasks.waiting")
+
+    retried = await backend.fail_task(first.id, "retry", queued_at=datetime.now(timezone.utc))
+
+    assert retried is first
+    assert retried.status == "pending"
+    assert (await backend.claim_next()) is waiting
 
 
 async def test_memory_backend_only_cancels_running_tasks_when_explicitly_allowed() -> "None":
@@ -584,6 +634,21 @@ async def test_memory_backend_claim_many_handles_limits_filters_and_scheduled() 
 
     reports = await backend.claim_many(limit=10, queues=("reports",))
     assert [record.task_name for record in reports] == ["tasks.batch.other_queue"]
+
+
+async def test_memory_backend_claim_many_skips_saturated_queue() -> "None":
+    backend = InMemoryQueueBackend()
+    await backend.enqueue("tasks.email.high", queue="email", priority=100)
+    email_second = await backend.enqueue("tasks.email.second", queue="email", priority=90)
+    reports = await backend.enqueue("tasks.reports", queue="reports", priority=1)
+
+    claimed = await backend.claim_many(limit=3, queue_limits={"email": 1, "reports": 2})
+
+    assert [record.task_name for record in claimed] == ["tasks.email.high", "tasks.reports"]
+    stored_email = await backend.get_task(email_second.id)
+    stored_reports = await backend.get_task(reports.id)
+    assert stored_email is not None and stored_email.status == "pending"
+    assert stored_reports is not None and stored_reports.status == "running"
 
 
 async def test_memory_backend_claim_many_never_double_claims_under_contention() -> "None":

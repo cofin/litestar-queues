@@ -277,13 +277,22 @@ class SQLAlchemyBackend(BaseQueueBackend):
         return None
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks across the requested queues.
 
         Returns:
             Claimed task records.
         """
+        if queue_limits is not None:
+            return await super().claim_many(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         if limit <= 0:
             return []
         records: "list[QueuedTaskRecord]" = []
@@ -300,9 +309,18 @@ class SQLAlchemyBackend(BaseQueueBackend):
         return records
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report expiry transitions from the same transactions."""
+        if queue_limits is not None:
+            return await super().claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         if limit <= 0:
             return [], []
         records: "list[QueuedTaskRecord]" = []
@@ -327,10 +345,24 @@ class SQLAlchemyBackend(BaseQueueBackend):
             return await service.complete_task(task_id, result=result, expected_retry_count=expected_retry_count)
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
-            return await service.fail_task(task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+            return await service.fail_task(
+                task_id,
+                error,
+                retry=retry,
+                expected_retry_count=expected_retry_count,
+                retry_at=retry_at,
+                queued_at=queued_at,
+            )
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         async with self._operation() as service:
@@ -488,9 +520,9 @@ class SQLAlchemyBackend(BaseQueueBackend):
         async with self._service() as service:
             return await service.list_running_external(limit=limit)
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         async with self._service() as service:
-            return await service.get_statistics()
+            return await service.get_statistics(queue=queue)
 
     async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         async with self._operation() as service:
@@ -640,6 +672,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         missing_columns = {
             "id",
             "created_at",
+            "queued_at",
             "task_name",
             "args_json",
             "kwargs_json",
@@ -647,6 +680,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             "execution_backend",
             "execution_profile",
             "execution_ref",
+            "worker_id",
             "status",
             "priority",
             "max_retries",

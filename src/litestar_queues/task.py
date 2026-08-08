@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from litestar_queues.service import QueueService
 
 __all__ = (
+    "RetryBackoff",
     "ScheduleConfig",
     "Task",
     "TaskResult",
@@ -65,6 +66,41 @@ _schedule_registry: 'dict[str, "ScheduleConfig"]' = {}
 _loaded_modules: "set[str]" = set()
 _RANDOM = random.SystemRandom()
 _default_service_holder: 'list["QueueService | None"]' = [None]
+
+
+@dataclass(frozen=True, slots=True)
+class RetryBackoff:
+    """Delay policy applied when a task consumes a retry."""
+
+    initial_delay: "float"
+    multiplier: "float" = 1.0
+    max_delay: "float | None" = None
+
+    def __post_init__(self) -> "None":
+        if self.initial_delay < 0:
+            msg = "RetryBackoff.initial_delay must be greater than or equal to 0."
+            raise ValueError(msg)
+        if self.multiplier < 1:
+            msg = "RetryBackoff.multiplier must be greater than or equal to 1."
+            raise ValueError(msg)
+        if self.max_delay is not None and self.max_delay < self.initial_delay:
+            msg = "RetryBackoff.max_delay must be greater than or equal to initial_delay."
+            raise ValueError(msg)
+
+    def delay_for(self, retry_count: "int") -> "float":
+        """Return the delay for a zero-based retry count."""
+        delay = self.initial_delay * self.multiplier**retry_count
+        return min(delay, self.max_delay) if self.max_delay is not None else delay
+
+    def as_metadata(self) -> "dict[str, float | None]":
+        """Return the JSON-compatible persisted representation."""
+        return {"initial_delay": self.initial_delay, "multiplier": self.multiplier, "max_delay": self.max_delay}
+
+
+def _normalize_retry_backoff(value: "float | RetryBackoff | None") -> "RetryBackoff | None":
+    if value is None or isinstance(value, RetryBackoff):
+        return value
+    return RetryBackoff(initial_delay=float(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,8 +426,10 @@ class Task(Generic[P, T]):
         "_on_stale_failure",
         "_priority",
         "_queue",
+        "_requeue_on_shutdown",
         "_requeue_on_stale",
         "_retries",
+        "_retry_backoff",
         "_run_after",
         "_sync_to_thread",
         "_timeout",
@@ -407,6 +445,7 @@ class Task(Generic[P, T]):
         queue: "str" = "default",
         priority: "int" = 0,
         retries: "int" = 0,
+        retry_backoff: "float | RetryBackoff | None" = None,
         timeout: "float | None" = None,
         execution_backend: "str | None" = None,
         execution_profile: "str | None" = None,
@@ -419,6 +458,7 @@ class Task(Generic[P, T]):
         log_level: "str | None" = None,
         log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
+        requeue_on_shutdown: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
         sync_to_thread: "bool | None" = None,
     ) -> "None":
@@ -429,6 +469,7 @@ class Task(Generic[P, T]):
         self._queue = queue
         self._priority = priority
         self._retries = retries
+        self._retry_backoff = _normalize_retry_backoff(retry_backoff)
         self._timeout = timeout
         self._execution_backend = execution_backend
         self._execution_profile = execution_profile
@@ -441,6 +482,7 @@ class Task(Generic[P, T]):
         self._log_level = log_level
         self._log_success = log_success
         self._requeue_on_stale = requeue_on_stale
+        self._requeue_on_shutdown = requeue_on_shutdown
         self._on_stale_failure = on_stale_failure
 
     @property
@@ -462,6 +504,11 @@ class Task(Generic[P, T]):
     def retries(self) -> "int":
         """Maximum retry count."""
         return self._retries
+
+    @property
+    def retry_backoff(self) -> "RetryBackoff | None":
+        """Retry delay policy, if configured."""
+        return self._retry_backoff
 
     @property
     def timeout(self) -> "float | None":
@@ -527,6 +574,11 @@ class Task(Generic[P, T]):
     def requeue_on_stale(self) -> "bool":
         """Whether stale running records should be requeued when retries remain."""
         return self._requeue_on_stale is not False
+
+    @property
+    def requeue_on_shutdown(self) -> "bool | None":
+        """Task-specific shutdown requeue override."""
+        return self._requeue_on_shutdown
 
     @property
     def on_stale_failure(self) -> "StaleFailureHandler | None":
@@ -605,6 +657,10 @@ class Task(Generic[P, T]):
             metadata["log_success"] = self._log_success
         if self._requeue_on_stale is not None:
             metadata["requeue_on_stale"] = self._requeue_on_stale
+        if self._requeue_on_shutdown is not None:
+            metadata["requeue_on_shutdown"] = self._requeue_on_shutdown
+        if self._retry_backoff is not None:
+            metadata["retry_backoff"] = self._retry_backoff.as_metadata()
         return metadata
 
     def using(
@@ -613,6 +669,7 @@ class Task(Generic[P, T]):
         queue: "str | None" = None,
         priority: "int | None" = None,
         retries: "int | None" = None,
+        retry_backoff: "float | RetryBackoff | None" = None,
         timeout: "float | None" = None,
         execution_backend: "str | None" = None,
         execution_profile: "str | None" = None,
@@ -625,6 +682,7 @@ class Task(Generic[P, T]):
         log_level: "str | None" = None,
         log_success: "bool | None" = None,
         requeue_on_stale: "bool | None" = None,
+        requeue_on_shutdown: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
         sync_to_thread: "bool | None" = None,
     ) -> "Task[P, T]":
@@ -636,6 +694,7 @@ class Task(Generic[P, T]):
             queue=queue if queue is not None else self._queue,
             priority=priority if priority is not None else self._priority,
             retries=retries if retries is not None else self._retries,
+            retry_backoff=retry_backoff if retry_backoff is not None else self._retry_backoff,
             timeout=timeout if timeout is not None else self._timeout,
             execution_backend=execution_backend if execution_backend is not None else self._execution_backend,
             execution_profile=execution_profile if execution_profile is not None else self._execution_profile,
@@ -648,6 +707,7 @@ class Task(Generic[P, T]):
             log_level=log_level if log_level is not None else self._log_level,
             log_success=log_success if log_success is not None else self._log_success,
             requeue_on_stale=requeue_on_stale if requeue_on_stale is not None else self._requeue_on_stale,
+            requeue_on_shutdown=(requeue_on_shutdown if requeue_on_shutdown is not None else self._requeue_on_shutdown),
             on_stale_failure=on_stale_failure if on_stale_failure is not None else self._on_stale_failure,
         )
 
@@ -793,6 +853,7 @@ def task(
     queue: "str" = "default",
     priority: "int" = 0,
     retries: "int" = 0,
+    retry_backoff: "float | RetryBackoff | None" = None,
     timeout: "float | None" = None,
     execution_backend: "str | None" = None,
     execution_profile: "str | None" = None,
@@ -805,6 +866,7 @@ def task(
     log_level: "str | None" = None,
     log_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
+    requeue_on_shutdown: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
     sync_to_thread: "bool | None" = None,
     cron: "str | None" = None,
@@ -822,6 +884,7 @@ def task(
     queue: "str" = "default",
     priority: "int" = 0,
     retries: "int" = 0,
+    retry_backoff: "float | RetryBackoff | None" = None,
     timeout: "float | None" = None,
     execution_backend: "str | None" = None,
     execution_profile: "str | None" = None,
@@ -834,6 +897,7 @@ def task(
     log_level: "str | None" = None,
     log_success: "bool | None" = None,
     requeue_on_stale: "bool | None" = None,
+    requeue_on_shutdown: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
     sync_to_thread: "bool | None" = None,
     cron: "str | None" = None,
@@ -878,6 +942,7 @@ def task(
             queue=queue,
             priority=priority,
             retries=retries,
+            retry_backoff=retry_backoff,
             timeout=timeout,
             execution_backend=execution_backend,
             execution_profile=execution_profile,
@@ -890,6 +955,7 @@ def task(
             log_level=log_level,
             log_success=log_success,
             requeue_on_stale=requeue_on_stale,
+            requeue_on_shutdown=requeue_on_shutdown,
             on_stale_failure=on_stale_failure,
             sync_to_thread=sync_to_thread,
         )

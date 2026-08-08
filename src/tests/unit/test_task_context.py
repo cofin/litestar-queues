@@ -2,7 +2,7 @@ from typing import cast
 
 import pytest
 
-from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
+from litestar_queues import JobCancelledError, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.events import (
     EventBufferConfig,
     EventDeliveryConfig,
@@ -26,6 +26,23 @@ def test_current_task_context_helpers_outside_task() -> "None":
     assert get_current_task_context() is None
     with pytest.raises(RuntimeError, match="No queue task execution context"):
         require_current_task_context()
+
+
+async def test_task_context_cooperative_cancellation_helpers() -> "None":
+    context = _build_context()
+
+    assert context.is_cancelled is False
+    from litestar_queues.events.context import _cancel_task_context
+
+    token = _bind_task_context(context)
+    try:
+        _cancel_task_context(context.task_id)
+        await context.wait_cancelled()
+        with pytest.raises(JobCancelledError):
+            context.raise_if_cancelled()
+        assert context.is_cancelled is True
+    finally:
+        _reset_task_context(token)
 
 
 async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None":

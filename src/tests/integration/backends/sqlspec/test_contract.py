@@ -547,7 +547,7 @@ def test_sqlspec_claim_batch_returning_sql_shape() -> "None":
     sql = store.claim_batch_returning_sql(queue_count=2, filter_execution_backend=True)
 
     assert "FOR UPDATE SKIP LOCKED" in sql
-    assert 'ORDER BY "priority" DESC, "created_at" ASC' in sql
+    assert 'ORDER BY "priority" DESC, "queued_at" ASC, "created_at" ASC, "id" ASC' in sql
     assert "RETURNING" in sql
     assert "\"status\" = 'running'" in sql
     assert '"started_at" = :started_at' in sql
@@ -597,7 +597,10 @@ def test_sqlspec_fail_returning_sql_uses_case_retry_branch() -> "None":
 
     sql = store.fail_returning_sql(fence_retry_count=False)
 
-    assert "CASE WHEN :retry = TRUE AND \"retry_count\" < \"max_retries\" THEN 'pending' ELSE 'failed' END" in sql
+    assert (
+        'CASE WHEN :retry = TRUE AND "retry_count" < "max_retries" THEN '
+        "CASE WHEN CAST(:retry_at AS TIMESTAMPTZ) IS NULL THEN 'pending' ELSE 'scheduled' END ELSE 'failed' END" in sql
+    )
     assert '"heartbeat_at" = NULL' in sql
     assert '"error" = :error' in sql
     assert (
@@ -1908,9 +1911,19 @@ async def test_sqlspec_duckdb_uses_the_non_returning_paths(
         *,
         retry: "bool" = True,
         expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         invoked.add("fail")
-        return await original_fail(self, task_id, error, retry=retry, expected_retry_count=expected_retry_count)
+        return await original_fail(
+            self,
+            task_id,
+            error,
+            retry=retry,
+            expected_retry_count=expected_retry_count,
+            retry_at=retry_at,
+            queued_at=queued_at,
+        )
 
     monkeypatch.setattr(SQLSpecQueueBackend, "_enqueue_without_returning", spy_enqueue)
     monkeypatch.setattr(SQLSpecQueueBackend, "_complete_task_without_returning", spy_complete)

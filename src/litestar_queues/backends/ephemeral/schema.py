@@ -33,7 +33,7 @@ __all__ = (
     "sqlite_errors",
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5000
 
 PATH_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_PATH"
@@ -123,12 +123,14 @@ _STATEMENTS = (
         task_name TEXT NOT NULL,
         queue TEXT NOT NULL,
         execution_backend TEXT NOT NULL,
+        worker_id TEXT,
         status TEXT NOT NULL,
         priority INTEGER NOT NULL,
         retry_count INTEGER NOT NULL,
         scheduled_at TEXT,
         expires_at TEXT,
         created_at TEXT NOT NULL,
+        queued_at TEXT NOT NULL,
         completed_at TEXT,
         heartbeat_at TEXT,
         task_key TEXT,
@@ -137,7 +139,7 @@ _STATEMENTS = (
     """,
     """
     CREATE INDEX IF NOT EXISTS ix_queue_task_claim
-        ON queue_task(status, execution_backend, queue, scheduled_at, expires_at, priority, created_at)
+        ON queue_task(status, execution_backend, queue, scheduled_at, expires_at, priority, queued_at, created_at)
     """,
     """
     CREATE INDEX IF NOT EXISTS ix_queue_task_expiry

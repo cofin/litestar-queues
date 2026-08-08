@@ -31,7 +31,16 @@ class QueueTaskModelMixin:
     def __table_args__(cls) -> "tuple[Any, ...]":
         table = str(cast("_NamedTable", cls).__tablename__)
         return (
-            Index(f"ix_{table}_pending", "status", "queue", "scheduled_at", "expires_at", "priority", "created_at"),
+            Index(
+                f"ix_{table}_pending",
+                "status",
+                "queue",
+                "scheduled_at",
+                "expires_at",
+                "priority",
+                "queued_at",
+                "created_at",
+            ),
             Index(f"ix_{table}_heartbeat", "status", "heartbeat_at"),
             Index(f"ix_{table}_execution", "status", "execution_ref", mysql_length={"execution_ref": 255}),
         )
@@ -65,6 +74,10 @@ class QueueTaskModelMixin:
         return mapped_column(String(length=1000), default=None)
 
     @declared_attr
+    def worker_id(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
     def status(cls) -> "Mapped[str]":
         return mapped_column(String(length=32), default="pending", nullable=False)
 
@@ -87,6 +100,10 @@ class QueueTaskModelMixin:
     @declared_attr
     def expires_at(cls) -> "Mapped[datetime | None]":
         return mapped_column(DateTime(timezone=True), default=None)
+
+    @declared_attr
+    def queued_at(cls) -> "Mapped[datetime]":
+        return mapped_column(DateTime(timezone=True), nullable=False)
 
     @declared_attr
     def started_at(cls) -> "Mapped[datetime | None]":

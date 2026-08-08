@@ -39,6 +39,30 @@ def test_worker_startup_timeout_must_be_positive() -> None:
         WorkerConfig(startup_timeout=0)
 
 
+@pytest.mark.parametrize("fraction", [0.0, 1.0])
+def test_worker_heartbeat_jitter_accepts_inclusive_boundaries(fraction: float) -> None:
+    worker_config = WorkerConfig(heartbeat_jitter_fraction=fraction)
+
+    assert worker_config.heartbeat_jitter_fraction == fraction
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 1.1])
+def test_worker_heartbeat_jitter_rejects_out_of_range_values(fraction: float) -> None:
+    with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.heartbeat_jitter_fraction"):
+        WorkerConfig(heartbeat_jitter_fraction=fraction)
+
+
+def test_worker_queue_concurrency_validates_names_caps_and_selected_queues() -> None:
+    assert WorkerConfig(queue_concurrency={"email": 1}).queue_concurrency == {"email": 1}
+
+    with pytest.raises(QueueConfigurationError, match="queue names"):
+        WorkerConfig(queue_concurrency={"": 1})
+    with pytest.raises(QueueConfigurationError, match="values"):
+        WorkerConfig(queue_concurrency={"email": 0})
+    with pytest.raises(QueueConfigurationError, match=r"not in WorkerConfig\.queues"):
+        WorkerConfig(queues=("reports",), queue_concurrency={"email": 1})
+
+
 def test_task_request_names_the_bulk_enqueue_input() -> None:
     request = TaskRequest(task_name="reports.generate", args=("report-1",))
 

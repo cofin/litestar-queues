@@ -1,10 +1,12 @@
 """Task execution context and helper APIs for queue event publishing."""
 
+import asyncio
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from litestar_queues.events.models import QueueEvent
+from litestar_queues.exceptions import JobCancelledError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -30,6 +32,7 @@ _current_task_context: 'ContextVar["TaskExecutionContext | None"]' = ContextVar(
     "litestar_queues_task_context", default=None
 )
 _current_beat_sink: 'ContextVar["TaskBeatSink | None"]' = ContextVar("litestar_queues_beat_sink", default=None)
+_active_task_contexts: "dict[str, TaskExecutionContext]" = {}
 
 
 @dataclass(slots=True)
@@ -45,6 +48,24 @@ class TaskExecutionContext:
     attempt: "int"
     event_publisher: "QueueEventPublisher"
     _sequence: "int" = field(default=0, init=False, repr=False)
+    _cancelled: "asyncio.Event" = field(default_factory=asyncio.Event, init=False, repr=False)
+
+    @property
+    def is_cancelled(self) -> "bool":
+        """Whether durable cancellation has reached this execution."""
+        return self._cancelled.is_set()
+
+    async def wait_cancelled(self) -> "None":
+        """Wait until durable cancellation reaches this execution."""
+        await self._cancelled.wait()
+
+    def raise_if_cancelled(self) -> "None":
+        """Raise :class:`JobCancelledError` after cancellation is requested."""
+        if self.is_cancelled:
+            raise JobCancelledError
+
+    def mark_cancelled(self) -> "None":
+        self._cancelled.set()
 
     async def progress(
         self,
@@ -231,11 +252,21 @@ def beat(detail: "str | None" = None) -> "None":
 
 
 def _bind_task_context(context: "TaskExecutionContext") -> "Token[TaskExecutionContext | None]":
+    _active_task_contexts[context.task_id] = context
     return _current_task_context.set(context)
 
 
 def _reset_task_context(token: "Token[TaskExecutionContext | None]") -> "None":
+    context = _current_task_context.get()
+    if context is not None:
+        _active_task_contexts.pop(context.task_id, None)
     _current_task_context.reset(token)
+
+
+def _cancel_task_context(task_id: "str") -> "None":
+    context = _active_task_contexts.get(task_id)
+    if context is not None:
+        context.mark_cancelled()
 
 
 def _bind_beat_sink(sink: "TaskBeatSink") -> "Token[TaskBeatSink | None]":

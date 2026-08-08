@@ -20,6 +20,7 @@ from litestar_queues.backends.base import (
     BaseQueueBackend,
     is_external_dispatch_reservation,
     record_matches_filters,
+    retry_schedule,
     stale_requeue_error,
     stale_requeue_priority,
 )
@@ -83,12 +84,14 @@ def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
         record.task_name,
         record.queue,
         record.execution_backend,
+        record.worker_id,
         record.status,
         record.priority,
         record.retry_count,
         _iso(record.scheduled_at),
         _iso(record.expires_at),
         _iso(record.created_at),
+        _iso(record.queued_at),
         _iso(record.completed_at),
         _iso(record.heartbeat_at),
         record.key,
@@ -98,15 +101,15 @@ def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
 
 _INSERT = """
 INSERT INTO queue_task (
-    id, task_name, queue, execution_backend, status, priority, retry_count,
-    scheduled_at, expires_at, created_at, completed_at, heartbeat_at, task_key, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, task_name, queue, execution_backend, worker_id, status, priority, retry_count,
+    scheduled_at, expires_at, created_at, queued_at, completed_at, heartbeat_at, task_key, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _UPDATE = """
 UPDATE queue_task SET
-    task_name = ?, queue = ?, execution_backend = ?, status = ?, priority = ?, retry_count = ?,
-    scheduled_at = ?, expires_at = ?, created_at = ?, completed_at = ?, heartbeat_at = ?, task_key = ?, payload = ?
+    task_name = ?, queue = ?, execution_backend = ?, worker_id = ?, status = ?, priority = ?, retry_count = ?,
+    scheduled_at = ?, expires_at = ?, created_at = ?, queued_at = ?, completed_at = ?, heartbeat_at = ?, task_key = ?, payload = ?
 WHERE id = ?
 """
 
@@ -274,6 +277,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         Returns:
             The stored or pre-existing queue record.
         """
+        now = _utc_now()
         record = QueuedTaskRecord(
             task_name=task_name,
             args=args,
@@ -288,6 +292,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
             expires_at=expires_at,
             key=key,
             metadata=dict(metadata or {}),
+            created_at=now,
+            queued_at=now,
         )
         if id is not None:
             record.id = id
@@ -338,6 +344,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
                     expires_at=request.expires_at,
                     key=request.key,
                     metadata=dict(request.metadata or {}),
+                    created_at=now,
+                    queued_at=now,
                 )
                 _insert(connection, record)
                 records.append(record)
@@ -360,6 +368,29 @@ class EphemeralQueueBackend(BaseQueueBackend):
             return None if row is None else _decode(row)
 
         return await self._run(operation)
+
+    async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
+        records = await asyncio.gather(*(self.get_task(task_id) for task_id in task_ids))
+        return [record for record in records if record is not None]
+
+    async def notify_worker_control(self, worker_id: "str") -> "None":
+        """Rely on durable polling for cross-process cancellation."""
+
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if record.status != "running" or record.retry_count != expected_retry_count:
+                return None
+            record.worker_id = worker_id
+            _write(connection, record)
+            return record
+
+        return await self._transaction(operation)
 
     async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
         """Return the newest record stored under ``key``.
@@ -398,7 +429,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
             if execution_backend is not None:
                 sql += " AND execution_backend = ?"
                 values.append(execution_backend)
-            sql += " ORDER BY priority DESC, created_at ASC LIMIT ?"
+            sql += " ORDER BY priority DESC, queued_at ASC, created_at ASC, id ASC LIMIT ?"
             values.append(limit)
             return [
                 record
@@ -448,20 +479,36 @@ class EphemeralQueueBackend(BaseQueueBackend):
         return await self._transaction(operation)
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due records in one transaction.
 
         Returns:
             Claimed task records in claim order.
         """
-        claimed, _ = await self.claim_many_with_expired(limit=limit, queues=queues, execution_backend=execution_backend)
+        claimed, _ = await self.claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
         return claimed
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and return overdue records expired in the transaction."""
+        if queue_limits is not None:
+            return await super().claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         if limit <= 0:
             return [], []
 
@@ -492,7 +539,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
             if execution_backend is not None:
                 sql += " AND execution_backend = ?"
                 values.append(execution_backend)
-            sql += " ORDER BY priority DESC, created_at ASC LIMIT ?"
+            sql += " ORDER BY priority DESC, queued_at ASC, created_at ASC, id ASC LIMIT ?"
             values.append(limit)
             claimed: "list[QueuedTaskRecord]" = []
             for row in connection.execute(sql, values).fetchall():
@@ -688,7 +735,14 @@ class EphemeralQueueBackend(BaseQueueBackend):
         return await self._transaction(operation)
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         """Retry or fail a running record under optional retry fencing.
 
@@ -702,8 +756,11 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 return None
             record.error = error
             if retry and record.retry_count < record.max_retries:
+                now = queued_at or _utc_now()
                 record.retry_count += 1
-                record.status = "pending"
+                record.queued_at = now
+                record.scheduled_at = retry_at
+                record.status = "scheduled" if retry_at is not None and retry_at > now else "pending"
                 record.started_at = None
                 record.heartbeat_at = None
             else:
@@ -735,6 +792,33 @@ class EphemeralQueueBackend(BaseQueueBackend):
             record.heartbeat_at = None
             _write(connection, record)
             return True
+
+        return await self._transaction(operation)
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if (
+                record.status != "running"
+                or record.retry_count != expected_retry_count
+                or record.worker_id != worker_id
+            ):
+                return None
+            record.status = "pending"
+            record.queued_at = queued_at
+            record.scheduled_at = None
+            record.started_at = None
+            record.heartbeat_at = None
+            record.completed_at = None
+            record.execution_ref = None
+            record.worker_id = None
+            _write(connection, record)
+            return record
 
         return await self._transaction(operation)
 
@@ -853,7 +937,10 @@ class EphemeralQueueBackend(BaseQueueBackend):
             for record in candidates:
                 requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                 if requeue_on_stale and record.retry_count < record.max_retries:
-                    record.status = "pending"
+                    queued_at, retry_at = retry_schedule(record, now=now)
+                    record.status = "scheduled" if retry_at is not None else "pending"
+                    record.queued_at = queued_at
+                    record.scheduled_at = retry_at
                     record.priority = stale_requeue_priority(record.priority)
                     record.started_at = None
                     record.heartbeat_at = None
@@ -942,7 +1029,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
         return await self._run(operation)
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         """Return per-status record counts.
 
         Returns:
@@ -951,7 +1038,13 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
         def operation(connection: "sqlite3.Connection") -> "QueueStatistics":
             statistics = QueueStatistics()
-            for row in connection.execute("SELECT status, COUNT(*) AS total FROM queue_task GROUP BY status"):
+            sql = "SELECT status, COUNT(*) AS total FROM queue_task"
+            parameters: "tuple[str, ...]" = ()
+            if queue is not None:
+                sql += " WHERE queue = ?"
+                parameters = (queue,)
+            sql += " GROUP BY status"
+            for row in connection.execute(sql, parameters):
                 status = str(row["status"])
                 if hasattr(statistics, status):
                     setattr(statistics, status, int(row["total"]))

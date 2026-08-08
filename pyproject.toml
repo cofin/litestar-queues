@@ -141,7 +141,7 @@ benchmark-backends = [
   "psycopg[binary,pool]>=3.2.0",
   "redis>=5.0.0",
   "sqlalchemy>=2.0.0",
-  "sqlspec[mypyc,performance]>=0.58.0",
+  "sqlspec[performance]>=0.58.0",
   "valkey>=6.0.0",
 ]
 benchmark-frameworks = ["arq", "celery", "dramatiq", "rq", "saq", "taskiq", "taskiq-redis"]

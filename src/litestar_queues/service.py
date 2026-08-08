@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.events import QueueEventLog, QueueEventPublisher
     from litestar_queues.execution import BaseExecutionBackend
-    from litestar_queues.models import QueuedTaskRecord, StaleTaskRecoveryResult, TaskReservation
+    from litestar_queues.models import QueuedTaskRecord, QueueStatistics, StaleTaskRecoveryResult, TaskReservation
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = ("QueueService",)
@@ -620,6 +620,57 @@ class QueueService:
         """Return a queued task record by ID."""
         return await self.get_queue_backend().get_task(task_id)
 
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
+        """Return global or queue-scoped task status counts."""
+        return await self.get_queue_backend().get_statistics(queue=queue)
+
+    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+        """Cancel one queued task and publish its terminal lifecycle event.
+
+        Args:
+            task_id: Identifier of the task to cancel.
+            include_running: Whether a running task may transition to cancelled.
+
+        Returns:
+            ``True`` only for the caller that wins the durable state transition.
+        """
+        return await self._cancel_task(task_id, include_running=include_running)
+
+    async def _cancel_task(
+        self, task_id: "UUID", *, include_running: "bool" = False, message: "str | None" = None
+    ) -> "bool":
+        backend = self.get_queue_backend()
+        if not await backend.cancel_task(task_id, include_running=include_running):
+            return False
+        record = await backend.get_task(task_id)
+        if record is None:
+            return True
+        payload = {"status": record.status, "retry_count": record.retry_count}
+        task_context = _task_execution_context(record, worker_id=None, event_publisher=self.get_event_publisher())
+        await task_context.lifecycle("task.cancelled", message=message, payload=payload)
+        self._log_task_event("Queue task cancelled", record, level=logging.INFO, payload=payload)
+        if include_running and record.worker_id is not None:
+            await backend.notify_worker_control(record.worker_id)
+        return True
+
+    async def interrupt_task(
+        self, record: "QueuedTaskRecord", *, worker_id: "str", reason: "str" = "shutdown"
+    ) -> "QueuedTaskRecord | None":
+        """Requeue one owned running attempt after local execution unwinds."""
+        updated = await self.get_queue_backend().interrupt_task(
+            record.id,
+            expected_retry_count=record.retry_count,
+            worker_id=worker_id,
+            queued_at=datetime.now(timezone.utc),
+        )
+        if updated is None:
+            return None
+        payload = {"reason": reason, "status": updated.status, "retry_count": updated.retry_count}
+        context = _task_execution_context(updated, worker_id=worker_id, event_publisher=self.get_event_publisher())
+        await context.lifecycle("task.interrupted", payload=payload)
+        self._log_task_event("Queue task interrupted", updated, level=logging.INFO, payload=payload)
+        return updated
+
     async def reset_task_identity(self, key: "str") -> "bool":
         """Delete a ``unique_until="forever"`` reservation by its exact effective key.
 
@@ -664,14 +715,12 @@ class QueueService:
             await task_context.lifecycle("task.started")
             result = await self._execute_task(record, task_obj, task_context, timeout)
         except asyncio.CancelledError as exc:
-            final_status = "cancelled"
+            final_status = "interrupted"
             telemetry.record_exception(exc)
-            await task_context.lifecycle("task.cancelled")
-            self._log_task_event("Queue task cancelled", record, level=logging.WARNING)
             telemetry.finish(final_status)
             raise
         except JobCancelledError as exc:
-            cancelled = await self.get_queue_backend().cancel_task(record.id, include_running=True)
+            cancelled = await self._cancel_task(record.id, include_running=True, message=str(exc))
             if not cancelled:
                 final_status = "claim_lost"
                 current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
@@ -679,9 +728,6 @@ class QueueService:
                 return current
             cancelled_record = await self._current_or_claimed(record)
             final_status = cancelled_record.status
-            payload = {"status": cancelled_record.status, "retry_count": cancelled_record.retry_count}
-            await task_context.lifecycle("task.cancelled", message=str(exc), payload=payload)
-            self._log_task_event("Queue task cancelled", cancelled_record, level=logging.INFO, payload=payload)
             telemetry.finish(final_status)
             return cancelled_record
         except NonRetryableError as exc:
@@ -751,26 +797,32 @@ class QueueService:
         telemetry: "_ExecutionObservability",
     ) -> "QueuedTaskRecord":
         error_message = self._error_message(exc, record)
+        queued_at = datetime.now(timezone.utc)
+        retry_delay = _retry_delay(record)
+        retry_at = queued_at + timedelta(seconds=retry_delay) if retry_delay > 0 else None
         updated = await self.get_queue_backend().fail_task(
-            record.id, error_message, expected_retry_count=record.retry_count
+            record.id, error_message, expected_retry_count=record.retry_count, retry_at=retry_at, queued_at=queued_at
         )
         if updated is None:
             return await self._finish_claim_lost_observability(record, task_context, telemetry)
-        payload = {
+        payload: "dict[str, Any]" = {
             "status": updated.status,
             "retry_count": updated.retry_count,
-            "will_retry": updated.status == "pending",
+            "will_retry": updated.status in {"pending", "scheduled"},
         }
+        if updated.status in {"pending", "scheduled"}:
+            payload["retry_delay"] = retry_delay
+            payload["retry_at"] = retry_at.isoformat() if retry_at is not None else None
         await task_context.lifecycle("task.failed", message=error_message, payload=payload)
         self._log_task_event(
             "Queue task failed",
             updated,
-            level=logging.WARNING if updated.status == "pending" else logging.ERROR,
+            level=logging.WARNING if updated.status in {"pending", "scheduled"} else logging.ERROR,
             payload=payload,
         )
         if updated.status == "failed":
             await self._reschedule_if_needed(updated)
-        elif updated.status == "pending":
+        elif updated.status in {"pending", "scheduled"}:
             # A retry on a queue with no worker needs its own delivery, and the
             # claim this handler owns is the only thing that knows one is due.
             updated = await self._schedule_persisted(updated)
@@ -890,15 +942,26 @@ class QueueService:
         queues: "tuple[str, ...]" = (),
         execution_backend: "str | None" = None,
         worker_id: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim due tasks and publish events for claim-time expirations.
 
         Returns:
             Records successfully transitioned to ``running``.
         """
-        claimed, expired = await self.get_queue_backend().claim_many_with_expired(
-            limit=limit, queues=queues, execution_backend=execution_backend
-        )
+        backend = self.get_queue_backend()
+        if queue_limits is None:
+            claimed, expired = await backend.claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend
+            )
+        else:
+            from litestar_queues.backends.base import BaseQueueBackend
+
+            expired = await backend.expire_overdue()
+            claimed = await BaseQueueBackend.claim_many(
+                backend, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
+            expired.extend(await backend.expire_overdue())
         self.observability_runtime.record_histogram(
             "litestar_queues.claim.batch.size",
             len(claimed),
@@ -1391,6 +1454,18 @@ def _reset_execution_context(scope: "tuple[Any, tuple[Any, bool]]") -> "None":
     context_token, correlation_state = scope
     _reset_task_context(context_token)
     reset_correlation_id(correlation_state)
+
+
+def _retry_delay(record: "QueuedTaskRecord") -> "float":
+    """Return the persisted retry delay for the record's current retry count."""
+    value = record.metadata.get("retry_backoff")
+    if not isinstance(value, dict):
+        return 0.0
+    initial_delay = float(value.get("initial_delay", 0.0))
+    multiplier = float(value.get("multiplier", 1.0))
+    delay = initial_delay * multiplier**record.retry_count
+    max_delay = value.get("max_delay")
+    return min(delay, float(max_delay)) if max_delay is not None else delay
 
 
 def _base_observability_attributes(

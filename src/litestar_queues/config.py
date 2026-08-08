@@ -196,11 +196,20 @@ class WorkerConfig:
     max_concurrency: "int" = 1
     """Maximum number of tasks executed concurrently."""
 
+    queue_concurrency: "Mapping[str, int]" = field(default_factory=dict)
+    """Per-worker concurrency caps for named queues."""
+
     heartbeat_interval: "float" = 30
     """Interval between bulk heartbeat writes in seconds."""
 
+    heartbeat_jitter_fraction: "float" = 0.1
+    """Positive heartbeat delay jitter ratio from zero through one."""
+
     heartbeat_miss_threshold: "int" = 2
     """Consecutive heartbeat misses tolerated before claim loss."""
+
+    cancellation_poll_interval: "float" = 1.0
+    """Interval between durable running-cancellation reconciliation passes."""
 
     reconcile_interval: "float" = 30
     """Interval between external-execution reconciliation passes in seconds."""
@@ -220,13 +229,16 @@ class WorkerConfig:
     final_cancel_timeout: "float" = 5
     """Maximum post-cancellation drain time in seconds."""
 
+    requeue_on_shutdown: "bool" = False
+    """Whether cancelled executions are requeued after shutdown drain timeout."""
+
     startup_timeout: "float" = 30
     """Maximum time to wait for worker startup readiness in seconds."""
 
     queues: "tuple[str, ...]" = ()
     """Queue names claimed by this worker; empty claims every queue."""
 
-    def __post_init__(self) -> "None":
+    def __post_init__(self) -> "None":  # noqa: C901
         """Validate worker placement, concurrency, intervals, and adaptive polling."""
         if self.placement not in _PLACEMENTS:
             msg = f"WorkerConfig.placement must be one of {_PLACEMENTS}, not {self.placement!r}."
@@ -237,6 +249,7 @@ class WorkerConfig:
             "max_concurrency": self.max_concurrency,
             "heartbeat_interval": self.heartbeat_interval,
             "heartbeat_miss_threshold": self.heartbeat_miss_threshold,
+            "cancellation_poll_interval": self.cancellation_poll_interval,
             "reconcile_interval": self.reconcile_interval,
             "stale_check_interval": self.stale_check_interval,
             "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
@@ -256,12 +269,25 @@ class WorkerConfig:
         if not 0.0 <= self.poll_jitter <= 1.0:
             msg = "WorkerConfig.poll_jitter must be between 0.0 and 1.0, inclusive."
             raise QueueConfigurationError(msg)
+        if not 0.0 <= self.heartbeat_jitter_fraction <= 1.0:
+            msg = "WorkerConfig.heartbeat_jitter_fraction must be between 0.0 and 1.0, inclusive."
+            raise QueueConfigurationError(msg)
         if self.stale_after is not None and self.stale_after <= 0:
             msg = "WorkerConfig.stale_after must be greater than 0 when set."
             raise QueueConfigurationError(msg)
         if self.expiry_check_interval is not None and self.expiry_check_interval < 0:
             msg = "WorkerConfig.expiry_check_interval must be greater than or equal to 0 when set."
             raise QueueConfigurationError(msg)
+        for queue, cap in self.queue_concurrency.items():
+            if not queue:
+                msg = "WorkerConfig.queue_concurrency queue names must not be empty."
+                raise QueueConfigurationError(msg)
+            if cap <= 0:
+                msg = "WorkerConfig.queue_concurrency values must be greater than 0."
+                raise QueueConfigurationError(msg)
+            if self.queues and queue not in self.queues:
+                msg = f"WorkerConfig.queue_concurrency contains {queue!r}, which is not in WorkerConfig.queues."
+                raise QueueConfigurationError(msg)
 
 
 @dataclass(slots=True)

@@ -73,6 +73,7 @@ class MssqlQueueStore(SQLSpecQueueStore):
                 {self._quoted_col("execution_backend")} {self._indexed_text_type()} NOT NULL,
                 {self._quoted_col("execution_profile")} {self._indexed_text_type()},
                 {self._quoted_col("execution_ref")} {self._indexed_text_type()},
+                {self._quoted_col("worker_id")} {self._indexed_text_type()},
                 {self._quoted_col("status")} {self._indexed_text_type()} NOT NULL,
                 {self._quoted_col("priority")} {self._integer_type()} NOT NULL,
                 {self._quoted_col("max_retries")} {self._integer_type()} NOT NULL,
@@ -80,6 +81,7 @@ class MssqlQueueStore(SQLSpecQueueStore):
                 {self._quoted_col("scheduled_at")} {self._timestamp_type()},
                 {expiration_column}
                 {self._quoted_col("created_at")} {self._timestamp_type()} NOT NULL,
+                {self._quoted_col("queued_at")} {self._timestamp_type()} NOT NULL,
                 {self._quoted_col("started_at")} {self._timestamp_type()},
                 {self._quoted_col("completed_at")} {self._timestamp_type()},
                 {self._quoted_col("heartbeat_at")} {self._timestamp_type()},
@@ -105,7 +107,15 @@ class MssqlQueueStore(SQLSpecQueueStore):
         if suffix == "pending":
             columns = ", ".join(
                 self._quoted_col(canonical)
-                for canonical in ("status", "queue", "execution_backend", "scheduled_at", "priority", "created_at")
+                for canonical in (
+                    "status",
+                    "queue",
+                    "execution_backend",
+                    "scheduled_at",
+                    "priority",
+                    "queued_at",
+                    "created_at",
+                )
             )
             return self._create_mssql_index_statement_sql("pending", columns)
         if suffix == "heartbeat":
@@ -325,6 +335,7 @@ class MySQLQueueStore(SQLSpecQueueStore):
             {self._quoted_col("execution_backend")} {self._indexed_text_type()} NOT NULL,
             {self._quoted_col("execution_profile")} {self._indexed_text_type()},
             {self._quoted_col("execution_ref")} {self._indexed_text_type()},
+            {self._quoted_col("worker_id")} {self._indexed_text_type()},
             {self._quoted_col("status")} {self._indexed_text_type()} NOT NULL,
             {self._quoted_col("priority")} {self._integer_type()} NOT NULL,
             {self._quoted_col("max_retries")} {self._integer_type()} NOT NULL,
@@ -332,6 +343,7 @@ class MySQLQueueStore(SQLSpecQueueStore):
             {self._quoted_col("scheduled_at")} {self._timestamp_type()},
             {expiration_column}
             {self._quoted_col("created_at")} {self._timestamp_type()} NOT NULL,
+            {self._quoted_col("queued_at")} {self._timestamp_type()} NOT NULL,
             {self._quoted_col("started_at")} {self._timestamp_type()},
             {self._quoted_col("completed_at")} {self._timestamp_type()},
             {self._quoted_col("heartbeat_at")} {self._timestamp_type()},
@@ -342,7 +354,7 @@ class MySQLQueueStore(SQLSpecQueueStore):
             INDEX {self._quoted_index_name("pending")} (
                 {self._prefixed_col("status", 32)}, {self._prefixed_col("queue", 191)},
                 {self._prefixed_col("execution_backend", 191)}, {self._quoted_col("scheduled_at")},
-                {self._quoted_col("priority")}, {self._quoted_col("created_at")}
+                {self._quoted_col("priority")}, {self._quoted_col("queued_at")}, {self._quoted_col("created_at")}
             ),
             INDEX {self._quoted_index_name("heartbeat")} (
                 {self._prefixed_col("status", 32)}, {self._quoted_col("heartbeat_at")}

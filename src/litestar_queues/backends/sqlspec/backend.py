@@ -20,6 +20,7 @@ from litestar_queues.backends.base import (
     BaseQueueBackend,
     is_external_dispatch_reservation,
     record_matches_filters,
+    retry_schedule,
     stale_requeue_error,
     stale_requeue_priority,
 )
@@ -368,6 +369,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             expires_at=expires_at,
             key=key,
             metadata=dict(metadata or {}),
+            created_at=now,
+            queued_at=now,
         )
         if id is not None:
             record.id = id
@@ -702,7 +705,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return expired
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks.
 
@@ -713,6 +721,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Returns:
             Claimed task records.
         """
+        if queue_limits is not None:
+            return await super().claim_many(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         if limit <= 0:
             return []
         store = self._get_store()
@@ -743,9 +755,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return records
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report every expiry transition owned by this call."""
+        if queue_limits is not None:
+            return await super().claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         if limit <= 0:
             return [], []
         store = self._get_store()
@@ -960,12 +981,24 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return completed
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         store = self._get_store()
         if not type(store).supports_dml_returning:
             return await self._fail_task_without_returning(
-                task_id, error, retry=retry, expected_retry_count=expected_retry_count
+                task_id,
+                error,
+                retry=retry,
+                expected_retry_count=expected_retry_count,
+                retry_at=retry_at,
+                queued_at=queued_at,
             )
         now = _utc_now()
         stored_error = store.serialize_error(error)
@@ -974,6 +1007,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "error": stored_error,
             "retry": retry,
             "completed_at": self._serialize_datetime(now),
+            "queued_at": self._serialize_datetime(queued_at or now),
+            "retry_at": self._serialize_datetime(retry_at),
         }
         if expected_retry_count is not None:
             parameters["expected_retry_count"] = expected_retry_count
@@ -985,13 +1020,20 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if updated is None:
             self._increment_queue_metric("claim_lost")
             return None
-        self._increment_queue_metric("retry" if updated.status == "pending" else "fail")
-        if updated.status == "pending":
+        self._increment_queue_metric("retry" if updated.status in {"pending", "scheduled"} else "fail")
+        if updated.status in {"pending", "scheduled"}:
             await self.notify_new_task(updated)
         return updated
 
     async def _fail_task_without_returning(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):
             async with self._session() as driver:
@@ -1020,10 +1062,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                 error=stored_error,
                                 retry_count=record.retry_count + 1,
                                 expected_retry_count=retry_fence,
+                                retry_at=self._serialize_datetime(retry_at),
+                                queued_at=self._serialize_datetime(queued_at or _utc_now()),
                             )
                         )
                         metric = "retry"
-                        expected_status = "pending"
+                        expected_status = "scheduled" if retry_at is not None else "pending"
                         expected_retry_after_update = record.retry_count + 1
                     else:
                         now = _utc_now()
@@ -1257,6 +1301,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         if requeue_on_stale and record.retry_count < record.max_retries:
                             retry_error = stale_requeue_error(record.error)
                             retry_priority = stale_requeue_priority(record.priority)
+                            queued_at, retry_at = retry_schedule(record)
                             updated = await driver.execute(
                                 store.retry_task(
                                     task_id=str(record.id),
@@ -1265,6 +1310,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                     expected_retry_count=record.retry_count,
                                     heartbeat_cutoff=serialized_cutoff,
                                     priority=retry_priority,
+                                    retry_at=self._serialize_datetime(retry_at),
+                                    queued_at=self._serialize_datetime(queued_at),
                                 )
                             )
                             rows_affected = self._resolve_rows_affected(updated)
@@ -1524,12 +1571,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             rows = await self._select_rows(driver, self._get_store().list_running_external(limit=limit))
         return [self._record_from_row(row) for row in rows]
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         statistics = QueueStatistics()
         async with self._session() as driver:
-            async for row in _select_stream(driver, self._get_store().list_all()):
-                status = _coerce_status(cast("dict[str, Any]", row)["status"])
-                setattr(statistics, status, getattr(statistics, status) + 1)
+            rows = await self._select_rows(driver, self._get_store().statistics(queue=queue))
+        for row in rows:
+            status = _coerce_status(row["status"])
+            setattr(statistics, status, int(row["total"]))
         return statistics
 
     async def iter_all(self, *, chunk_size: "int" = 1000) -> "AsyncIterator[QueuedTaskRecord]":
@@ -2081,7 +2129,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             return False
         record = self._record_from_row(row)
         return (
-            record.status == "pending"
+            record.status in {"pending", "scheduled"}
             and record.retry_count == previous_retry_count + 1
             and record.error == expected_error
             and record.priority == expected_priority
@@ -2208,6 +2256,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             expires_at=request.expires_at,
             key=request.key,
             metadata=dict(request.metadata or {}),
+            created_at=now,
+            queued_at=now,
         )
 
     async def _bulk_insert(
@@ -2244,11 +2294,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "args_json": store.serialize_json("args_json", list(record.args)),
             "completed_at": self._serialize_datetime(record.completed_at),
             "created_at": self._serialize_datetime(record.created_at),
+            "queued_at": self._serialize_datetime(record.queued_at),
             "error": record.error,
             "expires_at": self._serialize_datetime(record.expires_at),
             "execution_backend": record.execution_backend,
             "execution_profile": record.execution_profile,
             "execution_ref": record.execution_ref,
+            "worker_id": record.worker_id,
             "heartbeat_at": self._serialize_datetime(record.heartbeat_at),
             "id": str(record.id),
             "kwargs_json": store.serialize_json("kwargs_json", record.kwargs),
@@ -2281,6 +2333,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             execution_backend=str(row["execution_backend"]),
             execution_profile=cast("str | None", row["execution_profile"]),
             execution_ref=cast("str | None", row["execution_ref"]),
+            worker_id=cast("str | None", row["worker_id"]),
             status=_coerce_status(row["status"]),
             priority=int(row["priority"]),
             max_retries=int(row["max_retries"]),
@@ -2288,6 +2341,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             scheduled_at=_deserialize_datetime(row["scheduled_at"]),
             expires_at=_deserialize_datetime(row["expires_at"]),
             created_at=cast("datetime", _deserialize_datetime(row["created_at"])),
+            queued_at=cast("datetime", _deserialize_datetime(row["queued_at"])),
             started_at=_deserialize_datetime(row["started_at"]),
             completed_at=_deserialize_datetime(row["completed_at"]),
             heartbeat_at=_deserialize_datetime(row["heartbeat_at"]),

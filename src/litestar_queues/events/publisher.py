@@ -36,6 +36,7 @@ _LIFECYCLE_EVENT_TYPES = frozenset({
     "task.completed",
     "task.failed",
     "task.cancelled",
+    "task.interrupted",
     "task.claim_lost",
     "task.stale_failed",
 })
@@ -43,6 +44,7 @@ _TERMINAL_EVENT_TYPES = frozenset({
     "task.completed",
     "task.failed",
     "task.cancelled",
+    "task.interrupted",
     "task.claim_lost",
     "task.stale_failed",
 })

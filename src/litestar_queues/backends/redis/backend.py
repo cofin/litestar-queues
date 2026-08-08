@@ -21,6 +21,7 @@ from litestar_queues.backends.base import (
     BaseQueueBackend,
     is_external_dispatch_reservation,
     record_matches_filters,
+    retry_schedule,
     stale_requeue_error,
     stale_requeue_priority,
 )
@@ -332,6 +333,10 @@ local retry = ARGV[5]
 local completed_at = ARGV[6]
 local channel = ARGV[7]
 local completed_score = ARGV[8]
+local retry_at = ARGV[9]
+local retry_score = ARGV[10]
+local queued_at = ARGV[11]
+local ready_score = ARGV[12]
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'running' then
@@ -345,10 +350,13 @@ redis.call('HSET', hkey, 'error', error)
 local max_retries = tonumber(redis.call('HGET', hkey, 'max_retries')) or 0
 if retry == '1' and retry_count < max_retries then
     local new_retry_count = retry_count + 1
-    redis.call('HSET', hkey, 'status', 'pending', 'retry_count', new_retry_count,
+    local retry_status = 'pending'
+    if retry_at ~= '' then retry_status = 'scheduled' end
+    redis.call('HSET', hkey, 'status', retry_status, 'retry_count', new_retry_count,
+        'queued_at', queued_at, 'ready_score', ready_score, 'scheduled_at', retry_at,
         'started_at', '', 'started_score', '0', 'heartbeat_at', '', 'heartbeat_score', '0')
     redis.call('SREM', prefix .. ':status:running', task_id)
-    redis.call('SADD', prefix .. ':status:pending', task_id)
+    redis.call('SADD', prefix .. ':status:' .. retry_status, task_id)
     redis.call('ZREM', prefix .. ':maintenance:running', task_id)
     redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
     local execution_ref = redis.call('HGET', hkey, 'execution_ref')
@@ -358,11 +366,14 @@ if retry == '1' and retry_count < max_retries then
     else
         redis.call('ZREM', prefix .. ':maintenance:external', task_id)
     end
-    local ready_score = redis.call('HGET', hkey, 'ready_score')
-    if ready_score then
+    if retry_at ~= '' then
+        redis.call('ZREM', ready, task_id)
+        redis.call('ZADD', KEYS[3], retry_score, task_id)
+    else
+        redis.call('ZREM', KEYS[3], task_id)
         redis.call('ZADD', ready, ready_score, task_id)
     end
-    return {1, 'pending'}
+    return {1, retry_status}
 end
 redis.call('HSET', hkey, 'status', 'failed', 'completed_at', completed_at,
     'completed_score', completed_score, 'heartbeat_at', '', 'heartbeat_score', '0')
@@ -390,6 +401,7 @@ local hkey = prefix .. ':task:' .. task_id
 redis.call('HSET', hkey, unpack(ARGV, 10))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
+redis.call('SADD', KEYS[3], task_id)
 if expires_score > 0 then
     redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
 end
@@ -429,6 +441,7 @@ local hkey = prefix .. ':task:' .. task_id
 redis.call('HSET', hkey, unpack(ARGV, 11))
 redis.call('SADD', prefix .. ':tasks', task_id)
 redis.call('SADD', prefix .. ':status:' .. status, task_id)
+redis.call('SADD', KEYS[3], task_id)
 if expires_score > 0 then
     redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
 end
@@ -539,6 +552,7 @@ if status ~= 'completed' and status ~= 'failed' and status ~= 'cancelled' and st
     return {0}
 end
 local dedup_key = redis.call('HGET', hkey, 'key')
+local queue_index_key = redis.call('HGET', hkey, 'queue_index_key')
 redis.call('DEL', hkey)
 redis.call('SREM', prefix .. ':tasks', task_id)
 redis.call('ZREM', prefix .. ':ready', task_id)
@@ -548,12 +562,22 @@ redis.call('ZREM', prefix .. ':maintenance:running', task_id)
 redis.call('ZREM', prefix .. ':maintenance:external', task_id)
 redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
 redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
+if queue_index_key and queue_index_key ~= '' then
+    redis.call('SREM', queue_index_key, task_id)
+end
 if dedup_key and dedup_key ~= '' then
     if redis.call('HGET', prefix .. ':keys', dedup_key) == task_id then
         redis.call('HDEL', prefix .. ':keys', dedup_key)
     end
 end
 return {1}
+"""
+_QUEUE_STATISTICS_SCRIPT = """
+local counts = {}
+for index = 2, #KEYS do
+    counts[index - 1] = redis.call('SINTERCARD', 2, KEYS[1], KEYS[index])
+end
+return counts
 """
 _RESERVE_IDENTITY_SCRIPT = """
 local existing = redis.call('HGET', KEYS[1], ARGV[1])
@@ -968,20 +992,36 @@ class RedisQueueBackend(BaseQueueBackend):
         return None, None
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
         """Claim up to ``limit`` due tasks in a single fenced ``EVAL``.
 
         Returns:
             Claimed task records in claim order.
         """
-        claimed, _ = await self.claim_many_with_expired(limit=limit, queues=queues, execution_backend=execution_backend)
+        claimed, _ = await self.claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
         return claimed
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report expirations owned by the same Lua script."""
+        if queue_limits is not None:
+            return await super().claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         if limit <= 0:
             return [], []
         client = await self._get_client()
@@ -1039,7 +1079,14 @@ class RedisQueueBackend(BaseQueueBackend):
         return await self.get_task(task_id)
 
     async def fail_task(
-        self, task_id: "UUID", error: "str", *, retry: "bool" = True, expected_retry_count: "int | None" = None
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
         """Mark a task as failed or retry it via a single fenced script.
 
@@ -1048,10 +1095,14 @@ class RedisQueueBackend(BaseQueueBackend):
         """
         client = await self._get_client()
         now = _utc_now()
+        queue_time = queued_at or now
+        score_record = await self.get_task(task_id)
+        if score_record is not None:
+            score_record.queued_at = queue_time
         outcome = await _eval_script(
             client,
             _FAIL_SCRIPT,
-            [self._task_key(task_id), self._ready_key],
+            [self._task_key(task_id), self._ready_key, self._scheduled_key],
             [
                 self._key_prefix,
                 str(task_id),
@@ -1061,12 +1112,16 @@ class RedisQueueBackend(BaseQueueBackend):
                 _serialize_datetime(now),
                 self._completion_channel,
                 repr(_maintenance_score(now)),
+                _serialize_datetime(retry_at),
+                repr(_scheduled_score(retry_at)),
+                _serialize_datetime(queue_time),
+                repr(_ready_score(score_record)) if score_record is not None else "0",
             ],
         )
         if not outcome or int(outcome[0]) != 1:
             return None
         record = await self.get_task(task_id)
-        if record is not None and _decode(outcome[1]) == "pending":
+        if record is not None and _decode(outcome[1]) in {"pending", "scheduled"}:
             await self.notify_new_task(record)
         return record
 
@@ -1231,7 +1286,10 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def _commit_stale_requeue(self, record: "QueuedTaskRecord") -> "bool":
         expected_retry = record.retry_count
-        record.status = "pending"
+        queued_at, retry_at = retry_schedule(record)
+        record.status = "scheduled" if retry_at is not None else "pending"
+        record.queued_at = queued_at
+        record.scheduled_at = retry_at
         record.priority = stale_requeue_priority(record.priority)
         record.started_at = None
         record.heartbeat_at = None
@@ -1242,7 +1300,7 @@ class RedisQueueBackend(BaseQueueBackend):
             record.id,
             expected_status="running",
             expected_retry_count=expected_retry,
-            new_status="pending",
+            new_status=record.status,
             patch={
                 "priority": str(record.priority),
                 "started_at": "",
@@ -1251,6 +1309,8 @@ class RedisQueueBackend(BaseQueueBackend):
                 "heartbeat_score": "0",
                 "error": record.error or "",
                 "retry_count": str(record.retry_count),
+                "queued_at": _serialize_datetime(queued_at),
+                "scheduled_at": _serialize_datetime(retry_at),
                 "ready_score": repr(_ready_score(record)),
             },
             zset_action=zset_action,
@@ -1453,12 +1513,17 @@ class RedisQueueBackend(BaseQueueBackend):
         records.sort(key=lambda record: (record.started_at or record.created_at, str(record.id)))
         return records[:limit] if limit is not None else records
 
-    async def get_statistics(self) -> "QueueStatistics":
+    async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         """Return queue status counts."""
         client = await self._get_client()
         statistics = QueueStatistics()
         statuses = sorted(_STATUS_VALUES)
-        counts = await _pipeline_scard(client, [self._status_key(status) for status in statuses])
+        status_keys = [self._status_key(status) for status in statuses]
+        counts = (
+            await _pipeline_scard(client, status_keys)
+            if queue is None
+            else await _eval_script(client, _QUEUE_STATISTICS_SCRIPT, [self._queue_index_key(queue), *status_keys], [])
+        )
         for status, count in zip(statuses, counts, strict=True):
             setattr(statistics, status, int(count))
         return statistics
@@ -1874,7 +1939,12 @@ class RedisQueueBackend(BaseQueueBackend):
         client = await self._get_client()
         args = self._enqueue_args(record, publish=publish)
         args = [*args[:8], key, *args[8:]]
-        outcome = await _eval_script(client, _ENQUEUE_KEYED_SCRIPT, [self._ready_key, self._scheduled_key], args)
+        outcome = await _eval_script(
+            client,
+            _ENQUEUE_KEYED_SCRIPT,
+            [self._ready_key, self._scheduled_key, self._queue_index_key(record.queue)],
+            args,
+        )
         if int(outcome[0]) == 1:
             return record
         existing = await self.get_task(UUID(str(_decode(outcome[1]))))
@@ -1903,6 +1973,7 @@ class RedisQueueBackend(BaseQueueBackend):
         execution_profile: "str | None",
         metadata: "dict[str, Any] | None",
     ) -> "QueuedTaskRecord":
+        now = _utc_now()
         return QueuedTaskRecord(
             task_name=task_name,
             args=args,
@@ -1917,21 +1988,26 @@ class RedisQueueBackend(BaseQueueBackend):
             expires_at=expires_at,
             key=key,
             metadata=dict(metadata or {}),
+            created_at=now,
+            queued_at=now,
         )
 
     async def _save_new_record(self, record: "QueuedTaskRecord", *, publish: "bool") -> "None":
         client = await self._get_client()
         await _eval_script(
-            client, _ENQUEUE_SCRIPT, [self._ready_key, self._scheduled_key], self._enqueue_args(record, publish=publish)
+            client,
+            _ENQUEUE_SCRIPT,
+            [self._ready_key, self._scheduled_key, self._queue_index_key(record.queue)],
+            self._enqueue_args(record, publish=publish),
         )
 
     async def _save_new_records(self, records: "Sequence[QueuedTaskRecord]", *, publish: "bool") -> "None":
         if not records:
             return
         client = await self._get_client()
-        keys = [self._ready_key, self._scheduled_key]
         pipeline = _create_pipeline(client)
         for record in records:
+            keys = [self._ready_key, self._scheduled_key, self._queue_index_key(record.queue)]
             pipeline.eval(_ENQUEUE_SCRIPT, len(keys), *keys, *self._enqueue_args(record, publish=publish))
         await _execute_pipeline(pipeline)
 
@@ -2039,6 +2115,9 @@ class RedisQueueBackend(BaseQueueBackend):
     def _status_key(self, status: "str") -> "str":
         return f"{self._key_prefix}:status:{status}"
 
+    def _queue_index_key(self, queue: "str") -> "str":
+        return f"{self._key_prefix}:queue:{hashed_index_value(queue)}"
+
     def _task_key(self, task_id: "UUID") -> "str":
         return f"{self._key_prefix}:task:{task_id}"
 
@@ -2067,9 +2146,11 @@ class RedisQueueBackend(BaseQueueBackend):
             "args": _json_dumps(list(record.args)),
             "kwargs": _json_dumps(record.kwargs),
             "queue": record.queue,
+            "queue_index_key": self._queue_index_key(record.queue),
             "execution_backend": record.execution_backend,
             "execution_profile": record.execution_profile or "",
             "execution_ref": record.execution_ref or "",
+            "worker_id": record.worker_id or "",
             "status": record.status,
             "priority": str(record.priority),
             "max_retries": str(record.max_retries),
@@ -2079,6 +2160,7 @@ class RedisQueueBackend(BaseQueueBackend):
             "expires_score": repr(_maintenance_score(record.expires_at)),
             "created_at": _serialize_datetime(record.created_at),
             "created_score": repr(_maintenance_score(record.created_at)),
+            "queued_at": _serialize_datetime(record.queued_at),
             "started_at": _serialize_datetime(record.started_at),
             "started_score": repr(_maintenance_score(record.started_at)),
             "completed_at": _serialize_datetime(record.completed_at),
@@ -2102,6 +2184,7 @@ class RedisQueueBackend(BaseQueueBackend):
             execution_backend=str(mapping.get("execution_backend") or "local"),
             execution_profile=str(mapping["execution_profile"]) if mapping.get("execution_profile") else None,
             execution_ref=str(mapping["execution_ref"]) if mapping.get("execution_ref") else None,
+            worker_id=str(mapping["worker_id"]) if mapping.get("worker_id") else None,
             status=_coerce_status(mapping.get("status")),
             priority=int(str(mapping.get("priority") or 0)),
             max_retries=int(str(mapping.get("max_retries") or 0)),
@@ -2109,6 +2192,7 @@ class RedisQueueBackend(BaseQueueBackend):
             scheduled_at=_deserialize_datetime(mapping.get("scheduled_at")),
             expires_at=_deserialize_datetime(mapping.get("expires_at")),
             created_at=_deserialize_datetime(mapping.get("created_at")) or _utc_now(),
+            queued_at=_deserialize_datetime(mapping.get("queued_at")) or _utc_now(),
             started_at=_deserialize_datetime(mapping.get("started_at")),
             completed_at=_deserialize_datetime(mapping.get("completed_at")),
             heartbeat_at=_deserialize_datetime(mapping.get("heartbeat_at")),
@@ -2207,11 +2291,11 @@ _PRIORITY_STRIDE = 1e13
 
 
 def _ready_score(record: "QueuedTaskRecord") -> "float":
-    created = record.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    created_ms = created.astimezone(timezone.utc).timestamp() * 1000.0
-    return (-record.priority) * _PRIORITY_STRIDE + created_ms
+    queued = record.queued_at
+    if queued.tzinfo is None:
+        queued = queued.replace(tzinfo=timezone.utc)
+    queued_ms = queued.astimezone(timezone.utc).timestamp() * 1000.0
+    return (-record.priority) * _PRIORITY_STRIDE + queued_ms
 
 
 def _scheduled_score(value: "datetime | None") -> "float":

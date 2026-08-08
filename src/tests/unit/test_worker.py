@@ -27,7 +27,7 @@ from litestar_queues.execution import BaseExecutionBackend
 from tests.helpers._timing import wait_until
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from uuid import UUID
 
     from litestar_queues.events import TaskExecutionContext
@@ -762,6 +762,17 @@ async def test_worker_heartbeat_miss_threshold_comes_from_config() -> "None":
     assert worker._heartbeat_manager._miss_threshold == 3
 
 
+async def test_worker_heartbeat_jitter_comes_from_config() -> "None":
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
+    assert config.worker.heartbeat_jitter_fraction == 0.1
+
+    custom_config = WorkerConfig(heartbeat_jitter_fraction=0.0)
+    async with QueueService(config) as service:
+        worker = Worker(service, custom_config)
+
+    assert worker._heartbeat_manager._jitter_fraction == 0.0
+
+
 async def test_plugin_worker_uses_configured_heartbeat_miss_threshold() -> "None":
     plugin = QueuePlugin(
         QueueConfig(
@@ -1010,6 +1021,38 @@ async def test_worker_stop_cancels_stuck_task_after_drain_timeout() -> "None":
 
     assert cancelled.is_set()
     assert result.status == "running"
+
+
+async def test_worker_reconciles_durable_running_cancellation() -> "None":
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    @task("tasks.external_cancel")
+    async def external_cancel() -> "None":
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopped.set()
+            raise
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(external_cancel)
+        worker = Worker(
+            service, WorkerConfig(poll_interval=0.01, poll_backoff_max=None, cancellation_poll_interval=0.01)
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        assert await service.cancel_task(result.id, include_running=True) is True
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        await worker.stop()
+        await asyncio.wait_for(worker_task, timeout=1)
+        await result.refresh()
+
+    assert result.status == "cancelled"
 
 
 async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
@@ -1650,15 +1693,27 @@ class _ClaimNextRecordingInMemoryQueueBackend(InMemoryQueueBackend):
         self.list_pending_calls: "list[tuple[int, str | None, str | None]]" = []
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> 'list["QueuedTaskRecord"]':
-        return await BaseQueueBackend.claim_many(self, limit=limit, queues=queues, execution_backend=execution_backend)
+        return await BaseQueueBackend.claim_many(
+            self, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
 
     async def claim_many_with_expired(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> 'tuple[list["QueuedTaskRecord"], list["QueuedTaskRecord"]]':
         return await BaseQueueBackend.claim_many_with_expired(
-            self, limit=limit, queues=queues, execution_backend=execution_backend
+            self, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
         )
 
     async def claim_next(
@@ -1699,7 +1754,12 @@ class _ClaimManyRecordingInMemoryQueueBackend(_ClaimNextRecordingInMemoryQueueBa
         self.claim_many_calls: "list[tuple[int, tuple[str, ...], str | None]]" = []
 
     async def claim_many(
-        self, *, limit: "int", queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> 'list["QueuedTaskRecord"]':
         self.claim_many_calls.append((limit, queues, execution_backend))
         records: 'list["QueuedTaskRecord"]' = []

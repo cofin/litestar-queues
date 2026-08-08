@@ -329,6 +329,7 @@ def _create_table_block(
             {store._col("execution_backend")} {store._indexed_text_type()} NOT NULL,
             {store._col("execution_profile")} {store._indexed_text_type()},
             {store._col("execution_ref")} {store._indexed_text_type()},
+            {store._col("worker_id")} {store._indexed_text_type()},
             {store._col("status")} {store._indexed_text_type()} NOT NULL,
             {store._col("priority")} {store._integer_type()} NOT NULL,
             {store._col("max_retries")} {store._integer_type()} NOT NULL,
@@ -336,6 +337,7 @@ def _create_table_block(
             {store._col("scheduled_at")} {store._timestamp_type()},
             {expiration_column}
             {store._col("created_at")} {store._timestamp_type()} NOT NULL,
+            {store._col("queued_at")} {store._timestamp_type()} NOT NULL,
             {store._col("started_at")} {store._timestamp_type()},
             {store._col("completed_at")} {store._timestamp_type()},
             {store._col("heartbeat_at")} {store._timestamp_type()},

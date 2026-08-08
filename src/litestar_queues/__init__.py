@@ -100,6 +100,7 @@ if TYPE_CHECKING:
     from litestar_queues.plugin import QueuePlugin
     from litestar_queues.service import QueueService
     from litestar_queues.task import (
+        RetryBackoff,
         ScheduleConfig,
         Task,
         TaskResult,
@@ -162,6 +163,7 @@ __all__ = (
     "QueueStatistics",
     "QueuedBackgroundTask",
     "QueuedTaskRecord",
+    "RetryBackoff",
     "ScheduleConfig",
     "SqsExecutionBackend",
     "SqsExecutionConfig",
@@ -257,6 +259,7 @@ _EXPORTS = {
     "QueueNamespace": "litestar_queues.namespace",
     "QueuePlugin": "litestar_queues.plugin",
     "QueueService": "litestar_queues.service",
+    "RetryBackoff": "litestar_queues.task",
     "QueueStatistics": "litestar_queues.models",
     "QueuedBackgroundTask": "litestar_queues.background",
     "QueuedTaskRecord": "litestar_queues.models",

@@ -906,6 +906,105 @@ async def test_initialize_schedules_uses_task_priority_for_schedule_record() -> 
     assert records[0].priority == 5
 
 
+async def test_cancel_task_enforces_running_boundary_and_publishes_once() -> "None":
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.cancel_facade")
+    async def cancel_facade() -> "None":
+        return None
+
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+        ),
+        event_publisher=QueueEventPublisher(sink),
+    ) as service:
+        pending = await service.enqueue(cancel_facade)
+        assert await service.cancel_task(pending.id) is True
+        assert await service.cancel_task(pending.id) is False
+
+        running = await service.enqueue(cancel_facade)
+        claimed = await service.get_queue_backend().claim_task(running.id)
+        assert claimed is not None
+        assert await service.cancel_task(running.id) is False
+        assert await service.cancel_task(running.id, include_running=True) is True
+        assert await service.cancel_task(running.id, include_running=True) is False
+
+    cancelled_events = [event for event in sink.events if event.type == "task.cancelled"]
+    assert [event.task_id for event in cancelled_events] == [str(pending.id), str(running.id)]
+    assert all(event.payload["status"] == "cancelled" for event in cancelled_events)
+
+
+async def test_job_cancelled_error_uses_cancel_task_facade_once() -> "None":
+    from litestar_queues import job_cancelled, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.self_cancel_facade")
+    async def self_cancel_facade() -> "None":
+        job_cancelled("stop")
+
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+        ),
+        event_publisher=QueueEventPublisher(sink),
+    ) as service:
+        result = await service.enqueue(self_cancel_facade)
+        claimed = await service.get_queue_backend().claim_task(result.id)
+        assert claimed is not None
+        updated = await service.execute_record(claimed)
+
+    assert updated.status == "cancelled"
+    assert [event.type for event in sink.events] == ["task.started", "task.cancelled"]
+    assert sink.events[-1].payload == {"status": "cancelled", "retry_count": 0}
+
+
+async def test_retry_backoff_schedules_and_caps_exponential_delays() -> "None":
+    from litestar_queues import RetryBackoff, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.backoff", retries=3, retry_backoff=RetryBackoff(initial_delay=2.0, multiplier=3.0, max_delay=5.0))
+    async def backoff() -> "None":
+        message = "retry"
+        raise RuntimeError(message)
+
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig()),
+        ),
+        event_publisher=QueueEventPublisher(sink),
+    ) as service:
+        result = await service.enqueue(backoff)
+        first = await service.get_queue_backend().claim_task(result.id)
+        assert first is not None
+        first_retry = await service.execute_record(first)
+        first_retry.scheduled_at = None
+        first_retry.status = "pending"
+        second = await service.get_queue_backend().claim_task(result.id)
+        assert second is not None
+        await service.execute_record(second)
+
+    failures = [event for event in sink.events if event.type == "task.failed"]
+    assert [event.payload["retry_delay"] for event in failures] == [2.0, 5.0]
+    assert all(event.payload["will_retry"] is True for event in failures)
+
+
 async def test_initialize_schedules_applies_task_expiration_from_each_run_time() -> "None":
     from litestar_queues import task
     from litestar_queues.task import clear_task_registry

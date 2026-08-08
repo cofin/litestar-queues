@@ -205,12 +205,7 @@ async def _run_consumer(
 
 
 @queues_group.command(name="status", help="Show queue status counts.")
-@click.option(
-    "--queue",
-    "queue_filter",
-    default=None,
-    help="Filter by queue name. Currently advisory; backend filtering is not yet enforced.",
-)
+@click.option("--queue", "queue_filter", default=None, help="Count only records in this queue.")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 def status_command(ctx: "click.Context", queue_filter: "str | None", as_json: "bool") -> "None":
     env = _ensure_env(ctx)
@@ -459,13 +454,10 @@ class _CLIStopCoordinator:
 
 
 async def _status_run(plugin: "QueuePlugin", queue_filter: "str | None", as_json: "bool") -> "int":
-    if queue_filter is not None:
-        click.echo(f"--queue is advisory; backend filtering not yet enforced (selected: {queue_filter})", err=True)
-
     service = _open_service(plugin)
     await service.open()
     try:
-        stats = await service.get_queue_backend().get_statistics()
+        stats = await service.get_statistics(queue=queue_filter)
     except Exception as exc:
         click.echo(f"error: {exc}", err=True)
         await service.close()

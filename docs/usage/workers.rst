@@ -92,6 +92,15 @@ standalone workers to any placement:
 They all claim from the same backend, so the total worker count is the built-in
 one plus however many you start.
 
+Heartbeat timing
+================
+
+``WorkerConfig.heartbeat_interval`` sets the base interval between running-task
+heartbeat writes, while ``heartbeat_miss_threshold`` controls how many
+consecutive misses are tolerated. ``heartbeat_jitter_fraction`` adds up to that
+fraction of positive random delay to each interval so a fleet does not write in
+lockstep. It defaults to ``0.1``; set it to ``0.0`` for an exact fixed interval.
+
 Choosing a placement
 ====================
 
@@ -138,8 +147,17 @@ the safe ``claim_next`` loop and may return a shorter batch as soon as no
 eligible record remains. Both paths preserve exclusive ownership and the same
 queue/execution filters.
 
+``max_concurrency`` remains the worker-wide ceiling. Use
+``queue_concurrency={"email": 1, "reports": 2}`` for per-worker queue caps.
+These are local limits, not distributed fleet semaphores.
+
 Shutdown
 ========
+
+By default, unfinished work remains ``running`` for stale recovery. Set
+``WorkerConfig.requeue_on_shutdown=True`` to return an attempt to ``pending``
+after its coroutine accepts cancellation and unwinds. Tasks can override this
+with ``@task(requeue_on_shutdown=True)`` or ``False`` and must be idempotent.
 
 The first termination signal stops new claims and gives running tasks time to
 finish. A second signal cancels them. Server placement must become ready within
