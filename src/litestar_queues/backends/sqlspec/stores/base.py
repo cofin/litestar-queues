@@ -333,6 +333,7 @@ class SQLSpecQueueStore:
         def build() -> "str":
             retry_count_col = self._quoted_col("retry_count")
             max_retries_col = self._quoted_col("max_retries")
+            retry_at = f"CAST(:retry_at AS {self._timestamp_type()})"
             can_retry = f":retry = TRUE AND {retry_count_col} < {max_retries_col}"
             where = f"{self._quoted_col('id')} = :id AND {self._quoted_col('status')} = 'running'"
             if fence_retry_count:
@@ -341,11 +342,11 @@ class SQLSpecQueueStore:
                 f"UPDATE {self._quoted_table_name()} SET "  # noqa: S608
                 f"{self._quoted_col('error')} = :error, "
                 f"{self._quoted_col('status')} = CASE WHEN {can_retry} THEN "
-                f"CASE WHEN :retry_at IS NULL THEN 'pending' ELSE 'scheduled' END ELSE 'failed' END, "
+                f"CASE WHEN {retry_at} IS NULL THEN 'pending' ELSE 'scheduled' END ELSE 'failed' END, "
                 f"{retry_count_col} = CASE WHEN {can_retry} THEN {retry_count_col} + 1 ELSE {retry_count_col} END, "
                 f"{self._quoted_col('queued_at')} = CASE WHEN {can_retry} THEN :queued_at "
                 f"ELSE {self._quoted_col('queued_at')} END, "
-                f"{self._quoted_col('scheduled_at')} = CASE WHEN {can_retry} THEN :retry_at "
+                f"{self._quoted_col('scheduled_at')} = CASE WHEN {can_retry} THEN {retry_at} "
                 f"ELSE {self._quoted_col('scheduled_at')} END, "
                 f"{self._quoted_col('started_at')} = CASE WHEN {can_retry} THEN NULL "
                 f"ELSE {self._quoted_col('started_at')} END, "
@@ -994,9 +995,7 @@ RETURNING {target}.{id_col} AS id
     def statistics(self, *, queue: "str | None" = None) -> "Select":
         """Return grouped status counts, optionally scoped to one queue."""
         status = self._col("status")
-        statement = sql.select(
-            self._select_column("status"), sql.raw(f"COUNT(*) AS {self._quote_identifier('total')}")
-        ).from_(self.table_name)
+        statement = sql.select(self._select_column("status"), sql.count("*").as_("total")).from_(self.table_name)
         if queue is not None:
             statement = statement.where_eq(self._col("queue"), queue)
         return statement.group_by(status)
