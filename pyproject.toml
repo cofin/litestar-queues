@@ -57,6 +57,7 @@ queues = "litestar_queues._cli:queues_group"
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloud-tasks = ["google-cloud-tasks>=2.23.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
+rabbitmq = ["aio-pika>=10.0.1; python_version >= '3.11'"]
 sqs = ["aiobotocore>=3.8.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
@@ -182,6 +183,7 @@ test-adapters = [
   "prometheus-client",
   "psutil",
   "pyarrow",
+  "aio-pika>=10.0.1; python_version >= '3.11'",
   "pytest-databases[postgres,mysql,mssql,oracle,redis,valkey,cockroachdb,spanner]>=0.19.0",
   "redis>=5.0.0",
   "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.58.0",

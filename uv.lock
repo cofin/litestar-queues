@@ -114,6 +114,19 @@ wheels = [
 ]
 
 [[package]]
+name = "aio-pika"
+version = "10.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiormq" },
+    { name = "yarl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/7f/01f4ea7fe3490194420bb52e596b9619092ed13c5a230014b02075c3bd77/aio_pika-10.0.1.tar.gz", hash = "sha256:96ec3ef748ca7a25a9d2fa6e511c16c3ffcfa6b1f40ade79b8a5baabba682efd", size = 70882, upload-time = "2026-07-09T13:31:35.709Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/3f/329d0e52f994349ff7449c714c242ad65f14586b0e205ca632ac817fda72/aio_pika-10.0.1-py3-none-any.whl", hash = "sha256:12120a3cf8022d2a8bc5dc89e716512a38bf742c24c5562f54764af27eec7edd", size = 56332, upload-time = "2026-07-09T13:31:33.634Z" },
+]
+
+[[package]]
 name = "aiobotocore"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -297,6 +310,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/29/e0/302aeffe8d90853556f47f3106b89c16cc2ec2a4d269bdfd82e3f4ae12cc/aiomysql-0.3.2.tar.gz", hash = "sha256:72d15ef5cfc34c03468eb41e1b90adb9fd9347b0b589114bd23ead569a02ac1a", size = 108311, upload-time = "2025-10-22T00:15:21.278Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4c/af/aae0153c3e28712adaf462328f6c7a3c196a1c1c27b491de4377dd3e6b52/aiomysql-0.3.2-py3-none-any.whl", hash = "sha256:c82c5ba04137d7afd5c693a258bea8ead2aad77101668044143a991e04632eb2", size = 71834, upload-time = "2025-10-22T00:15:15.905Z" },
+]
+
+[[package]]
+name = "aiormq"
+version = "7.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pamqp" },
+    { name = "yarl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/00/16/7e1c2bb887db6cbad191db9a1562e1cf5c0c61ad93f194ddc7baf5661f02/aiormq-7.0.0.tar.gz", hash = "sha256:f524121f1afbb875f50235b2748f81331e3be47542ee600e83c321c4e97ea168", size = 49231, upload-time = "2026-07-09T11:40:51.775Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/88/8da3627882f6bd75f780f87e46d0b58da99332c1b71d038db7a127a80648/aiormq-7.0.0-py3-none-any.whl", hash = "sha256:df49bb2282e5374a28507c4c43948e8c8e5321590f2998781c2d90a34e100789", size = 32152, upload-time = "2026-07-09T11:40:50.508Z" },
 ]
 
 [[package]]
@@ -2398,6 +2424,9 @@ otel = [
 prometheus = [
     { name = "prometheus-client" },
 ]
+rabbitmq = [
+    { name = "aio-pika", marker = "python_full_version >= '3.11'" },
+]
 redis = [
     { name = "redis" },
 ]
@@ -2462,6 +2491,7 @@ build = [
 dev = [
     { name = "adbc-driver-sqlite" },
     { name = "advanced-alchemy" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11'" },
     { name = "aiosqlite" },
     { name = "anyio" },
     { name = "auto-pytabs", extra = ["sphinx"] },
@@ -2545,6 +2575,7 @@ lint = [
 test-adapters = [
     { name = "adbc-driver-sqlite" },
     { name = "advanced-alchemy" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11'" },
     { name = "google-cloud-spanner" },
     { name = "hiredis" },
     { name = "libvalkey" },
@@ -2578,6 +2609,7 @@ test-core = [
 tests = [
     { name = "adbc-driver-sqlite" },
     { name = "advanced-alchemy" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11'" },
     { name = "anyio" },
     { name = "coverage", extra = ["toml"] },
     { name = "google-cloud-spanner" },
@@ -2610,6 +2642,7 @@ tests = [
 [package.metadata]
 requires-dist = [
     { name = "advanced-alchemy", marker = "extra == 'advanced-alchemy'", specifier = ">=1.10.0" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11' and extra == 'rabbitmq'", specifier = ">=10.0.1" },
     { name = "aiobotocore", marker = "extra == 'sqs'", specifier = ">=3.8.0" },
     { name = "google-cloud-run", marker = "extra == 'cloudrun'", specifier = ">=0.10.0" },
     { name = "google-cloud-tasks", marker = "extra == 'cloud-tasks'", specifier = ">=2.23.0" },
@@ -2622,7 +2655,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.0.0" },
     { name = "valkey", marker = "extra == 'valkey'", specifier = ">=6.0.0" },
 ]
-provides-extras = ["advanced-alchemy", "cloud-tasks", "cloudrun", "sqs", "otel", "prometheus", "redis", "sqlspec", "valkey"]
+provides-extras = ["advanced-alchemy", "cloud-tasks", "cloudrun", "rabbitmq", "sqs", "otel", "prometheus", "redis", "sqlspec", "valkey"]
 
 [package.metadata.requires-dev]
 benchmark-backends = [
@@ -2673,6 +2706,7 @@ build = [{ name = "bump-my-version" }]
 dev = [
     { name = "adbc-driver-sqlite" },
     { name = "advanced-alchemy", specifier = ">=1.10.0" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11'", specifier = ">=10.0.1" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "anyio" },
     { name = "auto-pytabs", extras = ["sphinx"], specifier = ">=0.5.0" },
@@ -2747,6 +2781,7 @@ lint = [
 test-adapters = [
     { name = "adbc-driver-sqlite" },
     { name = "advanced-alchemy", specifier = ">=1.10.0" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11'", specifier = ">=10.0.1" },
     { name = "google-cloud-spanner", specifier = ">=3.47.0" },
     { name = "hiredis" },
     { name = "libvalkey", specifier = ">=4.0.1" },
@@ -2778,6 +2813,7 @@ test-core = [
 tests = [
     { name = "adbc-driver-sqlite" },
     { name = "advanced-alchemy", specifier = ">=1.10.0" },
+    { name = "aio-pika", marker = "python_full_version >= '3.11'", specifier = ">=10.0.1" },
     { name = "anyio" },
     { name = "coverage", extras = ["toml"] },
     { name = "google-cloud-spanner", specifier = ">=3.47.0" },
@@ -3767,6 +3803,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d7/f1/e7a6dd94a8d4a5626c03e4e99c87f241ba9e350cd9e6d75123f992427270/packaging-26.2.tar.gz", hash = "sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661", size = 228134, upload-time = "2026-04-24T20:15:23.917Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e", size = 100195, upload-time = "2026-04-24T20:15:22.081Z" },
+]
+
+[[package]]
+name = "pamqp"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/4c/33a0ddaaac7bc42f9a542dbaaee8b580ceca3f89bf5da7c498d1fa97ff9a/pamqp-4.0.1.tar.gz", hash = "sha256:9dd13b828e346622793981f14a5df817fce5de998c746209d6c0154eb8403970", size = 137192, upload-time = "2026-07-06T16:37:51.732Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/14/1dfc08b743ba995a38dee0ea09beb46a05c7fe8ac53d729095905f7bf11d/pamqp-4.0.1-py3-none-any.whl", hash = "sha256:a547f45128b06e42ce8d7a739b0cfcc40f2c724770622eaaff4a3f587b1cf7d0", size = 32773, upload-time = "2026-07-06T16:37:50.623Z" },
 ]
 
 [[package]]
