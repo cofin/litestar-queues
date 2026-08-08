@@ -31,6 +31,8 @@ Install only the integration your application uses:
      - Google Cloud Run Jobs execution.
    * - ``pip install "litestar-queues[sqs]"``
      - Amazon SQS execution dispatch and consumers.
+   * - ``pip install "litestar-queues[pubsub]"``
+     - Google Cloud Pub/Sub execution dispatch and streaming consumers.
    * - ``pip install "litestar-queues[rabbitmq]"``
      - RabbitMQ 4.3+ execution dispatch and consumers on Python 3.11+.
    * - ``pip install "litestar-queues[otel]"``

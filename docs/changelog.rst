@@ -6,6 +6,18 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+Unreleased
+==========
+
+**Added:**
+
+* Google Cloud Pub/Sub is available as an optional execution backend through
+  ``litestar-queues[pubsub]``. Dispatch publishes only the task UUID and an
+  attempt fence; ``litestar queues run-consumer --backend pubsub`` processes
+  streaming-pull deliveries against the authoritative queue backend. The
+  official Google emulator backs the integration suite. See
+  :doc:`usage/deployment/pubsub`.
+
 0.8.0 - 2026-08-03
 ==================
 

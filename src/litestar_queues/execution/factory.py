@@ -20,6 +20,7 @@ _BUILTIN_BACKENDS: "dict[str, str]" = {
     "cloudtasks": "litestar_queues.execution.cloudtasks:CloudTasksExecutionBackend",
     "immediate": "litestar_queues.execution.immediate:ImmediateExecutionBackend",
     "local": "litestar_queues.execution.local:LocalExecutionBackend",
+    "pubsub": "litestar_queues.execution.pubsub:PubSubExecutionBackend",
     "rabbitmq": "litestar_queues.execution.rabbitmq:RabbitMQExecutionBackend",
     "sqs": "litestar_queues.execution.sqs:SqsExecutionBackend",
 }

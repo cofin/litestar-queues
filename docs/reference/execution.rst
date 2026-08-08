@@ -94,6 +94,19 @@ RabbitMQ
    :undoc-members:
    :show-inheritance:
 
+Google Cloud Pub/Sub
+====================
+
+.. automodule:: litestar_queues.execution.pubsub.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.pubsub.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Consumer
 ========
 

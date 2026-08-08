@@ -150,7 +150,10 @@ def run_command(
 
 @queues_group.command(name="run-consumer", help="Start a continuous external broker consumer.")
 @click.option(
-    "--backend", type=click.Choice(["rabbitmq", "sqs"]), required=True, help="Configured broker backend to consume."
+    "--backend",
+    type=click.Choice(["pubsub", "rabbitmq", "sqs"]),
+    required=True,
+    help="Configured broker backend to consume.",
 )
 @click.option("--max-concurrency", type=click.IntRange(min=1), default=None)
 @click.option("--drain-timeout", type=click.FloatRange(min=0), default=None)

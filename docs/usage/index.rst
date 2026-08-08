@@ -126,6 +126,12 @@ Choose production options
 
       Route task identifiers through a RabbitMQ 4.3 quorum queue.
 
+   .. grid-item-card:: Dispatch through Pub/Sub
+      :link: deployment/pubsub
+      :link-type: doc
+
+      Route task identifiers through a Google Cloud pull subscription.
+
 .. toctree::
    :hidden:
    :maxdepth: 2
@@ -158,4 +164,5 @@ Choose production options
    deployment/cloud-tasks
    deployment/sqs
    deployment/rabbitmq
+   deployment/pubsub
    migration
