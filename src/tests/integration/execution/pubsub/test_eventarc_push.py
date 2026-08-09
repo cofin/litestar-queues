@@ -27,6 +27,11 @@ pytestmark = pytest.mark.anyio
 logger = logging.getLogger(__name__)
 
 _MAX_HEADER_BYTES = 16 * 1024
+_MAX_BODY_BYTES = 64 * 1024
+
+
+class _PayloadTooLargeError(ValueError):
+    """Raised before the bridge reads an oversized body."""
 
 
 async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(  # noqa: PLR0915
@@ -123,8 +128,9 @@ async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(  # noqa: PL
                         raise
                     logger.warning("Pub/Sub topic cleanup failed", exc_info=True)
         finally:
-            await publisher.transport.close()
-            await channel.close()
+            await _close_transport_resources(
+                publisher, channel, causal_exception=causal_exception or sys.exc_info()[0] is not None
+            )
 
 
 @asynccontextmanager
@@ -143,10 +149,12 @@ async def _serve(app: "Litestar") -> "AsyncGenerator[int, None]":
         async def forward(reader: "asyncio.StreamReader", writer: "asyncio.StreamWriter") -> "None":
             try:
                 method, path, headers = await _read_request_head(reader)
-                length = int(headers.get("content-length", "0"))
-                body = await reader.readexactly(length)
+                body = await _read_request_body(reader, headers)
                 response = await client.request(method, path, headers=headers, content=body)
                 status = response.status_code
+            except _PayloadTooLargeError:
+                logger.warning("Rejected oversized Eventarc HTTP delivery")
+                status = 413
             except (
                 asyncio.IncompleteReadError,
                 asyncio.LimitOverrunError,
@@ -181,3 +189,34 @@ async def _read_request_head(reader: "asyncio.StreamReader") -> "tuple[str, str,
         raise ValueError(msg)
     headers = dict(line.split(":", maxsplit=1) for line in lines[1:] if line)
     return method, path, {name.strip().lower(): value.strip() for name, value in headers.items()}
+
+
+async def _read_request_body(reader: "asyncio.StreamReader", headers: "dict[str, str]") -> bytes:
+    try:
+        length = int(headers.get("content-length", "0"))
+    except ValueError as exc:
+        msg = "Invalid Eventarc Content-Length"
+        raise ValueError(msg) from exc
+    if length < 0:
+        msg = "Eventarc Content-Length must be nonnegative"
+        raise ValueError(msg)
+    if length > _MAX_BODY_BYTES:
+        raise _PayloadTooLargeError
+    return await asyncio.wait_for(reader.readexactly(length), timeout=5)
+
+
+async def _close_transport_resources(publisher: "Any", channel: "Any", *, causal_exception: bool) -> "None":
+    first_error = await _close_one("publisher transport", publisher.transport.close)
+    channel_error = await _close_one("gRPC channel", channel.close)
+    first_error = first_error or channel_error
+    if first_error is not None and not causal_exception:
+        raise first_error
+
+
+async def _close_one(label: "str", close: "Any") -> "Exception | None":
+    try:
+        await close()
+    except Exception as exc:
+        logger.warning("Eventarc %s cleanup failed", label, exc_info=True)
+        return exc
+    return None
