@@ -38,6 +38,7 @@ def _delivery(task_id: "object", attempt: "object", **overrides: "Any") -> "dict
             "publishTime": "2026-08-09T00:00:00Z",
         }
     }
+    body["message"].update(overrides.pop("message", {}))
     body.update(overrides.pop("body", {}))
     return {"headers": headers, "json": body, **overrides}
 
@@ -71,6 +72,18 @@ async def test_receiver_runs_fenced_pubsub_delivery(monkeypatch: "pytest.MonkeyP
     consume.assert_awaited_once_with(
         app.state.eventarc_queue_service, task_id, expected_retry_count=2, expected_execution_ref=attempt
     )
+
+
+@pytest.mark.parametrize(
+    "outcome", [TaskExitCode.FAILURE, TaskExitCode.CANCELLED, TaskExitCode.MISSING_RECORD, TaskExitCode.CLAIM_LOST]
+)
+async def test_durable_outcomes_are_acknowledged(monkeypatch: "pytest.MonkeyPatch", outcome: "TaskExitCode") -> "None":
+    consume = AsyncMock(return_value=outcome)
+    monkeypatch.setattr("tests.helpers.eventarc_receiver.consume_one", consume)
+    async with _receiver_service() as (_service, _backend, client):
+        response = await client.post("/eventarc/pubsub", **_delivery(uuid4(), f"pubsub:0:123:{uuid4()}"))
+
+    assert response.status_code == 204
 
 
 async def test_duplicate_delivery_executes_task_once() -> "None":
@@ -108,7 +121,8 @@ async def test_cancelled_or_stale_delivery_does_not_execute(state: "str") -> "No
         if state == "cancelled":
             assert await service.cancel_task(result.id, include_running=True)
         else:
-            delivered_attempt = f"pubsub:0:122:{uuid4()}"
+            replacement = f"pubsub:0:124:{uuid4()}"
+            assert await backend.replace_execution_ref(result.id, 0, current, replacement) is not None
         response = await client.post("/eventarc/pubsub", **_delivery(result.id, delivered_attempt))
 
     assert response.status_code == 204
@@ -121,8 +135,12 @@ async def test_cancelled_or_stale_delivery_does_not_execute(state: "str") -> "No
         _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", headers={"ce-specversion": "0.3"}),
         _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", headers={"ce-type": "wrong"}),
         _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", headers={"ce-source": "//pubsub.googleapis.com/wrong"}),
+        _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", headers={"ce-id": ""}),
+        _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", headers={"ce-time": ""}),
         _delivery(uuid4(), "missing-attempt"),
         _delivery("not-a-uuid", f"pubsub:0:123:{uuid4()}"),
+        _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", message={"data": "not-base64!"}),
+        _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", message={"messageId": "different"}),
         _delivery(uuid4(), f"pubsub:0:123:{uuid4()}", body={"unexpected": True}),
     ],
 )
@@ -140,3 +158,22 @@ async def test_infrastructure_error_is_retryable(monkeypatch: "pytest.MonkeyPatc
         response = await client.post("/eventarc/pubsub", **_delivery(uuid4(), f"pubsub:0:123:{uuid4()}"))
 
     assert response.status_code == 503
+
+
+async def test_programming_error_is_not_marked_retryable(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    consume = AsyncMock(side_effect=ValueError("bug"))
+    monkeypatch.setattr("tests.helpers.eventarc_receiver.consume_one", consume)
+    async with _receiver_service() as (_service, _backend, client):
+        response = await client.post("/eventarc/pubsub", **_delivery(uuid4(), f"pubsub:0:123:{uuid4()}"))
+
+    assert response.status_code == 500
+
+
+async def test_oversized_delivery_is_rejected() -> "None":
+    oversized = "x" * (64 * 1024)
+    async with _receiver_service() as (_service, _backend, client):
+        response = await client.post(
+            "/eventarc/pubsub", **_delivery(uuid4(), f"pubsub:0:123:{uuid4()}", message={"data": oversized})
+        )
+
+    assert response.status_code == 413

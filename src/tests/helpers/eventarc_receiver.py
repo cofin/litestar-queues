@@ -10,6 +10,7 @@ from litestar import Litestar, Request, Response, post
 from litestar.di import NamedDependency, Provide
 
 from litestar_queues.consumer import consume_one
+from litestar_queues.exceptions import QueueError
 from litestar_queues.execution.pubsub.backend import ATTEMPT_ATTRIBUTE, _parse_attempt
 from litestar_queues.service import QueueService
 
@@ -78,7 +79,7 @@ def create_eventarc_receiver(*, queue_service: QueueService, topic: str) -> Lite
         retry_count, _created_at = parsed
         try:
             await consume_one(queue_service, task_id, expected_retry_count=retry_count, expected_execution_ref=attempt)
-        except Exception:  # noqa: BLE001 - only infrastructure failures escape consume_one.
+        except (OSError, QueueError):
             return Response(content=None, status_code=503)
         probe.deliveries.append(EventarcDelivery(task_id=task_id, attempt=attempt))
         return Response(content=None, status_code=204)

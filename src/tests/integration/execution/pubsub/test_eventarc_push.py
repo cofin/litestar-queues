@@ -24,7 +24,9 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(floci_gcp_service: "FlociGcpService") -> "None":
+async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(  # noqa: PLR0915
+    floci_gcp_service: "FlociGcpService",
+) -> "None":
     if "eventarc-standard" not in floci_gcp_service.capabilities:
         pytest.skip("Floci-GCP image does not declare Eventarc Standard delivery")
     publisher_module = pytest.importorskip("google.pubsub_v1.services.publisher")
@@ -61,37 +63,42 @@ async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(floci_gcp_se
             async with _serve(receiver) as receiver_port:
                 receiver_uri = f"http://{floci_gcp_service.docker_host}:{receiver_port}/eventarc/pubsub"
                 async with httpx.AsyncClient(base_url=floci_gcp_service.rest_endpoint) as client:
-                    response = await client.post(
-                        trigger_path.rsplit("/", maxsplit=1)[0],
-                        params={"triggerId": trigger_id},
-                        json={
-                            "eventFilters": [
-                                {"attribute": "type", "value": "google.cloud.pubsub.topic.v1.messagePublished"},
-                                {"attribute": "topic", "value": topic_path},
-                            ],
-                            "destination": {"httpEndpoint": {"uri": receiver_uri}},
-                        },
-                    )
-                    response.raise_for_status()
-                    result = await service.enqueue(delivered.using(execution_backend="pubsub"))
-                    record = await queue_backend.get_task(result.id)
-                    assert record is not None
-                    attempt = await backend.dispatch(service, record)
-                    assert attempt is not None
-                    stored: Any | None = None
-                    for _ in range(100):
-                        stored = await queue_backend.get_task(result.id)
-                        if stored is not None and stored.status == "completed":
-                            break
-                        await asyncio.sleep(0.05)
-                    assert stored is not None
-                    assert stored.status == "completed", receiver.state.eventarc_receiver_probe.rejections
-                    assert stored.result == "done"
-                    assert receiver.state.eventarc_receiver_probe.deliveries == [
-                        EventarcDelivery(task_id=result.id, attempt=attempt)
-                    ]
-                    delete_response = await client.delete(trigger_path)
-                    delete_response.raise_for_status()
+                    trigger_created = False
+                    try:
+                        response = await client.post(
+                            trigger_path.rsplit("/", maxsplit=1)[0],
+                            params={"triggerId": trigger_id},
+                            json={
+                                "eventFilters": [
+                                    {"attribute": "type", "value": "google.cloud.pubsub.topic.v1.messagePublished"},
+                                    {"attribute": "topic", "value": topic_path},
+                                ],
+                                "destination": {"httpEndpoint": {"uri": receiver_uri}},
+                            },
+                        )
+                        response.raise_for_status()
+                        trigger_created = True
+                        result = await service.enqueue(delivered.using(execution_backend="pubsub"))
+                        record = await queue_backend.get_task(result.id)
+                        assert record is not None
+                        attempt = await backend.dispatch(service, record)
+                        assert attempt is not None
+                        stored: Any | None = None
+                        for _ in range(100):
+                            stored = await queue_backend.get_task(result.id)
+                            if stored is not None and stored.status == "completed":
+                                break
+                            await asyncio.sleep(0.05)
+                        assert stored is not None
+                        assert stored.status == "completed", receiver.state.eventarc_receiver_probe.rejections
+                        assert stored.result == "done"
+                        assert receiver.state.eventarc_receiver_probe.deliveries == [
+                            EventarcDelivery(task_id=result.id, attempt=attempt)
+                        ]
+                    finally:
+                        if trigger_created:
+                            delete_response = await client.delete(trigger_path)
+                            delete_response.raise_for_status()
     finally:
         try:
             await publisher.delete_topic(request={"topic": topic_path})
