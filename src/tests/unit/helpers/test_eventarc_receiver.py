@@ -65,6 +65,8 @@ async def test_receiver_runs_fenced_pubsub_delivery(monkeypatch: "pytest.MonkeyP
     service = QueueService(config, queue_backend=InMemoryQueueBackend())
     app = create_eventarc_receiver(queue_service=service, topic=TOPIC)
 
+    assert app.request_max_body_size == 64 * 1024
+
     async with AsyncTestClient(app=app) as client:
         response = await client.post("/eventarc/pubsub", **_delivery(task_id, attempt))
 

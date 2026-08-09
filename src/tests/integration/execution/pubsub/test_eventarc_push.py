@@ -1,6 +1,8 @@
 """Joined Floci-GCP Pub/Sub to Eventarc Standard delivery contract."""
 
 import asyncio
+import logging
+import sys
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +24,9 @@ if TYPE_CHECKING:
     from tests.plugins.floci_gcp import FlociGcpService
 
 pytestmark = pytest.mark.anyio
+logger = logging.getLogger(__name__)
+
+_MAX_HEADER_BYTES = 16 * 1024
 
 
 async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(  # noqa: PLR0915
@@ -56,8 +61,10 @@ async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(  # noqa: PL
     async def delivered() -> str:
         return "done"
 
+    topic_created = False
     try:
         await publisher.create_topic(request={"name": topic_path})
+        topic_created = True
         async with QueueService(config, queue_backend=queue_backend, execution_backend=backend) as service:
             receiver = create_eventarc_receiver(queue_service=service, topic=topic_path)
             async with _serve(receiver) as receiver_port:
@@ -97,11 +104,24 @@ async def test_floci_pubsub_dispatch_reaches_eventarc_http_receiver(  # noqa: PL
                         ]
                     finally:
                         if trigger_created:
-                            delete_response = await client.delete(trigger_path)
-                            delete_response.raise_for_status()
+                            causal_exception = sys.exc_info()[0] is not None
+                            try:
+                                delete_response = await client.delete(trigger_path)
+                                delete_response.raise_for_status()
+                            except httpx.HTTPError:
+                                if not causal_exception:
+                                    raise
+                                logger.warning("Eventarc trigger cleanup failed", exc_info=True)
     finally:
+        causal_exception = sys.exc_info()[0] is not None
         try:
-            await publisher.delete_topic(request={"topic": topic_path})
+            if topic_created:
+                try:
+                    await publisher.delete_topic(request={"topic": topic_path})
+                except Exception:
+                    if not causal_exception:
+                        raise
+                    logger.warning("Pub/Sub topic cleanup failed", exc_info=True)
         finally:
             await publisher.transport.close()
             await channel.close()
@@ -122,17 +142,22 @@ async def _serve(app: "Litestar") -> "AsyncGenerator[int, None]":
 
         async def forward(reader: "asyncio.StreamReader", writer: "asyncio.StreamWriter") -> "None":
             try:
-                head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
-                lines = head.decode("latin-1").split("\r\n")
-                method, path, _protocol = lines[0].split(" ", maxsplit=2)
-                headers = dict(line.split(":", maxsplit=1) for line in lines[1:] if line)
-                headers = {name.strip(): value.strip() for name, value in headers.items()}
-                length = int(headers.get("Content-Length", "0"))
+                method, path, headers = await _read_request_head(reader)
+                length = int(headers.get("content-length", "0"))
                 body = await reader.readexactly(length)
                 response = await client.request(method, path, headers=headers, content=body)
-                writer.write(
-                    f"HTTP/1.1 {response.status_code} Eventarc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode()
-                )
+                status = response.status_code
+            except (
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+                TimeoutError,
+                UnicodeDecodeError,
+                ValueError,
+            ):
+                logger.warning("Rejected malformed Eventarc HTTP delivery", exc_info=True)
+                status = 400
+            try:
+                writer.write(f"HTTP/1.1 {status} Eventarc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode())
                 await writer.drain()
             finally:
                 writer.close()
@@ -142,3 +167,17 @@ async def _serve(app: "Litestar") -> "AsyncGenerator[int, None]":
         port = server.sockets[0].getsockname()[1]
         async with server:
             yield port
+
+
+async def _read_request_head(reader: "asyncio.StreamReader") -> "tuple[str, str, dict[str, str]]":
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+    if len(head) > _MAX_HEADER_BYTES:
+        msg = "Eventarc request headers exceed the test bridge limit"
+        raise ValueError(msg)
+    lines = head.decode("latin-1").split("\r\n")
+    method, path, protocol = lines[0].split(" ", maxsplit=2)
+    if protocol != "HTTP/1.1":
+        msg = f"Unsupported Eventarc HTTP protocol: {protocol}"
+        raise ValueError(msg)
+    headers = dict(line.split(":", maxsplit=1) for line in lines[1:] if line)
+    return method, path, {name.strip().lower(): value.strip() for name, value in headers.items()}

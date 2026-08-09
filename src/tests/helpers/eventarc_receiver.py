@@ -84,7 +84,11 @@ def create_eventarc_receiver(*, queue_service: QueueService, topic: str) -> Lite
         probe.deliveries.append(EventarcDelivery(task_id=task_id, attempt=attempt))
         return Response(content=None, status_code=204)
 
-    app = Litestar(route_handlers=[receive_event], dependencies={"queue_service": Provide(provide_queue_service)})
+    app = Litestar(
+        route_handlers=[receive_event],
+        dependencies={"queue_service": Provide(provide_queue_service)},
+        request_max_body_size=_MAX_BODY_BYTES,
+    )
     app.state.eventarc_queue_service = queue_service
     app.state.eventarc_receiver_probe = probe
     return app
