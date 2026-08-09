@@ -491,7 +491,7 @@ async def test_rebalance_timeout_keeps_consumer_running_for_new_assignment(monke
     ])
     entered = asyncio.Event()
 
-    async def consume(_self: "object", _service: "object", message: "object") -> "bool":
+    async def consume(_self: "object", _service: "object", message: "Any") -> "bool":
         if message.topic_partition == revoked_partition:
             entered.set()
             await asyncio.Event().wait()

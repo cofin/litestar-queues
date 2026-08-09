@@ -204,8 +204,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
                             continue
                         if isinstance(result, BaseException):
                             self._logger.error(
-                                "Kafka partition consumer failed",
-                                exc_info=(type(result), result, result.__traceback__),
+                                "Kafka partition consumer failed", exc_info=(type(result), result, result.__traceback__)
                             )
                             raise result
         except asyncio.CancelledError:

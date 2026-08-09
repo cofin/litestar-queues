@@ -1,6 +1,5 @@
 import asyncio
 import json
-import socket
 from contextlib import suppress
 from http.client import RemoteDisconnected
 from typing import TYPE_CHECKING, Any
@@ -31,9 +30,18 @@ def _request(url: "str", *, method: "str" = "GET", payload: "dict[str, Any] | No
     return json.loads(body) if body else {}
 
 
-def _probe(address: "tuple[str, int]") -> "None":
-    with socket.create_connection(address, timeout=1):
-        pass
+async def _probe(address: "str") -> "None":
+    aiokafka = pytest.importorskip("aiokafka")
+    producer = aiokafka.AIOKafkaProducer(bootstrap_servers=address, request_timeout_ms=1_000)
+    try:
+        try:
+            await asyncio.wait_for(producer.start(), timeout=3)
+        except Exception as exc:
+            msg = f"Kafka metadata probe failed for {address}"
+            raise OSError(msg) from exc
+    finally:
+        with suppress(Exception):
+            await producer.stop()
 
 
 def _container_for_ip(service: "FlociManagedKafkaService", address: "str") -> "Any | None":
@@ -88,12 +96,12 @@ async def test_kafka_floci_gcp_dispatch_consume_and_commit(
             await asyncio.sleep(0.5)
         else:
             pytest.fail(f"Floci Managed Kafka cluster did not become ACTIVE: {cluster}")
-        bootstrap_host, bootstrap_port = cluster["bootstrapAddress"].rsplit(":", 1)
+        bootstrap_host, _ = cluster["bootstrapAddress"].rsplit(":", 1)
         child = await asyncio.to_thread(_container_for_ip, service_fixture, bootstrap_host)
         assert child is not None
         try:
-            await asyncio.to_thread(_probe, (bootstrap_host, int(bootstrap_port)))
-        except OSError as exc:
+            await _probe(cluster["bootstrapAddress"])
+        except (OSError, TimeoutError) as exc:
             pytest.skip(
                 "Floci provisioned a real Managed Kafka cluster, but its Docker-bridge bootstrap address "
                 f"{cluster['bootstrapAddress']} is unreachable from this test process: {exc}"
