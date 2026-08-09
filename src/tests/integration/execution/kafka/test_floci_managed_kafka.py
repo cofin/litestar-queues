@@ -30,14 +30,15 @@ def _request(url: "str", *, method: "str" = "GET", payload: "dict[str, Any] | No
     return json.loads(body) if body else {}
 
 
-async def _probe(address: "str") -> "None":
+async def _probe(address: "str", topic: "str") -> "None":
     aiokafka = pytest.importorskip("aiokafka")
     producer = aiokafka.AIOKafkaProducer(bootstrap_servers=address, request_timeout_ms=1_000)
     try:
         try:
             await asyncio.wait_for(producer.start(), timeout=3)
+            await asyncio.wait_for(producer.send_and_wait(topic, b"probe"), timeout=3)
         except Exception as exc:
-            msg = f"Kafka metadata probe failed for {address}"
+            msg = f"Kafka data-plane probe failed for {address}"
             raise OSError(msg) from exc
     finally:
         with suppress(Exception):
@@ -99,8 +100,15 @@ async def test_kafka_floci_gcp_dispatch_consume_and_commit(
         bootstrap_host, _ = cluster["bootstrapAddress"].rsplit(":", 1)
         child = await asyncio.to_thread(_container_for_ip, service_fixture, bootstrap_host)
         assert child is not None
+        probe_topic = f"probe-{uuid4().hex}"
+        await asyncio.to_thread(
+            _request,
+            f"{cluster_url}/topics?topicId={probe_topic}",
+            method="POST",
+            payload={"topicId": probe_topic, "topic": {"partitionCount": 1, "replicationFactor": 1}},
+        )
         try:
-            await _probe(cluster["bootstrapAddress"])
+            await _probe(cluster["bootstrapAddress"], probe_topic)
         except (OSError, TimeoutError) as exc:
             pytest.skip(
                 "Floci provisioned a real Managed Kafka cluster, but its Docker-bridge bootstrap address "
