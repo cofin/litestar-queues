@@ -363,7 +363,7 @@ async def test_consumer_commits_next_offset_only_after_durable_outcome(monkeypat
     consumer_task = asyncio.create_task(
         backend.run_consumer(service, max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
     )
-    await consumer.committed.wait()
+    await asyncio.wait_for(consumer.committed.wait(), timeout=0.5)
     consumer_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consumer_task
@@ -477,6 +477,38 @@ async def test_rebalance_waits_for_inflight_partition_prefix(monkeypatch: "pytes
     release.set()
     await revoked
     assert consumer.commits == [{partition: 1}]
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+
+async def test_rebalance_timeout_keeps_consumer_running_for_new_assignment(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    revoked_partition = TopicPartition("tasks", 0)
+    retained_partition = TopicPartition("tasks", 1)
+    consumer = FakeConsumer([
+        SimpleNamespace(offset=0, topic_partition=revoked_partition),
+        SimpleNamespace(offset=4, topic_partition=retained_partition),
+    ])
+    entered = asyncio.Event()
+
+    async def consume(_self: "object", _service: "object", message: "object") -> "bool":
+        if message.topic_partition == revoked_partition:
+            entered.set()
+            await asyncio.Event().wait()
+        return True
+
+    monkeypatch.setattr(KafkaExecutionBackend, "_consume_message", consume)
+    backend = KafkaExecutionBackend(
+        execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
+    )
+    runner = asyncio.create_task(backend.run_consumer(object(), max_concurrency=1, drain_timeout=0))  # type: ignore[arg-type]
+    await entered.wait()
+    assert consumer.listener is not None
+    await consumer.listener.on_partitions_revoked({revoked_partition})
+    await asyncio.wait_for(consumer.committed.wait(), timeout=0.5)
+
+    assert not runner.done()
+    assert consumer.commits == [{retained_partition: 5}]
     runner.cancel()
     with pytest.raises(asyncio.CancelledError):
         await runner

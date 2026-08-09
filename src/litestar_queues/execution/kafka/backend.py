@@ -198,7 +198,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
                     for partition, messages in batches.items()
                 ]
                 if tasks:
-                    await asyncio.shield(asyncio.gather(*tasks))
+                    await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
         except asyncio.CancelledError:
             await self._drain_inflight(drain_timeout)
             raise
