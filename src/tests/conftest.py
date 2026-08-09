@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 # at the project root because pytest requires ``pytest_plugins`` to live in the
 # top-level conftest.
 pytest_plugins = [
+    "tests.plugins.floci_gcp",
     "tests.plugins.localstack",
     "tests.plugins.pubsub",
     "tests.plugins.rabbitmq",
