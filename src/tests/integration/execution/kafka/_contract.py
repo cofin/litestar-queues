@@ -46,7 +46,13 @@ async def assert_kafka_transport_contract(*, bootstrap_servers: "str", topic: "s
                 )
                 await verifier.start()
                 try:
-                    committed = await verifier.committed(aiokafka.TopicPartition(topic, 0))
+                    partition = aiokafka.TopicPartition(topic, 0)
+                    committed: "int | None" = None
+                    for _ in range(100):
+                        committed = await verifier.committed(partition)
+                        if committed == 1:
+                            break
+                        await asyncio.sleep(0.05)
                 finally:
                     await verifier.stop()
                 assert committed == 1
