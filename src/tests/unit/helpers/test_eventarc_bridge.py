@@ -20,10 +20,10 @@ async def test_bridge_rejects_invalid_content_length(length: "str") -> "None":
 
 
 async def test_bridge_rejects_oversized_body_before_reading() -> "None":
-    reader = asyncio.StreamReader()
+    reader = AsyncMock(spec=asyncio.StreamReader)
     with pytest.raises(_PayloadTooLargeError):
         await _read_request_body(reader, {"content-length": str(64 * 1024 + 1)})
-    assert reader._buffer == bytearray()
+    reader.readexactly.assert_not_called()
 
 
 async def test_bridge_times_out_incomplete_body(monkeypatch: "pytest.MonkeyPatch") -> "None":
