@@ -41,10 +41,13 @@ Delivery and cancellation
 -------------------------
 
 The consumer disables automatic offset commits. It processes each partition
-in offset order and commits the next offset only after the queue operation has
-reported a durable outcome. A process failure before that commit redelivers the
-record; retry-count and execution-reference fences prevent an old delivery from
-claiming a newer attempt.
+in offset order, processes different partitions concurrently, and commits the
+next offset only after the queue operation has reported a durable outcome. On
+rebalance, the revocation listener drains the affected partition before
+returning ownership; on shutdown, ``--drain-timeout`` bounds the same operation.
+An unfinished record remains uncommitted for redelivery. Retry-count and
+execution-reference fences prevent an old delivery from claiming a newer
+attempt.
 
 Kafka cannot remove one record from a log. Cancellation therefore updates the
 durable task record, and a later delivery observes that terminal state without

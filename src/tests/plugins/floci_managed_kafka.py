@@ -29,7 +29,15 @@ _PORT = 4588
 @dataclass
 class FlociManagedKafkaService(ServiceContainer):
     project_id: "str"
+    resource_prefix: "str"
+    docker_host: "str"
+    capabilities: "frozenset[str]"
     location: "str"
+    docker_client: "Any"
+
+    @property
+    def grpc_endpoint(self) -> "str":
+        return f"{self.host}:{self.port}"
 
     @property
     def rest_endpoint(self) -> "str":
@@ -85,7 +93,11 @@ def floci_managed_kafka_service(docker_service: "DockerService") -> "Generator[F
             host="127.0.0.1",
             port=host_port,
             project_id="litestar-queues-test",
+            resource_prefix=f"litestar-queues-{os.getpid()}-",
+            docker_host="127.0.0.1",
+            capabilities=frozenset({"managed-kafka", "managed-kafka-redpanda"}),
             location="us-central1",
+            docker_client=client,
         )
     finally:
         try:

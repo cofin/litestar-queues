@@ -29,7 +29,10 @@ def test_kafka_config_defaults() -> "None":
 
 
 def test_kafka_config_rejects_options_owned_by_backend() -> "None":
-    with pytest.raises(QueueConfigurationError, match="bootstrap_servers"):
+    with pytest.raises(QueueConfigurationError, match=r"producer_options\.bootstrap_servers"):
         KafkaExecutionConfig(
             bootstrap_servers="localhost:9092", producer_options={"bootstrap_servers": "elsewhere:9092"}
         )
+
+    with pytest.raises(QueueConfigurationError, match=r"consumer_options\.group_id"):
+        KafkaExecutionConfig(bootstrap_servers="localhost:9092", consumer_options={"group_id": "other"})

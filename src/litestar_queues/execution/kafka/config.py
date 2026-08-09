@@ -38,8 +38,14 @@ class KafkaExecutionConfig:
         if self.dispatch_stale_after <= 0 or self.api_timeout <= 0:
             msg = "dispatch_stale_after and api_timeout must be positive."
             raise QueueConfigurationError(msg)
-        owned_options = {"acks", "auto_offset_reset", "bootstrap_servers", "enable_auto_commit", "group_id"}
-        invalid = sorted(owned_options.intersection({*self.producer_options, *self.consumer_options}))
+        producer_owned = {"acks", "bootstrap_servers"}.intersection(self.producer_options)
+        consumer_owned = {"auto_offset_reset", "bootstrap_servers", "enable_auto_commit", "group_id"}.intersection(
+            self.consumer_options
+        )
+        invalid = [
+            *(f"producer_options.{name}" for name in sorted(producer_owned)),
+            *(f"consumer_options.{name}" for name in sorted(consumer_owned)),
+        ]
         if invalid:
             msg = f"Kafka client options are owned by the backend and cannot be overridden: {', '.join(invalid)}."
             raise QueueConfigurationError(msg)

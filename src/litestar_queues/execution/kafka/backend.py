@@ -2,7 +2,7 @@ import asyncio
 import time
 from contextlib import suppress
 from importlib import import_module
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 from litestar_queues.consumer import TaskExitCode, consume_one
@@ -11,7 +11,10 @@ from litestar_queues.execution.base import BaseConsumerExecutionBackend, Dispatc
 from litestar_queues.execution.kafka.config import KafkaExecutionConfig, _execution_config_from_queue_config
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from litestar_queues.config import QueueConfig
+    from litestar_queues.execution.kafka._typing import KafkaConsumer, KafkaProducer
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
@@ -23,15 +26,24 @@ ATTEMPT_HEADER = "litestar_queues_attempt"
 class KafkaExecutionBackend(BaseConsumerExecutionBackend):
     """Dispatch bare task identifiers through a Kafka consumer group."""
 
-    __slots__ = ("_consumer", "_execution_config", "_owns_consumer", "_owns_producer", "_producer")
+    __slots__ = (
+        "_consumer",
+        "_drain_timeout",
+        "_execution_config",
+        "_inflight",
+        "_listener",
+        "_owns_consumer",
+        "_owns_producer",
+        "_producer",
+    )
 
     def __init__(
         self,
         config: "QueueConfig | None" = None,
         *,
         execution_config: "KafkaExecutionConfig | None" = None,
-        producer: "Any | None" = None,
-        consumer: "Any | None" = None,
+        producer: "KafkaProducer | None" = None,
+        consumer: "KafkaConsumer | None" = None,
     ) -> "None":
         super().__init__(config=config)
         self._execution_config = execution_config
@@ -39,6 +51,9 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
         self._consumer = consumer
         self._owns_producer = False
         self._owns_consumer = False
+        self._inflight: "dict[Any, asyncio.Task[None]]" = {}
+        self._listener: "Any | None" = None
+        self._drain_timeout = 0.0
 
     @property
     def is_external(self) -> "bool":
@@ -123,51 +138,98 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
         await self.dispatch(service, record)
         return await service.get_queue_backend().get_task(record.id) or record
 
-    async def _get_producer(self) -> "Any":
+    async def _get_producer(self) -> "KafkaProducer":
         if self._producer is None:
             aiokafka = _aiokafka()
-            self._producer = aiokafka.AIOKafkaProducer(
-                bootstrap_servers=self.execution_config.bootstrap_servers,
-                acks="all",
-                **self.execution_config.producer_options,
+            producer = cast(
+                "KafkaProducer",
+                aiokafka.AIOKafkaProducer(
+                    bootstrap_servers=self.execution_config.bootstrap_servers,
+                    acks="all",
+                    **self.execution_config.producer_options,
+                ),
             )
-            await self._producer.start()
+            try:
+                await producer.start()
+            except BaseException:
+                with suppress(Exception):
+                    await producer.stop()
+                raise
+            self._producer = producer
             self._owns_producer = True
         return self._producer
 
-    async def _get_consumer(self) -> "Any":
+    async def _get_consumer(self) -> "KafkaConsumer":
         if self._consumer is None:
             aiokafka = _aiokafka()
-            self._consumer = aiokafka.AIOKafkaConsumer(
-                self.execution_config.topic,
-                bootstrap_servers=self.execution_config.bootstrap_servers,
-                group_id=self.execution_config.consumer_group,
-                enable_auto_commit=False,
-                auto_offset_reset="earliest",
-                **self.execution_config.consumer_options,
+            self._consumer = cast(
+                "KafkaConsumer",
+                aiokafka.AIOKafkaConsumer(
+                    bootstrap_servers=self.execution_config.bootstrap_servers,
+                    group_id=self.execution_config.consumer_group,
+                    enable_auto_commit=False,
+                    auto_offset_reset="earliest",
+                    **self.execution_config.consumer_options,
+                ),
             )
-            self._owns_consumer = True
         return self._consumer
 
     async def run_consumer(self, service: "QueueService", *, max_concurrency: "int", drain_timeout: "float") -> "None":
-        del drain_timeout
         consumer = await self._get_consumer()
-        await consumer.start()
+        self._drain_timeout = drain_timeout
+
+        async def drain_revoked(revoked: "set[Any]") -> "None":
+            await self._drain_inflight(self._drain_timeout, revoked)
+
+        self._listener = _create_rebalance_listener(drain_revoked)
+        consumer.subscribe([self.execution_config.topic], listener=self._listener)
+        try:
+            await consumer.start()
+        except BaseException:
+            with suppress(Exception):
+                await consumer.stop()
+            raise
+        self._owns_consumer = True
         try:
             while True:
                 batches = await consumer.getmany(timeout_ms=1_000, max_records=max_concurrency)
-                await asyncio.gather(
-                    *(
-                        self._consume_partition(service, consumer, partition, messages)
-                        for partition, messages in batches.items()
-                    )
-                )
+                tasks = [
+                    self._start_partition(service, consumer, partition, messages)
+                    for partition, messages in batches.items()
+                ]
+                if tasks:
+                    await asyncio.shield(asyncio.gather(*tasks))
+        except asyncio.CancelledError:
+            await self._drain_inflight(drain_timeout)
+            raise
         finally:
             if self._owns_consumer:
                 await consumer.stop()
 
+    def _start_partition(
+        self, service: "QueueService", consumer: "KafkaConsumer", partition: "Any", messages: "list[Any]"
+    ) -> "asyncio.Task[None]":
+        task = asyncio.create_task(self._consume_partition(service, consumer, partition, messages))
+        self._inflight[partition] = task
+
+        def discard(completed: "asyncio.Task[None]") -> "None":
+            if self._inflight.get(partition) is completed:
+                self._inflight.pop(partition, None)
+
+        task.add_done_callback(discard)
+        return task
+
+    async def _drain_inflight(self, timeout: "float", partitions: "set[Any] | None" = None) -> "None":
+        tasks = {task for partition, task in self._inflight.items() if partitions is None or partition in partitions}
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*done, *pending, return_exceptions=True)
+
     async def _consume_partition(
-        self, service: "QueueService", consumer: "Any", partition: "Any", messages: "list[Any]"
+        self, service: "QueueService", consumer: "KafkaConsumer", partition: "Any", messages: "list[Any]"
     ) -> "None":
         """Process one partition in order and commit only its contiguous durable prefix."""
         for message in messages:
@@ -230,6 +292,25 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
         self._producer = None
         self._owns_consumer = False
         self._owns_producer = False
+        self._inflight.clear()
+        self._listener = None
+
+
+def _create_rebalance_listener(on_revoked: "Callable[[set[Any]], Awaitable[None]]") -> "Any":
+    aiokafka = _aiokafka()
+
+    async def revoked(_self: "object", partitions: "set[Any]") -> "None":
+        await on_revoked(partitions)
+
+    async def assigned(_self: "object", partitions: "set[Any]") -> "None":
+        del partitions
+
+    listener_type = type(
+        "KafkaRebalanceListener",
+        (aiokafka.ConsumerRebalanceListener,),
+        {"on_partitions_revoked": revoked, "on_partitions_assigned": assigned},
+    )
+    return listener_type()
 
 
 def _aiokafka() -> "Any":
