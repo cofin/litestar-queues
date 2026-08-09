@@ -14,8 +14,10 @@ if TYPE_CHECKING:
 # top-level conftest.
 pytest_plugins = [
     "tests.plugins.localstack",
+    "tests.plugins.floci_managed_kafka",
     "tests.plugins.pubsub",
     "tests.plugins.rabbitmq",
+    "tests.plugins.redpanda",
     "pytest_databases.docker.cockroachdb",
     "pytest_databases.docker.postgres",
     "pytest_databases.docker.mysql",

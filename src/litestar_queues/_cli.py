@@ -153,7 +153,7 @@ def run_command(
 @queues_group.command(name="run-consumer", help="Start a continuous external broker consumer.")
 @click.option(
     "--backend",
-    type=click.Choice(["pubsub", "rabbitmq", "sqs"]),
+    type=click.Choice(["kafka", "pubsub", "rabbitmq", "sqs"]),
     required=True,
     help="Configured broker backend to consume.",
 )
