@@ -512,3 +512,25 @@ async def test_rebalance_timeout_keeps_consumer_running_for_new_assignment(monke
     runner.cancel()
     with pytest.raises(asyncio.CancelledError):
         await runner
+
+
+async def test_unexpected_partition_failure_is_reported_without_commit(
+    monkeypatch: "pytest.MonkeyPatch", caplog: "pytest.LogCaptureFixture"
+) -> "None":
+    partition = TopicPartition("tasks", 0)
+    consumer = FakeConsumer([SimpleNamespace(offset=0, topic_partition=partition)])
+    partition_error = RuntimeError("partition consumer failed")
+
+    async def fail(*_args: "object") -> "None":
+        raise partition_error
+
+    monkeypatch.setattr(KafkaExecutionBackend, "_consume_partition", fail)
+    backend = KafkaExecutionBackend(
+        execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
+    )
+
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError, match="partition consumer failed"):
+        await backend.run_consumer(object(), max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
+
+    assert "Kafka partition consumer failed" in caplog.text
+    assert consumer.commits == []

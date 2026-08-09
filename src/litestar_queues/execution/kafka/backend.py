@@ -198,7 +198,16 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
                     for partition, messages in batches.items()
                 ]
                 if tasks:
-                    await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+                    results = await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+                    for result in results:
+                        if isinstance(result, asyncio.CancelledError):
+                            continue
+                        if isinstance(result, BaseException):
+                            self._logger.error(
+                                "Kafka partition consumer failed",
+                                exc_info=(type(result), result, result.__traceback__),
+                            )
+                            raise result
         except asyncio.CancelledError:
             await self._drain_inflight(drain_timeout)
             raise
