@@ -2,20 +2,22 @@
 Broker execution transports
 ============================
 
-Amazon SQS, RabbitMQ, and Google Cloud Pub/Sub are **execution transports**.
+Amazon SQS, RabbitMQ, Google Cloud Pub/Sub, and Apache Kafka are
+**execution transports**.
 They decide *where* a task runs, not *where it is stored*. Everything about a
 task -- its arguments, result, retry count, schedule, lease, and final state --
 lives in a persistent queue backend. The broker carries one thing: the UUID of
 a record that is ready to run.
 
-The three transports work the same way and differ only in the details covered
-by their own guides:
+The transports work the same way and differ only in the details covered by
+their own guides:
 
 * :doc:`sqs` -- IAM permissions, standard versus FIFO queues, LocalStack.
 * :doc:`rabbitmq` -- quorum-queue topology, vhost permissions, broker-managed
   retry delays.
 * :doc:`pubsub` -- topic and subscription setup, and the official local
   emulator.
+* :doc:`kafka` -- consumer groups, manual offset commits, and partitioning.
 
 The shared model
 ================
@@ -53,9 +55,9 @@ configuration on both sides:
    # Any number of consumers: receive identifiers and run the tasks
    LITESTAR_APP=app:app litestar queues run-consumer --backend sqs --max-concurrency 10
 
-``--backend`` takes ``sqs``, ``rabbitmq``, or ``pubsub``, and must match the
-execution backend in your configuration -- the command exits with an error if
-it does not, rather than consuming from a broker nobody publishes to.
+``--backend`` takes ``kafka``, ``pubsub``, ``rabbitmq``, or ``sqs``, and must
+match the execution backend in your configuration -- the command exits with an
+error if it does not, rather than consuming from a broker nobody publishes to.
 
 ``--max-concurrency`` bounds tasks in flight per consumer process and defaults
 to ``WorkerConfig.max_concurrency``. ``--drain-timeout`` sets how long a
@@ -71,14 +73,16 @@ own schedule.
 
 Duplicate deliveries do not cause duplicate execution. The dispatcher stamps
 each published message with a private ``litestar_queues_attempt`` reference --
-an SQS message attribute, a RabbitMQ header, or a Pub/Sub attribute -- that
+an SQS message attribute, a RabbitMQ or Kafka header, or a Pub/Sub attribute
+-- that
 fences the delivery to one exact retry generation and dispatch attempt. A
 consumer whose message does not match the persisted attempt discards it instead
 of running the task a second time.
 
 Consumers acknowledge a message only after the matching queue transition is
 durable. Broker-side timers -- SQS visibility timeout, RabbitMQ consumer
-timeout, Pub/Sub acknowledgement deadline -- are crash-redelivery courtesy
+timeout, Pub/Sub acknowledgement deadline, Kafka consumer offset -- are
+crash-redelivery courtesy
 only. They are not a lease on the work, and they never replace the queue
 backend's own heartbeat, retry count, scheduling, or stale-work recovery.
 
