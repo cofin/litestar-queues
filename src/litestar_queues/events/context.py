@@ -1,32 +1,41 @@
 """Task execution context and helper APIs for queue event publishing."""
 
 import asyncio
-from contextvars import ContextVar, Token
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from litestar_queues.events.models import QueueEvent
 from litestar_queues.exceptions import JobCancelledError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from typing import Protocol
+    from collections.abc import Iterator, Sequence
 
     from litestar_queues.events.publisher import QueueEventPublisher
 
-    class TaskBeatSink(Protocol):
-        def record_beat(self, task_id: "str", detail: "str | None") -> "None": ...
-
 
 __all__ = (
+    "TaskBeatSink",
     "TaskExecutionContext",
     "beat",
+    "bind_beat_sink",
+    "bind_task_context",
     "get_current_task_context",
     "publish_task_event",
     "publish_task_log",
     "publish_task_progress",
     "require_current_task_context",
 )
+
+
+class TaskBeatSink(Protocol):
+    """Receives last-value-wins beat progress for a running task."""
+
+    def record_beat(self, task_id: "str", detail: "str | None") -> "None":
+        """Record the latest beat detail reported by ``task_id``."""
+        ...
+
 
 _current_task_context: 'ContextVar["TaskExecutionContext | None"]' = ContextVar(
     "litestar_queues_task_context", default=None
@@ -251,27 +260,41 @@ def beat(detail: "str | None" = None) -> "None":
         context.beat(detail)
 
 
-def _bind_task_context(context: "TaskExecutionContext") -> "Token[TaskExecutionContext | None]":
+@contextmanager
+def bind_task_context(context: "TaskExecutionContext") -> "Iterator[TaskExecutionContext]":
+    """Bind ``context`` as the current task execution context.
+
+    This is the supported entry point for external runtimes adopting the events
+    subpackage standalone. While bound, :func:`require_current_task_context` and
+    the module-level publish helpers resolve to ``context``.
+
+    Yields:
+        The bound task execution context.
+    """
     _active_task_contexts[context.task_id] = context
-    return _current_task_context.set(context)
-
-
-def _reset_task_context(token: "Token[TaskExecutionContext | None]") -> "None":
-    context = _current_task_context.get()
-    if context is not None:
+    token = _current_task_context.set(context)
+    try:
+        yield context
+    finally:
         _active_task_contexts.pop(context.task_id, None)
-    _current_task_context.reset(token)
+        _current_task_context.reset(token)
+
+
+@contextmanager
+def bind_beat_sink(sink: "TaskBeatSink") -> "Iterator[TaskBeatSink]":
+    """Bind ``sink`` to receive :meth:`TaskExecutionContext.beat` calls.
+
+    Yields:
+        The bound beat sink.
+    """
+    token = _current_beat_sink.set(sink)
+    try:
+        yield sink
+    finally:
+        _current_beat_sink.reset(token)
 
 
 def _cancel_task_context(task_id: "str") -> "None":
     context = _active_task_contexts.get(task_id)
     if context is not None:
         context.mark_cancelled()
-
-
-def _bind_beat_sink(sink: "TaskBeatSink") -> "Token[TaskBeatSink | None]":
-    return _current_beat_sink.set(sink)
-
-
-def _reset_beat_sink(token: "Token[TaskBeatSink | None]") -> "None":
-    _current_beat_sink.reset(token)
