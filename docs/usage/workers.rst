@@ -101,6 +101,26 @@ consecutive misses are tolerated. ``heartbeat_jitter_fraction`` adds up to that
 fraction of positive random delay to each interval so a fleet does not write in
 lockstep. It defaults to ``0.1``; set it to ``0.0`` for an exact fixed interval.
 
+Losing a claim
+==============
+
+When ``heartbeat_miss_threshold`` consecutive heartbeat writes are rejected, the
+worker no longer owns the record: another worker has taken it over. The queue
+already fences writes on the claim, so the losing attempt cannot record a
+result — but its side effects keep going while the replacement re-runs the same
+task.
+
+``WorkerConfig.cancel_on_claim_loss`` (default ``True``) closes that window by
+cancelling the local coroutine as soon as claim loss is detected. The body sees
+``asyncio.CancelledError``, the attempt is recorded as interrupted, and no
+terminal write is attempted, so exactly one ownership-loss event is published
+for the attempt. The record itself is left alone; it belongs to whichever worker
+holds the claim now.
+
+Set it to ``False`` to let a lost attempt run to completion instead. Its
+terminal write is then rejected on the claim fence, which publishes a second
+ownership-loss event for the same attempt.
+
 Choosing a placement
 ====================
 

@@ -141,6 +141,7 @@ class Worker:
             miss_threshold=worker_config.heartbeat_miss_threshold,
             worker_id=self._worker_id,
             jitter_fraction=worker_config.heartbeat_jitter_fraction,
+            on_claim_lost=self._cancel_claim_lost_task if worker_config.cancel_on_claim_loss else None,
         )
         self._queues = worker_config.queues
         self._running_tasks: "dict[asyncio.Task[None], QueuedTaskRecord]" = {}
@@ -430,6 +431,23 @@ class Worker:
                     extra={"worker_id": self._worker_id},
                 )
         self._completion_event.set()
+
+    def _cancel_claim_lost_task(self, task_id: "UUID") -> "None":
+        """Cancel the local coroutine whose claim the heartbeat manager just lost.
+
+        Deliberately a plain ``cancel()`` rather than the durable-cancel pair:
+        claim loss is an ownership interruption, not a user cancel, so the
+        attempt records ``interrupted`` telemetry and attempts no terminal
+        write. The record already belongs to whichever worker took the claim.
+        """
+        for task, record in self._running_tasks.items():
+            if record.id != task_id or task.done():
+                continue
+            task.cancel()
+            self._record_counter(
+                "litestar_queues.worker.claim_lost_cancel", {"messaging.destination.name": record.queue}
+            )
+            return
 
     async def _maybe_cancel_running(self) -> "None":
         if not self._running_tasks:

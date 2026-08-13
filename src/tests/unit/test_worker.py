@@ -24,6 +24,7 @@ from litestar_queues import (
 from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
 from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
 from litestar_queues.execution import BaseExecutionBackend
+from litestar_queues.models import HeartbeatTouchResult
 from tests.helpers._timing import wait_until
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from litestar_queues.events import TaskExecutionContext
-    from litestar_queues.models import HeartbeatTouch, HeartbeatTouchResult, QueuedTaskRecord, StaleTaskRecoveryResult
+    from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, StaleTaskRecoveryResult
     from litestar_queues.task import TaskResult
     from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
@@ -1055,6 +1056,105 @@ async def test_worker_reconciles_durable_running_cancellation() -> "None":
     assert result.status == "cancelled"
 
 
+async def test_heartbeat_claim_loss_cancels_running_coroutine() -> "None":
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.claim_loss_cancel")
+    async def claim_loss_cancel() -> "None":
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    backend = _ClaimLossInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        ),
+        queue_backend=backend,
+    ) as service:
+        result = await service.enqueue(claim_loss_cancel)
+        worker = Worker(service, WorkerConfig(heartbeat_interval=60, heartbeat_miss_threshold=1))
+
+        assert await worker.run_once() == 1
+        await asyncio.wait_for(started.wait(), timeout=1)
+        running = next(iter(worker._running_tasks))
+
+        backend.miss_all = True
+        await worker._heartbeat_manager._tick()
+
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(running, timeout=1)
+        stored = await backend.get_task(result.id)
+
+    assert running.cancelled() is True
+    # The record is no longer this worker's to finish: no terminal write, and no
+    # requeue (the shutdown gate in ``_execute_claimed`` never opens).
+    assert backend.terminal_calls == []
+    assert backend.interrupt_calls == []
+    assert stored is not None
+    assert stored.status == "running"
+    claim_lost = [event for event in sink.events if event.type == "task.claim_lost"]
+    assert len(claim_lost) == 1
+    assert claim_lost[0].payload["phase"] == "heartbeat"
+
+
+async def test_claim_loss_cancel_opt_out_preserves_run_to_completion() -> "None":
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    sink = InMemoryQueueEventSink()
+
+    @task("tasks.claim_loss_no_cancel")
+    async def claim_loss_no_cancel() -> "str":
+        started.set()
+        await release.wait()
+        finished.set()
+        return "ok"
+
+    backend = _ClaimLossInMemoryQueueBackend(fence_terminal=True)
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            execution_backend="local",
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(sink,))),
+        ),
+        queue_backend=backend,
+    ) as service:
+        result = await service.enqueue(claim_loss_no_cancel)
+        worker = Worker(
+            service,
+            WorkerConfig(heartbeat_interval=60, heartbeat_miss_threshold=1, cancel_on_claim_loss=False),
+        )
+
+        assert await worker.run_once() == 1
+        await asyncio.wait_for(started.wait(), timeout=1)
+        running = next(iter(worker._running_tasks))
+
+        backend.miss_all = True
+        await worker._heartbeat_manager._tick()
+
+        release.set()
+        await asyncio.wait_for(running, timeout=1)
+
+    # Historical behavior: the body runs to completion and its terminal write is
+    # fence-rejected, emitting a second claim-lost for the same attempt.
+    assert finished.is_set() is True
+    assert running.cancelled() is False
+    assert backend.terminal_calls == [("complete_task", result.id)]
+    phases = [event.payload["phase"] for event in sink.events if event.type == "task.claim_lost"]
+    assert phases == ["heartbeat", "complete"]
+
+
 async def test_plugin_shutdown_waits_for_in_flight_worker_task() -> "None":
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1773,6 +1873,62 @@ class _ClaimManyRecordingInMemoryQueueBackend(_ClaimNextRecordingInMemoryQueueBa
                 if claimed is not None:
                     records.append(claimed)
         return records
+
+
+class _ClaimLossInMemoryQueueBackend(InMemoryQueueBackend):
+    """Memory backend that can force heartbeat misses and fence terminal writes."""
+
+    __slots__ = ("fence_terminal", "interrupt_calls", "miss_all", "terminal_calls")
+
+    def __init__(self, *, fence_terminal: "bool" = False) -> "None":
+        super().__init__()
+        self.miss_all = False
+        self.fence_terminal = fence_terminal
+        self.terminal_calls: "list[tuple[str, UUID]]" = []
+        self.interrupt_calls: "list[UUID]" = []
+
+    async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        if self.miss_all:
+            return HeartbeatTouchResult(missed_task_ids={touch.task_id for touch in touches})
+        return await super().touch_heartbeats(touches)
+
+    async def complete_task(
+        self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
+    ) -> "QueuedTaskRecord | None":
+        self.terminal_calls.append(("complete_task", task_id))
+        if self.fence_terminal:
+            return None
+        return await super().complete_task(task_id, result=result, expected_retry_count=expected_retry_count)
+
+    async def fail_task(
+        self,
+        task_id: "UUID",
+        error: "str",
+        *,
+        retry: "bool" = True,
+        expected_retry_count: "int | None" = None,
+        retry_at: "datetime | None" = None,
+        queued_at: "datetime | None" = None,
+    ) -> "QueuedTaskRecord | None":
+        self.terminal_calls.append(("fail_task", task_id))
+        if self.fence_terminal:
+            return None
+        return await super().fail_task(
+            task_id,
+            error,
+            retry=retry,
+            expected_retry_count=expected_retry_count,
+            retry_at=retry_at,
+            queued_at=queued_at,
+        )
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        self.interrupt_calls.append(task_id)
+        return await super().interrupt_task(
+            task_id, expected_retry_count=expected_retry_count, worker_id=worker_id, queued_at=queued_at
+        )
 
 
 class _HeartbeatCleanupRecordingBackend(InMemoryQueueBackend):

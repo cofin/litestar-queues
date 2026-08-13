@@ -11,7 +11,7 @@ from litestar_queues.models import HeartbeatTouch
 from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from typing import Protocol
 
     from litestar_queues.models import HeartbeatTouchResult, QueuedTaskRecord
@@ -90,6 +90,7 @@ class WorkerHeartbeatManager:
         "_jitter_fraction",
         "_logger",
         "_miss_threshold",
+        "_on_claim_lost",
         "_registrations",
         "_service",
         "_stop_event",
@@ -105,8 +106,10 @@ class WorkerHeartbeatManager:
         miss_threshold: "int" = 2,
         worker_id: "str",
         jitter_fraction: "float" = 0.1,
+        on_claim_lost: "Callable[[UUID], None] | None" = None,
     ) -> "None":
         self._service = service
+        self._on_claim_lost = on_claim_lost
         config = getattr(service, "config", None)
         names = getattr(config, "names", QueueNamespace())
         self._logger = logging.getLogger(names.logger("worker", "heartbeat"))
@@ -231,6 +234,12 @@ class WorkerHeartbeatManager:
             self.record_failure(exc)
             return
         self.unregister(task_id)
+        if self._on_claim_lost is None:
+            return
+        try:
+            self._on_claim_lost(task_id)
+        except Exception as exc:  # noqa: BLE001 - a cancel hiccup must not kill the heartbeat loop.
+            self.record_failure(exc, "Queue worker claim-loss cancellation failed")
 
     async def _safe_tick(self) -> "None":
         try:
