@@ -107,3 +107,17 @@ def test_effective_cpu_count_honors_cgroup_quota(monkeypatch: pytest.MonkeyPatch
 def test_sync_thread_pool_size_must_be_positive(size: int) -> None:
     with pytest.raises(QueueConfigurationError, match="sync_thread_pool_size must be greater than 0"):
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", sync_thread_pool_size=size)
+
+
+def test_worker_config_max_interruptions_defaults_and_validates() -> "None":
+    assert WorkerConfig().max_interruptions == 3
+    assert WorkerConfig(max_interruptions=1).max_interruptions == 1
+    with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.max_interruptions"):
+        WorkerConfig(max_interruptions=0)
+
+
+def test_worker_config_hard_exit_timeout_defaults_and_validates() -> "None":
+    assert WorkerConfig().hard_exit_timeout == 10.0
+    assert WorkerConfig(hard_exit_timeout=None).hard_exit_timeout is None
+    with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.hard_exit_timeout"):
+        WorkerConfig(hard_exit_timeout=0)

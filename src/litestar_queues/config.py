@@ -229,8 +229,14 @@ class WorkerConfig:
     final_cancel_timeout: "float" = 5
     """Maximum post-cancellation drain time in seconds."""
 
+    hard_exit_timeout: "float | None" = 10.0
+    """Wall-clock budget from forced shutdown to process exit; ``None`` disables the watchdog."""
+
     requeue_on_shutdown: "bool" = False
     """Whether cancelled executions are requeued after shutdown drain timeout."""
+
+    max_interruptions: "int" = 3
+    """Shutdown requeues an attempt may absorb before interruptions consume the retry budget."""
 
     startup_timeout: "float" = 30
     """Maximum time to wait for worker startup readiness in seconds."""
@@ -254,6 +260,7 @@ class WorkerConfig:
             "stale_check_interval": self.stale_check_interval,
             "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
             "final_cancel_timeout": self.final_cancel_timeout,
+            "max_interruptions": self.max_interruptions,
             "startup_timeout": self.startup_timeout,
         }
         for name, value in positive.items():
@@ -271,6 +278,9 @@ class WorkerConfig:
             raise QueueConfigurationError(msg)
         if not 0.0 <= self.heartbeat_jitter_fraction <= 1.0:
             msg = "WorkerConfig.heartbeat_jitter_fraction must be between 0.0 and 1.0, inclusive."
+            raise QueueConfigurationError(msg)
+        if self.hard_exit_timeout is not None and self.hard_exit_timeout <= 0:
+            msg = "WorkerConfig.hard_exit_timeout must be greater than 0 when set."
             raise QueueConfigurationError(msg)
         if self.stale_after is not None and self.stale_after <= 0:
             msg = "WorkerConfig.stale_after must be greater than 0 when set."

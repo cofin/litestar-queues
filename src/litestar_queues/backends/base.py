@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 __all__ = (
     "EXTERNAL_DISPATCH_RESERVATION_PREFIX",
     "BaseQueueBackend",
+    "attempts_consumed",
+    "interruption_count",
     "is_external_dispatch_reservation",
     "retry_schedule",
 )
@@ -37,13 +39,36 @@ STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
 STALE_REQUEUE_PRIORITY = 4
 
 
+def interruption_count(record: "QueuedTaskRecord") -> "int":
+    """Return how many times an attempt has been interrupted by a shutdown.
+
+    Returns:
+        The recorded interruption count, or ``0`` when it is absent or unusable.
+    """
+    value = record.metadata.get("interruptions")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def attempts_consumed(record: "QueuedTaskRecord") -> "int":
+    """Return the retry attempts a record has actually consumed.
+
+    An interruption bumps ``retry_count`` so the old owner's fences can never
+    settle the reclaimed attempt, but it is not a failed attempt: it must not
+    spend the record's retry budget.
+
+    Returns:
+        ``retry_count`` less the recorded interruptions.
+    """
+    return record.retry_count - interruption_count(record)
+
+
 def retry_schedule(record: "QueuedTaskRecord", *, now: "datetime | None" = None) -> "tuple[datetime, datetime | None]":
     """Return refreshed queue and optional due timestamps for a retry."""
     queued_at = now or datetime.now(timezone.utc)
     value = record.metadata.get("retry_backoff")
     if not isinstance(value, dict):
         return queued_at, None
-    delay = float(value.get("initial_delay", 0.0)) * float(value.get("multiplier", 1.0)) ** record.retry_count
+    delay = float(value.get("initial_delay", 0.0)) * float(value.get("multiplier", 1.0)) ** attempts_consumed(record)
     max_delay = value.get("max_delay")
     if max_delay is not None:
         delay = min(delay, float(max_delay))

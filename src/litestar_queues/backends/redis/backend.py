@@ -19,6 +19,8 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    attempts_consumed,
+    interruption_count,
     is_external_dispatch_reservation,
     record_matches_filters,
     retry_schedule,
@@ -348,7 +350,15 @@ if expected ~= '' and tostring(retry_count) ~= expected then
 end
 redis.call('HSET', hkey, 'error', error)
 local max_retries = tonumber(redis.call('HGET', hkey, 'max_retries')) or 0
-if retry == '1' and retry_count < max_retries then
+local interruptions = 0
+local metadata_json = redis.call('HGET', hkey, 'metadata')
+if metadata_json and metadata_json ~= '' then
+    local decoded_ok, decoded = pcall(cjson.decode, metadata_json)
+    if decoded_ok and type(decoded) == 'table' and type(decoded.interruptions) == 'number' then
+        interruptions = decoded.interruptions
+    end
+end
+if retry == '1' and (retry_count - interruptions) < max_retries then
     local new_retry_count = retry_count + 1
     local retry_status = 'pending'
     if retry_at ~= '' then retry_status = 'scheduled' end
@@ -1172,6 +1182,8 @@ class RedisQueueBackend(BaseQueueBackend):
         record.completed_at = None
         record.execution_ref = None
         record.worker_id = None
+        record.metadata["interruptions"] = interruption_count(record) + 1
+        record.retry_count += 1
         zset_action, score = self._index_action(record)
         committed = await self._commit_transition(
             task_id,
@@ -1190,6 +1202,8 @@ class RedisQueueBackend(BaseQueueBackend):
                 "completed_score": "0",
                 "execution_ref": "",
                 "worker_id": "",
+                "retry_count": str(record.retry_count),
+                "metadata": _json_dumps(record.metadata),
                 "ready_score": repr(_ready_score(record)),
             },
             zset_action=zset_action,
@@ -1343,7 +1357,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 result.skipped += 1
                 continue
             requeue_on_stale = latest.metadata.get("requeue_on_stale", True) is not False
-            if requeue_on_stale and latest.retry_count < latest.max_retries:
+            if requeue_on_stale and attempts_consumed(latest) < latest.max_retries:
                 if await self._commit_stale_requeue(latest):
                     result.requeued += 1
                 else:

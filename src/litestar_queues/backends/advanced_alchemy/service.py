@@ -20,6 +20,8 @@ from litestar_queues.backends.advanced_alchemy.repository import (
 from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
+    attempts_consumed,
+    interruption_count,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -685,7 +687,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model_type = self.model_type
         retry_fence = expected_retry_count if expected_retry_count is not None else int(model.retry_count)
         criteria = [model_type.id == task_id, model_type.status == "running", model_type.retry_count == retry_fence]
-        if retry and int(model.retry_count) < int(model.max_retries):
+        if retry and attempts_consumed(self.record_from_model(model)) < int(model.max_retries):
             now = queued_at or _utc_now()
             update_result = await self.repository.session.execute(
                 update(model_type)
@@ -757,6 +759,12 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             The requeued record, or ``None`` when the fence was lost.
         """
         model_type = self.model_type
+        current = await self._select_task(task_id)
+        if current is None:
+            return None
+        metadata = _deserialize_json(current.metadata_json)
+        record = self.record_from_model(current)
+        metadata["interruptions"] = interruption_count(record) + 1
         result = await self.repository.session.execute(
             update(model_type)
             .where(
@@ -777,6 +785,8 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                         "completed_at": None,
                         "execution_ref": None,
                         "worker_id": None,
+                        "retry_count": int(current.retry_count) + 1,
+                        "metadata_json": _serialize_json(metadata),
                     },
                 )
             )
@@ -999,7 +1009,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             ]
             if use_heartbeat_cutoff:
                 update_criteria.append(stale_heartbeat)
-            if requeue_on_stale and int(model.retry_count) < int(model.max_retries):
+            if requeue_on_stale and attempts_consumed(self.record_from_model(model)) < int(model.max_retries):
                 queued_at, retry_at = retry_schedule(self.record_from_model(model))
                 update_result = await self.repository.session.execute(
                     update(model_type)

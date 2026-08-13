@@ -6,6 +6,8 @@ from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    attempts_consumed,
+    interruption_count,
     is_external_dispatch_reservation,
     record_matches_filters,
     retry_schedule,
@@ -359,7 +361,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 return None
 
             record.error = error
-            if retry and record.retry_count < record.max_retries:
+            if retry and attempts_consumed(record) < record.max_retries:
                 now = queued_at or _utc_now()
                 record.retry_count += 1
                 record.queued_at = now
@@ -406,6 +408,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.completed_at = None
             record.execution_ref = None
             record.worker_id = None
+            record.metadata["interruptions"] = interruption_count(record) + 1
+            record.retry_count += 1
             return record
 
     async def cancel_tasks(
@@ -479,7 +483,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 candidates = candidates[:limit]
             for record in candidates:
                 requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
-                if requeue_on_stale and record.retry_count < record.max_retries:
+                if requeue_on_stale and attempts_consumed(record) < record.max_retries:
                     queued_at, retry_at = retry_schedule(record)
                     record.status = "scheduled" if retry_at is not None else "pending"
                     record.queued_at = queued_at

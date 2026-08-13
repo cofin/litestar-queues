@@ -2186,3 +2186,44 @@ async def test_worker_warns_when_shutdown_requeue_loses_its_fence(caplog: "pytes
     assert any(
         record.levelno == logging.WARNING and "fence" in record.getMessage().lower() for record in caplog.records
     )
+
+
+async def test_worker_nulls_heartbeats_for_tasks_that_survive_cancellation() -> "None":
+    started = asyncio.Event()
+    hang = asyncio.Event()
+
+    @task("tasks.undead")
+    async def undead() -> "None":
+        started.set()
+        try:
+            await hang.wait()
+        except asyncio.CancelledError:
+            await hang.wait()
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(undead)
+        backend = service.get_queue_backend()
+        worker = Worker(
+            service,
+            WorkerConfig(placement="external", graceful_shutdown_timeout=0.05, final_cancel_timeout=0.1),
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        await wait_until(lambda: _has_heartbeat(backend, result.id), timeout=5)
+
+        await asyncio.wait_for(worker.stop(), timeout=5)
+        stored = await backend.get_task(result.id)
+        assert stored is not None
+        assert stored.status == "running"
+        assert stored.heartbeat_at is None
+
+        hang.set()
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(worker_task, timeout=5)
+
+
+async def _has_heartbeat(backend: "BaseQueueBackend", task_id: "UUID") -> "bool":
+    record = await backend.get_task(task_id)
+    return record is not None and record.heartbeat_at is not None

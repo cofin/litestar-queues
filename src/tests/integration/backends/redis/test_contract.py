@@ -651,3 +651,15 @@ async def test_redis_worker_shutdown_requeues_running_task(redis_backend: "Any")
     from tests.integration._interrupt_contract import assert_worker_shutdown_requeues_running_task
 
     await assert_worker_shutdown_requeues_running_task(redis_backend)
+
+
+async def test_redis_interruption_does_not_consume_retry_budget(redis_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_retry_budget
+
+    await assert_interruption_does_not_consume_retry_budget(redis_backend)
+
+
+async def test_redis_interruption_does_not_consume_failure_budget(redis_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_failure_budget
+
+    await assert_interruption_does_not_consume_failure_budget(redis_backend)

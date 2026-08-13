@@ -1210,3 +1210,67 @@ class _EventLogBackend(InMemoryQueueBackend):
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         del config
         return self._event_log
+
+
+async def _interrupt_cycles(backend: "InMemoryQueueBackend", service: "QueueService", task_id: "UUID", count: "int") -> "None":
+    for _ in range(count):
+        claimed = await backend.claim_task(task_id)
+        assert claimed is not None
+        assert await backend.assign_worker(task_id, worker_id="worker-a", expected_retry_count=claimed.retry_count)
+        assert await service.interrupt_task(claimed, worker_id="worker-a", max_interruptions=3) is not None
+
+
+async def test_interrupt_task_over_the_cap_consumes_the_retry_budget() -> "None":
+    backend = InMemoryQueueBackend()
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=backend
+    )
+    async with service:
+        record = await backend.enqueue("tasks.capped", max_retries=2)
+        await _interrupt_cycles(backend, service, record.id, 3)
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert await backend.assign_worker(record.id, worker_id="worker-a", expected_retry_count=claimed.retry_count)
+
+        updated = await service.interrupt_task(claimed, worker_id="worker-a", max_interruptions=3)
+
+        assert updated is not None
+        assert updated.status == "pending"
+        assert updated.retry_count == 4
+        assert updated.metadata.get("interruptions") == 3
+        assert updated.error == "Interrupted during shutdown"
+
+
+async def test_interrupt_task_over_the_cap_fails_terminally_without_retries() -> "None":
+    backend = InMemoryQueueBackend()
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=backend
+    )
+    async with service:
+        record = await backend.enqueue("tasks.capped.terminal", max_retries=0)
+        await _interrupt_cycles(backend, service, record.id, 3)
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        assert await backend.assign_worker(record.id, worker_id="worker-a", expected_retry_count=claimed.retry_count)
+
+        updated = await service.interrupt_task(claimed, worker_id="worker-a", max_interruptions=3)
+
+        assert updated is not None
+        assert updated.status == "failed"
+        assert updated.error == "Interrupted during shutdown"
+
+
+async def test_interrupt_task_under_the_cap_requeues() -> "None":
+    backend = InMemoryQueueBackend()
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=backend
+    )
+    async with service:
+        record = await backend.enqueue("tasks.uncapped", max_retries=0)
+        await _interrupt_cycles(backend, service, record.id, 1)
+        stored = await backend.get_task(record.id)
+
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.metadata.get("interruptions") == 1
+        assert stored.error is None

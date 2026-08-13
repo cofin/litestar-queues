@@ -818,3 +818,19 @@ async def test_backend_contract_interrupts_owned_running_record(queue_backend: "
     from tests.integration._interrupt_contract import assert_interrupts_owned_running_record
 
     await assert_interrupts_owned_running_record(queue_backend)
+
+
+async def test_backend_contract_interruption_does_not_consume_retry_budget(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_retry_budget
+
+    await assert_interruption_does_not_consume_retry_budget(queue_backend)
+
+
+async def test_backend_contract_interruption_does_not_consume_failure_budget(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_failure_budget
+
+    await assert_interruption_does_not_consume_failure_budget(queue_backend)

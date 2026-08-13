@@ -589,3 +589,15 @@ async def test_valkey_worker_shutdown_requeues_running_task(valkey_backend: "Any
     from tests.integration._interrupt_contract import assert_worker_shutdown_requeues_running_task
 
     await assert_worker_shutdown_requeues_running_task(valkey_backend)
+
+
+async def test_valkey_interruption_does_not_consume_retry_budget(valkey_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_retry_budget
+
+    await assert_interruption_does_not_consume_retry_budget(valkey_backend)
+
+
+async def test_valkey_interruption_does_not_consume_failure_budget(valkey_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_failure_budget
+
+    await assert_interruption_does_not_consume_failure_budget(valkey_backend)

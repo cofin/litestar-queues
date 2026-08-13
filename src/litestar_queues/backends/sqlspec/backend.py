@@ -18,6 +18,8 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    attempts_consumed,
+    interruption_count,
     is_external_dispatch_reservation,
     record_matches_filters,
     retry_schedule,
@@ -1055,7 +1057,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         return None
                     metric = "fail"
                     retry_fence = expected_retry_count if expected_retry_count is not None else record.retry_count
-                    if retry and record.retry_count < record.max_retries:
+                    if retry and attempts_consumed(record) < record.max_retries:
                         updated = await driver.execute(
                             store.retry_task(
                                 task_id=str(task_id),
@@ -1155,14 +1157,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 ):
                     await driver.commit()
                     return None
+                metadata = dict(current.metadata)
+                metadata["interruptions"] = interruption_count(current) + 1
                 result = await driver.execute(
                     store.interrupt_task(
                         task_id=str(task_id),
                         expected_retry_count=expected_retry_count,
                         worker_id=worker_id,
                         queued_at=self._serialize_datetime(queued_at),
-                        retry_count=current.retry_count,
-                        metadata_json=store.serialize_json("metadata_json", current.metadata),
+                        retry_count=current.retry_count + 1,
+                        metadata_json=store.serialize_json("metadata_json", metadata),
                     )
                 )
                 rows_affected = self._resolve_rows_affected(result)
@@ -1369,7 +1373,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     for row in rows:
                         record = self._record_from_row(row)
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
-                        if requeue_on_stale and record.retry_count < record.max_retries:
+                        if requeue_on_stale and attempts_consumed(record) < record.max_retries:
                             retry_error = stale_requeue_error(record.error)
                             retry_priority = stale_requeue_priority(record.priority)
                             queued_at, retry_at = retry_schedule(record)

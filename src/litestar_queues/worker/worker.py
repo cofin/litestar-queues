@@ -13,6 +13,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
@@ -82,6 +84,7 @@ class Worker:
         "_listener_reconnect_pending",
         "_logger",
         "_max_concurrency",
+        "_max_interruptions",
         "_poll_backoff_max",
         "_poll_backoff_multiplier",
         "_poll_interval",
@@ -123,6 +126,7 @@ class Worker:
         self._queue_concurrency = dict(worker_config.queue_concurrency)
         self._reconcile_interval = worker_config.reconcile_interval
         self._requeue_on_shutdown = worker_config.requeue_on_shutdown
+        self._max_interruptions = worker_config.max_interruptions
         self._expiry_check_interval = worker_config.expiry_check_interval
         self._stale_after = (
             timedelta(seconds=worker_config.stale_after) if worker_config.stale_after is not None else None
@@ -460,7 +464,9 @@ class Worker:
                 # the exception would be swallowed whole by the drain/cancel
                 # wait and the record would silently stay `running`.
                 try:
-                    updated = await self._service.interrupt_task(record, worker_id=self._worker_id)
+                    updated = await self._service.interrupt_task(
+                        record, worker_id=self._worker_id, max_interruptions=self._max_interruptions
+                    )
                 except Exception:  # noqa: BLE001 - shutdown requeue failures are reported, never raised.
                     self._record_counter(
                         "litestar_queues.worker.interrupt.error", {"messaging.destination.name": record.queue}
@@ -581,6 +587,38 @@ class Worker:
                 self._cancel_requested.add(task)
                 task.cancel()
         await asyncio.wait(tasks, timeout=self._final_cancel_timeout)
+        await self._hand_off_undead_tasks()
+
+    async def _hand_off_undead_tasks(self) -> "None":
+        """Null the heartbeats of tasks that outlived their cancellation budget.
+
+        The records stay ``running`` and this worker no longer touches their
+        heartbeats, so a stale sweep (``stale_after``) can reclaim them on its
+        next pass instead of waiting out a full heartbeat age.
+        """
+        survivors = [record for task, record in self._running_tasks.items() if not task.done()]
+        if not survivors:
+            return
+        self._logger.warning(
+            "Queue tasks survived cancellation; abandoning them to stale recovery",
+            extra={
+                "worker_id": self._worker_id,
+                "task_ids": [str(record.id) for record in survivors],
+            },
+        )
+        # `null_heartbeats` carries one fence value per call, so group the
+        # survivors by the generation this worker still believes it owns.
+        by_generation: "dict[int, list[UUID]]" = {}
+        for record in survivors:
+            by_generation.setdefault(record.retry_count, []).append(record.id)
+        backend = self._service.get_queue_backend()
+        for expected_retry_count, task_ids in by_generation.items():
+            try:
+                await backend.null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
+            except Exception:  # noqa: BLE001 - the handoff is best effort during shutdown.
+                self._logger.exception(
+                    "Nulling heartbeats for surviving queue tasks failed", extra={"worker_id": self._worker_id}
+                )
 
     async def _wait_for_work(self) -> "bool | None":
         """Wait for new work, a backend notification, or a stop signal.

@@ -158,16 +158,38 @@ By default, unfinished work remains ``running`` for stale recovery. Set
 ``WorkerConfig.requeue_on_shutdown=True`` to return an attempt to ``pending``
 after its coroutine accepts cancellation and unwinds. Tasks can override this
 with ``@task(requeue_on_shutdown=True)`` or ``False`` and must be idempotent.
+Every shipped backend performs the requeue behind an owner and generation
+fence, so a worker can only requeue the attempt it still owns.
 
-The first termination signal stops new claims and gives running tasks time to
-finish. A second signal cancels them. Server placement must become ready within
-``startup_timeout``. Shutdown then allows ``graceful_shutdown_timeout``, uses
-``final_cancel_timeout`` for cancellation, and finally escalates to bounded
-process-tree termination if the child cannot exit. The standalone CLI returns
-``0`` for a clean shutdown, ``1`` for a worker error, and ``2`` when the
-graceful timeout ends and cancellation begins. Windows uses console Ctrl+C or
-Ctrl+Break semantics. Focused topology smoke tests run on macOS and Windows in
-native CI jobs.
+Each requeue is counted in the record's ``interruptions`` metadata and does not
+spend a retry attempt. ``WorkerConfig.max_interruptions`` (default ``3``) bounds
+that: once an attempt has been interrupted that many times, the next
+interruption goes through the ordinary retry policy instead, so a task that is
+restarted forever eventually fails rather than cycling.
+
+The escalation ladder:
+
+#. **First signal** — stop claiming and drain for ``graceful_shutdown_timeout``.
+#. **Second signal** — cancel running tasks with a ``final_cancel_timeout``
+   budget and arm the hard-exit watchdog.
+#. **Deadline or third signal** — the process exits with ``128 + signum``
+   (``143`` for SIGTERM, ``130`` for SIGINT). ``WorkerConfig.hard_exit_timeout``
+   (default ``10.0`` seconds, ``None`` to disable) is the wall-clock budget from
+   forced shutdown to that exit. The watchdog runs on a daemon thread, because
+   the case it exists for is an event loop that no longer runs callbacks.
+
+Tasks still alive after ``final_cancel_timeout`` are logged with their ids and
+their heartbeats are cleared, so a stale sweep can reclaim them immediately
+instead of waiting out a full heartbeat age. Stale recovery is off by default;
+set ``WorkerConfig.stale_after`` (or the maintenance equivalent) to make that
+handoff useful.
+
+Server placement must become ready within ``startup_timeout``, and shutdown
+finally escalates to bounded process-tree termination if the child cannot exit.
+The standalone CLI returns ``0`` for a clean shutdown, ``1`` for a worker error,
+and ``2`` when the graceful timeout ends and cancellation begins. Windows uses
+console Ctrl+C or Ctrl+Break semantics. Focused topology smoke tests run on
+macOS and Windows in native CI jobs.
 
 See :doc:`worker-wakeups` for idle waiting and :doc:`worker-recovery` for
 heartbeats and stale work.
