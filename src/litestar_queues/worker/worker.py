@@ -418,6 +418,17 @@ class Worker:
     def _on_execution_done(self, task: "asyncio.Task[None]") -> "None":
         self._running_tasks.pop(task, None)
         self._cancel_requested.discard(task)
+        # Retrieve the outcome here rather than through a drain-time gather, so
+        # a task that finishes outside a drain never trips asyncio's
+        # "exception was never retrieved" reporting.
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                self._logger.error(
+                    "Queue task execution failed outside its own error handling",
+                    exc_info=error,
+                    extra={"worker_id": self._worker_id},
+                )
         self._completion_event.set()
 
     async def _maybe_cancel_running(self) -> "None":
