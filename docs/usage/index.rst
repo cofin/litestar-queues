@@ -126,6 +126,12 @@ Choose production options
 
       Route task identifiers through a RabbitMQ 4.3 quorum queue.
 
+   .. grid-item-card:: Dispatch through Kafka
+      :link: deployment/kafka
+      :link-type: doc
+
+      Route task identifiers through a manual-commit Kafka consumer group.
+
    .. grid-item-card:: Dispatch through Pub/Sub
       :link: deployment/pubsub
       :link-type: doc
@@ -165,5 +171,6 @@ Choose production options
    deployment/cloud-tasks
    deployment/sqs
    deployment/rabbitmq
+   deployment/kafka
    deployment/pubsub
    migration

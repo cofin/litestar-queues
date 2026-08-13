@@ -94,6 +94,19 @@ RabbitMQ
    :undoc-members:
    :show-inheritance:
 
+Kafka
+=====
+
+.. automodule:: litestar_queues.execution.kafka.config
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: litestar_queues.execution.kafka.backend
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Google Cloud Pub/Sub
 ====================
 

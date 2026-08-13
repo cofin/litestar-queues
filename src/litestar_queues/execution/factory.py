@@ -19,6 +19,7 @@ _BUILTIN_BACKENDS: "dict[str, str]" = {
     "cloudrun": "litestar_queues.execution.cloudrun:CloudRunExecutionBackend",
     "cloudtasks": "litestar_queues.execution.cloudtasks:CloudTasksExecutionBackend",
     "immediate": "litestar_queues.execution.immediate:ImmediateExecutionBackend",
+    "kafka": "litestar_queues.execution.kafka:KafkaExecutionBackend",
     "local": "litestar_queues.execution.local:LocalExecutionBackend",
     "pubsub": "litestar_queues.execution.pubsub:PubSubExecutionBackend",
     "rabbitmq": "litestar_queues.execution.rabbitmq:RabbitMQExecutionBackend",

@@ -57,6 +57,7 @@ queues = "litestar_queues._cli:queues_group"
 advanced-alchemy = ["advanced-alchemy>=1.10.0"]
 cloud-tasks = ["google-cloud-tasks>=2.23.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
+kafka = ["aiokafka>=0.14.0"]
 pubsub = ["google-cloud-pubsub>=2.39.0"]
 rabbitmq = ["aio-pika>=10.0.1; python_version >= '3.11'"]
 sqs = ["aiobotocore>=3.8.0"]
