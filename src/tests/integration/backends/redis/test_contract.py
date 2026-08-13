@@ -663,3 +663,9 @@ async def test_redis_interruption_does_not_consume_failure_budget(redis_backend:
     from tests.integration._interrupt_contract import assert_interruption_does_not_consume_failure_budget
 
     await assert_interruption_does_not_consume_failure_budget(redis_backend)
+
+
+async def test_redis_stale_requeue_priority_policy(redis_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
+
+    await assert_stale_requeue_priority_policy(redis_backend)

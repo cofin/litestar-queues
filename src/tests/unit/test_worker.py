@@ -2206,8 +2206,7 @@ async def test_worker_nulls_heartbeats_for_tasks_that_survive_cancellation() -> 
         result = await service.enqueue(undead)
         backend = service.get_queue_backend()
         worker = Worker(
-            service,
-            WorkerConfig(placement="external", graceful_shutdown_timeout=0.05, final_cancel_timeout=0.1),
+            service, WorkerConfig(placement="external", graceful_shutdown_timeout=0.05, final_cancel_timeout=0.1)
         )
         worker_task = asyncio.create_task(worker.start())
         await asyncio.wait_for(started.wait(), timeout=2)

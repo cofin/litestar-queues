@@ -1375,7 +1375,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
                         if requeue_on_stale and attempts_consumed(record) < record.max_retries:
                             retry_error = stale_requeue_error(record.error)
-                            retry_priority = stale_requeue_priority(record.priority)
+                            retry_priority = stale_requeue_priority(
+                                record.priority, self._stale_requeue_priority_policy()
+                            )
                             queued_at, retry_at = retry_schedule(record)
                             updated = await driver.execute(
                                 store.retry_task(

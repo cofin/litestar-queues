@@ -696,11 +696,7 @@ class QueueService:
         )
         if updated is None:
             return None
-        payload = {
-            "status": updated.status,
-            "retry_count": updated.retry_count,
-            "will_retry": not updated.is_terminal,
-        }
+        payload = {"status": updated.status, "retry_count": updated.retry_count, "will_retry": not updated.is_terminal}
         context = _task_execution_context(updated, worker_id=worker_id, event_publisher=self.get_event_publisher())
         await context.lifecycle("task.failed", message=INTERRUPTION_LIMIT_ERROR, payload=payload)
         self._log_task_event(

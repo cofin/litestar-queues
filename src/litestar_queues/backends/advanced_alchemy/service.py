@@ -20,6 +20,7 @@ from litestar_queues.backends.advanced_alchemy.repository import (
 from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
+    STALE_REQUEUE_PRIORITY,
     attempts_consumed,
     interruption_count,
     record_matches_filters,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
         QueueTaskModelMixin,
         QueueTaskReservationModelMixin,
     )
+    from litestar_queues.config import StaleRequeuePriority
     from litestar_queues.models import HeartbeatTouch, TaskRequest
 
 __all__ = ("QueueEventLogService", "QueueTaskReservationService", "QueueTaskService")
@@ -737,9 +739,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         result = await self.repository.session.execute(
             update(model_type)
             .where(
-                model_type.id == task_id,
-                model_type.status == "running",
-                model_type.retry_count == expected_retry_count,
+                model_type.id == task_id, model_type.status == "running", model_type.retry_count == expected_retry_count
             )
             .values(_update_values(model_type, {"worker_id": worker_id}))
             .execution_options(synchronize_session=False)
@@ -979,7 +979,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         )
 
     async def requeue_stale_running(
-        self, *, stale_after: "timedelta", limit: "int | None" = None
+        self,
+        *,
+        stale_after: "timedelta",
+        limit: "int | None" = None,
+        priority_policy: "StaleRequeuePriority" = STALE_REQUEUE_PRIORITY,
     ) -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         model_type = self.model_type
@@ -1024,7 +1028,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                                 "started_at": None,
                                 "heartbeat_at": None,
                                 "retry_count": int(model.retry_count) + 1,
-                                "priority": stale_requeue_priority(int(model.priority)),
+                                "priority": stale_requeue_priority(int(model.priority), priority_policy),
                                 "error": stale_requeue_error(model.error),
                             },
                         )

@@ -121,3 +121,14 @@ def test_worker_config_hard_exit_timeout_defaults_and_validates() -> "None":
     assert WorkerConfig(hard_exit_timeout=None).hard_exit_timeout is None
     with pytest.raises(QueueConfigurationError, match=r"WorkerConfig\.hard_exit_timeout"):
         WorkerConfig(hard_exit_timeout=0)
+
+
+def test_queue_config_validates_the_stale_requeue_priority_policy() -> "None":
+    assert QueueConfig().stale_requeue_priority == 4
+    assert QueueConfig(stale_requeue_priority="preserve").stale_requeue_priority == "preserve"
+    with pytest.raises(QueueConfigurationError, match=r"QueueConfig\.stale_requeue_priority"):
+        QueueConfig(stale_requeue_priority=-1)
+    with pytest.raises(QueueConfigurationError, match=r"QueueConfig\.stale_requeue_priority"):
+        QueueConfig(stale_requeue_priority="keep")  # type: ignore[arg-type]
+    with pytest.raises(QueueConfigurationError, match=r"QueueConfig\.stale_requeue_priority"):
+        QueueConfig(stale_requeue_priority=True)

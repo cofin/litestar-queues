@@ -467,7 +467,7 @@ class Worker:
                     updated = await self._service.interrupt_task(
                         record, worker_id=self._worker_id, max_interruptions=self._max_interruptions
                     )
-                except Exception:  # noqa: BLE001 - shutdown requeue failures are reported, never raised.
+                except Exception:
                     self._record_counter(
                         "litestar_queues.worker.interrupt.error", {"messaging.destination.name": record.queue}
                     )
@@ -601,24 +601,24 @@ class Worker:
             return
         self._logger.warning(
             "Queue tasks survived cancellation; abandoning them to stale recovery",
-            extra={
-                "worker_id": self._worker_id,
-                "task_ids": [str(record.id) for record in survivors],
-            },
+            extra={"worker_id": self._worker_id, "task_ids": [str(record.id) for record in survivors]},
         )
         # `null_heartbeats` carries one fence value per call, so group the
         # survivors by the generation this worker still believes it owns.
         by_generation: "dict[int, list[UUID]]" = {}
         for record in survivors:
             by_generation.setdefault(record.retry_count, []).append(record.id)
-        backend = self._service.get_queue_backend()
         for expected_retry_count, task_ids in by_generation.items():
-            try:
-                await backend.null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
-            except Exception:  # noqa: BLE001 - the handoff is best effort during shutdown.
-                self._logger.exception(
-                    "Nulling heartbeats for surviving queue tasks failed", extra={"worker_id": self._worker_id}
-                )
+            await self._null_heartbeats_quietly(task_ids, expected_retry_count=expected_retry_count)
+
+    async def _null_heartbeats_quietly(self, task_ids: "list[UUID]", *, expected_retry_count: "int") -> "None":
+        """Clear one generation's heartbeats, reporting rather than raising a backend failure."""
+        try:
+            await self._service.get_queue_backend().null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
+        except Exception:
+            self._logger.exception(
+                "Nulling heartbeats for surviving queue tasks failed", extra={"worker_id": self._worker_id}
+            )
 
     async def _wait_for_work(self) -> "bool | None":
         """Wait for new work, a backend notification, or a stop signal.

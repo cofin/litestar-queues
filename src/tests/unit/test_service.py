@@ -1212,7 +1212,9 @@ class _EventLogBackend(InMemoryQueueBackend):
         return self._event_log
 
 
-async def _interrupt_cycles(backend: "InMemoryQueueBackend", service: "QueueService", task_id: "UUID", count: "int") -> "None":
+async def _interrupt_cycles(
+    backend: "InMemoryQueueBackend", service: "QueueService", task_id: "UUID", count: "int"
+) -> "None":
     for _ in range(count):
         claimed = await backend.claim_task(task_id)
         assert claimed is not None

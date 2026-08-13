@@ -1378,7 +1378,7 @@ class RedisQueueBackend(BaseQueueBackend):
         record.status = "scheduled" if retry_at is not None else "pending"
         record.queued_at = queued_at
         record.scheduled_at = retry_at
-        record.priority = stale_requeue_priority(record.priority)
+        record.priority = stale_requeue_priority(record.priority, self._stale_requeue_priority_policy())
         record.started_at = None
         record.heartbeat_at = None
         record.error = stale_requeue_error(record.error)

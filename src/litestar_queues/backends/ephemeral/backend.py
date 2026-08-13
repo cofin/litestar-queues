@@ -927,6 +927,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
             The recovery counts and affected task ids.
         """
 
+        policy = self._stale_requeue_priority_policy()
+
         def operation(connection: "sqlite3.Connection") -> "StaleTaskRecoveryResult":
             now = _utc_now()
             cutoff = now - stale_after
@@ -945,7 +947,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
                     record.status = "scheduled" if retry_at is not None else "pending"
                     record.queued_at = queued_at
                     record.scheduled_at = retry_at
-                    record.priority = stale_requeue_priority(record.priority)
+                    record.priority = stale_requeue_priority(record.priority, policy)
                     record.started_at = None
                     record.heartbeat_at = None
                     record.error = stale_requeue_error(record.error)

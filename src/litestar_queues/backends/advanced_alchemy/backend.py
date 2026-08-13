@@ -368,9 +368,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
         async with self._operation() as service:
-            return await service.assign_worker(
-                task_id, worker_id=worker_id, expected_retry_count=expected_retry_count
-            )
+            return await service.assign_worker(task_id, worker_id=worker_id, expected_retry_count=expected_retry_count)
 
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
@@ -412,7 +410,9 @@ class SQLAlchemyBackend(BaseQueueBackend):
         self, *, stale_after: "timedelta", limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
         async with self._operation() as service:
-            return await service.requeue_stale_running(stale_after=stale_after, limit=limit)
+            return await service.requeue_stale_running(
+                stale_after=stale_after, limit=limit, priority_policy=self._stale_requeue_priority_policy()
+            )
 
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None

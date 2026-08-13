@@ -5,7 +5,8 @@ import pytest
 
 from litestar_queues import HeartbeatTouch, InMemoryQueueBackend
 from litestar_queues.backends import BaseQueueBackend
-from litestar_queues.backends.base import attempts_consumed, interruption_count, retry_schedule
+from litestar_queues.backends.base import attempts_consumed, interruption_count, retry_schedule, stale_requeue_priority
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -113,9 +114,7 @@ def test_attempts_consumed_discounts_interruptions() -> "None":
 
 def test_retry_schedule_backoff_uses_attempts_consumed() -> "None":
     backoff = {"initial_delay": 1.0, "multiplier": 2.0}
-    interrupted = QueuedTaskRecord(
-        "tasks.a", retry_count=3, metadata={"interruptions": 2, "retry_backoff": backoff}
-    )
+    interrupted = QueuedTaskRecord("tasks.a", retry_count=3, metadata={"interruptions": 2, "retry_backoff": backoff})
     plain = QueuedTaskRecord("tasks.a", retry_count=1, metadata={"retry_backoff": backoff})
 
     queued_at, retry_at = retry_schedule(interrupted)
@@ -124,3 +123,15 @@ def test_retry_schedule_backoff_uses_attempts_consumed() -> "None":
     assert retry_at is not None
     assert plain_retry_at is not None
     assert (retry_at - queued_at) == (plain_retry_at - plain_queued_at)
+
+
+def test_stale_requeue_priority_policies() -> "None":
+    assert stale_requeue_priority(9, 4) == 4
+    assert stale_requeue_priority(2, 4) == 2
+    assert stale_requeue_priority(9, "preserve") == 9
+    assert stale_requeue_priority(9, lambda priority: priority - 1) == 8
+
+
+def test_stale_requeue_priority_rejects_a_non_integer_callable() -> "None":
+    with pytest.raises(QueueConfigurationError):
+        stale_requeue_priority(9, lambda _priority: "high")  # type: ignore[arg-type,return-value]

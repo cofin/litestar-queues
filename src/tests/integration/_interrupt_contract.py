@@ -35,9 +35,7 @@ async def assert_assign_worker_persists_ownership(queue_backend: "BaseQueueBacke
     assert stored is not None
     assert stored.worker_id == "worker-a"
 
-    lost_fence = await queue_backend.assign_worker(
-        record.id, worker_id="worker-b", expected_retry_count=generation + 1
-    )
+    lost_fence = await queue_backend.assign_worker(record.id, worker_id="worker-b", expected_retry_count=generation + 1)
     assert lost_fence is None
     still_owned = await queue_backend.get_task(record.id)
     assert still_owned is not None
@@ -74,10 +72,7 @@ async def assert_interrupts_owned_running_record(queue_backend: "BaseQueueBacken
     assert updated.metadata.get("interruptions") == 1
 
     # The generation bump locks the previous owner out of every settle fence.
-    assert (
-        await queue_backend.complete_task(record.id, result="stale-owner", expected_retry_count=generation)
-        is None
-    )
+    assert await queue_backend.complete_task(record.id, result="stale-owner", expected_retry_count=generation) is None
 
     stored = await queue_backend.get_task(record.id)
     assert stored is not None
@@ -189,3 +184,31 @@ async def assert_interruption_does_not_consume_failure_budget(queue_backend: "Ba
 
     assert failed is not None
     assert failed.status in {"pending", "scheduled"}
+
+
+async def assert_stale_requeue_priority_policy(queue_backend: "BaseQueueBackend") -> "None":
+    """``QueueConfig.stale_requeue_priority`` decides the priority recovered work re-enters with."""
+    original_config = queue_backend.config
+    # Fixture backends are built without a QueueConfig; the policy is read live
+    # from whatever config the backend carries at sweep time.
+    config = (
+        original_config
+        if original_config is not None
+        else QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external"))
+    )
+    original_policy = config.stale_requeue_priority
+    config.stale_requeue_priority = "preserve"
+    queue_backend.config = config
+    try:
+        record = await queue_backend.enqueue("tasks.stale.keep", priority=9, max_retries=2)
+        assert await queue_backend.claim_task(record.id) is not None
+
+        result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
+        stored = await queue_backend.get_task(record.id)
+
+        assert result.requeued == 1
+        assert stored is not None
+        assert stored.priority == 9
+    finally:
+        config.stale_requeue_priority = original_policy
+        queue_backend.config = original_config

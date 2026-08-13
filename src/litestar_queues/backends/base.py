@@ -6,7 +6,8 @@ from uuid import uuid4
 
 from typing_extensions import Self
 
-from litestar_queues.config import queue_backend_name
+from litestar_queues.config import STALE_REQUEUE_PRIORITY, queue_backend_name
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
@@ -20,13 +21,14 @@ if TYPE_CHECKING:
     from types import TracebackType
     from uuid import UUID
 
-    from litestar_queues.config import QueueConfig
+    from litestar_queues.config import QueueConfig, StaleRequeuePriority
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = (
     "EXTERNAL_DISPATCH_RESERVATION_PREFIX",
+    "STALE_REQUEUE_PRIORITY",
     "BaseQueueBackend",
     "attempts_consumed",
     "interruption_count",
@@ -36,7 +38,6 @@ __all__ = (
 
 EXTERNAL_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
-STALE_REQUEUE_PRIORITY = 4
 
 
 def interruption_count(record: "QueuedTaskRecord") -> "int":
@@ -120,6 +121,15 @@ class BaseQueueBackend:
         runtime.record_counter(
             "litestar_queues.wakeup.coalesced", count, attributes=self._transport_metric_attributes()
         )
+
+    def _stale_requeue_priority_policy(self) -> "StaleRequeuePriority":
+        """Return the configured stale-recovery priority policy.
+
+        Returns:
+            The owning config's policy, or the historical clamp when a backend
+            was built without a config.
+        """
+        return self.config.stale_requeue_priority if self.config is not None else STALE_REQUEUE_PRIORITY
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
@@ -816,6 +826,21 @@ def stale_requeue_error(current_error: "str | None") -> "str":
     return current_error or STALE_HEARTBEAT_ERROR
 
 
-def stale_requeue_priority(priority: "int") -> "int":
-    """Return the priority for a stale requeued task."""
-    return min(priority, STALE_REQUEUE_PRIORITY)
+def stale_requeue_priority(priority: "int", policy: "StaleRequeuePriority") -> "int":
+    """Return the priority a stale-recovered record re-enters the queue with.
+
+    Returns:
+        The priority resolved by ``policy``.
+
+    Raises:
+        QueueConfigurationError: If a callable policy returns a non-integer.
+    """
+    if callable(policy):
+        resolved = policy(priority)
+        if isinstance(resolved, bool) or not isinstance(resolved, int):
+            msg = f"QueueConfig.stale_requeue_priority callable returned {resolved!r}; an int is required."
+            raise QueueConfigurationError(msg)
+        return resolved
+    if policy == "preserve":
+        return priority
+    return min(priority, policy)

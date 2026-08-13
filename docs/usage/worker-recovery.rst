@@ -27,6 +27,26 @@ worker at a time check for stale records. A stale task returns to the queue if
 it has retries left. Otherwise, it ends with a stale failure. A task may turn
 off stale requeueing or register ``on_stale_failure`` for cleanup.
 
+Recovered priority
+------------------
+
+``QueueConfig.stale_requeue_priority`` decides the priority recovered work
+re-enters the queue with:
+
+.. code-block:: python
+
+   QueueConfig(stale_requeue_priority="preserve")   # keep the original priority
+   QueueConfig(stale_requeue_priority=4)            # ceiling clamp (the default)
+   QueueConfig(stale_requeue_priority=lambda p: p - 1)  # map old priority to new
+
+The default clamps to ``4``, which is the historical behavior. That demotion
+protects a queue from a record that crashes its worker repeatedly, but it also
+inverts priority: work enqueued at priority ``9`` re-enters at ``4`` and can be
+starved indefinitely by ordinary priority-``5`` inflow. Prefer ``"preserve"``
+together with bounded shutdown interruptions and a real ``max_retries`` budget
+when the priority actually matters. A callable that returns anything other than
+an integer fails the sweep loudly rather than silently clamping.
+
 Heartbeat timestamps are automatic for every running task. Calling
 ``beat(detail)`` is optional: it replaces the latest short diagnostic detail
 without changing heartbeat cadence. Progress and custom task events are
