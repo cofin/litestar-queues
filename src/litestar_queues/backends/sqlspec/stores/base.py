@@ -698,6 +698,51 @@ class SQLSpecQueueStore:
             )
         return statement
 
+    def assign_worker(self, *, task_id: "str", worker_id: "str", expected_retry_count: "int") -> "Update":
+        """Return a fenced UPDATE statement that persists running-record ownership."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"worker_id": worker_id}))
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
+            .where_eq(self._col("retry_count"), expected_retry_count)
+        )
+
+    def interrupt_task(
+        self,
+        *,
+        task_id: "str",
+        expected_retry_count: "int",
+        worker_id: "str",
+        queued_at: "DatetimeParam",
+        retry_count: "int",
+        metadata_json: "Any",
+    ) -> "Update":
+        """Return a fenced UPDATE statement that returns an owned running task to pending."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "status": "pending",
+                    "queued_at": queued_at,
+                    "scheduled_at": None,
+                    "started_at": None,
+                    "heartbeat_at": None,
+                    "completed_at": None,
+                    "execution_ref": None,
+                    "worker_id": None,
+                    "retry_count": retry_count,
+                    "metadata_json": metadata_json,
+                })
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
+            .where_eq(self._col("retry_count"), expected_retry_count)
+            .where_eq(self._col("worker_id"), worker_id)
+        )
+
     def cancel_task(
         self, *, task_id: "str", completed_at: "DatetimeParam", include_running: "bool" = False
     ) -> "Update":

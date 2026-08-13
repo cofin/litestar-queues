@@ -723,6 +723,71 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         updated = await self._select_task(task_id)
         return self.record_from_model(updated) if updated is not None else None
 
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        """Persist running-record ownership behind a status/generation fence.
+
+        Returns:
+            The owned record, or ``None`` when the fence was lost.
+        """
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.status == "running",
+                model_type.retry_count == expected_retry_count,
+            )
+            .values(_update_values(model_type, {"worker_id": worker_id}))
+            .execution_options(synchronize_session=False)
+        )
+        if int(result.rowcount or 0) != 1:
+            return None
+        self.repository.session.expire_all()
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        """Return an owned running attempt to pending behind an owner/generation fence.
+
+        Returns:
+            The requeued record, or ``None`` when the fence was lost.
+        """
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.status == "running",
+                model_type.retry_count == expected_retry_count,
+                model_type.worker_id == worker_id,
+            )
+            .values(
+                _update_values(
+                    model_type,
+                    {
+                        "status": "pending",
+                        "queued_at": queued_at,
+                        "scheduled_at": None,
+                        "started_at": None,
+                        "heartbeat_at": None,
+                        "completed_at": None,
+                        "execution_ref": None,
+                        "worker_id": None,
+                    },
+                )
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if int(result.rowcount or 0) != 1:
+            return None
+        self.repository.session.expire_all()
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         model_type = self.model_type
         now = _utc_now()

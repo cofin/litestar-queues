@@ -633,3 +633,21 @@ async def test_redis_forever_concurrent_reservation_single_winner(redis_backend:
     from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
 
     await assert_concurrent_reservation_has_single_winner(redis_backend)
+
+
+async def test_redis_assign_worker_persists_ownership(redis_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_assign_worker_persists_ownership
+
+    await assert_assign_worker_persists_ownership(redis_backend)
+
+
+async def test_redis_interrupts_owned_running_record(redis_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_interrupts_owned_running_record
+
+    await assert_interrupts_owned_running_record(redis_backend)
+
+
+async def test_redis_worker_shutdown_requeues_running_task(redis_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_worker_shutdown_requeues_running_task
+
+    await assert_worker_shutdown_requeues_running_task(redis_backend)

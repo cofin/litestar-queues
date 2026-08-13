@@ -2109,3 +2109,80 @@ class _NextDueQueryCountingBackend(InMemoryQueueBackend):
     async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
         self.next_due_calls += 1
         return await super().time_until_next_due(queues=queues)
+
+
+async def test_worker_logs_shutdown_requeue_backend_failure(caplog: "pytest.LogCaptureFixture") -> "None":
+    started = asyncio.Event()
+
+    @task("tasks.shutdown_requeue_error")
+    async def blocking() -> "None":
+        started.set()
+        await asyncio.Event().wait()
+
+    async def failing_interrupt(*args: "Any", **kwargs: "Any") -> "QueuedTaskRecord | None":
+        msg = "backend down"
+        raise RuntimeError(msg)
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(blocking)
+        backend = service.get_queue_backend()
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(type(backend), "interrupt_task", failing_interrupt, raising=True)
+            worker = Worker(
+                service,
+                WorkerConfig(
+                    placement="external",
+                    requeue_on_shutdown=True,
+                    graceful_shutdown_timeout=0.05,
+                    final_cancel_timeout=1.0,
+                ),
+            )
+            worker_task = asyncio.create_task(worker.start())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            with caplog.at_level(logging.ERROR):
+                await asyncio.wait_for(worker.stop(), timeout=5)
+            await asyncio.wait_for(worker_task, timeout=5)
+
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert errors, "Expected the failed shutdown requeue to be logged at ERROR"
+    assert any(str(result.id) in str(record.__dict__.get("task_id")) for record in errors)
+
+
+async def test_worker_warns_when_shutdown_requeue_loses_its_fence(caplog: "pytest.LogCaptureFixture") -> "None":
+    started = asyncio.Event()
+
+    @task("tasks.shutdown_requeue_fence")
+    async def blocking() -> "None":
+        started.set()
+        await asyncio.Event().wait()
+
+    async def lost_fence(*args: "Any", **kwargs: "Any") -> "QueuedTaskRecord | None":
+        return None
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        await service.enqueue(blocking)
+        backend = service.get_queue_backend()
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(type(backend), "interrupt_task", lost_fence, raising=True)
+            worker = Worker(
+                service,
+                WorkerConfig(
+                    placement="external",
+                    requeue_on_shutdown=True,
+                    graceful_shutdown_timeout=0.05,
+                    final_cancel_timeout=1.0,
+                ),
+            )
+            worker_task = asyncio.create_task(worker.start())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            with caplog.at_level(logging.WARNING):
+                await asyncio.wait_for(worker.stop(), timeout=5)
+            await asyncio.wait_for(worker_task, timeout=5)
+
+    assert any(
+        record.levelno == logging.WARNING and "fence" in record.getMessage().lower() for record in caplog.records
+    )

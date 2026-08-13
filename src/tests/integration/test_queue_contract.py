@@ -806,3 +806,15 @@ async def test_backend_contract_retires_a_record_whose_task_name_is_unknown(
     assert stored.is_terminal
     assert stored.error is not None
     assert "contract.consumer.never_registered" in stored.error
+
+
+async def test_backend_contract_assign_worker_persists_ownership(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_assign_worker_persists_ownership
+
+    await assert_assign_worker_persists_ownership(queue_backend)
+
+
+async def test_backend_contract_interrupts_owned_running_record(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_interrupts_owned_running_record
+
+    await assert_interrupts_owned_running_record(queue_backend)

@@ -193,12 +193,20 @@ class BaseQueueBackend:
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
-        """Persist the owner of a running retry generation."""
-        record = await self.get_task(task_id)
-        if record is None or record.status != "running" or record.retry_count != expected_retry_count:
-            return None
-        record.worker_id = worker_id
-        return record
+        """Persist the owner of a running retry generation.
+
+        The write is fenced on ``status='running' AND retry_count = expected``
+        so a worker can never claim ownership of a generation it lost.
+
+        Args:
+            task_id: Queue record identifier.
+            worker_id: Identity to persist as the record owner.
+            expected_retry_count: Retry generation the caller believes it owns.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
+        raise NotImplementedError
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
@@ -381,7 +389,22 @@ class BaseQueueBackend:
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
     ) -> "QueuedTaskRecord | None":
-        """Return an owned running attempt to pending after interruption."""
+        """Return an owned running attempt to pending after interruption.
+
+        The write is fenced on ``status='running' AND retry_count = expected
+        AND worker_id = worker_id``. It resets the record to ``pending`` with a
+        fresh ``queued_at`` and clears ``scheduled_at``, ``started_at``,
+        ``heartbeat_at``, ``completed_at``, ``execution_ref``, and ``worker_id``.
+
+        Args:
+            task_id: Queue record identifier.
+            expected_retry_count: Retry generation the caller owns.
+            worker_id: Identity that must currently own the record.
+            queued_at: Requeue timestamp used for fair claim ordering.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
         raise NotImplementedError
 
     async def cancel_tasks(

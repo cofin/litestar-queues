@@ -571,3 +571,21 @@ async def test_valkey_forever_concurrent_reservation_single_winner(valkey_backen
     from tests.integration._uniqueness_contract import assert_concurrent_reservation_has_single_winner
 
     await assert_concurrent_reservation_has_single_winner(valkey_backend)
+
+
+async def test_valkey_assign_worker_persists_ownership(valkey_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_assign_worker_persists_ownership
+
+    await assert_assign_worker_persists_ownership(valkey_backend)
+
+
+async def test_valkey_interrupts_owned_running_record(valkey_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_interrupts_owned_running_record
+
+    await assert_interrupts_owned_running_record(valkey_backend)
+
+
+async def test_valkey_worker_shutdown_requeues_running_task(valkey_backend: "Any") -> "None":
+    from tests.integration._interrupt_contract import assert_worker_shutdown_requeues_running_task
+
+    await assert_worker_shutdown_requeues_running_task(valkey_backend)
