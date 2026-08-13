@@ -534,3 +534,50 @@ async def test_unexpected_partition_failure_is_reported_without_commit(
 
     assert "Kafka partition consumer failed" in caplog.text
     assert consumer.commits == []
+
+
+async def test_injected_consumer_is_not_stopped_by_the_backend() -> "None":
+    consumer = FakeConsumer([])
+    backend = KafkaExecutionBackend(
+        execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
+    )
+
+    consumer_task = asyncio.create_task(
+        backend.run_consumer(object(), max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0)
+    consumer_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer_task
+    await backend.close()
+
+    assert consumer.started is True
+    assert consumer.stopped is False
+
+
+async def test_backend_owned_consumer_is_stopped_once(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    consumer = FakeConsumer([])
+    stops = 0
+
+    async def stop() -> "None":
+        nonlocal stops
+        stops += 1
+        consumer.stopped = True
+
+    monkeypatch.setattr(consumer, "stop", stop)
+    monkeypatch.setattr(
+        "litestar_queues.execution.kafka.backend._aiokafka",
+        lambda: SimpleNamespace(AIOKafkaConsumer=lambda **_options: consumer, ConsumerRebalanceListener=object),
+    )
+
+    backend = KafkaExecutionBackend(execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"))
+    consumer_task = asyncio.create_task(
+        backend.run_consumer(object(), max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0)
+    consumer_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer_task
+    await backend.close()
+
+    assert stops == 1

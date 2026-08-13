@@ -172,6 +172,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
                     **self.execution_config.consumer_options,
                 ),
             )
+            self._owns_consumer = True
         return self._consumer
 
     async def run_consumer(self, service: "QueueService", *, max_concurrency: "int", drain_timeout: "float") -> "None":
@@ -186,10 +187,10 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
         try:
             await consumer.start()
         except BaseException:
-            with suppress(Exception):
-                await consumer.stop()
+            if self._owns_consumer:
+                with suppress(Exception):
+                    await consumer.stop()
             raise
-        self._owns_consumer = True
         try:
             while True:
                 batches = await consumer.getmany(timeout_ms=1_000, max_records=max_concurrency)
@@ -213,6 +214,8 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
         finally:
             if self._owns_consumer:
                 await consumer.stop()
+                self._consumer = None
+                self._owns_consumer = False
 
     def _start_partition(
         self, service: "QueueService", consumer: "KafkaConsumer", partition: "Any", messages: "list[Any]"
