@@ -502,8 +502,7 @@ class Worker:
                             )
                         except Exception:
                             self._record_counter(
-                                "litestar_queues.worker.interrupt.error",
-                                {"messaging.destination.name": record.queue},
+                                "litestar_queues.worker.interrupt.error", {"messaging.destination.name": record.queue}
                             )
                             self._logger.exception(
                                 "Queue task shutdown requeue failed; record remains running",
