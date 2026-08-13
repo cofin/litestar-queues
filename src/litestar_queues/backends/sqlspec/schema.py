@@ -20,6 +20,7 @@ __all__ = (
     "DEFAULT_TABLE_NAME",
     "DEFAULT_TASK_RESERVATION_TABLE_SUFFIX",
     "EVENT_HISTORY_COLUMNS",
+    "RESERVED_EVENT_HISTORY_COLUMNS",
     "EventHistoryExtraColumn",
     "event_history_table_name_for",
     "maintenance_table_name_for",
@@ -94,6 +95,13 @@ EVENT_HISTORY_COLUMNS = (
 )
 """Physical columns the package owns on the SQLSpec event-history table."""
 
+RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"actor", "entity", "scope", "scope_key"})
+"""Names held for built-in event-history scoping dimensions.
+
+These are not columns on the table yet. They are reserved so an adopter-declared
+extra column cannot claim a name the package intends to own.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class EventHistoryExtraColumn:
@@ -119,8 +127,9 @@ def validate_event_history_extra_columns(
 
     Raises:
         QueueConfigurationError: If a name is not a valid unquoted SQL
-            identifier, collides with a package-owned column, repeats another
-            declaration, or the payload source key is empty.
+            identifier, collides with a package-owned column, uses a reserved
+            scoping-dimension name, repeats another declaration, or the payload
+            source key is empty.
     """
     seen: "set[str]" = set()
     validated: "list[EventHistoryExtraColumn]" = []
@@ -130,6 +139,13 @@ def validate_event_history_extra_columns(
             raise QueueConfigurationError(msg)
         if column.name in EVENT_HISTORY_COLUMNS:
             msg = f"event_history_extra_columns may not redeclare package-owned column {column.name!r}"
+            raise QueueConfigurationError(msg)
+        # Unquoted SQL identifiers fold case, so the reservation must too.
+        if column.name.lower() in RESERVED_EVENT_HISTORY_COLUMNS:
+            msg = (
+                f"event_history_extra_columns may not use {column.name!r}: "
+                f"{sorted(RESERVED_EVENT_HISTORY_COLUMNS)!r} are reserved for built-in scoping dimensions"
+            )
             raise QueueConfigurationError(msg)
         if column.name in seen:
             msg = f"Duplicate column in event_history_extra_columns: {column.name!r}"

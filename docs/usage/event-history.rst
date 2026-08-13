@@ -157,6 +157,11 @@ Query it with the additive ``extra`` filter on the SQLSpec event log:
 undeclared key raises ``ValueError`` naming the declared columns, so the filter
 never reaches SQL unvalidated.
 
+A declared name must be a valid unquoted SQL identifier and must not collide
+with a column the package already owns. The names ``scope``, ``scope_key``,
+``actor``, and ``entity`` are also rejected: they are reserved for built-in
+scoping dimensions. The check ignores case, because unquoted SQL identifiers do.
+
 Three things to know:
 
 * Values are stored as text and read from the event payload. They stay in
