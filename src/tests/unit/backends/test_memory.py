@@ -300,7 +300,7 @@ async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -
 
 
 async def test_memory_backend_demotes_stale_requeue_priority_and_preserves_prior_error() -> "None":
-    backend = InMemoryQueueBackend()
+    backend = InMemoryQueueBackend(config=QueueConfig(stale_requeue_priority=4))
     record = await backend.enqueue(
         "tasks.stale_demote", priority=10, max_retries=2, metadata={"requeue_on_stale": True}
     )

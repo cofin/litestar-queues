@@ -34,9 +34,11 @@ Unreleased
   hanging. Tasks still alive after ``final_cancel_timeout`` are logged and have
   their heartbeats cleared so stale recovery can reclaim them at once.
 * ``QueueConfig.stale_requeue_priority`` chooses the priority recovered work
-  re-enters with: ``"preserve"``, an integer ceiling clamp (the default ``4``,
-  unchanged behavior), or a callable mapping the old priority to the new one.
-  See :doc:`usage/worker-recovery`.
+  re-enters with: ``"preserve"`` (the default), an integer ceiling clamp, or a
+  callable mapping the old priority to the new one. **Breaking:** stale-recovered
+  work now keeps its original priority instead of being clamped to ``4``. Pass
+  ``stale_requeue_priority=4`` to restore the clamp. See
+  :doc:`usage/worker-recovery`.
 * ``WorkerConfig.queue_concurrency`` sets per-worker caps for named queues.
   These are local limits, not fleet-wide semaphores.
 * ``WorkerConfig.cancellation_poll_interval``: workers reconcile durable

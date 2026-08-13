@@ -42,8 +42,8 @@ __all__ = (
 
 logger = getLogger(__name__)
 
-STALE_REQUEUE_PRIORITY = 4
-"""Historical priority ceiling applied to stale-recovered work."""
+STALE_REQUEUE_PRIORITY: "StaleRequeuePriority" = "preserve"
+"""Default stale-requeue policy: recovered work keeps the priority it was enqueued with."""
 
 _SERVICE_STATE_KEY = "queue_service"
 _WORKER_STATE_KEY = "queue_worker"

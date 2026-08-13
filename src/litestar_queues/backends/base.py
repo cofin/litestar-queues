@@ -131,7 +131,7 @@ class BaseQueueBackend:
         """Return the configured stale-recovery priority policy.
 
         Returns:
-            The owning config's policy, or the historical clamp when a backend
+            The owning config's policy, or the package default when a backend
             was built without a config.
         """
         return self.config.stale_requeue_priority if self.config is not None else STALE_REQUEUE_PRIORITY

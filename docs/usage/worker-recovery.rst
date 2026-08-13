@@ -35,17 +35,17 @@ re-enters the queue with:
 
 .. code-block:: python
 
-   QueueConfig(stale_requeue_priority="preserve")   # keep the original priority
-   QueueConfig(stale_requeue_priority=4)            # ceiling clamp (the default)
+   QueueConfig(stale_requeue_priority="preserve")   # keep the original priority (the default)
+   QueueConfig(stale_requeue_priority=4)            # ceiling clamp
    QueueConfig(stale_requeue_priority=lambda p: p - 1)  # map old priority to new
 
-The default clamps to ``4``, which is the historical behavior. That demotion
-protects a queue from a record that crashes its worker repeatedly, but it also
-inverts priority: work enqueued at priority ``9`` re-enters at ``4`` and can be
-starved indefinitely by ordinary priority-``5`` inflow. Prefer ``"preserve"``
-together with bounded shutdown interruptions and a real ``max_retries`` budget
-when the priority actually matters. A callable that returns anything other than
-an integer fails the sweep loudly rather than silently clamping.
+Recovered work keeps its priority by default. A ceiling clamp protects a queue
+from a record that crashes its worker repeatedly, but it also inverts priority:
+work enqueued at priority ``9`` re-enters at the ceiling and can then be starved
+indefinitely by ordinary priority-``5`` inflow. Reach for a clamp only when that
+trade is one you want, and pair it with bounded shutdown interruptions and a real
+``max_retries`` budget. A callable that returns anything other than an integer
+fails the sweep loudly rather than silently clamping.
 
 Heartbeat timestamps are automatic for every running task. Calling
 ``beat(detail)`` is optional: it replaces the latest short diagnostic detail

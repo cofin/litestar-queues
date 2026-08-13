@@ -124,7 +124,7 @@ def test_worker_config_hard_exit_timeout_defaults_and_validates() -> "None":
 
 
 def test_queue_config_validates_the_stale_requeue_priority_policy() -> "None":
-    assert QueueConfig().stale_requeue_priority == 4
+    assert QueueConfig().stale_requeue_priority == "preserve"
     assert QueueConfig(stale_requeue_priority="preserve").stale_requeue_priority == "preserve"
     with pytest.raises(QueueConfigurationError, match=r"QueueConfig\.stale_requeue_priority"):
         QueueConfig(stale_requeue_priority=-1)
