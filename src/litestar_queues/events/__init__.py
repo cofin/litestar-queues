@@ -5,8 +5,11 @@ from typing import TYPE_CHECKING, Any
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.config import EventDeliveryConfig, QueueEventsConfig
 from litestar_queues.events.context import (
+    TaskBeatSink,
     TaskExecutionContext,
     beat,
+    bind_beat_sink,
+    bind_task_context,
     get_current_task_context,
     publish_task_event,
     publish_task_log,
@@ -70,9 +73,12 @@ __all__ = (
     "QueueEventStageSummary",
     "QueueEventType",
     "QueueEventsConfig",
+    "TaskBeatSink",
     "TaskExecutionContext",
     "UnauthenticatedAccess",
     "beat",
+    "bind_beat_sink",
+    "bind_task_context",
     "create_event_producer",
     "get_current_task_context",
     "publish_task_event",

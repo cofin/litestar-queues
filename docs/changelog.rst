@@ -11,6 +11,16 @@ Unreleased
 
 **Added:**
 
+* Event history stores the event actor and can filter on it.
+  ``QueueEventLogRecord`` carries ``actor_type`` and ``actor_id``, and
+  ``QueueEventLog.list_events()`` accepts ``actor_id=`` and ``actor_type=``,
+  ANDed with the task filters. The actor's display ``name`` is deliberately not
+  stored, because it is mutable text that would go stale against the event it
+  was stamped on, so it stays on the live event envelope. **Breaking:** the
+  event-history table gains ``actor_type`` and ``actor_id`` columns plus an
+  ``(actor_id, occurred_at)`` index, so the schema must be recreated; adopters
+  declaring their own event-history columns can no longer use those two names,
+  while ``actor`` is no longer reserved. See :doc:`usage/event-history`.
 * Google Cloud Pub/Sub is available as an optional execution backend through
   ``litestar-queues[pubsub]``. Dispatch publishes only the task UUID and an
   attempt fence; ``litestar queues run-consumer --backend pubsub`` processes

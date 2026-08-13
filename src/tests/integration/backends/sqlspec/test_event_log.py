@@ -22,7 +22,13 @@ from litestar_queues import (
 )
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.events import QueueEventsConfig, publish_task_log, publish_task_progress
+from litestar_queues.events import (
+    QueueEvent,
+    QueueEventActor,
+    QueueEventsConfig,
+    publish_task_log,
+    publish_task_progress,
+)
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema
 
@@ -113,6 +119,55 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
     assert third_deleted == 1
     assert after_third == []
     assert (final_deleted, after_final) == (0, [])
+
+
+async def test_sqlspec_event_log_persists_and_filters_the_actor(
+    tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
+) -> "None":
+    """The actor type and id are stored columns, so history can be filtered by who acted."""
+    db_path = tmp_path / "event-actor.db"
+    event_log_config = EventHistoryConfig(batch_size=100, flush_interval=60)
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlite_config_factory(db_path))
+    await bootstrap_queue_schema(backend_config, event_history_enabled=True)
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend=backend_config,
+        events=QueueEventsConfig(history=event_log_config),
+    )
+
+    async with QueueService(config) as service:
+        event_log = service.get_queue_backend().get_event_log(event_log_config)
+        assert event_log is not None
+        for index, actor in enumerate((
+            QueueEventActor(type="user", id="u-1", name="Alice"),
+            QueueEventActor(type="service", id="svc-1"),
+            None,
+        )):
+            await event_log.publish_event(
+                QueueEvent(
+                    type="task.log",
+                    scope="task",
+                    task_id=f"task-{index}",
+                    task_name="tasks.actor",
+                    sequence=index,
+                    actor=actor,
+                    payload={"index": index},
+                )
+            )
+
+        recorded = await event_log.list_events(task_name="tasks.actor")
+        by_actor_id = await event_log.list_events(actor_id="u-1")
+        by_actor_type = await event_log.list_events(actor_type="service")
+        by_both = await event_log.list_events(actor_id="u-1", actor_type="service")
+
+    assert [(record.actor_type, record.actor_id) for record in recorded] == [
+        ("user", "u-1"),
+        ("service", "svc-1"),
+        (None, None),
+    ]
+    assert [record.detail["index"] for record in by_actor_id] == [0]
+    assert [record.detail["index"] for record in by_actor_type] == [1]
+    assert by_both == []
 
 
 async def test_sqlspec_event_history_table_follows_event_history_enabled_lifecycle(

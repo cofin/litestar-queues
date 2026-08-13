@@ -8,7 +8,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import WorkerConfig, execution_backend_name, queue_backend_name
-from litestar_queues.events.context import _bind_beat_sink, _cancel_task_context, _reset_beat_sink
+from litestar_queues.events import bind_beat_sink
+from litestar_queues.events.context import _cancel_task_context
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
@@ -482,37 +483,39 @@ class Worker:
     async def _execute_claimed(self, record: "QueuedTaskRecord") -> "None":
         await self._heartbeat_manager.start()
         self._heartbeat_manager.register(record.id, expected_retry_count=record.retry_count)
-        beat_token = _bind_beat_sink(self._heartbeat_manager)
         try:
-            await self._service.get_execution_backend().execute(self._service, record, worker_id=self._worker_id)
-        except asyncio.CancelledError:
-            task_setting = record.metadata.get("requeue_on_shutdown")
-            should_requeue = self._requeue_on_shutdown if task_setting is None else task_setting is True
-            if self._stop_event.is_set() and should_requeue:
-                # A backend failure here must never replace the cancellation:
-                # the exception would be swallowed whole by the drain/cancel
-                # wait and the record would silently stay `running`.
+            with bind_beat_sink(self._heartbeat_manager):
                 try:
-                    updated = await self._service.interrupt_task(
-                        record, worker_id=self._worker_id, max_interruptions=self._max_interruptions
+                    await self._service.get_execution_backend().execute(
+                        self._service, record, worker_id=self._worker_id
                     )
-                except Exception:
-                    self._record_counter(
-                        "litestar_queues.worker.interrupt.error", {"messaging.destination.name": record.queue}
-                    )
-                    self._logger.exception(
-                        "Queue task shutdown requeue failed; record remains running",
-                        extra={"worker_id": self._worker_id, "task_id": str(record.id)},
-                    )
-                else:
-                    if updated is None:
-                        self._logger.warning(
-                            "Queue task shutdown requeue lost its fence",
-                            extra={"worker_id": self._worker_id, "task_id": str(record.id)},
-                        )
-            raise
+                except asyncio.CancelledError:
+                    task_setting = record.metadata.get("requeue_on_shutdown")
+                    should_requeue = self._requeue_on_shutdown if task_setting is None else task_setting is True
+                    if self._stop_event.is_set() and should_requeue:
+                        # A backend failure here must never replace the cancellation:
+                        # the exception would be swallowed whole by the drain/cancel
+                        # wait and the record would silently stay `running`.
+                        try:
+                            updated = await self._service.interrupt_task(
+                                record, worker_id=self._worker_id, max_interruptions=self._max_interruptions
+                            )
+                        except Exception:
+                            self._record_counter(
+                                "litestar_queues.worker.interrupt.error", {"messaging.destination.name": record.queue}
+                            )
+                            self._logger.exception(
+                                "Queue task shutdown requeue failed; record remains running",
+                                extra={"worker_id": self._worker_id, "task_id": str(record.id)},
+                            )
+                        else:
+                            if updated is None:
+                                self._logger.warning(
+                                    "Queue task shutdown requeue lost its fence",
+                                    extra={"worker_id": self._worker_id, "task_id": str(record.id)},
+                                )
+                    raise
         finally:
-            _reset_beat_sink(beat_token)
             try:
                 try:
                     self._heartbeat_manager.unregister(record.id)

@@ -39,7 +39,13 @@ class InMemoryQueueEventLog:
         """
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
+        limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return matching event history records in ascending event order."""
         async with self._lock:
@@ -48,6 +54,8 @@ class InMemoryQueueEventLog:
                 for record in self._records
                 if (task_id is None or record.task_id == task_id)
                 and (task_name is None or record.task_name == task_name)
+                and (actor_id is None or record.actor_id == actor_id)
+                and (actor_type is None or record.actor_type == actor_type)
             ]
         records.sort(key=event_log_record_sort_key)
         return records[:limit] if limit is not None else records

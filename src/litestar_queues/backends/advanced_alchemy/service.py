@@ -76,7 +76,13 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         self.repository.session.add_all([self.model_from_record(record) for record in records])
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
+        limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return matching event-history records in ascending event order."""
         model_type = self.model_type
@@ -85,6 +91,10 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             criteria.append(model_type.task_id == task_id)
         if task_name is not None:
             criteria.append(model_type.task_name == task_name)
+        if actor_id is not None:
+            criteria.append(model_type.actor_id == actor_id)
+        if actor_type is not None:
+            criteria.append(model_type.actor_type == actor_type)
         statement = select(model_type)
         if criteria:
             statement = statement.where(*criteria)
@@ -136,6 +146,8 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             worker_id=record.worker_id,
             execution_backend=record.execution_backend,
             execution_profile=record.execution_profile,
+            actor_type=record.actor_type,
+            actor_id=record.actor_id,
             level=record.level,
             message=record.message,
             detail_json=_serialize_json(record.detail),
@@ -166,6 +178,8 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             worker_id=cast("str | None", model.worker_id),
             execution_backend=cast("str | None", model.execution_backend),
             execution_profile=cast("str | None", model.execution_profile),
+            actor_type=cast("str | None", model.actor_type),
+            actor_id=cast("str | None", model.actor_id),
             stage=optional_str(detail.get("stage")),
             level=cast("str | None", model.level),
             message=cast("str | None", model.message),

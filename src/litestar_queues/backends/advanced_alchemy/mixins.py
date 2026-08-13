@@ -147,6 +147,7 @@ class QueueEventHistoryModelMixin:
             Index(f"ix_{table}_task_id", "task_id", "sequence", "occurred_at"),
             Index(f"ix_{table}_task_name", "task_name", "occurred_at"),
             Index(f"ix_{table}_event_type", "event_type", "occurred_at"),
+            Index(f"ix_{table}_actor_id", "actor_id", "occurred_at"),
             Index(f"ix_{table}_occurred_at", "occurred_at"),
         )
 
@@ -180,6 +181,14 @@ class QueueEventHistoryModelMixin:
 
     @declared_attr
     def execution_profile(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def actor_type(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def actor_id(cls) -> "Mapped[str | None]":
         return mapped_column(String(length=255), default=None)
 
     @declared_attr

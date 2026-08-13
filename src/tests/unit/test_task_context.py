@@ -9,15 +9,17 @@ from litestar_queues.events import (
     InMemoryQueueEventSink,
     QueueEventPublisher,
     QueueEventsConfig,
+    TaskBeatSink,
     TaskExecutionContext,
     beat,
+    bind_beat_sink,
+    bind_task_context,
     get_current_task_context,
     publish_task_event,
     publish_task_log,
     publish_task_progress,
     require_current_task_context,
 )
-from litestar_queues.events.context import _bind_beat_sink, _bind_task_context, _reset_beat_sink, _reset_task_context
 
 pytestmark = pytest.mark.anyio
 
@@ -34,15 +36,12 @@ async def test_task_context_cooperative_cancellation_helpers() -> "None":
     assert context.is_cancelled is False
     from litestar_queues.events.context import _cancel_task_context
 
-    token = _bind_task_context(context)
-    try:
+    with bind_task_context(context):
         _cancel_task_context(context.task_id)
         await context.wait_cancelled()
         with pytest.raises(JobCancelledError):
             context.raise_if_cancelled()
         assert context.is_cancelled is True
-    finally:
-        _reset_task_context(token)
 
 
 async def test_task_context_is_bound_and_helpers_publish_task_events() -> "None":
@@ -136,11 +135,8 @@ async def test_module_helper_immediate_flushes_prior() -> "None":
 
     await context.log("buffered")
 
-    token = _bind_task_context(context)
-    try:
+    with bind_task_context(context):
         await publish_task_progress(current=1, total=2, immediate=True)
-    finally:
-        _reset_task_context(token)
 
     assert [event.type for event in sink.events] == ["task.log", "task.progress"]
 
@@ -153,11 +149,8 @@ def test_ctx_beat_forwards_to_bound_sink() -> "None":
     sink = _RecordingBeatSink()
     context = _build_context()
 
-    token = _bind_beat_sink(sink)
-    try:
+    with bind_beat_sink(sink):
         context.beat("row 30000")
-    finally:
-        _reset_beat_sink(token)
 
     assert sink.records == [("task-1", "row 30000")]
 
@@ -166,13 +159,8 @@ def test_module_beat_forwards_current_context_to_bound_sink() -> "None":
     sink = _RecordingBeatSink()
     context = _build_context()
 
-    context_token = _bind_task_context(context)
-    sink_token = _bind_beat_sink(sink)
-    try:
+    with bind_task_context(context), bind_beat_sink(sink):
         beat("row 30000")
-    finally:
-        _reset_beat_sink(sink_token)
-        _reset_task_context(context_token)
 
     assert sink.records == [("task-1", "row 30000")]
 
@@ -181,13 +169,46 @@ def test_beat_performs_no_await_and_no_backend_call() -> "None":
     sink = _RecordingBeatSink()
     context = _build_context(event_publisher=_FailingPublisher())
 
-    token = _bind_beat_sink(sink)
-    try:
+    with bind_beat_sink(sink):
         context.beat("sync progress")
-    finally:
-        _reset_beat_sink(token)
 
     assert sink.records == [("task-1", "sync progress")]
+
+
+def test_bind_task_context_public_contextmanager() -> "None":
+    context = _build_context()
+    with bind_task_context(context) as bound:
+        assert bound is context
+        assert get_current_task_context() is context
+    assert get_current_task_context() is None
+
+
+def test_bind_beat_sink_public_contextmanager() -> "None":
+    sink = _RecordingBeatSink()
+    context = _build_context()
+    with bind_task_context(context), bind_beat_sink(sink):
+        context.beat("halfway")
+    assert sink.records == [(context.task_id, "halfway")]
+
+
+def test_public_beat_sink_protocol_is_importable_at_runtime() -> "None":
+    sink: "TaskBeatSink" = _RecordingBeatSink()
+    sink.record_beat("task-1", "detail")
+    assert TaskBeatSink.__name__ == "TaskBeatSink"
+
+
+async def test_bind_task_context_supports_cancellation_fanin() -> "None":
+    from litestar_queues.events.context import _cancel_task_context
+
+    context = _build_context()
+    with bind_task_context(context):
+        _cancel_task_context(context.task_id)
+        assert context.is_cancelled is True
+
+    # Once unbound the context leaves the registry, so cancellation is a no-op.
+    unbound = _build_context()
+    _cancel_task_context(unbound.task_id)
+    assert unbound.is_cancelled is False
 
 
 def _build_context(*, event_publisher: "object | None" = None) -> "TaskExecutionContext":

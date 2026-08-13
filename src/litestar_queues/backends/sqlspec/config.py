@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from litestar_queues.backends.sqlspec.schema import (
+    EventHistoryExtraColumn,
     resolve_column_map,
+    validate_event_history_extra_columns,
     validate_native_json_columns,
     validate_table_name,
 )
@@ -99,6 +101,9 @@ class SQLSpecBackendConfig:
     event_history_table_name: "str | None" = None
     """Task-event history table name; ``None`` derives it from the queue-task table."""
 
+    event_history_extra_columns: "tuple[EventHistoryExtraColumn, ...]" = ()
+    """Adopter-declared extra scoping columns on the event-history table."""
+
     maintenance_table_name: "str | None" = None
     """Maintenance coordination table name; ``None`` derives the package default."""
 
@@ -124,6 +129,7 @@ class SQLSpecBackendConfig:
             self.maintenance_table_name = validate_table_name(self.maintenance_table_name)
         if self.task_reservation_table_name is not None:
             self.task_reservation_table_name = validate_table_name(self.task_reservation_table_name)
+        self.event_history_extra_columns = validate_event_history_extra_columns(self.event_history_extra_columns)
         self.column_map = resolve_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
 
@@ -169,6 +175,7 @@ class SQLSpecBackendConfig:
             queue_table_name=str(queue_table_name),
             event_history_enabled=event_log_config is not None,
             event_history_table_name=self.event_history_table_name,
+            event_history_extra_columns=self.event_history_extra_columns,
             maintenance_table_name=self.maintenance_table_name,
             task_reservation_table_name=self.task_reservation_table_name,
         )

@@ -103,9 +103,32 @@ optional, last-value-wins detail update for the next heartbeat write; it is not
 a liveness requirement and does not publish a task event by itself.
 
 The active task context adds the task ID, task name, queue, worker ID, attempt,
-execution backend, and sequence. Use ``publish_task_event()`` for a custom
-event type. Accept ``_task_context`` when you prefer to call the context
-methods directly.
+execution backend, and sequence.
+
+A running task never has to bind that context. The service binds it before it
+calls the task body, so the module-level helpers resolve it on their own:
+
+.. code-block:: python
+
+   from litestar_queues import task
+   from litestar_queues.events import publish_task_progress
+
+
+   @task("catalog.import")
+   async def import_catalog() -> None:
+       await publish_task_progress(current=13, total=400)
+
+Each helper is a pass-through to the context method of the same name, so
+``publish_task_progress(...)`` and ``ctx.progress(...)`` do the same work.
+Prefer the context method in a task body, where the context is already in hand.
+Reach for a helper in a function further down the call stack, so it can report
+progress without threading ``ctx`` through every signature in between. A helper
+raises :exc:`RuntimeError` when no context is bound.
+
+Context injection is keyed on the parameter **name** ``_task_context``, not on
+its type annotation: a parameter annotated ``TaskExecutionContext`` under any
+other name receives nothing. A task declaring ``**kwargs`` also receives the
+context under that key.
 
 Keep payloads small and JSON-serializable. Put large files, crawled documents,
 and model artifacts in external storage and send a stable reference in the
@@ -146,6 +169,17 @@ Code outside a worker should use this context manager:
 The context manager opens the resource, starts it, flushes pending events, and
 closes it. ``QueueEventProducer`` does not manage resources by itself.
 
+Using events without the queue
+==============================
+
+The ``litestar_queues.events`` subpackage also runs on its own, for a runtime
+that has its own task runner and never starts this package's worker. That is a
+separate integration path with its own setup — see
+:doc:`events-standalone`. Nothing on this page requires it.
+
+For durable, queryable history — including extra scoping dimensions such as a
+tenant or project id — see :doc:`event-history`.
+
 Topology and security
 =====================
 
@@ -172,6 +206,7 @@ Next steps
 ==========
 
 * :doc:`event-streams` exposes SSE and WebSocket endpoints.
-* :doc:`event-history` retains backend-managed history.
+* :doc:`event-history` retains backend-managed history and adds extra scoping
+  dimensions such as a tenant id.
 * :doc:`event-testing` tests delivery without external infrastructure.
 * :doc:`../examples/index` runs the canonical visual examples.

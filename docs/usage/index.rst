@@ -158,6 +158,7 @@ Choose production options
    event-streams
    event-history
    event-testing
+   events-standalone
    observability
    dependency-resolver
    deployment/cloud-run

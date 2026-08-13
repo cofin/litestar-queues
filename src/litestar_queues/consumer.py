@@ -19,7 +19,7 @@ from uuid import UUID
 
 from litestar_queues._environment import CONFIG_FACTORY_ENV, TASK_ID_ENV
 from litestar_queues.config import QueueConfig
-from litestar_queues.events.context import _bind_beat_sink, _reset_beat_sink
+from litestar_queues.events import bind_beat_sink
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch
 from litestar_queues.service import QueueService
@@ -192,36 +192,35 @@ async def _resolve_and_consume(
 async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "TaskExitCode":
     expected_retry_count = claimed.retry_count
     beat_sink = SingleTaskBeatSink(claimed.id)
-    beat_token = _bind_beat_sink(beat_sink)
-    heartbeat_task = asyncio.create_task(
-        _heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count, beat_sink=beat_sink)
-    )
-    execution_task = asyncio.create_task(queue.execute_record(claimed))
-    try:
-        done, _pending = await asyncio.wait({heartbeat_task, execution_task}, return_when=asyncio.FIRST_COMPLETED)
-        if heartbeat_task in done and not heartbeat_task.result():
+    with bind_beat_sink(beat_sink):
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(queue, claimed.id, expected_retry_count=expected_retry_count, beat_sink=beat_sink)
+        )
+        execution_task = asyncio.create_task(queue.execute_record(claimed))
+        try:
+            done, _pending = await asyncio.wait({heartbeat_task, execution_task}, return_when=asyncio.FIRST_COMPLETED)
+            if heartbeat_task in done and not heartbeat_task.result():
+                execution_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await execution_task
+                await queue.publish_claim_lost(claimed, phase="heartbeat", expected_retry_count=expected_retry_count)
+                return TaskExitCode.CLAIM_LOST
+            updated = await execution_task
+        except asyncio.CancelledError:
+            # The caller going away is not the queue deciding anything. The record
+            # is still running and still owned, so stop the body, let the ``finally``
+            # clear the heartbeat that stale recovery reads, and let the
+            # cancellation reach the caller rather than reporting an outcome it
+            # could mistake for a settled one.
             execution_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await execution_task
-            await queue.publish_claim_lost(claimed, phase="heartbeat", expected_retry_count=expected_retry_count)
-            return TaskExitCode.CLAIM_LOST
-        updated = await execution_task
-    except asyncio.CancelledError:
-        # The caller going away is not the queue deciding anything. The record
-        # is still running and still owned, so stop the body, let the ``finally``
-        # clear the heartbeat that stale recovery reads, and let the
-        # cancellation reach the caller rather than reporting an outcome it
-        # could mistake for a settled one.
-        execution_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await execution_task
-        raise
-    finally:
-        heartbeat_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat_task
-        _reset_beat_sink(beat_token)
-        await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
+            raise
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+            await queue.get_queue_backend().null_heartbeats([claimed.id], expected_retry_count=expected_retry_count)
 
     if updated.status == "completed":
         return TaskExitCode.SUCCESS

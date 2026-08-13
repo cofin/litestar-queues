@@ -4,6 +4,7 @@ import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable, iscoroutinefunction
@@ -21,7 +22,7 @@ from litestar_queues._correlation import (
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.backends.base import interruption_count
 from litestar_queues.config import execution_backend_name, queue_backend_name
-from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
+from litestar_queues.events.context import TaskExecutionContext, bind_task_context
 from litestar_queues.events.models import QueueEvent
 from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
@@ -652,8 +653,9 @@ class QueueService:
         await task_context.lifecycle("task.cancelled", message=message, payload=payload)
         self._log_task_event("Queue task cancelled", record, level=logging.INFO, payload=payload)
         if include_running:
-            # Not gated on a persisted owner: backends that do not track one
-            # would otherwise never emit the hint their workers listen for.
+            # Not gated on a persisted owner: an unclaimed record has no owner
+            # to name, and every subscribed worker reconciles the shared
+            # control channel against durable status regardless.
             await backend.notify_worker_control(record.worker_id)
         return True
 
@@ -1466,19 +1468,21 @@ def _capture_enqueue_context(runtime: "QueueObservabilityRuntimeProtocol", metad
 
 def _bind_execution_context(
     task_context: "TaskExecutionContext", metadata: "Mapping[str, Any]"
-) -> "tuple[Any, tuple[Any, bool]]":
+) -> "tuple[ExitStack, tuple[Any, bool]]":
     """Bind the ambient context a task body runs under.
 
     Returns:
         Scope state for :func:`_reset_execution_context`.
     """
-    return _bind_task_context(task_context), bind_correlation_id(metadata)
+    stack = ExitStack()
+    stack.enter_context(bind_task_context(task_context))
+    return stack, bind_correlation_id(metadata)
 
 
-def _reset_execution_context(scope: "tuple[Any, tuple[Any, bool]]") -> "None":
+def _reset_execution_context(scope: "tuple[ExitStack, tuple[Any, bool]]") -> "None":
     """Restore the context that was active before the task body ran."""
-    context_token, correlation_state = scope
-    _reset_task_context(context_token)
+    stack, correlation_state = scope
+    stack.close()
     reset_correlation_id(correlation_state)
 
 

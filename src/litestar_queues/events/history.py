@@ -54,6 +54,8 @@ class QueueEventLogRecord:
     worker_id: "str | None"
     execution_backend: "str | None"
     execution_profile: "str | None"
+    actor_type: "str | None"
+    actor_id: "str | None"
     stage: "str | None"
     level: "str | None"
     message: "str | None"
@@ -90,9 +92,18 @@ class QueueEventLog(Protocol):
         ...
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
+        limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records."""
+        """Return durable event history records.
+
+        Every filter uses equality and is ANDed with the others.
+        """
         ...
 
     async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":

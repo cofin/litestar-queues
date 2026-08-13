@@ -65,7 +65,13 @@ class EphemeralQueueEventLog:
         """
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
+        limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return matching event records in ascending event order.
 
@@ -86,6 +92,12 @@ class EphemeralQueueEventLog:
             return [event_from_payload(row["payload"]) for row in rows]
 
         records: "list[QueueEventLogRecord]" = await self._backend._run(operation)  # noqa: SLF001
+        # The actor lives in the encoded payload rather than its own indexed
+        # column, so it is matched after decoding. The table is capacity-bounded.
+        if actor_id is not None:
+            records = [record for record in records if record.actor_id == actor_id]
+        if actor_type is not None:
+            records = [record for record in records if record.actor_type == actor_type]
         records.sort(key=event_log_record_sort_key)
         return records[:limit] if limit is not None else records
 
