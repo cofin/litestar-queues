@@ -103,9 +103,32 @@ optional, last-value-wins detail update for the next heartbeat write; it is not
 a liveness requirement and does not publish a task event by itself.
 
 The active task context adds the task ID, task name, queue, worker ID, attempt,
-execution backend, and sequence. Use ``publish_task_event()`` for a custom
-event type. Accept ``_task_context`` when you prefer to call the context
-methods directly.
+execution backend, and sequence.
+
+A running task never has to bind that context. The service binds it before it
+calls the task body, so the module-level helpers resolve it on their own:
+
+.. code-block:: python
+
+   from litestar_queues import task
+   from litestar_queues.events import publish_task_progress
+
+
+   @task("catalog.import")
+   async def import_catalog() -> None:
+       await publish_task_progress(current=13, total=400)
+
+Each helper is a pass-through to the context method of the same name, so
+``publish_task_progress(...)`` and ``ctx.progress(...)`` do the same work.
+Prefer the context method in a task body, where the context is already in hand.
+Reach for a helper in a function further down the call stack, so it can report
+progress without threading ``ctx`` through every signature in between. A helper
+raises :exc:`RuntimeError` when no context is bound.
+
+Context injection is keyed on the parameter **name** ``_task_context``, not on
+its type annotation: a parameter annotated ``TaskExecutionContext`` under any
+other name receives nothing. A task declaring ``**kwargs`` also receives the
+context under that key.
 
 Keep payloads small and JSON-serializable. Put large files, crawled documents,
 and model artifacts in external storage and send a stable reference in the
@@ -154,6 +177,13 @@ Standalone adoption
 runtime that already has its own task runner can bind a task context and use
 the same event surface the package's own worker uses.
 
+.. note::
+
+   This section is only for runtimes that never run this package's worker.
+   Inside a task, the service has already bound a context, and publishing is
+   the one-line call shown in `Publish from a task`_. Constructing a
+   ``TaskExecutionContext`` by hand there would replace the real one.
+
 ``bind_task_context()`` binds a :class:`~litestar_queues.events.TaskExecutionContext`
 for the duration of a ``with`` block. While it is bound,
 ``get_current_task_context()`` and the module-level publish helpers resolve to
@@ -169,7 +199,6 @@ inside both sync and async task bodies:
        QueueEventPublisher,
        TaskExecutionContext,
        bind_task_context,
-       publish_task_progress,
    )
 
 
@@ -189,7 +218,6 @@ inside both sync and async task bodies:
 
        with bind_task_context(context) as ctx:
            await ctx.progress(current=12, total=400, message="loading")
-           await publish_task_progress(current=13, total=400)
 
        print([event.type for event in sink.events])
 
