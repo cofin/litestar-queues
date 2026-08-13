@@ -160,7 +160,11 @@ never reaches SQL unvalidated.
 A declared name must be a valid unquoted SQL identifier and must not collide
 with a column the package already owns. The names ``scope``, ``scope_key``,
 ``actor``, and ``entity`` are also rejected: they are reserved for built-in
-scoping dimensions. The check ignores case, because unquoted SQL identifiers do.
+scoping dimensions. Every name check — package-owned columns, reserved names,
+and duplicates between your own declarations — ignores case, because unquoted
+SQL identifiers fold case, so ``TASK_ID`` and ``task_id`` are one column to the
+database. A rejected declaration raises ``QueueConfigurationError`` when the
+config is built, rather than failing later against the database.
 
 Three things to know:
 

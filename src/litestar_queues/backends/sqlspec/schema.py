@@ -95,6 +95,8 @@ EVENT_HISTORY_COLUMNS = (
 )
 """Physical columns the package owns on the SQLSpec event-history table."""
 
+_EVENT_HISTORY_COLUMN_NAMES = frozenset(EVENT_HISTORY_COLUMNS)
+
 RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"actor", "entity", "scope", "scope_key"})
 """Names held for built-in event-history scoping dimensions.
 
@@ -137,23 +139,25 @@ def validate_event_history_extra_columns(
         if not _is_unquoted_identifier_part(column.name):
             msg = f"Invalid SQL identifier in event_history_extra_columns: {column.name!r}"
             raise QueueConfigurationError(msg)
-        if column.name in EVENT_HISTORY_COLUMNS:
+        # Unquoted SQL identifiers fold case, so every name comparison below does
+        # too: ``TASK_ID`` and ``task_id`` are one column to the database.
+        folded = column.name.lower()
+        if folded in _EVENT_HISTORY_COLUMN_NAMES:
             msg = f"event_history_extra_columns may not redeclare package-owned column {column.name!r}"
             raise QueueConfigurationError(msg)
-        # Unquoted SQL identifiers fold case, so the reservation must too.
-        if column.name.lower() in RESERVED_EVENT_HISTORY_COLUMNS:
+        if folded in RESERVED_EVENT_HISTORY_COLUMNS:
             msg = (
                 f"event_history_extra_columns may not use {column.name!r}: "
                 f"{sorted(RESERVED_EVENT_HISTORY_COLUMNS)!r} are reserved for built-in scoping dimensions"
             )
             raise QueueConfigurationError(msg)
-        if column.name in seen:
+        if folded in seen:
             msg = f"Duplicate column in event_history_extra_columns: {column.name!r}"
             raise QueueConfigurationError(msg)
         if not column.source:
             msg = f"event_history_extra_columns entry {column.name!r} requires a non-empty payload source key"
             raise QueueConfigurationError(msg)
-        seen.add(column.name)
+        seen.add(folded)
         validated.append(column)
     return tuple(validated)
 

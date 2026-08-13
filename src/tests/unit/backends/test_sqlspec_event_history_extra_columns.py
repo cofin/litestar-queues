@@ -53,6 +53,37 @@ def test_extra_column_declaration_rejects(column: "EventHistoryExtraColumn") -> 
         validate_event_history_extra_columns((column,))
 
 
+@pytest.mark.parametrize("name", ["TASK_ID", "Detail", "Occurred_At"])
+def test_extra_column_package_owned_names_are_case_insensitive(name: "str") -> "None":
+    """Unquoted SQL identifiers fold case, so the collision check must too."""
+    column = EventHistoryExtraColumn(name=name, source="x")
+
+    with pytest.raises(QueueConfigurationError, match="package-owned"):
+        validate_event_history_extra_columns((column,))
+
+
+def test_extra_column_names_near_package_owned_names_are_allowed() -> "None":
+    """Only exact package-owned names collide, not names that merely contain them."""
+    columns = (
+        EventHistoryExtraColumn(name="task_id_hash", source="a"),
+        EventHistoryExtraColumn(name="detail_url", source="b"),
+        EventHistoryExtraColumn(name="sub_queue", source="c"),
+    )
+
+    assert validate_event_history_extra_columns(columns) == columns
+
+
+def test_extra_column_duplicate_names_are_case_insensitive() -> "None":
+    """Two declarations differing only in case are the same physical column."""
+    columns = (
+        EventHistoryExtraColumn(name="tenant_id", source="tenant_id"),
+        EventHistoryExtraColumn(name="TENANT_ID", source="account_id"),
+    )
+
+    with pytest.raises(QueueConfigurationError, match="Duplicate"):
+        validate_event_history_extra_columns(columns)
+
+
 @pytest.mark.parametrize("reserved", ["scope", "scope_key", "actor", "entity"])
 def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "None":
     """Names held for the built-in scoping dimensions cannot be claimed by adopters."""
