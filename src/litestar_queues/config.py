@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from litestar_queues.task import Task
 
 __all__ = (
+    "STALE_REQUEUE_PRIORITY",
     "ExecutionBackendConfig",
     "ExecutionBackendConfigProtocol",
     "MigrationConfiguringBackend",
@@ -30,6 +31,7 @@ __all__ = (
     "QueueBackendConfigProtocol",
     "QueueConfig",
     "QueueNamespace",
+    "StaleRequeuePriority",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "WorkerConfig",
@@ -39,6 +41,9 @@ __all__ = (
 )
 
 logger = getLogger(__name__)
+
+STALE_REQUEUE_PRIORITY: "StaleRequeuePriority" = "preserve"
+"""Default stale-requeue policy: recovered work keeps the priority it was enqueued with."""
 
 _SERVICE_STATE_KEY = "queue_service"
 _WORKER_STATE_KEY = "queue_worker"
@@ -167,6 +172,13 @@ TaskDependencyResolver = Callable[
 TaskErrorSanitizer = Callable[["BaseException", "QueuedTaskRecord"], str]
 """User-supplied callable that converts task exceptions into persisted error messages."""
 
+StaleRequeuePriority = Literal["preserve"] | int | Callable[[int], int]
+"""Priority policy applied to work recovered by the stale sweep.
+
+``"preserve"`` keeps the original priority, an ``int`` is a ceiling clamp, and a
+callable maps the current priority to the recovered one.
+"""
+
 
 @dataclass(slots=True)
 class WorkerConfig:
@@ -229,8 +241,14 @@ class WorkerConfig:
     final_cancel_timeout: "float" = 5
     """Maximum post-cancellation drain time in seconds."""
 
+    hard_exit_timeout: "float | None" = 10.0
+    """Wall-clock budget from forced shutdown to process exit; ``None`` disables the watchdog."""
+
     requeue_on_shutdown: "bool" = False
     """Whether cancelled executions are requeued after shutdown drain timeout."""
+
+    max_interruptions: "int" = 3
+    """Shutdown requeues an attempt may absorb before interruptions consume the retry budget."""
 
     startup_timeout: "float" = 30
     """Maximum time to wait for worker startup readiness in seconds."""
@@ -254,6 +272,7 @@ class WorkerConfig:
             "stale_check_interval": self.stale_check_interval,
             "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
             "final_cancel_timeout": self.final_cancel_timeout,
+            "max_interruptions": self.max_interruptions,
             "startup_timeout": self.startup_timeout,
         }
         for name, value in positive.items():
@@ -271,6 +290,9 @@ class WorkerConfig:
             raise QueueConfigurationError(msg)
         if not 0.0 <= self.heartbeat_jitter_fraction <= 1.0:
             msg = "WorkerConfig.heartbeat_jitter_fraction must be between 0.0 and 1.0, inclusive."
+            raise QueueConfigurationError(msg)
+        if self.hard_exit_timeout is not None and self.hard_exit_timeout <= 0:
+            msg = "WorkerConfig.hard_exit_timeout must be greater than 0 when set."
             raise QueueConfigurationError(msg)
         if self.stale_after is not None and self.stale_after <= 0:
             msg = "WorkerConfig.stale_after must be greater than 0 when set."
@@ -352,6 +374,9 @@ class QueueConfig:
     max_argument_identity_bytes: "int | None" = None
     """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
 
+    stale_requeue_priority: "StaleRequeuePriority" = STALE_REQUEUE_PRIORITY
+    """Priority applied to stale-recovered work; see :data:`StaleRequeuePriority`."""
+
     names: "QueueNamespace" = field(init=False)
     """Validated format-specific runtime-name renderer."""
 
@@ -369,7 +394,24 @@ class QueueConfig:
         if self.sync_thread_pool_size <= 0:
             msg = "QueueConfig.sync_thread_pool_size must be greater than 0."
             raise QueueConfigurationError(msg)
+        self._validate_stale_requeue_priority()
         self._validate_placement()
+
+    def _validate_stale_requeue_priority(self) -> "None":
+        """Reject a stale-requeue policy that is neither ``"preserve"``, a priority, nor a mapper.
+
+        Raises:
+            QueueConfigurationError: If the configured policy cannot be applied.
+        """
+        policy = self.stale_requeue_priority
+        if callable(policy) or policy == "preserve":
+            return
+        if isinstance(policy, bool) or not isinstance(policy, int) or policy < 0:
+            msg = (
+                "QueueConfig.stale_requeue_priority must be 'preserve', a non-negative priority ceiling, "
+                f"or a callable mapping the old priority to the new one, not {policy!r}."
+            )
+            raise QueueConfigurationError(msg)
 
     def _validate_placement(self) -> "None":
         """Reject storage, execution, and placement combinations that cannot work.

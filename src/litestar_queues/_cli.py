@@ -13,6 +13,7 @@ import os
 import signal
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 import click
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.maintenance import MaintenancePhase, QueueMaintenanceSummary
     from litestar_queues.service import QueueService
+    from litestar_queues.worker.runtime import ShutdownWatchdog
 
 __all__ = (
     "queues_group",
@@ -181,30 +183,39 @@ def run_consumer_command(
 async def _run_consumer(
     plugin: "QueuePlugin", backend: "BaseConsumerExecutionBackend", max_concurrency: "int", drain_timeout: "float"
 ) -> "int":
+    from litestar_queues.worker.runtime import ShutdownWatchdog
+
     service = _open_service(plugin)
     await service.open()
     task = asyncio.create_task(
         backend.run_consumer(service, max_concurrency=max_concurrency, drain_timeout=drain_timeout)
     )
     loop = asyncio.get_running_loop()
+    watchdog = ShutdownWatchdog(plugin.config.worker.hard_exit_timeout)
     stop_count = 0
 
-    def stop() -> "None":
+    def stop(signum: "int" = int(signal.SIGTERM)) -> "None":
         nonlocal stop_count
         stop_count += 1
+        if stop_count > FORCE_STOP_SIGNAL_COUNT:
+            watchdog.exit_now(signum)
+            return
+        if stop_count >= FORCE_STOP_SIGNAL_COUNT:
+            watchdog.arm(signum)
         task.cancel()
 
     try:
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, stop)
+            loop.add_signal_handler(sig, partial(stop, int(sig)))
     except NotImplementedError:
         for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, lambda *_: stop())
+            signal.signal(sig, lambda handled, _frame: stop(int(handled)))
     try:
         await task
     except asyncio.CancelledError:
         return 2 if stop_count > 1 else 0
     finally:
+        watchdog.disarm()
         await service.close()
     return 0
 
@@ -393,7 +404,7 @@ async def _run_worker(
     Returns:
         The process exit code: 0 clean, 1 crashed, 2 escalated.
     """
-    from litestar_queues.worker.runtime import WorkerRunResult, run_worker
+    from litestar_queues.worker.runtime import ShutdownWatchdog, WorkerRunResult, run_worker
 
     config = replace(
         plugin.config,
@@ -404,14 +415,15 @@ async def _run_worker(
             queues=queues,
         ),
     )
-    stop = _CLIStopCoordinator()
+    watchdog = ShutdownWatchdog(config.worker.hard_exit_timeout)
+    stop = _CLIStopCoordinator(watchdog=watchdog)
     loop = asyncio.get_running_loop()
 
     def _register_signal_handler(sig: "signal.Signals") -> "None":
         try:
-            loop.add_signal_handler(sig, stop.request_stop)
+            loop.add_signal_handler(sig, partial(stop.request_stop, int(sig)))
         except NotImplementedError:
-            signal.signal(sig, lambda *_: stop.request_stop())
+            signal.signal(sig, lambda handled, _frame: stop.request_stop(int(handled)))
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         _register_signal_handler(sig)
@@ -434,6 +446,9 @@ async def _run_worker(
         click.echo(f"error: queue worker failed during {_failure_detail(exc)}", err=True)
         logging.getLogger(config.names.logger("cli")).exception("Standalone queue worker failed")
         return int(WorkerRunResult.CRASHED)
+    finally:
+        # A shutdown that actually finished must never trip the deadline.
+        watchdog.disarm()
     return int(result)
 
 
@@ -441,20 +456,28 @@ class _CLIStopCoordinator:
     """Translate repeated termination signals into the runner's two stop events.
 
     The second signal must reach the runner while the first drain is still in
-    flight, so the force request is never queued behind the graceful one.
+    flight, so the force request is never queued behind the graceful one. It
+    also arms the hard-exit watchdog, and a third signal exits at once: by then
+    the operator has asked three times and the loop is demonstrably stuck.
     """
 
-    __slots__ = ("force", "graceful", "stop_count")
+    __slots__ = ("force", "graceful", "stop_count", "watchdog")
 
-    def __init__(self) -> "None":
+    def __init__(self, watchdog: "ShutdownWatchdog | None" = None) -> "None":
         self.graceful = asyncio.Event()
         self.force = asyncio.Event()
         self.stop_count = 0
+        self.watchdog = watchdog
 
-    def request_stop(self) -> "None":
+    def request_stop(self, signum: "int" = signal.SIGTERM) -> "None":
         self.stop_count += 1
+        if self.stop_count > FORCE_STOP_SIGNAL_COUNT and self.watchdog is not None:
+            self.watchdog.exit_now(signum)
+            return
         if self.stop_count >= FORCE_STOP_SIGNAL_COUNT:
             self.force.set()
+            if self.watchdog is not None:
+                self.watchdog.arm(signum)
         self.graceful.set()
 
 

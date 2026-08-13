@@ -18,6 +18,8 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    attempts_consumed,
+    interruption_count,
     is_external_dispatch_reservation,
     record_matches_filters,
     retry_schedule,
@@ -1055,7 +1057,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         return None
                     metric = "fail"
                     retry_fence = expected_retry_count if expected_retry_count is not None else record.retry_count
-                    if retry and record.retry_count < record.max_retries:
+                    if retry and attempts_consumed(record) < record.max_retries:
                         updated = await driver.execute(
                             store.retry_task(
                                 task_id=str(task_id),
@@ -1107,6 +1109,79 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         else:
             self._increment_queue_metric("claim_lost")
         return updated_record
+
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        store = self._get_store()
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                result = await driver.execute(
+                    store.assign_worker(
+                        task_id=str(task_id), worker_id=worker_id, expected_retry_count=expected_retry_count
+                    )
+                )
+                rows_affected = self._resolve_rows_affected(result)
+                updated_row = None
+                if rows_affected != 0:
+                    updated_row = await self._select_task(driver, task_id)
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        if updated_row is None:
+            return None
+        record = self._record_from_row(updated_row)
+        if record.worker_id != worker_id or record.retry_count != expected_retry_count:
+            return None
+        return record
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        store = self._get_store()
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                current_row = await self._select_task(driver, task_id)
+                if current_row is None:
+                    await driver.commit()
+                    return None
+                current = self._record_from_row(current_row)
+                if (
+                    current.status != "running"
+                    or current.retry_count != expected_retry_count
+                    or current.worker_id != worker_id
+                ):
+                    await driver.commit()
+                    return None
+                metadata = dict(current.metadata)
+                metadata["interruptions"] = interruption_count(current) + 1
+                result = await driver.execute(
+                    store.interrupt_task(
+                        task_id=str(task_id),
+                        expected_retry_count=expected_retry_count,
+                        worker_id=worker_id,
+                        queued_at=self._serialize_datetime(queued_at),
+                        retry_count=current.retry_count + 1,
+                        metadata_json=store.serialize_json("metadata_json", metadata),
+                    )
+                )
+                rows_affected = self._resolve_rows_affected(result)
+                updated_row = None
+                if rows_affected != 0:
+                    updated_row = await self._select_task(driver, task_id)
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        if updated_row is None:
+            return None
+        record = self._record_from_row(updated_row)
+        return record if record.status == "pending" else None
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         async with self._session() as driver:
@@ -1298,9 +1373,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     for row in rows:
                         record = self._record_from_row(row)
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
-                        if requeue_on_stale and record.retry_count < record.max_retries:
+                        if requeue_on_stale and attempts_consumed(record) < record.max_retries:
                             retry_error = stale_requeue_error(record.error)
-                            retry_priority = stale_requeue_priority(record.priority)
+                            retry_priority = stale_requeue_priority(
+                                record.priority, self._stale_requeue_priority_policy()
+                            )
                             queued_at, retry_at = retry_schedule(record)
                             updated = await driver.execute(
                                 store.retry_task(

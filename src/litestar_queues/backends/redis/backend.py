@@ -19,6 +19,8 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    attempts_consumed,
+    interruption_count,
     is_external_dispatch_reservation,
     record_matches_filters,
     retry_schedule,
@@ -348,7 +350,15 @@ if expected ~= '' and tostring(retry_count) ~= expected then
 end
 redis.call('HSET', hkey, 'error', error)
 local max_retries = tonumber(redis.call('HGET', hkey, 'max_retries')) or 0
-if retry == '1' and retry_count < max_retries then
+local interruptions = 0
+local metadata_json = redis.call('HGET', hkey, 'metadata')
+if metadata_json and metadata_json ~= '' then
+    local decoded_ok, decoded = pcall(cjson.decode, metadata_json)
+    if decoded_ok and type(decoded) == 'table' and type(decoded.interruptions) == 'number' then
+        interruptions = decoded.interruptions
+    end
+end
+if retry == '1' and (retry_count - interruptions) < max_retries then
     local new_retry_count = retry_count + 1
     local retry_status = 'pending'
     if retry_at ~= '' then retry_status = 'scheduled' end
@@ -468,6 +478,7 @@ local zset_action = ARGV[6]
 local score = ARGV[7]
 local channel = ARGV[8]
 local payload = ARGV[9]
+local expected_worker = ARGV[10]
 
 local status = redis.call('HGET', hkey, 'status')
 if not status then
@@ -482,13 +493,19 @@ if expected_retry ~= '' then
         return {0}
     end
 end
+if expected_worker ~= '' then
+    local worker_id = redis.call('HGET', hkey, 'worker_id')
+    if worker_id ~= expected_worker then
+        return {0}
+    end
+end
 if new_status ~= '' then
     redis.call('SREM', prefix .. ':status:' .. status, task_id)
     redis.call('SADD', prefix .. ':status:' .. new_status, task_id)
     redis.call('HSET', hkey, 'status', new_status)
 end
-if #ARGV >= 10 then
-    redis.call('HSET', hkey, unpack(ARGV, 10))
+if #ARGV >= 11 then
+    redis.call('HSET', hkey, unpack(ARGV, 11))
 end
 if zset_action == 'ready' then
     redis.call('ZADD', ready, score, task_id)
@@ -1125,6 +1142,77 @@ class RedisQueueBackend(BaseQueueBackend):
             await self.notify_new_task(record)
         return record
 
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        """Persist running-record ownership through the fenced transition script.
+
+        Returns:
+            The owned record, or ``None`` when the fence was lost.
+        """
+        committed = await self._commit_transition(
+            task_id,
+            expected_status="running",
+            expected_retry_count=expected_retry_count,
+            patch={"worker_id": worker_id},
+        )
+        return await self.get_task(task_id) if committed else None
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        """Return an owned running attempt to pending through the fenced transition script.
+
+        Returns:
+            The requeued record, or ``None`` when the fence was lost.
+        """
+        record = await self.get_task(task_id)
+        if (
+            record is None
+            or record.status != "running"
+            or record.retry_count != expected_retry_count
+            or record.worker_id != worker_id
+        ):
+            return None
+        record.status = "pending"
+        record.queued_at = queued_at
+        record.scheduled_at = None
+        record.started_at = None
+        record.heartbeat_at = None
+        record.completed_at = None
+        record.execution_ref = None
+        record.worker_id = None
+        record.metadata["interruptions"] = interruption_count(record) + 1
+        record.retry_count += 1
+        zset_action, score = self._index_action(record)
+        committed = await self._commit_transition(
+            task_id,
+            expected_status="running",
+            expected_retry_count=expected_retry_count,
+            expected_worker_id=worker_id,
+            new_status="pending",
+            patch={
+                "queued_at": _serialize_datetime(queued_at),
+                "scheduled_at": "",
+                "started_at": "",
+                "started_score": "0",
+                "heartbeat_at": "",
+                "heartbeat_score": "0",
+                "completed_at": "",
+                "completed_score": "0",
+                "execution_ref": "",
+                "worker_id": "",
+                "retry_count": str(record.retry_count),
+                "metadata": _json_dumps(record.metadata),
+                "ready_score": repr(_ready_score(record)),
+            },
+            zset_action=zset_action,
+            score=score,
+            publish_channel=self._wakeup_channel if (self._notifications and zset_action == "ready") else "",
+            publish_payload=_json_dumps({"event": "task_available"}),
+        )
+        return await self.get_task(task_id) if committed else None
+
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         """Cancel a task via a single fenced script.
 
@@ -1269,7 +1357,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 result.skipped += 1
                 continue
             requeue_on_stale = latest.metadata.get("requeue_on_stale", True) is not False
-            if requeue_on_stale and latest.retry_count < latest.max_retries:
+            if requeue_on_stale and attempts_consumed(latest) < latest.max_retries:
                 if await self._commit_stale_requeue(latest):
                     result.requeued += 1
                 else:
@@ -1290,7 +1378,7 @@ class RedisQueueBackend(BaseQueueBackend):
         record.status = "scheduled" if retry_at is not None else "pending"
         record.queued_at = queued_at
         record.scheduled_at = retry_at
-        record.priority = stale_requeue_priority(record.priority)
+        record.priority = stale_requeue_priority(record.priority, self._stale_requeue_priority_policy())
         record.started_at = None
         record.heartbeat_at = None
         record.error = stale_requeue_error(record.error)
@@ -1894,6 +1982,7 @@ class RedisQueueBackend(BaseQueueBackend):
         zset_action: "str" = "none",
         score: "str" = "",
         expected_retry_count: "int | None" = None,
+        expected_worker_id: "str" = "",
         publish_channel: "str" = "",
         publish_payload: "str" = "",
     ) -> "bool":
@@ -1908,6 +1997,7 @@ class RedisQueueBackend(BaseQueueBackend):
             score,
             publish_channel,
             publish_payload,
+            expected_worker_id,
         ]
         if patch:
             for field, value in patch.items():

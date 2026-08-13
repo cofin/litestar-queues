@@ -20,6 +20,9 @@ from litestar_queues.backends.advanced_alchemy.repository import (
 from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
+    STALE_REQUEUE_PRIORITY,
+    attempts_consumed,
+    interruption_count,
     record_matches_filters,
     retry_schedule,
     stale_requeue_error,
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
         QueueTaskModelMixin,
         QueueTaskReservationModelMixin,
     )
+    from litestar_queues.config import StaleRequeuePriority
     from litestar_queues.models import HeartbeatTouch, TaskRequest
 
 __all__ = ("QueueEventLogService", "QueueTaskReservationService", "QueueTaskService")
@@ -685,7 +689,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model_type = self.model_type
         retry_fence = expected_retry_count if expected_retry_count is not None else int(model.retry_count)
         criteria = [model_type.id == task_id, model_type.status == "running", model_type.retry_count == retry_fence]
-        if retry and int(model.retry_count) < int(model.max_retries):
+        if retry and attempts_consumed(self.record_from_model(model)) < int(model.max_retries):
             now = queued_at or _utc_now()
             update_result = await self.repository.session.execute(
                 update(model_type)
@@ -722,6 +726,77 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             return None
         updated = await self._select_task(task_id)
         return self.record_from_model(updated) if updated is not None else None
+
+    async def assign_worker(
+        self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
+    ) -> "QueuedTaskRecord | None":
+        """Persist running-record ownership behind a status/generation fence.
+
+        Returns:
+            The owned record, or ``None`` when the fence was lost.
+        """
+        model_type = self.model_type
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id, model_type.status == "running", model_type.retry_count == expected_retry_count
+            )
+            .values(_update_values(model_type, {"worker_id": worker_id}))
+            .execution_options(synchronize_session=False)
+        )
+        if int(result.rowcount or 0) != 1:
+            return None
+        self.repository.session.expire_all()
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
+    async def interrupt_task(
+        self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
+    ) -> "QueuedTaskRecord | None":
+        """Return an owned running attempt to pending behind an owner/generation fence.
+
+        Returns:
+            The requeued record, or ``None`` when the fence was lost.
+        """
+        model_type = self.model_type
+        current = await self._select_task(task_id)
+        if current is None:
+            return None
+        metadata = _deserialize_json(current.metadata_json)
+        record = self.record_from_model(current)
+        metadata["interruptions"] = interruption_count(record) + 1
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.status == "running",
+                model_type.retry_count == expected_retry_count,
+                model_type.worker_id == worker_id,
+            )
+            .values(
+                _update_values(
+                    model_type,
+                    {
+                        "status": "pending",
+                        "queued_at": queued_at,
+                        "scheduled_at": None,
+                        "started_at": None,
+                        "heartbeat_at": None,
+                        "completed_at": None,
+                        "execution_ref": None,
+                        "worker_id": None,
+                        "retry_count": int(current.retry_count) + 1,
+                        "metadata_json": _serialize_json(metadata),
+                    },
+                )
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if int(result.rowcount or 0) != 1:
+            return None
+        self.repository.session.expire_all()
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
 
     async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
         model_type = self.model_type
@@ -904,7 +979,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         )
 
     async def requeue_stale_running(
-        self, *, stale_after: "timedelta", limit: "int | None" = None
+        self,
+        *,
+        stale_after: "timedelta",
+        limit: "int | None" = None,
+        priority_policy: "StaleRequeuePriority" = STALE_REQUEUE_PRIORITY,
     ) -> "StaleTaskRecoveryResult":
         cutoff = _utc_now() - stale_after
         model_type = self.model_type
@@ -934,7 +1013,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             ]
             if use_heartbeat_cutoff:
                 update_criteria.append(stale_heartbeat)
-            if requeue_on_stale and int(model.retry_count) < int(model.max_retries):
+            if requeue_on_stale and attempts_consumed(self.record_from_model(model)) < int(model.max_retries):
                 queued_at, retry_at = retry_schedule(self.record_from_model(model))
                 update_result = await self.repository.session.execute(
                     update(model_type)
@@ -949,7 +1028,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                                 "started_at": None,
                                 "heartbeat_at": None,
                                 "retry_count": int(model.retry_count) + 1,
-                                "priority": stale_requeue_priority(int(model.priority)),
+                                "priority": stale_requeue_priority(int(model.priority), priority_policy),
                                 "error": stale_requeue_error(model.error),
                             },
                         )

@@ -17,6 +17,47 @@ Unreleased
   streaming-pull deliveries against the authoritative queue backend. The
   official Google emulator backs the integration suite. See
   :doc:`usage/deployment/pubsub`.
+* Shutdown requeue: ``WorkerConfig.requeue_on_shutdown`` returns an in-flight
+  attempt to ``pending`` once its coroutine accepts cancellation, with a
+  per-task ``@task(requeue_on_shutdown=...)`` override,
+  :meth:`~litestar_queues.QueueService.interrupt_task`, and the
+  ``task.interrupted`` lifecycle event. Every shipped backend now performs the
+  requeue behind an owner and generation fence. See :doc:`usage/workers`.
+* ``WorkerConfig.max_interruptions`` (default ``3``) bounds how many times one
+  attempt may be requeued by shutdown. Interruptions are counted in the record's
+  metadata and consume no retry attempt below the cap; at the cap the
+  interruption goes through the ordinary retry policy instead, so a task that is
+  restarted forever eventually fails.
+* ``WorkerConfig.hard_exit_timeout`` (default ``10.0`` seconds, ``None`` to
+  disable) bounds a forced shutdown. When the deadline passes, or a third
+  termination signal arrives, the process exits with ``128 + signum`` instead of
+  hanging. Tasks still alive after ``final_cancel_timeout`` are logged and have
+  their heartbeats cleared so stale recovery can reclaim them at once.
+* ``QueueConfig.stale_requeue_priority`` chooses the priority recovered work
+  re-enters with: ``"preserve"`` (the default), an integer ceiling clamp, or a
+  callable mapping the old priority to the new one. **Breaking:** stale-recovered
+  work now keeps its original priority instead of being clamped to ``4``. Pass
+  ``stale_requeue_priority=4`` to restore the clamp. See
+  :doc:`usage/worker-recovery`.
+* ``WorkerConfig.queue_concurrency`` sets per-worker caps for named queues.
+  These are local limits, not fleet-wide semaphores.
+* ``WorkerConfig.cancellation_poll_interval``: workers reconcile durable
+  ``cancelled`` state into running executions, so
+  ``cancel_task(..., include_running=True)`` interrupts a cooperative task on
+  another worker. Worker-control notifications make that pickup prompt on
+  notification-capable backends.
+* Service-level cancellation, single and bulk, with task name, queue, kwargs,
+  and metadata filters, plus cooperative in-task cancellation checkpoints. See
+  :doc:`usage/failures-and-cancellation`.
+
+**Changed:**
+
+* Claim ordering is now fair: ready work is ordered by priority, then
+  ``queued_at``, then creation time. A retried, requeued, or interrupted record
+  re-enters the line at its requeue time instead of jumping ahead of newer work.
+  Deployments that relied on retried work being claimed first will see a
+  different claim order.
+* Queue-scoped statistics are enforced filters rather than advisory hints.
 
 0.8.0 - 2026-08-03
 ==================

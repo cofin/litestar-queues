@@ -13,6 +13,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.worker.heartbeat import WorkerHeartbeatManager
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
@@ -66,6 +68,7 @@ class Worker:
 
     __slots__ = (
         "_batch_size",
+        "_cancel_requested",
         "_cancellation_poll_interval",
         "_completion_event",
         "_current_poll_interval",
@@ -81,6 +84,7 @@ class Worker:
         "_listener_reconnect_pending",
         "_logger",
         "_max_concurrency",
+        "_max_interruptions",
         "_poll_backoff_max",
         "_poll_backoff_multiplier",
         "_poll_interval",
@@ -122,6 +126,7 @@ class Worker:
         self._queue_concurrency = dict(worker_config.queue_concurrency)
         self._reconcile_interval = worker_config.reconcile_interval
         self._requeue_on_shutdown = worker_config.requeue_on_shutdown
+        self._max_interruptions = worker_config.max_interruptions
         self._expiry_check_interval = worker_config.expiry_check_interval
         self._stale_after = (
             timedelta(seconds=worker_config.stale_after) if worker_config.stale_after is not None else None
@@ -139,6 +144,7 @@ class Worker:
         )
         self._queues = worker_config.queues
         self._running_tasks: "dict[asyncio.Task[None], QueuedTaskRecord]" = {}
+        self._cancel_requested: "set[asyncio.Task[None]]" = set()
         self._stop_event = asyncio.Event()
         self._completion_event = asyncio.Event()
         self._startup_completion: "asyncio.Future[BaseException | None] | None" = None
@@ -411,6 +417,18 @@ class Worker:
 
     def _on_execution_done(self, task: "asyncio.Task[None]") -> "None":
         self._running_tasks.pop(task, None)
+        self._cancel_requested.discard(task)
+        # Retrieve the outcome here rather than through a drain-time gather, so
+        # a task that finishes outside a drain never trips asyncio's
+        # "exception was never retrieved" reporting.
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                self._logger.error(
+                    "Queue task execution failed outside its own error handling",
+                    exc_info=error,
+                    extra={"worker_id": self._worker_id},
+                )
         self._completion_event.set()
 
     async def _maybe_cancel_running(self) -> "None":
@@ -453,7 +471,27 @@ class Worker:
             task_setting = record.metadata.get("requeue_on_shutdown")
             should_requeue = self._requeue_on_shutdown if task_setting is None else task_setting is True
             if self._stop_event.is_set() and should_requeue:
-                await self._service.interrupt_task(record, worker_id=self._worker_id)
+                # A backend failure here must never replace the cancellation:
+                # the exception would be swallowed whole by the drain/cancel
+                # wait and the record would silently stay `running`.
+                try:
+                    updated = await self._service.interrupt_task(
+                        record, worker_id=self._worker_id, max_interruptions=self._max_interruptions
+                    )
+                except Exception:
+                    self._record_counter(
+                        "litestar_queues.worker.interrupt.error", {"messaging.destination.name": record.queue}
+                    )
+                    self._logger.exception(
+                        "Queue task shutdown requeue failed; record remains running",
+                        extra={"worker_id": self._worker_id, "task_id": str(record.id)},
+                    )
+                else:
+                    if updated is None:
+                        self._logger.warning(
+                            "Queue task shutdown requeue lost its fence",
+                            extra={"worker_id": self._worker_id, "task_id": str(record.id)},
+                        )
             raise
         finally:
             _reset_beat_sink(beat_token)
@@ -538,12 +576,11 @@ class Worker:
     async def _drain_running(self) -> "bool":
         if not self._running_tasks:
             return False
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*tuple(self._running_tasks), return_exceptions=True),
-                timeout=self._graceful_shutdown_timeout,
-            )
-        except asyncio.TimeoutError:
+        # `asyncio.wait`, not `wait_for(gather(...))`: a timed-out `wait_for`
+        # cancels the gather, and that cancellation propagates into every
+        # execution task as an unaccounted extra delivery.
+        _, pending = await asyncio.wait(tuple(self._running_tasks), timeout=self._graceful_shutdown_timeout)
+        if pending:
             await self._cancel_running()
             return True
         return False
@@ -552,10 +589,47 @@ class Worker:
         tasks = tuple(self._running_tasks)
         if not tasks:
             return
+        # `stop()` and the loop's own shutdown drain both land here. Cancelling
+        # a task twice delivers a second CancelledError into the task's own
+        # shutdown-requeue handler and aborts the backend write mid-flight, so
+        # each execution task is cancelled exactly once per worker.
         for task in tasks:
-            task.cancel()
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=self._final_cancel_timeout)
+            if task not in self._cancel_requested:
+                self._cancel_requested.add(task)
+                task.cancel()
+        await asyncio.wait(tasks, timeout=self._final_cancel_timeout)
+        await self._hand_off_undead_tasks()
+
+    async def _hand_off_undead_tasks(self) -> "None":
+        """Null the heartbeats of tasks that outlived their cancellation budget.
+
+        The records stay ``running`` and this worker no longer touches their
+        heartbeats, so a stale sweep (``stale_after``) can reclaim them on its
+        next pass instead of waiting out a full heartbeat age.
+        """
+        survivors = [record for task, record in self._running_tasks.items() if not task.done()]
+        if not survivors:
+            return
+        self._logger.warning(
+            "Queue tasks survived cancellation; abandoning them to stale recovery",
+            extra={"worker_id": self._worker_id, "task_ids": [str(record.id) for record in survivors]},
+        )
+        # `null_heartbeats` carries one fence value per call, so group the
+        # survivors by the generation this worker still believes it owns.
+        by_generation: "dict[int, list[UUID]]" = {}
+        for record in survivors:
+            by_generation.setdefault(record.retry_count, []).append(record.id)
+        for expected_retry_count, task_ids in by_generation.items():
+            await self._null_heartbeats_quietly(task_ids, expected_retry_count=expected_retry_count)
+
+    async def _null_heartbeats_quietly(self, task_ids: "list[UUID]", *, expected_retry_count: "int") -> "None":
+        """Clear one generation's heartbeats, reporting rather than raising a backend failure."""
+        try:
+            await self._service.get_queue_backend().null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
+        except Exception:
+            self._logger.exception(
+                "Nulling heartbeats for surviving queue tasks failed", extra={"worker_id": self._worker_id}
+            )
 
     async def _wait_for_work(self) -> "bool | None":
         """Wait for new work, a backend notification, or a stop signal.

@@ -352,7 +352,9 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
     assert stored_requeued is not None
     assert stored_requeued.status == "pending"
     assert stored_requeued.retry_count == 2
-    assert stored_requeued.priority == 4
+    # The default policy is "preserve": recovery must carry the enqueued
+    # priority through unchanged rather than demoting the record.
+    assert stored_requeued.priority == 10
     assert stored_requeued.error == "first failure"
     assert stored_failed is not None
     assert stored_failed.status == "failed"
@@ -806,3 +808,35 @@ async def test_backend_contract_retires_a_record_whose_task_name_is_unknown(
     assert stored.is_terminal
     assert stored.error is not None
     assert "contract.consumer.never_registered" in stored.error
+
+
+async def test_backend_contract_assign_worker_persists_ownership(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_assign_worker_persists_ownership
+
+    await assert_assign_worker_persists_ownership(queue_backend)
+
+
+async def test_backend_contract_interrupts_owned_running_record(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_interrupts_owned_running_record
+
+    await assert_interrupts_owned_running_record(queue_backend)
+
+
+async def test_backend_contract_interruption_does_not_consume_retry_budget(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_retry_budget
+
+    await assert_interruption_does_not_consume_retry_budget(queue_backend)
+
+
+async def test_backend_contract_interruption_does_not_consume_failure_budget(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_failure_budget
+
+    await assert_interruption_does_not_consume_failure_budget(queue_backend)
+
+
+async def test_backend_contract_stale_requeue_priority_policy(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
+
+    await assert_stale_requeue_priority_policy(queue_backend)

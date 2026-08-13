@@ -5,6 +5,9 @@ import pytest
 
 from litestar_queues import HeartbeatTouch, InMemoryQueueBackend
 from litestar_queues.backends import BaseQueueBackend
+from litestar_queues.backends.base import attempts_consumed, interruption_count, retry_schedule, stale_requeue_priority
+from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
 
@@ -60,6 +63,10 @@ _REQUIRED_CONTRACT_CALLS = {
     "get_statistics": lambda b: b.get_statistics(),
     "list_completed_by_task": lambda b: b.list_completed_by_task("tasks.sync"),
     "list_running_external": lambda b: b.list_running_external(),
+    "assign_worker": lambda b: b.assign_worker(uuid4(), worker_id="worker-a", expected_retry_count=0),
+    "interrupt_task": lambda b: b.interrupt_task(
+        uuid4(), expected_retry_count=0, worker_id="worker-a", queued_at=datetime.now(timezone.utc)
+    ),
     "null_heartbeats": lambda b: b.null_heartbeats([uuid4()]),
     "requeue_stale_running": lambda b: b.requeue_stale_running(stale_after=timedelta(seconds=60)),
     "set_execution_backend": lambda b: b.set_execution_backend(uuid4(), "cloudrun"),
@@ -88,3 +95,43 @@ async def test_worker_lock_is_fenced_on_a_backend_with_real_maintenance() -> "No
 
     assert first is True
     assert second is False
+
+
+def test_interruption_count_reads_only_positive_integers() -> "None":
+    assert interruption_count(QueuedTaskRecord("tasks.a")) == 0
+    assert interruption_count(QueuedTaskRecord("tasks.a", metadata={"interruptions": None})) == 0
+    assert interruption_count(QueuedTaskRecord("tasks.a", metadata={"interruptions": "two"})) == 0
+    assert interruption_count(QueuedTaskRecord("tasks.a", metadata={"interruptions": -1})) == 0
+    assert interruption_count(QueuedTaskRecord("tasks.a", metadata={"interruptions": 2})) == 2
+
+
+def test_attempts_consumed_discounts_interruptions() -> "None":
+    record = QueuedTaskRecord("tasks.a", retry_count=3, metadata={"interruptions": 2})
+
+    assert attempts_consumed(record) == 1
+    assert attempts_consumed(QueuedTaskRecord("tasks.a", retry_count=3)) == 3
+
+
+def test_retry_schedule_backoff_uses_attempts_consumed() -> "None":
+    backoff = {"initial_delay": 1.0, "multiplier": 2.0}
+    interrupted = QueuedTaskRecord("tasks.a", retry_count=3, metadata={"interruptions": 2, "retry_backoff": backoff})
+    plain = QueuedTaskRecord("tasks.a", retry_count=1, metadata={"retry_backoff": backoff})
+
+    queued_at, retry_at = retry_schedule(interrupted)
+    plain_queued_at, plain_retry_at = retry_schedule(plain)
+
+    assert retry_at is not None
+    assert plain_retry_at is not None
+    assert (retry_at - queued_at) == (plain_retry_at - plain_queued_at)
+
+
+def test_stale_requeue_priority_policies() -> "None":
+    assert stale_requeue_priority(9, 4) == 4
+    assert stale_requeue_priority(2, 4) == 2
+    assert stale_requeue_priority(9, "preserve") == 9
+    assert stale_requeue_priority(9, lambda priority: priority - 1) == 8
+
+
+def test_stale_requeue_priority_rejects_a_non_integer_callable() -> "None":
+    with pytest.raises(QueueConfigurationError):
+        stale_requeue_priority(9, lambda _priority: "high")  # type: ignore[arg-type,return-value]

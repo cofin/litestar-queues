@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from typing_extensions import Self
 
-from litestar_queues.config import queue_backend_name
+from litestar_queues.config import STALE_REQUEUE_PRIORITY, queue_backend_name
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
@@ -20,21 +22,50 @@ if TYPE_CHECKING:
     from types import TracebackType
     from uuid import UUID
 
-    from litestar_queues.config import QueueConfig
+    from litestar_queues.config import QueueConfig, StaleRequeuePriority
     from litestar_queues.events import EventHistoryConfig, QueueEventLog
     from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest, TaskReservation
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
 
 __all__ = (
     "EXTERNAL_DISPATCH_RESERVATION_PREFIX",
+    "STALE_REQUEUE_PRIORITY",
     "BaseQueueBackend",
+    "attempts_consumed",
+    "interruption_count",
     "is_external_dispatch_reservation",
     "retry_schedule",
 )
 
 EXTERNAL_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
-STALE_REQUEUE_PRIORITY = 4
+
+
+def interruption_count(record: "QueuedTaskRecord") -> "int":
+    """Return how many times an attempt has been interrupted by a shutdown.
+
+    Returns:
+        The recorded interruption count, or ``0`` when it is absent or unusable.
+    """
+    value = record.metadata.get("interruptions")
+    # Drivers decode JSON numbers differently: Oracle hands back ``Decimal``.
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return 0
+    count = int(value)
+    return max(0, count)
+
+
+def attempts_consumed(record: "QueuedTaskRecord") -> "int":
+    """Return the retry attempts a record has actually consumed.
+
+    An interruption bumps ``retry_count`` so the old owner's fences can never
+    settle the reclaimed attempt, but it is not a failed attempt: it must not
+    spend the record's retry budget.
+
+    Returns:
+        ``retry_count`` less the recorded interruptions.
+    """
+    return record.retry_count - interruption_count(record)
 
 
 def retry_schedule(record: "QueuedTaskRecord", *, now: "datetime | None" = None) -> "tuple[datetime, datetime | None]":
@@ -43,7 +74,7 @@ def retry_schedule(record: "QueuedTaskRecord", *, now: "datetime | None" = None)
     value = record.metadata.get("retry_backoff")
     if not isinstance(value, dict):
         return queued_at, None
-    delay = float(value.get("initial_delay", 0.0)) * float(value.get("multiplier", 1.0)) ** record.retry_count
+    delay = float(value.get("initial_delay", 0.0)) * float(value.get("multiplier", 1.0)) ** attempts_consumed(record)
     max_delay = value.get("max_delay")
     if max_delay is not None:
         delay = min(delay, float(max_delay))
@@ -95,6 +126,15 @@ class BaseQueueBackend:
         runtime.record_counter(
             "litestar_queues.wakeup.coalesced", count, attributes=self._transport_metric_attributes()
         )
+
+    def _stale_requeue_priority_policy(self) -> "StaleRequeuePriority":
+        """Return the configured stale-recovery priority policy.
+
+        Returns:
+            The owning config's policy, or the package default when a backend
+            was built without a config.
+        """
+        return self.config.stale_requeue_priority if self.config is not None else STALE_REQUEUE_PRIORITY
 
     @property
     def capabilities(self) -> "QueueBackendCapabilities":
@@ -193,12 +233,20 @@ class BaseQueueBackend:
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
-        """Persist the owner of a running retry generation."""
-        record = await self.get_task(task_id)
-        if record is None or record.status != "running" or record.retry_count != expected_retry_count:
-            return None
-        record.worker_id = worker_id
-        return record
+        """Persist the owner of a running retry generation.
+
+        The write is fenced on ``status='running' AND retry_count = expected``
+        so a worker can never claim ownership of a generation it lost.
+
+        Args:
+            task_id: Queue record identifier.
+            worker_id: Identity to persist as the record owner.
+            expected_retry_count: Retry generation the caller believes it owns.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
+        raise NotImplementedError
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
@@ -381,7 +429,22 @@ class BaseQueueBackend:
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
     ) -> "QueuedTaskRecord | None":
-        """Return an owned running attempt to pending after interruption."""
+        """Return an owned running attempt to pending after interruption.
+
+        The write is fenced on ``status='running' AND retry_count = expected
+        AND worker_id = worker_id``. It resets the record to ``pending`` with a
+        fresh ``queued_at`` and clears ``scheduled_at``, ``started_at``,
+        ``heartbeat_at``, ``completed_at``, ``execution_ref``, and ``worker_id``.
+
+        Args:
+            task_id: Queue record identifier.
+            expected_retry_count: Retry generation the caller owns.
+            worker_id: Identity that must currently own the record.
+            queued_at: Requeue timestamp used for fair claim ordering.
+
+        Raises:
+            NotImplementedError: Always; every backend must answer this.
+        """
         raise NotImplementedError
 
     async def cancel_tasks(
@@ -768,6 +831,21 @@ def stale_requeue_error(current_error: "str | None") -> "str":
     return current_error or STALE_HEARTBEAT_ERROR
 
 
-def stale_requeue_priority(priority: "int") -> "int":
-    """Return the priority for a stale requeued task."""
-    return min(priority, STALE_REQUEUE_PRIORITY)
+def stale_requeue_priority(priority: "int", policy: "StaleRequeuePriority") -> "int":
+    """Return the priority a stale-recovered record re-enters the queue with.
+
+    Returns:
+        The priority resolved by ``policy``.
+
+    Raises:
+        QueueConfigurationError: If a callable policy returns a non-integer.
+    """
+    if callable(policy):
+        resolved = policy(priority)
+        if isinstance(resolved, bool) or not isinstance(resolved, int):
+            msg = f"QueueConfig.stale_requeue_priority callable returned {resolved!r}; an int is required."
+            raise QueueConfigurationError(msg)
+        return resolved
+    if policy == "preserve":
+        return priority
+    return min(priority, policy)

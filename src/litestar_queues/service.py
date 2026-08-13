@@ -19,6 +19,7 @@ from litestar_queues._correlation import (
     reset_correlation_id,
 )
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
+from litestar_queues.backends.base import interruption_count
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.events.context import TaskExecutionContext, _bind_task_context, _reset_task_context
 from litestar_queues.events.models import QueueEvent
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
 __all__ = ("QueueService",)
 
 _CLOUD_TASKS_BACKEND = "cloudtasks"
+INTERRUPTION_LIMIT_ERROR = "Interrupted during shutdown"
 
 
 def _utc_now() -> "datetime":
@@ -654,9 +656,24 @@ class QueueService:
         return True
 
     async def interrupt_task(
-        self, record: "QueuedTaskRecord", *, worker_id: "str", reason: "str" = "shutdown"
+        self,
+        record: "QueuedTaskRecord",
+        *,
+        worker_id: "str",
+        reason: "str" = "shutdown",
+        max_interruptions: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
-        """Requeue one owned running attempt after local execution unwinds."""
+        """Requeue one owned running attempt after local execution unwinds.
+
+        An attempt that keeps being interrupted would otherwise cycle forever
+        without ever consuming its retry budget, so at ``max_interruptions`` the
+        interruption is routed through the ordinary retry policy instead.
+
+        Returns:
+            The requeued or failed record, or ``None`` when the fence was lost.
+        """
+        if max_interruptions is not None and interruption_count(record) >= max_interruptions:
+            return await self._fail_interrupted_task(record, worker_id=worker_id)
         updated = await self.get_queue_backend().interrupt_task(
             record.id,
             expected_retry_count=record.retry_count,
@@ -669,6 +686,22 @@ class QueueService:
         context = _task_execution_context(updated, worker_id=worker_id, event_publisher=self.get_event_publisher())
         await context.lifecycle("task.interrupted", payload=payload)
         self._log_task_event("Queue task interrupted", updated, level=logging.INFO, payload=payload)
+        return updated
+
+    async def _fail_interrupted_task(
+        self, record: "QueuedTaskRecord", *, worker_id: "str"
+    ) -> "QueuedTaskRecord | None":
+        updated = await self.get_queue_backend().fail_task(
+            record.id, INTERRUPTION_LIMIT_ERROR, retry=True, expected_retry_count=record.retry_count
+        )
+        if updated is None:
+            return None
+        payload = {"status": updated.status, "retry_count": updated.retry_count, "will_retry": not updated.is_terminal}
+        context = _task_execution_context(updated, worker_id=worker_id, event_publisher=self.get_event_publisher())
+        await context.lifecycle("task.failed", message=INTERRUPTION_LIMIT_ERROR, payload=payload)
+        self._log_task_event(
+            "Queue task exceeded its shutdown interruption budget", updated, level=logging.ERROR, payload=payload
+        )
         return updated
 
     async def reset_task_identity(self, key: "str") -> "bool":

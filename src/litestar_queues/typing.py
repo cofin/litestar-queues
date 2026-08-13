@@ -26,6 +26,7 @@ from litestar_queues._typing import (
     otel_trace,
     prometheus_default_registry,
 )
+from litestar_queues.config import StaleRequeuePriority
 from litestar_queues.task import TaskUniqueBy, TaskUniqueUntil
 
 __all__ = (
@@ -41,6 +42,7 @@ __all__ = (
     "PrometheusCounter",
     "PrometheusGauge",
     "PrometheusHistogram",
+    "StaleRequeuePriority",
     "TaskUniqueBy",
     "TaskUniqueUntil",
     "otel_context",

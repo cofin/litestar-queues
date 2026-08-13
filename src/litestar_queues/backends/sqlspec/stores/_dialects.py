@@ -268,6 +268,13 @@ class PostgresQueueStore(SQLSpecQueueStore):
             ),
         ]
 
+    def interruptions_expression(self) -> "str":
+        """Return the JSONB accessor for the record's shutdown-interruption count."""
+        metadata = self._quoted_col("metadata_json")
+        if "metadata_json" not in self._native_json_columns:
+            metadata = f"({metadata})::JSONB"
+        return f"COALESCE(({metadata} ->> 'interruptions')::INT, 0)"
+
     def _json_type(self) -> "str":
         return "JSONB"
 

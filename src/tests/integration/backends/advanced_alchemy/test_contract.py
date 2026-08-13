@@ -1044,3 +1044,49 @@ class _FakeListenerSQLAlchemyBackend(SQLAlchemyBackend):
 
     async def _has_due_tasks(self) -> "bool":
         return self.listener.due_on_reconcile
+
+
+async def test_advanced_alchemy_assign_worker_persists_ownership(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_assign_worker_persists_ownership
+
+    await assert_assign_worker_persists_ownership(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_interrupts_owned_running_record(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_interrupts_owned_running_record
+
+    await assert_interrupts_owned_running_record(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_worker_shutdown_requeues_running_task(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_worker_shutdown_requeues_running_task
+
+    await assert_worker_shutdown_requeues_running_task(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_interruption_does_not_consume_retry_budget(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_retry_budget
+
+    await assert_interruption_does_not_consume_retry_budget(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_interruption_does_not_consume_failure_budget(
+    advanced_alchemy_backend: "SQLAlchemyBackend",
+) -> "None":
+    from tests.integration._interrupt_contract import assert_interruption_does_not_consume_failure_budget
+
+    await assert_interruption_does_not_consume_failure_budget(advanced_alchemy_backend)
+
+
+async def test_advanced_alchemy_stale_requeue_priority_policy(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
+
+    await assert_stale_requeue_priority_policy(advanced_alchemy_backend)

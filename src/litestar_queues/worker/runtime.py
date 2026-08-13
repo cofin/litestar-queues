@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import os
+import threading
 from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Protocol
 
@@ -15,7 +17,71 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig, WorkerConfig
     from litestar_queues.service import QueueService
 
-__all__ = ()
+__all__ = ("ShutdownWatchdog",)
+
+
+class ShutdownWatchdog:
+    """Force process exit when a forced shutdown does not finish in time.
+
+    The watchdog runs on a daemon thread rather than the event loop: the exact
+    failure it defends against is a loop that no longer runs callbacks, either
+    because a task refuses cancellation or because the loop itself is wedged.
+    """
+
+    __slots__ = ("_exit_fn", "_finished", "_signum", "_thread", "_timeout")
+
+    def __init__(self, timeout: "float | None", *, exit_fn: "Callable[[int], object]" = os._exit) -> "None":
+        """Initialize the watchdog.
+
+        Args:
+            timeout: Seconds from arming to forced exit; ``None`` disables it.
+            exit_fn: Exit callable, injected so tests never end the process.
+        """
+        self._timeout = timeout
+        self._exit_fn = exit_fn
+        self._finished = threading.Event()
+        self._thread: "threading.Thread | None" = None
+        self._signum: "int | None" = None
+
+    @property
+    def is_armed(self) -> "bool":
+        """Whether a deadline is currently running."""
+        return self._thread is not None and not self._finished.is_set()
+
+    def arm(self, signum: "int") -> "None":
+        """Start the exit deadline; the first arming signal wins."""
+        if self._timeout is None or self._thread is not None:
+            return
+        self._signum = signum
+        thread = threading.Thread(target=self._wait_and_exit, name="litestar-queues-shutdown-watchdog", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def disarm(self) -> "None":
+        """Cancel the deadline; a shutdown that completed must not exit hard."""
+        self._finished.set()
+
+    def exit_now(self, signum: "int") -> "None":
+        """Exit immediately with the conventional signal exit code."""
+        self._finished.set()
+        self._exit_fn(exit_code_for_signal(signum))
+
+    def _wait_and_exit(self) -> "None":
+        timeout = self._timeout
+        if timeout is None:
+            return
+        if self._finished.wait(timeout):
+            return
+        self._exit_fn(exit_code_for_signal(self._signum))
+
+
+def exit_code_for_signal(signum: "int | None") -> "int":
+    """Return the conventional ``128 + signum`` exit code.
+
+    Returns:
+        The shell convention exit code for a signal-terminated process.
+    """
+    return 128 + (signum if signum is not None else 15)
 
 
 class WorkerRunResult(IntEnum):

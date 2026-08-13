@@ -334,7 +334,7 @@ class SQLSpecQueueStore:
             retry_count_col = self._quoted_col("retry_count")
             max_retries_col = self._quoted_col("max_retries")
             retry_at = f"CAST(:retry_at AS {self._timestamp_type()})"
-            can_retry = f":retry = TRUE AND {retry_count_col} < {max_retries_col}"
+            can_retry = f":retry = TRUE AND ({retry_count_col} - {self.interruptions_expression()}) < {max_retries_col}"
             where = f"{self._quoted_col('id')} = :id AND {self._quoted_col('status')} = 'running'"
             if fence_retry_count:
                 where += f" AND {retry_count_col} = :expected_retry_count"
@@ -697,6 +697,51 @@ class SQLSpecQueueStore:
                 heartbeat_cutoff=heartbeat_cutoff,
             )
         return statement
+
+    def assign_worker(self, *, task_id: "str", worker_id: "str", expected_retry_count: "int") -> "Update":
+        """Return a fenced UPDATE statement that persists running-record ownership."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"worker_id": worker_id}))
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
+            .where_eq(self._col("retry_count"), expected_retry_count)
+        )
+
+    def interrupt_task(
+        self,
+        *,
+        task_id: "str",
+        expected_retry_count: "int",
+        worker_id: "str",
+        queued_at: "DatetimeParam",
+        retry_count: "int",
+        metadata_json: "Any",
+    ) -> "Update":
+        """Return a fenced UPDATE statement that returns an owned running task to pending."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(
+                **self._mapped_values({
+                    "status": "pending",
+                    "queued_at": queued_at,
+                    "scheduled_at": None,
+                    "started_at": None,
+                    "heartbeat_at": None,
+                    "completed_at": None,
+                    "execution_ref": None,
+                    "worker_id": None,
+                    "retry_count": retry_count,
+                    "metadata_json": metadata_json,
+                })
+            )
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("status"), "running")
+            .where_eq(self._col("retry_count"), expected_retry_count)
+            .where_eq(self._col("worker_id"), worker_id)
+        )
 
     def cancel_task(
         self, *, task_id: "str", completed_at: "DatetimeParam", include_running: "bool" = False
@@ -1224,6 +1269,24 @@ RETURNING {target}.{id_col} AS id
 
     def _result_json_type(self, column_name: "str") -> "str":
         return self._json_type()
+
+    def interruptions_expression(self) -> "str":
+        """Return SQL reading the record's shutdown-interruption count from its metadata.
+
+        Only stores that answer ``supports_dml_returning`` settle a task in one
+        statement, so only they need to read the counter in SQL; every other
+        store subtracts it in Python from the row it already fetched.
+
+        Raises:
+            NotImplementedError: When a store enables single-statement settling
+                without telling the queue how to read the counter.
+        """
+        msg = (
+            f"{type(self).__name__} enables supports_dml_returning but does not implement "
+            f"interruptions_expression(), so its single-statement retry budget would count "
+            f"shutdown interruptions as failed attempts."
+        )
+        raise NotImplementedError(msg)
 
     def _metadata_json_type(self, column_name: "str") -> "str":
         return self._json_type()
