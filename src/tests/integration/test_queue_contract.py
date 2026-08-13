@@ -352,7 +352,9 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
     assert stored_requeued is not None
     assert stored_requeued.status == "pending"
     assert stored_requeued.retry_count == 2
-    assert stored_requeued.priority == 4
+    # The default policy is "preserve": recovery must carry the enqueued
+    # priority through unchanged rather than demoting the record.
+    assert stored_requeued.priority == 10
     assert stored_requeued.error == "first failure"
     assert stored_failed is not None
     assert stored_failed.status == "failed"
