@@ -48,10 +48,42 @@ Support matrix
 Query and cleanup
 =================
 
-Use ``QueueEventLog`` to find events by task ID or task name, review stages,
-flush pending writes, and delete old records. Choose retention rules that fit
-your audit and privacy needs. Deleting finished task records does not delete
-event history, and vice versa.
+Use ``QueueEventLog`` to find events by task ID, task name, or actor, review
+stages, flush pending writes, and delete old records. Choose retention rules
+that fit your audit and privacy needs. Deleting finished task records does not
+delete event history, and vice versa.
+
+Filtering by actor
+==================
+
+An event may carry a ``QueueEventActor`` naming who or what caused it. History
+stores the actor's ``type`` and ``id`` and lets you filter on either:
+
+.. code-block:: python
+
+   from litestar_queues.events import QueueEvent, QueueEventActor
+
+   await publisher.publish(
+       QueueEvent(
+           type="task.log",
+           scope="task",
+           task_id=task_id,
+           message="importing",
+           actor=QueueEventActor(type="user", id="u-1", name="Alice"),
+       )
+   )
+
+   records = await event_log.list_events(actor_id="u-1")
+   service_records = await event_log.list_events(actor_type="service", task_name="tasks.import")
+
+Filters use equality and are ANDed together. Every backend stores the actor and
+answers the filter; the SQLSpec and Advanced Alchemy tables index
+``(actor_id, occurred_at)`` to match the time-ordered read pattern.
+
+The actor's ``name`` is not stored. It is mutable display text that would go
+stale against the event it was stamped on, so it travels on the live event
+envelope only. Resolve names from your own user or service directory when you
+render history.
 
 Configure a bounded event-history phase and run it from one external schedule:
 
@@ -109,7 +141,7 @@ methods satisfies it — no subclassing and no package change:
            ...
 
        async def list_events(
-           self, *, task_id=None, task_name=None, limit=None
+           self, *, task_id=None, task_name=None, actor_id=None, actor_type=None, limit=None
        ) -> list[QueueEventLogRecord]:
            ...  # your own query surface, scoped however you need
 
@@ -153,14 +185,15 @@ Query it with the additive ``extra`` filter on the SQLSpec event log:
    event_log = backend.get_event_log(history_config)
    records = await event_log.list_events(extra={"tenant_id": "acme"})
 
-``extra`` uses equality and is ANDed with ``task_id`` and ``task_name``. An
+``extra`` uses equality and is ANDed with the built-in ``task_id``,
+``task_name``, ``actor_id``, and ``actor_type`` filters. An
 undeclared key raises ``ValueError`` naming the declared columns, so the filter
 never reaches SQL unvalidated.
 
 A declared name must be a valid unquoted SQL identifier and must not collide
-with a column the package already owns. The names ``scope``, ``scope_key``,
-``actor``, and ``entity`` are also rejected: they are reserved for built-in
-scoping dimensions. Every name check — package-owned columns, reserved names,
+with a column the package already owns — including ``actor_type`` and
+``actor_id``. The names ``scope``, ``scope_key``, and ``entity`` are also
+rejected: they are reserved for built-in scoping dimensions. Every name check — package-owned columns, reserved names,
 and duplicates between your own declarations — ignores case, because unquoted
 SQL identifiers fold case, so ``TASK_ID`` and ``task_id`` are one column to the
 database. A rejected declaration raises ``QueueConfigurationError`` when the

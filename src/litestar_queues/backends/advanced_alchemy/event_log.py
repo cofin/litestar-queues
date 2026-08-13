@@ -76,12 +76,20 @@ class AdvancedAlchemyQueueEventLog:
             self._last_flush = time.monotonic()
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
+        limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return durable event history records."""
         await self.flush_events()
         async with self._service_factory() as service:
-            return await service.list_events(task_id=task_id, task_name=task_name, limit=limit)
+            return await service.list_events(
+                task_id=task_id, task_name=task_name, actor_id=actor_id, actor_type=actor_type, limit=limit
+            )
 
     async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
         """Return no aggregate summaries for the Advanced Alchemy event log."""

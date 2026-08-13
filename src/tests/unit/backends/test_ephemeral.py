@@ -18,7 +18,7 @@ from litestar_queues.backends.ephemeral import backend as ephemeral_backend_modu
 from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, record_from_payload, record_to_payload
 from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
-from litestar_queues.events import EventHistoryConfig, QueueEvent
+from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventActor
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
 from tests.helpers._timing import MutableClock
@@ -627,6 +627,39 @@ async def test_event_log_round_trips_every_history_field(backend: "EphemeralQueu
     assert record.duration_ms == 11.0
     assert record.sequence == 7
     assert record.occurred_at == occurred
+
+
+async def test_event_log_filters_by_actor(backend: "EphemeralQueueBackend") -> "None":
+    log = _event_log(backend, EventHistoryConfig())
+    for index, actor in enumerate((
+        QueueEventActor(type="user", id="u-1", name="Alice"),
+        QueueEventActor(type="service", id="svc-1"),
+        None,
+    )):
+        await log.publish_event(
+            QueueEvent(
+                type="task.log",
+                scope="task",
+                task_id=f"task-{index}",
+                task_name="tasks.actor",
+                sequence=index,
+                actor=actor,
+                payload={"index": index},
+                occurred_at=datetime(2026, 1, 1, 0, 0, index, tzinfo=timezone.utc),
+            )
+        )
+
+    recorded = await log.list_events(task_name="tasks.actor")
+    by_actor_id = await log.list_events(actor_id="u-1")
+    by_actor_type = await log.list_events(actor_type="service")
+
+    assert [(record.actor_type, record.actor_id) for record in recorded] == [
+        ("user", "u-1"),
+        ("service", "svc-1"),
+        (None, None),
+    ]
+    assert [record.detail["index"] for record in by_actor_id] == [0]
+    assert [record.detail["index"] for record in by_actor_type] == [1]
 
 
 async def test_event_log_summarize_stages_returns_no_aggregates(backend: "EphemeralQueueBackend") -> "None":

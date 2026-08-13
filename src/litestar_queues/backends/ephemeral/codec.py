@@ -77,6 +77,8 @@ _EVENT_FIELDS = (
     "worker_id",
     "execution_backend",
     "execution_profile",
+    "actor_type",
+    "actor_id",
     "stage",
     "level",
     "message",

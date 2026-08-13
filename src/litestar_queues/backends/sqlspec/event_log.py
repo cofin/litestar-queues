@@ -87,6 +87,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 if column.indexed
             ),
             self._to_sql(sql.drop_index(self._index_name("occurred_at")).if_exists()),
+            self._to_sql(sql.drop_index(self._index_name("actor_id")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("task_name")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("task_id")).if_exists()),
             self._to_sql(sql.drop_table(self.table_name).if_exists()),
@@ -104,6 +105,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         *,
         task_id: "str | None" = None,
         task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
         limit: "int | None" = None,
         extra: "Mapping[str, str] | None" = None,
     ) -> "Select":
@@ -118,6 +121,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             statement = statement.where_eq("task_id", task_id)
         if task_name is not None:
             statement = statement.where_eq("task_name", task_name)
+        if actor_id is not None:
+            statement = statement.where_eq("actor_id", actor_id)
+        if actor_type is not None:
+            statement = statement.where_eq("actor_type", actor_type)
         for name, value in filters:
             statement = statement.where_eq(name, value)
         statement = statement.order_by(
@@ -207,6 +214,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             .column("worker_id", self._indexed_text_type())
             .column("execution_backend", self._indexed_text_type())
             .column("execution_profile", self._indexed_text_type())
+            .column("actor_type", self._indexed_text_type())
+            .column("actor_id", self._indexed_text_type())
             .column("stage", self._indexed_text_type())
             .column("level", self._indexed_text_type())
             .column("message", self._text_type())
@@ -246,6 +255,13 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 .if_not_exists()
                 .on_table(self.table_name)
                 .columns("task_name", "stage", "occurred_at")
+            ),
+            self._to_sql(
+                sql
+                .create_index(self._index_name("actor_id"))
+                .if_not_exists()
+                .on_table(self.table_name)
+                .columns("actor_id", "occurred_at")
             ),
             self._to_sql(
                 sql
@@ -295,6 +311,8 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
             f"{self._quote_identifier('worker_id')} {self._indexed_text_type()}",
             f"{self._quote_identifier('execution_backend')} {self._indexed_text_type()}",
             f"{self._quote_identifier('execution_profile')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('actor_type')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('actor_id')} {self._indexed_text_type()}",
             f"{self._quote_identifier('stage')} {self._indexed_text_type()}",
             f"{self._quote_identifier('level')} {self._indexed_text_type()}",
             f"{self._quote_identifier('message')} {self._text_type()}",
@@ -325,6 +343,10 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 f"{self._quote_identifier('occurred_at')})"
             ),
             (
+                f"CREATE INDEX {self._quoted_index_name('actor_id')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('actor_id')}, {self._quote_identifier('occurred_at')})"
+            ),
+            (
                 f"CREATE INDEX {self._quoted_index_name('occurred_at')} ON {self._quoted_table_name()} "
                 f"({self._quote_identifier('occurred_at')})"
             ),
@@ -347,6 +369,7 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 if column.indexed
             ),
             f"DROP INDEX {self._quoted_index_name('occurred_at')}",
+            f"DROP INDEX {self._quoted_index_name('actor_id')}",
             f"DROP INDEX {self._quoted_index_name('task_name')}",
             f"DROP INDEX {self._quoted_index_name('task_id')}",
             f"DROP TABLE {self._quoted_table_name()}",
@@ -423,15 +446,16 @@ class SQLSpecQueueEventLog:
         *,
         task_id: "str | None" = None,
         task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
         limit: "int | None" = None,
         extra: "Mapping[str, str] | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return durable event history records.
 
         ``extra`` filters on adopter-declared event-history columns with
-        equality, ANDed with ``task_id`` and ``task_name``. It is additive on
-        this concrete store; the ``QueueEventLog`` protocol signature is
-        unchanged.
+        equality, ANDed with the package-owned filters. It is additive on this
+        concrete store; the ``QueueEventLog`` protocol signature is unchanged.
 
         Raises:
             ValueError: If ``extra`` names a column that was not declared.
@@ -439,7 +463,14 @@ class SQLSpecQueueEventLog:
         await self.flush_events()
         async with self._session_factory() as driver:
             rows = await driver.select(
-                self._store.select_events(task_id=task_id, task_name=task_name, limit=limit, extra=extra)
+                self._store.select_events(
+                    task_id=task_id,
+                    task_name=task_name,
+                    actor_id=actor_id,
+                    actor_type=actor_type,
+                    limit=limit,
+                    extra=extra,
+                )
             )
         return [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
 
@@ -497,6 +528,8 @@ class SQLSpecQueueEventLog:
             "worker_id": event.worker_id,
             "execution_backend": event.execution_backend,
             "execution_profile": event.execution_profile,
+            "actor_type": event.actor.type if event.actor is not None else None,
+            "actor_id": event.actor.id if event.actor is not None else None,
             "stage": _optional_str(detail.get("stage")),
             "level": event.level,
             "message": event.message,
@@ -523,6 +556,8 @@ class SQLSpecQueueEventLog:
             worker_id=cast("str | None", row["worker_id"]),
             execution_backend=cast("str | None", row["execution_backend"]),
             execution_profile=cast("str | None", row["execution_profile"]),
+            actor_type=cast("str | None", row["actor_type"]),
+            actor_id=cast("str | None", row["actor_id"]),
             stage=cast("str | None", row["stage"]),
             level=cast("str | None", row["level"]),
             message=cast("str | None", row["message"]),

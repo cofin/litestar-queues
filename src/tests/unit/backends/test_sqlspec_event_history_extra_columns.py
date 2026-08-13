@@ -84,7 +84,7 @@ def test_extra_column_duplicate_names_are_case_insensitive() -> "None":
         validate_event_history_extra_columns(columns)
 
 
-@pytest.mark.parametrize("reserved", ["scope", "scope_key", "actor", "entity"])
+@pytest.mark.parametrize("reserved", ["scope", "scope_key", "entity"])
 def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "None":
     """Names held for the built-in scoping dimensions cannot be claimed by adopters."""
     column = EventHistoryExtraColumn(name=reserved, source="x")
@@ -93,7 +93,7 @@ def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "Non
         validate_event_history_extra_columns((column,))
 
 
-@pytest.mark.parametrize("reserved", ["Scope", "SCOPE_KEY", "Actor", "ENTITY"])
+@pytest.mark.parametrize("reserved", ["Scope", "SCOPE_KEY", "ENTITY"])
 def test_extra_column_reserved_names_are_case_insensitive(reserved: "str") -> "None":
     """Unquoted SQL identifiers are case-insensitive, so the reservation is too."""
     column = EventHistoryExtraColumn(name=reserved, source="x")
@@ -111,6 +111,15 @@ def test_extra_column_names_near_reserved_words_are_allowed() -> "None":
     )
 
     assert validate_event_history_extra_columns(columns) == columns
+
+
+@pytest.mark.parametrize("name", ["actor_type", "actor_id", "ACTOR_ID", "Actor_Type"])
+def test_actor_columns_are_package_owned(name: "str") -> "None":
+    """The actor columns are real columns now, so they collide as package-owned names."""
+    column = EventHistoryExtraColumn(name=name, source="x")
+
+    with pytest.raises(QueueConfigurationError, match="package-owned"):
+        validate_event_history_extra_columns((column,))
 
 
 def test_extra_column_duplicate_names_rejected() -> "None":
@@ -174,6 +183,42 @@ def test_unindexed_extra_column_has_no_index_statement() -> "None":
 
     assert any("project_id" in statement and statement.startswith("CREATE TABLE") for statement in statements)
     assert not any("project_id" in statement and statement.startswith("CREATE INDEX") for statement in statements)
+
+
+def test_actor_columns_are_created_and_indexed() -> "None":
+    store = _store()
+
+    statements = store.create_statements()  # type: ignore[attr-defined]
+    template = store.insert_events_template()  # type: ignore[attr-defined]
+
+    create_table = next(statement for statement in statements if statement.startswith("CREATE TABLE"))
+    assert "actor_type" in create_table
+    assert "actor_id" in create_table
+    assert any(
+        statement.startswith("CREATE INDEX") and "actor_id" in statement and "occurred_at" in statement
+        for statement in statements
+    )
+    assert ":actor_type" in template
+    assert ":actor_id" in template
+    assert any("actor_id" in statement for statement in store.drop_statements())  # type: ignore[attr-defined]
+
+
+def test_actor_name_is_not_persisted() -> "None":
+    """Display names go stale against the event they are stamped on, so only type and id persist."""
+    store = _store()
+
+    statements = store.create_statements()  # type: ignore[attr-defined]
+
+    assert "actor_name" not in next(statement for statement in statements if statement.startswith("CREATE TABLE"))
+
+
+def test_select_events_filters_on_actor() -> "None":
+    store = _store()
+
+    rendered = store.select_events(actor_id="u-1", actor_type="user").build(dialect="sqlite").sql  # type: ignore[attr-defined]
+
+    assert "actor_id" in rendered
+    assert "actor_type" in rendered
 
 
 def test_select_events_rejects_undeclared_extra_filter() -> "None":

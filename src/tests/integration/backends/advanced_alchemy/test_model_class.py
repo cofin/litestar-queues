@@ -97,6 +97,8 @@ def test_queue_event_history_model_mixin_adds_generic_event_history_schema() -> 
         "worker_id",
         "execution_backend",
         "execution_profile",
+        "actor_type",
+        "actor_id",
         "level",
         "message",
         "detail_json",
@@ -106,11 +108,12 @@ def test_queue_event_history_model_mixin_adds_generic_event_history_schema() -> 
         "sequence",
         "occurred_at",
     } <= _column_names(CustomQueueEventHistoryModel)
-    assert {"stage", "duration_ms"}.isdisjoint(_column_names(CustomQueueEventHistoryModel))
+    assert {"stage", "duration_ms", "actor_name"}.isdisjoint(_column_names(CustomQueueEventHistoryModel))
     assert {
         "ix_custom_queue_task_event_log_task_id",
         "ix_custom_queue_task_event_log_task_name",
         "ix_custom_queue_task_event_log_event_type",
+        "ix_custom_queue_task_event_log_actor_id",
         "ix_custom_queue_task_event_log_occurred_at",
     } <= _index_names(CustomQueueEventHistoryModel)
 

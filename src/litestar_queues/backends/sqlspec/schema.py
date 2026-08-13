@@ -81,6 +81,8 @@ EVENT_HISTORY_COLUMNS = (
     "worker_id",
     "execution_backend",
     "execution_profile",
+    "actor_type",
+    "actor_id",
     "stage",
     "level",
     "message",
@@ -97,7 +99,7 @@ EVENT_HISTORY_COLUMNS = (
 
 _EVENT_HISTORY_COLUMN_NAMES = frozenset(EVENT_HISTORY_COLUMNS)
 
-RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"actor", "entity", "scope", "scope_key"})
+RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"entity", "scope", "scope_key"})
 """Names held for built-in event-history scoping dimensions.
 
 These are not columns on the table yet. They are reserved so an adopter-declared

@@ -35,6 +35,8 @@ def event_log_record_from_event(event: "QueueEvent", *, created_at: "datetime | 
         worker_id=event.worker_id,
         execution_backend=event.execution_backend,
         execution_profile=event.execution_profile,
+        actor_type=event.actor.type if event.actor is not None else None,
+        actor_id=event.actor.id if event.actor is not None else None,
         stage=optional_str(detail.get("stage")),
         level=event.level,
         message=event.message,

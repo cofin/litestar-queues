@@ -16,6 +16,7 @@ from litestar_queues import (
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.events import (
     QueueEvent,
+    QueueEventActor,
     QueueEventsConfig,
     publish_task_event,
     publish_task_log,
@@ -124,6 +125,55 @@ async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() ->
     assert [record.detail["index"] for record in after_second] == [4]
     assert final_deleted == 0
     assert [record.detail["index"] for record in after_final] == [4]
+
+
+async def test_memory_backend_event_log_records_and_filters_the_actor() -> "None":
+    event_log_config = EventHistoryConfig()
+    backend = InMemoryQueueBackend(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=event_log_config),
+        )
+    )
+    event_log = backend.get_event_log(event_log_config)
+    assert event_log is not None
+
+    await event_log.publish_event(
+        QueueEvent(
+            type="task.log",
+            scope="task",
+            task_name="tasks.actor",
+            actor=QueueEventActor(type="user", id="u-1", name="Alice"),
+            payload={"index": 0},
+        )
+    )
+    await event_log.publish_event(
+        QueueEvent(
+            type="task.log",
+            scope="task",
+            task_name="tasks.actor",
+            actor=QueueEventActor(type="service", id="svc-1"),
+            payload={"index": 1},
+        )
+    )
+    await event_log.publish_event(
+        QueueEvent(type="task.log", scope="task", task_name="tasks.actor", payload={"index": 2})
+    )
+
+    recorded = await event_log.list_events(task_name="tasks.actor")
+    by_actor_id = await event_log.list_events(actor_id="u-1")
+    by_actor_type = await event_log.list_events(actor_type="service")
+    by_both = await event_log.list_events(actor_id="u-1", actor_type="service")
+
+    assert [(record.actor_type, record.actor_id) for record in recorded] == [
+        ("user", "u-1"),
+        ("service", "svc-1"),
+        (None, None),
+    ]
+    assert [record.detail["index"] for record in by_actor_id] == [0]
+    assert [record.detail["index"] for record in by_actor_type] == [1]
+    assert by_both == []
 
 
 async def test_memory_backend_clear_clears_event_log() -> "None":

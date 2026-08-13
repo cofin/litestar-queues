@@ -71,7 +71,13 @@ class RedisQueueEventLog:
             self._last_flush = time.monotonic()
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        actor_id: "str | None" = None,
+        actor_type: "str | None" = None,
+        limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return durable event history records."""
         await self.flush_events()
@@ -82,7 +88,10 @@ class RedisQueueEventLog:
         records = [
             record
             for record in records
-            if (task_id is None or record.task_id == task_id) and (task_name is None or record.task_name == task_name)
+            if (task_id is None or record.task_id == task_id)
+            and (task_name is None or record.task_name == task_name)
+            and (actor_id is None or record.actor_id == actor_id)
+            and (actor_type is None or record.actor_type == actor_type)
         ]
         records.sort(key=event_log_record_sort_key)
         return records[:limit] if limit is not None else records
@@ -178,6 +187,8 @@ class RedisQueueEventLog:
             "worker_id": record.worker_id or "",
             "execution_backend": record.execution_backend or "",
             "execution_profile": record.execution_profile or "",
+            "actor_type": record.actor_type or "",
+            "actor_id": record.actor_id or "",
             "level": record.level or "",
             "message": record.message or "",
             "detail": _json_dumps(record.detail),
@@ -230,6 +241,8 @@ def _record_from_mapping(mapping: "dict[str, Any]") -> "QueueEventLogRecord":
         worker_id=_optional_mapping_str(mapping.get("worker_id")),
         execution_backend=_optional_mapping_str(mapping.get("execution_backend")),
         execution_profile=_optional_mapping_str(mapping.get("execution_profile")),
+        actor_type=_optional_mapping_str(mapping.get("actor_type")),
+        actor_id=_optional_mapping_str(mapping.get("actor_id")),
         stage=optional_str(detail.get("stage")),
         level=_optional_mapping_str(mapping.get("level")),
         message=_optional_mapping_str(mapping.get("message")),
