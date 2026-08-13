@@ -182,6 +182,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
             queue_col = self._quoted_col("queue")
             eb_col = self._quoted_col("execution_backend")
             priority_col = self._quoted_col("priority")
+            queued_col = self._quoted_col("queued_at")
             created_col = self._quoted_col("created_at")
             claim_conditions = [
                 f"{status_col} IN ('pending', 'scheduled')",
@@ -206,7 +207,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
                 f"{self._quoted_col('completed_at')} = :completed_at, {self._quoted_col('heartbeat_at')} = NULL "
                 f"FROM expired_candidates AS e WHERE t.{id_col} = e.{id_col} RETURNING {returned}), "
                 f"claim_candidates AS (SELECT {id_col} FROM {table} WHERE {claim_where} "
-                f"ORDER BY {priority_col} DESC, {created_col} ASC "
+                f"ORDER BY {priority_col} DESC, {queued_col} ASC, {created_col} ASC, {id_col} ASC "
                 f"FOR UPDATE SKIP LOCKED LIMIT :limit), "
                 f"claimed AS (UPDATE {table} AS t SET {status_col} = 'running', "
                 f"{self._quoted_col('started_at')} = :started_at, {self._quoted_col('heartbeat_at')} = :heartbeat_at "
@@ -253,7 +254,8 @@ class PostgresQueueStore(SQLSpecQueueStore):
             (
                 f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('pending')} "
                 f"ON {table_name} ({self._quoted_col('queue')}, {self._quoted_col('execution_backend')}, "
-                f"{self._quoted_col('priority')} DESC, {self._quoted_col('created_at')}) "
+                f"{self._quoted_col('priority')} DESC, {self._quoted_col('queued_at')}, "
+                f"{self._quoted_col('created_at')}) "
                 f"WHERE {self._quoted_col('status')} IN ('pending', 'scheduled')"
             ),
             (

@@ -577,6 +577,27 @@ def test_postgres_claim_with_expired_sql_is_one_tagged_statement() -> "None":
     assert '"execution_backend" = :execution_backend' in sql
 
 
+def test_postgres_claim_with_expired_sql_orders_by_queued_at() -> "None":
+    """The combined expiry/claim statement uses the canonical fairness ordering."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    sql = store.claim_batch_with_expired_returning_sql(queue_count=0, filter_execution_backend=False)
+
+    assert 'ORDER BY "priority" DESC, "queued_at" ASC, "created_at" ASC, "id" ASC' in sql
+    assert 'ORDER BY "priority" DESC, "created_at" ASC ' not in sql
+
+
+def test_postgres_pending_index_covers_queued_at() -> "None":
+    """The Postgres partial pending index matches the canonical claim ordering."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    pending_index = next(
+        statement for statement in store.create_statements() if store._quoted_index_name("pending") in statement
+    )
+
+    assert '"priority" DESC, "queued_at", "created_at"' in pending_index
+
+
 def test_sqlspec_complete_returning_sql_clears_heartbeat_and_fences() -> "None":
     """The completion statement clears the heartbeat and fences on running status."""
     store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
@@ -1763,6 +1784,28 @@ async def test_sqlspec_postgres_claim_many_single_statement_orders_and_fences(
             claimed_ids.extend(record.id for record in straggler)
         assert len(claimed_ids) == len(set(claimed_ids))
         assert set(claimed_ids) == concurrent_ids
+
+
+async def test_sqlspec_postgres_combined_claim_retries_behind_newer_work(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """A retried record re-enters behind newer same-priority work on the combined hot path."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_claim_fair") as backend:
+        assert type(backend._get_store()).supports_combined_expiry_claim is True
+
+        old = await backend.enqueue("tasks.fairness.old", queue="q1", priority=5, max_retries=3)
+        newer = await backend.enqueue("tasks.fairness.newer", queue="q1", priority=5, max_retries=3)
+
+        first, _ = await backend.claim_many_with_expired(limit=1, queues=("q1",))
+        assert [record.id for record in first] == [old.id]
+
+        retried = await backend.fail_task(old.id, "boom", retry=True, expected_retry_count=0)
+        assert retried is not None
+        assert retried.status == "pending"
+
+        second, _ = await backend.claim_many_with_expired(limit=1, queues=("q1",))
+
+        assert [record.id for record in second] == [newer.id]
 
 
 async def test_sqlspec_postgres_claim_many_returns_owned_expirations(
