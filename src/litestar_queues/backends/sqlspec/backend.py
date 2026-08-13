@@ -736,15 +736,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         Returns:
             Claimed task records.
         """
-        if queue_limits is not None:
-            return await super().claim_many(
-                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
-            )
         if limit <= 0:
             return []
         store = self._get_store()
         if not type(store).supports_returning_claim:
-            return await super().claim_many(limit=limit, queues=queues, execution_backend=execution_backend)
+            return await super().claim_many(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
         now = _utc_now()
         parameters: "dict[str, Any]" = {
             "now": self._serialize_datetime(now),
@@ -758,8 +756,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             parameters[f"queue_{index}"] = queue
         if execution_backend is not None:
             parameters["execution_backend"] = execution_backend
+        cap_count = self._bind_queue_limits(parameters, queue_limits)
         sql_text = store.claim_batch_returning_sql(
-            queue_count=len(queues), filter_execution_backend=execution_backend is not None
+            queue_count=len(queues), filter_execution_backend=execution_backend is not None, cap_count=cap_count
         )
         with self._observe_queue_operation("claim", execution_backend=execution_backend):
             async with self._session() as driver:
@@ -778,16 +777,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report every expiry transition owned by this call."""
-        if queue_limits is not None:
-            return await super().claim_many_with_expired(
-                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
-            )
         if limit <= 0:
             return [], []
         store = self._get_store()
         if type(store).supports_combined_expiry_claim:
             return await self._claim_many_postgres_with_expired(
-                store, limit=limit, queues=queues, execution_backend=execution_backend
+                store, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+            )
+        if queue_limits is not None:
+            return await super().claim_many_with_expired(
+                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
             )
 
         expired = await self.expire_overdue()
@@ -816,8 +815,28 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         unique_expired = {record.id: record for record in expired}
         return claimed, list(unique_expired.values())
 
+    @staticmethod
+    def _bind_queue_limits(parameters: "dict[str, Any]", queue_limits: "Mapping[str, int] | None") -> "int":
+        """Bind per-queue caps as ``qc_*`` parameters.
+
+        Returns:
+            The number of bound caps, which selects the capped statement variant.
+        """
+        if not queue_limits:
+            return 0
+        for index, (queue, cap) in enumerate(sorted(queue_limits.items())):
+            parameters[f"qc_queue_{index}"] = queue
+            parameters[f"qc_cap_{index}"] = cap
+        return len(queue_limits)
+
     async def _claim_many_postgres_with_expired(
-        self, store: "SQLSpecQueueStore", *, limit: "int", queues: "tuple[str, ...]", execution_backend: "str | None"
+        self,
+        store: "SQLSpecQueueStore",
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]",
+        execution_backend: "str | None",
+        queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         now = _utc_now()
         parameters: "dict[str, Any]" = {
@@ -833,8 +852,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             parameters[f"queue_{index}"] = queue
         if execution_backend is not None:
             parameters["execution_backend"] = execution_backend
+        cap_count = self._bind_queue_limits(parameters, queue_limits)
         sql_text = store.claim_batch_with_expired_returning_sql(
-            queue_count=len(queues), filter_execution_backend=execution_backend is not None
+            queue_count=len(queues), filter_execution_backend=execution_backend is not None, cap_count=cap_count
         )
         with self._observe_queue_operation("claim", execution_backend=execution_backend):
             async with self._session() as driver:

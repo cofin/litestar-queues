@@ -168,9 +168,11 @@ class PostgresQueueStore(SQLSpecQueueStore):
     supports_returning_claim: "ClassVar[bool]" = True
     supports_combined_expiry_claim: "ClassVar[bool]" = True
 
-    def claim_batch_with_expired_returning_sql(self, *, queue_count: "int", filter_execution_backend: "bool") -> "str":
+    def claim_batch_with_expired_returning_sql(
+        self, *, queue_count: "int", filter_execution_backend: "bool", cap_count: "int" = 0
+    ) -> "str":
         """Return one PostgreSQL statement that expires and claims due records."""
-        cache_key = f"claim_batch_with_expired:{queue_count}:{int(filter_execution_backend)}"
+        cache_key = f"claim_batch_with_expired:{queue_count}:{int(filter_execution_backend)}:{cap_count}"
 
         def build() -> "str":
             table = self._quoted_table_name()
@@ -198,6 +200,19 @@ class PostgresQueueStore(SQLSpecQueueStore):
                 claim_conditions.append(f"{eb_col} = :execution_backend")
             claim_where = " AND ".join(claim_conditions)
             returned = self._prefixed_returning_columns_sql("t")
+            if cap_count:
+                candidates_sql = (
+                    f"{self._capped_candidate_ctes_sql(cap_count=cap_count, where=claim_where)}"  # noqa: S608
+                    f"claim_candidates AS (SELECT {id_col} FROM {table} "
+                    f"WHERE {id_col} IN (SELECT {id_col} FROM picked) AND {claim_where} "
+                    f"FOR UPDATE SKIP LOCKED), "
+                )
+            else:
+                candidates_sql = (
+                    f"claim_candidates AS (SELECT {id_col} FROM {table} WHERE {claim_where} "  # noqa: S608
+                    f"ORDER BY {priority_col} DESC, {queued_col} ASC, {created_col} ASC, {id_col} ASC "
+                    f"FOR UPDATE SKIP LOCKED LIMIT :limit), "
+                )
             return (
                 f"WITH expired_candidates AS (SELECT {id_col} FROM {table} "  # noqa: S608
                 f"WHERE {status_col} IN ('pending', 'scheduled') AND {execution_ref_col} IS NULL "
@@ -206,9 +221,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
                 f"expired AS (UPDATE {table} AS t SET {status_col} = 'expired', "
                 f"{self._quoted_col('completed_at')} = :completed_at, {self._quoted_col('heartbeat_at')} = NULL "
                 f"FROM expired_candidates AS e WHERE t.{id_col} = e.{id_col} RETURNING {returned}), "
-                f"claim_candidates AS (SELECT {id_col} FROM {table} WHERE {claim_where} "
-                f"ORDER BY {priority_col} DESC, {queued_col} ASC, {created_col} ASC, {id_col} ASC "
-                f"FOR UPDATE SKIP LOCKED LIMIT :limit), "
+                f"{candidates_sql}"
                 f"claimed AS (UPDATE {table} AS t SET {status_col} = 'running', "
                 f"{self._quoted_col('started_at')} = :started_at, {self._quoted_col('heartbeat_at')} = :heartbeat_at "
                 f"FROM claim_candidates AS c WHERE t.{id_col} = c.{id_col} RETURNING {returned}) "

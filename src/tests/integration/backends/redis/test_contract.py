@@ -364,9 +364,37 @@ async def test_redis_backend_claim_many_orders_by_priority_then_created(redis_ba
     assert all(record.status == "running" for record in claimed)
 
 
-async def test_redis_queue_filtered_claim_reaches_beyond_ready_window(
-    redis_backend: "RedisQueueBackend",
+async def test_redis_claim_many_enforces_queue_limits_in_script(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
+    """Per-queue caps are applied inside the claim script, not by a generic fallback loop."""
+    from litestar_queues.backends.base import BaseQueueBackend
+
+    email_first = await redis_backend.enqueue("tasks.caps.email1", queue="email", priority=100)
+    email_second = await redis_backend.enqueue("tasks.caps.email2", queue="email", priority=90)
+    bulk = await redis_backend.enqueue("tasks.caps.bulk", queue="bulk", priority=50)
+    reports = await redis_backend.enqueue("tasks.caps.reports", queue="reports", priority=1)
+
+    def _fail(*args: "Any", **kwargs: "Any") -> "Any":
+        del args, kwargs
+        msg = "fell back to generic claim loop"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(BaseQueueBackend, "claim_many", _fail)
+    monkeypatch.setattr(BaseQueueBackend, "claim_next", _fail)
+
+    claimed = await redis_backend.claim_many(limit=4, queue_limits={"email": 1, "reports": 2})
+
+    assert [record.id for record in claimed] == [email_first.id, bulk.id, reports.id]
+    stored = await redis_backend.get_task(email_second.id)
+    assert stored is not None
+    assert stored.status == "pending"
+
+    later = await redis_backend.claim_many(limit=4)
+    assert [record.id for record in later] == [email_second.id]
+
+
+async def test_redis_queue_filtered_claim_reaches_beyond_ready_window(redis_backend: "RedisQueueBackend") -> "None":
     """A queue-filtered claim finds records sitting far behind other queues' head-of-set traffic."""
     noise = [await redis_backend.enqueue(f"tasks.noise.{index}", queue="noise", priority=10) for index in range(40)]
     wanted = [await redis_backend.enqueue(f"tasks.wanted.{index}", queue="wanted", priority=1) for index in range(3)]

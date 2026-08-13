@@ -111,9 +111,16 @@ local eb_filter = ARGV[5]
 local window = tonumber(ARGV[6])
 
 local reservation_prefix = ARGV[7]
+local ncaps = tonumber(ARGV[8])
+local caps = {}
+local idx = 9
+for _ = 1, ncaps do
+    caps[ARGV[idx]] = tonumber(ARGV[idx + 1])
+    idx = idx + 2
+end
 local queue_filter = {}
 local has_queue_filter = false
-for i = 8, #ARGV do
+for i = idx, #ARGV do
     queue_filter[ARGV[i]] = true
     has_queue_filter = true
 end
@@ -200,17 +207,21 @@ while #claimed < limit do
                     redis.call('PUBLISH', prefix .. ':completions', id)
                     expired[#expired + 1] = id
                 else
-                    redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
-                        'started_score', now_ms, 'heartbeat_score', now_ms)
-                    redis.call('SREM', prefix .. ':status:pending', id)
-                    redis.call('SADD', prefix .. ':status:running', id)
-                    redis.call('ZREM', ready, id)
-                    removed = removed + 1
-                    redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
-                    redis.call('ZREM', prefix .. ':maintenance:terminal', id)
-                    redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-                    redis.call('ZREM', prefix .. ':maintenance:external', id)
-                    claimed[#claimed + 1] = id
+                    local cap = caps[q]
+                    if cap == nil or cap > 0 then
+                        redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
+                            'started_score', now_ms, 'heartbeat_score', now_ms)
+                        redis.call('SREM', prefix .. ':status:pending', id)
+                        redis.call('SADD', prefix .. ':status:running', id)
+                        redis.call('ZREM', ready, id)
+                        removed = removed + 1
+                        redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
+                        redis.call('ZREM', prefix .. ':maintenance:terminal', id)
+                        redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+                        redis.call('ZREM', prefix .. ':maintenance:external', id)
+                        claimed[#claimed + 1] = id
+                        if cap ~= nil then caps[q] = cap - 1 end
+                    end
                 end
             end
         end
@@ -986,9 +997,7 @@ class RedisQueueBackend(BaseQueueBackend):
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
-        due_records.sort(
-            key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int)
-        )
+        due_records.sort(key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int))
         return due_records[:limit]
 
     async def claim_task(
@@ -1059,15 +1068,12 @@ class RedisQueueBackend(BaseQueueBackend):
         queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report expirations owned by the same Lua script."""
-        if queue_limits is not None:
-            return await super().claim_many_with_expired(
-                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
-            )
         if limit <= 0:
             return [], []
         client = await self._get_client()
         now = _utc_now()
         window = max(limit * 2, limit + 10)
+        caps = sorted((queue_limits or {}).items())
         args = [
             self._key_prefix,
             repr(now.timestamp() * 1000.0),
@@ -1076,6 +1082,8 @@ class RedisQueueBackend(BaseQueueBackend):
             execution_backend or "",
             str(window),
             EXTERNAL_DISPATCH_RESERVATION_PREFIX,
+            str(len(caps)),
+            *(value for queue, cap in caps for value in (queue, str(cap))),
             *queues,
         ]
         outcome = await _eval_script(client, _CLAIM_SCRIPT, [self._ready_key, self._scheduled_key], args)
