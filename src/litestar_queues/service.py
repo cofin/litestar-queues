@@ -653,8 +653,9 @@ class QueueService:
         await task_context.lifecycle("task.cancelled", message=message, payload=payload)
         self._log_task_event("Queue task cancelled", record, level=logging.INFO, payload=payload)
         if include_running:
-            # Not gated on a persisted owner: backends that do not track one
-            # would otherwise never emit the hint their workers listen for.
+            # Not gated on a persisted owner: an unclaimed record has no owner
+            # to name, and every subscribed worker reconciles the shared
+            # control channel against durable status regardless.
             await backend.notify_worker_control(record.worker_id)
         return True
 

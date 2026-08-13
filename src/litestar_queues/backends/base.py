@@ -230,10 +230,11 @@ class BaseQueueBackend:
     async def notify_worker_control(self, worker_id: "str | None") -> "None":
         """Publish a best-effort worker-control hint.
 
-        ``worker_id`` is the record's persisted owner when the backend tracks
-        one, and ``None`` otherwise. It travels for observability only: the
-        control channel is shared and every subscribed worker reconciles its
-        own running tasks against durable status on receipt.
+        ``worker_id`` is the record's persisted owner, or ``None`` when the
+        record was cancelled before any worker claimed it. It travels for
+        observability only: the control channel is shared and every subscribed
+        worker reconciles its own running tasks against durable status on
+        receipt.
 
         Worker-control hints are lossy: durable status remains authoritative,
         and a dropped hint costs cancellation latency, never correctness.
