@@ -8,24 +8,24 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 
 def test_queue_config_exposes_format_specific_namespace_names() -> None:
-    config = QueueConfig(namespace="dma")
+    config = QueueConfig(namespace="myapp")
 
-    assert config.namespace == "dma"
-    assert config.names == QueueNamespace("dma")
-    assert config.names.metric("wakeups") == "dma.wakeups"
-    assert config.names.logger("worker") == "dma.worker"
-    assert config.names.channel("worker_wakeups") == "dma:worker_wakeups"
-    assert config.names.key("tasks") == "dma:tasks"
-    assert config.names.registration("service") == "dma_service"
-    assert config.names.environment("task_id") == "DMA_TASK_ID"
-    assert config.names.resource("worker") == "dma-worker"
-    assert config.names.coordination("maintenance") == "dma-maintenance"
-    assert config.service_state_key == "dma_service"
-    assert config.worker_state_key == "dma_worker"
-    assert config.event_publisher_state_key == "dma_event_publisher"
-    assert config.event_channels_state_key == "dma_event_channels"
-    assert config.observability_runtime_state_key == "dma_observability_runtime"
-    assert config.maintenance_name == "dma-maintenance"
+    assert config.namespace == "myapp"
+    assert config.names == QueueNamespace("myapp")
+    assert config.names.metric("wakeups") == "myapp.wakeups"
+    assert config.names.logger("worker") == "myapp.worker"
+    assert config.names.channel("worker_wakeups") == "myapp:worker_wakeups"
+    assert config.names.key("tasks") == "myapp:tasks"
+    assert config.names.registration("service") == "myapp_service"
+    assert config.names.environment("task_id") == "MYAPP_TASK_ID"
+    assert config.names.resource("worker") == "myapp-worker"
+    assert config.names.coordination("maintenance") == "myapp-maintenance"
+    assert config.service_state_key == "myapp_service"
+    assert config.worker_state_key == "myapp_worker"
+    assert config.event_publisher_state_key == "myapp_event_publisher"
+    assert config.event_channels_state_key == "myapp_event_channels"
+    assert config.observability_runtime_state_key == "myapp_observability_runtime"
+    assert config.maintenance_name == "myapp-maintenance"
 
 
 def test_default_namespace_preserves_legacy_name_families() -> None:
@@ -49,17 +49,17 @@ def test_default_namespace_preserves_legacy_name_families() -> None:
 
 
 def test_custom_namespace_derives_package_owned_config_defaults() -> None:
-    config = QueueConfig(namespace="dma")
+    config = QueueConfig(namespace="myapp")
 
-    assert config.service_dependency_key == "dma_service"
-    assert config.events_dependency_key == "dma_events"
-    assert config.sync_thread_name_prefix == "dma"
-    assert config.scheduler_canary_task == "dma.scheduler.heartbeat"
+    assert config.service_dependency_key == "myapp_service"
+    assert config.events_dependency_key == "myapp_events"
+    assert config.sync_thread_name_prefix == "myapp"
+    assert config.scheduler_canary_task == "myapp.scheduler.heartbeat"
 
 
 def test_explicit_package_owned_names_override_namespace_defaults() -> None:
     config = QueueConfig(
-        namespace="dma",
+        namespace="myapp",
         service_dependency_key="service",
         events_dependency_key="events",
         sync_thread_name_prefix="threads",
@@ -73,7 +73,8 @@ def test_explicit_package_owned_names_override_namespace_defaults() -> None:
 
 
 @pytest.mark.parametrize(
-    "namespace", ["", "DMA", " dma", "dma ", "_dma", "dma_", "dma__queues", "dma.queues", "dma-queues", "1dma"]
+    "namespace",
+    ["", "MYAPP", " myapp", "myapp ", "_myapp", "myapp_", "myapp__queues", "myapp.queues", "myapp-queues", "1myapp"],
 )
 def test_namespace_rejects_ambiguous_roots(namespace: str) -> None:
     with pytest.raises(QueueConfigurationError, match=r"QueueConfig\.namespace"):
@@ -83,7 +84,7 @@ def test_namespace_rejects_ambiguous_roots(namespace: str) -> None:
 def test_namespace_does_not_change_user_task_or_queue_names() -> None:
     worker = WorkerConfig(placement="external", queues=("critical", "reports"))
     config = QueueConfig(
-        namespace="dma", queue_backend="memory", worker=worker, scheduler_canary_task="app.scheduler.healthcheck"
+        namespace="myapp", queue_backend="memory", worker=worker, scheduler_canary_task="app.scheduler.healthcheck"
     )
 
     assert config.worker.queues == ("critical", "reports")
@@ -101,7 +102,7 @@ def test_namespace_does_not_change_sql_table_configuration() -> None:
         maintenance_table_name="job_maintenance",
         task_reservation_table_name="job_reservations",
     )
-    config = QueueConfig(namespace="dma", queue_backend=backend, worker=WorkerConfig(placement="external"))
+    config = QueueConfig(namespace="myapp", queue_backend=backend, worker=WorkerConfig(placement="external"))
 
     assert config.queue_backend is backend
     assert backend.queue_table_name == "jobs"
@@ -111,8 +112,8 @@ def test_namespace_does_not_change_sql_table_configuration() -> None:
 
 
 def test_queue_channels_accept_namespace_without_mutating_legacy_default() -> None:
-    assert QueueChannels.task("task-1", namespace="dma") == "dma:task:task-1:events"
-    assert QueueChannels.queue("reports", namespace=QueueNamespace("dma")) == "dma:queue:reports:events"
+    assert QueueChannels.task("task-1", namespace="myapp") == "myapp:task:task-1:events"
+    assert QueueChannels.queue("reports", namespace=QueueNamespace("myapp")) == "myapp:queue:reports:events"
     assert QueueChannels.task("task-1") == "litestar_queues:task:task-1:events"
 
 
@@ -121,16 +122,16 @@ def test_redis_runtime_keys_derive_from_namespace_and_explicit_values_win() -> N
     from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 
     derived = RedisQueueBackend(
-        QueueConfig(namespace="dma", queue_backend=RedisBackendConfig(), worker=WorkerConfig(placement="external")),
+        QueueConfig(namespace="myapp", queue_backend=RedisBackendConfig(), worker=WorkerConfig(placement="external")),
         backend_config=RedisBackendConfig(),
     )
     explicit = RedisQueueBackend(
-        QueueConfig(namespace="dma", worker=WorkerConfig(placement="external")),
+        QueueConfig(namespace="myapp", worker=WorkerConfig(placement="external")),
         backend_config=RedisBackendConfig(key_prefix="jobs", wakeup_channel="jobs:wakeups"),
     )
 
-    assert derived._key_prefix == "dma"
-    assert derived._wakeup_channel == "dma:worker_wakeups"
+    assert derived._key_prefix == "myapp"
+    assert derived._wakeup_channel == "myapp:worker_wakeups"
     assert explicit._key_prefix == "jobs"
     assert explicit._wakeup_channel == "jobs:wakeups"
 
@@ -141,11 +142,11 @@ def test_sqlspec_wakeup_channel_derives_without_changing_tables() -> None:
 
     backend_config = SQLSpecBackendConfig(queue_table_name="jobs")
     backend = SQLSpecQueueBackend(
-        QueueConfig(namespace="dma", queue_backend=backend_config, worker=WorkerConfig(placement="external")),
+        QueueConfig(namespace="myapp", queue_backend=backend_config, worker=WorkerConfig(placement="external")),
         backend_config=backend_config,
     )
 
-    assert backend._wakeup_channel == "dma_tasks"
+    assert backend._wakeup_channel == "myapp_tasks"
     assert backend._queue_table_name == "jobs"
 
 
@@ -156,16 +157,16 @@ def test_runtime_components_use_namespace_logger_hierarchy() -> None:
     from litestar_queues.worker import Worker
     from litestar_queues.worker.supervisor import ServerWorkerSupervisor
 
-    config = QueueConfig(namespace="dma", queue_backend="memory", worker=WorkerConfig(placement="external"))
+    config = QueueConfig(namespace="myapp", queue_backend="memory", worker=WorkerConfig(placement="external"))
     service = QueueService(config)
     worker = Worker(service)
 
-    assert service._logger.name == "dma.service"
-    assert worker._logger.name == "dma.worker"
-    assert QueuePlugin(config)._logger.name == "dma.plugin"
-    assert QueueEventPublisher(namespace=config.names)._logger.name == "dma.events.publisher"
-    assert InMemoryQueueBackend(config)._logger.name == "dma.backends.InMemoryQueueBackend"
-    assert ServerWorkerSupervisor(config)._logger.name == "dma.worker.supervisor"
+    assert service._logger.name == "myapp.service"
+    assert worker._logger.name == "myapp.worker"
+    assert QueuePlugin(config)._logger.name == "myapp.plugin"
+    assert QueueEventPublisher(namespace=config.names)._logger.name == "myapp.events.publisher"
+    assert InMemoryQueueBackend(config)._logger.name == "myapp.backends.InMemoryQueueBackend"
+    assert ServerWorkerSupervisor(config)._logger.name == "myapp.worker.supervisor"
 
 
 def test_runtime_resource_drift_gate_keeps_legacy_literals_out_of_live_paths() -> None:
@@ -185,7 +186,7 @@ def test_cloudrun_environment_defaults_derive_from_namespace_and_explicit_prefix
 
     derived = CloudRunExecutionConfig(project_id="project", job_name="worker")
     explicit = CloudRunExecutionConfig(project_id="project", job_name="worker", env_prefix="WORK")
-    namespace = QueueNamespace("dma")
+    namespace = QueueNamespace("myapp")
 
     assert derived.env_name("TASK_ID", namespace=namespace) == "QUEUES_TASK_ID"
     assert explicit.env_name("TASK_ID", namespace=namespace) == "QUEUES_TASK_ID"

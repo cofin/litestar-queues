@@ -237,14 +237,14 @@ def test_server_context_derives_private_environment_and_resource_names() -> "Non
     from litestar_queues import QueueNamespace
     from litestar_queues.worker.invocation import server_context, server_context_active
 
-    names = QueueNamespace("dma")
+    names = QueueNamespace("myapp")
     nonce_env = names.environment("server", "nonce")
     marker_env = names.environment("server", "marker")
 
     with server_context(names) as nonce:
         marker = Path(os.environ[marker_env])
         assert os.environ[nonce_env] == nonce
-        assert marker.parent.name.startswith("dma-server-")
+        assert marker.parent.name.startswith("myapp-server-")
         assert server_context_active(names) is True
 
     assert nonce_env not in os.environ

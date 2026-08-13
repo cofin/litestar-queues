@@ -63,19 +63,8 @@ Run and operate workers
       :link: workers
       :link-type: doc
 
-      Pick in-app or standalone placement and start worker processes.
-
-   .. grid-item-card:: Understand wakeups
-      :link: worker-wakeups
-      :link-type: doc
-
-      Combine notification hints with polling and shutdown interruption.
-
-   .. grid-item-card:: Recover stale work
-      :link: worker-recovery
-      :link-type: doc
-
-      Configure heartbeats, recovery, identity, and diagnosis.
+      Choose placement, tune concurrency, pick up work faster, and recover
+      work whose worker died.
 
    .. grid-item-card:: Run maintenance
       :link: maintenance
@@ -150,9 +139,8 @@ Choose production options
    failures-and-cancellation
    schedules
    workers
-   worker-wakeups
-   worker-recovery
    configuration
+   runtime-namespace
    cli
    maintenance
    testing
@@ -163,12 +151,14 @@ Choose production options
    events
    event-streams
    event-history
+   event-history-extending
    event-testing
    events-standalone
    observability
    dependency-resolver
    deployment/cloud-run
    deployment/cloud-tasks
+   deployment/execution-transports
    deployment/sqs
    deployment/rabbitmq
    deployment/kafka

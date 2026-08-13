@@ -91,5 +91,6 @@ when it owns the queue record. An external runtime cancels through its own
 mechanism and can still surface that to task code by calling
 ``context.mark_cancelled()``.
 
-For durable, queryable history — including extra scoping dimensions such as a
-tenant or project id — see :doc:`event-history`.
+For durable, queryable history see :doc:`event-history`, and
+:doc:`event-history-extending` for scoping it by a dimension the queue does not
+model, such as a tenant or project id.

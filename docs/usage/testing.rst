@@ -7,17 +7,30 @@ Use immediate execution when a test should receive the terminal record before
 
 .. code-block:: python
 
-   from litestar_queues import QueueConfig, QueueService
+   from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
+
+
+   @task("reports.render")
+   async def render_report(report_id: str) -> str:
+       return report_id
 
 
    async def test_report_task() -> None:
-       async with QueueService(
-           QueueConfig(queue_backend="memory", execution_backend="immediate")
-       ) as service:
+       config = QueueConfig(
+           queue_backend="memory",
+           execution_backend="immediate",
+           worker=WorkerConfig(placement="external"),
+       )
+
+       async with QueueService(config) as service:
            result = await service.enqueue(render_report, "report-123")
 
        assert result.status == "completed"
        assert result.result == "report-123"
+
+``execution_backend="immediate"`` runs the task inline at enqueue time, so it
+needs ``WorkerConfig(placement="external")``: the default server placement would
+start a worker with nothing to claim, and the config rejects that combination.
 
 Use local execution when the test covers worker behavior. Start a ``Worker``,
 enqueue work, and await ``TaskResult.wait()`` before checking the final state.

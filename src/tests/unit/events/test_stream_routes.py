@@ -68,18 +68,18 @@ def test_build_stream_router_sse_only_registers_no_websocket_routes() -> None:
 
 def test_build_stream_router_names_handlers_from_namespace() -> None:
     router = _build_stream_router(
-        QueueConfig(namespace="dma", worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        QueueConfig(namespace="myapp", worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(scopes={"task"}),
     )
 
-    assert _stream_handler_name(router, "/tasks/{task_id:str}") == "dma_event_stream_task"
-    assert _stream_handler_name(router, "/sse/tasks/{task_id:str}") == "dma_event_sse_task"
-    assert _stream_paths(router) == {"/dma/events/tasks/{task_id:str}", "/dma/events/sse/tasks/{task_id:str}"}
+    assert _stream_handler_name(router, "/tasks/{task_id:str}") == "myapp_event_stream_task"
+    assert _stream_handler_name(router, "/sse/tasks/{task_id:str}") == "myapp_event_sse_task"
+    assert _stream_paths(router) == {"/myapp/events/tasks/{task_id:str}", "/myapp/events/sse/tasks/{task_id:str}"}
 
 
 def test_build_stream_router_preserves_explicit_path_with_custom_namespace() -> None:
     router = _build_stream_router(
-        QueueConfig(namespace="dma", worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        QueueConfig(namespace="myapp", worker=WorkerConfig(placement="external"), queue_backend="memory"),
         EventStreamConfig(path="/events", scopes={"task"}),
     )
 

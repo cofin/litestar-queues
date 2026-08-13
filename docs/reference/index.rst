@@ -17,11 +17,11 @@ Core
 
       Configuration, service, task, model, worker, plugin, and exception APIs.
 
-   .. grid-item-card:: Reference Map
-      :link: api
+   .. grid-item-card:: Telemetry metric catalog
+      :link: observability
       :link-type: doc
 
-      A quick index for the grouped API reference pages.
+      Every metric name, attribute, and label value queue telemetry emits.
 
 Backends
 ========
@@ -66,4 +66,4 @@ Realtime
    backends
    execution
    events
-   api
+   observability

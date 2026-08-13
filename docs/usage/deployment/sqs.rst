@@ -1,7 +1,14 @@
-Amazon SQS Dispatch
+===================
+Amazon SQS dispatch
 ===================
 
-Install the optional client and configure SQS as execution placement:
+Read :doc:`execution-transports` first: it covers the dispatcher/consumer
+model, the two CLI commands, and the at-least-once delivery guarantee that SQS
+shares with the other transports. This page covers only what is specific to
+SQS.
+
+Install and configure
+=====================
 
 .. code-block:: bash
 
@@ -22,41 +29,41 @@ Install the optional client and configure SQS as execution placement:
        worker=WorkerConfig(placement="external"),
    )
 
-SQS is an execution transport, not queue persistence. Run one dispatcher and
-one or more consumers against the same persistent queue backend:
+Then run ``litestar queues run`` and
+``litestar queues run-consumer --backend sqs``.
 
-.. code-block:: bash
-
-   LITESTAR_APP=app:app litestar queues run
-   LITESTAR_APP=app:app litestar queues run-consumer --backend sqs --max-concurrency 10
-
-The dispatcher sends only the task UUID. Arguments, task names, results,
-retries, schedules, and leases remain in queue storage. A private
-``litestar_queues_attempt`` message attribute fences each delivery to the exact
-persisted retry generation and dispatch attempt.
-
-Standard and FIFO queues
-------------------------
-
-Standard queues are the default. Set ``fifo=True`` for a FIFO queue; the
-attempt reference becomes ``MessageDeduplicationId`` and a stable bounded group
-is derived from the persisted queue name. Set ``message_group_id`` to override
-that group.
-
-SQS visibility is only crash-redelivery courtesy. It never replaces the queue
-backend heartbeat lease, retry count, scheduling, or stale recovery.
-
-LocalStack
-----------
-
-For local development, create a queue in LocalStack and set
-``endpoint_url="http://localhost:4566"``. Use the usual test credentials through
-the AWS credential chain; credentials are intentionally not configuration
-fields on ``SqsExecutionConfig``.
+Credentials come from the normal AWS credential chain and are deliberately not
+configuration fields on ``SqsExecutionConfig``.
 
 IAM
----
+===
 
-Dispatchers need ``sqs:SendMessage``. Consumers need ``sqs:ReceiveMessage``,
-``sqs:DeleteMessage``, and ``sqs:ChangeMessageVisibility`` on the configured
-queue.
+This is the part most likely to be missing on a first deployment. The two roles
+need different permissions on the configured queue:
+
+* the **dispatcher** needs ``sqs:SendMessage``;
+* each **consumer** needs ``sqs:ReceiveMessage``, ``sqs:DeleteMessage``, and
+  ``sqs:ChangeMessageVisibility``.
+
+Standard and FIFO queues
+========================
+
+Standard queues are the default. Set ``fifo=True`` for a FIFO queue: the
+attempt reference is then also sent as ``MessageDeduplicationId``, and a stable
+bounded message group is derived from the persisted queue name. Set
+``message_group_id`` to choose that group yourself.
+
+Visibility timeout
+==================
+
+``visibility_timeout`` (60 seconds by default) is extended every
+``visibility_extension_interval`` seconds while a task runs. This only reduces
+duplicate deliveries. It is not a lease on the work: the queue backend's own
+heartbeat remains what actually protects a running task.
+
+LocalStack
+==========
+
+For local development, create a queue in LocalStack and point the config at it
+with ``endpoint_url="http://localhost:4566"``, using the usual test credentials
+through the AWS credential chain.

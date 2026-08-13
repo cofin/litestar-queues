@@ -2,11 +2,42 @@
 Run workers
 ===========
 
+A worker is the process that claims queued records and runs your task
+functions. The first decision is where that process lives, and the rest of
+this page is what you tune once it is running.
+
+Choose where the worker runs
+============================
+
 ``WorkerConfig.placement`` names the process that owns the worker. There are
 three choices and no fallback between them.
 
+.. list-table::
+   :header-rows: 1
+
+   * - Placement
+     - Who starts the worker
+     - How many it starts
+     - Storage
+   * - ``server``
+     - the Litestar CLI server lifespan
+     - one per ``litestar run``
+     - ephemeral or persistent
+   * - ``asgi``
+     - the application lifespan
+     - one per ASGI process
+     - memory or persistent
+   * - ``external``
+     - nobody; you do
+     - none
+     - persistent for ``litestar queues run``
+
+The count is what the application starts for itself, not a ceiling. Managed
+placements (``server`` and ``asgi``) reject ``execution_backend="immediate"``,
+because inline execution leaves a worker with nothing to claim.
+
 Server placement (the default)
-==============================
+------------------------------
 
 .. code-block:: python
 
@@ -31,14 +62,15 @@ fails immediately rather than serving traffic against a queue nothing drains.
 The default database is deliberately ephemeral. It is created when the server
 starts and removed when it stops, so queued work does not survive a restart.
 It has no listener or configurable path, cannot be attached by standalone CLI
-commands, and is unsupported on network storage. A hard parent crash may leave
-one random private directory that no later invocation reuses. Choose a backend
-from :doc:`backends` as soon as you need durability.
+commands, and is unsupported on network storage. Choose a backend from
+:doc:`backends` as soon as you need durability.
 
 One worker per ASGI process
-===========================
+---------------------------
 
 .. code-block:: python
+
+   from litestar_queues import QueueConfig, WorkerConfig
 
    queue_config = QueueConfig(
        queue_backend="memory", worker=WorkerConfig(placement="asgi")
@@ -50,12 +82,14 @@ queue workers. It is the right choice for a single-process development server
 using ``queue_backend="memory"``, and a deliberate one everywhere else.
 
 Standalone workers
-==================
+------------------
 
 Choose a shared, persistent queue backend, declare that nothing starts
 automatically, and run the same Litestar application as a worker service:
 
 .. code-block:: python
+
+   from litestar_queues import QueueConfig, WorkerConfig
 
    queue_config = QueueConfig(
        queue_backend="redis", worker=WorkerConfig(placement="external")
@@ -76,8 +110,8 @@ This command refuses process-local storage. Memory lives inside the process
 that created it, and the ephemeral database belongs to the ``litestar run``
 invocation that created it, so neither is visible to a separate worker.
 
-Scaling out
-===========
+Add more workers
+----------------
 
 ``placement`` names the worker your application starts for itself, not a limit
 on how many workers may exist. Once you are on a persistent backend you can add
@@ -92,96 +126,161 @@ standalone workers to any placement:
 They all claim from the same backend, so the total worker count is the built-in
 one plus however many you start.
 
-Heartbeat timing
-================
+Run more tasks at once
+======================
 
-``WorkerConfig.heartbeat_interval`` sets the base interval between running-task
-heartbeat writes, while ``heartbeat_miss_threshold`` controls how many
-consecutive misses are tolerated. ``heartbeat_jitter_fraction`` adds up to that
-fraction of positive random delay to each interval so a fleet does not write in
-lockstep. It defaults to ``0.1``; set it to ``0.0`` for an exact fixed interval.
+``max_concurrency`` is the worker-wide ceiling on tasks executing at the same
+time. Use ``queue_concurrency`` to cap individual queues below it:
 
-Losing a claim
-==============
+.. code-block:: python
 
-When ``heartbeat_miss_threshold`` consecutive heartbeat writes are rejected, the
-worker no longer owns the record: another worker has taken it over. The queue
-already fences writes on the claim, so the losing attempt cannot record a
-result — but its side effects keep going while the replacement re-runs the same
-task.
+   from litestar_queues import QueueConfig, WorkerConfig
 
-``WorkerConfig.cancel_on_claim_loss`` (default ``True``) closes that window by
-cancelling the local coroutine as soon as claim loss is detected. The body sees
-``asyncio.CancelledError``, the attempt is recorded as interrupted, and no
-terminal write is attempted, so exactly one ownership-loss event is published
-for the attempt. The record itself is left alone; it belongs to whichever worker
-holds the claim now.
+   queue_config = QueueConfig(
+       worker=WorkerConfig(
+           max_concurrency=8,
+           queue_concurrency={"email": 1, "reports": 2},
+       )
+   )
 
-Set it to ``False`` to let a lost attempt run to completion instead. Its
-terminal write is then rejected on the claim fence, which publishes a second
-ownership-loss event for the same attempt.
+Both are local limits on one worker, not distributed fleet semaphores. To bound
+a shared resource across a fleet, run fewer workers or give the constrained work
+its own queue and its own worker.
 
-Choosing a placement
-====================
+``batch_size`` (default ``10``) is the largest number of records the worker asks
+for per claim. Raise it when tasks are short and you want fewer round trips to
+the backend; a backend may return fewer records than requested, and doing so is
+normal rather than an error.
 
-.. list-table::
-   :header-rows: 1
+.. _worker-wakeups:
 
-   * - Placement
-     - Who starts the worker
-     - How many it starts
-     - Storage
-   * - ``server``
-     - the Litestar CLI server lifespan
-     - one per ``litestar run``
-     - ephemeral or persistent
-   * - ``asgi``
-     - the application lifespan
-     - one per ASGI process
-     - memory or persistent
-   * - ``external``
-     - nobody; you do
-     - none
-     - persistent for ``litestar queues run``
+Pick up new work faster
+=======================
 
-The count is what the application starts for itself. Any placement on a
-persistent backend can have standalone workers added alongside it.
+When no work is available, the worker waits instead of spinning. It wakes on a
+backend notification, on a timeout, or on shutdown. ``poll_interval`` is the
+starting timeout:
 
-Managed placements (``server`` and ``asgi``) reject
-``execution_backend="immediate"``, because inline execution leaves a worker
-with nothing to claim.
+.. code-block:: python
 
-What one worker loop does
-=========================
+   from litestar_queues import QueueConfig, WorkerConfig
 
-A worker makes due scheduled tasks ready, claims as many tasks as its
-concurrency limit allows, and starts local execution. It also sends heartbeats
-for running records and checks external work. ``Worker.run_once()`` returns
-after it schedules claimed tasks; it does not wait for them to finish. Use
-:doc:`results` when a caller must observe the final state.
+   queue_config = QueueConfig(worker=WorkerConfig(poll_interval=0.25))
 
-``batch_size`` is the maximum requested claim size, not a promise that every
-backend performs one storage operation. Memory, capable SQLSpec stores, and
-PostgreSQL Advanced Alchemy have native bounded batch paths. Other stores use
-the safe ``claim_next`` loop and may return a shorter batch as soon as no
-eligible record remains. Both paths preserve exclusive ownership and the same
-queue/execution filters.
+After an empty cycle the worker multiplies its wait by
+``poll_backoff_multiplier`` up to ``poll_backoff_max``, so an idle queue stops
+hammering the backend. Claimed work, a backend notification, or worker startup
+resets it immediately. The defaults are ``poll_interval=0.1``,
+``poll_backoff_max=30.0``, ``poll_backoff_multiplier=2.0``, and
+``poll_jitter=0.15``.
 
-``max_concurrency`` remains the worker-wide ceiling. Use
-``queue_concurrency={"email": 1, "reports": 2}`` for per-worker queue caps.
-These are local limits, not distributed fleet semaphores. Backends with a
-native batch claim keep it when caps are set: PostgreSQL applies them inside
-the same claim statement and Redis/Valkey inside the same claim script.
+Reach for these when work sits queued longer than you want:
 
-Shutdown
-========
+- **Your backend sends notifications.** Redis, Valkey, and SQLSpec on
+  PostgreSQL push a hint the moment work is enqueued, so pickup is prompt no
+  matter what the polling numbers say. Check which of your choices support that
+  in the wakeup matrix in :doc:`backends`, and prefer switching backends over
+  tuning intervals.
+- **Your backend polls.** Then ``poll_backoff_max`` is the worst-case delay
+  before a worker notices work. Set it no higher than the latency your service
+  can tolerate, or ``None`` for fixed-interval polling at ``poll_interval``.
+- **You need a lower floor.** Lower ``poll_interval``. Every reduction costs
+  backend round trips on an idle queue, so change it only when a measured
+  latency target requires it.
+
+Notifications are hints, not state. They can arrive late, be coalesced, or not
+arrive at all; every cycle checks durable queue state before it waits, so a
+later polling pass still claims the task. They are also unrelated to
+:doc:`events` delivery — a Redis queue backend does not configure Redis
+Channels for your SSE or WebSocket consumers.
+
+Keep running work alive
+=======================
+
+A worker heartbeats each record it is running so other workers can tell a live
+task from an abandoned one:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig, WorkerConfig
+
+   queue_config = QueueConfig(
+       worker=WorkerConfig(
+           heartbeat_interval=15,
+           stale_after=120,
+           stale_check_interval=30,
+       ),
+   )
+
+All three are seconds. ``heartbeat_jitter_fraction`` (default ``0.1``) adds up
+to that fraction of positive random delay to each interval so a fleet does not
+write in lockstep; set it to ``0.0`` for an exact fixed interval.
+
+Heartbeat timestamps are automatic for every running task. ``beat(detail)``
+only replaces the latest short diagnostic string and does not change the
+cadence.
+
+Workers default to the identity ``worker-{pid}``. Set ``WorkerConfig.id`` when
+process IDs may repeat across hosts or preforked processes; the ID appears in
+logs, metrics, and task events.
+
+If heartbeat writes compete with queue traffic, SQLSpec can route heartbeat-only
+writes through ``heartbeat_pool_config`` and Advanced Alchemy through an
+app-owned ``heartbeat_session_maker``. Both must point at the same database as
+normal queue operations.
+
+.. _worker-recovery:
+
+Recover work whose worker died
+==============================
+
+Stale recovery is **off by default**. Set ``stale_after`` to turn it on: a
+running record whose heartbeat is older than that is returned to the queue if it
+has retries left, and otherwise ends with a stale failure. A shared lock lets
+only one worker at a time run the check. A task may turn off stale requeueing or
+register ``on_stale_failure`` for cleanup.
+
+``QueueConfig.stale_requeue_priority`` decides the priority recovered work
+re-enters with:
+
+.. code-block:: python
+
+   from litestar_queues import QueueConfig
+
+   QueueConfig(stale_requeue_priority="preserve")        # keep the original priority (the default)
+   QueueConfig(stale_requeue_priority=4)                 # ceiling clamp
+   QueueConfig(stale_requeue_priority=lambda p: p - 1)   # map old priority to new
+
+A ceiling clamp protects a queue from a record that crashes its worker
+repeatedly, but it also inverts priority: work enqueued at priority ``9``
+re-enters at the ceiling and can then be starved indefinitely by ordinary
+priority-``5`` inflow. Reach for a clamp only when that trade is one you want,
+and pair it with a real ``retries`` budget on the task. A callable that returns anything
+other than an integer fails the sweep loudly rather than silently clamping.
+
+A recovered record is taken over by another worker, which leaves the original
+attempt still running. ``WorkerConfig.cancel_on_claim_loss`` (default ``True``)
+cancels that attempt as soon as its heartbeat is rejected, so its side effects
+stop instead of racing the replacement. Set it to ``False`` only when a task
+must always finish what it started; its terminal write is rejected either way,
+because the record now belongs to another worker.
+
+If work is stuck ``running`` after a crash, check heartbeat timestamps, stale
+thresholds, backend connectivity, and whether at least one worker has
+``stale_after`` set at all. ``litestar queues status`` prints the counts, and
+task errors are readable after :meth:`~litestar_queues.TaskResult.refresh`.
+
+Worker recovery runs continuously while a worker runs. For an infrequent,
+finite recovery pass that also applies retention, use :doc:`maintenance`
+instead.
+
+Shut a worker down
+==================
 
 By default, unfinished work remains ``running`` for stale recovery. Set
 ``WorkerConfig.requeue_on_shutdown=True`` to return an attempt to ``pending``
 after its coroutine accepts cancellation and unwinds. Tasks can override this
 with ``@task(requeue_on_shutdown=True)`` or ``False`` and must be idempotent.
-Every shipped backend performs the requeue behind an owner and generation
-fence, so a worker can only requeue the attempt it still owns.
 
 Each requeue is counted in the record's ``interruptions`` metadata and does not
 spend a retry attempt. ``WorkerConfig.max_interruptions`` (default ``3``) bounds
@@ -197,21 +296,17 @@ The escalation ladder:
 #. **Deadline or third signal** — the process exits with ``128 + signum``
    (``143`` for SIGTERM, ``130`` for SIGINT). ``WorkerConfig.hard_exit_timeout``
    (default ``10.0`` seconds, ``None`` to disable) is the wall-clock budget from
-   forced shutdown to that exit. The watchdog runs on a daemon thread, because
-   the case it exists for is an event loop that no longer runs callbacks.
+   forced shutdown to that exit.
 
 Tasks still alive after ``final_cancel_timeout`` are logged with their ids and
 their heartbeats are cleared, so a stale sweep can reclaim them immediately
-instead of waiting out a full heartbeat age. Stale recovery is off by default;
-set ``WorkerConfig.stale_after`` (or the maintenance equivalent) to make that
-handoff useful.
+instead of waiting out a full heartbeat age. That handoff is only useful when
+``stale_after`` is set.
 
 Server placement must become ready within ``startup_timeout``, and shutdown
 finally escalates to bounded process-tree termination if the child cannot exit.
-The standalone CLI returns ``0`` for a clean shutdown, ``1`` for a worker error,
-and ``2`` when the graceful timeout ends and cancellation begins. Windows uses
-console Ctrl+C or Ctrl+Break semantics. Focused topology smoke tests run on
-macOS and Windows in native CI jobs.
+Windows uses console Ctrl+C or Ctrl+Break semantics. :doc:`cli` lists the exit
+codes ``litestar queues run`` returns.
 
-See :doc:`worker-wakeups` for idle waiting and :doc:`worker-recovery` for
-heartbeats and stale work.
+Telemetry for waits, wakeups, claims, and heartbeats is listed in
+:doc:`../reference/observability`.

@@ -4,10 +4,10 @@ Command-Line Interface
 
 ``QueuePlugin`` implements Litestar's :class:`~litestar.plugins.CLIPluginProtocol`
 and adds a ``queues`` group to the ``litestar`` CLI. It provides ``run``,
-``status``, ``scheduler-health``, ``run-task``, and ``run-maintenance``.
-``run-task`` is the one-record external-executor command described in
-:doc:`deployment/cloud-run`. The ``discover_tasks`` helper supports applications
-that keep tasks under ``app.domain.<x>.jobs/``.
+``run-consumer``, ``status``, ``scheduler-health``, ``run-task``, and
+``run-maintenance``. ``run-task`` is the one-record external-executor command
+described in :doc:`deployment/cloud-run`. The ``discover_tasks`` helper supports
+applications that keep tasks under ``app.domain.<x>.jobs/``.
 
 Pre-requisites
 ==============
@@ -61,6 +61,50 @@ Code          Meaning
 ``SIGTERM`` requires a POSIX host. Windows only meaningfully delivers
 ``SIGINT`` (Ctrl+C); ``add_signal_handler`` raises ``NotImplementedError``
 there and the CLI falls back to ``signal.signal``.
+
+``litestar queues run-consumer``
+================================
+
+Starts a long-running consumer that pulls task identifiers from an external
+broker and executes them. Use it when ``execution_backend`` is RabbitMQ, SQS, or
+Pub/Sub — the broker delivers the work instead of a worker polling the queue
+store. See :doc:`deployment/rabbitmq`, :doc:`deployment/sqs`, and
+:doc:`deployment/pubsub` for the surrounding deployment.
+
+.. code-block:: console
+
+   $ LITESTAR_APP=app.asgi:app litestar queues run-consumer --backend rabbitmq
+
+Options:
+
+* ``--backend [pubsub|rabbitmq|sqs]`` — **required**. Must name the same backend
+  the application already configures; a mismatch is refused rather than silently
+  consuming from somewhere else.
+* ``--max-concurrency N`` — how many deliveries run at once. Defaults to
+  :attr:`~litestar_queues.WorkerConfig.max_concurrency`.
+* ``--drain-timeout SECONDS`` — wait time after ``SIGTERM``/``SIGINT`` before
+  in-flight deliveries are cancelled. Defaults to
+  :attr:`~litestar_queues.WorkerConfig.graceful_shutdown_timeout`.
+
+Signals behave as they do for ``run``: the first stops consuming and drains, a
+second cancels immediately, and a third exits the process without waiting.
+
+Exit codes:
+
+============  ==================================================================
+Code          Meaning
+============  ==================================================================
+``0``         Clean drain.
+``1``         Configuration error — no application found, an ephemeral or
+              in-memory queue backend, ``--backend`` disagreeing with the
+              configured execution backend, or an execution backend that has no
+              consumer.
+``2``         A second signal arrived and in-flight deliveries were cancelled.
+============  ==================================================================
+
+The in-memory queue backend is rejected for the same reason as ``run``: its
+records never leave the process that created them, so a separate consumer would
+find nothing while looking healthy.
 
 ``litestar queues status``
 ==========================
@@ -136,39 +180,21 @@ subcommand.
 ===================================
 
 Runs one bounded maintenance pass — external-execution reconciliation, stale
-recovery, terminal-task retention, and durable-event retention — under
-distributed maintenance coordination, then exits. It is safe on a six-hour or daily external
-schedule. It never starts a worker or executes queued work. See
-:doc:`maintenance` for the full operator guide.
+recovery, terminal-task retention, and durable-event retention — then exits. It
+never starts a worker or executes queued work, so it is safe on a six-hour or
+daily external schedule.
 
 .. code-block:: console
 
    $ litestar queues run-maintenance --json
    {"outcome":"completed","acquired":true,"duration_ms":41.2,"phases":[...]}
 
-Options:
+It takes ``--phase [external|stale|terminal|events]`` (repeatable) and
+``--json``. Every threshold, limit, and retention window comes from
+:attr:`QueueConfig.maintenance`, so no flag can introduce a destructive cutoff.
 
-* ``--phase [external|stale|terminal|events]`` (repeatable) — narrow the run to
-  selected phases. Filtering only narrows configuration; it never enables a
-  disabled retention threshold. When omitted, every configured phase runs.
-* ``--json`` — emit one compact JSON object matching
-  :class:`~litestar_queues.QueueMaintenanceSummary`.
-
-All thresholds, limits, and retention windows come from
-:attr:`QueueConfig.maintenance`; the CLI exposes no flags that could introduce a
-destructive cutoff. The command rejects a missing ``QueueConfig.maintenance``, a
-backend without distributed maintenance support, and the process-local in-memory
-backend before any mutation.
-
-Exit codes:
-
-============  ==================================================================
-Code          Meaning
-============  ==================================================================
-``0``         Completed, a clean no-op, or maintenance was already running.
-``1``         Configuration error, lifecycle failure, or a phase failed.
-``2``         The time budget was exhausted and later phases were skipped.
-============  ==================================================================
+:doc:`maintenance` is the operator guide and owns the phase reference, the
+scheduling advice, and the exit codes.
 
 ``discover_tasks``
 ==================

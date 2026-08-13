@@ -71,7 +71,26 @@ custom models:
    )
 
 The ``_event_history`` suffix keeps the two table names together. The queue
-backend checks the model shape, but it does not create either table.
+backend checks the model shape, but it does not create either table. Creating
+them is your job: in production, generate an Alembic migration for the two new
+models the same way you would for any other application table. For a local
+bootstrap, create them directly from the shared metadata:
+
+.. code-block:: python
+
+   import asyncio
+
+
+   async def create_queue_tables() -> None:
+       async with alchemy.get_engine().begin() as connection:
+           await connection.run_sync(UUIDAuditBase.metadata.create_all)
+
+
+   asyncio.run(create_queue_tables())
+
+``alchemy`` and ``UUIDAuditBase`` come from the example above. This creates
+every model registered on that base, not only the queue tables, so use it for
+development databases rather than as a substitute for migrations.
 
 If the application uses forever uniqueness or bounded maintenance, its metadata
 and migrations must also include ``QueueTaskReservationModel`` and
@@ -90,16 +109,15 @@ database lifecycle as the queue model.
 Wakeups and heartbeats
 ======================
 
-``worker_wakeups=True`` enables transient PostgreSQL ``LISTEN``/``NOTIFY``
-hints for both ``postgresql+asyncpg`` and ``postgresql+psycopg``. The marker has
-no task payload and is not durable: it only asks the worker to reconcile the
-task table. SQLite, MySQL, and Oracle remain polling-only; Advanced Alchemy does
-not expose SQLSpec's Oracle AQ or TxEventQ transports.
+Wakeups are off by default here. Set ``worker_wakeups=True`` to shorten worker
+pickup time on PostgreSQL; it takes effect on ``postgresql+asyncpg`` and
+``postgresql+psycopg`` and is ignored everywhere else, where workers keep
+polling the task table. The hint carries no task payload and is not durable, so
+losing one only delays a pickup -- it never loses work.
 
-PostgreSQL also uses a native bounded batch claim. Other dialects use the safe
-single-record fallback while preserving ordering and ownership semantics.
 ``heartbeat_session_maker`` may use a separate session for heartbeat writes.
 The application owns and closes its engine.
 
-This direct PostgreSQL hint is not task storage and not browser delivery. See
-:doc:`../worker-wakeups` and :doc:`../event-streams`.
+The full comparison against the other backends is in :doc:`../backends`; see
+:ref:`worker-wakeups` for what a wakeup does and :doc:`../event-streams` for
+sending events to browsers, which wakeups never do.

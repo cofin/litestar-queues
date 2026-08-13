@@ -14,8 +14,12 @@ Provide Channels or one or more additive sinks:
 
 .. code-block:: python
 
+   from litestar.channels.backends.memory import MemoryChannelsBackend
+
    from litestar_queues import QueueConfig
    from litestar_queues.events import EventDeliveryConfig, QueueEventsConfig
+
+   channels_backend = MemoryChannelsBackend(history=100)
 
    queue_config = QueueConfig(
        events=QueueEventsConfig(
@@ -23,6 +27,10 @@ Provide Channels or one or more additive sinks:
            delivery=EventDeliveryConfig(publish_global_lifecycle=True),
        ),
    )
+
+``MemoryChannelsBackend`` only reaches subscribers in the same process. Once the
+worker and the web server are separate processes, swap it for a shared backend —
+see `Topology and security`_.
 
 Without a configured sink or Channels backend, publishing does nothing. By
 default, a live-delivery failure does not fail the task. Set ``strict=True``
@@ -157,17 +165,37 @@ another ``task.started``. With no retry remaining, the record and event are
 terminally failed. Task code should not publish its own completed or failed
 lifecycle event.
 
-Code outside a worker should use this context manager:
+Code outside a worker should use this context manager. It takes the same
+``queue_config`` built under `Enable publishing`_:
 
 .. code-block:: python
 
    from litestar_queues.events import create_event_producer
 
-   async with create_event_producer(queue_config) as events:
-       await events.task(task_id).progress(current=1, total=2, message="Started")
+
+   async def report_started(task_id: str) -> None:
+       async with create_event_producer(queue_config) as events:
+           await events.task(task_id).progress(current=1, total=2, message="Started")
 
 The context manager opens the resource, starts it, flushes pending events, and
 closes it. ``QueueEventProducer`` does not manage resources by itself.
+
+.. _live-delivery-vs-history:
+
+Live delivery versus durable history
+====================================
+
+Live streams deliver events; they do not store them. A subscriber receives only
+what is published while it is connected, so a client that connects late,
+reconnects, or falls behind the Channels backlog misses the rest. Keepalives
+keep an idle connection open; they do not prove a task is healthy.
+
+Durable history answers "what happened?" after the fact; live delivery answers
+"what is happening now?" A deployment may use either or both. Replaying history
+into a newly connected client is an application policy — a live Channels backend
+does not read the queue event log.
+
+Enable and query history with :doc:`event-history`.
 
 Using events without the queue
 ==============================
@@ -176,9 +204,6 @@ The ``litestar_queues.events`` subpackage also runs on its own, for a runtime
 that has its own task runner and never starts this package's worker. That is a
 separate integration path with its own setup — see
 :doc:`events-standalone`. Nothing on this page requires it.
-
-For durable, queryable history — including extra scoping dimensions such as a
-tenant or project id — see :doc:`event-history`.
 
 Topology and security
 =====================
@@ -206,7 +231,6 @@ Next steps
 ==========
 
 * :doc:`event-streams` exposes SSE and WebSocket endpoints.
-* :doc:`event-history` retains backend-managed history and adds extra scoping
-  dimensions such as a tenant id.
+* :doc:`event-history` retains and queries backend-managed history.
 * :doc:`event-testing` tests delivery without external infrastructure.
 * :doc:`../examples/index` runs the canonical visual examples.

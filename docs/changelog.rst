@@ -48,7 +48,7 @@ Unreleased
   callable mapping the old priority to the new one. **Breaking:** stale-recovered
   work now keeps its original priority instead of being clamped to ``4``. Pass
   ``stale_requeue_priority=4`` to restore the clamp. See
-  :doc:`usage/worker-recovery`.
+  :ref:`worker-recovery`.
 * ``WorkerConfig.queue_concurrency`` sets per-worker caps for named queues.
   These are local limits, not fleet-wide semaphores.
 * ``WorkerConfig.cancellation_poll_interval``: workers reconcile durable

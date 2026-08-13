@@ -36,7 +36,8 @@ starting:
 
    @task("reports.refresh", expires_in=300)
    async def refresh_report(report_id: str) -> None:
-       ...
+       print(f"refreshing {report_id}")
+
 
    result = await queue_service.enqueue(refresh_report, "report-123")
 
@@ -110,12 +111,15 @@ runs heartbeats, the claim loop, and event publishing:
 
 .. code-block:: python
 
+   import time
+
    from litestar_queues import task
 
 
    @task("reports.render")
    def render_report(report_id: str) -> str:
-       return blocking_pdf_library.render(report_id)
+       time.sleep(2)  # stand-in for a blocking PDF library call
+       return report_id
 
 ``sync_to_thread`` makes that choice explicit, using the same vocabulary as
 Litestar's route handlers:
@@ -233,11 +237,13 @@ you need it, ``unique_until``.
 
 
    @task("reports.refresh", unique_by="task")
-   async def refresh_report(report_id: str) -> None: ...
+   async def refresh_report(report_id: str) -> None:
+       print(f"refreshing {report_id}")
 
 
    @task("reports.render", unique_by="arguments")
-   async def render_report(report_id: str, *, fmt: str = "pdf") -> None: ...
+   async def render_report(report_id: str, *, fmt: str = "pdf") -> None:
+       print(f"rendering {report_id} as {fmt}")
 
 Identity precedence and lifetime
 --------------------------------
@@ -282,7 +288,8 @@ required:
 .. code-block:: python
 
    @task("imports.once", unique_by="arguments", unique_until="forever")
-   async def import_once(object_key: str) -> None: ...
+   async def import_once(object_key: str) -> None:
+       print(f"importing {object_key}")
 
 A ``forever`` identity blocks every later enqueue of that identity -- even after
 the original record completes and is cleaned up. The only way to allow a new

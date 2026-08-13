@@ -249,12 +249,12 @@ async def test_runtime_rewrites_package_metric_names_from_queue_namespace() -> "
 
     registry = prometheus_client.CollectorRegistry()
     runtime = QueueObservabilityRuntime(
-        ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry), namespace="dma"
+        ObservabilityConfig(enable_prometheus=True, prometheus_registry=registry), namespace="myapp"
     )
 
     runtime.record_counter("litestar_queues.wakeup.emitted", attributes={"queue.backend": "memory"})
 
-    assert registry.get_sample_value("dma_wakeup_emitted_total", labels={"queue.backend": "memory"}) == 1.0
+    assert registry.get_sample_value("myapp_wakeup_emitted_total", labels={"queue.backend": "memory"}) == 1.0
 
 
 async def test_runtime_records_and_caches_value_histograms_with_explicit_units(

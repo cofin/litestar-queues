@@ -19,7 +19,7 @@ Use ``interval`` for fixed-delay recurring work:
 
    @task("reports.refresh", interval=timedelta(minutes=15), jitter=30)
    async def refresh_reports() -> None:
-       ...
+       print("refreshing every report")
 
 Cron Schedules
 ==============
@@ -28,9 +28,12 @@ Use ``cron`` for calendar-based schedules:
 
 .. code-block:: python
 
+   from litestar_queues import task
+
+
    @task("billing.close-day", cron="0 0 * * *", timezone="UTC")
    async def close_billing_day() -> None:
-       ...
+       print("closing the billing day")
 
 Cron aliases such as ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, and
 ``@yearly`` are supported.
@@ -98,6 +101,8 @@ Configuration
 =============
 
 .. code-block:: python
+
+   from litestar_queues import QueueConfig, WorkerConfig
 
    config = QueueConfig(
        task_modules=("app.tasks",),
