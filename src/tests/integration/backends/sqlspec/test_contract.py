@@ -528,7 +528,7 @@ def test_sqlspec_claim_batch_sql_is_cached() -> "None":
     claim_second = store.claim_batch_returning_sql(queue_count=1, filter_execution_backend=True)
 
     assert claim_first is claim_second
-    assert store._cached_sql["claim_batch:1:1"] is claim_first
+    assert store._cached_sql["claim_batch:1:1:0"] is claim_first
     assert store.complete_returning_sql(fence_retry_count=True) is store.complete_returning_sql(fence_retry_count=True)
     assert store.fail_returning_sql(fence_retry_count=True) is store.fail_returning_sql(fence_retry_count=True)
     assert store.insert_returning_sql() is store.insert_returning_sql()
@@ -561,6 +561,40 @@ def test_sqlspec_claim_batch_returning_sql_shape() -> "None":
     assert '"execution_backend" = :execution_backend' not in unfiltered
 
 
+def test_sqlspec_claim_batch_sql_with_caps_shape() -> "None":
+    """Per-queue caps rank inside a CTE so the locking stage stays window-function free."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    capped = store.claim_batch_returning_sql(queue_count=0, filter_execution_backend=False, cap_count=2)
+
+    assert 'PARTITION BY "queue"' in capped
+    assert '"qrank" <= c."cap"' in capped
+    assert "FOR UPDATE SKIP LOCKED" in capped
+    assert ":qc_queue_0" in capped
+    assert ":qc_cap_1" in capped
+    ranked_select = capped.split("picked AS")[0]
+    assert "row_number()" in ranked_select
+    assert "FOR UPDATE" not in ranked_select
+
+    assert store.claim_batch_returning_sql(
+        queue_count=0, filter_execution_backend=False, cap_count=0
+    ) == store.claim_batch_returning_sql(queue_count=0, filter_execution_backend=False)
+
+
+def test_postgres_claim_with_expired_sql_with_caps_shape() -> "None":
+    """The combined Postgres statement applies caps in a ranking CTE too."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    capped = store.claim_batch_with_expired_returning_sql(queue_count=0, filter_execution_backend=False, cap_count=1)
+
+    assert 'PARTITION BY "queue"' in capped
+    assert '"qrank" <= c."cap"' in capped
+    assert capped.count("FOR UPDATE SKIP LOCKED") == 2
+    assert store.claim_batch_with_expired_returning_sql(
+        queue_count=0, filter_execution_backend=False, cap_count=0
+    ) == store.claim_batch_with_expired_returning_sql(queue_count=0, filter_execution_backend=False)
+
+
 def test_postgres_claim_with_expired_sql_is_one_tagged_statement() -> "None":
     """PostgreSQL expiry and claim share one statement with disjoint locked candidates."""
     store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
@@ -575,6 +609,27 @@ def test_postgres_claim_with_expired_sql_is_one_tagged_statement() -> "None":
     assert "'claimed' AS \"_claim_outcome\"" in sql
     assert '"queue" IN (:queue_0)' in sql
     assert '"execution_backend" = :execution_backend' in sql
+
+
+def test_postgres_claim_with_expired_sql_orders_by_queued_at() -> "None":
+    """The combined expiry/claim statement uses the canonical fairness ordering."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    sql = store.claim_batch_with_expired_returning_sql(queue_count=0, filter_execution_backend=False)
+
+    assert 'ORDER BY "priority" DESC, "queued_at" ASC, "created_at" ASC, "id" ASC' in sql
+    assert 'ORDER BY "priority" DESC, "created_at" ASC ' not in sql
+
+
+def test_postgres_pending_index_covers_queued_at() -> "None":
+    """The Postgres partial pending index matches the canonical claim ordering."""
+    store = AsyncpgQueueStore(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+
+    pending_index = next(
+        statement for statement in store.create_statements() if store._quoted_index_name("pending") in statement
+    )
+
+    assert '"priority" DESC, "queued_at", "created_at"' in pending_index
 
 
 def test_sqlspec_complete_returning_sql_clears_heartbeat_and_fences() -> "None":
@@ -1763,6 +1818,86 @@ async def test_sqlspec_postgres_claim_many_single_statement_orders_and_fences(
             claimed_ids.extend(record.id for record in straggler)
         assert len(claimed_ids) == len(set(claimed_ids))
         assert set(claimed_ids) == concurrent_ids
+
+
+def _forbid_generic_claim_loop(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Make any fall back to the generic per-record claim loop fail loudly."""
+    from litestar_queues.backends.base import BaseQueueBackend
+
+    def _fail(*args: "Any", **kwargs: "Any") -> "Any":
+        del args, kwargs
+        msg = "fell back to generic claim loop"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(BaseQueueBackend, "claim_many", _fail)
+    monkeypatch.setattr(BaseQueueBackend, "claim_next", _fail)
+
+
+async def test_sqlspec_postgres_claim_many_enforces_queue_limits_natively(
+    postgres_service: "PostgresService", request: "FixtureRequest", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Per-queue caps ride the single-statement claim instead of the generic loop."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_caps_claim") as backend:
+        email_first = await backend.enqueue("tasks.caps.email1", queue="email", priority=100)
+        email_second = await backend.enqueue("tasks.caps.email2", queue="email", priority=90)
+        reports = await backend.enqueue("tasks.caps.reports", queue="reports", priority=1)
+        bulk = await backend.enqueue("tasks.caps.bulk", queue="bulk", priority=50)
+
+        _forbid_generic_claim_loop(monkeypatch)
+        claimed = await backend.claim_many(limit=4, queue_limits={"email": 1, "reports": 2})
+
+        assert {record.id for record in claimed} == {email_first.id, bulk.id, reports.id}
+        stored = await backend.get_task(email_second.id)
+        assert stored is not None
+        assert stored.status == "pending"
+
+
+async def test_sqlspec_postgres_claim_many_with_expired_enforces_queue_limits_natively(
+    postgres_service: "PostgresService", request: "FixtureRequest", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """The combined statement honours per-queue caps and still reports expirations."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_caps_combined") as backend:
+        email_first = await backend.enqueue("tasks.caps.email1", queue="email", priority=100)
+        email_second = await backend.enqueue("tasks.caps.email2", queue="email", priority=90)
+        reports = await backend.enqueue("tasks.caps.reports", queue="reports", priority=1)
+        bulk = await backend.enqueue("tasks.caps.bulk", queue="bulk", priority=50)
+        overdue = await backend.enqueue(
+            "tasks.caps.overdue",
+            queue="email",
+            priority=200,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+
+        _forbid_generic_claim_loop(monkeypatch)
+        claimed, expired = await backend.claim_many_with_expired(limit=4, queue_limits={"email": 1, "reports": 2})
+
+        assert {record.id for record in claimed} == {email_first.id, bulk.id, reports.id}
+        assert [record.id for record in expired] == [overdue.id]
+        stored = await backend.get_task(email_second.id)
+        assert stored is not None
+        assert stored.status == "pending"
+
+
+async def test_sqlspec_postgres_combined_claim_retries_behind_newer_work(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """A retried record re-enters behind newer same-priority work on the combined hot path."""
+    async with _postgres_asyncpg_backend(postgres_service, request, "lq_claim_fair") as backend:
+        assert type(backend._get_store()).supports_combined_expiry_claim is True
+
+        old = await backend.enqueue("tasks.fairness.old", queue="q1", priority=5, max_retries=3)
+        newer = await backend.enqueue("tasks.fairness.newer", queue="q1", priority=5, max_retries=3)
+
+        first, _ = await backend.claim_many_with_expired(limit=1, queues=("q1",))
+        assert [record.id for record in first] == [old.id]
+
+        retried = await backend.fail_task(old.id, "boom", retry=True, expected_retry_count=0)
+        assert retried is not None
+        assert retried.status == "pending"
+
+        second, _ = await backend.claim_many_with_expired(limit=1, queues=("q1",))
+
+        assert [record.id for record in second] == [newer.id]
 
 
 async def test_sqlspec_postgres_claim_many_returns_owned_expirations(

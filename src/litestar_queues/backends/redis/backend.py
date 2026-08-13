@@ -111,9 +111,16 @@ local eb_filter = ARGV[5]
 local window = tonumber(ARGV[6])
 
 local reservation_prefix = ARGV[7]
+local ncaps = tonumber(ARGV[8])
+local caps = {}
+local idx = 9
+for _ = 1, ncaps do
+    caps[ARGV[idx]] = tonumber(ARGV[idx + 1])
+    idx = idx + 2
+end
 local queue_filter = {}
 local has_queue_filter = false
-for i = 8, #ARGV do
+for i = idx, #ARGV do
     queue_filter[ARGV[i]] = true
     has_queue_filter = true
 end
@@ -162,50 +169,64 @@ for _, id in ipairs(due) do
 end
 
 local claimed = {}
-local candidates = redis.call('ZRANGE', ready, 0, window)
-for _, id in ipairs(candidates) do
-    if #claimed >= limit then break end
-    local hkey = prefix .. ':task:' .. id
-    local status = redis.call('HGET', hkey, 'status')
-    if status ~= 'pending' then
-        redis.call('ZREM', ready, id)
-    else
-        local eb = redis.call('HGET', hkey, 'execution_backend')
-        local q = redis.call('HGET', hkey, 'queue')
-        local execution_ref = redis.call('HGET', hkey, 'execution_ref')
-        local eb_ok = (eb_filter == '' or eb == eb_filter)
-        local q_ok = (not has_queue_filter or queue_filter[q] == true)
-        local reservation_active = execution_ref and string.sub(execution_ref, 1, string.len(reservation_prefix)) == reservation_prefix
-        local unreserved = not reservation_active
-        if eb_ok and q_ok and unreserved then
-            local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
-            if expires_score > 0 and expires_score <= now_ms then
-                redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
-                    'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
-                redis.call('SREM', prefix .. ':status:pending', id)
-                redis.call('SADD', prefix .. ':status:expired', id)
-                redis.call('ZREM', ready, id)
-                redis.call('ZREM', scheduled, id)
-                redis.call('ZREM', prefix .. ':maintenance:running', id)
-                redis.call('ZREM', prefix .. ':maintenance:external', id)
-                redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-                redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
-                redis.call('PUBLISH', prefix .. ':completions', id)
-                expired[#expired + 1] = id
-            else
-                redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
-                    'started_score', now_ms, 'heartbeat_score', now_ms)
-                redis.call('SREM', prefix .. ':status:pending', id)
-                redis.call('SADD', prefix .. ':status:running', id)
-                redis.call('ZREM', ready, id)
-                redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
-                redis.call('ZREM', prefix .. ':maintenance:terminal', id)
-                redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-                redis.call('ZREM', prefix .. ':maintenance:external', id)
-                claimed[#claimed + 1] = id
+local start = 0
+while #claimed < limit do
+    local candidates = redis.call('ZRANGE', ready, start, start + window - 1)
+    if #candidates == 0 then break end
+    local scanned = #candidates
+    local removed = 0
+    for _, id in ipairs(candidates) do
+        if #claimed >= limit then break end
+        local hkey = prefix .. ':task:' .. id
+        local status = redis.call('HGET', hkey, 'status')
+        if status ~= 'pending' then
+            redis.call('ZREM', ready, id)
+            removed = removed + 1
+        else
+            local eb = redis.call('HGET', hkey, 'execution_backend')
+            local q = redis.call('HGET', hkey, 'queue')
+            local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+            local eb_ok = (eb_filter == '' or eb == eb_filter)
+            local q_ok = (not has_queue_filter or queue_filter[q] == true)
+            local reservation_active = execution_ref and string.sub(execution_ref, 1, string.len(reservation_prefix)) == reservation_prefix
+            local unreserved = not reservation_active
+            if eb_ok and q_ok and unreserved then
+                local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+                if expires_score > 0 and expires_score <= now_ms then
+                    redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
+                        'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
+                    redis.call('SREM', prefix .. ':status:pending', id)
+                    redis.call('SADD', prefix .. ':status:expired', id)
+                    redis.call('ZREM', ready, id)
+                    removed = removed + 1
+                    redis.call('ZREM', scheduled, id)
+                    redis.call('ZREM', prefix .. ':maintenance:running', id)
+                    redis.call('ZREM', prefix .. ':maintenance:external', id)
+                    redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+                    redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
+                    redis.call('PUBLISH', prefix .. ':completions', id)
+                    expired[#expired + 1] = id
+                else
+                    local cap = caps[q]
+                    if cap == nil or cap > 0 then
+                        redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
+                            'started_score', now_ms, 'heartbeat_score', now_ms)
+                        redis.call('SREM', prefix .. ':status:pending', id)
+                        redis.call('SADD', prefix .. ':status:running', id)
+                        redis.call('ZREM', ready, id)
+                        removed = removed + 1
+                        redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
+                        redis.call('ZREM', prefix .. ':maintenance:terminal', id)
+                        redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+                        redis.call('ZREM', prefix .. ':maintenance:external', id)
+                        claimed[#claimed + 1] = id
+                        if cap ~= nil then caps[q] = cap - 1 end
+                    end
+                end
             end
         end
     end
+    start = start + scanned - removed
 end
 local outcome = {}
 for _, id in ipairs(claimed) do
@@ -976,7 +997,7 @@ class RedisQueueBackend(BaseQueueBackend):
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
-        due_records.sort(key=lambda record: (-record.priority, record.created_at))
+        due_records.sort(key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int))
         return due_records[:limit]
 
     async def claim_task(
@@ -1047,15 +1068,12 @@ class RedisQueueBackend(BaseQueueBackend):
         queue_limits: "Mapping[str, int] | None" = None,
     ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
         """Claim records and report expirations owned by the same Lua script."""
-        if queue_limits is not None:
-            return await super().claim_many_with_expired(
-                limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
-            )
         if limit <= 0:
             return [], []
         client = await self._get_client()
         now = _utc_now()
         window = max(limit * 2, limit + 10)
+        caps = sorted((queue_limits or {}).items())
         args = [
             self._key_prefix,
             repr(now.timestamp() * 1000.0),
@@ -1064,6 +1082,8 @@ class RedisQueueBackend(BaseQueueBackend):
             execution_backend or "",
             str(window),
             EXTERNAL_DISPATCH_RESERVATION_PREFIX,
+            str(len(caps)),
+            *(value for queue, cap in caps for value in (queue, str(cap))),
             *queues,
         ]
         outcome = await _eval_script(client, _CLAIM_SCRIPT, [self._ready_key, self._scheduled_key], args)

@@ -169,7 +169,9 @@ queue/execution filters.
 
 ``max_concurrency`` remains the worker-wide ceiling. Use
 ``queue_concurrency={"email": 1, "reports": 2}`` for per-worker queue caps.
-These are local limits, not distributed fleet semaphores.
+These are local limits, not distributed fleet semaphores. Backends with a
+native batch claim keep it when caps are set: PostgreSQL applies them inside
+the same claim statement and Redis/Valkey inside the same claim script.
 
 Shutdown
 ========

@@ -249,13 +249,54 @@ class SQLSpecQueueStore:
 
         return self._cached("insert_returning", build)
 
-    def claim_batch_returning_sql(self, *, queue_count: "int", filter_execution_backend: "bool") -> "str":
+    def _claim_order_sql(self, *, alias: "str" = "") -> "str":
+        """Return the canonical claim ordering, optionally prefixed with a table alias."""
+        prefix = f"{alias}." if alias else ""
+        return (
+            f"{prefix}{self._quoted_col('priority')} DESC, {prefix}{self._quoted_col('queued_at')} ASC, "
+            f"{prefix}{self._quoted_col('created_at')} ASC, {prefix}{self._quoted_col('id')} ASC"
+        )
+
+    def _capped_candidate_ctes_sql(self, *, cap_count: "int", where: "str") -> "str":
+        """Return ``caps``/``ranked``/``picked`` CTE text applying per-queue claim caps.
+
+        PostgreSQL rejects ``FOR UPDATE`` in a query level that contains a window
+        function, so ranking happens here and the caller locks the picked ids in a
+        separate stage.
+
+        Returns:
+            Comma-terminated CTE definitions ending with the ``picked`` CTE.
+        """
+        table = self._quoted_table_name()
+        id_col = self._quoted_col("id")
+        queue_col = self._quoted_col("queue")
+        cap_rows = ", ".join(
+            f"(CAST(:qc_queue_{index} AS {self._indexed_text_type()}), CAST(:qc_cap_{index} AS INTEGER))"
+            for index in range(cap_count)
+        )
+        ranked_columns = ", ".join(
+            self._quoted_col(canonical) for canonical in ("id", "queue", "priority", "queued_at", "created_at")
+        )
+        return (
+            f'caps("queue", "cap") AS (VALUES {cap_rows}), '  # noqa: S608
+            f"ranked AS (SELECT {ranked_columns}, row_number() OVER ("
+            f"PARTITION BY {queue_col} ORDER BY {self._claim_order_sql()}"
+            f') AS "qrank" FROM {table} WHERE {where}), '
+            f"picked AS (SELECT r.{id_col} FROM ranked AS r "
+            f'LEFT JOIN caps AS c ON c."queue" = r.{queue_col} '
+            f'WHERE c."cap" IS NULL OR r."qrank" <= c."cap" '
+            f"ORDER BY {self._claim_order_sql(alias='r')} LIMIT :limit), "
+        )
+
+    def claim_batch_returning_sql(
+        self, *, queue_count: "int", filter_execution_backend: "bool", cap_count: "int" = 0
+    ) -> "str":
         """Return a cached batched claim statement locking rows with SKIP LOCKED.
 
         Returns:
             An ``UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED LIMIT :limit) ... RETURNING`` statement.
         """
-        cache_key = f"claim_batch:{queue_count}:{int(filter_execution_backend)}"
+        cache_key = f"claim_batch:{queue_count}:{int(filter_execution_backend)}:{cap_count}"
 
         def build() -> "str":
             table = self._quoted_table_name()
@@ -281,10 +322,23 @@ class SQLSpecQueueStore:
             if filter_execution_backend:
                 conditions.append(f"{eb_col} = :execution_backend")
             where = " AND ".join(conditions)
-            return (
+            update_sql = (
                 f"UPDATE {table} AS t "  # noqa: S608
                 f"SET {status_col} = 'running', {self._quoted_col('started_at')} = :started_at, "
                 f"{self._quoted_col('heartbeat_at')} = :heartbeat_at "
+            )
+            if cap_count:
+                return (
+                    f"WITH {self._capped_candidate_ctes_sql(cap_count=cap_count, where=where)}"  # noqa: S608
+                    f"claim_candidates AS (SELECT {id_col} FROM {table} "
+                    f"WHERE {id_col} IN (SELECT {id_col} FROM picked) AND {where} "
+                    f"FOR UPDATE SKIP LOCKED) "
+                    f"{update_sql}"
+                    f"FROM claim_candidates AS c WHERE t.{id_col} = c.{id_col} "
+                    f"RETURNING {self._prefixed_returning_columns_sql('t')}"
+                )
+            return (
+                f"{update_sql}"  # noqa: S608
                 f"FROM (SELECT {id_col} FROM {table} WHERE {where} "
                 f"ORDER BY {priority_col} DESC, {queued_col} ASC, {created_col} ASC, {id_col} ASC "
                 f"FOR UPDATE SKIP LOCKED LIMIT :limit) AS sub "
@@ -294,7 +348,9 @@ class SQLSpecQueueStore:
 
         return self._cached(cache_key, build)
 
-    def claim_batch_with_expired_returning_sql(self, *, queue_count: "int", filter_execution_backend: "bool") -> "str":
+    def claim_batch_with_expired_returning_sql(
+        self, *, queue_count: "int", filter_execution_backend: "bool", cap_count: "int" = 0
+    ) -> "str":
         """Return a tagged expiry-and-claim statement for capable stores."""
         raise NotImplementedError
 

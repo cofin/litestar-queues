@@ -985,18 +985,9 @@ class QueueService:
             Records successfully transitioned to ``running``.
         """
         backend = self.get_queue_backend()
-        if queue_limits is None:
-            claimed, expired = await backend.claim_many_with_expired(
-                limit=limit, queues=queues, execution_backend=execution_backend
-            )
-        else:
-            from litestar_queues.backends.base import BaseQueueBackend
-
-            expired = await backend.expire_overdue()
-            claimed = await BaseQueueBackend.claim_many(
-                backend, limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
-            )
-            expired.extend(await backend.expire_overdue())
+        claimed, expired = await backend.claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
         self.observability_runtime.record_histogram(
             "litestar_queues.claim.batch.size",
             len(claimed),

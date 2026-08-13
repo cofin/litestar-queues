@@ -12,7 +12,7 @@ from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from uuid import UUID
 
     from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
@@ -1309,3 +1309,53 @@ async def test_interrupt_task_under_the_cap_requeues() -> "None":
         assert stored.status == "pending"
         assert stored.metadata.get("interruptions") == 1
         assert stored.error is None
+
+
+class _RecordingClaimBackend(InMemoryQueueBackend):
+    """Records the kwargs every native batch-claim call receives."""
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.claim_calls: "list[Mapping[str, int] | None]" = []
+        self.base_loop_calls = 0
+
+    async def claim_many_with_expired(
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
+    ) -> "tuple[list[QueuedTaskRecord], list[QueuedTaskRecord]]":
+        self.claim_calls.append(queue_limits)
+        return await super().claim_many_with_expired(
+            limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
+
+    async def claim_many(
+        self,
+        *,
+        limit: "int",
+        queues: "tuple[str, ...]" = (),
+        execution_backend: "str | None" = None,
+        queue_limits: "Mapping[str, int] | None" = None,
+    ) -> "list[QueuedTaskRecord]":
+        self.base_loop_calls += 1
+        return await super().claim_many(
+            limit=limit, queues=queues, execution_backend=execution_backend, queue_limits=queue_limits
+        )
+
+
+async def test_claim_tasks_forwards_queue_limits_to_backend() -> "None":
+    """Per-queue caps reach the backend through one batch-claim call."""
+    backend = _RecordingClaimBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=backend
+    ) as service:
+        await backend.enqueue("tasks.email.first", queue="email")
+        await backend.enqueue("tasks.email.second", queue="email")
+
+        claimed = await service.claim_tasks(limit=2, queue_limits={"email": 1})
+
+    assert len(claimed) == 1
+    assert backend.claim_calls == [{"email": 1}]
