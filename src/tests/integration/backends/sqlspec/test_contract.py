@@ -597,16 +597,18 @@ def test_sqlspec_fail_returning_sql_uses_case_retry_branch() -> "None":
 
     sql = store.fail_returning_sql(fence_retry_count=False)
 
+    # Shutdown interruptions bump the fence generation without spending a retry
+    # attempt, so the single-statement budget subtracts them from retry_count.
+    can_retry = (
+        ':retry = TRUE AND ("retry_count" - COALESCE(("metadata" ->> \'interruptions\')::INT, 0)) < "max_retries"'
+    )
     assert (
-        'CASE WHEN :retry = TRUE AND "retry_count" < "max_retries" THEN '
+        f"CASE WHEN {can_retry} THEN "
         "CASE WHEN CAST(:retry_at AS TIMESTAMPTZ) IS NULL THEN 'pending' ELSE 'scheduled' END ELSE 'failed' END" in sql
     )
     assert '"heartbeat_at" = NULL' in sql
     assert '"error" = :error' in sql
-    assert (
-        '"completed_at" = CASE WHEN :retry = TRUE AND "retry_count" < "max_retries" '
-        "THEN NULL ELSE CAST(:completed_at AS TIMESTAMPTZ) END" in sql
-    )
+    assert f'"completed_at" = CASE WHEN {can_retry} THEN NULL ELSE CAST(:completed_at AS TIMESTAMPTZ) END' in sql
 
 
 def test_sqlspec_returning_columns_alias_remapped_columns() -> "None":

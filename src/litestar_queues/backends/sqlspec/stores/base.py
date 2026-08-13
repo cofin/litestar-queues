@@ -334,7 +334,7 @@ class SQLSpecQueueStore:
             retry_count_col = self._quoted_col("retry_count")
             max_retries_col = self._quoted_col("max_retries")
             retry_at = f"CAST(:retry_at AS {self._timestamp_type()})"
-            can_retry = f":retry = TRUE AND {retry_count_col} < {max_retries_col}"
+            can_retry = f":retry = TRUE AND ({retry_count_col} - {self.interruptions_expression()}) < {max_retries_col}"
             where = f"{self._quoted_col('id')} = :id AND {self._quoted_col('status')} = 'running'"
             if fence_retry_count:
                 where += f" AND {retry_count_col} = :expected_retry_count"
@@ -1269,6 +1269,24 @@ RETURNING {target}.{id_col} AS id
 
     def _result_json_type(self, column_name: "str") -> "str":
         return self._json_type()
+
+    def interruptions_expression(self) -> "str":
+        """Return SQL reading the record's shutdown-interruption count from its metadata.
+
+        Only stores that answer ``supports_dml_returning`` settle a task in one
+        statement, so only they need to read the counter in SQL; every other
+        store subtracts it in Python from the row it already fetched.
+
+        Raises:
+            NotImplementedError: When a store enables single-statement settling
+                without telling the queue how to read the counter.
+        """
+        msg = (
+            f"{type(self).__name__} enables supports_dml_returning but does not implement "
+            f"interruptions_expression(), so its single-statement retry budget would count "
+            f"shutdown interruptions as failed attempts."
+        )
+        raise NotImplementedError(msg)
 
     def _metadata_json_type(self, column_name: "str") -> "str":
         return self._json_type()

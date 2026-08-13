@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -47,7 +48,11 @@ def interruption_count(record: "QueuedTaskRecord") -> "int":
         The recorded interruption count, or ``0`` when it is absent or unusable.
     """
     value = record.metadata.get("interruptions")
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+    # Drivers decode JSON numbers differently: Oracle hands back ``Decimal``.
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return 0
+    count = int(value)
+    return max(0, count)
 
 
 def attempts_consumed(record: "QueuedTaskRecord") -> "int":
