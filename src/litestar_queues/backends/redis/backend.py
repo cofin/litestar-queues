@@ -162,50 +162,60 @@ for _, id in ipairs(due) do
 end
 
 local claimed = {}
-local candidates = redis.call('ZRANGE', ready, 0, window)
-for _, id in ipairs(candidates) do
-    if #claimed >= limit then break end
-    local hkey = prefix .. ':task:' .. id
-    local status = redis.call('HGET', hkey, 'status')
-    if status ~= 'pending' then
-        redis.call('ZREM', ready, id)
-    else
-        local eb = redis.call('HGET', hkey, 'execution_backend')
-        local q = redis.call('HGET', hkey, 'queue')
-        local execution_ref = redis.call('HGET', hkey, 'execution_ref')
-        local eb_ok = (eb_filter == '' or eb == eb_filter)
-        local q_ok = (not has_queue_filter or queue_filter[q] == true)
-        local reservation_active = execution_ref and string.sub(execution_ref, 1, string.len(reservation_prefix)) == reservation_prefix
-        local unreserved = not reservation_active
-        if eb_ok and q_ok and unreserved then
-            local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
-            if expires_score > 0 and expires_score <= now_ms then
-                redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
-                    'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
-                redis.call('SREM', prefix .. ':status:pending', id)
-                redis.call('SADD', prefix .. ':status:expired', id)
-                redis.call('ZREM', ready, id)
-                redis.call('ZREM', scheduled, id)
-                redis.call('ZREM', prefix .. ':maintenance:running', id)
-                redis.call('ZREM', prefix .. ':maintenance:external', id)
-                redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-                redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
-                redis.call('PUBLISH', prefix .. ':completions', id)
-                expired[#expired + 1] = id
-            else
-                redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
-                    'started_score', now_ms, 'heartbeat_score', now_ms)
-                redis.call('SREM', prefix .. ':status:pending', id)
-                redis.call('SADD', prefix .. ':status:running', id)
-                redis.call('ZREM', ready, id)
-                redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
-                redis.call('ZREM', prefix .. ':maintenance:terminal', id)
-                redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-                redis.call('ZREM', prefix .. ':maintenance:external', id)
-                claimed[#claimed + 1] = id
+local start = 0
+while #claimed < limit do
+    local candidates = redis.call('ZRANGE', ready, start, start + window - 1)
+    if #candidates == 0 then break end
+    local scanned = #candidates
+    local removed = 0
+    for _, id in ipairs(candidates) do
+        if #claimed >= limit then break end
+        local hkey = prefix .. ':task:' .. id
+        local status = redis.call('HGET', hkey, 'status')
+        if status ~= 'pending' then
+            redis.call('ZREM', ready, id)
+            removed = removed + 1
+        else
+            local eb = redis.call('HGET', hkey, 'execution_backend')
+            local q = redis.call('HGET', hkey, 'queue')
+            local execution_ref = redis.call('HGET', hkey, 'execution_ref')
+            local eb_ok = (eb_filter == '' or eb == eb_filter)
+            local q_ok = (not has_queue_filter or queue_filter[q] == true)
+            local reservation_active = execution_ref and string.sub(execution_ref, 1, string.len(reservation_prefix)) == reservation_prefix
+            local unreserved = not reservation_active
+            if eb_ok and q_ok and unreserved then
+                local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+                if expires_score > 0 and expires_score <= now_ms then
+                    redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
+                        'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
+                    redis.call('SREM', prefix .. ':status:pending', id)
+                    redis.call('SADD', prefix .. ':status:expired', id)
+                    redis.call('ZREM', ready, id)
+                    removed = removed + 1
+                    redis.call('ZREM', scheduled, id)
+                    redis.call('ZREM', prefix .. ':maintenance:running', id)
+                    redis.call('ZREM', prefix .. ':maintenance:external', id)
+                    redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+                    redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
+                    redis.call('PUBLISH', prefix .. ':completions', id)
+                    expired[#expired + 1] = id
+                else
+                    redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
+                        'started_score', now_ms, 'heartbeat_score', now_ms)
+                    redis.call('SREM', prefix .. ':status:pending', id)
+                    redis.call('SADD', prefix .. ':status:running', id)
+                    redis.call('ZREM', ready, id)
+                    removed = removed + 1
+                    redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
+                    redis.call('ZREM', prefix .. ':maintenance:terminal', id)
+                    redis.call('ZREM', prefix .. ':maintenance:expiry', id)
+                    redis.call('ZREM', prefix .. ':maintenance:external', id)
+                    claimed[#claimed + 1] = id
+                end
             end
         end
     end
+    start = start + scanned - removed
 end
 local outcome = {}
 for _, id in ipairs(claimed) do
@@ -976,7 +986,9 @@ class RedisQueueBackend(BaseQueueBackend):
             and (queue is None or record.queue == queue)
             and (execution_backend is None or record.execution_backend == execution_backend)
         ]
-        due_records.sort(key=lambda record: (-record.priority, record.created_at))
+        due_records.sort(
+            key=lambda record: (-record.priority, record.queued_at, record.created_at, record.id.int)
+        )
         return due_records[:limit]
 
     async def claim_task(

@@ -364,6 +364,40 @@ async def test_redis_backend_claim_many_orders_by_priority_then_created(redis_ba
     assert all(record.status == "running" for record in claimed)
 
 
+async def test_redis_queue_filtered_claim_reaches_beyond_ready_window(
+    redis_backend: "RedisQueueBackend",
+) -> "None":
+    """A queue-filtered claim finds records sitting far behind other queues' head-of-set traffic."""
+    noise = [await redis_backend.enqueue(f"tasks.noise.{index}", queue="noise", priority=10) for index in range(40)]
+    wanted = [await redis_backend.enqueue(f"tasks.wanted.{index}", queue="wanted", priority=1) for index in range(3)]
+
+    claimed = await redis_backend.claim_many(limit=3, queues=("wanted",))
+
+    assert {record.id for record in claimed} == {record.id for record in wanted}
+    assert all(record.queue == "wanted" for record in claimed)
+    assert all(record.status == "running" for record in claimed)
+    for record in noise:
+        stored = await redis_backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "pending"
+
+
+async def test_redis_list_pending_orders_retries_behind_newer_work(redis_backend: "RedisQueueBackend") -> "None":
+    """``list_pending`` ranks a retried record behind newer same-priority work."""
+    old = await redis_backend.enqueue("tasks.fairness.old", priority=5, max_retries=3)
+    await asyncio.sleep(0.005)
+    newer = await redis_backend.enqueue("tasks.fairness.newer", priority=5, max_retries=3)
+
+    assert await redis_backend.claim_task(old.id) is not None
+    retried = await redis_backend.fail_task(old.id, "boom", retry=True, expected_retry_count=0)
+    assert retried is not None
+    assert retried.status == "pending"
+
+    pending = await redis_backend.list_pending(limit=2)
+
+    assert [record.id for record in pending] == [newer.id, old.id]
+
+
 async def test_redis_backend_claim_many_filters_queue_and_execution_backend(
     redis_backend: "RedisQueueBackend",
 ) -> "None":
