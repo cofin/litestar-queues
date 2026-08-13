@@ -57,6 +57,14 @@ async def test_worker_lock_uses_a_distinct_token_per_acquisition() -> "None":
     assert len(set(tokens)) == 2
 
 
+async def test_worker_control_wait_defaults_to_sleep_and_report_nothing() -> "None":
+    """Polling-only backends inherit a wait that never claims a hint arrived."""
+    backend = _MaintenanceOnlyBackend()
+
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False
+    assert await backend.wait_for_worker_control(worker_id="worker-a") is False
+
+
 _REQUIRED_CONTRACT_CALLS = {
     "cleanup_terminal": lambda b: b.cleanup_terminal(datetime.now(timezone.utc)),
     "expire_overdue": lambda b: b.expire_overdue(),

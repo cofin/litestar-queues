@@ -704,3 +704,15 @@ class _CountingEvent:
     async def wait(self) -> "bool":
         self.waits += 1
         return await self._event.wait()
+
+
+async def test_memory_worker_control_uses_its_own_primitive() -> "None":
+    backend = InMemoryQueueBackend()
+
+    await backend.notify_worker_control("worker-a")
+
+    # The control hint must not masquerade as new-work availability.
+    assert await backend.wait_for_wakeups(timeout=0) is False
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is True
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False
+    await backend.close()

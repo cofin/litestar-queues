@@ -141,6 +141,7 @@ class Worker:
             miss_threshold=worker_config.heartbeat_miss_threshold,
             worker_id=self._worker_id,
             jitter_fraction=worker_config.heartbeat_jitter_fraction,
+            on_claim_lost=self._cancel_claim_lost_task if worker_config.cancel_on_claim_loss else None,
         )
         self._queues = worker_config.queues
         self._running_tasks: "dict[asyncio.Task[None], QueuedTaskRecord]" = {}
@@ -431,6 +432,23 @@ class Worker:
                 )
         self._completion_event.set()
 
+    def _cancel_claim_lost_task(self, task_id: "UUID") -> "None":
+        """Cancel the local coroutine whose claim the heartbeat manager just lost.
+
+        Deliberately a plain ``cancel()`` rather than the durable-cancel pair:
+        claim loss is an ownership interruption, not a user cancel, so the
+        attempt records ``interrupted`` telemetry and attempts no terminal
+        write. The record already belongs to whichever worker took the claim.
+        """
+        for task, record in self._running_tasks.items():
+            if record.id != task_id or task.done():
+                continue
+            task.cancel()
+            self._record_counter(
+                "litestar_queues.worker.claim_lost_cancel", {"messaging.destination.name": record.queue}
+            )
+            return
+
     async def _maybe_cancel_running(self) -> "None":
         if not self._running_tasks:
             return
@@ -661,16 +679,24 @@ class Worker:
             )
             self._listener_reconnect_pending = False
         notification_task = asyncio.create_task(queue_backend.wait_for_wakeups(timeout=timeout))
+        control_task = asyncio.create_task(
+            queue_backend.wait_for_worker_control(worker_id=self._worker_id, timeout=timeout)
+        )
         stop_task = asyncio.create_task(self._stop_event.wait())
         completion_task = asyncio.create_task(self._completion_event.wait())
         done, pending = await asyncio.wait(
-            {notification_task, stop_task, completion_task}, return_when=asyncio.FIRST_COMPLETED
+            {notification_task, control_task, stop_task, completion_task}, return_when=asyncio.FIRST_COMPLETED
         )
         self._completion_event.clear()
         for task in pending:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if control_task in done and await self._consume_control_task(control_task):
+            # A saturated worker never reaches run_once's cadence check quickly
+            # enough for the hint to matter, so the gate is reset before the pass.
+            self._last_cancellation_check_at = -float("inf")
+            await self._maybe_cancel_running()
         outcome: "bool | None" = None
         if notification_task in done:
             outcome = await self._consume_wait_task(notification_task)
@@ -710,6 +736,31 @@ class Worker:
             await self._backoff_after_loop_error()
             return None
         return result
+
+    async def _consume_control_task(self, task: "asyncio.Task[bool]") -> "bool":
+        """Return whether a worker-control hint arrived, containing read failures.
+
+        Returns:
+            True when a hint was observed and an immediate cancellation pass
+            should run.
+        """
+        try:
+            return task.result()
+        except asyncio.TimeoutError:
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Control hints are lossy by contract: a failed read costs latency,
+            # never correctness, because run_once still polls durable status.
+            self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
+            self._service.observability_runtime.record_counter(
+                "litestar_queues.listener.error",
+                attributes={**self._transport_metric_attributes(), "queue.outcome": "control_read_failed"},
+            )
+            self._listener_reconnect_pending = True
+            self._logger.exception("Queue worker loop iteration failed", extra={"worker_id": self._worker_id})
+            return False
 
     async def _backoff_after_loop_error(self) -> "None":
         timeout = min(max(self._poll_interval, 0.01), 1.0)

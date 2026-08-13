@@ -32,6 +32,15 @@ def test_worker_cli_overrides_can_copy_without_mutating_app_config() -> None:
     assert overridden.max_concurrency == 8
 
 
+def test_claim_loss_cancellation_defaults_on_and_is_opt_out() -> None:
+    queue_config = QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external"))
+    service = QueueService(queue_config, queue_backend=InMemoryQueueBackend(queue_config))
+
+    assert WorkerConfig().cancel_on_claim_loss is True
+    assert Worker(service, WorkerConfig())._heartbeat_manager._on_claim_lost is not None
+    assert Worker(service, WorkerConfig(cancel_on_claim_loss=False))._heartbeat_manager._on_claim_lost is None
+
+
 def test_worker_startup_timeout_must_be_positive() -> None:
     assert WorkerConfig(startup_timeout=0.25).startup_timeout == 0.25
 

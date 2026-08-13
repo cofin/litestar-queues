@@ -227,8 +227,31 @@ class BaseQueueBackend:
         records = await asyncio.gather(*(self.get_task(task_id) for task_id in task_ids))
         return [record for record in records if record is not None]
 
-    async def notify_worker_control(self, worker_id: "str") -> "None":
-        """Publish a best-effort worker-control hint."""
+    async def notify_worker_control(self, worker_id: "str | None") -> "None":
+        """Publish a best-effort worker-control hint.
+
+        ``worker_id`` is the record's persisted owner when the backend tracks
+        one, and ``None`` otherwise. It travels for observability only: the
+        control channel is shared and every subscribed worker reconciles its
+        own running tasks against durable status on receipt.
+
+        Worker-control hints are lossy: durable status remains authoritative,
+        and a dropped hint costs cancellation latency, never correctness.
+        """
+
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        """Wait for a best-effort worker-control hint.
+
+        Mirrors :meth:`wait_for_wakeups`: polling-only backends inherit this
+        sleep-and-report-nothing default and stay pure-poll.
+
+        Returns:
+            True when a control hint was observed.
+        """
+        del worker_id
+        if timeout is not None:
+            await asyncio.sleep(timeout)
+        return False
 
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"

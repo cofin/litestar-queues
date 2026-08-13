@@ -220,6 +220,15 @@ class WorkerConfig:
     heartbeat_miss_threshold: "int" = 2
     """Consecutive heartbeat misses tolerated before claim loss."""
 
+    cancel_on_claim_loss: "bool" = True
+    """Whether heartbeat claim loss cancels the locally running coroutine.
+
+    Writes are already fenced on the claim, but side effects are not: while a
+    lost claim keeps running, a replacement worker executes the same record.
+    Cancelling closes that duplicate-execution window. Set to ``False`` to let
+    a lost attempt run to completion and have its terminal write rejected.
+    """
+
     cancellation_poll_interval: "float" = 1.0
     """Interval between durable running-cancellation reconciliation passes."""
 

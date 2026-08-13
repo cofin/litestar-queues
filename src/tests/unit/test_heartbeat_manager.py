@@ -76,6 +76,52 @@ async def test_second_consecutive_miss_claims_lost() -> "None":
     assert task_id not in manager._registrations
 
 
+async def test_claim_lost_invokes_callback_after_unregister() -> "None":
+    """Claim loss should hand the task id to the owner's cancel callback."""
+    task_id = uuid4()
+    record = QueuedTaskRecord(task_name="heartbeat.callback", id=task_id, retry_count=0)
+    backend = FakeBackend(records={task_id: record})
+    backend.touch_results.append(HeartbeatTouchResult(missed_task_ids={task_id}))
+    service = FakeService(backend)
+    seen: "list[UUID]" = []
+    manager = WorkerHeartbeatManager(
+        service, interval=30, miss_threshold=1, worker_id="worker-a", jitter_fraction=0, on_claim_lost=seen.append
+    )
+
+    manager.register(task_id, expected_retry_count=0)
+    await manager._tick()
+
+    assert seen == [task_id]
+    assert task_id not in manager._registrations
+
+
+async def test_claim_lost_callback_failure_is_contained() -> "None":
+    """A raising cancel callback should be recorded, not propagated."""
+    task_id = uuid4()
+    record = QueuedTaskRecord(task_name="heartbeat.callback_error", id=task_id, retry_count=0)
+    backend = FakeBackend(records={task_id: record})
+    backend.touch_results.append(HeartbeatTouchResult(missed_task_ids={task_id}))
+    service = FakeService(backend)
+
+    def explode(task_id: "UUID") -> "None":
+        del task_id
+        msg = "cancel failed"
+        raise RuntimeError(msg)
+
+    manager = WorkerHeartbeatManager(
+        service, interval=30, miss_threshold=1, worker_id="worker-a", jitter_fraction=0, on_claim_lost=explode
+    )
+
+    manager.register(task_id, expected_retry_count=0)
+    await manager._tick()
+
+    failures = [
+        name for name, _value, _attributes in service.observability_runtime.counters if name.endswith("failure")
+    ]
+    assert failures == ["litestar_queues.heartbeat.failure"]
+    assert task_id not in manager._registrations
+
+
 async def test_shutdown_flush_and_clear() -> "None":
     """Closing should final-flush current registrations and leave no loop task running."""
     task_id = uuid4()
