@@ -39,6 +39,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
     """In-process queue backend for tests, local development, and examples."""
 
     __slots__ = (
+        "_control_event",
+        "_control_pending_read",
         "_event_log",
         "_keys",
         "_lock",
@@ -57,6 +59,8 @@ class InMemoryQueueBackend(BaseQueueBackend):
         self._lock = asyncio.Lock()
         self._notification_event = asyncio.Event()
         self._pending_read = PendingNativeRead()
+        self._control_event = asyncio.Event()
+        self._control_pending_read = PendingNativeRead()
         self._event_log: "QueueEventLog | None" = None
         self._maintenances: "dict[str, tuple[str, datetime]]" = {}
 
@@ -189,9 +193,9 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
         return [record for task_id in task_ids if (record := self._records.get(task_id)) is not None]
 
-    async def notify_worker_control(self, worker_id: "str") -> "None":
+    async def notify_worker_control(self, worker_id: "str | None") -> "None":
         del worker_id
-        self._notification_event.set()
+        self._control_event.set()
 
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
@@ -774,6 +778,18 @@ class InMemoryQueueBackend(BaseQueueBackend):
         self._notification_event.clear()
         return True
 
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        del worker_id
+        if not self._control_pending_read.has_pending and self._control_event.is_set():
+            self._control_event.clear()
+            return True
+        task = await self._control_pending_read.race(self._control_event.wait, timeout)
+        if task is None:
+            return False
+        task.result()
+        self._control_event.clear()
+        return True
+
     async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
         """Return seconds until the earliest not-yet-due pending/scheduled record.
 
@@ -796,8 +812,9 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return max((min(upcoming) - _utc_now()).total_seconds(), 0.0)
 
     async def close(self) -> "None":
-        """Cancel any retained notification wait."""
+        """Cancel any retained notification and worker-control waits."""
         await self._pending_read.aclose()
+        await self._control_pending_read.aclose()
 
     async def clear(self) -> "None":
         """Clear all in-memory records."""
@@ -807,7 +824,9 @@ class InMemoryQueueBackend(BaseQueueBackend):
             self._maintenances.clear()
             self._reservations.clear()
             self._notification_event.clear()
+            self._control_event.clear()
         await self._pending_read.aclose()
+        await self._control_pending_read.aclose()
         if self._event_log is not None:
             clear = getattr(self._event_log, "clear", None)
             if clear is not None:

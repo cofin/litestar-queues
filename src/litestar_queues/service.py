@@ -651,7 +651,9 @@ class QueueService:
         task_context = _task_execution_context(record, worker_id=None, event_publisher=self.get_event_publisher())
         await task_context.lifecycle("task.cancelled", message=message, payload=payload)
         self._log_task_event("Queue task cancelled", record, level=logging.INFO, payload=payload)
-        if include_running and record.worker_id is not None:
+        if include_running:
+            # Not gated on a persisted owner: backends that do not track one
+            # would otherwise never emit the hint their workers listen for.
             await backend.notify_worker_control(record.worker_id)
         return True
 

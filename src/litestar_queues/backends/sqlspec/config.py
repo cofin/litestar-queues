@@ -19,9 +19,17 @@ if TYPE_CHECKING:
     from litestar_queues.backends.sqlspec._typing import SQLSpecConfig, SQLSpecStoreConfig
     from litestar_queues.config import QueueConfig
 
-__all__ = ("DEFAULT_WAKEUP_CHANNEL", "WAKEUP_TRANSPORTS", "SQLSpecBackendConfig", "SQLSpecWorkerWakeupConfig")
+__all__ = (
+    "DEFAULT_CONTROL_CHANNEL",
+    "DEFAULT_WAKEUP_CHANNEL",
+    "WAKEUP_TRANSPORTS",
+    "SQLSpecBackendConfig",
+    "SQLSpecWorkerWakeupConfig",
+)
 
 DEFAULT_WAKEUP_CHANNEL = "litestar_queues_tasks"
+
+DEFAULT_CONTROL_CHANNEL = "litestar_queues_worker_control"
 
 WAKEUP_TRANSPORTS: "frozenset[str]" = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
 """Valid worker-wakeup transports for :attr:`SQLSpecWorkerWakeupConfig.transport`.

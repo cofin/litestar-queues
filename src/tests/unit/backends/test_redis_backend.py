@@ -83,6 +83,52 @@ async def test_redis_wait_for_wakeups_wakes_after_prior_timeout() -> "None":
     await backend.close()
 
 
+async def test_redis_notify_worker_control_publishes_to_control_channel() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
+
+    await backend.notify_worker_control("worker-a")
+
+    assert len(client.published) == 1
+    channel, payload = client.published[0]
+    assert channel == "litestar_queues:worker_control"
+    assert json.loads(payload) == {"event": "worker_control", "worker_id": "worker-a"}
+
+
+async def test_redis_worker_control_wait_retains_one_read_across_timeouts() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
+
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0.001) is False
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0.001) is False
+    control_pubsub = client.pubsubs[0]
+    control_pubsub.deliver()
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=1.0) is True
+
+    # The control subscription is its own, never shared with the wakeup read.
+    assert control_pubsub.channels == ["litestar_queues:worker_control"]
+    assert control_pubsub.subscribe_calls == 1
+    assert control_pubsub.get_message_calls == 1
+
+    assert await backend.wait_for_wakeups(timeout=0.001) is False
+    assert client.pubsubs[1].channels == ["litestar_queues:worker_wakeups"]
+
+    await backend.close()
+    assert control_pubsub.unsubscribe_calls == 1
+    assert control_pubsub.close_calls == 1
+
+
+async def test_redis_worker_control_falls_back_to_polling_without_notifications() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=False))
+
+    await backend.notify_worker_control("worker-a")
+
+    assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False
+    assert client.publish_calls == 0
+    assert client.pubsub_calls == 0
+
+
 async def test_redis_enqueue_many_persists_unkeyed_batch_with_one_pipeline_and_one_notification() -> "None":
     client = _CountingRedisClient()
     backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), worker_wakeups=True))
@@ -393,10 +439,11 @@ class _CountingPubSub:
         self.subscribe_calls = 0
         self.unsubscribe_calls = 0
         self.get_message_calls = 0
+        self.channels: "list[str]" = []
         self._message: "asyncio.Queue[object]" = asyncio.Queue()
 
     async def subscribe(self, channel: "str") -> "None":
-        del channel
+        self.channels.append(channel)
         self.subscribe_calls += 1
 
     async def unsubscribe(self, channel: "str") -> "None":

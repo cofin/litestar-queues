@@ -26,7 +26,11 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
-from litestar_queues.backends.sqlspec.config import DEFAULT_WAKEUP_CHANNEL, SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.config import (
+    DEFAULT_CONTROL_CHANNEL,
+    DEFAULT_WAKEUP_CHANNEL,
+    SQLSpecBackendConfig,
+)
 from litestar_queues.backends.sqlspec.event_log import (
     SQLSpecQueueEventLog,
     create_event_log_store,
@@ -125,6 +129,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     __slots__ = (
         "_column_map",
+        "_control_channel",
+        "_control_pending_read",
+        "_control_stream",
         "_event_channel",
         "_event_history_table_name",
         "_event_log",
@@ -215,6 +222,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         )
         self._event_stream: "Any | None" = None
         self._pending_read = PendingNativeRead()
+        self._control_stream: "Any | None" = None
+        self._control_pending_read = PendingNativeRead()
+        self._control_channel = (
+            config.names.database_channel("worker_control") if config is not None else DEFAULT_CONTROL_CHANNEL
+        )
         self._opened = False
 
     async def open(self) -> "bool":
@@ -239,6 +251,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._event_log is not None:
             await self._event_log.flush_events()
         await self._close_notification_stream()
+        await self._close_control_stream()
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
             await _invoke_event_channel_method(self._event_channel, "shutdown")
@@ -1837,6 +1850,56 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await _invoke_event_channel_method(self._event_channel, "ack", event.event_id)
         return True
 
+    async def notify_worker_control(self, worker_id: "str | None") -> "None":
+        """Publish a worker-control hint on the SQLSpec events channel.
+
+        On the Postgres drivers this is a LISTEN/NOTIFY message. The hint is
+        lossy by contract: it only shortens the wait before the owning worker
+        reconciles durable status.
+        """
+        if not self._worker_wakeups_enabled or self._event_channel is None:
+            return
+        await _invoke_event_channel_method(
+            self._event_channel,
+            "publish",
+            self._resolve_control_channel(),
+            {"event": "worker_control", "worker_id": worker_id},
+            {"event_type": "litestar_queues.worker_control"},
+        )
+
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        """Wait for a SQLSpec worker-control hint.
+
+        One ``iter_events`` stream and its pending read are retained across
+        worker poll timeouts, exactly like the wakeup stream, and are never
+        shared with it.
+
+        Returns:
+            True when a control hint was observed.
+
+        Raises:
+            Exception: Whatever the event read raised, after the stream is
+                closed so the next wait re-establishes it.
+        """
+        if not self._worker_wakeups_enabled or self._event_channel is None:
+            return await super().wait_for_worker_control(worker_id=worker_id, timeout=timeout)
+
+        stream = self._control_stream
+        if stream is None:
+            stream = self._event_channel.iter_events(
+                self._resolve_control_channel(), poll_interval=self._wakeup_poll_interval
+            )
+            self._control_stream = stream
+        task = await self._control_pending_read.race(lambda: _next_event(stream), timeout)
+        if task is None:
+            return False
+        exc = task.exception()
+        if exc is not None:
+            await self._close_control_stream()
+            raise exc
+        await _invoke_event_channel_method(self._event_channel, "ack", task.result().event_id)
+        return True
+
     async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
         """Return seconds until the earliest not-yet-due pending/scheduled record.
 
@@ -1869,6 +1932,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     if isawaitable(result):
                         await result
 
+    async def _close_control_stream(self) -> "None":
+        """Cancel the retained control read and close its iterator."""
+        await self._control_pending_read.aclose()
+        stream = self._control_stream
+        self._control_stream = None
+        if stream is not None:
+            with suppress(Exception):
+                close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+                if close is not None:
+                    result = close()
+                    if isawaitable(result):
+                        await result
+
     @staticmethod
     def _default_sqlspec_config() -> "SQLSpecConfig":
         from sqlspec.adapters.aiosqlite import AiosqliteConfig
@@ -1888,6 +1964,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         else:
             self._wakeup_channel = DEFAULT_WAKEUP_CHANNEL
         return self._wakeup_channel
+
+    def _resolve_control_channel(self) -> "str":
+        self._control_channel = _normalize_wakeup_channel(str(self._control_channel))
+        return self._control_channel
 
     def _configure_worker_wakeups(self) -> "None":
         sqlspec_config = self._get_sqlspec_config()

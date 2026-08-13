@@ -115,7 +115,9 @@ async def test_claim_lost_callback_failure_is_contained() -> "None":
     manager.register(task_id, expected_retry_count=0)
     await manager._tick()
 
-    failures = [name for name, _value, _attributes in service.observability_runtime.counters if name.endswith("failure")]
+    failures = [
+        name for name, _value, _attributes in service.observability_runtime.counters if name.endswith("failure")
+    ]
     assert failures == ["litestar_queues.heartbeat.failure"]
     assert task_id not in manager._registrations
 

@@ -375,8 +375,20 @@ class EphemeralQueueBackend(BaseQueueBackend):
         records = await asyncio.gather(*(self.get_task(task_id) for task_id in task_ids))
         return [record for record in records if record is not None]
 
-    async def notify_worker_control(self, worker_id: "str") -> "None":
-        """Rely on durable polling for cross-process cancellation."""
+    async def notify_worker_control(self, worker_id: "str | None") -> "None":
+        """Rely on durable polling for cross-process cancellation.
+
+        A process-local signal would only ever reach the emitting process, and
+        the owning worker usually runs in another one.
+        """
+
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        """Rely on durable polling for cross-process cancellation.
+
+        Returns:
+            Always False: this backend has no cross-process control transport.
+        """
+        return await super().wait_for_worker_control(worker_id=worker_id, timeout=timeout)
 
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"

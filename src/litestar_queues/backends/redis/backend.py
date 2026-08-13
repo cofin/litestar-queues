@@ -747,6 +747,9 @@ class RedisQueueBackend(BaseQueueBackend):
         "_completion_pubsub",
         "_completion_reader_task",
         "_completion_waiters",
+        "_control_channel",
+        "_control_pending_read",
+        "_control_pubsub",
         "_event_log",
         "_key_prefix",
         "_notifications",
@@ -781,8 +784,13 @@ class RedisQueueBackend(BaseQueueBackend):
             if config is not None
             else "litestar_queues:worker_wakeups"
         )
+        self._control_channel = (
+            config.names.channel("worker_control") if config is not None else "litestar_queues:worker_control"
+        )
         self._pubsub: "PubSubLike | None" = None
         self._pending_read = PendingNativeRead()
+        self._control_pubsub: "PubSubLike | None" = None
+        self._control_pending_read = PendingNativeRead()
         self._completion_lock = asyncio.Lock()
         self._completion_pubsub: "PubSubLike | None" = None
         self._completion_reader_task: "asyncio.Task[None] | None" = None
@@ -817,10 +825,14 @@ class RedisQueueBackend(BaseQueueBackend):
         if self._event_log is not None:
             await self._event_log.flush_events()
         await self._pending_read.aclose()
+        await self._control_pending_read.aclose()
         await self._close_completion_subscriber()
         if self._pubsub is not None:
             await _close_pubsub(self._pubsub, self._wakeup_channel)
             self._pubsub = None
+        if self._control_pubsub is not None:
+            await _close_pubsub(self._control_pubsub, self._control_channel)
+            self._control_pubsub = None
         if self._owns_client and self._client is not None:
             close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
             if close is not None:
@@ -1844,6 +1856,43 @@ class RedisQueueBackend(BaseQueueBackend):
             raise exc
         return bool(task.result())
 
+    async def notify_worker_control(self, worker_id: "str | None") -> "None":
+        """Publish a worker-control hint on the Redis-protocol control channel.
+
+        The hint is lossy by contract: it only shortens the wait before the
+        owning worker reconciles durable status.
+        """
+        if not self._notifications:
+            return
+        client = await self._get_client()
+        await client.publish(self._control_channel, _json_dumps({"event": "worker_control", "worker_id": worker_id}))
+
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        """Wait for a Redis-protocol worker-control hint.
+
+        The control subscription and its pending receive are retained across
+        worker poll timeouts, exactly like the wakeup subscription, and are
+        never shared with it: one in-flight read per subscription.
+
+        Returns:
+            True when a control hint was observed.
+
+        Raises:
+            Exception: Whatever the pub/sub receive raised, after the
+                subscription is reset so the next wait reconnects.
+        """
+        if not self._notifications:
+            return await super().wait_for_worker_control(worker_id=worker_id, timeout=timeout)
+        pubsub = await self._get_control_pubsub()
+        task = await self._control_pending_read.race(lambda: _receive_pubsub_message(pubsub), timeout)
+        if task is None:
+            return False
+        exc = task.exception()
+        if exc is not None:
+            await self._reset_control_pubsub()
+            raise exc
+        return bool(task.result())
+
     async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
         """Return seconds until the earliest not-yet-due scheduled record.
 
@@ -1874,6 +1923,14 @@ class RedisQueueBackend(BaseQueueBackend):
         self._pubsub = None
         if pubsub is not None:
             await _close_pubsub(pubsub, self._wakeup_channel)
+
+    async def _reset_control_pubsub(self) -> "None":
+        """Drop the control subscription so the next wait re-establishes it."""
+        await self._control_pending_read.aclose()
+        pubsub = self._control_pubsub
+        self._control_pubsub = None
+        if pubsub is not None:
+            await _close_pubsub(pubsub, self._control_channel)
 
     async def wait_for_completion(self, task_id: "UUID", *, timeout: "float | None" = None) -> "bool":
         """Wait for a terminal completion message naming ``task_id``.
@@ -1971,6 +2028,15 @@ class RedisQueueBackend(BaseQueueBackend):
             if inspect.isawaitable(subscribe):
                 await subscribe
         return self._pubsub
+
+    async def _get_control_pubsub(self) -> "PubSubLike":
+        if self._control_pubsub is None:
+            client = await self._get_client()
+            self._control_pubsub = client.pubsub()
+            subscribe = self._control_pubsub.subscribe(self._control_channel)
+            if inspect.isawaitable(subscribe):
+                await subscribe
+        return self._control_pubsub
 
     async def _commit_transition(
         self,

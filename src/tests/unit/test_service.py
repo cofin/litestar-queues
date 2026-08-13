@@ -941,6 +941,39 @@ async def test_cancel_task_enforces_running_boundary_and_publishes_once() -> "No
     assert all(event.payload["status"] == "cancelled" for event in cancelled_events)
 
 
+async def test_running_cancel_hints_workers_even_without_a_persisted_owner() -> "None":
+    """The push hint must not depend on a backend that records ``worker_id``."""
+    from litestar_queues import task
+    from litestar_queues.backends import InMemoryQueueBackend
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    hints: "list[str | None]" = []
+
+    class _OwnerlessBackend(InMemoryQueueBackend):
+        __slots__ = ()
+
+        async def notify_worker_control(self, worker_id: "str | None") -> "None":
+            hints.append(worker_id)
+
+    @task("tasks.ownerless_cancel")
+    async def ownerless_cancel() -> "None":
+        return None
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        queue_backend=_OwnerlessBackend(),
+    ) as service:
+        record = await service.enqueue(ownerless_cancel)
+        claimed = await service.get_queue_backend().claim_task(record.id)
+        assert claimed is not None
+        assert claimed.worker_id is None
+
+        assert await service.cancel_task(record.id, include_running=True) is True
+
+    assert hints == [None]
+
+
 async def test_job_cancelled_error_uses_cancel_task_facade_once() -> "None":
     from litestar_queues import job_cancelled, task
     from litestar_queues.task import clear_task_registry

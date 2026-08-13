@@ -92,3 +92,38 @@ def test_only_backends_that_own_migrations_advertise_the_hook() -> None:
 
     assert isinstance(SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig()), MigrationConfiguringBackend)
     assert not isinstance(RedisBackendConfig(url="redis://localhost:6379/0"), MigrationConfiguringBackend)
+
+
+@pytest.mark.anyio
+async def test_sqlspec_worker_control_publishes_on_its_own_channel() -> None:
+    """The control hint rides the events channel under its own NOTIFY identifier."""
+    channel = _EventChannel()
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=sqlspec_config,
+            worker_wakeups=SQLSpecWorkerWakeupConfig(channel=cast("AsyncEventChannel", channel)),
+        )
+    )
+
+    await backend.open()
+    try:
+        await backend.notify_worker_control("worker-a")
+        assert channel.published == ["litestar_queues_worker_control"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.anyio
+async def test_sqlspec_worker_control_falls_back_to_polling_without_wakeups() -> None:
+    """A polling-only adapter keeps the base no-op publish and poll wait."""
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
+
+    await backend.open()
+    try:
+        assert backend.capabilities.supports_worker_wakeups is False
+        await backend.notify_worker_control("worker-a")
+        assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False
+    finally:
+        await backend.close()

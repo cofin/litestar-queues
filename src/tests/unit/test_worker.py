@@ -1056,6 +1056,118 @@ async def test_worker_reconciles_durable_running_cancellation() -> "None":
     assert result.status == "cancelled"
 
 
+async def test_control_hint_interrupts_saturated_wait_and_cancels_running() -> "None":
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @task("tasks.control_hint_cancel")
+    async def control_hint_cancel() -> "None":
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
+    ) as service:
+        result = await service.enqueue(control_hint_cancel)
+        backend = cast("InMemoryQueueBackend", service.get_queue_backend())
+        # Both durable slow paths are pinned far out: only a push hint can make
+        # this cancel prompt.
+        worker = Worker(
+            service,
+            WorkerConfig(
+                max_concurrency=1,
+                poll_interval=30,
+                poll_backoff_max=None,
+                cancellation_poll_interval=30,
+                reconcile_interval=3600,
+            ),
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await wait_until(lambda: backend._pending_read.has_pending, message="worker did not park in its saturated wait")
+
+        assert await service.cancel_task(result.id, include_running=True) is True
+        await asyncio.wait_for(cancelled.wait(), timeout=2)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+        await result.refresh()
+
+    assert result.status == "cancelled"
+
+
+async def test_worker_control_read_failure_keeps_loop_alive(caplog: "pytest.LogCaptureFixture") -> "None":
+    @task("tasks.after_control_failure")
+    async def after_control_failure(value: "int") -> "int":
+        return value + 1
+
+    backend = _FailingControlReadInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service, WorkerConfig(poll_interval=0.01))
+
+        with caplog.at_level(logging.ERROR, logger="litestar_queues.worker"):
+            worker_task = asyncio.create_task(worker.start())
+            await asyncio.sleep(0)
+
+            result = await service.enqueue(after_control_failure, 41)
+            await result.wait(timeout=2, poll_interval=0.01)
+
+            await worker.stop()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(worker_task, timeout=1)
+
+    assert result.status == "completed"
+    assert result.result == 42
+    assert backend.control_read_starts >= 1
+    assert "Queue worker loop iteration failed" in caplog.text
+
+
+async def test_dropped_control_hint_still_cancelled_by_durable_poll() -> "None":
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @task("tasks.dropped_control_hint")
+    async def dropped_control_hint() -> "None":
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    backend = _DroppedControlHintInMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
+        queue_backend=backend,
+    ) as service:
+        result = await service.enqueue(dropped_control_hint)
+        worker = Worker(
+            service, WorkerConfig(poll_interval=0.01, poll_backoff_max=None, cancellation_poll_interval=0.01)
+        )
+        worker_task = asyncio.create_task(worker.start())
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        assert await service.cancel_task(result.id, include_running=True) is True
+        await asyncio.wait_for(cancelled.wait(), timeout=2)
+
+        await worker.stop()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(worker_task, timeout=1)
+        await result.refresh()
+
+    # The hint was emitted and swallowed; the durable status poll still cancelled.
+    assert backend.control_notify_calls >= 1
+    assert result.status == "cancelled"
+
+
 async def test_heartbeat_claim_loss_cancels_running_coroutine() -> "None":
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -1132,8 +1244,7 @@ async def test_claim_loss_cancel_opt_out_preserves_run_to_completion() -> "None"
     ) as service:
         result = await service.enqueue(claim_loss_no_cancel)
         worker = Worker(
-            service,
-            WorkerConfig(heartbeat_interval=60, heartbeat_miss_threshold=1, cancel_on_claim_loss=False),
+            service, WorkerConfig(heartbeat_interval=60, heartbeat_miss_threshold=1, cancel_on_claim_loss=False)
         )
 
         assert await worker.run_once() == 1
@@ -1768,6 +1879,45 @@ class _FailingReadInMemoryQueueBackend(InMemoryQueueBackend):
         task.result()
         self._notification_event.clear()
         return True
+
+
+class _FailingControlReadInMemoryQueueBackend(InMemoryQueueBackend):
+    """Memory backend whose first worker-control read raises."""
+
+    __slots__ = ("_control_fail_pending", "control_read_starts")
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.control_read_starts = 0
+        self._control_fail_pending = True
+
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        self.control_read_starts += 1
+        if self._control_fail_pending:
+            self._control_fail_pending = False
+            msg = "control listener boom"
+            raise RuntimeError(msg)
+        return await super().wait_for_worker_control(worker_id=worker_id, timeout=timeout)
+
+
+class _DroppedControlHintInMemoryQueueBackend(InMemoryQueueBackend):
+    """Memory backend that emits control hints nobody ever receives."""
+
+    __slots__ = ("control_notify_calls",)
+
+    def __init__(self) -> "None":
+        super().__init__()
+        self.control_notify_calls = 0
+
+    async def notify_worker_control(self, worker_id: "str | None") -> "None":
+        del worker_id
+        self.control_notify_calls += 1
+
+    async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        del worker_id
+        if timeout is not None:
+            await asyncio.sleep(timeout)
+        return False
 
 
 class _DroppedNotificationInMemoryQueueBackend(InMemoryQueueBackend):
