@@ -8,13 +8,16 @@ from litestar_queues.backends.sqlspec.schema import (
     maintenance_table_name_for,
     migration_directory,
     task_reservation_table_name_for,
+    validate_event_history_extra_columns,
     validate_table_name,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
+    from litestar_queues.backends.sqlspec.schema import EventHistoryExtraColumn
 
 __all__ = (
     "QUEUE_EXTENSION_NAME",
@@ -58,6 +61,7 @@ def configure_queue_migration_extension(
     queue_table_name: "str" = DEFAULT_TABLE_NAME,
     event_history_enabled: "bool" = False,
     event_history_table_name: "str | None" = None,
+    event_history_extra_columns: "Sequence[EventHistoryExtraColumn]" = (),
     maintenance_table_name: "str | None" = None,
     task_reservation_table_name: "str | None" = None,
 ) -> "None":
@@ -67,6 +71,7 @@ def configure_queue_migration_extension(
         queue_table_name=queue_table_name,
         event_history_enabled=event_history_enabled,
         event_history_table_name=event_history_table_name,
+        event_history_extra_columns=event_history_extra_columns,
         maintenance_table_name=maintenance_table_name,
         task_reservation_table_name=task_reservation_table_name,
     )
@@ -87,6 +92,7 @@ def _configure_extension_settings(
     queue_table_name: "str",
     event_history_enabled: "bool" = False,
     event_history_table_name: "str | None" = None,
+    event_history_extra_columns: "Sequence[EventHistoryExtraColumn]" = (),
     maintenance_table_name: "str | None" = None,
     task_reservation_table_name: "str | None" = None,
 ) -> "dict[str, Any]":
@@ -97,6 +103,10 @@ def _configure_extension_settings(
         queue_settings["event_history_enabled"] = True
         queue_settings["event_history_table_name"] = validate_table_name(
             event_history_table_name or event_history_table_name_for(queue_table_name)
+        )
+        queue_settings["event_history_extra_columns"] = tuple(
+            {"name": column.name, "source": column.source, "indexed": column.indexed}
+            for column in validate_event_history_extra_columns(event_history_extra_columns)
         )
     queue_settings["maintenance_table_name"] = validate_table_name(
         maintenance_table_name or maintenance_table_name_for(queue_table_name)

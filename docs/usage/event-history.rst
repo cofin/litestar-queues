@@ -78,6 +78,111 @@ Memory history is bounded by ``memory_capacity`` and disappears with the process
 SQLSpec, Advanced Alchemy, Redis, and Valkey history is durable or shared, so
 those deployments should include cleanup in their backup and privacy policies.
 
+Extra scoping dimensions
+========================
+
+Some deployments scope events by a dimension the queue does not model — a
+tenant, project, or account. There are two supported ways to handle that.
+
+Implement ``QueueEventLog`` yourself
+------------------------------------
+
+This is the supported path for arbitrary dimensions, custom indexes, or scoped
+aggregates. ``QueueEventLog`` is a ``Protocol``, so any object with the right
+methods satisfies it — no subclassing and no package change:
+
+.. code-block:: python
+
+   from datetime import datetime
+
+   from litestar_queues.events import QueueEvent, QueueEventLogRecord, QueueEventStageSummary
+
+
+   class TenantEventLog:
+       def __init__(self, tenant_id: str) -> None:
+           self.tenant_id = tenant_id
+
+       async def publish_event(self, event: QueueEvent) -> None:
+           ...  # write the event with your own tenant column and indexes
+
+       async def flush_events(self) -> None:
+           ...
+
+       async def list_events(
+           self, *, task_id=None, task_name=None, limit=None
+       ) -> list[QueueEventLogRecord]:
+           ...  # your own query surface, scoped however you need
+
+       async def summarize_stages(self, *, task_name=None) -> list[QueueEventStageSummary]:
+           ...
+
+       async def cleanup_before(self, before: datetime, *, limit=None) -> int:
+           ...
+
+You own the storage, the schema, and the query API, and you can expose scoped
+aggregates the built-in store does not.
+
+Declaring extra columns on the built-in SQLSpec store
+------------------------------------------------------
+
+If you want to keep the built-in SQLSpec store and only need indexed, filterable
+columns, declare them on the backend config:
+
+.. code-block:: python
+
+   from litestar_queues.backends.sqlspec import EventHistoryExtraColumn, SQLSpecBackendConfig
+
+   backend_config = SQLSpecBackendConfig(
+       sqlspec_config=sqlspec_config,
+       event_history_extra_columns=(
+           EventHistoryExtraColumn(name="tenant_id", source="tenant_id", indexed=True),
+       ),
+   )
+
+Each declaration adds one column to the event-history table. ``source`` is the
+key read from the event payload, so publishing carries the value automatically:
+
+.. code-block:: python
+
+   await publish_task_log("importing", payload={"tenant_id": "acme"})
+
+Query it with the additive ``extra`` filter on the SQLSpec event log:
+
+.. code-block:: python
+
+   event_log = backend.get_event_log(history_config)
+   records = await event_log.list_events(extra={"tenant_id": "acme"})
+
+``extra`` uses equality and is ANDed with ``task_id`` and ``task_name``. An
+undeclared key raises ``ValueError`` naming the declared columns, so the filter
+never reaches SQL unvalidated.
+
+Three things to know:
+
+* Values are stored as text and read from the event payload. They stay in
+  ``detail`` too — the column is an indexable, filterable copy, and ``detail``
+  remains the complete record.
+* The ``extra`` filter lives on the concrete SQLSpec event log, not on the
+  ``QueueEventLog`` protocol. Code holding the protocol type sees the unchanged
+  signature; code that filters holds the concrete store from
+  ``SQLSpecQueueBackend.get_event_log()``.
+* ``summarize_stages`` does not accept the filter. Scoped aggregates are a
+  reason to implement the protocol instead.
+
+Both the managed schema and the packaged migration emit the same DDL for
+declared columns, so a migrated database and a backend-created one match.
+
+Choosing between them
+---------------------
+
+Extra columns give you indexed, filterable, authorization-pushdown-capable
+dimensions with no protocol churn — but only equality filtering, only text
+values, and only on the concrete SQLSpec store. Implementing ``QueueEventLog``
+costs more code and gives you everything: any number of dimensions, any types,
+your own indexes, and your own query and aggregate surface. Start with the
+columns if a tenant id and an equality filter is the whole requirement; move to
+the protocol when it is not.
+
 History versus live delivery
 ============================
 

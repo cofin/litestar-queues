@@ -42,6 +42,7 @@ from litestar_queues.backends.sqlspec.reservation import create_task_reservation
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
+    validate_event_history_extra_columns,
     validate_native_json_columns,
     validate_table_name,
 )
@@ -133,6 +134,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_control_pending_read",
         "_control_stream",
         "_event_channel",
+        "_event_history_extra_columns",
         "_event_history_table_name",
         "_event_log",
         "_event_log_store",
@@ -197,6 +199,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             validate_table_name(backend_config.event_history_table_name)
             if backend_config.event_history_table_name is not None
             else None
+        )
+        self._event_history_extra_columns = validate_event_history_extra_columns(
+            backend_config.event_history_extra_columns
         )
         self._maintenance_table_name = (
             validate_table_name(backend_config.maintenance_table_name)
@@ -2121,6 +2126,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 queue_table_name=self._resolve_queue_table_name(),
                 event_history_table_name=self._event_history_table_name,
                 manage_schema=self._manage_schema,
+                extra_columns=self._event_history_extra_columns,
             )
             self._event_history_table_name = store.table_name
             self._event_log_store = store

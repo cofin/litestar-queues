@@ -9,18 +9,24 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec import sql
 
-from litestar_queues.backends.sqlspec.schema import event_history_table_name_for, validate_table_name
+from litestar_queues.backends.sqlspec.schema import (
+    EVENT_HISTORY_COLUMNS,
+    event_history_table_name_for,
+    validate_event_history_extra_columns,
+    validate_table_name,
+)
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events.history import EventHistoryConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractAsyncContextManager
 
     from sqlspec.builder import CreateIndex, CreateTable, Delete, DropIndex, DropTable, Select
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecDriver, SQLSpecStoreConfig
+    from litestar_queues.backends.sqlspec.schema import EventHistoryExtraColumn
     from litestar_queues.events.models import QueueEvent
 
 __all__ = (
@@ -33,37 +39,36 @@ __all__ = (
 
 logger = logging.getLogger(__name__)
 
-_EVENT_COLUMNS = (
-    "event_id",
-    "event_type",
-    "task_id",
-    "task_name",
-    "queue",
-    "worker_id",
-    "execution_backend",
-    "execution_profile",
-    "stage",
-    "level",
-    "message",
-    "detail",
-    "progress_current",
-    "progress_total",
-    "progress_percent",
-    "duration_ms",
-    "sequence",
-    "occurred_at",
-    "created_at",
-)
-
 
 class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     """SQLSpec statement store for backend-managed queue event history."""
 
-    __slots__ = ()
+    __slots__ = ("_extra_columns",)
 
-    def __init__(self, *args: "Any", **kwargs: "Any") -> "None":
+    def __init__(
+        self, *args: "Any", extra_columns: "Sequence[EventHistoryExtraColumn] | None" = None, **kwargs: "Any"
+    ) -> "None":
         super().__init__(*args, **kwargs)
         self._column_map = {}
+        self._extra_columns = validate_event_history_extra_columns(extra_columns or ())
+
+    @property
+    def extra_columns(self) -> "tuple[EventHistoryExtraColumn, ...]":
+        """Adopter-declared extra scoping columns on this event-history table."""
+        return self._extra_columns
+
+    def _all_columns(self) -> "tuple[str, ...]":
+        return (*EVENT_HISTORY_COLUMNS, *(column.name for column in self._extra_columns))
+
+    def _validated_extra_filter(self, extra: "Mapping[str, str] | None") -> "tuple[tuple[str, str], ...]":
+        if not extra:
+            return ()
+        declared = {column.name for column in self._extra_columns}
+        unknown = sorted(set(extra) - declared)
+        if unknown:
+            msg = f"Unknown event-history filter column(s) {unknown!r}; declared extra columns are {sorted(declared)!r}"
+            raise ValueError(msg)
+        return tuple((name, extra[name]) for name in extra)
 
     def create_statements(self) -> "list[str]":
         """Return statements that create the event-log table and indexes."""
@@ -76,6 +81,11 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         if not self._manage_schema:
             return []
         return [
+            *(
+                self._to_sql(sql.drop_index(self._index_name(column.name)).if_exists())
+                for column in reversed(self._extra_columns)
+                if column.indexed
+            ),
             self._to_sql(sql.drop_index(self._index_name("occurred_at")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("task_name")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("task_id")).if_exists()),
@@ -84,19 +94,32 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
 
     def insert_events_template(self) -> "str":
         """Return a parametrized batch INSERT template for event rows."""
-        columns = ", ".join(self._quote_identifier(column) for column in _EVENT_COLUMNS)
-        placeholders = ", ".join(f":{column}" for column in _EVENT_COLUMNS)
+        names = self._all_columns()
+        columns = ", ".join(self._quote_identifier(column) for column in names)
+        placeholders = ", ".join(f":{column}" for column in names)
         return f"INSERT INTO {self._quoted_table_name()} ({columns}) VALUES ({placeholders})"  # noqa: S608
 
     def select_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        limit: "int | None" = None,
+        extra: "Mapping[str, str] | None" = None,
     ) -> "Select":
-        """Return a SELECT for event-log records."""
-        statement = sql.select(*_EVENT_COLUMNS).from_(self.table_name)
+        """Return a SELECT for event-log records.
+
+        Raises:
+            ValueError: If ``extra`` names a column that was not declared.
+        """
+        filters = self._validated_extra_filter(extra)
+        statement = sql.select(*EVENT_HISTORY_COLUMNS).from_(self.table_name)
         if task_id is not None:
             statement = statement.where_eq("task_id", task_id)
         if task_name is not None:
             statement = statement.where_eq("task_name", task_name)
+        for name, value in filters:
+            statement = statement.where_eq(name, value)
         statement = statement.order_by(
             _raw_order("occurred_at ASC"), _raw_order("sequence ASC"), _raw_order("event_id ASC")
         )
@@ -172,7 +195,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return detail if isinstance(detail, dict) else {}
 
     def _create_event_table_statement(self) -> "CreateTable":
-        return (
+        statement = (
             sql
             .create_table(self.table_name)
             .if_not_exists()
@@ -196,6 +219,9 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             .column("occurred_at", self._timestamp_type(), not_null=True)
             .column("created_at", self._timestamp_type(), not_null=True)
         )
+        for column in self._extra_columns:
+            statement = statement.column(column.name, self._indexed_text_type())
+        return statement
 
     def _create_event_table_sql(self) -> "str":
         rendered = self._to_sql(self._create_event_table_statement())
@@ -227,6 +253,17 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 .if_not_exists()
                 .on_table(self.table_name)
                 .columns("occurred_at")
+            ),
+            *(
+                self._to_sql(
+                    sql
+                    .create_index(self._index_name(column.name))
+                    .if_not_exists()
+                    .on_table(self.table_name)
+                    .columns(column.name, "occurred_at")
+                )
+                for column in self._extra_columns
+                if column.indexed
             ),
         ]
 
@@ -269,6 +306,7 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
             f"{self._quote_identifier('sequence')} {self._integer_type()}",
             f"{self._quote_identifier('occurred_at')} {self._timestamp_type()} NOT NULL",
             f"{self._quote_identifier('created_at')} {self._timestamp_type()} NOT NULL",
+            *(f"{self._quote_identifier(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
         )
         column_sql = ",\n  ".join(columns)
         return [
@@ -290,6 +328,12 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 f"CREATE INDEX {self._quoted_index_name('occurred_at')} ON {self._quoted_table_name()} "
                 f"({self._quote_identifier('occurred_at')})"
             ),
+            *(
+                f"CREATE INDEX {self._quoted_index_name(column.name)} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier(column.name)}, {self._quote_identifier('occurred_at')})"
+                for column in self._extra_columns
+                if column.indexed
+            ),
         ]
 
     def drop_statements(self) -> "list[str]":
@@ -297,6 +341,11 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
         if not self._manage_schema:
             return []
         return [
+            *(
+                f"DROP INDEX {self._quoted_index_name(column.name)}"
+                for column in reversed(self._extra_columns)
+                if column.indexed
+            ),
             f"DROP INDEX {self._quoted_index_name('occurred_at')}",
             f"DROP INDEX {self._quoted_index_name('task_name')}",
             f"DROP INDEX {self._quoted_index_name('task_id')}",
@@ -370,12 +419,28 @@ class SQLSpecQueueEventLog:
             self._last_flush = time.monotonic()
 
     async def list_events(
-        self, *, task_id: "str | None" = None, task_name: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        task_id: "str | None" = None,
+        task_name: "str | None" = None,
+        limit: "int | None" = None,
+        extra: "Mapping[str, str] | None" = None,
     ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records."""
+        """Return durable event history records.
+
+        ``extra`` filters on adopter-declared event-history columns with
+        equality, ANDed with ``task_id`` and ``task_name``. It is additive on
+        this concrete store; the ``QueueEventLog`` protocol signature is
+        unchanged.
+
+        Raises:
+            ValueError: If ``extra`` names a column that was not declared.
+        """
         await self.flush_events()
         async with self._session_factory() as driver:
-            rows = await driver.select(self._store.select_events(task_id=task_id, task_name=task_name, limit=limit))
+            rows = await driver.select(
+                self._store.select_events(task_id=task_id, task_name=task_name, limit=limit, extra=extra)
+            )
         return [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
 
     async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
@@ -423,7 +488,7 @@ class SQLSpecQueueEventLog:
 
     def _params_from_event(self, event: "QueueEvent") -> "dict[str, Any]":
         detail = dict(event.payload)
-        return {
+        params: "dict[str, Any]" = {
             "event_id": event.id,
             "event_type": event.type,
             "task_id": event.task_id,
@@ -444,6 +509,9 @@ class SQLSpecQueueEventLog:
             "occurred_at": self._datetime_serializer(event.occurred_at),
             "created_at": self._datetime_serializer(datetime.now(timezone.utc)),
         }
+        for column in self._store.extra_columns:
+            params[column.name] = _optional_str(detail.get(column.source))
+        return params
 
     def _record_from_row(self, row: "dict[str, Any]") -> "QueueEventLogRecord":
         return QueueEventLogRecord(
@@ -484,6 +552,7 @@ def create_event_log_store(
     queue_table_name: "str",
     event_history_table_name: "str | None" = None,
     manage_schema: "bool" = True,
+    extra_columns: "Sequence[EventHistoryExtraColumn]" = (),
 ) -> "SQLSpecQueueEventLogStore":
     """Create an event-log store for a SQLSpec adapter configuration.
 
@@ -497,6 +566,7 @@ def create_event_log_store(
             queue_table_name, event_history_table_name=event_history_table_name
         ),
         manage_schema=manage_schema,
+        extra_columns=extra_columns,
     )
 
 

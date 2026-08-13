@@ -8,10 +8,12 @@ from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.maintenance import create_maintenance_store
 from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
-from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
+from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, EventHistoryExtraColumn, validate_table_name
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from sqlspec.migrations.context import MigrationContext
 
     from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLogStore
@@ -60,11 +62,19 @@ def _load_event_log_store(context: "MigrationContext | None") -> "SQLSpecQueueEv
         return None
     configured_event_table = queue_settings.get("event_history_table_name")
     event_history_table_name = str(configured_event_table) if configured_event_table is not None else None
+    declared = queue_settings.get("event_history_extra_columns") or ()
+    extra_columns = tuple(
+        EventHistoryExtraColumn(
+            name=str(entry["name"]), source=str(entry["source"]), indexed=bool(entry.get("indexed", False))
+        )
+        for entry in cast("Sequence[Mapping[str, Any]]", declared)
+    )
     return create_event_log_store(
         config,
         queue_table_name=queue_table_name,
         event_history_table_name=event_history_table_name,
         manage_schema=bool(getattr(config, "manage_schema", True)),
+        extra_columns=extra_columns,
     )
 
 
