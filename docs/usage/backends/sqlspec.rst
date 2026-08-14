@@ -91,25 +91,12 @@ Wakeups
 
 Native worker wakeups are **on by default whenever the adapter can push them**.
 A bare ``SQLSpecBackendConfig`` needs no notification settings: the backend
-selects each adapter's best wakeup transport from a capability gate and
-provisions everything it needs.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 25 45
-
-   * - Adapter
-     - Default transport
-     - Wakeup mechanism
-   * - asyncpg, psycopg, psqlpy
-     - ``notify_queue``
-     - Durable events queue table + PostgreSQL ``LISTEN``/``NOTIFY`` push
-   * - DuckDB
-     - ``poll_queue``
-     - Durable events queue table, polled in-process (embedded, no LISTEN/NOTIFY)
-   * - SQLite, MySQL, CockroachDB, SQL Server, Spanner, Oracle
-     - ``polling``
-     - Interval polling (no push transport available by default)
+picks the transport from the adapter you configured and provisions everything
+it needs. In short, the PostgreSQL drivers (asyncpg, psycopg, psqlpy) get
+``notify_queue``, DuckDB gets ``poll_queue``, and every other adapter --
+SQLite, MySQL, CockroachDB, SQL Server, Spanner, and Oracle -- falls back to
+interval polling. :doc:`../backends` carries the full matrix, including how
+these compare with the other queue backends.
 
 The durable ``notify_queue`` and ``poll_queue`` transports ride a SQLSpec events
 queue table (``sqlspec_event_queue`` by default). It is provisioned the same way
@@ -136,7 +123,7 @@ startup, privileges, payload type, and retention; Litestar Queues only opens
 the configured SQLSpec event channel. Oracle stays on interval polling by
 default because the backend does not provision Advanced Queuing.
 Durable queue transports are competing-consumer queues; do not use them as
-multi-process browser fan-out. See :doc:`../worker-wakeups`.
+multi-process browser fan-out. See :ref:`worker-wakeups`.
 
 Batch claiming
 ==============

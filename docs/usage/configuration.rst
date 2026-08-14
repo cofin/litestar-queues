@@ -29,7 +29,7 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - :doc:`backends`
    * - Runtime identity
      - ``namespace``
-     - This page
+     - :doc:`runtime-namespace`
    * - Execution placement
      - ``execution_backend``
      - :doc:`backends`
@@ -42,11 +42,11 @@ Use this page as a map; each linked guide owns the detailed behavior.
    * - Idle waiting
      - ``worker.poll_interval``, ``worker.poll_backoff_max``,
        ``worker.poll_backoff_multiplier``, ``worker.poll_jitter``
-     - :doc:`worker-wakeups`
+     - :ref:`worker-wakeups`
    * - Heartbeats and recovery
      - ``worker.heartbeat_interval``, ``worker.heartbeat_miss_threshold``,
        ``worker.stale_after``, ``worker.stale_check_interval``
-     - :doc:`worker-recovery`
+     - :ref:`worker-recovery`
    * - Queued task expiration
      - ``worker.expiry_check_interval``, task ``expires_in``, enqueue
        ``expires_in`` / ``expires_at``
@@ -112,28 +112,6 @@ Choose persistent storage and placement explicitly for durable deployments.
 Runtime namespace
 =================
 
-Set ``namespace`` once on :class:`~litestar_queues.QueueConfig` to rebrand
-package-owned runtime identity:
-
-.. code-block:: python
-
-   queue_config = QueueConfig(namespace="dma")
-
-That one value produces names such as ``dma.wakeups`` for telemetry,
-``dma.worker`` for loggers, ``dma:worker_wakeups`` for channels and Redis or
-Valkey keys, ``dma_service`` for Litestar state and dependency registration,
-``DMA_SERVER_NONCE`` for private process coordination, and ``dma-worker`` for
-process, thread, and temporary-resource names. Default event streams mount
-under ``/dma/events`` and Cloud Tasks delivery resources begin with ``dma-``.
-Multiple queue plugins can use different namespaces without mutating
-process-global naming state.
-
-Explicit component settings still win. User-authored task and queue names are
-never rewritten. SQL table names and Advanced Alchemy model classes also remain
-under their existing backend settings; ``namespace`` does not derive them.
-
-External one-task executors use two stable bootstrap variables:
-``QUEUES_CONFIG_FACTORY`` and ``QUEUES_TASK_ID``. They are intentionally not
-namespace-derived because the consumer must locate the config factory before it
-can load ``QueueConfig.namespace``. After the factory is loaded, other derived
-runtime names use that config's namespace.
+``namespace`` renames every runtime name the package owns — loggers, metrics,
+channels, keys, and generated routes — from a single setting. Most applications
+leave it alone; see :doc:`runtime-namespace` when you need to change it.

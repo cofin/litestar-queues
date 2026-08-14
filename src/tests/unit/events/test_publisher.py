@@ -54,10 +54,10 @@ def test_queue_channels_normalize_parts_deterministically() -> "None":
 
 
 def test_queue_event_publisher_uses_custom_namespace() -> "None":
-    publisher = QueueEventPublisher(namespace="dma")
+    publisher = QueueEventPublisher(namespace="myapp")
     event = QueueEvent(type="task.started", scope="task", task_id="task-1")
 
-    assert publisher.resolve_channels(event) == ("dma:task:task-1:events",)
+    assert publisher.resolve_channels(event) == ("myapp:task:task-1:events",)
 
 
 async def test_queue_event_publisher_targets_configured_channels() -> "None":

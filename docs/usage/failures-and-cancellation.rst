@@ -74,10 +74,8 @@ by default). The hint interrupts that wait.
      - none; the durable poll is the only path
 
 Hints are lossy by contract. A dropped hint costs latency, never correctness,
-so a backend that cannot deliver one simply keeps polling. Backends adding a
-transport implement ``notify_worker_control`` and ``wait_for_worker_control``
-and must preserve that contract: no cancellation outcome may depend on a hint
-arriving.
+so a backend that cannot deliver one simply keeps polling. If you are writing a
+backend and want to add a transport, see :doc:`backends`.
 
 Inside a task, ``current_task_context().is_cancelled`` exposes the cooperative
 token; ``wait_cancelled()`` waits for it and ``raise_if_cancelled()`` raises

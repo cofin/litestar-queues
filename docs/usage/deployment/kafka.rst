@@ -1,6 +1,11 @@
 Kafka Dispatch
 ==============
 
+Read :doc:`execution-transports` first: it covers the dispatcher/consumer
+model, the two CLI commands, and the at-least-once delivery guarantee that
+Kafka shares with the other transports. This page covers only what is specific
+to Kafka.
+
 Install the optional asynchronous client:
 
 .. code-block:: bash

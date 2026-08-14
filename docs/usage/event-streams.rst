@@ -7,12 +7,34 @@ The plugin can add task, queue, worker, global, and custom stream routes under
 
 .. code-block:: python
 
+   from litestar.channels import ChannelsPlugin
+   from litestar.channels.backends.memory import MemoryChannelsBackend
+   from litestar.connection import ASGIConnection
+
    from litestar_queues import QueueConfig
-   from litestar_queues.events import EventDeliveryConfig, EventStreamConfig, QueueEventsConfig
+   from litestar_queues.events import (
+       EventDeliveryConfig,
+       EventStreamConfig,
+       QueueEventsConfig,
+       QueueEventScope,
+   )
+
+   channels = ChannelsPlugin(
+       backend=MemoryChannelsBackend(history=200),
+       arbitrary_channels_allowed=True,
+   )
+
+
+   async def authorize_channel(
+       connection: ASGIConnection, scope: QueueEventScope, key: "str | None"
+   ) -> bool:
+       """Allow a client to subscribe only to its own tasks."""
+       return key is not None and key in connection.session.get("task_ids", ())
+
 
    queue_config = QueueConfig(
        events=QueueEventsConfig(
-           channels=channels_backend,
+           channels=channels,
            delivery=EventDeliveryConfig(),
            stream=EventStreamConfig(
                transports={"sse", "websocket"},
@@ -22,13 +44,19 @@ The plugin can add task, queue, worker, global, and custom stream routes under
        ),
    )
 
+``MemoryChannelsBackend`` is per-process. Use a Redis, Valkey, or PostgreSQL
+Channels backend when more than one process serves streams. The authorizer
+above reads Litestar's session, so it assumes session middleware is installed;
+any callable with that signature works, including one that queries your own
+permission store.
+
 Use SSE for server-to-browser updates with automatic browser reconnection. Use
 WebSockets when the connection also needs bidirectional application messages.
 Both deliver the same JSON ``QueueEvent`` envelope.
 
 The default path follows :attr:`~litestar_queues.QueueConfig.namespace`: the
 legacy namespace uses ``/queues/events``, while
-``QueueConfig(namespace="dma")`` uses ``/dma/events``. Set
+``QueueConfig(namespace="myapp")`` uses ``/myapp/events``. Set
 ``EventStreamConfig(path="/events")`` when the application owns an explicit
 path; explicit paths are never rewritten.
 
@@ -47,10 +75,10 @@ Top-level JSON fields use camel case, including ``taskId``,
 not renamed. Consumers should deduplicate by ``eventKey`` when present and by
 ``id`` otherwise.
 
-Live streams deliver events; they do not store tasks. Keepalives keep an idle
-connection open, but they do not prove that a task is healthy. A slow client
-may miss best-effort events, depending on the Channels backend and its backlog
-policy. Query :doc:`event-history` when a client must replay events.
+A slow client may miss best-effort events, depending on the Channels backend
+and its backlog policy, so query :doc:`event-history` when a client must replay
+events. See :ref:`live-delivery-vs-history` for what a live stream does and
+does not guarantee.
 
 Authorization
 =============

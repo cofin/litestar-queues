@@ -66,15 +66,15 @@ def test_entering_creates_a_private_database_and_environment() -> "None":
 def test_entering_with_namespace_derives_private_environment_and_directory() -> "None":
     from litestar_queues import QueueNamespace
 
-    names = QueueNamespace("dma")
+    names = QueueNamespace("myapp")
     path_env = names.environment("ephemeral", "path")
     nonce_env = names.environment("ephemeral", "nonce")
 
-    with EphemeralServerContext(nonce="nonce-dma", namespace=names) as context:
+    with EphemeralServerContext(nonce="nonce-myapp", namespace=names) as context:
         path = context.path
         assert os.environ[path_env] == str(path)
-        assert os.environ[nonce_env] == "nonce-dma"
-        assert path.parent.name.startswith("dma-")
+        assert os.environ[nonce_env] == "nonce-myapp"
+        assert path.parent.name.startswith("myapp-")
 
     assert path_env not in os.environ
     assert nonce_env not in os.environ

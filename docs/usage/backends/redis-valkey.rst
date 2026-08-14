@@ -64,31 +64,28 @@ these indexes automatically.
 
 When upgrading a populated prefix created before this release, bounded
 maintenance fails closed until the indexes are rebuilt. Stop every Redis or
-Valkey queue writer using that prefix, then run this once with the configured
-backend:
+Valkey queue writer using that prefix, then run the rebuild once as a
+standalone script. ``queue_config`` is the configuration from the example
+above:
 
 .. code-block:: python
 
-   rebuilt = await backend.rebuild_maintenance_indexes()
+   import asyncio
+
+   from litestar_queues import QueueService
+
+
+   async def rebuild_indexes() -> None:
+       async with QueueService(queue_config) as queue_service:
+           rebuilt = await queue_service.get_queue_backend().rebuild_maintenance_indexes()
+           print(f"reindexed {rebuilt} queue records")
+
+
+   asyncio.run(rebuild_indexes())
 
 The return value is the number of queue records examined. The rebuild is
 explicit, unbounded, and idempotent, so an interrupted call is safe to repeat.
 Restart the writers only after it completes.
-
-Batch claiming
-==============
-
-Redis and Valkey deliberately do not advertise native batch claiming
-(``capabilities.supports_batch_claim`` is ``False``). Workers claim tasks by
-looping the exclusive single-task ``claim_next`` primitive, which preserves both
-priority ordering and single-owner semantics.
-
-A bounded atomic ``claim_many`` is not possible on the current storage layout:
-the ready set is a sorted set keyed by due time, while claim eligibility also
-requires priority ordering. An atomic implementation would either scan every due
-task (unbounded) or inspect only a due-time prefix and thereby change fairness.
-Supporting it correctly requires a separate ready-by-priority index migration,
-which is intentionally out of scope here.
 
 Worker wakeups
 ==============

@@ -70,22 +70,9 @@ Each part has one job:
 The **dispatcher** is the worker loop that starts Cloud Run Jobs. Without a
 running dispatcher, records routed to ``cloudrun`` remain pending.
 
-Realtime fan-out is a separate concern
---------------------------------------
-
-If the web service and dispatcher run in separate processes, do not use
-``MemoryChannelsBackend`` for browser events. It works in one process only,
-even when queue records use a shared database. Configure the same shared
-Channels backend in both processes. Use Redis Channels Streams, or PostgreSQL
-Channels when it matches the existing stack, with the same channel prefix and
-event contract. Redis/Valkey queue notifications only wake the dispatcher.
-They do not carry SSE or WebSocket events.
-
-Configure browser authentication and proxies explicitly. Same-origin relative
-stream URLs are the simplest choice. A separate frontend origin also needs the
-right CORS, cookie, WebSocket upgrade, and proxy timeout settings. A ``403`` on
-an enqueue POST points to authentication or CSRF, not Channels. If enqueueing
-succeeds but the stream fails, check Channels, the origin, and the proxy.
+Because the web service and dispatcher are separate processes, live browser
+events need a shared Channels backend configured in both. Queue wakeups do not
+carry SSE or WebSocket events. See :doc:`../event-streams`.
 
 Topology and security
 ---------------------
@@ -120,18 +107,25 @@ enqueues records. The dispatcher service owns the worker loop.
 
 .. code-block:: python
 
+   from sqlspec.adapters.asyncpg import AsyncpgConfig
+
    from litestar_queues import QueueConfig, WorkerConfig, task
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
+   # Any SQLSpec adapter config works; this one points at Cloud SQL for PostgreSQL.
+   sqlspec_config = AsyncpgConfig(
+       connection_config={"dsn": "postgresql://queue@127.0.0.1:5432/appdb"}
+   )
+
 
    @task("reports.render", execution_backend="cloudrun", execution_profile="heavy")
    async def render_report(report_id: str) -> None:
-       ...
+       print(f"rendering {report_id}")
 
 
    queue_config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlspec_config),
        execution_backend=CloudRunExecutionConfig(
            project_id="my-project",
            region="my-region",
@@ -178,13 +172,18 @@ background polling works only while the service stays warm and has CPU.
 
 .. code-block:: python
 
+   from sqlspec.adapters.asyncpg import AsyncpgConfig
+
    from litestar_queues import QueueConfig, WorkerConfig
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
+   sqlspec_config = AsyncpgConfig(
+       connection_config={"dsn": "postgresql://queue@127.0.0.1:5432/appdb"}
+   )
 
    queue_config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlspec_config),
        execution_backend=CloudRunExecutionConfig(
            project_id="my-project",
            region="my-region",

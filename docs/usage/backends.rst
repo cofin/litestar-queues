@@ -52,13 +52,6 @@ The queue backend stores task records. ``local`` runs work in a worker process.
 does not store the queue. Backend notifications wake workers, but they do not
 send task events to browsers.
 
-Batch claims are also a persistence capability, not an execution-placement
-choice. Memory claims a batch under its process-local lock. SQLSpec uses a
-single returning claim on capable stores, and Advanced Alchemy uses a native
-PostgreSQL batch claim. Every backend inherits a safe single-record loop when
-its storage cannot preserve bounded ordering and ownership in one batch;
-Redis and Valkey intentionally use that fallback.
-
 Worker-wakeup capability matrix
 ================================
 
@@ -204,5 +197,26 @@ Topology and security
      - Separately configured Channels transport
      - Protect database credentials and authorize subscriber scopes.
 
-Continue with :doc:`workers`, :doc:`worker-wakeups`, or the focused backend
-guide selected above.
+Adding a wakeup or control transport
+====================================
+
+The rows above are what the shipped backends provide. If you are writing a new
+queue backend, two optional hooks on the backend base class carry best-effort
+hints, and both are lossy by contract — a dropped hint costs latency, never
+correctness:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Hook pair
+     - Purpose
+   * - ``notify_new_task`` / ``wait_for_wakeups``
+     - Tell an idle worker that new work exists, so it stops waiting early.
+   * - ``notify_worker_control`` / ``wait_for_worker_control``
+     - Tell the owning worker to reconcile now, used by running cancellation.
+
+A backend that implements neither inherits pure polling and stays correct: the
+worker reconciles durable queue and task state on a fixed cadence regardless.
+No wakeup or cancellation outcome may depend on a hint arriving.
+
+Continue with :doc:`workers` or the focused backend guide selected above.

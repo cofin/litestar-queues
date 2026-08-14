@@ -1,14 +1,20 @@
-RabbitMQ Dispatch
+=================
+RabbitMQ dispatch
 =================
 
-Install the optional client on Python 3.11 or newer:
+Read :doc:`execution-transports` first: it covers the dispatcher/consumer
+model, the two CLI commands, and the at-least-once delivery guarantee that
+RabbitMQ shares with the other transports. This page covers only what is
+specific to RabbitMQ.
+
+RabbitMQ 4.3 or newer is required, as is Python 3.11 or newer.
+
+Install and configure
+=====================
 
 .. code-block:: bash
 
    pip install "litestar-queues[rabbitmq]"
-
-RabbitMQ 4.3 or newer is required. Configure a persistent queue backend and
-use RabbitMQ only for execution delivery:
 
 .. code-block:: python
 
@@ -19,44 +25,47 @@ use RabbitMQ only for execution delivery:
    queue_config = QueueConfig(
        queue_backend=RedisBackendConfig(url="redis://redis:6379/0"),
        execution_backend=RabbitMQExecutionConfig(
-           amqp_url="amqps://queues_user:secret@rabbit.example/queues",
+           amqp_url="amqps://queues_user@rabbit.example/queues",
        ),
        worker=WorkerConfig(placement="external"),
    )
 
-Run a dispatcher and one or more consumers against the same persistent queue
-storage:
+Then run ``litestar queues run`` and
+``litestar queues run-consumer --backend rabbitmq``.
 
-.. code-block:: bash
+Prefer ``amqps`` outside a trusted private network. The AMQP URL carries the
+credentials, and it is excluded from representations and telemetry so it does
+not leak into logs.
 
-   LITESTAR_APP=app:app litestar queues run
-   LITESTAR_APP=app:app litestar queues run-consumer --backend rabbitmq --max-concurrency 32
-
-The broker message contains only the task UUID and an opaque attempt header.
-Arguments, results, scheduling, retries, cancellation, and terminal state stay
-in the queue backend. RabbitMQ delivery is therefore a wakeup and routing slip,
-not the task record.
-
-Topology and permissions
-------------------------
+Queue topology and permissions
+==============================
 
 By default the backend declares one durable, non-exclusive, non-auto-delete
-quorum queue. Its namespace-derived name ends in ``-rabbitmq``. Set an explicit
-``queue_name`` when deployment policy owns the resource name, or set
-``declare_queue=False`` to perform a passive existence check instead. The
-RabbitMQ principal needs connect permission on the vhost and configure, write,
-and read permissions for the queue. Prefer ``amqps`` outside a trusted private
-network; credentials and the AMQP URL are never attached to telemetry.
+quorum queue whose namespace-derived name ends in ``-rabbitmq``. Set
+``queue_name`` when deployment policy owns the resource name, or
+``declare_queue=False`` to perform a passive existence check instead of
+declaring.
 
-RabbitMQ 4.3 quorum queues provide strict priority. Stored priority is clamped
-to the broker range ``0..31`` after dispatch; storage still decides whether a
-record is due and eligible. The default ``delayed_retry_type="returned"``
-applies linear 1--30 second backoff to explicit transient nacks without the
-delayed-message plugin. Set it to ``disabled`` when a queue policy owns retry
-behavior.
+The RabbitMQ principal needs connect permission on the vhost, plus configure,
+write, and read permissions on the queue.
 
-Set ``consumer_timeout_ms`` only when broker-side protection from stuck
-consumers is required. It must exceed the longest legitimate task duration,
-otherwise RabbitMQ can return healthy in-flight work for redelivery. Consumers
-ack only after the corresponding durable queue transition; storage fences make
-redelivery safe.
+Priority and broker-managed retries
+===================================
+
+RabbitMQ 4.3 quorum queues provide strict priority. Stored task priority is
+clamped to the broker range ``0..31`` after dispatch; queue storage still
+decides whether a record is due and eligible in the first place.
+
+``delayed_retry_type`` defaults to ``"returned"``, which applies a linear
+1--30 second backoff to explicitly nacked transient failures without needing
+the delayed-message plugin. Tune the window with ``delayed_retry_min_ms`` and
+``delayed_retry_max_ms``, or set ``delayed_retry_type="disabled"`` when a queue
+policy owns retry behavior instead.
+
+Consumer timeout
+================
+
+``consumer_timeout_ms`` is unset by default. Set it only when you need
+broker-side protection from stuck consumers, and make it longer than the
+longest legitimate task duration -- otherwise RabbitMQ returns healthy
+in-flight work for redelivery.

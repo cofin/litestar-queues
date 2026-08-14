@@ -109,13 +109,19 @@ Configuring
 
 .. code-block:: python
 
+   from sqlspec.adapters.asyncpg import AsyncpgConfig
+
    from litestar_queues import QueueConfig, WorkerConfig
    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
    from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
 
+   # Any SQLSpec adapter config works; this one points at Cloud SQL for PostgreSQL.
+   sqlspec_config = AsyncpgConfig(
+       connection_config={"dsn": "postgresql://queue:secret@127.0.0.1:5432/appdb"}
+   )
 
    queue_config = QueueConfig(
-       queue_backend=SQLSpecBackendConfig(sqlspec_config=...),
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlspec_config),
        execution_backend=CloudTasksExecutionConfig(
            project_id="my-project",
            location="my-region",
@@ -140,12 +146,12 @@ The delivery route
 
 A queue configured for Cloud Tasks registers one route on your application at
 ``/_litestar-queues/cloud-tasks`` by default, or the equivalent path derived
-from ``QueueConfig.namespace`` (for example ``/_dma/cloud-tasks``). Set
+from ``QueueConfig.namespace`` (for example ``/_myapp/cloud-tasks``). Set
 ``route_path`` to move it. You do not
 write it, mount it, or wire it up.
 
 Cloud Tasks delivery resource names use ``lq-`` with the default namespace and
-the configured namespace otherwise (for example ``dma-``). Set
+the configured namespace otherwise (for example ``myapp-``). Set
 ``delivery_name_prefix`` when infrastructure needs an explicit prefix.
 
 It is never open by default. Either assert Cloud Run's own IAM with
@@ -271,10 +277,12 @@ external phase's budget:
 
 .. code-block:: bash
 
-   litestar queues maintenance --once
+   litestar queues run-maintenance --phase external
 
-Run it on a schedule — Cloud Scheduler calling a maintenance endpoint, or a
-small cron job — sized to how quickly you need a lost record noticed. Repair is
+Each invocation runs one bounded pass and exits, so run it on a schedule — a
+cron entry, a ``systemd`` timer, or a Cloud Scheduler job that starts the
+container — sized to how quickly you need a lost record noticed. Drop
+``--phase external`` to run every configured phase in the same pass. Repair is
 also the reason maintenance matters more here than on a polled queue, where a
 missed record is picked up by the next poll.
 
@@ -378,4 +386,4 @@ See also
 
 * :doc:`cloud-run` for the dispatcher and Cloud Run Jobs topologies.
 * :doc:`../maintenance` for the bounded maintenance phases repair shares.
-* :doc:`../observability` for the dispatch, delivery, and repair metrics.
+* :doc:`../../reference/observability` for the dispatch, delivery, and repair metrics.

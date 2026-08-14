@@ -287,13 +287,13 @@ async def test_the_delivery_name_is_random_and_encodes_the_record_and_attempt(ha
 
 
 async def test_the_delivery_name_prefix_derives_from_queue_namespace(harness: "Callable[..., Any]") -> "None":
-    live = await harness(queue_namespace="dma")
+    live = await harness(queue_namespace="myapp")
     record = await live.enqueue()
 
     name = await live.schedule(record)
 
     assert name is not None
-    assert name.startswith(f"{live.execution_config.queue_path}/tasks/dma-{record.id.hex}-r0-")
+    assert name.startswith(f"{live.execution_config.queue_path}/tasks/myapp-{record.id.hex}-r0-")
 
 
 async def test_two_records_never_share_a_delivery_name(harness: "Callable[..., Any]") -> "None":
