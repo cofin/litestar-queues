@@ -12,11 +12,11 @@ from sqlspec import sql
 from litestar_queues.backends.sqlspec.schema import (
     EVENT_HISTORY_COLUMNS,
     event_history_table_name_for,
-    validate_event_history_extra_columns,
     validate_table_name,
 )
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
+from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
 from litestar_queues.events.history import EventHistoryConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from sqlspec.builder import CreateIndex, CreateTable, Delete, DropIndex, DropTable, Select
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecDriver, SQLSpecStoreConfig
-    from litestar_queues.backends.sqlspec.schema import EventHistoryExtraColumn
     from litestar_queues.events.models import QueueEvent
 
 __all__ = (

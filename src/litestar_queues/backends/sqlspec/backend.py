@@ -42,11 +42,11 @@ from litestar_queues.backends.sqlspec.reservation import create_task_reservation
 from litestar_queues.backends.sqlspec.schema import (
     DEFAULT_TABLE_NAME,
     resolve_column_map,
-    validate_event_history_extra_columns,
     validate_native_json_columns,
     validate_table_name,
 )
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
+from litestar_queues.events import validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,

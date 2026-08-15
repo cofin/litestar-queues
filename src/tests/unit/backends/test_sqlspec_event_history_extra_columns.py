@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues.backends.sqlspec import EventHistoryExtraColumn, SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
-from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS, validate_event_history_extra_columns
+from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS
+from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:

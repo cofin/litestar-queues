@@ -18,9 +18,11 @@ from litestar_queues.events.context import (
 )
 from litestar_queues.events.history import (
     EventHistoryConfig,
+    EventHistoryExtraColumn,
     QueueEventLog,
     QueueEventLogRecord,
     QueueEventStageSummary,
+    validate_event_history_extra_columns,
 )
 from litestar_queues.events.models import (
     QueueEvent,
@@ -55,6 +57,7 @@ __all__ = (
     "EventBufferConfig",
     "EventDeliveryConfig",
     "EventHistoryConfig",
+    "EventHistoryExtraColumn",
     "EventStreamConfig",
     "EventStreamTransport",
     "Guard",
@@ -85,6 +88,7 @@ __all__ = (
     "publish_task_log",
     "publish_task_progress",
     "require_current_task_context",
+    "validate_event_history_extra_columns",
 )
 
 

@@ -1,16 +1,117 @@
 """Backend-owned queue event history contracts."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
 
     from litestar_queues.events.models import QueueEvent
 
-__all__ = ("EventHistoryConfig", "QueueEventLog", "QueueEventLogRecord", "QueueEventStageSummary")
+__all__ = ("RESERVED_EVENT_HISTORY_COLUMNS", "EventHistoryConfig", "EventHistoryExtraColumn", "QueueEventLog", "QueueEventLogRecord", "QueueEventStageSummary", "validate_event_history_extra_columns")
+
+
+def _is_unquoted_identifier_part(identifier: "str") -> "bool":
+    """Return whether an identifier part is safe unquoted text."""
+    return (
+        identifier.isascii()
+        and bool(identifier)
+        and (identifier[0].isalpha() or identifier[0] == "_")
+        and all(character.isalnum() or character == "_" for character in identifier)
+    )
+
+
+_EVENT_HISTORY_COLUMN_NAMES = frozenset({
+    "event_id",
+    "event_type",
+    "task_id",
+    "task_name",
+    "queue",
+    "worker_id",
+    "execution_backend",
+    "execution_profile",
+    "actor_type",
+    "actor_id",
+    "stage",
+    "level",
+    "message",
+    "detail",
+    "progress_current",
+    "progress_total",
+    "progress_percent",
+    "duration_ms",
+    "sequence",
+    "occurred_at",
+    "created_at",
+})
+
+
+RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"entity", "scope", "scope_key"})
+"""Names held for built-in event-history scoping dimensions.
+
+These are not columns on the table yet. They are reserved so an adopter-declared
+extra column cannot claim a name the package intends to own.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class EventHistoryExtraColumn:
+    """Adopter-declared scoping column on the SQLSpec event-history table."""
+
+    name: "str"
+    """Physical column name; must be a valid unquoted SQL identifier."""
+
+    source: "str"
+    """Key looked up in the event payload (``QueueEvent.payload``)."""
+
+    indexed: "bool" = False
+    """Whether a ``(name, occurred_at)`` index is created."""
+
+
+def validate_event_history_extra_columns(
+    columns: "Sequence[EventHistoryExtraColumn]",
+) -> "tuple[EventHistoryExtraColumn, ...]":
+    """Validate adopter-declared extra event-history columns.
+
+    Returns:
+        The validated declarations as a tuple.
+
+    Raises:
+        QueueConfigurationError: If a name is not a valid unquoted SQL
+            identifier, collides with a package-owned column, uses a reserved
+            scoping-dimension name, repeats another declaration, or the payload
+            source key is empty.
+    """
+    seen: "set[str]" = set()
+    validated: "list[EventHistoryExtraColumn]" = []
+    for column in columns:
+        if not _is_unquoted_identifier_part(column.name):
+            msg = f"Invalid SQL identifier in event_history_extra_columns: {column.name!r}"
+            raise QueueConfigurationError(msg)
+        # Unquoted SQL identifiers fold case, so every name comparison below does
+        # too: ``TASK_ID`` and ``task_id`` are one column to the database.
+        folded = column.name.lower()
+        if folded in _EVENT_HISTORY_COLUMN_NAMES:
+            msg = f"event_history_extra_columns may not redeclare package-owned column {column.name!r}"
+            raise QueueConfigurationError(msg)
+        if folded in RESERVED_EVENT_HISTORY_COLUMNS:
+            msg = (
+                f"event_history_extra_columns may not use {column.name!r}: "
+                f"{sorted(RESERVED_EVENT_HISTORY_COLUMNS)!r} are reserved for built-in scoping dimensions"
+            )
+            raise QueueConfigurationError(msg)
+        if folded in seen:
+            msg = f"Duplicate column in event_history_extra_columns: {column.name!r}"
+            raise QueueConfigurationError(msg)
+        if not column.source:
+            msg = f"event_history_extra_columns entry {column.name!r} requires a non-empty payload source key"
+            raise QueueConfigurationError(msg)
+        seen.add(folded)
+        validated.append(column)
+    return tuple(validated)
 
 
 @dataclass(slots=True)
@@ -67,6 +168,7 @@ class QueueEventLogRecord:
     sequence: "int | None"
     occurred_at: "datetime"
     created_at: "datetime"
+    extra: "dict[str, str]" = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

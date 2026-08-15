@@ -3,179 +3,113 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from litestar_queues.backends.sqlspec.schema import (
-    EventHistoryExtraColumn,
-    resolve_column_map,
-    validate_event_history_extra_columns,
-    validate_native_json_columns,
-    validate_table_name,
-)
-from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.backends.sqlspec.schema import resolve_column_map, validate_table_name
+from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from sqlspec import SQLSpec
-    from sqlspec.extensions.events import AsyncEventChannel
 
     from litestar_queues.backends.sqlspec._typing import SQLSpecConfig, SQLSpecStoreConfig
     from litestar_queues.config import QueueConfig
 
 __all__ = (
     "DEFAULT_CONTROL_CHANNEL",
+    "DEFAULT_EVENT_HISTORY_TABLE_SUFFIX",
+    "DEFAULT_MAINTENANCE_TABLE_SUFFIX",
+    "DEFAULT_TABLE_NAME",
+    "DEFAULT_TASK_RESERVATION_TABLE_SUFFIX",
     "DEFAULT_WAKEUP_CHANNEL",
-    "WAKEUP_TRANSPORTS",
     "SQLSpecBackendConfig",
     "SQLSpecWorkerWakeupConfig",
 )
 
-DEFAULT_WAKEUP_CHANNEL = "litestar_queues_tasks"
-
-DEFAULT_CONTROL_CHANNEL = "litestar_queues_worker_control"
-
-WAKEUP_TRANSPORTS: "frozenset[str]" = frozenset({"aq", "notify", "notify_queue", "poll_queue", "polling", "txeventq"})
-"""Valid worker-wakeup transports for :attr:`SQLSpecWorkerWakeupConfig.transport`.
-
-``notify`` uses native push wakeups, ``notify_queue`` uses native push wakeups
-with a durable queue fallback, ``poll_queue`` uses the durable events table,
-``aq`` and ``txeventq`` use Oracle Advanced Queuing backends, and ``polling``
-disables push wakeups so workers fall back to interval polling.
-"""
+DEFAULT_TABLE_NAME = "queue_task"
+DEFAULT_EVENT_HISTORY_TABLE_SUFFIX = "_event_history"
+DEFAULT_MAINTENANCE_TABLE_SUFFIX = "_maintenance"
+DEFAULT_TASK_RESERVATION_TABLE_SUFFIX = "_reservation"
+DEFAULT_WAKEUP_CHANNEL = "litestar_queues_wakeups"
+DEFAULT_CONTROL_CHANNEL = "litestar_queues_control"
 
 
-@dataclass(slots=True)
+@dataclass
 class SQLSpecWorkerWakeupConfig:
-    """SQLSpec worker-wakeup channel and transport configuration."""
+    """Configuration for push-based worker wakeup notifications."""
 
-    channel: "AsyncEventChannel | None" = None
-    """Explicit SQLSpec event channel; ``None`` constructs one from configuration."""
+    enabled: "bool" = True
+    """Whether push notifications wake idle workers immediately."""
 
-    transport: "str | None" = None
-    """Explicit wakeup transport; ``None`` selects the adapter capability."""
-
-    channel_name: "str | None" = None
-    """Logical worker-wakeup channel name; ``None`` uses the package default."""
-
-    queue_table_name: "str | None" = None
-    """Durable SQLSpec event-queue table; ``None`` derives it from the adapter."""
-
-    poll_interval: "float | None" = None
-    """SQLSpec event-store poll interval in seconds; ``None`` uses SQLSpec defaults."""
-
-    settings: "dict[str, Any]" = field(default_factory=dict)
-    """Additional SQLSpec events-extension settings."""
-
-    def __post_init__(self) -> "None":
-        """Validate wakeup transport, table name, and poll interval."""
-        if self.transport is not None and self.transport not in WAKEUP_TRANSPORTS:
-            valid = ", ".join(sorted(WAKEUP_TRANSPORTS))
-            msg = f"Invalid SQLSpec worker wakeup transport {self.transport!r}; expected one of: {valid}."
-            raise QueueConfigurationError(msg)
-        if self.queue_table_name is not None:
-            self.queue_table_name = validate_table_name(self.queue_table_name)
-        if self.poll_interval is not None and self.poll_interval <= 0:
-            msg = "SQLSpecWorkerWakeupConfig.poll_interval must be greater than 0."
-            raise QueueConfigurationError(msg)
+    channel_name: "str" = DEFAULT_WAKEUP_CHANNEL
+    """Event channel used for worker wakeup broadcasts."""
 
 
-@dataclass(slots=True)
+@dataclass
 class SQLSpecBackendConfig:
-    """Configuration values for the SQLSpec queue backend."""
+    """Configuration for the SQLSpec queue backend."""
 
-    backend_name: "ClassVar[str]" = "sqlspec"
+    is_async: "ClassVar[bool]" = True
+    """Backend execution mode."""
+
     sqlspec: "SQLSpec | None" = None
-    """Injected SQLSpec manager; ``None`` creates a manager owned by the queue backend."""
+    """Dedicated SQLSpec client instance for queue storage."""
 
-    sqlspec_config: "SQLSpecStoreConfig | None" = None
-    """SQLSpec adapter configuration used for queue operations; ``None`` resolves or creates one."""
+    config_name: "str | None" = None
+    """Named database configuration from the application SQLSpec plugin."""
 
-    heartbeat_pool_config: "SQLSpecStoreConfig | None" = None
-    """Dedicated heartbeat adapter configuration; ``None`` reuses normal queue operations."""
-
-    queue_table_name: "str | None" = None
-    """Queue-task table name; ``None`` uses ``queue_task`` or SQLSpec extension settings."""
-
-    worker_wakeups: "SQLSpecWorkerWakeupConfig | None" = field(default_factory=SQLSpecWorkerWakeupConfig)
-    """Worker wakeup transport configuration; ``None`` disables wakeups."""
+    table_name: "str" = DEFAULT_TABLE_NAME
+    """Base table name for queue tasks."""
 
     event_history_table_name: "str | None" = None
-    """Task-event history table name; ``None`` derives it from the queue-task table."""
+    """Table name for queue event history records."""
 
-    event_history_extra_columns: "tuple[EventHistoryExtraColumn, ...]" = ()
-    """Adopter-declared extra scoping columns on the event-history table."""
+    event_history_extra_columns: "tuple[EventHistoryExtraColumn, ...]" = field(default_factory=tuple)
+    """Adopter-declared scoping columns on the event-history table."""
 
     maintenance_table_name: "str | None" = None
-    """Maintenance coordination table name; ``None`` derives the package default."""
+    """Table name for distributed queue maintenance metadata."""
 
     task_reservation_table_name: "str | None" = None
-    """Permanent task-reservation table name; ``None`` derives it from the queue-task table."""
+    """Table name for forever-uniqueness task reservations."""
 
-    column_map: "Mapping[str, str]" = field(default_factory=dict)
-    """Overrides mapping logical queue fields to adopter-owned database columns."""
+    column_map: "Mapping[str, str] | None" = None
+    """Mapping of canonical column names to custom database column names."""
 
-    native_json_columns: "frozenset[str]" = field(default_factory=frozenset)
-    """Logical queue fields stored in database-native JSON columns."""
+    store_config: "SQLSpecStoreConfig | None" = None
+    """Driver-specific configuration overrides for the queue store."""
 
-    manage_schema: "bool" = True
-    """Whether backend startup and migrations may create package-owned queue tables."""
+    event_log_store_config: "SQLSpecStoreConfig | None" = None
+    """Driver-specific configuration overrides for the event log store."""
+
+    maintenance_store_config: "SQLSpecStoreConfig | None" = None
+    """Driver-specific configuration overrides for the maintenance store."""
+
+    task_reservation_store_config: "SQLSpecStoreConfig | None" = None
+    """Driver-specific configuration overrides for the task reservation store."""
+
+    worker_wakeups: "SQLSpecWorkerWakeupConfig" = field(default_factory=SQLSpecWorkerWakeupConfig)
+    """Configuration for push-based worker wakeup notifications."""
+
+    heartbeat_pool_config: "dict[str, Any] | None" = None
+    """Dedicated connection pool configuration for the worker heartbeat loop."""
 
     def __post_init__(self) -> "None":
-        """Validate adopter-owned table and wakeup-transport configuration."""
-        if self.queue_table_name is not None:
-            self.queue_table_name = validate_table_name(self.queue_table_name)
+        """Validate and normalize SQLSpec backend configuration."""
+        self.table_name = validate_table_name(self.table_name)
         if self.event_history_table_name is not None:
             self.event_history_table_name = validate_table_name(self.event_history_table_name)
         if self.maintenance_table_name is not None:
             self.maintenance_table_name = validate_table_name(self.maintenance_table_name)
         if self.task_reservation_table_name is not None:
             self.task_reservation_table_name = validate_table_name(self.task_reservation_table_name)
+        if self.column_map is not None:
+            self.column_map = resolve_column_map(self.column_map)
         self.event_history_extra_columns = validate_event_history_extra_columns(self.event_history_extra_columns)
-        self.column_map = resolve_column_map(self.column_map)
-        self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
 
-    def configure_migrations(self, config: "QueueConfig") -> "None":
-        """Register the queue and durable-events migrations with the SQLSpec config.
-
-        Implements :class:`~litestar_queues.config.MigrationConfiguringBackend`, so
-        ``QueuePlugin`` reaches this without importing the SQLSpec backend.
-        """
-        from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
-        from litestar_queues.backends.sqlspec.extension import (
-            configure_events_migration_extension,
-            configure_queue_migration_extension,
-        )
-        from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME
-
-        sqlspec_config = self.sqlspec_config
-        if sqlspec_config is None and self.sqlspec is not None:
-            registered_configs = tuple(self.sqlspec.configs.values())
-            if len(registered_configs) == 1:
-                sqlspec_config = registered_configs[0]
-        if sqlspec_config is None:
-            return
-
-        # Register the durable events queue migration first: a capability-native
-        # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
-        # its events table provisioned on migrate-up so zero-config native wakeups
-        # work on a fresh database.
-        events_backend = resolve_events_migration_backend(self, cast("SQLSpecConfig", sqlspec_config))
-        if events_backend is not None:
-            configure_events_migration_extension(
-                cast("SQLSpecConfig", sqlspec_config),
-                backend=events_backend,
-                queue_table=(self.worker_wakeups.queue_table_name if self.worker_wakeups is not None else None),
-            )
-
-        extension_config = sqlspec_config.extension_config or {}
-        queue_settings = dict(extension_config.get("litestar_queues", {}) or {})
-        queue_table_name = self.queue_table_name or queue_settings.get("table_name") or DEFAULT_TABLE_NAME
-        event_log_config = config.events.history if config.events is not None else None
-        configure_queue_migration_extension(
-            cast("SQLSpecConfig", sqlspec_config),
-            queue_table_name=str(queue_table_name),
-            event_history_enabled=event_log_config is not None,
-            event_history_table_name=self.event_history_table_name,
-            event_history_extra_columns=self.event_history_extra_columns,
-            maintenance_table_name=self.maintenance_table_name,
-            task_reservation_table_name=self.task_reservation_table_name,
-        )
+    def get_store_config(self, parent_config: "QueueConfig") -> "SQLSpecConfig":
+        """Resolve the effective SQLSpec configuration for the queue store."""
+        if self.sqlspec is not None:
+            return self.sqlspec.config
+        if self.config_name is not None:
+            return self.config_name
+        return cast("SQLSpecConfig", parent_config.signature_namespace.get("sqlspec_config"))
