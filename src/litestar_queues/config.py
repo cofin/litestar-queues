@@ -10,6 +10,8 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.namespace import DEFAULT_NAMESPACE, QueueNamespace
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from litestar.datastructures import State
 
     from litestar_queues.backends import BaseQueueBackend
@@ -32,6 +34,7 @@ __all__ = (
     "QueueConfig",
     "QueueNamespace",
     "StaleRequeuePriority",
+    "TaskDependencyProvider",
     "TaskDependencyResolver",
     "TaskErrorSanitizer",
     "WorkerConfig",
@@ -162,6 +165,32 @@ def queue_backend_name(backend: "QueueBackendConfig") -> "str":
 def execution_backend_name(backend: "ExecutionBackendConfig") -> "str":
     """Return the registered execution backend name for a selector."""
     return backend if isinstance(backend, str) else backend.backend_name
+
+
+class TaskDependencyProvider(Protocol):
+    """Per-attempt async context manager supplying task keyword arguments.
+
+    The queue enters this scope inside the attempt timeout, merges the yielded
+    mapping into the task's keyword arguments, and awaits ``__aexit__`` exactly
+    once for every attempt outcome: success, retryable failure, terminal
+    failure, timeout, cancellation, claim loss, and shutdown interruption.
+
+    ``__aexit__`` receives :class:`asyncio.CancelledError` for timeout,
+    cancellation, claim loss, and shutdown alike, because all four reach the
+    attempt as a coroutine cancellation. Read ``record`` and ``context`` to
+    distinguish outcomes; never the exception type. A truthy ``__aexit__``
+    return value is ignored: this is a resource scope, not an exception filter.
+
+    An implementation that also owns process-level state may expose ``open()``
+    and ``close()`` (synchronous or asynchronous); :class:`QueueService`
+    includes them in its own lifecycle and partial-open rollback.
+    """
+
+    def __call__(
+        self, task: "Task[..., object]", record: "QueuedTaskRecord", context: "TaskExecutionContext"
+    ) -> "AbstractAsyncContextManager[Mapping[str, object]]":
+        """Return the attempt-scoped dependency context manager."""
+        ...
 
 
 TaskDependencyResolver = Callable[
@@ -337,6 +366,14 @@ class QueueConfig:
     task_dependency_resolver: "TaskDependencyResolver | None" = None
     """Per-attempt dependency resolver; ``None`` injects no additional task keyword arguments."""
 
+    task_dependency_provider: "TaskDependencyProvider | None" = None
+    """Per-attempt dependency scope; ``None`` opens no scope around the task body.
+
+    Mutually exclusive with :attr:`task_dependency_resolver`. Use the resolver
+    for stateless keyword arguments and the provider when the attempt must own a
+    resource that has to be released on every outcome.
+    """
+
     error_sanitizer: "TaskErrorSanitizer | None" = None
     """Persisted task-error formatter; ``None`` stores the default exception representation."""
 
@@ -403,8 +440,24 @@ class QueueConfig:
         if self.sync_thread_pool_size <= 0:
             msg = "QueueConfig.sync_thread_pool_size must be greater than 0."
             raise QueueConfigurationError(msg)
+        self._validate_task_dependencies()
         self._validate_stale_requeue_priority()
         self._validate_placement()
+
+    def _validate_task_dependencies(self) -> "None":
+        """Reject configuring both task dependency hooks.
+
+        Raises:
+            QueueConfigurationError: If a resolver and a provider are both set.
+        """
+        if self.task_dependency_resolver is not None and self.task_dependency_provider is not None:
+            msg = (
+                "QueueConfig sets both task_dependency_resolver and task_dependency_provider. "
+                "Two mappings merging into one task call has no defined precedence. "
+                "Use task_dependency_provider when the attempt owns a resource, or "
+                "task_dependency_resolver when it only supplies stateless keyword arguments."
+            )
+            raise QueueConfigurationError(msg)
 
     def _validate_stale_requeue_priority(self) -> "None":
         """Reject a stale-requeue policy that is neither ``"preserve"``, a priority, nor a mapper.
