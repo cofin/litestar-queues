@@ -23,7 +23,7 @@ from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task
 from litestar_queues.backends.base import interruption_count
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.events.context import TaskExecutionContext, bind_task_context
-from litestar_queues.events.models import QueueEvent
+from litestar_queues.events.models import QueueEvent, QueueEventActor
 from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
 from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
@@ -746,6 +746,7 @@ class QueueService:
         runtime = self.observability_runtime
         telemetry = _start_execution_observability(runtime, record, worker_id=worker_id)
         task_context = _task_execution_context(record, worker_id=worker_id, event_publisher=self.get_event_publisher())
+        task_context.actor = _resolve_task_actor(task_obj)
         execution_scope = _bind_execution_context(task_context, record.metadata)
         final_status = "failed"
         try:
@@ -1458,6 +1459,28 @@ def _task_execution_context(
         attempt=record.retry_count + 1,
         event_publisher=event_publisher,
     )
+
+
+def _resolve_task_actor(task_obj: "Task[Any, Any]") -> "QueueEventActor | None":
+    """Resolve a task's declared actor for this attempt.
+
+    Returns:
+        The resolved actor, or ``None`` when the task declares none.
+
+    Raises:
+        QueueConfigurationError: If a declared resolver returns a non-actor.
+    """
+    declared = task_obj.actor
+    if declared is None or isinstance(declared, QueueEventActor):
+        return declared
+    resolved = declared()
+    if not isinstance(resolved, QueueEventActor):
+        msg = (
+            f"@task(actor=...) resolver for {task_obj.name!r} returned "
+            f"{type(resolved).__name__}; QueueEventActor is required."
+        )
+        raise QueueConfigurationError(msg)
+    return resolved
 
 
 def _capture_enqueue_context(runtime: "QueueObservabilityRuntimeProtocol", metadata: "dict[str, Any]") -> "None":
