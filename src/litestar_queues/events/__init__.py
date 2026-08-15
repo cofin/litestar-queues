@@ -22,6 +22,8 @@ from litestar_queues.events.history import (
     QueueEventLog,
     QueueEventLogRecord,
     QueueEventStageSummary,
+    extract_event_extras,
+    validate_event_extra_filter,
     validate_event_history_extra_columns,
 )
 from litestar_queues.events.models import (
@@ -83,11 +85,13 @@ __all__ = (
     "bind_beat_sink",
     "bind_task_context",
     "create_event_producer",
+    "extract_event_extras",
     "get_current_task_context",
     "publish_task_event",
     "publish_task_log",
     "publish_task_progress",
     "require_current_task_context",
+    "validate_event_extra_filter",
     "validate_event_history_extra_columns",
 )
 

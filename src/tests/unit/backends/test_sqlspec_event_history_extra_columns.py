@@ -225,7 +225,7 @@ def test_select_events_filters_on_actor() -> "None":
 def test_select_events_rejects_undeclared_extra_filter() -> "None":
     store = _store(_TENANT)
 
-    with pytest.raises(ValueError, match="tenant_id"):
+    with pytest.raises(QueueConfigurationError):
         store.select_events(extra={"unknown": "x"})  # type: ignore[attr-defined]
 
 

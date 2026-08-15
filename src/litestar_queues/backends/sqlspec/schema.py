@@ -96,9 +96,6 @@ EVENT_HISTORY_COLUMNS = (
 _EVENT_HISTORY_COLUMN_NAMES = frozenset(EVENT_HISTORY_COLUMNS)
 
 
-
-
-
 def validate_table_name(table_name: "str") -> "str":
     """Validate a SQL identifier used for the queue table name.
 

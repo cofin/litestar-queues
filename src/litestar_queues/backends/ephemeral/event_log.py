@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING, Any
 
 from litestar_queues.backends.ephemeral.codec import event_from_payload, event_to_payload
 from litestar_queues.events._log_records import event_log_record_from_event, event_log_record_sort_key
+from litestar_queues.events.history import validate_event_extra_filter
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Mapping
     from datetime import datetime
 
     from litestar_queues.backends.ephemeral.backend import EphemeralQueueBackend
@@ -30,7 +32,7 @@ class EphemeralQueueEventLog:
 
     async def publish_event(self, event: "QueueEvent") -> "None":
         """Append an event record and prune the oldest rows beyond capacity."""
-        record = event_log_record_from_event(event)
+        record = event_log_record_from_event(event, extra_columns=self._config.extra_columns)
         capacity = self._config.memory_capacity
 
         def operation(connection: "sqlite3.Connection") -> "None":
@@ -71,6 +73,7 @@ class EphemeralQueueEventLog:
         task_name: "str | None" = None,
         actor_id: "str | None" = None,
         actor_type: "str | None" = None,
+        extra: "Mapping[str, str] | None" = None,
         limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return matching event records in ascending event order.
@@ -78,6 +81,7 @@ class EphemeralQueueEventLog:
         Returns:
             The matching event history records.
         """
+        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
 
         def operation(connection: "sqlite3.Connection") -> "list[QueueEventLogRecord]":
             sql = "SELECT payload FROM queue_event WHERE 1 = 1"
@@ -98,6 +102,8 @@ class EphemeralQueueEventLog:
             records = [record for record in records if record.actor_id == actor_id]
         if actor_type is not None:
             records = [record for record in records if record.actor_type == actor_type]
+        if resolved_extra:
+            records = [record for record in records if all(record.extra.get(k) == v for k, v in resolved_extra.items())]
         records.sort(key=event_log_record_sort_key)
         return records[:limit] if limit is not None else records
 

@@ -16,7 +16,11 @@ from litestar_queues.backends.sqlspec.schema import (
 )
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
-from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
+from litestar_queues.events import (
+    EventHistoryExtraColumn,
+    validate_event_extra_filter,
+    validate_event_history_extra_columns,
+)
 from litestar_queues.events.history import EventHistoryConfig, QueueEventLogRecord, QueueEventStageSummary
 
 if TYPE_CHECKING:
@@ -60,14 +64,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return (*EVENT_HISTORY_COLUMNS, *(column.name for column in self._extra_columns))
 
     def _validated_extra_filter(self, extra: "Mapping[str, str] | None") -> "tuple[tuple[str, str], ...]":
-        if not extra:
-            return ()
-        declared = {column.name for column in self._extra_columns}
-        unknown = sorted(set(extra) - declared)
-        if unknown:
-            msg = f"Unknown event-history filter column(s) {unknown!r}; declared extra columns are {sorted(declared)!r}"
-            raise ValueError(msg)
-        return tuple((name, extra[name]) for name in extra)
+        resolved = validate_event_extra_filter(extra, self._extra_columns)
+        return tuple(resolved.items())
 
     def create_statements(self) -> "list[str]":
         """Return statements that create the event-log table and indexes."""
