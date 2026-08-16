@@ -177,6 +177,8 @@ def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None
     assert len(statements) == 1
     assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
     assert "INDEX `ix_queue_task_event_history_task_id`" in statements[0]
+    assert "`scope_key`" in statements[0]
+    assert "`entity`" in statements[0]
     assert "CREATE INDEX IF NOT EXISTS" not in statements[0]
 
 
@@ -194,6 +196,8 @@ def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "Non
 
     assert statements[0].lstrip().startswith("IF OBJECT_ID")
     assert "DATETIME2(6)" in statements[0]
+    assert '"scope_key"' in statements[0]
+    assert '"entity"' in statements[0]
     assert all("CREATE INDEX IF NOT EXISTS" not in statement for statement in statements[1:])
 
 
@@ -203,9 +207,11 @@ def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
     store = _store_for_dialect("oracle")
     assert "EVENT_LEVEL VARCHAR(255)" in statements[0]
     assert "EVENT_LEVEL" in store.insert_events_template()  # type: ignore[attr-defined]
-    selected = store.select_events().build(dialect="oracle").sql  # type: ignore[attr-defined]
+    selected = store.select_events(QueueEventQuery()).build(dialect="oracle").sql  # type: ignore[attr-defined]
     assert "event_level" in selected
     assert "event_level AS level" not in selected
+    assert "SCOPE_KEY" in statements[0]
+    assert "ENTITY" in statements[0]
     assert "(TASK_ID, SEQUENCE, OCCURRED_AT)" in statements[1]
 
 

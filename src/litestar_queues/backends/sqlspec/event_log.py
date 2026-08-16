@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha1
 from typing import TYPE_CHECKING, Any, cast
@@ -218,7 +219,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         if query.event_type is not None:
             statement = statement.where_eq("event_type", query.event_type)
         if query.level is not None:
-            statement = statement.where_eq("level", query.level)
+            statement = statement.where_eq(self._col("level"), query.level)
         if query.scope is not None:
             statement = statement.where_eq("scope", query.scope)
         if query.scope_key is not None:
@@ -361,6 +362,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('sequence')} {self._integer_type()}",
                 f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
                 f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
                 *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
             ]
             column_sql = ",\n  ".join(cols)
@@ -395,6 +400,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('sequence')} {self._integer_type()}",
                 f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
                 f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
                 *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
             ]
             column_sql = ",\n  ".join(cols)
@@ -433,11 +442,17 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('sequence')} {self._integer_type()}",
                 f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
                 f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
                 *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
                 f"INDEX {self._quoted_index_name('task_id')} ({self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')})",
                 f"INDEX {self._quoted_index_name('task_name')} ({self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')})",
                 f"INDEX {self._quoted_index_name('actor_id')} ({self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')})",
                 f"INDEX {self._quoted_index_name('occurred_at')} ({self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('scope_key')} ({self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('entity')} ({self._quoted_col('entity')}, {self._quoted_col('occurred_at')})",
                 *(
                     f"INDEX {self._quoted_index_name(column.name)} ({self._quoted_col(column.name)}, {self._quoted_col('occurred_at')})"
                     for column in self._extra_columns
@@ -477,6 +492,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 ),
                 _mssql_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
                 _mssql_idx("occurred_at", f"{self._quoted_col('occurred_at')}"),
+                _mssql_idx("scope_key", f"{self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')}"),
+                _mssql_idx("entity", f"{self._quoted_col('entity')}, {self._quoted_col('occurred_at')}"),
                 *(
                     _mssql_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
                     for column in self._extra_columns
@@ -508,6 +525,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 ),
                 _oracle_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
                 _oracle_idx("occurred_at", self._quoted_col("occurred_at")),
+                _oracle_idx("scope_key", f"{self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')}"),
+                _oracle_idx("entity", f"{self._quoted_col('entity')}, {self._quoted_col('occurred_at')}"),
                 *(
                     _oracle_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
                     for column in self._extra_columns
@@ -769,17 +788,15 @@ class SQLSpecQueueEventLog:
 
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
         """Return per-stage event history aggregates."""
-        from litestar_queues.events.query import require_unpaginated_query
+        from litestar_queues.events.query import QueueEventQuery, require_unpaginated_query, summarize_event_records
 
         require_unpaginated_query(query)
-        task_name = query.task_name if query else None
-        # note: SQLSpec doesn't actually support querying by other dimensions for summarize_stages yet
-
+        unpaginated = replace(query or QueueEventQuery(), order="asc", limit=None, offset=0)
         await self.flush_events()
-        statement, params = self._store.summarize_stages(task_name=task_name)
         async with self._session_factory() as driver:
-            rows = await driver.select(statement, params)
-        return [self._summary_from_row(cast("dict[str, Any]", row)) for row in rows]
+            rows = await driver.select(self._store.select_events(unpaginated))
+        records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
+        return summarize_event_records(records)
 
     async def cleanup_events(
         self,
@@ -797,13 +814,24 @@ class SQLSpecQueueEventLog:
         Returns:
             Number of deleted event-history rows.
         """
+        from litestar_queues.events.query import QueueEventQuery, match_event_record, sort_event_records
+
         await self.flush_events()
-        before_value = self._datetime_serializer(before)
+        unpaginated = replace(match or QueueEventQuery(), order="asc", limit=None, offset=0)
         async with self._session_factory() as driver:
             await driver.begin()
             try:
-                id_rows = await driver.select(self._store.select_event_ids_before(before=before_value, limit=limit))
-                event_ids = [str(cast("dict[str, Any]", row)["event_id"]) for row in id_rows]
+                rows = await driver.select(self._store.select_events(unpaginated))
+                records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
+                doomed = [
+                    record
+                    for record in records
+                    if record.occurred_at < before and not any(match_event_record(record, other) for other in exclude)
+                ]
+                doomed = sort_event_records(doomed)
+                if limit is not None:
+                    doomed = doomed[:limit]
+                event_ids = [record.event_id for record in doomed]
                 deleted = len(event_ids)
                 if event_ids:
                     await driver.execute(self._store.delete_events_by_ids(event_ids=event_ids))
