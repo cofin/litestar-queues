@@ -245,6 +245,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         Returns:
             The adapter-shaped serialized detail payload.
         """
+        if _adapter_name(self._config) == "psqlpy":
+            return detail
         return self._serialize_json(detail)
 
     def deserialize_detail(self, value: "Any") -> "dict[str, Any]":
@@ -253,6 +255,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         Returns:
             The decoded detail mapping, or an empty mapping for non-object JSON.
         """
+        if isinstance(value, dict):
+            return value
         detail = self.deserialize_json("detail", value)
         return detail if isinstance(detail, dict) else {}
 
