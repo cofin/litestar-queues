@@ -197,10 +197,13 @@ def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "Non
     assert all("CREATE INDEX IF NOT EXISTS" not in statement for statement in statements[1:])
 
 
-def test_oracle_event_history_quotes_reserved_level_column() -> "None":
+def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
     statements = _store_for_dialect("oracle").create_statements()  # type: ignore[attr-defined]
 
-    assert '"LEVEL" VARCHAR(255)' in statements[0]
+    store = _store_for_dialect("oracle")
+    assert '"event_level" VARCHAR(255)' in statements[0]
+    assert '"event_level"' in store.insert_events_template()  # type: ignore[attr-defined]
+    assert "event_level AS level" in store.select_events().build(dialect="oracle").sql  # type: ignore[attr-defined]
     assert '("task_id", "sequence", "occurred_at")' in statements[1]
 
 

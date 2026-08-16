@@ -56,7 +56,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         self, *args: "Any", extra_columns: "Sequence[EventHistoryExtraColumn] | None" = None, **kwargs: "Any"
     ) -> "None":
         super().__init__(*args, **kwargs)
-        self._column_map = {}
+        self._column_map = {"level": "event_level"} if self._event_dialect_name() == "oracle" else {}
         self._extra_columns = validate_event_history_extra_columns(extra_columns or ())
 
     @property
@@ -173,14 +173,12 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     def insert_events_template(self) -> "str":
         """Return a parametrized batch INSERT template for event rows."""
         names = self._all_columns()
-        columns = ", ".join(self._quote_identifier(column) for column in names)
+        columns = ", ".join(self._quoted_col(column) for column in names)
         placeholders = ", ".join(f":{column}" for column in names)
         return f"INSERT INTO {self._quoted_table_name()} ({columns}) VALUES ({placeholders})"  # noqa: S608
 
     def _select_columns(self) -> "tuple[str, ...]":
-        if self._event_dialect_name() == "oracle":
-            return tuple('"LEVEL" AS level' if col == "level" else col for col in self._all_columns())
-        return self._all_columns()
+        return tuple(self._select_column(column) for column in self._all_columns())
 
     def select_events(
         self,
@@ -303,7 +301,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             .column("actor_type", self._indexed_text_type())
             .column("actor_id", self._indexed_text_type())
             .column("stage", self._indexed_text_type())
-            .column("level", self._indexed_text_type())
+            .column(self._col("level"), self._indexed_text_type())
             .column("message", self._text_type())
             .column("detail", self._json_type(), not_null=True)
             .column("progress_current", self._float_type())
@@ -366,7 +364,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
                 f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
                 f"{self._quoted_col('stage')} {self._indexed_text_type()}",
-                f'"LEVEL" {self._indexed_text_type()}',
+                f"{self._quoted_col('level')} {self._indexed_text_type()}",
                 f"{self._quoted_col('message')} {self._text_type()}",
                 f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
                 f"{self._quoted_col('progress_current')} {self._float_type()}",
