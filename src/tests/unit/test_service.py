@@ -11,9 +11,7 @@ import pytest
 from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
-from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEventPublisher, QueueEventsConfig
-from litestar_queues.events.query import QueueEventQuery
-from litestar_queues.events.typing import OffsetPagination
+from litestar_queues.events import EventHistoryConfig, QueueEventPublisher, QueueEventsConfig
 from litestar_queues.exceptions import JobCancelledError
 from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.execution.base import ExecutionCancelResult
