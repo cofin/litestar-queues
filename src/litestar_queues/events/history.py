@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from litestar_queues.events.models import QueueEvent
+    from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
 
 __all__ = (
     "RESERVED_EVENT_HISTORY_COLUMNS",
@@ -252,38 +254,17 @@ class QueueEventStageSummary:
 class QueueEventLog(Protocol):
     """Backend-owned queue event history writer and query interface."""
 
-    async def publish_event(self, event: "QueueEvent") -> "None":
-        """Record a queue event for durable history."""
-        ...
-
-    async def flush_events(self) -> "None":
-        """Flush any buffered queue event history writes."""
-        ...
-
-    async def list_events(
+    async def publish_event(self, event: "QueueEvent") -> "None": ...
+    async def flush_events(self) -> "None": ...
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]": ...
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]": ...
+    async def cleanup_events(
         self,
         *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
+        before: "datetime",
+        match: "QueueEventQuery | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
         limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records.
-
-        Every filter uses equality and is ANDed with the others.
-        """
-        ...
-
-    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
-        """Return per-stage event history aggregates."""
-        ...
-
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
-        """Delete event history older than ``before``.
-
-        ``limit`` bounds one bounded maintenance batch (oldest ``occurred_at``,
-        then record id); ``None`` preserves the historical unbounded behavior.
-        """
-        ...
+    ) -> "int": ...

@@ -17,6 +17,7 @@ import pytest
 from litestar_queues import QueueConfig
 from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, PATH_ENV_VAR, EphemeralQueueBackend
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, QueueEvent
 
 if TYPE_CHECKING:
@@ -127,7 +128,7 @@ async def test_a_fresh_producer_and_consumer_share_one_database(
         reservation = await backend.has_identity("forever-key")
         log = backend.get_event_log(EventHistoryConfig())
         assert log is not None
-        events = await log.list_events(task_id=str(PRODUCER_ID))
+        events = (await log.query_events(QueueEventQuery(task_id=str(PRODUCER_ID)))).items
     finally:
         await backend.close()
 

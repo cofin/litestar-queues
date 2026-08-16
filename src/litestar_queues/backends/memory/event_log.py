@@ -3,8 +3,7 @@
 import asyncio
 from typing import TYPE_CHECKING
 
-from litestar_queues.events._log_records import event_log_record_from_event, event_log_record_sort_key
-from litestar_queues.events.history import validate_event_extra_filter
+from litestar_queues.events._log_records import event_log_record_from_event
 from litestar_queues.events.query import (
     match_event_record,
     paginate_event_records,
@@ -12,6 +11,7 @@ from litestar_queues.events.query import (
     sort_event_records,
     summarize_event_records,
 )
+from litestar_queues.events.history import validate_event_extra_filter
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -49,39 +49,22 @@ class InMemoryQueueEventLog:
         The memory event log writes immediately, so this is intentionally a no-op.
         """
 
-    async def list_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-        limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return matching event history records in ascending event order."""
-        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
-        async with self._lock:
-            records = [
-                record
-                for record in self._records
-                if (task_id is None or record.task_id == task_id)
-                and (task_name is None or record.task_name == task_name)
-                and (actor_id is None or record.actor_id == actor_id)
-                and (actor_type is None or record.actor_type == actor_type)
-                and (not resolved_extra or all(record.extra.get(k) == v for k, v in resolved_extra.items()))
-            ]
-        records.sort(key=event_log_record_sort_key)
-        return records[:limit] if limit is not None else records
-
-    async def query_events(self, query: "QueueEventQuery | None" = None) -> "OffsetPagination[QueueEventLogRecord]":
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
         """Return a filtered, ordered page of event history records.
 
         Returns:
             The matching page.
         """
+        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
         async with self._lock:
             matched = [record for record in self._records if match_event_record(record, query)]
+            if resolved_extra:
+                matched = [
+                    record for record in matched
+                    if all(record.extra.get(k) == v for k, v in resolved_extra.items())
+                ]
         ordered = sort_event_records(matched, order="asc" if query is None else query.order)
         return paginate_event_records(ordered, query)
 
@@ -132,26 +115,6 @@ class InMemoryQueueEventLog:
             targets = {id(record) for record in doomed}
             self._records = [record for record in self._records if id(record) not in targets]
             return len(doomed)
-
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
-        """Delete records older than ``before``.
-
-        ``limit`` bounds one batch, deleting the oldest matching records first
-        (oldest ``occurred_at``, then event id).
-
-        Returns:
-            Number of deleted records.
-        """
-        async with self._lock:
-            stale = [record for record in self._records if record.occurred_at < before]
-            if limit is not None:
-                stale.sort(key=lambda record: (record.occurred_at, record.event_id))
-                stale = stale[:limit]
-            if not stale:
-                return 0
-            doomed = {id(record) for record in stale}
-            self._records = [record for record in self._records if id(record) not in doomed]
-            return len(stale)
 
     async def clear(self) -> "None":
         """Clear all memory event-history records."""

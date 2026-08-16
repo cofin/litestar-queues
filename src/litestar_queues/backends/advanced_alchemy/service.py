@@ -76,39 +76,6 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         """Persist event-history records."""
         self.repository.session.add_all([self.model_from_record(record) for record in records])
 
-    async def list_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-        limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return matching event-history records in ascending event order."""
-        model_type = self.model_type
-        criteria: "list[Any]" = []
-        if task_id is not None:
-            criteria.append(model_type.task_id == task_id)
-        if task_name is not None:
-            criteria.append(model_type.task_name == task_name)
-        if actor_id is not None:
-            criteria.append(model_type.actor_id == actor_id)
-        if actor_type is not None:
-            criteria.append(model_type.actor_type == actor_type)
-        statement = select(model_type)
-        if criteria:
-            statement = statement.where(*criteria)
-        statement = statement.order_by(model_type.occurred_at, model_type.sequence, model_type.event_id)
-        if limit is not None and not extra:
-            statement = statement.limit(limit)
-        models = await self.get_many(statement=statement)
-        records = [self.record_from_model(model) for model in models]
-        if extra:
-            records = [record for record in records if all(record.extra.get(k) == v for k, v in extra.items())]
-        return records[:limit] if limit is not None else records
-
     def _criteria(self, query: "QueueEventQuery") -> "list[Any]":
         model = self.model_type
         criteria = []

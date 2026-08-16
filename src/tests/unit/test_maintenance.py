@@ -19,6 +19,7 @@ from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryRe
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    from litestar_queues.events.query import QueueEventQuery
     from litestar_queues.maintenance import MaintenancePhase
     from litestar_queues.service import QueueService
 
@@ -38,14 +39,21 @@ class _Clock:
 
 
 class _StubEventLog:
-    """Event-log double recording ``cleanup_before`` calls."""
+    """Event-log double recording ``cleanup_events`` calls."""
 
     def __init__(self, *, deleted: "int" = 0, error: "Exception | None" = None) -> "None":
         self.deleted = deleted
         self.error = error
         self.calls: "list[tuple[datetime, int | None]]" = []
 
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+    async def cleanup_events(
+        self,
+        before: "datetime",
+        *,
+        match: "QueueEventQuery | None" = None,
+        exclude: "tuple[QueueEventQuery, ...] | None" = None,
+        limit: "int | None" = None,
+    ) -> "int":
         self.calls.append((before, limit))
         if self.error is not None:
             raise self.error

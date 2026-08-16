@@ -1,6 +1,7 @@
 import pytest
 
 from litestar_queues.backends.memory.event_log import InMemoryQueueEventLog
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -13,7 +14,7 @@ async def test_memory_filters_declared_extra() -> "None":
     await log.publish_event(QueueEvent(type="task.started", scope="task", task_id="a", payload={"tenant_id": "acme"}))
     await log.publish_event(QueueEvent(type="task.started", scope="task", task_id="b", payload={"tenant_id": "other"}))
 
-    events = await log.list_events(extra={"tenant": "acme"})
+    events = (await log.query_events(QueueEventQuery(), extra={"tenant": "acme"})).items
     assert [r.task_id for r in events] == ["a"]
     with pytest.raises(QueueConfigurationError):
-        await log.list_events(extra={"project": "x"})
+        (await log.query_events(QueueEventQuery(), extra={"project": "x"})).items

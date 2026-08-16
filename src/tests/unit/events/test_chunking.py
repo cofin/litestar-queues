@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 import msgspec
 import pytest
 
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import QueueEvent, QueueEventPublisher
 from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
@@ -32,15 +33,15 @@ class _RecordingEventLog:
     async def flush_events(self) -> None:
         return None
 
-    async def list_events(
-        self, *, task_id: str | None = None, task_name: str | None = None, limit: int | None = None
-    ) -> list[Any]:
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        return OffsetPagination(items=[], total=0, limit=100, offset=0)
+
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[Any]":
         return []
 
-    async def summarize_stages(self, *, task_name: str | None = None) -> list[Any]:
-        return []
-
-    async def cleanup_before(self, before: Any) -> int:
+    async def cleanup_events(self, *, before: Any, match: Any = None, exclude: Any = (), limit: Any = None) -> int:
         return 0
 
 

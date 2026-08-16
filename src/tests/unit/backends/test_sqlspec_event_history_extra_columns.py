@@ -12,7 +12,7 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS
-from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
+from litestar_queues.events import EventHistoryExtraColumn, QueueEventQuery, validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -266,7 +266,7 @@ def test_actor_name_is_not_persisted() -> "None":
 def test_select_events_filters_on_actor() -> "None":
     store = _store()
 
-    rendered = store.select_events(actor_id="u-1", actor_type="user").build(dialect="sqlite").sql  # type: ignore[attr-defined]
+    rendered = store.select_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "user"}).build(dialect="sqlite").sql  # type: ignore[attr-defined]
 
     assert "actor_id" in rendered
     assert "actor_type" in rendered
@@ -276,13 +276,13 @@ def test_select_events_rejects_undeclared_extra_filter() -> "None":
     store = _store(_TENANT)
 
     with pytest.raises(QueueConfigurationError):
-        store.select_events(extra={"unknown": "x"})  # type: ignore[attr-defined]
+        store.select_events(QueueEventQuery(), extra={"unknown": "x"})  # type: ignore[attr-defined]
 
 
 def test_select_events_accepts_declared_extra_filter() -> "None":
     store = _store(_TENANT)
 
-    statement = store.select_events(extra={"tenant_id": "t-1"})  # type: ignore[attr-defined]
+    statement = store.select_events(QueueEventQuery(), extra={"tenant_id": "t-1"})  # type: ignore[attr-defined]
 
     assert "tenant_id" in statement.build(dialect="sqlite").sql
 

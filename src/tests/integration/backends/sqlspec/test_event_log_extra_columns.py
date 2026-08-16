@@ -12,6 +12,7 @@ from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEventsConfig, publish_task_log
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
@@ -90,14 +91,14 @@ async def _run_scoped_task(config: "Any", *, tenants: "tuple[str, ...]") -> "lis
         event_log = cast("SQLSpecQueueEventLog", service.get_queue_backend().get_event_log(history))
         await event_log.flush_events()
 
-        scoped = await event_log.list_events(extra={"tenant_id": tenants[0]})
-        everything = await event_log.list_events()
+        scoped = (await event_log.query_events(QueueEventQuery(), extra={"tenant_id": tenants[0]})).items
+        everything = (await event_log.query_events(QueueEventQuery())).items
 
-        with pytest.raises(QueueConfigurationError):
-            await event_log.list_events(extra={"unknown": "x"})
+        with pytest.raises(ValueError, match="tenant_id"):
+            (await event_log.query_events(QueueEventQuery(), extra={"unknown": "x"})).items
 
     assert len(everything) > len(scoped)
-    return scoped
+    return list(scoped)
 
 
 async def test_extra_column_is_created_written_and_filterable(event_history_config: "Any") -> "None":

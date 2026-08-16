@@ -330,7 +330,7 @@ class QueueMaintenanceService:
         event_log = self._service.get_event_log()
         if event_log is None:  # pragma: no cover - guarded by _phase_enabled.
             return 0
-        return await event_log.cleanup_before(cutoffs["events"], limit=self._config.event_limit)
+        return await event_log.cleanup_events(before=cutoffs["events"], limit=self._config.event_limit)
 
     def _elapsed_ms(self, start: "float") -> "float":
         return (self._monotonic() - start) * 1000.0

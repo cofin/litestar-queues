@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING, Any
 
 from litestar_queues.backends.ephemeral.codec import event_from_payload, event_to_payload
-from litestar_queues.events._log_records import event_log_record_from_event, event_log_record_sort_key
+from litestar_queues.events._log_records import event_log_record_from_event
 from litestar_queues.events.history import validate_event_extra_filter
 from litestar_queues.events.query import (
     match_event_record,
@@ -99,54 +99,23 @@ class EphemeralQueueEventLog:
         Each publish commits immediately, so this is intentionally a no-op.
         """
 
-    async def list_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-        limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return matching event records in ascending event order.
 
-        Returns:
-            The matching event history records.
-        """
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        """Return a filtered, ordered page of event history records."""
+        where, values = _where(query)
         resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
 
         def operation(connection: "sqlite3.Connection") -> "list[QueueEventLogRecord]":
-            sql = "SELECT payload FROM queue_event WHERE 1 = 1"
-            values: "list[Any]" = []
-            if task_id is not None:
-                sql += " AND task_id = ?"
-                values.append(task_id)
-            if task_name is not None:
-                sql += " AND task_name = ?"
-                values.append(task_name)
-            rows = connection.execute(sql, values).fetchall()
-            return [event_from_payload(row["payload"]) for row in rows]
-
-        records: "list[QueueEventLogRecord]" = await self._backend._run(operation)  # noqa: SLF001
-        # The actor lives in the encoded payload rather than its own indexed
-        # column, so it is matched after decoding. The table is capacity-bounded.
-        if actor_id is not None:
-            records = [record for record in records if record.actor_id == actor_id]
-        if actor_type is not None:
-            records = [record for record in records if record.actor_type == actor_type]
-        if resolved_extra:
-            records = [record for record in records if all(record.extra.get(k) == v for k, v in resolved_extra.items())]
-        records.sort(key=event_log_record_sort_key)
-        return records[:limit] if limit is not None else records
-
-    async def query_events(self, query: "QueueEventQuery | None" = None) -> "OffsetPagination[QueueEventLogRecord]":
-        """Return a filtered, ordered page of event history records."""
-        where, values = _where(query)
-
-        def operation(connection: "sqlite3.Connection") -> "list[QueueEventLogRecord]":
             rows = connection.execute(f"SELECT payload FROM queue_event WHERE {where}", values).fetchall()  # noqa: S608
-            return [event_from_payload(row["payload"]) for row in rows]
+            matched = [event_from_payload(row["payload"]) for row in rows]
+            if resolved_extra:
+                matched = [
+                    record for record in matched
+                    if all(record.extra.get(k) == v for k, v in resolved_extra.items())
+                ]
+            return matched
 
         records = await self._backend._run(operation)  # noqa: SLF001
         ordered = sort_event_records(records, order="asc" if query is None else query.order)
@@ -195,21 +164,6 @@ class EphemeralQueueEventLog:
 
         return await self._backend._transaction(operation)  # noqa: SLF001
 
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
-        """Delete the oldest records occurring before ``before``."""
-
-        def operation(connection: "sqlite3.Connection") -> "int":
-            sql = "SELECT event_id FROM queue_event WHERE occurred_at < ? ORDER BY occurred_at ASC, event_id ASC"
-            values: "list[Any]" = [_iso(before)]
-            if limit is not None:
-                sql += " LIMIT ?"
-                values.append(limit)
-            ids = [row["event_id"] for row in connection.execute(sql, values).fetchall()]
-            if ids:
-                connection.executemany("DELETE FROM queue_event WHERE event_id = ?", [(i,) for i in ids])
-            return len(ids)
-
-        return await self._backend._transaction(operation)  # noqa: SLF001
 
     async def clear(self) -> "None":
         """Remove every stored event record."""

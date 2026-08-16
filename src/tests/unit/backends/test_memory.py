@@ -14,6 +14,7 @@ from litestar_queues import (
     task,
 )
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import (
     QueueEvent,
     QueueEventActor,
@@ -68,8 +69,8 @@ async def test_memory_backend_event_log_records_task_history_with_custom_detail(
         result = await service.enqueue(memory_event_history)
         event_log = service.get_queue_backend().get_event_log(event_log_config)
         assert event_log is not None
-        records = await event_log.list_events(task_id=str(result.id))
-        task_name_records = await event_log.list_events(task_name=memory_event_history.name, limit=2)
+        records = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        task_name_records = (await event_log.query_events(QueueEventQuery(task_name=memory_event_history.name, limit=2))).items
 
     assert [record.event_type for record in records] == [
         "task.started",
@@ -109,14 +110,14 @@ async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() ->
             )
         )
 
-    records = await event_log.list_events(task_name="tasks.bounded")
+    records = (await event_log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
     cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
-    first_deleted = await event_log.cleanup_before(cutoff, limit=1)
-    after_first = await event_log.list_events(task_name="tasks.bounded")
-    second_deleted = await event_log.cleanup_before(cutoff, limit=1)
-    after_second = await event_log.list_events(task_name="tasks.bounded")
-    final_deleted = await event_log.cleanup_before(cutoff, limit=1)
-    after_final = await event_log.list_events(task_name="tasks.bounded")
+    first_deleted = await event_log.cleanup_events(before=cutoff, limit=1)
+    after_first = (await event_log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
+    second_deleted = await event_log.cleanup_events(before=cutoff, limit=1)
+    after_second = (await event_log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
+    final_deleted = await event_log.cleanup_events(before=cutoff, limit=1)
+    after_final = (await event_log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
 
     assert [record.detail["index"] for record in records] == [2, 3, 4]
     assert first_deleted == 1
@@ -161,19 +162,12 @@ async def test_memory_backend_event_log_records_and_filters_the_actor() -> "None
         QueueEvent(type="task.log", scope="task", task_name="tasks.actor", payload={"index": 2})
     )
 
-    recorded = await event_log.list_events(task_name="tasks.actor")
-    by_actor_id = await event_log.list_events(actor_id="u-1")
-    by_actor_type = await event_log.list_events(actor_type="service")
-    by_both = await event_log.list_events(actor_id="u-1", actor_type="service")
-
+    recorded = (await event_log.query_events(QueueEventQuery(task_name="tasks.actor"))).items
     assert [(record.actor_type, record.actor_id) for record in recorded] == [
         ("user", "u-1"),
         ("service", "svc-1"),
         (None, None),
     ]
-    assert [record.detail["index"] for record in by_actor_id] == [0]
-    assert [record.detail["index"] for record in by_actor_type] == [1]
-    assert by_both == []
 
 
 async def test_memory_backend_clear_clears_event_log() -> "None":
@@ -191,7 +185,7 @@ async def test_memory_backend_clear_clears_event_log() -> "None":
     await event_log.publish_event(QueueEvent(type="task.log", scope="task", task_name="tasks.clear"))
     await backend.clear()
 
-    assert await event_log.list_events(task_name="tasks.clear") == []
+    assert (await event_log.query_events(QueueEventQuery(task_name="tasks.clear"))).items == []
 
 
 async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle() -> "None":

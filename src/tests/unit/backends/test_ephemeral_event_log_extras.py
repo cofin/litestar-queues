@@ -5,6 +5,7 @@ import pytest
 from litestar_queues.backends.ephemeral import EphemeralQueueBackend
 from litestar_queues.backends.ephemeral.event_log import EphemeralQueueEventLog
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -33,9 +34,9 @@ async def test_ephemeral_filters_declared_extra(server_context: "EphemeralServer
             QueueEvent(type="task.started", scope="task", task_id="b", payload={"tenant_id": "other"})
         )
 
-        events = await log.list_events(extra={"tenant": "acme"})
+        events = (await log.query_events(QueueEventQuery(), extra={"tenant": "acme"})).items
         assert [r.task_id for r in events] == ["a"]
         with pytest.raises(QueueConfigurationError):
-            await log.list_events(extra={"project": "x"})
+            (await log.query_events(QueueEventQuery(), extra={"project": "x"})).items
     finally:
         await backend.close()

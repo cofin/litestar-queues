@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,10 +20,9 @@ from litestar_queues.events._log_records import (
     optional_str,
     parse_datetime,
 )
-from litestar_queues.events.history import QueueEventLogRecord, validate_event_extra_filter
+from litestar_queues.events.history import QueueEventLogRecord
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
 
     from litestar.pagination import OffsetPagination
 
@@ -77,14 +77,18 @@ class RedisQueueEventLog:
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()
 
-    async def query_events(self, query: "QueueEventQuery | None" = None) -> "OffsetPagination[QueueEventLogRecord]":
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
         """Return a filtered, ordered page of event history records.
 
         Returns:
             The matching page.
         """
+        from litestar_queues.events.history import validate_event_extra_filter
         from litestar_queues.events.query import match_event_record, paginate_event_records, sort_event_records
 
+        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
         await self.flush_events()
         client = await self._backend._get_client()
         index_key = self._select_index_key(query)
@@ -92,38 +96,13 @@ class RedisQueueEventLog:
         records = [
             record for record in await self._records_from_ids(client, event_ids) if match_event_record(record, query)
         ]
+        if resolved_extra:
+            records = [
+                record for record in records
+                if all(record.extra.get(k) == v for k, v in resolved_extra.items())
+            ]
         ordered = sort_event_records(records, order="asc" if query is None else query.order)
         return paginate_event_records(ordered, query)  # type: ignore[no-any-return]
-
-    async def list_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-        limit: "int | None" = None,
-        offset: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records."""
-        from litestar_queues.events.query import QueueEventQuery
-
-        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
-
-        query = QueueEventQuery(task_id=task_id, task_name=task_name, limit=limit, offset=offset or 0)
-        page = await self.query_events(query)
-
-        # apply missing filters
-        records = list(page.items)
-        if actor_id is not None:
-            records = [r for r in records if r.actor_id == actor_id]
-        if actor_type is not None:
-            records = [r for r in records if r.actor_type == actor_type]
-        if resolved_extra:
-            records = [r for r in records if all(r.extra.get(k) == v for k, v in resolved_extra.items())]
-
-        return records
 
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
         """Return per-stage event history aggregates."""
@@ -138,9 +117,6 @@ class RedisQueueEventLog:
             record for record in await self._records_from_ids(client, event_ids) if match_event_record(record, query)
         ]
         return summarize_event_records(records)
-
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
-        return await self.cleanup_events(before=before, limit=limit)
 
     async def cleanup_events(  # noqa: C901
         self,
