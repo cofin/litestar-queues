@@ -28,6 +28,10 @@ class CloudTasksClient(Protocol):
         """Look up one task by full resource name."""
         ...
 
+    async def delete_task(self, *, name: "str", timeout: "float | None" = None) -> "None":
+        """Delete one task by full resource name."""
+        ...
+
     async def close(self) -> "None":
         """Release the client's transport."""
         ...

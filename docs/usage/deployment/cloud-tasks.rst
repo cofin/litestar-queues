@@ -318,6 +318,11 @@ so the package never reuses a name: each attempt gets a fresh random suffix.
 De-duplication has a documented throughput cost relative to unnamed tasks, so
 confirm the current published limits before planning a high-rate queue.
 
+Cancellation
+============
+
+The Cloud Tasks backend implements remote execution cancellation. Because Cloud Tasks holds a future delivery, cancellation is implemented as an API ``delete_task`` operation using the ``execution_ref`` stored on the queue record. If the delivery is already in flight, it cannot be deleted, so the operation succeeds idempotently but leaves the running task to cooperative cancellation.
+
 Testing
 =======
 

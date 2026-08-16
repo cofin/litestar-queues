@@ -71,3 +71,29 @@ def test_the_dead_boolean_cancel_operation_is_gone() -> "None":
     cmd = ["grep", "-rn", "async def cancel(", "src/litestar_queues"]
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert res.stdout == ""
+
+
+@pytest.mark.anyio
+async def test_cancel_task_degradation_without_execution_backend() -> "None":
+    from litestar_queues.task import task
+
+    @task("tasks.ext")
+    async def _ext() -> "None":
+        return None
+
+    from litestar_queues.config import WorkerConfig
+
+    queue_backend = InMemoryQueueBackend()
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=queue_backend
+    )
+    async with service:
+        record = await queue_backend.enqueue("tasks.ext")
+        assert record.status == "pending"
+        assert record.execution_backend == "local"
+
+        # Test degradation fallback
+        assert await service.cancel_task(record.id) is True
+
+        stored = await queue_backend.get_task(record.id)
+        assert stored and stored.status == "cancelled"

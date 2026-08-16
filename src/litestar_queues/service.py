@@ -1172,7 +1172,7 @@ class QueueService:
             self._reject_beyond_scheduling_horizon(task_name, scheduled_at)
             metadata = self._metadata_with_schedule_default(task_obj, schedule_metadata, scheduled_at)
             if active is not None:
-                await queue_backend.cancel_task(active.id)
+                await self.cancel_task(active.id)
             records.append(
                 await self._persist_scheduled_record(
                     task_name,

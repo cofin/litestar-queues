@@ -23,6 +23,7 @@ from litestar_queues.exceptions import MissingDependencyError, QueueConfiguratio
 from litestar_queues.execution.base import (
     BaseExecutionBackend,
     DispatchRepairResult,
+    ExecutionCancelResult,
     _queue_metric_attributes,
     _queue_observability_attributes,
 )
@@ -294,6 +295,34 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             await self._publish_delivery_failure(service, current, exc, operation=_REPAIR)
             return False
         return True
+
+    async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
+        """Delete the Cloud Tasks delivery holding this record's attempt.
+
+        Cloud Tasks holds a future delivery rather than a running process, so
+        cancellation is a delete: after it, nothing will be delivered. A
+        delivery that is already in flight has been claimed by the consumer, and
+        the delete answers not-found -- idempotent success, with the running body
+        left to cooperative cancellation.
+
+        Returns:
+            The provider's answer, mapped to the shared cancellation contract.
+        """
+        task_name = record.execution_ref
+        if task_name is None:
+            return ExecutionCancelResult.unsupported("no Cloud Tasks delivery reference")
+        del service
+        config = self.execution_config
+        try:
+            await (await self._get_client()).delete_task(name=task_name, timeout=config.api_timeout)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return ExecutionCancelResult.already_cancelled("Cloud Tasks delivery not found")
+            self._logger.warning(
+                "Cloud Tasks delivery deletion failed", exc_info=True, extra={"cloudtasks_task_name": task_name}
+            )
+            return ExecutionCancelResult.retryable(str(exc))
+        return ExecutionCancelResult.accepted(task_name)
 
     async def _delivery_exists(self, task_name: "str", config: "CloudTasksExecutionConfig") -> "bool":
         """Whether Cloud Tasks still holds the named delivery.
