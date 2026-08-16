@@ -758,6 +758,7 @@ def test_cloudrun_factory_registration_and_import_boundary() -> "None":
 
 async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "None":
     from datetime import datetime, timezone
+    from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
@@ -767,7 +768,7 @@ async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "Non
         execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
     )
     record = QueuedTaskRecord(
-        id="123",
+        id=uuid4(),
         task_name="tasks.ext",
         status="running",
         queued_at=datetime.now(timezone.utc),
@@ -776,7 +777,7 @@ async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "Non
         execution_backend="cloudrun",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -787,6 +788,7 @@ async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "Non
 
 async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
     from datetime import datetime, timezone
+    from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
@@ -797,7 +799,7 @@ async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
         execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
     )
     record = QueuedTaskRecord(
-        id="123",
+        id=uuid4(),
         task_name="tasks.ext",
         status="running",
         queued_at=datetime.now(timezone.utc),
@@ -806,7 +808,7 @@ async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
         execution_backend="cloudrun",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -815,6 +817,7 @@ async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
 
 async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None":
     from datetime import datetime, timezone
+    from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
@@ -824,7 +827,7 @@ async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None
         execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
     )
     record = QueuedTaskRecord(
-        id="123",
+        id=uuid4(),
         task_name="tasks.ext",
         status="running",
         queued_at=datetime.now(timezone.utc),
@@ -833,7 +836,7 @@ async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None
         execution_backend="cloudrun",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -843,6 +846,7 @@ async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None
 
 async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() -> "None":
     from datetime import datetime, timezone
+    from uuid import uuid4
 
     from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
@@ -853,7 +857,7 @@ async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() ->
         execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
     )
     record = QueuedTaskRecord(
-        id="123",
+        id=uuid4(),
         task_name="tasks.ext",
         status="running",
         queued_at=datetime.now(timezone.utc),
@@ -862,7 +866,7 @@ async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() ->
         execution_backend="cloudrun",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -875,6 +879,7 @@ async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() ->
 
 async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None":
     from datetime import datetime, timezone
+    from uuid import uuid4
 
     from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
@@ -882,7 +887,7 @@ async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None
     class InspectableFakeExecutionsClient(FakeExecutionsClient):
         def __init__(self, execution: "FakeCloudRunExecution") -> "None":
             super().__init__(execution)
-            self.last_op = None
+            self.last_op: "object" = None
 
         async def cancel_execution(self, *, name: "str") -> "object":
             op = await super().cancel_execution(name=name)
@@ -894,7 +899,7 @@ async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None
         execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
     )
     record = QueuedTaskRecord(
-        id="123",
+        id=uuid4(),
         task_name="tasks.ext",
         status="running",
         queued_at=datetime.now(timezone.utc),
@@ -903,7 +908,7 @@ async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None
         execution_backend="cloudrun",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore

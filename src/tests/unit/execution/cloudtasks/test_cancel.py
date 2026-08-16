@@ -37,7 +37,7 @@ async def test_cloudtasks_cancel_execution_deletes_the_stored_delivery() -> "Non
         execution_backend="cloudtasks",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -71,7 +71,7 @@ async def test_cloudtasks_cancel_execution_missing_delivery_is_idempotent() -> "
         execution_backend="cloudtasks",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -110,7 +110,7 @@ async def test_cloudtasks_cancel_execution_api_error_is_retryable() -> "None":
         execution_backend="cloudtasks",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
@@ -142,7 +142,7 @@ async def test_cloudtasks_cancel_execution_without_a_reference_is_unsupported() 
         execution_backend="cloudtasks",
         retry_count=0,
         max_retries=3,
-        kwargs=b"{}",
+        kwargs={},
         execution_profile=None,
     )
     result = await backend.cancel_execution(None, record)  # type: ignore
