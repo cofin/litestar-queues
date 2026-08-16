@@ -1231,9 +1231,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             try:
                 adapter_name = resolve_adapter_name(self._get_sqlspec_config())
                 before_row = (
-                    await self._select_task(driver, task_id)
-                    if adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS
-                    else None
+                    await self._select_task(driver, task_id) if adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS else None
                 )
                 result = await driver.execute(
                     self._get_store().cancel_task(
