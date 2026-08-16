@@ -1223,7 +1223,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         record = self._record_from_row(updated_row)
         return record if record.status == "pending" else None
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self,
+        task_id: "UUID",
+        *,
+        include_running: "bool" = False,
+        expected_retry_count: "int | None" = None,
+    ) -> "bool":
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1232,12 +1238,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                         task_id=str(task_id),
                         completed_at=self._serialize_datetime(_utc_now()),
                         include_running=include_running,
+                        expected_retry_count=expected_retry_count,
                     )
                 )
                 rows_affected = self._resolve_rows_affected(result)
                 if rows_affected < 0:
                     updated_row = await self._select_task(driver, task_id)
-                    cancelled = updated_row is not None and self._record_from_row(updated_row).status == "cancelled"
+                    cancelled = False
+                    if updated_row is not None:
+                        record = self._record_from_row(updated_row)
+                        cancelled = record.status == "cancelled" and (
+                            expected_retry_count is None or record.retry_count == expected_retry_count
+                        )
                 else:
                     cancelled = rows_affected == 1
                 await driver.commit()

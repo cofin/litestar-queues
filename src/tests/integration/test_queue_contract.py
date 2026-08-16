@@ -1,7 +1,8 @@
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from typing_extensions import Self
@@ -242,6 +243,45 @@ async def test_backend_contract_bounds_external_reconciliation_deterministically
     await queue_backend.set_execution_ref(low.id, "cloudrun", "jobs/low")
 
     assert [record.id for record in await queue_backend.list_running_external(limit=1)] == [low.id]
+
+
+
+async def test_backend_contract_cancel_task_honours_retry_generation_fence(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    task = await queue_backend.enqueue("tasks.fenced.cancel")
+    claimed = await queue_backend.claim_many(limit=1)
+    assert len(claimed) == 1
+
+    assert await queue_backend.cancel_task(task.id, include_running=True, expected_retry_count=1) is False
+    stored = await queue_backend.get_task(task.id)
+    assert stored is not None and stored.status == "running"
+
+    assert await queue_backend.cancel_task(task.id, include_running=True, expected_retry_count=0) is True
+    stored = await queue_backend.get_task(task.id)
+    assert stored is not None and stored.status == "cancelled"
+
+    assert await queue_backend.cancel_task(task.id, include_running=True) is False
+
+async def test_backend_contract_finalize_external_dispatch_does_not_resurrect_cancelled(
+    queue_backend: "BaseQueueBackend",
+) -> "None":
+    task = await queue_backend.enqueue("tasks.race.finalize")
+    reservation_ref = f"__litestar_queues_dispatching__:{int(time.time()) + 900}:{uuid4()}"
+    reserved = await queue_backend.reserve_external_dispatch(task.id, "cloudrun", reservation_ref)
+    assert reserved is not None and reserved.status in {"pending", "scheduled"}
+
+    assert await queue_backend.cancel_task(task.id) is True
+
+    finalized = await queue_backend.finalize_external_dispatch(
+        task.id, reservation_ref, "cloudrun", "projects/p/locations/r/jobs/j/executions/e-1"
+    )
+    assert finalized is None
+
+    stored = await queue_backend.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "cancelled"
+    assert stored.execution_ref == reservation_ref
 
 
 async def test_backend_contract_bulk_cancels_matching_domain_predicate(queue_backend: "BaseQueueBackend") -> "None":

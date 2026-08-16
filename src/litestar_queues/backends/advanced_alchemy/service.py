@@ -821,14 +821,23 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self,
+        task_id: "UUID",
+        *,
+        include_running: "bool" = False,
+        expected_retry_count: "int | None" = None,
+    ) -> "bool":
         model_type = self.model_type
         now = _utc_now()
         cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
+
+        stmt = update(model_type).where(model_type.id == task_id, model_type.status.in_(cancellable_statuses))
+        if expected_retry_count is not None:
+            stmt = stmt.where(model_type.retry_count == expected_retry_count)
+
         result = await self.repository.session.execute(
-            update(model_type)
-            .where(model_type.id == task_id, model_type.status.in_(cancellable_statuses))
-            .values(
+            stmt.values(
                 _update_values(model_type, {"status": "cancelled", "completed_at": now, "heartbeat_at": None}, now=now)
             )
         )
@@ -1232,7 +1241,11 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
-            .where(model_type.id == task_id, model_type.execution_ref == reservation_ref)
+            .where(
+                model_type.id == task_id,
+                model_type.execution_ref == reservation_ref,
+                model_type.status.in_(_DUE_STATUSES)
+            )
             .values(
                 _update_values(
                     model_type,

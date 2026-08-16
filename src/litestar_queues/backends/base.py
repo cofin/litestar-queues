@@ -439,14 +439,22 @@ class BaseQueueBackend:
         """
         raise NotImplementedError
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self,
+        task_id: "UUID",
+        *,
+        include_running: "bool" = False,
+        expected_retry_count: "int | None" = None,
+    ) -> "bool":
         """Cancel a task.
 
         Args:
-            task_id: Queue record identifier.
-            include_running: When true, cancel a running task as part of a
-                cooperative cancellation path. Default behavior only cancels
-                pending or scheduled records.
+            task_id: ID of the task to cancel.
+            include_running: Whether to cancel a task that is currently running.
+            expected_retry_count: Only cancel if the task is still on this retry generation.
+
+        Returns:
+            True if the task was successfully cancelled, False otherwise.
         """
         raise NotImplementedError
 

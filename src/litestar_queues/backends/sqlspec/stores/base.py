@@ -800,17 +800,25 @@ class SQLSpecQueueStore:
         )
 
     def cancel_task(
-        self, *, task_id: "str", completed_at: "DatetimeParam", include_running: "bool" = False
+        self,
+        *,
+        task_id: "str",
+        completed_at: "DatetimeParam",
+        include_running: "bool" = False,
+        expected_retry_count: "int | None" = None,
     ) -> "Update":
         """Return an UPDATE statement that cancels a due or running task."""
         statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
-        return (
+        stmt = (
             sql
             .update(self.table_name)
             .set(**self._mapped_values({"status": "cancelled", "completed_at": completed_at, "heartbeat_at": None}))
             .where_eq(self._col("id"), task_id)
             .where_in(self._col("status"), statuses)
         )
+        if expected_retry_count is not None:
+            stmt = stmt.where_eq(self._col("retry_count"), expected_retry_count)
+        return stmt
 
     def list_cancellable(
         self, *, include_running: "bool" = False, task_name: "str | None" = None, queue: "str | None" = None
@@ -1048,14 +1056,17 @@ RETURNING {target}.{id_col} AS id
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values({
-                    "execution_backend": execution_backend,
-                    "execution_profile": execution_profile,
-                    "execution_ref": execution_ref,
-                })
+                **self._mapped_values(
+                    {
+                        "execution_backend": execution_backend,
+                        "execution_profile": execution_profile,
+                        "execution_ref": execution_ref,
+                    }
+                )
             )
             .where_eq(self._col("id"), task_id)
             .where_eq(self._col("execution_ref"), reservation_ref)
+            .where_in(self._col("status"), _DUE_STATUSES)
         )
 
     def set_execution_backend(

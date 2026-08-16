@@ -378,9 +378,17 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 task_id, expected_retry_count=expected_retry_count, worker_id=worker_id, queued_at=queued_at
             )
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self,
+        task_id: "UUID",
+        *,
+        include_running: "bool" = False,
+        expected_retry_count: "int | None" = None,
+    ) -> "bool":
         async with self._operation() as service:
-            return await service.cancel_task(task_id, include_running=include_running)
+            return await service.cancel_task(
+                task_id, include_running=include_running, expected_retry_count=expected_retry_count
+            )
 
     async def cancel_tasks(
         self,

@@ -1,12 +1,12 @@
-import pytest
 from dataclasses import replace
 
-from litestar_queues.execution.base import ExecutionCancelResult, BaseExecutionBackend
+import pytest
+
+from litestar_queues.backends.memory.backend import InMemoryQueueBackend
+from litestar_queues.config import QueueConfig
+from litestar_queues.execution.base import BaseExecutionBackend, ExecutionCancelResult
 from litestar_queues.execution.cloudrun.backend import CloudRunExecutionBackend
 from litestar_queues.service import QueueService
-from litestar_queues.config import QueueConfig
-from litestar_queues.backends.memory.backend import InMemoryQueueBackend
-from pathlib import Path
 
 
 @pytest.mark.anyio
@@ -43,7 +43,7 @@ async def test_base_execution_backend_cancel_execution_is_unsupported() -> "None
     from litestar_queues.config import WorkerConfig
     service = QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=InMemoryQueueBackend())
     await service.get_queue_backend().enqueue("tasks.unit")
-    
+
     # We need a record, we can just pass a dummy or a real one.
     # The method ignores both arguments anyway.
     record = None
@@ -58,5 +58,5 @@ def test_the_dead_boolean_cancel_operation_is_gone() -> "None":
     import subprocess
     # Run grep to ensure no file defines async def cancel( in src/litestar_queues
     cmd = ["grep", "-rn", "async def cancel(", "src/litestar_queues"]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert res.stdout == ""
