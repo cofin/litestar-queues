@@ -382,11 +382,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return record
 
     async def cancel_task(
-        self,
-        task_id: "UUID",
-        *,
-        include_running: "bool" = False,
-        expected_retry_count: "int | None" = None,
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
         async with self._lock:
             record = self._records.get(task_id)

@@ -239,9 +239,7 @@ class BaseExecutionBackend:
         """
         return None
 
-    async def cancel_execution(
-        self, service: "QueueService", record: "QueuedTaskRecord"
-    ) -> "ExecutionCancelResult":
+    async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
         """Cancel the provider resource backing one external attempt.
 
         Called before any durable transition to ``cancelled`` for a record whose

@@ -1224,11 +1224,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return record if record.status == "pending" else None
 
     async def cancel_task(
-        self,
-        task_id: "UUID",
-        *,
-        include_running: "bool" = False,
-        expected_retry_count: "int | None" = None,
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
         async with self._session() as driver:
             await driver.begin()

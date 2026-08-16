@@ -1250,11 +1250,7 @@ class RedisQueueBackend(BaseQueueBackend):
         return await self.get_task(task_id) if committed else None
 
     async def cancel_task(
-        self,
-        task_id: "UUID",
-        *,
-        include_running: "bool" = False,
-        expected_retry_count: "int | None" = None,
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
         """Cancel a task via a single fenced script.
 

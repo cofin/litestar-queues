@@ -440,11 +440,7 @@ class BaseQueueBackend:
         raise NotImplementedError
 
     async def cancel_task(
-        self,
-        task_id: "UUID",
-        *,
-        include_running: "bool" = False,
-        expected_retry_count: "int | None" = None,
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
         """Cancel a task.
 

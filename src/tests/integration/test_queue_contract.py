@@ -245,10 +245,7 @@ async def test_backend_contract_bounds_external_reconciliation_deterministically
     assert [record.id for record in await queue_backend.list_running_external(limit=1)] == [low.id]
 
 
-
-async def test_backend_contract_cancel_task_honours_retry_generation_fence(
-    queue_backend: "BaseQueueBackend",
-) -> "None":
+async def test_backend_contract_cancel_task_honours_retry_generation_fence(queue_backend: "BaseQueueBackend") -> "None":
     task = await queue_backend.enqueue("tasks.fenced.cancel")
     claimed = await queue_backend.claim_many(limit=1)
     assert len(claimed) == 1
@@ -262,6 +259,7 @@ async def test_backend_contract_cancel_task_honours_retry_generation_fence(
     assert stored is not None and stored.status == "cancelled"
 
     assert await queue_backend.cancel_task(task.id, include_running=True) is False
+
 
 async def test_backend_contract_finalize_external_dispatch_does_not_resurrect_cancelled(
     queue_backend: "BaseQueueBackend",

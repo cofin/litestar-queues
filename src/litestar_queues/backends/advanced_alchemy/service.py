@@ -822,11 +822,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def cancel_task(
-        self,
-        task_id: "UUID",
-        *,
-        include_running: "bool" = False,
-        expected_retry_count: "int | None" = None,
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
         model_type = self.model_type
         now = _utc_now()
@@ -1244,7 +1240,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             .where(
                 model_type.id == task_id,
                 model_type.execution_ref == reservation_ref,
-                model_type.status.in_(_DUE_STATUSES)
+                model_type.status.in_(_DUE_STATUSES),
             )
             .values(
                 _update_values(

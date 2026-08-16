@@ -1056,13 +1056,11 @@ RETURNING {target}.{id_col} AS id
             sql
             .update(self.table_name)
             .set(
-                **self._mapped_values(
-                    {
-                        "execution_backend": execution_backend,
-                        "execution_profile": execution_profile,
-                        "execution_ref": execution_ref,
-                    }
-                )
+                **self._mapped_values({
+                    "execution_backend": execution_backend,
+                    "execution_profile": execution_profile,
+                    "execution_ref": execution_ref,
+                })
             )
             .where_eq(self._col("id"), task_id)
             .where_eq(self._col("execution_ref"), reservation_ref)

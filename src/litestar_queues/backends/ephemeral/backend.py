@@ -787,11 +787,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         return await self._transaction(operation)
 
     async def cancel_task(
-        self,
-        task_id: "UUID",
-        *,
-        include_running: "bool" = False,
-        expected_retry_count: "int | None" = None,
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
         """Cancel one record.
 
@@ -805,9 +801,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
             if row is None:
                 return False
             record = _decode(row)
-            if (
-                record.status not in statuses
-                or (expected_retry_count is not None and record.retry_count != expected_retry_count)
+            if record.status not in statuses or (
+                expected_retry_count is not None and record.retry_count != expected_retry_count
             ):
                 return False
             record.status = "cancelled"
