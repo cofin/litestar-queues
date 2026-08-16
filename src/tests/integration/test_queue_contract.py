@@ -23,6 +23,8 @@ from litestar_queues.events import QueueEventPublisher, QueueEventsConfig
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.models import QueuedTaskRecord
     from tests.integration._backends import BackendCase
@@ -522,7 +524,6 @@ async def test_task_dependency_provider_scopes_a_successful_attempt(queue_backen
     events: "list[str]" = []
 
     import contextlib
-    from typing import AsyncIterator
 
     @contextlib.asynccontextmanager
     async def provider(
@@ -563,7 +564,6 @@ async def test_task_dependency_provider_closes_on_failure(queue_backend: "BaseQu
     events: "list[str]" = []
 
     import contextlib
-    from typing import AsyncIterator
 
     @contextlib.asynccontextmanager
     async def provider(
@@ -575,10 +575,12 @@ async def test_task_dependency_provider_closes_on_failure(queue_backend: "BaseQu
         finally:
             events.append("cleanup")
 
+    boom_msg = "boom"
+
     @task("contract.provider.failure")
     async def consume(**kwargs: "object") -> "dict[str, object]":
         events.append("body")
-        raise RuntimeError("boom")
+        raise RuntimeError(boom_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),

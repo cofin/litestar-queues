@@ -100,7 +100,6 @@ async def test_asgi_placement_creates_and_cleans_up_one_worker() -> "None":
 
 
 async def test_plugin_lifecycle_manages_dependency_provider() -> "None":
-    from litestar_queues import task
     import contextlib
 
     class _LifecycleDependencyProvider:
@@ -113,7 +112,8 @@ async def test_plugin_lifecycle_manages_dependency_provider() -> "None":
         async def close(self) -> "None":
             self.order.append("provider.close")
 
-        from typing import AsyncIterator
+        from collections.abc import AsyncIterator
+
         from litestar_queues import Task, TaskExecutionContext
         from litestar_queues.models import QueuedTaskRecord
 

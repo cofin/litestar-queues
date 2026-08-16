@@ -635,9 +635,10 @@ async def test_two_consumers_racing_one_record_run_the_task_once() -> "None":
 
 
 async def test_consumer_runtime_manages_dependency_provider() -> "None":
+    import contextlib
+
     from litestar_queues import QueueConfig, QueueService, task
     from litestar_queues.consumer import TaskExitCode, run_task
-    import contextlib
 
     class _LifecycleDependencyProvider:
         def __init__(self, order: "list[str]") -> "None":
@@ -649,7 +650,8 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
         async def close(self) -> "None":
             self.order.append("provider.close")
 
-        from typing import AsyncIterator
+        from collections.abc import AsyncIterator
+
         from litestar_queues import Task, TaskExecutionContext
         from litestar_queues.models import QueuedTaskRecord
 
@@ -661,7 +663,7 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
             yield {}
 
     order: "list[str]" = []
-    
+
     @task("tasks.consumer_provider_test")
     async def consumer_provider_test() -> "str":
         order.append("task.run")
@@ -674,7 +676,7 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
         execution_backend="cloudrun",
         task_dependency_provider=_LifecycleDependencyProvider(order),
     )
-    
+
     factory_module = ModuleType("consumer_provider_test_factory")
     sys.modules[factory_module.__name__] = factory_module
     try:
@@ -683,7 +685,7 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
             result = await service.enqueue(consumer_provider_test.using(execution_backend="cloudrun"))
             record = await queue_backend.get_task(result.id)
             assert record is not None
-            
+
             # The enqueuing service's provider is opened. We care about the consumer's.
             order.clear()
 

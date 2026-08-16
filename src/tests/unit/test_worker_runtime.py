@@ -837,8 +837,9 @@ def test_worker_runtime_import_does_not_load_click() -> "None":
 
 
 async def test_worker_runtime_manages_dependency_provider() -> "None":
-    from litestar_queues.service import QueueService
     import contextlib
+
+    from litestar_queues.service import QueueService
 
     class _LifecycleDependencyProvider:
         def __init__(self, order: "list[str]") -> "None":
@@ -851,9 +852,7 @@ async def test_worker_runtime_manages_dependency_provider() -> "None":
             self.order.append("provider.close")
 
         @contextlib.asynccontextmanager
-        async def __call__(
-            self, task_func: "object", record: "object", context: "object"
-        ) -> "object":
+        async def __call__(self, task_func: "object", record: "object", context: "object") -> "object":
             yield {}
 
     order: "list[str]" = []
@@ -869,13 +868,7 @@ async def test_worker_runtime_manages_dependency_provider() -> "None":
         assert "provider.open" in order
         graceful_stop.set()
 
-    result = await run_worker(
-        service,
-        config,
-        graceful_stop=graceful_stop,
-        force_stop=asyncio.Event(),
-        ready=ready,
-    )
+    result = await run_worker(service, config, graceful_stop=graceful_stop, force_stop=asyncio.Event(), ready=ready)
 
     assert result is WorkerRunResult.CLEAN
     assert order == ["provider.open", "provider.close"]

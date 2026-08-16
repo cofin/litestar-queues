@@ -101,7 +101,7 @@ The resolver runs once per attempt. Return fresh per-attempt resources. Do not r
 Attempt-scoped Provider
 =======================
 
-The ``task_dependency_provider`` hook manages resources that require deterministic cleanup, like database transactions or network connections. 
+The ``task_dependency_provider`` hook manages resources that require deterministic cleanup, like database transactions or network connections.
 
 It is an async context manager with the following signature::
 
@@ -114,7 +114,7 @@ The provider yields a dictionary of keyword arguments to inject into the task fu
 
    import contextlib
    from typing import Any, AsyncIterator
-   
+
    from litestar_queues import (
        QueueConfig,
        QueueService,

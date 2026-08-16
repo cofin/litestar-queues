@@ -877,7 +877,6 @@ class QueueService:
         task_context: "TaskExecutionContext",
         telemetry: "_ExecutionObservability",
     ) -> "QueuedTaskRecord":
-        print(f"_fail_record_without_retry called with exc={exc!r}")
         error_message = self._error_message(exc, record)
         updated = await self.get_queue_backend().fail_task(
             record.id, error_message, retry=False, expected_retry_count=record.retry_count

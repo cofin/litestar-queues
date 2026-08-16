@@ -13,9 +13,10 @@ from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from uuid import UUID
 
+    from litestar_queues import Task, TaskDependencyProvider, TaskExecutionContext
     from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
     from litestar_queues.models import QueuedTaskRecord
 
@@ -332,11 +333,7 @@ class _LifecycleDependencyProvider:
     """Provider object that records its own lifecycle into the shared order list."""
 
     def __init__(
-        self,
-        order: "list[str]",
-        *,
-        fail_open: "bool" = False,
-        close_error: "BaseException | None" = None,
+        self, order: "list[str]", *, fail_open: "bool" = False, close_error: "BaseException | None" = None
     ) -> "None":
         self._order = order
         self._fail_open = fail_open
@@ -345,7 +342,8 @@ class _LifecycleDependencyProvider:
     async def open(self) -> "None":
         self._order.append("provider.open")
         if self._fail_open:
-            raise RuntimeError("provider open failed")
+            msg = "provider open failed"
+            raise RuntimeError(msg)
 
     async def close(self) -> "None":
         self._order.append("provider.close")
@@ -419,7 +417,7 @@ async def test_provider_is_rolled_back_when_a_later_resource_fails_to_open() -> 
 
     with pytest.raises(RuntimeError, match="execution open failed"):
         await service.open()
-        
+
     await service.close()
 
     assert order == [
@@ -429,8 +427,9 @@ async def test_provider_is_rolled_back_when_a_later_resource_fails_to_open() -> 
         "execution.close",
         "event_log.flush",
         "queue.close",
-        "provider.close"
+        "provider.close",
     ]
+
 
 async def test_provider_close_error_does_not_hide_the_primary_failure() -> "None":
     order: "list[str]" = []
@@ -440,7 +439,9 @@ async def test_provider_close_error_does_not_hide_the_primary_failure() -> "None
             worker=WorkerConfig(placement="external"),
             queue_backend="memory",
             events=QueueEventsConfig(history=EventHistoryConfig()),
-            task_dependency_provider=_LifecycleDependencyProvider(order, close_error=RuntimeError("provider close failed")),
+            task_dependency_provider=_LifecycleDependencyProvider(
+                order, close_error=RuntimeError("provider close failed")
+            ),
         ),
         queue_backend=_LifecycleQueueBackend(order, event_log),
         execution_backend=_LifecycleExecutionBackend(order, fail_open=True),
@@ -448,7 +449,7 @@ async def test_provider_close_error_does_not_hide_the_primary_failure() -> "None
 
     with pytest.raises(RuntimeError, match="execution open failed"):
         await service.open()
-        
+
     assert order == [
         "provider.open",
         "queue.open",
@@ -456,7 +457,7 @@ async def test_provider_close_error_does_not_hide_the_primary_failure() -> "None
         "execution.close",
         "event_log.flush",
         "queue.close",
-        "provider.close"
+        "provider.close",
     ]
 
 
@@ -496,7 +497,7 @@ async def test_plain_callable_provider_needs_no_lifecycle_methods() -> "None":
 
     await service.open()
     await service.close()
-    
+
     assert "provider.open" not in order
     assert "provider.close" not in order
 
@@ -830,7 +831,7 @@ async def test_enqueue_rejects_negative_expires_in_and_accepts_zero() -> "None":
 
 async def test_execute_record_invokes_task_dependency_resolver_and_merges_kwargs() -> "None":
     """Configured resolver fires before task body and its kwargs reach the callable."""
-    from litestar_queues import Task, TaskExecutionContext, task
+    from litestar_queues import task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -868,7 +869,7 @@ async def test_execute_record_invokes_resolver_after_started_lifecycle() -> "Non
     """Resolver fires after the task.started event and before task.completed."""
     import time
 
-    from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, Task, TaskExecutionContext, task
+    from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, task
     from litestar_queues.events import QueueEventPublisher
     from litestar_queues.task import clear_task_registry
 
@@ -957,9 +958,6 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> "None":
     assert captured == [None]
 
 
-import contextlib
-from typing import AsyncIterator
-
 def _recording_provider(
     events: "list[str]",
     *,
@@ -987,7 +985,7 @@ def _recording_provider(
 
 
 async def test_provider_scope_wraps_successful_attempt() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1001,8 +999,9 @@ async def test_provider_scope_wraps_successful_attempt() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events)
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.success")
@@ -1013,21 +1012,23 @@ async def test_provider_scope_wraps_successful_attempt() -> "None":
 
 
 async def test_provider_scope_closes_on_retryable_body_failure() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
     events: list[str] = []
+    boom_msg = "boom"
 
     @task("scoped.retryable")
     async def run(scoped: str) -> str:
         events.append("body")
-        raise RuntimeError("boom")
+        raise RuntimeError(boom_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events)
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.retryable", retries=1)
@@ -1039,22 +1040,24 @@ async def test_provider_scope_closes_on_retryable_body_failure() -> "None":
 
 
 async def test_provider_scope_closes_on_terminal_body_failure() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.exceptions import NonRetryableError
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
     events: list[str] = []
+    nope_msg = "nope"
 
     @task("scoped.terminal")
     async def run(scoped: str) -> str:
         events.append("body")
-        raise NonRetryableError("nope")
+        raise NonRetryableError(nope_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events)
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.terminal")
@@ -1065,7 +1068,7 @@ async def test_provider_scope_closes_on_terminal_body_failure() -> "None":
 
 
 async def test_provider_acquisition_failure_never_cleans_up() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1078,8 +1081,9 @@ async def test_provider_acquisition_failure_never_cleans_up() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events, acquire_error=RuntimeError("no session"))
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, acquire_error=RuntimeError("no session")),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.acquire_fail", retries=1)
@@ -1091,7 +1095,7 @@ async def test_provider_acquisition_failure_never_cleans_up() -> "None":
 
 
 async def test_provider_scope_receives_task_record_and_context() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1100,9 +1104,7 @@ async def test_provider_scope_receives_task_record_and_context() -> "None":
 
     @contextlib.asynccontextmanager
     async def provider(
-        task_obj: "Task[..., object]",
-        record: "QueuedTaskRecord",
-        context: "TaskExecutionContext"
+        task_obj: "Task[..., object]", record: "QueuedTaskRecord", context: "TaskExecutionContext"
     ) -> "AsyncIterator[dict[str, object]]":
         captured_args["task"] = task_obj
         captured_args["record"] = record
@@ -1115,8 +1117,9 @@ async def test_provider_scope_receives_task_record_and_context() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=provider
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=provider,
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.args")
@@ -1128,7 +1131,7 @@ async def test_provider_scope_receives_task_record_and_context() -> "None":
 
 
 async def test_provider_output_never_overrides_task_context() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task, TaskExecutionContext
+    from litestar_queues import QueueConfig, QueueService, TaskExecutionContext, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1142,8 +1145,9 @@ async def test_provider_output_never_overrides_task_context() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events, payload={"_task_context": "hijacked"})
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, payload={"_task_context": "hijacked"}),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.override")
@@ -1153,7 +1157,7 @@ async def test_provider_output_never_overrides_task_context() -> "None":
 
 
 async def test_cleanup_failure_after_success_fails_the_attempt() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1166,8 +1170,9 @@ async def test_cleanup_failure_after_success_fails_the_attempt() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("commit failed"))
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("commit failed")),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.cleanup_fail", retries=1)
@@ -1179,21 +1184,24 @@ async def test_cleanup_failure_after_success_fails_the_attempt() -> "None":
 
 
 async def test_cleanup_failure_after_body_failure_preserves_the_body_error() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
     events: list[str] = []
+    primary_msg = "primary"
+    secondary_msg = "secondary"
 
     @task("scoped.both_fail")
     async def run(scoped: str) -> str:
         events.append("body")
-        raise ValueError("primary")
+        raise ValueError(primary_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("secondary"))
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError(secondary_msg)),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.both_fail", retries=0)
@@ -1206,30 +1214,35 @@ async def test_cleanup_failure_after_body_failure_preserves_the_body_error() -> 
 
 async def test_cleanup_failure_after_body_failure_is_logged_at_error(caplog: "pytest.LogCaptureFixture") -> "None":
     import logging
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
     events: list[str] = []
+    primary_msg = "primary"
+    secondary_msg = "secondary"
 
     @task("scoped.log_fail")
     async def run(scoped: str) -> str:
         events.append("body")
-        raise ValueError("primary")
+        raise ValueError(primary_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("secondary"))
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError(secondary_msg)),
     )
-    
+
     with caplog.at_level(logging.ERROR, logger=config.names.logger("service")):
         async with QueueService(config) as service:
             result = await service.enqueue("scoped.log_fail", retries=0)
 
     await result.refresh()
     matching_records = [
-        rec for rec in caplog.records
+        rec
+        for rec in caplog.records
         if rec.message == "Queue task dependency scope cleanup failed"
         and getattr(rec, "queue_task_id", None) == str(result.id)
     ]
@@ -1242,33 +1255,34 @@ async def test_cleanup_failure_after_body_failure_is_logged_at_error(caplog: "py
 
 async def test_cleanup_failure_text_passes_through_error_sanitizer(caplog: "pytest.LogCaptureFixture") -> "None":
     import logging
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
     events: list[str] = []
+    primary_msg = "primary"
+    secret_msg = "s3cret"
 
     @task("scoped.sanitize")
     async def run(scoped: str) -> str:
         events.append("body")
-        raise ValueError("primary")
+        raise ValueError(primary_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        error_sanitizer=lambda exc, rec: "[redacted]",
-        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("s3cret"))
+        queue_backend="memory",
+        execution_backend="immediate",
+        error_sanitizer=lambda _exc, _rec: "[redacted]",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError(secret_msg)),
     )
-    
+
     with caplog.at_level(logging.ERROR, logger=config.names.logger("service")):
         async with QueueService(config) as service:
             result = await service.enqueue("scoped.sanitize", retries=0)
 
     await result.refresh()
-    matching_records = [
-        rec for rec in caplog.records
-        if rec.message == "Queue task dependency scope cleanup failed"
-    ]
+    matching_records = [rec for rec in caplog.records if rec.message == "Queue task dependency scope cleanup failed"]
     assert matching_records
     record = matching_records[0]
     payload = getattr(record, "queue_task_event_payload", {})
@@ -1279,7 +1293,7 @@ async def test_cleanup_failure_text_passes_through_error_sanitizer(caplog: "pyte
 
 async def test_provider_cannot_suppress_the_body_exception() -> "None":
     """A truthy __aexit__ is ignored: there is no result to complete with."""
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1293,19 +1307,22 @@ async def test_provider_cannot_suppress_the_body_exception() -> "None":
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
             events.append("cleanup")
             return True
+
+    boom_msg = "boom"
 
     @task("scoped.suppress")
     async def run() -> str:
         events.append("body")
-        raise RuntimeError("boom")
+        raise RuntimeError(boom_msg)
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=SuppressingProvider()
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=SuppressingProvider(),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.suppress", retries=0)
@@ -1318,7 +1335,8 @@ async def test_provider_cannot_suppress_the_body_exception() -> "None":
 
 async def test_provider_cannot_suppress_cancellation() -> "None":
     import asyncio
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1330,7 +1348,7 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
         async def __aenter__(self) -> "dict[str, object]":
             return {}
 
-        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
             return True
 
     @task("scoped.cancel")
@@ -1341,7 +1359,7 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
-        task_dependency_provider=SuppressingProvider()
+        task_dependency_provider=SuppressingProvider(),
     )
     async with QueueService(config) as service:
         res = await service.enqueue("scoped.cancel", retries=0)
@@ -1350,14 +1368,14 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
         task_coro = asyncio.create_task(service.execute_record(record))
         await asyncio.sleep(0)  # let it start
         task_coro.cancel()
-        
+
+        cancelled_caught = False
         try:
             await task_coro
         except asyncio.CancelledError:
-            pass
-        else:
-            raise AssertionError("CancelledError did not propagate")
-            
+            cancelled_caught = True
+        assert cancelled_caught is True
+
         await res.refresh()
         # Should not be terminal because execution stopped cooperatively and didn't write failed
         assert res.status not in {"completed", "failed"}
@@ -1947,10 +1965,12 @@ async def test_claim_tasks_forwards_queue_limits_to_backend() -> "None":
     assert len(claimed) == 1
     assert backend.claim_calls == [{"email": 1}]
 
+
 async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
     """The attempt timeout cancels the body; the scope still closes exactly once."""
     import asyncio
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -1964,7 +1984,7 @@ async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
             events.append(exc_type.__name__ if exc_type else "None")
             events.append("cleanup")
             return False
@@ -1977,8 +1997,9 @@ async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=CapturingProvider()
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=CapturingProvider(),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.timeout", retries=0)
@@ -1986,12 +2007,13 @@ async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
     await result.refresh()
     assert events == ["acquire", "body", "CancelledError", "cleanup"]
     assert result.status == "failed"
-    assert result.error is not None # TimeoutError string representation can be empty in older Python versions
+    assert result.error is not None  # TimeoutError string representation can be empty in older Python versions
 
 
 async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
     import asyncio
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -2006,7 +2028,7 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
             await asyncio.sleep(5)
             return {}
 
-        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
             events.append("cleanup")
             return False
 
@@ -2017,8 +2039,9 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=SlowProvider()
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=SlowProvider(),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.timeout.acquire", retries=0)
@@ -2026,11 +2049,11 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
     await result.refresh()
     assert events == ["acquire"]
     assert result.status == "failed"
-    assert result.error is not None # TimeoutError string representation can be empty in older Python versions
+    assert result.error is not None  # TimeoutError string representation can be empty in older Python versions
 
 
 async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task, TaskExecutionContext
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
@@ -2040,11 +2063,11 @@ async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
         def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
             return self
 
-        async def __aenter__(self) -> "dict[str, object]":
+        async def __aenter__(self) -> dict[str, object]:
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
             events.append(exc_type.__name__ if exc_type else "None")
             events.append("cleanup")
             return False
@@ -2058,8 +2081,9 @@ async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
 
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
-        queue_backend="memory", execution_backend="immediate",
-        task_dependency_provider=CapturingProvider()
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=CapturingProvider(),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.cooperative_cancel", retries=0)
@@ -2071,9 +2095,10 @@ async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
 
 async def test_provider_scope_closes_on_durable_cancellation() -> "None":
     import asyncio
-    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
-    from litestar_queues.task import clear_task_registry
+
+    from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
     from litestar_queues.events.context import _cancel_task_context
+    from litestar_queues.task import clear_task_registry
 
     clear_task_registry()
     events: list[str] = []
@@ -2082,11 +2107,11 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
         def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
             return self
 
-        async def __aenter__(self) -> "dict[str, object]":
+        async def __aenter__(self) -> dict[str, object]:
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
             events.append(exc_type.__name__ if exc_type else "None")
             events.append("cleanup")
             return False
@@ -2101,9 +2126,7 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
         return "done"
 
     config = QueueConfig(
-        worker=WorkerConfig(placement="external"),
-        queue_backend="memory",
-        task_dependency_provider=CapturingProvider()
+        worker=WorkerConfig(placement="external"), queue_backend="memory", task_dependency_provider=CapturingProvider()
     )
     async with QueueService(config) as service:
         res = await service.enqueue("scoped.durable_cancel", retries=0)
@@ -2111,19 +2134,18 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
         assert record is not None
         task_coro = asyncio.create_task(service.execute_record(record))
         await started.wait()
-        
+
         _cancel_task_context(str(record.id))
         task_coro.cancel()
-        
+
+        cancelled_caught = False
         try:
             await task_coro
         except asyncio.CancelledError:
-            pass
-        else:
-            raise AssertionError("CancelledError did not propagate")
-            
+            cancelled_caught = True
+        assert cancelled_caught is True
+
         # no terminal write happened from this attempt, so it stays scheduled/pending since we didn't write terminal status
         await res.refresh()
         assert res.status not in {"completed", "failed", "cancelled"}
         assert events == ["acquire", "body", "CancelledError", "cleanup"]
-
