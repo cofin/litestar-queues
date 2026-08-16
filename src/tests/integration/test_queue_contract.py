@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import pytest
@@ -544,7 +544,7 @@ async def test_task_dependency_provider_scopes_a_successful_attempt(queue_backen
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=provider,
+        task_dependency_provider=cast("Any", provider),
     )
     service = QueueService(config, queue_backend=queue_backend)
 
@@ -586,7 +586,7 @@ async def test_task_dependency_provider_closes_on_failure(queue_backend: "BaseQu
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=provider,
+        task_dependency_provider=cast("Any", provider),
     )
     service = QueueService(config, queue_backend=queue_backend)
 

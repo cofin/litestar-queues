@@ -1,6 +1,6 @@
 """Behavioral shutdown-requeue proof for every registered queue backend."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -66,7 +66,7 @@ async def test_task_dependency_provider_closes_on_shutdown_interruption(queue_ba
         ),
         queue_backend="memory",
         execution_backend="local",
-        task_dependency_provider=provider,
+        task_dependency_provider=cast("Any", provider),
     )
     service = QueueService(config, queue_backend=queue_backend)
 
@@ -85,6 +85,7 @@ async def test_task_dependency_provider_closes_on_shutdown_interruption(queue_ba
         record = await queue_backend.get_task(result.id)
 
     assert events == ["acquire", "body", "cleanup"]
+    assert record is not None
     assert record.status == "pending"
     assert record.started_at is None
     assert record.worker_id is None

@@ -1,7 +1,7 @@
 import asyncio
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -10,7 +10,7 @@ from litestar_queues.config import WorkerConfig
 from litestar_queues.worker.runtime import WorkerRunResult, _WorkerStage, _WorkerStageError, run_worker
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
     from litestar_queues.service import QueueService
 
@@ -852,14 +852,14 @@ async def test_worker_runtime_manages_dependency_provider() -> "None":
             self.order.append("provider.close")
 
         @contextlib.asynccontextmanager
-        async def __call__(self, task_func: "object", record: "object", context: "object") -> "object":
+        async def __call__(self, task_func: "Any", record: "Any", context: "Any") -> "AsyncIterator[dict[str, object]]":
             yield {}
 
     order: "list[str]" = []
     config = QueueConfig(
         queue_backend="memory",
         worker=WorkerConfig(placement="external"),
-        task_dependency_provider=_LifecycleDependencyProvider(order),
+        task_dependency_provider=cast("Any", _LifecycleDependencyProvider(order)),
     )
     service = QueueService(config)
     graceful_stop = asyncio.Event()

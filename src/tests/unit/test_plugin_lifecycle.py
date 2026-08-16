@@ -3,7 +3,7 @@ import logging
 import subprocess
 import sys
 import textwrap
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from litestar import Litestar
@@ -36,7 +36,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable
     from pathlib import Path
 
 pytestmark = pytest.mark.anyio
@@ -117,18 +117,19 @@ async def test_plugin_lifecycle_manages_dependency_provider() -> "None":
         from litestar_queues import Task, TaskExecutionContext
         from litestar_queues.models import QueuedTaskRecord
 
-        @contextlib.asynccontextmanager
-        async def __call__(
-            self, _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
-        ) -> "AsyncIterator[dict[str, object]]":
-            yield {}
+        def __call__(self, _task: "Any", _record: "Any", _context: "Any") -> "Any":
+            @contextlib.asynccontextmanager
+            async def _scope() -> "AsyncIterator[dict[str, object]]":
+                yield {}
+
+            return _scope()
 
     order: "list[str]" = []
     plugin = QueuePlugin(
         QueueConfig(
             queue_backend="memory",
             worker=WorkerConfig(placement="asgi", poll_interval=0.01),
-            task_dependency_provider=_LifecycleDependencyProvider(order),
+            task_dependency_provider=cast("Any", _LifecycleDependencyProvider(order)),
         )
     )
     app = Litestar(plugins=[plugin])

@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import pytest
@@ -12,7 +12,7 @@ from litestar_queues import WorkerConfig
 from litestar_queues.backends import InMemoryQueueBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
     from datetime import datetime
     from uuid import UUID
 
@@ -655,12 +655,13 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
         from litestar_queues import Task, TaskExecutionContext
         from litestar_queues.models import QueuedTaskRecord
 
-        @contextlib.asynccontextmanager
-        async def __call__(
-            self, _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
-        ) -> "AsyncIterator[dict[str, object]]":
-            self.order.append("provider.call")
-            yield {}
+        def __call__(self, _task: "Any", _record: "Any", _context: "Any") -> "Any":
+            @contextlib.asynccontextmanager
+            async def _scope() -> "AsyncIterator[dict[str, object]]":
+                self.order.append("provider.call")
+                yield {}
+
+            return _scope()
 
     order: "list[str]" = []
 
@@ -674,7 +675,7 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="cloudrun",
-        task_dependency_provider=_LifecycleDependencyProvider(order),
+        task_dependency_provider=cast("Any", _LifecycleDependencyProvider(order)),
     )
 
     factory_module = ModuleType("consumer_provider_test_factory")

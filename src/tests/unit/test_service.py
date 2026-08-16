@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -1100,7 +1100,7 @@ async def test_provider_scope_receives_task_record_and_context() -> "None":
 
     clear_task_registry()
 
-    captured_args = {}
+    captured_args: dict[str, Any] = {}
 
     @contextlib.asynccontextmanager
     async def provider(
@@ -1119,7 +1119,7 @@ async def test_provider_scope_receives_task_record_and_context() -> "None":
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=provider,
+        task_dependency_provider=cast("Any", provider),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.args")
@@ -1300,14 +1300,16 @@ async def test_provider_cannot_suppress_the_body_exception() -> "None":
     events: list[str] = []
 
     class SuppressingProvider:
-        def __call__(self, task_obj: "object", record: "object", context: "object") -> "SuppressingProvider":
+        def __call__(self, task_obj: "Any", record: "Any", context: "Any") -> "Any":
             return self
 
         async def __aenter__(self) -> "dict[str, object]":
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        async def __aexit__(
+            self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
+        ) -> bool:
             events.append("cleanup")
             return True
 
@@ -1322,7 +1324,7 @@ async def test_provider_cannot_suppress_the_body_exception() -> "None":
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=SuppressingProvider(),
+        task_dependency_provider=cast("Any", SuppressingProvider()),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.suppress", retries=0)
@@ -1342,13 +1344,15 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
     clear_task_registry()
 
     class SuppressingProvider:
-        def __call__(self, task_obj: "object", record: "object", context: "object") -> "SuppressingProvider":
+        def __call__(self, task_obj: "Any", record: "Any", context: "Any") -> "Any":
             return self
 
         async def __aenter__(self) -> "dict[str, object]":
             return {}
 
-        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        async def __aexit__(
+            self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
+        ) -> bool:
             return True
 
     @task("scoped.cancel")
@@ -1359,7 +1363,7 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
-        task_dependency_provider=SuppressingProvider(),
+        task_dependency_provider=cast("Any", SuppressingProvider()),
     )
     async with QueueService(config) as service:
         res = await service.enqueue("scoped.cancel", retries=0)
@@ -1977,14 +1981,16 @@ async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
     events: list[str] = []
 
     class CapturingProvider:
-        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+        def __call__(self, task_obj: "Any", record: "Any", context: "Any") -> "Any":
             return self
 
         async def __aenter__(self) -> "dict[str, object]":
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        async def __aexit__(
+            self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
+        ) -> bool:
             events.append(exc_type.__name__ if exc_type else "None")
             events.append("cleanup")
             return False
@@ -1999,7 +2005,7 @@ async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=CapturingProvider(),
+        task_dependency_provider=cast("Any", CapturingProvider()),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.timeout", retries=0)
@@ -2020,7 +2026,7 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
     events: list[str] = []
 
     class SlowProvider:
-        def __call__(self, task_obj: "object", record: "object", context: "object") -> "SlowProvider":
+        def __call__(self, task_obj: "Any", record: "Any", context: "Any") -> "Any":
             return self
 
         async def __aenter__(self) -> "dict[str, object]":
@@ -2028,7 +2034,9 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
             await asyncio.sleep(5)
             return {}
 
-        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        async def __aexit__(
+            self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
+        ) -> bool:
             events.append("cleanup")
             return False
 
@@ -2041,7 +2049,7 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=SlowProvider(),
+        task_dependency_provider=cast("Any", SlowProvider()),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.timeout.acquire", retries=0)
@@ -2060,14 +2068,16 @@ async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
     events: list[str] = []
 
     class CapturingProvider:
-        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+        def __call__(self, task_obj: "Any", record: "Any", context: "Any") -> "Any":
             return self
 
         async def __aenter__(self) -> dict[str, object]:
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        async def __aexit__(
+            self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
+        ) -> bool:
             events.append(exc_type.__name__ if exc_type else "None")
             events.append("cleanup")
             return False
@@ -2083,7 +2093,7 @@ async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
         execution_backend="immediate",
-        task_dependency_provider=CapturingProvider(),
+        task_dependency_provider=cast("Any", CapturingProvider()),
     )
     async with QueueService(config) as service:
         result = await service.enqueue("scoped.cooperative_cancel", retries=0)
@@ -2104,14 +2114,16 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
     events: list[str] = []
 
     class CapturingProvider:
-        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+        def __call__(self, task_obj: "Any", record: "Any", context: "Any") -> "Any":
             return self
 
         async def __aenter__(self) -> dict[str, object]:
             events.append("acquire")
             return {}
 
-        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        async def __aexit__(
+            self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
+        ) -> bool:
             events.append(exc_type.__name__ if exc_type else "None")
             events.append("cleanup")
             return False
@@ -2126,7 +2138,9 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
         return "done"
 
     config = QueueConfig(
-        worker=WorkerConfig(placement="external"), queue_backend="memory", task_dependency_provider=CapturingProvider()
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        task_dependency_provider=cast("Any", CapturingProvider()),
     )
     async with QueueService(config) as service:
         res = await service.enqueue("scoped.durable_cancel", retries=0)
