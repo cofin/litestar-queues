@@ -649,10 +649,14 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
         async def close(self) -> "None":
             self.order.append("provider.close")
 
+        from typing import AsyncIterator
+        from litestar_queues import Task, TaskExecutionContext
+        from litestar_queues.models import QueuedTaskRecord
+
         @contextlib.asynccontextmanager
         async def __call__(
-            self, task_func: "object", record: "object", context: "object"
-        ) -> "object":
+            self, _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
+        ) -> "AsyncIterator[dict[str, object]]":
             self.order.append("provider.call")
             yield {}
 
@@ -675,7 +679,7 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
     sys.modules[factory_module.__name__] = factory_module
     try:
         async with QueueService(config, queue_backend=queue_backend) as service:
-            factory_module.create_service = lambda: QueueService(config, queue_backend=queue_backend)
+            factory_module.create_service = lambda: QueueService(config, queue_backend=queue_backend)  # type: ignore[attr-defined]
             result = await service.enqueue(consumer_provider_test.using(execution_backend="cloudrun"))
             record = await queue_backend.get_task(result.id)
             assert record is not None

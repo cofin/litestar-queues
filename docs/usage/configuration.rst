@@ -73,8 +73,13 @@ Use this page as a map; each linked guide owns the detailed behavior.
      - ``observability``
      - :doc:`observability`
    * - External dependencies
-     - ``task_dependency_resolver``
+     - ``task_dependency_resolver``, ``task_dependency_provider``
      - :doc:`dependency-resolver`
+
+External dependencies
+=====================
+
+``QueueConfig.task_dependency_resolver`` and ``QueueConfig.task_dependency_provider`` allow injecting external resources into queued tasks. You may configure at most one of these hooks; configuring both raises a ``QueueConfigurationError``. See :doc:`dependency-resolver` for details.
 
 Adaptive polling
 ================

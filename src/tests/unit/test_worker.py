@@ -8,10 +8,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from typing import AsyncIterator
+from litestar_queues.models import QueuedTaskRecord
 from litestar import Litestar
 from litestar.testing import AsyncTestClient
 
 from litestar_queues import (
+    TaskDependencyProvider, Task, TaskExecutionContext,
     QueueConfig,
     QueuePlugin,
     QueueService,

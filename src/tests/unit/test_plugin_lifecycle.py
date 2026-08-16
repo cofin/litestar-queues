@@ -113,10 +113,14 @@ async def test_plugin_lifecycle_manages_dependency_provider() -> "None":
         async def close(self) -> "None":
             self.order.append("provider.close")
 
+        from typing import AsyncIterator
+        from litestar_queues import Task, TaskExecutionContext
+        from litestar_queues.models import QueuedTaskRecord
+
         @contextlib.asynccontextmanager
         async def __call__(
-            self, task_func: "object", record: "object", context: "object"
-        ) -> "object":
+            self, _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
+        ) -> "AsyncIterator[dict[str, object]]":
             yield {}
 
     order: "list[str]" = []

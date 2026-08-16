@@ -1099,7 +1099,11 @@ async def test_provider_scope_receives_task_record_and_context() -> "None":
     captured_args = {}
 
     @contextlib.asynccontextmanager
-    async def provider(task_obj: "object", record: "object", context: "object") -> "AsyncIterator[dict[str, object]]":
+    async def provider(
+        task_obj: "Task[..., object]",
+        record: "QueuedTaskRecord",
+        context: "TaskExecutionContext"
+    ) -> "AsyncIterator[dict[str, object]]":
         captured_args["task"] = task_obj
         captured_args["record"] = record
         captured_args["context"] = context
