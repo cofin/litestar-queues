@@ -15,6 +15,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
+from litestar_queues.events import QueueEventLog, QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -61,7 +62,7 @@ class QueueMaintenanceConfig:
     Durations and retention values are seconds. Every limit and duration must be
     positive and ``coordination_timeout`` must exceed ``time_budget`` so ownership outlives
     the whole run. ``stale_after``,
-    ``terminal_retention``, and ``event_retention`` default to ``None`` which
+    ``terminal_retention``, and ``event_retention_rules`` default to ``None`` (or empty) which
     disables their phase; there are no destructive defaults.
     """
 
@@ -86,8 +87,13 @@ class QueueMaintenanceConfig:
     terminal_limit: "int" = 1000
     """Maximum expired terminal tasks deleted in one run."""
 
-    event_retention: "float | None" = None
-    """Task-event history retention age in seconds; ``None`` disables deletion."""
+    event_retention_rules: "tuple[QueueEventRetentionRule, ...]" = ()
+    """Ordered event-history retention rules; empty disables the events phase.
+
+    Rules are evaluated in order and the first rule whose ``match`` matches a
+    record decides that record's retention age. A record matching no rule is
+    never deleted.
+    """
 
     event_limit: "int" = 1000
     """Maximum expired task-event records deleted in one run."""
@@ -115,7 +121,6 @@ class QueueMaintenanceConfig:
         for name, retention in (
             ("stale_after", self.stale_after),
             ("terminal_retention", self.terminal_retention),
-            ("event_retention", self.event_retention),
         ):
             if retention is not None and (
                 isinstance(retention, bool)
@@ -125,6 +130,15 @@ class QueueMaintenanceConfig:
             ):
                 msg = f"QueueMaintenanceConfig.{name} must be a finite number greater than 0 when set."
                 raise QueueConfigurationError(msg)
+        if not isinstance(self.event_retention_rules, (tuple, list)):
+            msg = "QueueMaintenanceConfig.event_retention_rules must be a tuple of QueueEventRetentionRule."  # type: ignore[unreachable]
+            raise QueueConfigurationError(msg)
+        rules = tuple(self.event_retention_rules)
+        for rule in rules:
+            if not isinstance(rule, QueueEventRetentionRule):
+                msg = "QueueMaintenanceConfig.event_retention_rules must be a tuple of QueueEventRetentionRule."  # type: ignore[unreachable]
+                raise QueueConfigurationError(msg)
+        object.__setattr__(self, "event_retention_rules", rules)
         if self.coordination_timeout <= self.time_budget:
             msg = (
                 "QueueMaintenanceConfig.coordination_timeout must be greater than time_budget "
@@ -258,7 +272,7 @@ class QueueMaintenanceService:
                     budget_exhausted = True
                     results.append(QueueMaintenancePhaseResult(phase=phase, status="partial"))
                     continue
-                results.append(await self._run_phase(phase, cutoffs))
+                results.append(await self._run_phase(phase, cutoffs, started_at))
         finally:
             await backend.release_maintenance(maintenance_name, token)
 
@@ -287,22 +301,20 @@ class QueueMaintenanceService:
             return self._config.stale_after is not None
         if phase == "terminal":
             return self._config.terminal_retention is not None
-        return self._config.event_retention is not None and self._service.get_event_log() is not None
+        return bool(self._config.event_retention_rules) and self._service.get_event_log() is not None
 
     def _cutoffs(self, started_at: "datetime") -> "dict[str, datetime]":
         cutoffs: "dict[str, datetime]" = {}
         if self._config.terminal_retention is not None:
             cutoffs["terminal"] = started_at - timedelta(seconds=self._config.terminal_retention)
-        if self._config.event_retention is not None:
-            cutoffs["events"] = started_at - timedelta(seconds=self._config.event_retention)
         return cutoffs
 
     async def _run_phase(
-        self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]"
+        self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime"
     ) -> "QueueMaintenancePhaseResult":
         phase_start = self._monotonic()
         try:
-            changed = await self._execute_phase(phase, cutoffs)
+            changed = await self._execute_phase(phase, cutoffs, started_at)
         except Exception as exc:  # noqa: BLE001 - phase failures are contained and sanitized.
             return QueueMaintenancePhaseResult(
                 phase=phase,
@@ -315,7 +327,7 @@ class QueueMaintenanceService:
             phase=phase, status="completed", changed=changed, duration_ms=self._elapsed_ms(phase_start)
         )
 
-    async def _execute_phase(self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]") -> "int":
+    async def _execute_phase(self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime") -> "int":
         if phase == "external":
             return await self._service.reconcile_external(limit=self._config.external_limit)
         if phase == "stale":
@@ -330,7 +342,34 @@ class QueueMaintenanceService:
         event_log = self._service.get_event_log()
         if event_log is None:  # pragma: no cover - guarded by _phase_enabled.
             return 0
-        return await event_log.cleanup_events(before=cutoffs["events"], limit=self._config.event_limit)
+        return await self._run_event_retention(event_log, started_at)
+
+    async def _run_event_retention(self, event_log: "QueueEventLog", started_at: "datetime") -> "int":
+        """Apply ordered retention rules under one shared row budget.
+
+        Rule ``i`` deletes records matching its own filter and matching none of
+        the filters of rules ``0..i-1``, so the first matching rule owns the
+        record. Deletion is oldest-first and bounded, so repeated runs converge
+        and never touch a record no rule matched.
+
+        Returns:
+            Total rows deleted across every rule.
+        """
+        rules = self._config.event_retention_rules
+        remaining = self._config.event_limit
+        deleted = 0
+        for index, rule in enumerate(rules):
+            if remaining <= 0:
+                break
+            removed = await event_log.cleanup_events(
+                before=started_at - timedelta(seconds=rule.max_age),
+                match=rule.match,
+                exclude=tuple(earlier.match for earlier in rules[:index]),
+                limit=remaining,
+            )
+            deleted += removed
+            remaining -= removed
+        return deleted
 
     def _elapsed_ms(self, start: "float") -> "float":
         return (self._monotonic() - start) * 1000.0

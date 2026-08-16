@@ -33,12 +33,10 @@ class _RecordingEventLog:
     async def flush_events(self) -> None:
         return None
 
-    async def query_events(
-        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
-    ) -> "OffsetPagination[QueueEventLogRecord]":
-        return OffsetPagination(items=[], total=0, limit=100, offset=0)
+    async def query_events(self, query: Any = None, *, extra: Any = None) -> Any:
+        return None
 
-    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[Any]":
+    async def summarize_stages(self, query: Any = None) -> Any:
         return []
 
     async def cleanup_events(self, *, before: Any, match: Any = None, exclude: Any = (), limit: Any = None) -> int:

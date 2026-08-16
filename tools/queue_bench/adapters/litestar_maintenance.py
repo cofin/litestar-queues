@@ -30,7 +30,7 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         coordination_timeout=max(2.0, request.timeout_seconds + 60.0),
         terminal_retention=1.0,
         terminal_limit=limit,
-        event_retention=1.0,
+        event_retention_rules=(QueueEventRetentionRule(max_age=1.0),),
         event_limit=limit,
     )
     events_config = (

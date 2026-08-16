@@ -134,7 +134,7 @@ Configure a bounded event-history phase and run it from one external schedule:
        queue_backend="redis",
        events=QueueEventsConfig(history=EventHistoryConfig()),
        maintenance=QueueMaintenanceConfig(
-           event_retention=30 * 24 * 60 * 60,
+           event_retention_rules_rules=(QueueEventRetentionRule(max_age=30 * 24 * 60 * 60),),
            event_limit=1000,
        ),
    )

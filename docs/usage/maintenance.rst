@@ -32,7 +32,7 @@ Every invocation runs the configured phases once, in this fixed order:
    older than ``terminal_retention``. Enabled when ``terminal_retention`` is
    set.
 #. **events** — delete durable event-history rows older than
-   ``event_retention``. Enabled when ``event_retention`` is set *and* a durable
+   ``event_retention_rules``. Enabled when ``event_retention_rules`` is set *and* a durable
    event log is configured; otherwise the phase is skipped, not an error.
 
 Each phase performs **at most one bounded batch** per invocation. Retention
@@ -65,7 +65,7 @@ until you supply their thresholds.
            stale_limit=100,            # max stale records recovered per run
            terminal_retention=None,    # None disables terminal cleanup
            terminal_limit=1000,        # max terminal records deleted per run
-           event_retention=None,       # None disables event-history cleanup
+           event_retention_rules_rules=(),       # None disables event-history cleanup
            event_limit=1000,           # max event rows deleted per run
        ),
    )
@@ -73,7 +73,7 @@ until you supply their thresholds.
 Durations and retention windows are seconds; every limit and duration must be
 positive. ``coordination_timeout`` must be greater than ``time_budget`` because
 ownership is not renewed during a run. Leaving
-``stale_after``, ``terminal_retention``, or ``event_retention`` as ``None``
+``stale_after``, ``terminal_retention``, or ``event_retention_rules`` as ``None``
 disables that phase.
 
 Bounded batches and the time budget
