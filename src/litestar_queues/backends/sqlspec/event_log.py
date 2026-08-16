@@ -20,6 +20,7 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _ada
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events import (
     EventHistoryExtraColumn,
+    event_entity_key,
     validate_event_extra_filter,
     validate_event_history_extra_columns,
 )
@@ -167,6 +168,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 for column in reversed(self._extra_columns)
                 if column.indexed
             ),
+            self._to_sql(sql.drop_index(self._index_name("entity")).if_exists()),
+            self._to_sql(sql.drop_index(self._index_name("scope_key")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("occurred_at")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("actor_id")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("task_name")).if_exists()),
@@ -319,6 +322,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             .column("sequence", self._integer_type())
             .column("occurred_at", self._timestamp_type(), not_null=True)
             .column("created_at", self._timestamp_type(), not_null=True)
+            .column("scope", self._indexed_text_type())
+            .column("scope_key", self._indexed_text_type())
+            .column("actor", self._indexed_text_type())
+            .column("entity", self._indexed_text_type())
         )
         for column in self._extra_columns:
             statement = statement.column(column.name, self._indexed_text_type())
@@ -530,6 +537,20 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 .on_table(self.table_name)
                 .columns("occurred_at")
             ),
+            self._to_sql(
+                sql
+                .create_index(self._index_name("scope_key"))
+                .if_not_exists()
+                .on_table(self.table_name)
+                .columns("scope_key", "occurred_at")
+            ),
+            self._to_sql(
+                sql
+                .create_index(self._index_name("entity"))
+                .if_not_exists()
+                .on_table(self.table_name)
+                .columns("entity", "occurred_at")
+            ),
             *(
                 self._to_sql(
                     sql
@@ -584,6 +605,10 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
             f"{self._quote_identifier('sequence')} {self._integer_type()}",
             f"{self._quote_identifier('occurred_at')} {self._timestamp_type()} NOT NULL",
             f"{self._quote_identifier('created_at')} {self._timestamp_type()} NOT NULL",
+            f"{self._quote_identifier('scope')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('scope_key')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('actor')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('entity')} {self._indexed_text_type()}",
             *(f"{self._quote_identifier(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
         )
         column_sql = ",\n  ".join(columns)
@@ -610,6 +635,14 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 f"CREATE INDEX {self._quoted_index_name('occurred_at')} ON {self._quoted_table_name()} "
                 f"({self._quote_identifier('occurred_at')})"
             ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('scope_key')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('scope_key')}, {self._quote_identifier('occurred_at')})"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('entity')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('entity')}, {self._quote_identifier('occurred_at')})"
+            ),
             *(
                 f"CREATE INDEX {self._quoted_index_name(column.name)} ON {self._quoted_table_name()} "
                 f"({self._quote_identifier(column.name)}, {self._quote_identifier('occurred_at')})"
@@ -628,6 +661,8 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 for column in reversed(self._extra_columns)
                 if column.indexed
             ),
+            f"DROP INDEX {self._quoted_index_name('entity')}",
+            f"DROP INDEX {self._quoted_index_name('scope_key')}",
             f"DROP INDEX {self._quoted_index_name('occurred_at')}",
             f"DROP INDEX {self._quoted_index_name('actor_id')}",
             f"DROP INDEX {self._quoted_index_name('task_name')}",
@@ -806,6 +841,9 @@ class SQLSpecQueueEventLog:
             "sequence": event.sequence,
             "occurred_at": self._datetime_serializer(event.occurred_at),
             "created_at": self._datetime_serializer(datetime.now(timezone.utc)),
+            "scope": event.scope,
+            "scope_key": event.scope_key,
+            "entity": event_entity_key(event.entity),
         }
         for column in self._store.extra_columns:
             params[column.name] = _optional_str(detail.get(column.source))
@@ -843,6 +881,9 @@ class SQLSpecQueueEventLog:
             extra=extra,
             occurred_at=_deserialize_datetime(row["occurred_at"]),
             created_at=_deserialize_datetime(row["created_at"]),
+            scope=cast("str | None", row.get("scope")),
+            scope_key=cast("str | None", row.get("scope_key")),
+            entity=cast("str | None", row.get("entity")),
         )
 
     def _summary_from_row(self, row: "dict[str, Any]") -> "QueueEventStageSummary":

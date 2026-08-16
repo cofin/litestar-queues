@@ -36,6 +36,14 @@ from litestar_queues.events.models import (
 )
 from litestar_queues.events.producer import QueueEventProducer, create_event_producer
 from litestar_queues.events.publisher import EventBufferConfig, QueueEventPublisher
+from litestar_queues.events.query import (
+    EVENT_LEVEL_RANKS,
+    QueueEventOrder,
+    QueueEventQuery,
+    QueueEventRetentionRule,
+    event_level_for_rank,
+    event_level_rank,
+)
 from litestar_queues.events.sinks import (
     CompositeQueueEventSink,
     InMemoryQueueEventSink,
@@ -54,6 +62,7 @@ if TYPE_CHECKING:
     from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 
 __all__ = (
+    "EVENT_LEVEL_RANKS",
     "ChannelAuthorizer",
     "ChannelsQueueEventSink",
     "CompositeQueueEventSink",
@@ -72,8 +81,11 @@ __all__ = (
     "QueueEventEntityRef",
     "QueueEventLog",
     "QueueEventLogRecord",
+    "QueueEventOrder",
     "QueueEventProducer",
     "QueueEventPublisher",
+    "QueueEventQuery",
+    "QueueEventRetentionRule",
     "QueueEventScope",
     "QueueEventSink",
     "QueueEventStageSummary",
@@ -87,6 +99,8 @@ __all__ = (
     "bind_task_context",
     "create_event_producer",
     "event_entity_key",
+    "event_level_for_rank",
+    "event_level_rank",
     "extract_event_extras",
     "get_current_task_context",
     "publish_task_event",

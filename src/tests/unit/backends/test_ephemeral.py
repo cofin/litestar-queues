@@ -662,14 +662,6 @@ async def test_event_log_filters_by_actor(backend: "EphemeralQueueBackend") -> "
     assert [record.detail["index"] for record in by_actor_type] == [1]
 
 
-async def test_event_log_summarize_stages_returns_no_aggregates(backend: "EphemeralQueueBackend") -> "None":
-    log = _event_log(backend, EventHistoryConfig())
-    await log.publish_event(_event(0))
-
-    assert await log.summarize_stages() == []
-    assert await log.summarize_stages(task_name="tasks.bounded") == []
-
-
 async def test_event_log_cleanup_before_is_bounded_and_idempotent(backend: "EphemeralQueueBackend") -> "None":
     log = _event_log(backend, EventHistoryConfig(memory_capacity=3))
     for index in range(5):

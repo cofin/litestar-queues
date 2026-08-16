@@ -59,7 +59,7 @@ _EVENT_HISTORY_COLUMN_NAMES = frozenset({
 })
 
 
-RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"entity", "scope", "scope_key"})
+RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"actor", "entity", "scope", "scope_key"})
 """Names held for built-in event-history scoping dimensions.
 
 These are not columns on the table yet. They are reserved so an adopter-declared
@@ -225,6 +225,8 @@ class QueueEventLogRecord:
     """Envelope scope of the event (``task``/``queue``/``worker``/...)."""
     scope_key: "str | None" = None
     """Adopter scoping key carried on the envelope (tenant, project, account)."""
+    actor: "str | None" = None
+    """The logical actor."""
     entity: "str | None" = None
     """Canonical entity key from :func:`event_entity_key`."""
     extra: "dict[str, str]" = field(default_factory=dict)
@@ -239,6 +241,12 @@ class QueueEventStageSummary:
     total_duration_ms: "float"
     first_event_at: "datetime | None"
     last_event_at: "datetime | None"
+    latest_sequence: "int | None" = None
+    """Sequence of the newest record in the stage by the stable order key."""
+    latest_message: "str | None" = None
+    """Message of the newest record in the stage by the stable order key."""
+    worst_level: "str | None" = None
+    """Highest-ranked level present in the stage; ``None`` when no record has one."""
 
 
 class QueueEventLog(Protocol):

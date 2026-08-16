@@ -77,7 +77,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return bounded, process-local queue event history when enabled."""
         if self._event_log is None:
-            self._event_log = InMemoryQueueEventLog(config)
+            self._event_log = InMemoryQueueEventLog(config)  # type: ignore[assignment]
         return self._event_log
 
     async def enqueue(

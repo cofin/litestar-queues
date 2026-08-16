@@ -28,8 +28,8 @@ from litestar_queues.backends.base import (
     stale_requeue_error,
     stale_requeue_priority,
 )
-from litestar_queues.events._log_records import optional_float, optional_str
-from litestar_queues.events.history import QueueEventLogRecord
+from litestar_queues.events import QueueEventLogRecord
+from litestar_queues.events._log_records import optional_float
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueuedTaskRecord,
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         QueueTaskReservationModelMixin,
     )
     from litestar_queues.config import StaleRequeuePriority
+    from litestar_queues.events import QueueEventQuery, QueueEventStageSummary
     from litestar_queues.models import HeartbeatTouch, TaskRequest
 
 __all__ = ("QueueEventLogService", "QueueTaskReservationService", "QueueTaskService")
@@ -108,7 +109,133 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             records = [record for record in records if all(record.extra.get(k) == v for k, v in extra.items())]
         return records[:limit] if limit is not None else records
 
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+    def _criteria(self, query: "QueueEventQuery") -> "list[Any]":
+        model = self.model_type
+        criteria = []
+        if query.task_id is not None:
+            criteria.append(model.task_id == query.task_id)
+        if query.task_name is not None:
+            criteria.append(model.task_name == query.task_name)
+        if query.event_type is not None:
+            criteria.append(model.event_type == query.event_type)
+        if query.level is not None:
+            criteria.append(model.level == query.level)
+        if query.scope is not None:
+            criteria.append(model.scope == query.scope)
+        if query.scope_key is not None:
+            criteria.append(model.scope_key == query.scope_key)
+        if query.entity is not None:
+            criteria.append(model.entity == query.entity)
+        return criteria
+
+    async def query_events(self, query: "QueueEventQuery") -> "tuple[int, list[QueueEventLogRecord]]":
+        model_type = self.model_type
+        criteria = self._criteria(query)
+        statement = select(model_type).where(*criteria)
+
+        if query.order == "asc":
+            statement = statement.order_by(
+                model_type.occurred_at.asc(), model_type.sequence.asc(), model_type.event_id.asc()
+            )
+        else:
+            statement = statement.order_by(
+                model_type.occurred_at.desc(), model_type.sequence.desc(), model_type.event_id.desc()
+            )
+
+        if query.offset:
+            statement = statement.offset(query.offset)
+
+        if query.limit:
+            statement = statement.limit(query.limit + 1)
+
+        models = await self.get_many(statement=statement)
+        records = [self.record_from_model(model) for model in models]
+
+        total = await self.count(*criteria)
+        return total, records
+
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        from litestar_queues.events import QueueEventStageSummary
+        from litestar_queues.exceptions import QueueConfigurationError
+
+        if query and (query.limit is not None or query.offset > 0):
+            msg = "Pagination is not supported for stage summaries."
+            raise QueueConfigurationError(msg)
+
+        model_type = self.model_type
+        criteria = self._criteria(query) if query else []
+
+        # Aggregate query
+        agg_stmt = (
+            select(
+                model_type.stage,
+                func.count().label("event_count"),
+                func.sum(model_type.duration_ms).label("total_duration_ms"),
+                func.min(model_type.occurred_at).label("first_event_at"),
+                func.max(model_type.occurred_at).label("last_event_at"),
+            )
+            .where(*criteria)
+            .group_by(model_type.stage)
+        )
+
+        agg_results = (await self.repository.session.execute(agg_stmt)).all()
+        if not agg_results:
+            return []
+
+        # Get latest message, sequence, worst level for each stage using partition/window or separate query per stage
+        summaries = []
+        for row in agg_results:
+            stage_criteria = list(criteria)
+            stage_criteria.append(model_type.stage == row.stage)
+
+            # Fetch newest row to get sequence and message
+            newest_stmt = (
+                select(model_type)
+                .where(*stage_criteria)
+                .order_by(model_type.occurred_at.desc(), model_type.sequence.desc(), model_type.event_id.desc())
+                .limit(1)
+            )
+            newest_row = (await self.repository.session.execute(newest_stmt)).scalars().first()
+
+            # Find worst level - rank levels, but for now we just do a simple approach.
+            # Wait, the spec says "Highest-ranked level present in the stage"
+            # In test_memory_event_query it checks if worst_level is 'error' when 'info' 'error' exist.
+            # I will use the Python ranking logic from QueueEventStageSummary if needed,
+            # or just query distinct levels.
+            levels_stmt = select(model_type.level).where(*stage_criteria, model_type.level.is_not(None)).distinct()
+            levels = (await self.repository.session.execute(levels_stmt)).scalars().all()
+
+            # RANK_MAP logic:
+            level_ranks = {"debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50}
+            worst_level = None
+            if levels:
+                worst_level = max(levels, key=lambda lvl: level_ranks.get(str(lvl).lower(), 0))
+
+            summaries.append(
+                QueueEventStageSummary(
+                    stage=row.stage,
+                    event_count=row.event_count,
+                    total_duration_ms=row.total_duration_ms or 0.0,
+                    first_event_at=_coerce_datetime(row.first_event_at) if row.first_event_at else None,
+                    last_event_at=_coerce_datetime(row.last_event_at) if row.last_event_at else None,
+                    latest_sequence=int(newest_row.sequence)
+                    if newest_row and newest_row.sequence is not None
+                    else None,
+                    latest_message=newest_row.message if newest_row else None,
+                    worst_level=worst_level,
+                )
+            )
+
+        return summaries
+
+    async def cleanup_events(
+        self,
+        before: "datetime",
+        *,
+        limit: "int | None" = None,
+        match: "QueueEventQuery | None" = None,
+        exclude: "tuple[QueueEventQuery, ...] | None" = None,
+    ) -> "int":
         """Delete event-history records older than ``before``.
 
         ``limit`` bounds one batch, deleting the oldest matching rows first
@@ -118,10 +245,21 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             Number of deleted event-history rows.
         """
         model_type = self.model_type
+        criteria = [model_type.occurred_at < before]
+
+        if match:
+            criteria.extend(self._criteria(match))
+
+        if exclude:
+            for ex in exclude:
+                ex_criteria = self._criteria(ex)
+                if ex_criteria:
+                    criteria.append(~and_(*ex_criteria))
+
         if limit is not None:
             bounded_query = (
                 select(model_type.event_id)
-                .where(model_type.occurred_at < before)
+                .where(*criteria)
                 .order_by(model_type.occurred_at, model_type.sequence, model_type.event_id)
                 .limit(limit)
             )
@@ -131,7 +269,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
                 return 0
             statement = delete(model_type).where(model_type.event_id.in_(target_ids))
         else:
-            statement = delete(model_type).where(model_type.occurred_at < before)
+            statement = delete(model_type).where(*criteria)
         result = await self.repository.session.execute(statement)
         return int(result.rowcount or 0)
 
@@ -155,12 +293,18 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             execution_profile=record.execution_profile,
             actor_type=record.actor_type,
             actor_id=record.actor_id,
+            stage=record.stage,
+            scope=record.scope,
+            scope_key=record.scope_key,
+            actor=record.actor,
+            entity=record.entity,
             level=record.level,
             message=record.message,
             detail_json=_serialize_json(detail),
             progress_current=record.progress_current,
             progress_total=record.progress_total,
             progress_percent=record.progress_percent,
+            duration_ms=record.duration_ms,
             sequence=record.sequence,
             occurred_at=record.occurred_at,
             created_at=record.created_at,
@@ -188,14 +332,18 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             execution_profile=cast("str | None", model.execution_profile),
             actor_type=cast("str | None", model.actor_type),
             actor_id=cast("str | None", model.actor_id),
-            stage=optional_str(detail.get("stage")),
+            stage=cast("str | None", model.stage),
+            scope=cast("str | None", model.scope),
+            scope_key=cast("str | None", model.scope_key),
+            actor=cast("str | None", model.actor),
+            entity=cast("str | None", model.entity),
             level=cast("str | None", model.level),
             message=cast("str | None", model.message),
             detail=detail,
             progress_current=optional_float(model.progress_current),
             progress_total=optional_float(model.progress_total),
             progress_percent=optional_float(model.progress_percent),
-            duration_ms=optional_float(detail.get("duration_ms")),
+            duration_ms=optional_float(model.duration_ms),
             sequence=int(model.sequence) if model.sequence is not None else None,
             occurred_at=cast("datetime", _coerce_datetime(model.occurred_at)),
             created_at=cast("datetime", _coerce_datetime(model.created_at)),

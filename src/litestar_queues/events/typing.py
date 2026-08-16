@@ -12,6 +12,7 @@ from litestar_queues.events._typing import (
     ChannelsSubscriber,
     ChannelsSubscriptionBackend,
     ChannelsWaitPublishedBackend,
+    OffsetPagination,
 )
 
 __all__ = (
@@ -22,4 +23,5 @@ __all__ = (
     "ChannelsSubscriber",
     "ChannelsSubscriptionBackend",
     "ChannelsWaitPublishedBackend",
+    "OffsetPagination",
 )

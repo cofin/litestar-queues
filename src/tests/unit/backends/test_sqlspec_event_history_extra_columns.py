@@ -91,7 +91,7 @@ def test_extra_column_duplicate_names_are_case_insensitive() -> "None":
         validate_event_history_extra_columns(columns)
 
 
-@pytest.mark.parametrize("reserved", ["scope", "scope_key", "entity"])
+@pytest.mark.parametrize("reserved", ["scope", "scope_key", "actor", "entity"])
 def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "None":
     """Names held for the built-in scoping dimensions cannot be claimed by adopters."""
     column = EventHistoryExtraColumn(name=reserved, source="x")
@@ -100,7 +100,7 @@ def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "Non
         validate_event_history_extra_columns((column,))
 
 
-@pytest.mark.parametrize("reserved", ["Scope", "SCOPE_KEY", "ENTITY"])
+@pytest.mark.parametrize("reserved", ["Scope", "SCOPE_KEY", "Actor", "ENTITY"])
 def test_extra_column_reserved_names_are_case_insensitive(reserved: "str") -> "None":
     """Unquoted SQL identifiers are case-insensitive, so the reservation is too."""
     column = EventHistoryExtraColumn(name=reserved, source="x")

@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends._protocol import ClientLike, PipelineLike, PubSubLike
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventHistoryConfig, QueueEventLog
+    from litestar_queues.events import EventHistoryConfig
     from litestar_queues.models import HeartbeatTouch, TaskRequest
 
 __all__ = ("RedisQueueBackend",)
@@ -866,8 +866,7 @@ class RedisQueueBackend(BaseQueueBackend):
                     await result
             self._client = None
 
-    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
-        """Return Redis-protocol queue event history when enabled."""
+    def get_event_log(self, config: "EventHistoryConfig") -> "RedisQueueEventLog":  # type: ignore[override]
         if self._event_log is None:
             self._event_log = RedisQueueEventLog(backend=self, config=config)
         return self._event_log
@@ -2321,6 +2320,12 @@ class RedisQueueBackend(BaseQueueBackend):
 
     def _event_log_event_type_key(self, event_type: "str") -> "str":
         return f"{self._key_prefix}:events:event_type:{hashed_index_value(event_type)}"
+
+    def _event_log_scope_key_key(self, scope_key: "str") -> "str":
+        return f"{self._key_prefix}:events:scope_key:{hashed_index_value(scope_key)}"
+
+    def _event_log_entity_key(self, entity: "str") -> "str":
+        return f"{self._key_prefix}:events:entity:{hashed_index_value(entity)}"
 
     def _record_to_mapping(self, record: "QueuedTaskRecord") -> "dict[str, str]":
         return {

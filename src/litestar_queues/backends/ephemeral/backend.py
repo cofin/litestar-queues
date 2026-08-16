@@ -215,7 +215,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return the file-backed queue event history."""
         if self._event_log is None:
-            self._event_log = EphemeralQueueEventLog(config, backend=self)
+            self._event_log = EphemeralQueueEventLog(config, backend=self)  # type: ignore[assignment]
         return self._event_log
 
     async def _run(self, operation: "Callable[[sqlite3.Connection], T]") -> "T":

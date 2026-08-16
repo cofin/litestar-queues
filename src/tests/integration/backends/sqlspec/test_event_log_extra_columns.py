@@ -140,3 +140,32 @@ async def test_packaged_migration_ddl_matches_managed_schema(
     assert any("tenant_id" in statement for statement in expected)
     for statement in expected:
         assert statement in statements
+
+
+@pytest.mark.parametrize("adapter", ["aiosqlite", "duckdb", "psycopg"])
+async def test_packaged_migration_ddl_includes_dimensions(
+    adapter: "str", request: "pytest.FixtureRequest", tmp_path: "Path"
+) -> "None":
+    """The packaged migration DDL includes the package-owned dimensions."""
+    if adapter == "duckdb":
+        pytest.importorskip("duckdb")
+        from sqlspec.adapters.duckdb import DuckDBConfig
+
+        config: "Any" = DuckDBConfig(connection_config={"database": str(tmp_path / "extra.duckdb")})
+    else:
+        config = request.getfixturevalue(f"{adapter}_history_config")
+
+    configure_queue_migration_extension(
+        config, queue_table_name="queue_task", event_history_enabled=True, event_history_extra_columns=(_TENANT_COLUMN,)
+    )
+    settings = config.get_migration_commands().extension_configs[QUEUE_EXTENSION_NAME]
+    config.extension_config = {QUEUE_EXTENSION_NAME: settings}
+
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    statements = await migration.up(SimpleNamespace(config=config))
+
+    create_table = next(s for s in statements if s.startswith("CREATE TABLE") and "event_history" in s)
+    for dimension in ("scope", "scope_key", "actor", "entity"):
+        assert dimension in create_table
+    assert any("scope_key" in s and s.startswith("CREATE INDEX") for s in statements)
+    assert any("entity" in s and s.startswith("CREATE INDEX") for s in statements)

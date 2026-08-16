@@ -108,7 +108,7 @@ def test_queue_event_history_model_mixin_adds_generic_event_history_schema() -> 
         "sequence",
         "occurred_at",
     } <= _column_names(CustomQueueEventHistoryModel)
-    assert {"stage", "duration_ms", "actor_name"}.isdisjoint(_column_names(CustomQueueEventHistoryModel))
+    assert {"actor_name"}.isdisjoint(_column_names(CustomQueueEventHistoryModel))
     assert {
         "ix_custom_queue_task_event_log_task_id",
         "ix_custom_queue_task_event_log_task_name",
