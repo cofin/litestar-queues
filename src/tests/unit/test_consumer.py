@@ -632,3 +632,65 @@ async def test_two_consumers_racing_one_record_run_the_task_once() -> "None":
     # The winner's cleanup ran even though a second consumer was interleaved
     # with it, so stale recovery has nothing to reconsider.
     assert stored.heartbeat_at is None
+
+
+async def test_consumer_runtime_manages_dependency_provider() -> "None":
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, run_task
+    import contextlib
+
+    class _LifecycleDependencyProvider:
+        def __init__(self, order: "list[str]") -> "None":
+            self.order = order
+
+        async def open(self) -> "None":
+            self.order.append("provider.open")
+
+        async def close(self) -> "None":
+            self.order.append("provider.close")
+
+        @contextlib.asynccontextmanager
+        async def __call__(
+            self, task_func: "object", record: "object", context: "object"
+        ) -> "object":
+            self.order.append("provider.call")
+            yield {}
+
+    order: "list[str]" = []
+    
+    @task("tasks.consumer_provider_test")
+    async def consumer_provider_test() -> "str":
+        order.append("task.run")
+        return "ok"
+
+    queue_backend = InMemoryQueueBackend()
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="cloudrun",
+        task_dependency_provider=_LifecycleDependencyProvider(order),
+    )
+    
+    factory_module = ModuleType("consumer_provider_test_factory")
+    sys.modules[factory_module.__name__] = factory_module
+    try:
+        async with QueueService(config, queue_backend=queue_backend) as service:
+            factory_module.create_service = lambda: QueueService(config, queue_backend=queue_backend)
+            result = await service.enqueue(consumer_provider_test.using(execution_backend="cloudrun"))
+            record = await queue_backend.get_task(result.id)
+            assert record is not None
+            
+            # The enqueuing service's provider is opened. We care about the consumer's.
+            order.clear()
+
+            exit_code = await run_task(
+                env={
+                    "QUEUES_CONFIG_FACTORY": f"{factory_module.__name__}:create_service",
+                    "QUEUES_TASK_ID": str(record.id),
+                }
+            )
+
+            assert exit_code == TaskExitCode.SUCCESS
+            assert order == ["provider.open", "provider.call", "task.run", "provider.close"]
+    finally:
+        sys.modules.pop(factory_module.__name__, None)

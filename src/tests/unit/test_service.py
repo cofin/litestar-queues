@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, cast
@@ -325,6 +326,179 @@ async def test_service_close_control_flow_takes_precedence_and_all_resources_clo
         "executor.shutdown",
     ]
     assert service._sync_executor is None
+
+
+class _LifecycleDependencyProvider:
+    """Provider object that records its own lifecycle into the shared order list."""
+
+    def __init__(
+        self,
+        order: "list[str]",
+        *,
+        fail_open: "bool" = False,
+        close_error: "BaseException | None" = None,
+    ) -> "None":
+        self._order = order
+        self._fail_open = fail_open
+        self._close_error = close_error
+
+    async def open(self) -> "None":
+        self._order.append("provider.open")
+        if self._fail_open:
+            raise RuntimeError("provider open failed")
+
+    async def close(self) -> "None":
+        self._order.append("provider.close")
+        if self._close_error is not None:
+            raise self._close_error
+
+    @contextlib.asynccontextmanager
+    async def __call__(
+        self, task: "object", record: "object", context: "object"
+    ) -> "AsyncIterator[Mapping[str, object]]":
+        yield {}
+
+
+class _PlainCallableProvider:
+    """Provider object that does not expose open/close methods."""
+
+    @contextlib.asynccontextmanager
+    async def __call__(
+        self, task: "object", record: "object", context: "object"
+    ) -> "AsyncIterator[Mapping[str, object]]":
+        yield {}
+
+
+async def test_provider_opens_first_and_closes_last() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    publisher = _LifecyclePublisher(_LifecycleSink(order), order)
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            task_dependency_provider=_LifecycleDependencyProvider(order),
+        ),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order),
+        event_publisher=publisher,
+    )
+
+    await service.open()
+    await service.close()
+
+    assert order == [
+        "provider.open",
+        "queue.open",
+        "execution.open",
+        "sink.open",
+        "buffer.start",
+        "execution.close",
+        "event_log.flush",
+        "buffer.stop",
+        "queue.close",
+        "sink.close",
+        "provider.close",
+    ]
+
+
+async def test_provider_is_rolled_back_when_a_later_resource_fails_to_open() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            task_dependency_provider=_LifecycleDependencyProvider(order),
+        ),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order, fail_open=True),
+    )
+
+    with pytest.raises(RuntimeError, match="execution open failed"):
+        await service.open()
+        
+    await service.close()
+
+    assert order == [
+        "provider.open",
+        "queue.open",
+        "execution.open",
+        "execution.close",
+        "event_log.flush",
+        "queue.close",
+        "provider.close"
+    ]
+
+async def test_provider_close_error_does_not_hide_the_primary_failure() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            task_dependency_provider=_LifecycleDependencyProvider(order, close_error=RuntimeError("provider close failed")),
+        ),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order, fail_open=True),
+    )
+
+    with pytest.raises(RuntimeError, match="execution open failed"):
+        await service.open()
+        
+    assert order == [
+        "provider.open",
+        "queue.open",
+        "execution.open",
+        "execution.close",
+        "event_log.flush",
+        "queue.close",
+        "provider.close"
+    ]
+
+
+async def test_provider_open_failure_is_not_followed_by_close() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            task_dependency_provider=_LifecycleDependencyProvider(order, fail_open=True),
+        ),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order),
+    )
+
+    with pytest.raises(RuntimeError, match="provider open failed"):
+        await service.open()
+
+    assert order == ["provider.open"]
+
+
+async def test_plain_callable_provider_needs_no_lifecycle_methods() -> "None":
+    order: "list[str]" = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(history=EventHistoryConfig()),
+            task_dependency_provider=_PlainCallableProvider(),
+        ),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order),
+    )
+
+    await service.open()
+    await service.close()
+    
+    assert "provider.open" not in order
+    assert "provider.close" not in order
 
 
 async def test_service_context_manager_returns_service() -> "None":

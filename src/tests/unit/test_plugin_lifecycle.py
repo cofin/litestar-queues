@@ -99,6 +99,44 @@ async def test_asgi_placement_creates_and_cleans_up_one_worker() -> "None":
     assert not worker.is_running
 
 
+async def test_plugin_lifecycle_manages_dependency_provider() -> "None":
+    from litestar_queues import task
+    import contextlib
+
+    class _LifecycleDependencyProvider:
+        def __init__(self, order: "list[str]") -> "None":
+            self.order = order
+
+        async def open(self) -> "None":
+            self.order.append("provider.open")
+
+        async def close(self) -> "None":
+            self.order.append("provider.close")
+
+        @contextlib.asynccontextmanager
+        async def __call__(
+            self, task_func: "object", record: "object", context: "object"
+        ) -> "object":
+            yield {}
+
+    order: "list[str]" = []
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="memory",
+            worker=WorkerConfig(placement="asgi", poll_interval=0.01),
+            task_dependency_provider=_LifecycleDependencyProvider(order),
+        )
+    )
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        assert "provider.open" in order
+        assert "provider.close" not in order
+
+    assert "provider.close" in order
+    assert order == ["provider.open", "provider.close"]
+
+
 def test_app_publisher_is_non_owning_and_worker_publisher_is_owning() -> "None":
     channels = ChannelsPlugin(backend=MemoryChannelsBackend(), arbitrary_channels_allowed=True)
     plugin = QueuePlugin(

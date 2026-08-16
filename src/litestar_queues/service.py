@@ -78,6 +78,7 @@ _LOG_LEVELS = {
 }
 _UNVERIFIED_PERSISTENCE = object()
 _RESOURCE_BUFFER = "buffer"
+_RESOURCE_DEPENDENCY_PROVIDER = "dependency_provider"
 _RESOURCE_EVENT_LOG = "event_log"
 _RESOURCE_EXECUTION_BACKEND = "execution_backend"
 _RESOURCE_QUEUE_BACKEND = "queue_backend"
@@ -90,6 +91,7 @@ _ROLLBACK_ORDER = (
     _RESOURCE_EXECUTION_BACKEND,
     _RESOURCE_EVENT_LOG,
     _RESOURCE_QUEUE_BACKEND,
+    _RESOURCE_DEPENDENCY_PROVIDER,
 )
 _CLOSE_ORDER = (
     _RESOURCE_EXECUTION_BACKEND,
@@ -98,6 +100,7 @@ _CLOSE_ORDER = (
     _RESOURCE_QUEUE_BACKEND,
     _RESOURCE_SINK,
     _RESOURCE_SYNC_EXECUTOR,
+    _RESOURCE_DEPENDENCY_PROVIDER,
 )
 
 
@@ -230,6 +233,9 @@ class QueueService:
     async def open(self) -> "Self":
         """Open queue and execution backends.
 
+        If the configured task dependency provider exposes an ``open()`` method,
+        it is called first. If the provider fails to open, it will not be closed.
+
         Returns:
             The opened service.
         """
@@ -238,6 +244,9 @@ class QueueService:
         opened: "list[str]" = []
         try:
             preload_correlation_context()
+            provider = self._config.task_dependency_provider
+            if provider is not None and await _call_optional_lifecycle(provider, "open"):
+                opened.append(_RESOURCE_DEPENDENCY_PROVIDER)
             queue_backend = self.get_queue_backend()
             opened.append(_RESOURCE_QUEUE_BACKEND)
             await queue_backend.open()
@@ -298,6 +307,8 @@ class QueueService:
                 await _call_optional_lifecycle(self._event_publisher.sink, "close")
             elif resource == _RESOURCE_SYNC_EXECUTOR and self._sync_executor is not None:
                 self._sync_executor.shutdown(wait=True, cancel_futures=True)
+            elif resource == _RESOURCE_DEPENDENCY_PROVIDER:
+                await _call_optional_lifecycle(self._config.task_dependency_provider, "close")
         except BaseException as exc:
             errors.append(exc)
         finally:
