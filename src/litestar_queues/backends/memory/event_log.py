@@ -4,7 +4,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from litestar_queues.events._log_records import event_log_record_from_event
-from litestar_queues.events.history import validate_event_extra_filter
+from litestar_queues.events.history import event_extra_filter_matches, validate_event_extra_filter
 from litestar_queues.events.query import (
     match_event_record,
     paginate_event_records,
@@ -61,9 +61,7 @@ class InMemoryQueueEventLog:
         async with self._lock:
             matched = [record for record in self._records if match_event_record(record, query)]
             if resolved_extra:
-                matched = [
-                    record for record in matched if all(record.extra.get(k) == v for k, v in resolved_extra.items())
-                ]
+                matched = [record for record in matched if event_extra_filter_matches(record, resolved_extra)]
         ordered = sort_event_records(matched, order="asc" if query is None else query.order)
         return paginate_event_records(ordered, query)
 

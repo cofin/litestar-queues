@@ -84,7 +84,7 @@ class RedisQueueEventLog:
         Returns:
             The matching page.
         """
-        from litestar_queues.events.history import validate_event_extra_filter
+        from litestar_queues.events.history import event_extra_filter_matches, validate_event_extra_filter
         from litestar_queues.events.query import match_event_record, paginate_event_records, sort_event_records
 
         resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
@@ -96,7 +96,7 @@ class RedisQueueEventLog:
             record for record in await self._records_from_ids(client, event_ids) if match_event_record(record, query)
         ]
         if resolved_extra:
-            records = [record for record in records if all(record.extra.get(k) == v for k, v in resolved_extra.items())]
+            records = [record for record in records if event_extra_filter_matches(record, resolved_extra)]
         ordered = sort_event_records(records, order="asc" if query is None else query.order)
         return paginate_event_records(ordered, query)
 

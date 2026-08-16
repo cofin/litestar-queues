@@ -9,6 +9,7 @@ from litestar_queues.events._log_records import event_log_record_from_event
 def test_event_entity_key() -> "None":
     assert event_entity_key(None) is None
     assert event_entity_key(QueueEventEntityRef(type="invoice", id="42")) == "invoice:42"
+    assert event_entity_key({"type": "invoice", "id": "42"}) == "invoice:42"
 
 
 def test_record_carries_the_four_dimensions() -> "None":

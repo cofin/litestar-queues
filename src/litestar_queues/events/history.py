@@ -68,6 +68,9 @@ These are not columns on the table yet. They are reserved so an adopter-declared
 extra column cannot claim a name the package intends to own.
 """
 
+BUILTIN_EVENT_EXTRA_FILTERS = frozenset({"actor_id", "actor_type"})
+"""Built-in dimensions retained on the compatibility ``extra=`` surface."""
+
 
 @dataclass(frozen=True, slots=True)
 class EventHistoryExtraColumn:
@@ -138,6 +141,7 @@ def validate_event_extra_filter(
     if not filter_map:
         return {}
     declared_map = {col.name.lower(): col.name for col in declared_columns}
+    declared_map.update({name: name for name in BUILTIN_EVENT_EXTRA_FILTERS})
     resolved: "dict[str, str]" = {}
     for key, value in filter_map.items():
         folded = key.lower()
@@ -146,6 +150,14 @@ def validate_event_extra_filter(
             raise QueueConfigurationError(msg)
         resolved[declared_map[folded]] = str(value)
     return resolved
+
+
+def event_extra_filter_matches(record: "QueueEventLogRecord", filters: "Mapping[str, str]") -> "bool":
+    """Return whether a record matches validated built-in and adopter filters."""
+    return all(
+        (getattr(record, key) if key in BUILTIN_EVENT_EXTRA_FILTERS else record.extra.get(key)) == value
+        for key, value in filters.items()
+    )
 
 
 def extract_event_extras(

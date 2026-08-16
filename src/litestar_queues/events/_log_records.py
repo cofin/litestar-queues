@@ -1,5 +1,6 @@
 """Internal helpers for backend-managed queue event history records."""
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -110,19 +111,27 @@ def optional_int(value: "Any") -> "int | None":
     return int(cast("int", value))
 
 
-def event_entity_key(entity: "QueueEventEntityRef | None") -> "str | None":
+def event_entity_key(entity: "QueueEventEntityRef | Mapping[str, str] | None") -> "str | None":
     """Return the canonical indexable key for an entity reference.
 
     Returns:
         ``"{type}:{id}"``, or ``None`` when no entity is set.
     """
-    return None if entity is None else f"{entity.type}:{entity.id}"
+    if entity is None:
+        return None
+    if isinstance(entity, Mapping):
+        return f"{entity['type']}:{entity['id']}"
+    return f"{entity.type}:{entity.id}"
 
 
-def event_actor_key(actor: "QueueEventActor | None") -> "str | None":
+def event_actor_key(actor: "QueueEventActor | Mapping[str, str] | None") -> "str | None":
     """Return the canonical indexable key for an actor reference.
 
     Returns:
         ``"{type}:{id}"``, or ``None`` when no actor is set.
     """
-    return None if actor is None else f"{actor.type}:{actor.id}"
+    if actor is None:
+        return None
+    if isinstance(actor, Mapping):
+        return f"{actor['type']}:{actor['id']}"
+    return f"{actor.type}:{actor.id}"

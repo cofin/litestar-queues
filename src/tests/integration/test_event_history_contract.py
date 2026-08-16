@@ -11,7 +11,14 @@ from typing import Any
 
 import pytest
 
-from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventActor, QueueEventEntityRef, QueueEventQuery
+from litestar_queues.events import (
+    EventHistoryConfig,
+    QueueEvent,
+    QueueEventActor,
+    QueueEventEntityRef,
+    QueueEventQuery,
+    QueueEventsConfig,
+)
 from litestar_queues.events.history import QueueEventLog
 from litestar_queues.exceptions import QueueConfigurationError
 
@@ -61,6 +68,7 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
         pytest.importorskip("psycopg")
         from sqlspec.adapters.psycopg import PsycopgAsyncConfig
 
+        from litestar_queues import QueueConfig, WorkerConfig
         from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 
         try:
@@ -72,8 +80,7 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
 
         table = table_name_for_test("queue_task", "sqlspec", request.node.nodeid)
 
-        backend_sql = SQLSpecQueueBackend(
-            backend_config=SQLSpecBackendConfig(
+        backend_config = SQLSpecBackendConfig(
                 sqlspec_config=PsycopgAsyncConfig(
                     connection_config={
                         "host": postgres_service.host,
@@ -85,6 +92,13 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
                 ),
                 queue_table_name=table,
             )
+        backend_sql = SQLSpecQueueBackend(
+            config=QueueConfig(
+                worker=WorkerConfig(placement="external"),
+                queue_backend=backend_config,
+                events=QueueEventsConfig(history=config),
+            ),
+            backend_config=backend_config,
         )
         await backend_sql.open()
         if hasattr(backend_sql, "create_schema"):

@@ -270,7 +270,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         """
         statement = (
             sql
-            .select(self.table_name, "event_id")
+            .select("event_id")
+            .from_(self.table_name)
             .where("occurred_at < :event_log_before", event_log_before=before)
             .order_by(_raw_order("occurred_at ASC"), _raw_order("sequence ASC"), _raw_order("event_id ASC"))
         )
