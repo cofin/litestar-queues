@@ -6,11 +6,26 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
-Unreleased
-==========
+0.9.0 - 2026-08-14
+==================
 
 **Added:**
 
+* Apache Kafka is available as an optional execution backend through
+  ``litestar-queues[kafka]``. Dispatch publishes only the task UUID, with the
+  attempt fence travelling as a message header, and
+  ``litestar queues run-consumer --backend kafka`` runs a manual-commit consumer
+  group against the authoritative queue backend. See
+  :doc:`usage/deployment/kafka`.
+* The event subpackage can be adopted on its own, by a runtime that has its own
+  task runner and never starts this package's worker.
+  :func:`~litestar_queues.events.bind_task_context` and
+  :func:`~litestar_queues.events.bind_beat_sink` are public, so the module-level
+  publish helpers resolve against a context that external code binds. See
+  :doc:`usage/events-standalone`.
+* The SQLSpec event-history table accepts adopter-defined columns for scoping
+  dimensions the queue does not model, such as a tenant or project id, with
+  matching filters on ``list_events()``. See :doc:`usage/event-history-extending`.
 * Event history stores the event actor and can filter on it.
   ``QueueEventLogRecord`` carries ``actor_type`` and ``actor_id``, and
   ``QueueEventLog.list_events()`` accepts ``actor_id=`` and ``actor_type=``,
@@ -68,6 +83,9 @@ Unreleased
   Deployments that relied on retried work being claimed first will see a
   different claim order.
 * Queue-scoped statistics are enforced filters rather than advisory hints.
+* The guides are reorganized around what a reader is doing. The separate worker
+  wakeup and recovery pages are merged into :doc:`usage/workers`, and the
+  telemetry metric catalog moves to the reference section.
 
 0.8.0 - 2026-08-03
 ==================
