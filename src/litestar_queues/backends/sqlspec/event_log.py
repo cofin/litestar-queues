@@ -195,9 +195,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return tuple(self._col(column) if self._col(column) != column else column for column in self._all_columns())
 
     def select_events(  # noqa: C901
-        self,
-        query: "QueueEventQuery",
-        extra: "Mapping[str, str] | None" = None,
+        self, query: "QueueEventQuery", extra: "Mapping[str, str] | None" = None
     ) -> "Select":
         """Return a SELECT for event-log records.
 

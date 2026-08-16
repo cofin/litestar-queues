@@ -98,7 +98,7 @@ class RedisQueueEventLog:
         if resolved_extra:
             records = [record for record in records if all(record.extra.get(k) == v for k, v in resolved_extra.items())]
         ordered = sort_event_records(records, order="asc" if query is None else query.order)
-        return paginate_event_records(ordered, query)  # type: ignore[no-any-return]
+        return paginate_event_records(ordered, query)
 
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
         """Return per-stage event history aggregates."""
