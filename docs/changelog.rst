@@ -33,6 +33,11 @@ Unreleased
   :class:`~litestar_queues.QueueService` lifecycle and its startup rollback.
   ``task_dependency_resolver`` is unchanged for stateless injection; setting
   both raises ``QueueConfigurationError``. See :doc:`usage/dependency-resolver`.
+* Remote execution cancellation with provider-first ordering: When cancelling a task,
+  Litestar Queues cancels active provider execution (via Cloud Run jobs API or Cloud Tasks deletion)
+  before writing durable cancellation state. Durable cancellation fencing and retry guards prevent
+  out-of-order execution recovery from resurrecting cancelled work. See
+  :doc:`usage/failures-and-cancellation`.
 
 0.9.0 - 2026-08-14
 ==================

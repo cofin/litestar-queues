@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import Self
 
@@ -14,7 +14,13 @@ if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
     from litestar_queues.service import QueueService
 
-__all__ = ("BaseConsumerExecutionBackend", "BaseExecutionBackend", "DispatchRepairResult")
+__all__ = (
+    "BaseConsumerExecutionBackend",
+    "BaseExecutionBackend",
+    "DispatchRepairResult",
+    "ExecutionCancelResult",
+    "ExecutionCancelStatus",
+)
 
 _MESSAGING_SYSTEM = "litestar_queues"
 
@@ -69,6 +75,70 @@ class DispatchRepairResult:
 
     examined: "int" = 0
     changed: "int" = 0
+
+
+ExecutionCancelStatus = Literal["accepted", "already_cancelled", "retryable", "unsupported"]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionCancelResult:
+    """Outcome of one provider-level cancellation attempt.
+
+    ``detail`` carries the provider's own words for the log line and the
+    lifecycle event; it is never parsed.
+    """
+
+    status: "ExecutionCancelStatus"
+    detail: "str | None" = None
+
+    @property
+    def permits_durable_cancel(self) -> "bool":
+        """Whether this outcome may win the durable transition to cancelled.
+
+        Only a control plane that exists and refused blocks the write. A
+        transport with no control plane cannot strand anything, because the
+        dispatch-by-id claim fence makes an in-flight delivery a no-op.
+
+        Returns:
+            True unless the provider refused a cancellation it could have made.
+        """
+        return self.status != "retryable"
+
+    @classmethod
+    def accepted(cls, detail: "str | None" = None) -> "Self":
+        """Return an accepted cancellation result.
+
+        Returns:
+            A result whose status is ``accepted``.
+        """
+        return cls(status="accepted", detail=detail)
+
+    @classmethod
+    def already_cancelled(cls, detail: "str | None" = None) -> "Self":
+        """Return an idempotent already-cancelled result.
+
+        Returns:
+            A result whose status is ``already_cancelled``.
+        """
+        return cls(status="already_cancelled", detail=detail)
+
+    @classmethod
+    def retryable(cls, detail: "str | None" = None) -> "Self":
+        """Return a transient or rejected cancellation result.
+
+        Returns:
+            A result whose status is ``retryable``.
+        """
+        return cls(status="retryable", detail=detail)
+
+    @classmethod
+    def unsupported(cls, detail: "str | None" = None) -> "Self":
+        """Return a result for a transport with no cancellation control plane.
+
+        Returns:
+            A result whose status is ``unsupported``.
+        """
+        return cls(status="unsupported", detail=detail)
 
 
 class BaseExecutionBackend:
@@ -169,13 +239,22 @@ class BaseExecutionBackend:
         """
         return None
 
-    async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> "bool":
-        """Cancel an externally running queue record if possible.
+    async def cancel_execution(
+        self, service: "QueueService", record: "QueuedTaskRecord"
+    ) -> "ExecutionCancelResult":
+        """Cancel the provider resource backing one external attempt.
+
+        Called before any durable transition to ``cancelled`` for a record whose
+        ``execution_ref`` names a live provider resource. Implementations must
+        contain their client's exceptions and answer with a result: a not-found
+        resource is ``already_cancelled``, anything transient or refused is
+        ``retryable``. Raising is reserved for programming errors.
 
         Returns:
-            True when cancellation succeeds.
+            ``unsupported`` for a transport with no cancellation control plane.
         """
-        return False
+        del service, record
+        return ExecutionCancelResult.unsupported()
 
     async def __aenter__(self) -> "Self":
         await self.open()

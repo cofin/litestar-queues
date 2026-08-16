@@ -260,14 +260,6 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         expired = await service.expire_overdue_tasks()
         return next((candidate for candidate in expired if candidate.id == record.id), None)
 
-    async def cancel(self, service: "QueueService", record: "QueuedTaskRecord") -> "bool":
-        """Cloud Run Jobs do not expose per-execution cancellation here.
-
-        Returns:
-            Always false because per-execution cancellation is not implemented.
-        """
-        return False
-
     async def check_execution_status(self, execution_ref: "str") -> "CloudRunExecutionStatus":
         """Return Cloud Run execution status.
 
