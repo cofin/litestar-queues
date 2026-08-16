@@ -93,10 +93,10 @@ _WAKEUP_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
 # Durable event transports that ride the SQLSpec events queue table and must have
 # it provisioned before a worker can publish or consume wakeups.
 _EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
-# arrow-odbc exposes no portable rowcount API, so a reported zero can mean
-# either no match or unavailable metadata. SQLSpec 0.56 made psqlpy row counts
-# exact, leaving only arrow-odbc on the verify-after-write fallback.
-_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"arrow_odbc"})
+# Arrow ODBC exposes no portable rowcount API, and ADBC SQLite reports ``-1``
+# for updates. Their cancellation path therefore verifies both the eligible
+# before-image and the persisted after-image.
+_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"adbc", "arrow_odbc"})
 
 
 def _adapter_wakeup_transport(adapter_name: "str | None") -> "str":
@@ -1229,6 +1229,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
+                adapter_name = resolve_adapter_name(self._get_sqlspec_config())
+                before_row = (
+                    await self._select_task(driver, task_id)
+                    if adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS
+                    else None
+                )
                 result = await driver.execute(
                     self._get_store().cancel_task(
                         task_id=str(task_id),
@@ -1241,10 +1247,15 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 if rows_affected < 0:
                     updated_row = await self._select_task(driver, task_id)
                     cancelled = False
-                    if updated_row is not None:
+                    if before_row is not None and updated_row is not None:
+                        before = self._record_from_row(before_row)
                         record = self._record_from_row(updated_row)
-                        cancelled = record.status == "cancelled" and (
-                            expected_retry_count is None or record.retry_count == expected_retry_count
+                        eligible_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
+                        cancelled = (
+                            before.status in eligible_statuses
+                            and (expected_retry_count is None or before.retry_count == expected_retry_count)
+                            and record.status == "cancelled"
+                            and (expected_retry_count is None or record.retry_count == expected_retry_count)
                         )
                 else:
                     cancelled = rows_affected == 1
