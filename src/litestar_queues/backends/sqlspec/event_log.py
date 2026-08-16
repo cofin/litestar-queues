@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec import sql
+from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.schema import (
     EVENT_HISTORY_COLUMNS,
@@ -63,6 +64,21 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     def _all_columns(self) -> "tuple[str, ...]":
         return (*EVENT_HISTORY_COLUMNS, *(column.name for column in self._extra_columns))
 
+    def _event_dialect_name(self) -> "str | None":
+        dialect = self._data_dictionary_dialect_name()
+        return "mssql" if dialect == "tsql" else dialect
+
+    def _quote_identifier(self, identifier: "str") -> "str":
+        quote = quote_backtick_identifier if self._event_dialect_name() == "mysql" else quote_identifier
+        parts = split_qualified_identifier(identifier)
+        if not parts:
+            return quote(identifier)
+        return ".".join(quote(part) for part in parts)
+
+    def _quote_unsplit_identifier(self, identifier: "str") -> "str":
+        quote = quote_backtick_identifier if self._event_dialect_name() == "mysql" else quote_identifier
+        return quote(identifier)
+
     def _validated_extra_filter(self, extra: "Mapping[str, str] | None") -> "tuple[tuple[str, str], ...]":
         resolved = validate_event_extra_filter(extra, self._extra_columns)
         return tuple(resolved.items())
@@ -77,7 +93,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         """Return statements that drop event-log artifacts."""
         if not self._manage_schema:
             return []
-        if self.data_dictionary_dialect == "oracle":
+        if self._event_dialect_name() == "oracle":
 
             def _oracle_drop(name: "str") -> "str":
                 return f"""
@@ -111,7 +127,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 _oracle_drop("task_id"),
                 _oracle_drop_tbl(),
             ]
-        if self.data_dictionary_dialect == "mssql":
+        if self._event_dialect_name() == "mssql":
 
             def _mssql_drop(name: "str") -> "str":
                 return (
@@ -128,7 +144,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 _mssql_drop("task_id"),
                 f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};",
             ]
-        if self.data_dictionary_dialect == "mysql":
+        if self._event_dialect_name() == "mysql":
             return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
         return [
             *(
@@ -151,7 +167,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return f"INSERT INTO {self._quoted_table_name()} ({columns}) VALUES ({placeholders})"  # noqa: S608
 
     def _select_columns(self) -> "tuple[str, ...]":
-        if self.data_dictionary_dialect == "oracle":
+        if self._event_dialect_name() == "oracle":
             return tuple('"LEVEL" AS level' if col == "level" else col for col in self._all_columns())
         return self._all_columns()
 
@@ -292,7 +308,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return statement
 
     def _create_event_table_sql(self) -> "str":
-        if self.data_dictionary_dialect == "mssql":
+        if self._event_dialect_name() == "mssql":
             cols = [
                 f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
                 f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
@@ -326,7 +342,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 )
             END
             """
-        if self.data_dictionary_dialect == "oracle":
+        if self._event_dialect_name() == "oracle":
             cols = [
                 f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
                 f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
@@ -364,7 +380,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                     END IF;
             END;
             """
-        if self.data_dictionary_dialect == "mysql":
+        if self._event_dialect_name() == "mysql":
             cols = [
                 f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
                 f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
@@ -409,9 +425,9 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return rendered
 
     def _create_event_index_statements(self) -> "list[str]":
-        if self.data_dictionary_dialect == "mysql":
+        if self._event_dialect_name() == "mysql":
             return []
-        if self.data_dictionary_dialect == "mssql":
+        if self._event_dialect_name() == "mssql":
 
             def _mssql_idx(name: "str", cols: "str") -> "str":
                 return (
@@ -437,7 +453,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                     if column.indexed
                 ),
             ]
-        if self.data_dictionary_dialect == "oracle":
+        if self._event_dialect_name() == "oracle":
 
             def _oracle_idx(name: "str", cols: "str") -> "str":
                 return f"""

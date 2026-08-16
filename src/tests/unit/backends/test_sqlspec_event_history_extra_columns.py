@@ -27,6 +27,12 @@ def _store(*extra: "EventHistoryExtraColumn") -> "object":
     )
 
 
+def _store_for_dialect(dialect: "str") -> "object":
+    config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    config.statement_config.dialect = dialect
+    return create_event_log_store(config, queue_table_name="queue_task")
+
+
 def test_extra_column_declaration_validates() -> "None":
     columns = (EventHistoryExtraColumn(name="tenant_id", source="tenant_id", indexed=True),)
 
@@ -163,6 +169,29 @@ def test_store_without_extras_emits_unchanged_statements() -> "None":
     assert not any("tenant_id" in statement for statement in statements)
     assert "tenant_id" not in template
     assert template.count(":") == len(EVENT_HISTORY_COLUMNS)
+
+
+def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None":
+    statements = _store_for_dialect("mysql").create_statements()  # type: ignore[attr-defined]
+
+    assert len(statements) == 1
+    assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
+    assert "INDEX `ix_queue_task_event_history_task_id`" in statements[0]
+    assert "CREATE INDEX IF NOT EXISTS" not in statements[0]
+
+
+def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "None":
+    statements = _store_for_dialect("tsql").create_statements()  # type: ignore[attr-defined]
+
+    assert statements[0].lstrip().startswith("IF OBJECT_ID")
+    assert "DATETIME2(6)" in statements[0]
+    assert all("CREATE INDEX IF NOT EXISTS" not in statement for statement in statements[1:])
+
+
+def test_oracle_event_history_quotes_reserved_level_column() -> "None":
+    statements = _store_for_dialect("oracle").create_statements()  # type: ignore[attr-defined]
+
+    assert '"LEVEL" VARCHAR(255)' in statements[0]
 
 
 def test_extra_columns_appear_in_ddl_and_insert_template() -> "None":
