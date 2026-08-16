@@ -20,7 +20,7 @@ from litestar_queues._correlation import (
     reset_correlation_id,
 )
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
-from litestar_queues.backends.base import interruption_count
+from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX, interruption_count
 from litestar_queues.config import execution_backend_name, queue_backend_name
 from litestar_queues.events.context import TaskExecutionContext, bind_task_context
 from litestar_queues.events.models import QueueEvent, QueueEventActor
@@ -28,6 +28,7 @@ from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
 from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
 from litestar_queues.execution import get_execution_backend
+from litestar_queues.execution.base import ExecutionCancelResult
 from litestar_queues.task import (
     ScheduleConfig,
     Task,
@@ -651,9 +652,20 @@ class QueueService:
         return await self._cancel_task(task_id, include_running=include_running)
 
     async def _cancel_task(
-        self, task_id: "UUID", *, include_running: "bool" = False, message: "str | None" = None
+        self,
+        task_id: "UUID",
+        *,
+        include_running: "bool" = False,
+        message: "str | None" = None,
+        cancel_external: "bool" = True,
     ) -> "bool":
         backend = self.get_queue_backend()
+        if cancel_external:
+            current = await backend.get_task(task_id)
+            if current is not None and _external_attempt_ref(current) is not None:
+                outcome = await self._cancel_external_attempt(current)
+                if not outcome.permits_durable_cancel:
+                    return False
         if not await backend.cancel_task(task_id, include_running=include_running):
             return False
         record = await backend.get_task(task_id)
@@ -669,6 +681,48 @@ class QueueService:
             # control channel against durable status regardless.
             await backend.notify_worker_control(record.worker_id)
         return True
+
+    async def _cancel_external_attempt(self, record: "QueuedTaskRecord") -> "ExecutionCancelResult":
+        """Ask the record's execution backend to cancel its provider resource.
+
+        Returns:
+            The provider's answer, or ``unsupported`` when no reachable backend
+            owns this record.
+        """
+        try:
+            execution_backend = self._execution_backend_for_name(record.execution_backend)
+        except ValueError:
+            self._logger.warning(
+                "Skipping provider cancellation for an unknown execution backend",
+                extra={"queue_task_id": str(record.id), "queue_task_execution_backend": record.execution_backend},
+            )
+            return ExecutionCancelResult.unsupported("unknown execution backend")
+        if not execution_backend.is_external:
+            return ExecutionCancelResult.unsupported()
+        result = await execution_backend.cancel_execution(self, record)
+        self._record_cancel_result(record, result, trigger="request")
+        if result.status == "retryable":
+            await self._publish_cancel_refused(record, result)
+        return result
+
+    def _record_cancel_result(
+        self, record: "QueuedTaskRecord", result: "ExecutionCancelResult", *, trigger: "str"
+    ) -> "None":
+        attributes = _base_observability_attributes(
+            operation="cancel",
+            queue=record.queue,
+            task_name=record.task_name,
+            execution_backend=record.execution_backend,
+            execution_profile=record.execution_profile,
+        )
+        self.observability_runtime.record_counter(
+            "litestar_queues.execution.cancel",
+            attributes={
+                **_metric_attributes(attributes),
+                "queue.execution.status": result.status,
+                "queue.cancel.trigger": trigger,
+            },
+        )
 
     async def interrupt_task(
         self,
@@ -769,7 +823,11 @@ class QueueService:
             telemetry.finish(final_status)
             raise
         except JobCancelledError as exc:
-            cancelled = await self._cancel_task(record.id, include_running=True, message=str(exc))
+            # The process running this body *is* the external execution.
+            # Asking the provider to kill it would preempt the terminal write the handler is about to make.
+            cancelled = await self._cancel_task(
+                record.id, include_running=True, message=str(exc), cancel_external=False
+            )
             if not cancelled:
                 final_status = "claim_lost"
                 current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
@@ -1276,6 +1334,29 @@ class QueueService:
             "Recurring schedule stopped beyond the delivery horizon", record, level=logging.WARNING, payload=payload
         )
 
+    async def _publish_cancel_refused(self, record: "QueuedTaskRecord", result: "ExecutionCancelResult") -> "None":
+        payload = {
+            "phase": f"{record.execution_backend}.cancel_failed",
+            "result": result.status,
+            "error": result.detail,
+        }
+        await self.get_event_publisher().publish(
+            QueueEvent(
+                type="task.event",
+                scope="task",
+                task_id=str(record.id),
+                task_name=record.task_name,
+                queue=record.queue,
+                execution_backend=record.execution_backend,
+                execution_profile=record.execution_profile,
+                attempt=record.retry_count + 1,
+                level="warning",
+                message="Remote execution cancellation was refused",
+                payload=payload,
+            )
+        )
+        self._log_task_event("Remote execution cancellation refused", record, level=logging.WARNING, payload=payload)
+
     async def _current_or_claimed(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         return await self.get_queue_backend().get_task(record.id) or record
 
@@ -1672,3 +1753,20 @@ def _coerce_log_level(value: "object", default: "int" = logging.INFO) -> "int":
     if not isinstance(value, str):
         return default
     return _LOG_LEVELS.get(value.lower(), default)
+
+
+def _external_attempt_ref(record: "QueuedTaskRecord") -> "str | None":
+    """Return the provider resource this record's attempt owns, if any.
+
+    ``None`` covers both a local attempt (no reference at all) and a dispatch
+    still holding a reservation marker: in neither case is a provider resource
+    known to exist, so there is nothing to cancel first. A dispatch that goes
+    on to create one fences on its own status-checked finalize instead.
+
+    Returns:
+        The provider reference, or ``None`` when the attempt is not external.
+    """
+    execution_ref = record.execution_ref
+    if execution_ref is None or execution_ref.startswith(EXTERNAL_DISPATCH_RESERVATION_PREFIX):
+        return None
+    return execution_ref

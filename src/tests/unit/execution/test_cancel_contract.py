@@ -35,18 +35,24 @@ async def test_execution_cancel_result_constructors_and_durable_predicate() -> "
 
     # Check that setattr raises (frozen)
     with pytest.raises(AttributeError):
-        accepted.status = "retryable"
+        accepted.status = "retryable"  # type: ignore[misc]
 
 
 @pytest.mark.anyio
 async def test_base_execution_backend_cancel_execution_is_unsupported() -> "None":
+    from typing import cast
     from litestar_queues.config import WorkerConfig
-    service = QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"), queue_backend=InMemoryQueueBackend())
+    from litestar_queues.models import QueuedTaskRecord
+
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        queue_backend=InMemoryQueueBackend(),
+    )
     await service.get_queue_backend().enqueue("tasks.unit")
 
     # We need a record, we can just pass a dummy or a real one.
     # The method ignores both arguments anyway.
-    record = None
+    record = cast(QueuedTaskRecord, None)
     result = await BaseExecutionBackend().cancel_execution(service, record)
     assert result.status == "unsupported"
 
@@ -56,6 +62,7 @@ def test_the_dead_boolean_cancel_operation_is_gone() -> "None":
     assert not hasattr(CloudRunExecutionBackend, "cancel")
 
     import subprocess
+
     # Run grep to ensure no file defines async def cancel( in src/litestar_queues
     cmd = ["grep", "-rn", "async def cancel(", "src/litestar_queues"]
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
