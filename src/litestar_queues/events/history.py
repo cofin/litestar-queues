@@ -221,6 +221,12 @@ class QueueEventLogRecord:
     sequence: "int | None"
     occurred_at: "datetime"
     created_at: "datetime"
+    scope: "str | None" = None
+    """Envelope scope of the event (``task``/``queue``/``worker``/...)."""
+    scope_key: "str | None" = None
+    """Adopter scoping key carried on the envelope (tenant, project, account)."""
+    entity: "str | None" = None
+    """Canonical entity key from :func:`event_entity_key`."""
     extra: "dict[str, str]" = field(default_factory=dict)
 
 

@@ -44,6 +44,7 @@ Unreleased
 
 **Added:**
 
+* Persisted event dimensions (entity, scope) and context APIs for query and retention rules (gh-129).
 * Apache Kafka is available as an optional execution backend through
   ``litestar-queues[kafka]``. Dispatch publishes only the task UUID, with the
   attempt fence travelling as a message header, and
