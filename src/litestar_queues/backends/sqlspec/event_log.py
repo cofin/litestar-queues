@@ -77,6 +77,59 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         """Return statements that drop event-log artifacts."""
         if not self._manage_schema:
             return []
+        if self.data_dictionary_dialect == "oracle":
+
+            def _oracle_drop(name: "str") -> "str":
+                return f"""
+                BEGIN
+                    EXECUTE IMMEDIATE 'DROP INDEX {self._index_name(name)}';
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        IF SQLCODE != -1418 AND SQLCODE != -942 THEN
+                            RAISE;
+                        END IF;
+                END;
+                """
+
+            def _oracle_drop_tbl() -> "str":
+                return f"""
+                BEGIN
+                    EXECUTE IMMEDIATE 'DROP TABLE {self._quoted_table_name()} CASCADE CONSTRAINTS';
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        IF SQLCODE != -942 THEN
+                            RAISE;
+                        END IF;
+                END;
+                """
+
+            return [
+                *(_oracle_drop(column.name) for column in reversed(self._extra_columns) if column.indexed),
+                _oracle_drop("occurred_at"),
+                _oracle_drop("actor_id"),
+                _oracle_drop("task_name"),
+                _oracle_drop("task_id"),
+                _oracle_drop_tbl(),
+            ]
+        if self.data_dictionary_dialect == "mssql":
+
+            def _mssql_drop(name: "str") -> "str":
+                return (
+                    "IF EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
+                    f"WHERE name = N'{self._index_name(name)}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
+                    f"DROP INDEX [{self._index_name(name)}] ON {self._quoted_table_name()};"
+                )
+
+            return [
+                *(_mssql_drop(column.name) for column in reversed(self._extra_columns) if column.indexed),
+                _mssql_drop("occurred_at"),
+                _mssql_drop("actor_id"),
+                _mssql_drop("task_name"),
+                _mssql_drop("task_id"),
+                f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};",
+            ]
+        if self.data_dictionary_dialect == "mysql":
+            return [self._to_sql(sql.drop_table(self.table_name).if_exists())]
         return [
             *(
                 self._to_sql(sql.drop_index(self._index_name(column.name)).if_exists())
@@ -97,6 +150,11 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         placeholders = ", ".join(f":{column}" for column in names)
         return f"INSERT INTO {self._quoted_table_name()} ({columns}) VALUES ({placeholders})"  # noqa: S608
 
+    def _select_columns(self) -> "tuple[str, ...]":
+        if self.data_dictionary_dialect == "oracle":
+            return tuple('"LEVEL" AS level' if col == "level" else col for col in self._all_columns())
+        return self._all_columns()
+
     def select_events(
         self,
         *,
@@ -113,7 +171,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             ValueError: If ``extra`` names a column that was not declared.
         """
         filters = self._validated_extra_filter(extra)
-        statement = sql.select(*self._all_columns()).from_(self.table_name)
+        statement = sql.select(*self._select_columns()).from_(self.table_name)
         if task_id is not None:
             statement = statement.where_eq("task_id", task_id)
         if task_name is not None:
@@ -230,6 +288,115 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return statement
 
     def _create_event_table_sql(self) -> "str":
+        if self.data_dictionary_dialect == "mssql":
+            cols = [
+                f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
+                f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
+                f"{self._quoted_col('task_id')} {self._id_type()}",
+                f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
+                f"{self._quoted_col('queue')} {self._indexed_text_type()}",
+                f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
+                f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
+                f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
+                f"{self._quoted_col('stage')} {self._indexed_text_type()}",
+                f"{self._quoted_col('level')} {self._indexed_text_type()}",
+                f"{self._quoted_col('message')} {self._text_type()}",
+                f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
+                f"{self._quoted_col('progress_current')} {self._float_type()}",
+                f"{self._quoted_col('progress_total')} {self._float_type()}",
+                f"{self._quoted_col('progress_percent')} {self._float_type()}",
+                f"{self._quoted_col('duration_ms')} {self._float_type()}",
+                f"{self._quoted_col('sequence')} {self._integer_type()}",
+                f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
+            ]
+            column_sql = ",\n  ".join(cols)
+            return f"""
+            IF OBJECT_ID(N'{self.table_name}', N'U') IS NULL
+            BEGIN
+                CREATE TABLE {self._quoted_table_name()} (
+                    {column_sql}
+                )
+            END
+            """
+        if self.data_dictionary_dialect == "oracle":
+            cols = [
+                f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
+                f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
+                f"{self._quoted_col('task_id')} {self._id_type()}",
+                f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
+                f"{self._quoted_col('queue')} {self._indexed_text_type()}",
+                f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
+                f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
+                f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
+                f"{self._quoted_col('stage')} {self._indexed_text_type()}",
+                f'"LEVEL" {self._indexed_text_type()}',
+                f"{self._quoted_col('message')} {self._text_type()}",
+                f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
+                f"{self._quoted_col('progress_current')} {self._float_type()}",
+                f"{self._quoted_col('progress_total')} {self._float_type()}",
+                f"{self._quoted_col('progress_percent')} {self._float_type()}",
+                f"{self._quoted_col('duration_ms')} {self._float_type()}",
+                f"{self._quoted_col('sequence')} {self._integer_type()}",
+                f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
+            ]
+            column_sql = ",\n  ".join(cols)
+            return f"""
+            BEGIN
+                EXECUTE IMMEDIATE 'CREATE TABLE {self._quoted_table_name()} (
+                    {column_sql}
+                )';
+            EXCEPTION
+                WHEN OTHERS THEN
+                    IF SQLCODE != -955 THEN
+                        RAISE;
+                    END IF;
+            END;
+            """
+        if self.data_dictionary_dialect == "mysql":
+            cols = [
+                f"{self._quoted_col('event_id')} {self._id_type()} PRIMARY KEY",
+                f"{self._quoted_col('event_type')} {self._indexed_text_type()} NOT NULL",
+                f"{self._quoted_col('task_id')} {self._id_type()}",
+                f"{self._quoted_col('task_name')} {self._indexed_text_type()}",
+                f"{self._quoted_col('queue')} {self._indexed_text_type()}",
+                f"{self._quoted_col('worker_id')} {self._indexed_text_type()}",
+                f"{self._quoted_col('execution_backend')} {self._indexed_text_type()}",
+                f"{self._quoted_col('execution_profile')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor_type')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor_id')} {self._indexed_text_type()}",
+                f"{self._quoted_col('stage')} {self._indexed_text_type()}",
+                f"{self._quoted_col('level')} {self._indexed_text_type()}",
+                f"{self._quoted_col('message')} {self._text_type()}",
+                f"{self._quoted_col('detail')} {self._json_type()} NOT NULL",
+                f"{self._quoted_col('progress_current')} {self._float_type()}",
+                f"{self._quoted_col('progress_total')} {self._float_type()}",
+                f"{self._quoted_col('progress_percent')} {self._float_type()}",
+                f"{self._quoted_col('duration_ms')} {self._float_type()}",
+                f"{self._quoted_col('sequence')} {self._integer_type()}",
+                f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
+                f"INDEX {self._quoted_index_name('task_id')} ({self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('task_name')} ({self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('actor_id')} ({self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('occurred_at')} ({self._quoted_col('occurred_at')})",
+                *(
+                    f"INDEX {self._quoted_index_name(column.name)} ({self._quoted_col(column.name)}, {self._quoted_col('occurred_at')})"
+                    for column in self._extra_columns
+                    if column.indexed
+                ),
+            ]
+            column_sql = ",\n  ".join(cols)
+            return f"CREATE TABLE IF NOT EXISTS {self._quoted_table_name()} (\n  {column_sql}\n)"
+
         rendered = self._to_sql(self._create_event_table_statement())
         unsplit_target = self._quote_unsplit_identifier(self.table_name)
         split_target = self._quoted_table_name()
@@ -238,6 +405,59 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return rendered
 
     def _create_event_index_statements(self) -> "list[str]":
+        if self.data_dictionary_dialect == "mysql":
+            return []
+        if self.data_dictionary_dialect == "mssql":
+
+            def _mssql_idx(name: "str", cols: "str") -> "str":
+                return (
+                    "IF NOT EXISTS (SELECT 1 FROM sys.indexes "  # noqa: S608
+                    f"WHERE name = N'{self._index_name(name)}' AND object_id = OBJECT_ID(N'{self.table_name}')) "
+                    f"CREATE INDEX {self._quoted_index_name(name)} ON {self._quoted_table_name()} ({cols});"
+                )
+
+            return [
+                _mssql_idx(
+                    "task_id",
+                    f"{self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')}",
+                ),
+                _mssql_idx(
+                    "task_name",
+                    f"{self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')}",
+                ),
+                _mssql_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
+                _mssql_idx("occurred_at", f"{self._quoted_col('occurred_at')}"),
+                *(
+                    _mssql_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
+                    for column in self._extra_columns
+                    if column.indexed
+                ),
+            ]
+        if self.data_dictionary_dialect == "oracle":
+
+            def _oracle_idx(name: "str", cols: "str") -> "str":
+                return f"""
+                BEGIN
+                    EXECUTE IMMEDIATE 'CREATE INDEX {self._index_name(name)} ON {self._quoted_table_name()} ({cols})';
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        IF SQLCODE != -955 AND SQLCODE != -1408 THEN
+                            RAISE;
+                        END IF;
+                END;
+                """
+
+            return [
+                _oracle_idx("task_id", "task_id, sequence, occurred_at"),
+                _oracle_idx("task_name", "task_name, stage, occurred_at"),
+                _oracle_idx("actor_id", "actor_id, occurred_at"),
+                _oracle_idx("occurred_at", "occurred_at"),
+                *(
+                    _oracle_idx(column.name, f"{column.name}, occurred_at")
+                    for column in self._extra_columns
+                    if column.indexed
+                ),
+            ]
         return [
             self._to_sql(
                 sql

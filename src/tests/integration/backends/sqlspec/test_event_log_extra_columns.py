@@ -13,6 +13,7 @@ from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEventsConfig, publish_task_log
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 from tests.integration._names import table_name_for_test
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema
@@ -72,7 +73,7 @@ async def _run_scoped_task(config: "Any", *, tenants: "tuple[str, ...]") -> "lis
         await publish_task_log("scoped", payload={"tenant_id": tenant, "stage": "load", "note": "kept"})
         return tenant
 
-    history = EventHistoryConfig(batch_size=1, flush_interval=60)
+    history = EventHistoryConfig(batch_size=1, flush_interval=60, extra_columns=(_TENANT_COLUMN,))
     backend_config = SQLSpecBackendConfig(sqlspec_config=config, event_history_extra_columns=(_TENANT_COLUMN,))
     await bootstrap_queue_schema(backend_config, event_history_enabled=True)
     queue_config = QueueConfig(
@@ -92,7 +93,7 @@ async def _run_scoped_task(config: "Any", *, tenants: "tuple[str, ...]") -> "lis
         scoped = await event_log.list_events(extra={"tenant_id": tenants[0]})
         everything = await event_log.list_events()
 
-        with pytest.raises(ValueError, match="tenant_id"):
+        with pytest.raises(QueueConfigurationError):
             await event_log.list_events(extra={"unknown": "x"})
 
     assert len(everything) > len(scoped)

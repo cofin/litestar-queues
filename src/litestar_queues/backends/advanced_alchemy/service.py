@@ -125,8 +125,8 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
                 .order_by(model_type.occurred_at, model_type.sequence, model_type.event_id)
                 .limit(limit)
             )
-            oldest_rows = await self.get_many(statement=bounded_query)
-            target_ids = [row.event_id if hasattr(row, "event_id") else row[0] for row in oldest_rows]
+            raw_result = await self.repository.session.execute(bounded_query)
+            target_ids = list(raw_result.scalars().all())
             if not target_ids:
                 return 0
             statement = delete(model_type).where(model_type.event_id.in_(target_ids))
