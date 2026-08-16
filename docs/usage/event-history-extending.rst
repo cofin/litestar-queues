@@ -64,7 +64,8 @@ Query it with the additive ``extra`` filter on any event log implementation:
            if event_log is None:
                msg = "Enable EventHistoryConfig to query event history."
                raise RuntimeError(msg)
-           records = await event_log.list_events(extra={"tenant_id": tenant_id})
+           page = await event_log.query_events(extra={"tenant_id": tenant_id})
+           records = page.items
            print(len(records))
 
 ``extra`` uses equality and is ANDed with the built-in ``task_id``,
@@ -109,9 +110,17 @@ queries.
 
 .. code-block:: python
 
+   from collections.abc import Mapping, Sequence
    from datetime import datetime, timezone
 
-   from litestar_queues.events import QueueEvent, QueueEventLogRecord, QueueEventStageSummary
+   from litestar_queues.events import (
+       QueueEvent,
+       QueueEventLogRecord,
+       QueueEventQuery,
+       QueueEventStageSummary,
+   )
+   from litestar_queues.events.query import match_event_record, paginate_event_records, sort_event_records
+   from litestar_queues.events.typing import OffsetPagination
 
 
    class TenantEventLog:
@@ -155,34 +164,24 @@ queries.
        async def flush_events(self) -> None:
            """Nothing is buffered here; write your pending batch to storage instead."""
 
-       async def list_events(
+       async def query_events(
            self,
+           query: QueueEventQuery | None = None,
            *,
-           task_id: str | None = None,
-           task_name: str | None = None,
-           actor_id: str | None = None,
-           actor_type: str | None = None,
-           limit: int | None = None,
-       ) -> list[QueueEventLogRecord]:
-           """Return this tenant's newest matching records."""
-           matches = [
-               record
-               for record in self._records
-               if (task_id is None or record.task_id == task_id)
-               and (task_name is None or record.task_name == task_name)
-               and (actor_id is None or record.actor_id == actor_id)
-               and (actor_type is None or record.actor_type == actor_type)
-           ]
-           matches.sort(key=lambda record: record.occurred_at, reverse=True)
-           return matches if limit is None else matches[:limit]
+           extra: Mapping[str, str] | None = None,
+       ) -> OffsetPagination[QueueEventLogRecord]:
+           """Return this tenant's matching records."""
+           matched = [record for record in self._records if match_event_record(record, query)]
+           ordered = sort_event_records(matched, order="asc" if query is None else query.order)
+           return paginate_event_records(ordered, query)
 
        async def summarize_stages(
-           self, *, task_name: str | None = None
+           self, query: QueueEventQuery | None = None
        ) -> list[QueueEventStageSummary]:
            """Aggregate this tenant's records by stage."""
            stages: dict[str | None, list[QueueEventLogRecord]] = {}
            for record in self._records:
-               if task_name is None or record.task_name == task_name:
+               if match_event_record(record, query):
                    stages.setdefault(record.stage, []).append(record)
            return [
                QueueEventStageSummary(
@@ -195,10 +194,23 @@ queries.
                for stage, records in stages.items()
            ]
 
-       async def cleanup_before(self, before: datetime, *, limit: int | None = None) -> int:
+       async def cleanup_events(
+           self,
+           *,
+           before: datetime,
+           match: QueueEventQuery | None = None,
+           exclude: Sequence[QueueEventQuery] = (),
+           limit: int | None = None,
+       ) -> int:
            """Delete the oldest records older than ``before`` and return the count."""
            stale = sorted(
-               (record for record in self._records if record.occurred_at < before),
+               (
+                   record
+                   for record in self._records
+                   if record.occurred_at < before
+                   and match_event_record(record, match)
+                   and not any(match_event_record(record, ex) for ex in exclude)
+               ),
                key=lambda record: record.occurred_at,
            )
            if limit is not None:
@@ -208,7 +220,7 @@ queries.
            return len(deleted)
 
 You own the storage, the schema, and the query API, and you can expose scoped
-aggregates the built-in store does not. ``cleanup_before`` is what
+aggregates the built-in store does not. ``cleanup_events`` is what
 ``litestar queues run-maintenance`` calls, so honor ``limit`` to keep one
 invocation bounded.
 

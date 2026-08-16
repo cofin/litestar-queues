@@ -8,7 +8,6 @@ import inspect
 import json
 import logging
 import time
-from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,13 +22,13 @@ from litestar_queues.events._log_records import (
 from litestar_queues.events.history import QueueEventLogRecord
 
 if TYPE_CHECKING:
-
-    from litestar.pagination import OffsetPagination
+    from collections.abc import Mapping, Sequence
 
     from litestar_queues.backends._protocol import ClientLike, PipelineLike
     from litestar_queues.backends.redis.backend import RedisQueueBackend
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventStageSummary
     from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
 
 __all__ = ("RedisQueueEventLog",)
 
@@ -97,10 +96,7 @@ class RedisQueueEventLog:
             record for record in await self._records_from_ids(client, event_ids) if match_event_record(record, query)
         ]
         if resolved_extra:
-            records = [
-                record for record in records
-                if all(record.extra.get(k) == v for k, v in resolved_extra.items())
-            ]
+            records = [record for record in records if all(record.extra.get(k) == v for k, v in resolved_extra.items())]
         ordered = sort_event_records(records, order="asc" if query is None else query.order)
         return paginate_event_records(ordered, query)  # type: ignore[no-any-return]
 
@@ -120,11 +116,11 @@ class RedisQueueEventLog:
 
     async def cleanup_events(  # noqa: C901
         self,
-        before: "datetime",
         *,
-        limit: "int | None" = None,
+        before: "datetime",
         match: "QueueEventQuery | None" = None,
-        exclude: "tuple[QueueEventQuery, ...] | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
+        limit: "int | None" = None,
     ) -> "int":
         """Delete event history older than ``before``.
 

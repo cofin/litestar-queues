@@ -12,9 +12,8 @@ from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEventsConfig, publish_task_log
-from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.task import clear_task_registry
 from tests.integration._names import table_name_for_test
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema
@@ -95,7 +94,7 @@ async def _run_scoped_task(config: "Any", *, tenants: "tuple[str, ...]") -> "lis
         everything = (await event_log.query_events(QueueEventQuery())).items
 
         with pytest.raises(ValueError, match="tenant_id"):
-            (await event_log.query_events(QueueEventQuery(), extra={"unknown": "x"})).items
+            await event_log.query_events(QueueEventQuery(), extra={"unknown": "x"})
 
     assert len(everything) > len(scoped)
     return list(scoped)

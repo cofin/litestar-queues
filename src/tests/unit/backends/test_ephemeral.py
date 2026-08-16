@@ -18,8 +18,8 @@ from litestar_queues.backends.ephemeral import backend as ephemeral_backend_modu
 from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, record_from_payload, record_to_payload
 from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventActor
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
 from tests.helpers._timing import MutableClock
@@ -178,6 +178,36 @@ async def test_expired_record_is_hidden_and_fenced_at_claim(backend: "EphemeralQ
     assert stored is not None
     assert stored.status == "expired"
     assert stored.completed_at is not None
+
+
+def test_schema_version_bump_forces_rebuild(tmp_path: "Path") -> "None":
+    from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, connect, initialize_database, read_runtime
+
+    path = tmp_path / "queue.sqlite3"
+
+    # Fake an old database
+    conn = connect(path, create=True)
+    conn.execute("CREATE TABLE queue_runtime (singleton INTEGER, schema_version INTEGER, invocation_nonce TEXT)")
+    conn.execute("INSERT INTO queue_runtime VALUES (1, 1, 'old-nonce')")
+    conn.execute("CREATE TABLE queue_task (id TEXT)")  # fake table
+    conn.close()
+
+    # Initialize should drop and rebuild!
+    initialize_database(path, nonce="new-nonce")
+
+    # verify rebuilding
+    runtime = read_runtime(path)
+    assert runtime is not None
+    v, n = runtime
+    assert v == SCHEMA_VERSION
+    assert n == "new-nonce"
+
+    # check table was recreated
+    conn = connect(path, create=False)
+    # queue_task should have the real columns now
+    cur = conn.execute("PRAGMA table_info(queue_task)")
+    cols = [r["name"] for r in cur.fetchall()]
+    assert "task_name" in cols
 
 
 async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBackend") -> "None":
@@ -610,7 +640,7 @@ async def test_event_log_round_trips_every_history_field(backend: "EphemeralQueu
             occurred_at=occurred,
         )
     )
-    record = ((await log.query_events(QueueEventQuery(task_name="tasks.detailed")))).items[0]
+    record = (await log.query_events(QueueEventQuery(task_name="tasks.detailed"))).items[0]
 
     assert record.event_id == "event-1"
     assert record.event_type == "task.progress"
@@ -658,7 +688,7 @@ async def test_event_log_filters_by_actor(backend: "EphemeralQueueBackend") -> "
     ]
 
 
-async def test_event_log_cleanup_before_is_bounded_and_idempotent(backend: "EphemeralQueueBackend") -> "None":
+async def test_event_log_cleanup_events_is_bounded_and_idempotent(backend: "EphemeralQueueBackend") -> "None":
     log = _event_log(backend, EventHistoryConfig(memory_capacity=3))
     for index in range(5):
         await log.publish_event(_event(index))

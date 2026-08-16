@@ -14,7 +14,6 @@ from litestar_queues import (
     task,
 )
 from litestar_queues.backends import InMemoryQueueBackend
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import (
     QueueEvent,
     QueueEventActor,
@@ -23,6 +22,7 @@ from litestar_queues.events import (
     publish_task_log,
     publish_task_progress,
 )
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
@@ -70,7 +70,9 @@ async def test_memory_backend_event_log_records_task_history_with_custom_detail(
         event_log = service.get_queue_backend().get_event_log(event_log_config)
         assert event_log is not None
         records = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
-        task_name_records = (await event_log.query_events(QueueEventQuery(task_name=memory_event_history.name, limit=2))).items
+        task_name_records = (
+            await event_log.query_events(QueueEventQuery(task_name=memory_event_history.name, limit=2))
+        ).items
 
     assert [record.event_type for record in records] == [
         "task.started",

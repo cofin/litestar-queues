@@ -9,9 +9,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from litestar_queues.events.history import EventHistoryExtraColumn
-    from litestar_queues.events.models import QueueEvent, QueueEventEntityRef
+    from litestar_queues.events.models import QueueEvent, QueueEventActor, QueueEventEntityRef
 
 __all__ = (
+    "event_actor_key",
     "event_entity_key",
     "event_log_record_from_event",
     "event_log_record_sort_key",
@@ -116,3 +117,12 @@ def event_entity_key(entity: "QueueEventEntityRef | None") -> "str | None":
         ``"{type}:{id}"``, or ``None`` when no entity is set.
     """
     return None if entity is None else f"{entity.type}:{entity.id}"
+
+
+def event_actor_key(actor: "QueueEventActor | None") -> "str | None":
+    """Return the canonical indexable key for an actor reference.
+
+    Returns:
+        ``"{type}:{id}"``, or ``None`` when no actor is set.
+    """
+    return None if actor is None else f"{actor.type}:{actor.id}"

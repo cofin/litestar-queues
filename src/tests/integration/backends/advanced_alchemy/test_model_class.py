@@ -107,6 +107,12 @@ def test_queue_event_history_model_mixin_adds_generic_event_history_schema() -> 
         "progress_percent",
         "sequence",
         "occurred_at",
+        "scope",
+        "scope_key",
+        "actor",
+        "entity",
+        "stage",
+        "duration_ms",
     } <= _column_names(CustomQueueEventHistoryModel)
     assert {"actor_name"}.isdisjoint(_column_names(CustomQueueEventHistoryModel))
     assert {
@@ -115,6 +121,8 @@ def test_queue_event_history_model_mixin_adds_generic_event_history_schema() -> 
         "ix_custom_queue_task_event_log_event_type",
         "ix_custom_queue_task_event_log_actor_id",
         "ix_custom_queue_task_event_log_occurred_at",
+        "ix_custom_queue_task_event_log_scope_key",
+        "ix_custom_queue_task_event_log_entity",
     } <= _index_names(CustomQueueEventHistoryModel)
 
 

@@ -17,8 +17,8 @@ import pytest
 from litestar_queues import QueueConfig
 from litestar_queues.backends.ephemeral import NONCE_ENV_VAR, PATH_ENV_VAR, EphemeralQueueBackend
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, QueueEvent
+from litestar_queues.events.query import QueueEventQuery
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator

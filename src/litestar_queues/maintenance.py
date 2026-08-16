@@ -118,10 +118,7 @@ class QueueMaintenanceConfig:
             if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
                 msg = f"QueueMaintenanceConfig.{name} must be a positive integer."
                 raise QueueConfigurationError(msg)
-        for name, retention in (
-            ("stale_after", self.stale_after),
-            ("terminal_retention", self.terminal_retention),
-        ):
+        for name, retention in (("stale_after", self.stale_after), ("terminal_retention", self.terminal_retention)):
             if retention is not None and (
                 isinstance(retention, bool)
                 or not isinstance(retention, (int, float))
@@ -327,7 +324,9 @@ class QueueMaintenanceService:
             phase=phase, status="completed", changed=changed, duration_ms=self._elapsed_ms(phase_start)
         )
 
-    async def _execute_phase(self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime") -> "int":
+    async def _execute_phase(
+        self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime"
+    ) -> "int":
         if phase == "external":
             return await self._service.reconcile_external(limit=self._config.external_limit)
         if phase == "stale":
@@ -342,9 +341,9 @@ class QueueMaintenanceService:
         event_log = self._service.get_event_log()
         if event_log is None:  # pragma: no cover - guarded by _phase_enabled.
             return 0
-        return await self._run_event_retention(event_log, started_at)
+        return await self._run_event_retention_rules(event_log, started_at)
 
-    async def _run_event_retention(self, event_log: "QueueEventLog", started_at: "datetime") -> "int":
+    async def _run_event_retention_rules(self, event_log: "QueueEventLog", started_at: "datetime") -> "int":
         """Apply ordered retention rules under one shared row budget.
 
         Rule ``i`` deletes records matching its own filter and matching none of

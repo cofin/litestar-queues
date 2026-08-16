@@ -1,4 +1,3 @@
-from litestar_queues.events.query import QueueEventQuery
 import inspect
 
 from litestar_queues.events.history import QueueEventLog

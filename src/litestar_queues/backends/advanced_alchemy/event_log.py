@@ -6,17 +6,16 @@ import time
 from typing import TYPE_CHECKING
 
 from litestar_queues.events._log_records import event_log_record_from_event
+from litestar_queues.events.query import QueueEventQuery
+from litestar_queues.events.typing import OffsetPagination
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractAsyncContextManager
     from datetime import datetime
 
-    from litestar.pagination import OffsetPagination
-
     from litestar_queues.backends.advanced_alchemy.service import QueueEventLogService
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventLogRecord, QueueEventStageSummary
-    from litestar_queues.events.query import QueueEventQuery
 
 __all__ = ("AdvancedAlchemyQueueEventLog",)
 
@@ -78,12 +77,10 @@ class AdvancedAlchemyQueueEventLog:
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()
 
-    async def query_events(self, query: "QueueEventQuery | None" = None) -> "OffsetPagination[QueueEventLogRecord]":
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
         """Query durable event history records."""
-        from litestar.pagination import OffsetPagination
-
-        from litestar_queues.events import QueueEventQuery
-
         query = query or QueueEventQuery()
 
         await self.flush_events()
@@ -102,13 +99,12 @@ class AdvancedAlchemyQueueEventLog:
         async with self._service_factory() as service:
             return await service.summarize_stages(query)
 
-
     async def cleanup_events(
         self,
         *,
         before: "datetime",
         match: "QueueEventQuery | None" = None,
-        exclude: "tuple[QueueEventQuery, ...] | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
         limit: "int | None" = None,
     ) -> "int":
         """Delete event history older than ``before``.
@@ -118,6 +114,7 @@ class AdvancedAlchemyQueueEventLog:
         """
         await self.flush_events()
         async with self._transaction_factory() as service:
-            return await service.cleanup_events(before=before, limit=limit, match=match, exclude=exclude)
+            return await service.cleanup_events(before=before, limit=limit, match=match, exclude=tuple(exclude))
+
     def _flush_interval_elapsed(self) -> "bool":
         return self._config.flush_interval <= 0 or time.monotonic() - self._last_flush >= self._config.flush_interval

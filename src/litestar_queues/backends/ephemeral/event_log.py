@@ -99,7 +99,6 @@ class EphemeralQueueEventLog:
         Each publish commits immediately, so this is intentionally a no-op.
         """
 
-
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
     ) -> "OffsetPagination[QueueEventLogRecord]":
@@ -112,8 +111,7 @@ class EphemeralQueueEventLog:
             matched = [event_from_payload(row["payload"]) for row in rows]
             if resolved_extra:
                 matched = [
-                    record for record in matched
-                    if all(record.extra.get(k) == v for k, v in resolved_extra.items())
+                    record for record in matched if all(record.extra.get(k) == v for k, v in resolved_extra.items())
                 ]
             return matched
 
@@ -163,7 +161,6 @@ class EphemeralQueueEventLog:
             return len(doomed_ids)
 
         return await self._backend._transaction(operation)  # noqa: SLF001
-
 
     async def clear(self) -> "None":
         """Remove every stored event record."""

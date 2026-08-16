@@ -15,8 +15,8 @@ from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 from litestar_queues import EventHistoryConfig, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import QueueEventHistoryModelMixin, QueueTaskModelMixin
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import QueueEventsConfig, publish_task_event, publish_task_log, publish_task_progress
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
@@ -75,7 +75,9 @@ async def test_advanced_alchemy_event_log_records_queries_and_cleans_up(tmp_path
         assert event_log is not None
 
         records = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
-        task_name_records = (await event_log.query_events(QueueEventQuery(task_name=aa_event_history_task.name, limit=2))).items
+        task_name_records = (
+            await event_log.query_events(QueueEventQuery(task_name=aa_event_history_task.name, limit=2))
+        ).items
         cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
         first_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
         after_first = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items

@@ -22,7 +22,6 @@ from litestar_queues import (
 )
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import (
     QueueEvent,
     QueueEventActor,
@@ -30,6 +29,7 @@ from litestar_queues.events import (
     publish_task_log,
     publish_task_progress,
 )
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema
 
@@ -79,7 +79,9 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
         assert event_log is not None
 
         records = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
-        task_name_records = (await event_log.query_events(QueueEventQuery(task_name=event_history_task.name, limit=2))).items
+        task_name_records = (
+            await event_log.query_events(QueueEventQuery(task_name=event_history_task.name, limit=2))
+        ).items
         summaries = await event_log.summarize_stages(QueueEventQuery(task_name=event_history_task.name))
         cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
         first_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
@@ -159,7 +161,9 @@ async def test_sqlspec_event_log_persists_and_filters_the_actor(
         recorded = (await event_log.query_events(QueueEventQuery(task_name="tasks.actor"))).items
         by_actor_id = (await event_log.query_events(QueueEventQuery(), extra={"actor_id": "u-1"})).items
         by_actor_type = (await event_log.query_events(QueueEventQuery(), extra={"actor_type": "service"})).items
-        by_both = (await event_log.query_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "service"})).items
+        by_both = (
+            await event_log.query_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "service"})
+        ).items
 
     assert [(record.actor_type, record.actor_id) for record in recorded] == [
         ("user", "u-1"),

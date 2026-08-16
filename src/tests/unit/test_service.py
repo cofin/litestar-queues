@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
     from litestar_queues import Task, TaskDependencyProvider, TaskExecutionContext
     from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
+    from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -1834,6 +1836,7 @@ class _RecordingEventLog:
     ) -> "OffsetPagination[QueueEventLogRecord]":
         del query, extra
         from litestar_queues.events.typing import OffsetPagination
+
         return OffsetPagination(items=[], total=0, limit=1, offset=0)
 
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":

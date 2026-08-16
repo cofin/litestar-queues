@@ -1,8 +1,8 @@
 import pytest
 
 from litestar_queues.backends.memory.event_log import InMemoryQueueEventLog
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
 
 pytestmark = pytest.mark.anyio
@@ -17,4 +17,4 @@ async def test_memory_filters_declared_extra() -> "None":
     events = (await log.query_events(QueueEventQuery(), extra={"tenant": "acme"})).items
     assert [r.task_id for r in events] == ["a"]
     with pytest.raises(QueueConfigurationError):
-        (await log.query_events(QueueEventQuery(), extra={"project": "x"})).items
+        await log.query_events(QueueEventQuery(), extra={"project": "x"})

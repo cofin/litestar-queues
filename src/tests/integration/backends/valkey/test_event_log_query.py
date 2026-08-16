@@ -61,7 +61,7 @@ async def test_dimension_indexes_are_registered_and_cleaned(valkey_backend: "Val
 
     # Cleanup past its occurred_at
     cutoff = BASE + timedelta(hours=1)
-    # Note: cleanup_events replaces cleanup_before
+    # Bounded cleanup deletes oldest events first and reaches a stable no-op.
     await log.cleanup_events(before=cutoff)
 
     # Assert both index keys are gone

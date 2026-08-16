@@ -266,7 +266,12 @@ def test_actor_name_is_not_persisted() -> "None":
 def test_select_events_filters_on_actor() -> "None":
     store = _store()
 
-    rendered = store.select_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "user"}).build(dialect="sqlite").sql  # type: ignore[attr-defined]
+    rendered = (
+        store
+        .select_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "user"})
+        .build(dialect="sqlite")
+        .sql
+    )  # type: ignore[attr-defined]
 
     assert "actor_id" in rendered
     assert "actor_type" in rendered

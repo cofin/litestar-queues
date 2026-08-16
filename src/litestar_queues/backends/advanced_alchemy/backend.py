@@ -152,7 +152,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             await self._event_log.flush_events()
         self._opened = False
 
-    def get_event_log(self, config: "EventHistoryConfig") -> "AdvancedAlchemyQueueEventLog":  # type: ignore[override]
+    def get_event_log(self, config: "EventHistoryConfig") -> "AdvancedAlchemyQueueEventLog":
         """Return Advanced Alchemy-managed queue event history."""
         if self._event_log is None:
             self._event_log = AdvancedAlchemyQueueEventLog(

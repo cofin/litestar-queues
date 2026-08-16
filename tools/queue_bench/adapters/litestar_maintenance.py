@@ -19,7 +19,7 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
         Timed drain or lease-denial result with exact maintenance counters.
     """
     from litestar_queues import QueueConfig, QueueMaintenanceConfig, QueueService, WorkerConfig
-    from litestar_queues.events import EventHistoryConfig, QueueEventsConfig
+    from litestar_queues.events import EventHistoryConfig, QueueEventRetentionRule, QueueEventsConfig
     from litestar_queues.observability import ObservabilityConfig
 
     record_count = int(request.parameters.get("record_count", request.operations))

@@ -866,7 +866,7 @@ class RedisQueueBackend(BaseQueueBackend):
                     await result
             self._client = None
 
-    def get_event_log(self, config: "EventHistoryConfig") -> "RedisQueueEventLog":  # type: ignore[override]
+    def get_event_log(self, config: "EventHistoryConfig") -> "RedisQueueEventLog":
         if self._event_log is None:
             self._event_log = RedisQueueEventLog(backend=self, config=config)
         return self._event_log

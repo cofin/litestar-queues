@@ -88,7 +88,7 @@ Actor attachment
 
 Attach a :class:`~litestar_queues.events.QueueEventActor` to identify who or what
 triggered the work. The actor persists to durable event history and is queryable
-via ``list_events(actor_id=...)`` or ``list_events(actor_type=...)``.
+via :meth:`~litestar_queues.events.QueueEventLog.query_events`.
 
 There are three ways to attach an actor, evaluated in precedence order:
 

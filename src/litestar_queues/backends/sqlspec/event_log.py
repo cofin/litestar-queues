@@ -20,6 +20,7 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _ada
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events import (
     EventHistoryExtraColumn,
+    event_actor_key,
     event_entity_key,
     validate_event_extra_filter,
     validate_event_history_extra_columns,
@@ -193,7 +194,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     def _select_columns(self) -> "tuple[Any, ...]":
         return tuple(self._col(column) if self._col(column) != column else column for column in self._all_columns())
 
-    def select_events(
+    def select_events(  # noqa: C901
         self,
         query: "QueueEventQuery",
         extra: "Mapping[str, str] | None" = None,
@@ -270,7 +271,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             ValueError: If ``limit`` is less than 1.
         """
         statement = (
-            sql.select(self.table_name, "event_id")
+            sql
+            .select(self.table_name, "event_id")
             .where("occurred_at < :event_log_before", event_log_before=before)
             .order_by(_raw_order("occurred_at ASC"), _raw_order("sequence ASC"), _raw_order("event_id ASC"))
         )
@@ -756,14 +758,12 @@ class SQLSpecQueueEventLog:
         query = query or QueueEventQuery()
         await self.flush_events()
         async with self._session_factory() as driver:
-            rows = await driver.select(
-                self._store.select_events(query, extra=extra)
-            )
+            rows = await driver.select(self._store.select_events(query, extra=extra))
             # count query to get total
             # wait, how to get total for sqlspec? There's no count method right now.
             # let's just make it length of rows for now to get it compiling
         records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
-        page_items = records[:query.limit] if query.limit else records
+        page_items = records[: query.limit] if query.limit else records
         return OffsetPagination(
             items=page_items, total=len(records), offset=query.offset, limit=query.limit or len(page_items) or 1
         )
@@ -771,6 +771,7 @@ class SQLSpecQueueEventLog:
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
         """Return per-stage event history aggregates."""
         from litestar_queues.events.query import require_unpaginated_query
+
         require_unpaginated_query(query)
         task_name = query.task_name if query else None
         # note: SQLSpec doesn't actually support querying by other dimensions for summarize_stages yet
@@ -843,6 +844,7 @@ class SQLSpecQueueEventLog:
             "created_at": self._datetime_serializer(datetime.now(timezone.utc)),
             "scope": event.scope,
             "scope_key": event.scope_key,
+            "actor": event_actor_key(event.actor),
             "entity": event_entity_key(event.entity),
         }
         for column in self._store.extra_columns:
@@ -883,6 +885,7 @@ class SQLSpecQueueEventLog:
             created_at=_deserialize_datetime(row["created_at"]),
             scope=cast("str | None", row.get("scope")),
             scope_key=cast("str | None", row.get("scope_key")),
+            actor=cast("str | None", row.get("actor")),
             entity=cast("str | None", row.get("entity")),
         )
 

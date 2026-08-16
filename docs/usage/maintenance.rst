@@ -65,7 +65,7 @@ until you supply their thresholds.
            stale_limit=100,            # max stale records recovered per run
            terminal_retention=None,    # None disables terminal cleanup
            terminal_limit=1000,        # max terminal records deleted per run
-           event_retention_rules_rules=(),       # None disables event-history cleanup
+           event_retention_rules=(),       # None disables event-history cleanup
            event_limit=1000,           # max event rows deleted per run
        ),
    )

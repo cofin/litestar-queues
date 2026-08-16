@@ -2,8 +2,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent, QueueEventActor
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ async def assert_event_extra_contract(queue_backend: "BaseQueueBackend") -> "Non
     assert (await log.query_events(QueueEventQuery(), extra={"tenant": "missing"})).items == []
 
     with pytest.raises(QueueConfigurationError):
-        (await log.query_events(QueueEventQuery(), extra={"undeclared": "x"})).items
+        await log.query_events(QueueEventQuery(), extra={"undeclared": "x"})
 
 
 async def assert_event_actor_contract(queue_backend: "BaseQueueBackend") -> "None":

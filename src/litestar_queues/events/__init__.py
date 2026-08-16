@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from litestar_queues.events._log_records import event_entity_key
+from litestar_queues.events._log_records import event_actor_key, event_entity_key
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.config import EventDeliveryConfig, QueueEventsConfig
 from litestar_queues.events.context import (
@@ -98,6 +98,7 @@ __all__ = (
     "bind_beat_sink",
     "bind_task_context",
     "create_event_producer",
+    "event_actor_key",
     "event_entity_key",
     "event_level_for_rank",
     "event_level_rank",
