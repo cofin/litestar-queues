@@ -83,6 +83,45 @@ last-value-wins diagnostic detail. Implement
    with bind_task_context(context), bind_beat_sink(beats):
        context.beat("row 30000")
 
+Actor attachment
+================
+
+Attach a :class:`~litestar_queues.events.QueueEventActor` to identify who or what
+triggered the work. The actor persists to durable event history and is queryable
+via ``list_events(actor_id=...)`` or ``list_events(actor_type=...)``.
+
+There are three ways to attach an actor, evaluated in precedence order:
+
+1. **Per-call override:** Pass ``actor=QueueEventActor(...)`` directly to
+   ``ctx.publish()``, ``ctx.progress()``, ``ctx.log()``, ``ctx.event()``, or module helpers like
+   ``publish_task_log(..., actor=...)``.
+2. **Context actor:** Set ``context.actor = QueueEventActor(...)`` on the active
+   :class:`~litestar_queues.events.TaskExecutionContext`. All events published under the context
+   inherit this actor unless overridden per-call.
+3. **Decorator declaration:** When using queue tasks, declare ``@task(actor=...)`` with a
+   literal :class:`~litestar_queues.events.QueueEventActor` or zero-arg callable resolver.
+
+.. code-block:: python
+
+   from litestar_queues.events import (
+       QueueEventActor,
+       publish_task_log,
+       publish_task_progress,
+   )
+
+   # Explicit context actor
+   context.actor = QueueEventActor(type="service", id="cron-sync")
+
+   # Inherits context actor ("service", "cron-sync")
+   await publish_task_log("Starting sync")
+
+   # Per-call override for a specific sub-action
+   await publish_task_progress(
+       current=10,
+       total=100,
+       actor=QueueEventActor(type="user", id="usr_123"),
+   )
+
 Cancellation
 ============
 

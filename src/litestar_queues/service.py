@@ -1473,7 +1473,7 @@ def _resolve_task_actor(task_obj: "Task[Any, Any]") -> "QueueEventActor | None":
     declared = task_obj.actor
     if declared is None or isinstance(declared, QueueEventActor):
         return declared
-    resolved = declared()
+    resolved: Any = declared()
     if not isinstance(resolved, QueueEventActor):
         msg = (
             f"@task(actor=...) resolver for {task_obj.name!r} returned "

@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 import pytest
 
 from litestar_queues.backends.ephemeral import EphemeralQueueBackend
@@ -6,11 +8,14 @@ from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent
 from litestar_queues.exceptions import QueueConfigurationError
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-def server_context() -> "EphemeralServerContext":
+def server_context() -> "Iterator[EphemeralServerContext]":
     with EphemeralServerContext(nonce="test-nonce") as context:
         yield context
 

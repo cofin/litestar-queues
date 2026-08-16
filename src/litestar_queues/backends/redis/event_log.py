@@ -24,7 +24,8 @@ from litestar_queues.events.history import QueueEventLogRecord, validate_event_e
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from litestar_queues.backends.redis.backend import ClientLike, PipelineLike, RedisQueueBackend
+    from litestar_queues.backends._protocol import ClientLike, PipelineLike
+    from litestar_queues.backends.redis.backend import RedisQueueBackend
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventStageSummary
 
 __all__ = ("RedisQueueEventLog",)

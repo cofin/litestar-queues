@@ -113,7 +113,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             ValueError: If ``extra`` names a column that was not declared.
         """
         filters = self._validated_extra_filter(extra)
-        statement = sql.select(*EVENT_HISTORY_COLUMNS).from_(self.table_name)
+        statement = sql.select(*self._all_columns()).from_(self.table_name)
         if task_id is not None:
             statement = statement.where_eq("task_id", task_id)
         if task_name is not None:
@@ -405,6 +405,11 @@ class SQLSpecQueueEventLog:
         self._flush_lock = asyncio.Lock()
         self._logger = runtime_logger or logger
 
+    @property
+    def extra_columns(self) -> "tuple[EventHistoryExtraColumn, ...]":
+        """Declared extra scoping columns for this event log."""
+        return self._store.extra_columns
+
     async def publish_event(self, event: "QueueEvent") -> "None":
         """Buffer a queue event and flush when configured thresholds are reached."""
         should_flush = False
@@ -544,6 +549,11 @@ class SQLSpecQueueEventLog:
         return params
 
     def _record_from_row(self, row: "dict[str, Any]") -> "QueueEventLogRecord":
+        extra = {
+            column.name: str(row[column.name])
+            for column in self._store.extra_columns
+            if column.name in row and row[column.name] is not None
+        }
         return QueueEventLogRecord(
             event_id=str(row["event_id"]),
             event_type=str(row["event_type"]),
@@ -564,6 +574,7 @@ class SQLSpecQueueEventLog:
             progress_percent=_optional_float(row["progress_percent"]),
             duration_ms=_optional_float(row["duration_ms"]),
             sequence=_optional_int(row["sequence"]),
+            extra=extra,
             occurred_at=_deserialize_datetime(row["occurred_at"]),
             created_at=_deserialize_datetime(row["created_at"]),
         )

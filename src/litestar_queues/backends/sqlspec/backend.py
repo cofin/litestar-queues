@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from litestar_queues.backends.sqlspec.reservation import SQLSpecTaskReservationStore
     from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventHistoryConfig, QueueEventLog
+    from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEventLog
     from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("SQLSpecQueueBackend",)
@@ -268,12 +268,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return SQLSpec-managed durable queue event history when enabled."""
-        if self._event_log is None:
+        if self._event_log is None or (
+            config.extra_columns and getattr(self._event_log, "extra_columns", ()) != config.extra_columns
+        ):
             self._event_log = SQLSpecQueueEventLog(
                 session_factory=self._session,
                 datetime_serializer=self._serialize_datetime,
                 config=config,
-                store=self._get_event_log_store(),
+                store=self._get_event_log_store(extra_columns=config.extra_columns),
                 runtime_logger=self._logger,
             )
         return self._event_log
@@ -2119,14 +2121,17 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             )
         return self._store
 
-    def _get_event_log_store(self) -> "Any":
-        if self._event_log_store is None:
+    def _get_event_log_store(self, extra_columns: "Sequence[EventHistoryExtraColumn] | None" = None) -> "Any":
+        effective_columns = tuple(extra_columns) if extra_columns is not None else self._event_history_extra_columns
+        if self._event_log_store is None or (
+            extra_columns is not None and getattr(self._event_log_store, "extra_columns", ()) != effective_columns
+        ):
             store = create_event_log_store(
                 self._get_sqlspec_config(),
                 queue_table_name=self._resolve_queue_table_name(),
                 event_history_table_name=self._event_history_table_name,
                 manage_schema=self._manage_schema,
-                extra_columns=self._event_history_extra_columns,
+                extra_columns=effective_columns,
             )
             self._event_history_table_name = store.table_name
             self._event_log_store = store

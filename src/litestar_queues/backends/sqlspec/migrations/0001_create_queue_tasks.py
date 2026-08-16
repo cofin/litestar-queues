@@ -8,8 +8,9 @@ from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.maintenance import create_maintenance_store
 from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
-from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, EventHistoryExtraColumn, validate_table_name
+from litestar_queues.backends.sqlspec.schema import DEFAULT_TABLE_NAME, validate_table_name
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
+from litestar_queues.events import EventHistoryExtraColumn
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

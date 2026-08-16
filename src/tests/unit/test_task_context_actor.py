@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 
 from litestar_queues.events import (
@@ -88,7 +90,7 @@ async def test_convenience_methods_forward_actor(method_name: "str") -> "None":
 
 async def test_module_helpers_accept_actor() -> "None":
     context = _make_context()
-    sink = context.event_publisher._sink  # type: ignore[attr-defined]
+    sink = cast("InMemoryQueueEventSink", context.event_publisher._sink)
     with bind_task_context(context):
         await publish_task_progress(current=1, total=2, actor=QueueEventActor(type="user", id="u1"), immediate=True)
         await publish_task_log("hello", actor=QueueEventActor(type="user", id="u2"), immediate=True)
