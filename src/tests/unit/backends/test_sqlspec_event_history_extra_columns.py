@@ -180,6 +180,15 @@ def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None
     assert "CREATE INDEX IF NOT EXISTS" not in statements[0]
 
 
+def test_mysql_event_history_bounds_generated_index_names() -> "None":
+    config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    config.statement_config.dialect = "mysql"
+    store = create_event_log_store(config, queue_table_name="queue_task_mysql_aiomysql_637b5b4678")
+
+    assert len(store._index_name("occurred_at")) <= 63
+    assert store._quoted_index_name("occurred_at") in store.create_statements()[0]
+
+
 def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "None":
     statements = _store_for_dialect("tsql").create_statements()  # type: ignore[attr-defined]
 
@@ -192,6 +201,13 @@ def test_oracle_event_history_quotes_reserved_level_column() -> "None":
     statements = _store_for_dialect("oracle").create_statements()  # type: ignore[attr-defined]
 
     assert '"LEVEL" VARCHAR(255)' in statements[0]
+    assert '("task_id", "sequence", "occurred_at")' in statements[1]
+
+
+def test_spanner_event_history_uses_backtick_quoted_identifiers() -> "None":
+    statements = _store_for_dialect("spanner").create_statements()  # type: ignore[attr-defined]
+
+    assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
 
 
 def test_extra_columns_appear_in_ddl_and_insert_template() -> "None":

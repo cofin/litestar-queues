@@ -5,6 +5,7 @@ import logging
 import time
 from contextlib import suppress
 from datetime import datetime, timezone
+from hashlib import sha1
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec import sql
@@ -41,6 +42,8 @@ __all__ = (
     "resolve_event_history_table_name",
 )
 
+_PORTABLE_INDEX_NAME_LENGTH = 63
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,15 +72,23 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return "mssql" if dialect == "tsql" else dialect
 
     def _quote_identifier(self, identifier: "str") -> "str":
-        quote = quote_backtick_identifier if self._event_dialect_name() == "mysql" else quote_identifier
+        quote = quote_backtick_identifier if self._event_dialect_name() in {"mysql", "spanner"} else quote_identifier
         parts = split_qualified_identifier(identifier)
         if not parts:
             return quote(identifier)
         return ".".join(quote(part) for part in parts)
 
     def _quote_unsplit_identifier(self, identifier: "str") -> "str":
-        quote = quote_backtick_identifier if self._event_dialect_name() == "mysql" else quote_identifier
+        quote = quote_backtick_identifier if self._event_dialect_name() in {"mysql", "spanner"} else quote_identifier
         return quote(identifier)
+
+    def _index_name(self, suffix: "str") -> "str":
+        name = super()._index_name(suffix)
+        if len(name) <= _PORTABLE_INDEX_NAME_LENGTH:
+            return name
+        digest = sha1(name.encode()).hexdigest()[:8]  # noqa: S324 - stable identifier shortening.
+        prefix_length = _PORTABLE_INDEX_NAME_LENGTH - len(digest) - 1
+        return f"{name[:prefix_length]}_{digest}"
 
     def _validated_extra_filter(self, extra: "Mapping[str, str] | None") -> "tuple[tuple[str, str], ...]":
         resolved = validate_event_extra_filter(extra, self._extra_columns)
@@ -468,12 +479,18 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 """
 
             return [
-                _oracle_idx("task_id", "task_id, sequence, occurred_at"),
-                _oracle_idx("task_name", "task_name, stage, occurred_at"),
-                _oracle_idx("actor_id", "actor_id, occurred_at"),
-                _oracle_idx("occurred_at", "occurred_at"),
+                _oracle_idx(
+                    "task_id",
+                    f"{self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')}",
+                ),
+                _oracle_idx(
+                    "task_name",
+                    f"{self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')}",
+                ),
+                _oracle_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
+                _oracle_idx("occurred_at", self._quoted_col("occurred_at")),
                 *(
-                    _oracle_idx(column.name, f"{column.name}, occurred_at")
+                    _oracle_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
                     for column in self._extra_columns
                     if column.indexed
                 ),
