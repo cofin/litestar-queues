@@ -81,17 +81,17 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
         table = table_name_for_test("queue_task", "sqlspec", request.node.nodeid)
 
         backend_config = SQLSpecBackendConfig(
-                sqlspec_config=PsycopgAsyncConfig(
-                    connection_config={
-                        "host": postgres_service.host,
-                        "port": postgres_service.port,
-                        "user": postgres_service.user,
-                        "password": postgres_service.password,
-                        "dbname": postgres_service.database,
-                    }
-                ),
-                queue_table_name=table,
-            )
+            sqlspec_config=PsycopgAsyncConfig(
+                connection_config={
+                    "host": postgres_service.host,
+                    "port": postgres_service.port,
+                    "user": postgres_service.user,
+                    "password": postgres_service.password,
+                    "dbname": postgres_service.database,
+                }
+            ),
+            queue_table_name=table,
+        )
         backend_sql = SQLSpecQueueBackend(
             config=QueueConfig(
                 worker=WorkerConfig(placement="external"),
