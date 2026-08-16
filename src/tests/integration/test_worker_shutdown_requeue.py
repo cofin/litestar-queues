@@ -61,7 +61,9 @@ async def test_task_dependency_provider_closes_on_shutdown_interruption(queue_ba
             requeue_on_shutdown=True,
             max_concurrency=1,
             graceful_shutdown_timeout=0.05,
-            final_cancel_timeout=1.0,
+            # Shared CI database services can take longer than one second to
+            # hand a connection back to the shutdown-interruption write.
+            final_cancel_timeout=5.0,
             poll_interval=0.05,
         ),
         queue_backend="memory",
@@ -71,10 +73,12 @@ async def test_task_dependency_provider_closes_on_shutdown_interruption(queue_ba
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
+        # Enqueue before polling starts so single-writer sync drivers do not
+        # race the initial insert against a worker claim query.
+        result = await service.enqueue("contract.provider.shutdown")
+
         worker = Worker(service)
         worker_task = asyncio.create_task(worker.start())
-
-        result = await service.enqueue("contract.provider.shutdown")
         await asyncio.wait_for(started.wait(), timeout=5)
 
         # Give a small moment for DB to update to "running" if not memory
