@@ -783,6 +783,408 @@ async def test_execute_record_no_resolver_skips_invocation_path() -> "None":
     assert captured == [None]
 
 
+import contextlib
+from typing import AsyncIterator
+
+def _recording_provider(
+    events: "list[str]",
+    *,
+    acquire_error: "BaseException | None" = None,
+    cleanup_error: "BaseException | None" = None,
+    payload: "Mapping[str, object] | None" = None,
+) -> "TaskDependencyProvider":
+    """Build a provider that appends an ordered trace to ``events``."""
+
+    @contextlib.asynccontextmanager
+    async def provider(
+        task: "Task[..., object]", record: "QueuedTaskRecord", context: "TaskExecutionContext"
+    ) -> "AsyncIterator[Mapping[str, object]]":
+        events.append("acquire")
+        if acquire_error is not None:
+            raise acquire_error
+        try:
+            yield dict(payload or {"scoped": "value"})
+        finally:
+            events.append("cleanup")
+            if cleanup_error is not None:
+                raise cleanup_error
+
+    return provider
+
+
+async def test_provider_scope_wraps_successful_attempt() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.success")
+    async def run(scoped: str) -> str:
+        assert scoped == "value"
+        events.append("body")
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events)
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.success")
+
+    await result.refresh()
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status == "completed"
+
+
+async def test_provider_scope_closes_on_retryable_body_failure() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.retryable")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        raise RuntimeError("boom")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events)
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.retryable", retries=1)
+
+    await result.refresh()
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status in {"pending", "scheduled"}
+    assert result.error and "boom" in result.error
+
+
+async def test_provider_scope_closes_on_terminal_body_failure() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.exceptions import NonRetryableError
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.terminal")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        raise NonRetryableError("nope")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events)
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.terminal")
+
+    await result.refresh()
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status == "failed"
+
+
+async def test_provider_acquisition_failure_never_cleans_up() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.acquire_fail")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, acquire_error=RuntimeError("no session"))
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.acquire_fail", retries=1)
+
+    await result.refresh()
+    assert events == ["acquire"]
+    assert result.status in {"pending", "scheduled"}
+    assert result.error and "no session" in result.error
+
+
+async def test_provider_scope_receives_task_record_and_context() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    captured_args = {}
+
+    @contextlib.asynccontextmanager
+    async def provider(task_obj: "object", record: "object", context: "object") -> "AsyncIterator[dict[str, object]]":
+        captured_args["task"] = task_obj
+        captured_args["record"] = record
+        captured_args["context"] = context
+        yield {}
+
+    @task("scoped.args")
+    async def run() -> str:
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=provider
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.args")
+
+    await result.refresh()
+    assert captured_args["task"].name == "scoped.args"
+    assert captured_args["record"].id == result.id
+    assert captured_args["context"].task_id == str(result.id)
+
+
+async def test_provider_output_never_overrides_task_context() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task, TaskExecutionContext
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.override")
+    async def run(_task_context: "TaskExecutionContext") -> str:
+        assert isinstance(_task_context, TaskExecutionContext)
+        events.append("body")
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, payload={"_task_context": "hijacked"})
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.override")
+
+    await result.refresh()
+    assert events == ["acquire", "body", "cleanup"]
+
+
+async def test_cleanup_failure_after_success_fails_the_attempt() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.cleanup_fail")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("commit failed"))
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.cleanup_fail", retries=1)
+
+    await result.refresh()
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status in {"pending", "scheduled"}
+    assert result.error and "commit failed" in result.error
+
+
+async def test_cleanup_failure_after_body_failure_preserves_the_body_error() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.both_fail")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        raise ValueError("primary")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("secondary"))
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.both_fail", retries=0)
+
+    await result.refresh()
+    assert result.status == "failed"
+    assert result.error and "primary" in result.error
+    assert "secondary" not in result.error
+
+
+async def test_cleanup_failure_after_body_failure_is_logged_at_error(caplog: "pytest.LogCaptureFixture") -> "None":
+    import logging
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.log_fail")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        raise ValueError("primary")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("secondary"))
+    )
+    
+    with caplog.at_level(logging.ERROR, logger=config.names.logger("service")):
+        async with QueueService(config) as service:
+            result = await service.enqueue("scoped.log_fail", retries=0)
+
+    await result.refresh()
+    matching_records = [
+        rec for rec in caplog.records
+        if rec.message == "Queue task dependency scope cleanup failed"
+        and getattr(rec, "queue_task_id", None) == str(result.id)
+    ]
+    assert matching_records
+    record = matching_records[0]
+    payload = getattr(record, "queue_task_event_payload", {})
+    assert payload.get("primary_error") == "ValueError"
+    assert "secondary" in payload.get("error", "")
+
+
+async def test_cleanup_failure_text_passes_through_error_sanitizer(caplog: "pytest.LogCaptureFixture") -> "None":
+    import logging
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    @task("scoped.sanitize")
+    async def run(scoped: str) -> str:
+        events.append("body")
+        raise ValueError("primary")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        error_sanitizer=lambda exc, rec: "[redacted]",
+        task_dependency_provider=_recording_provider(events, cleanup_error=RuntimeError("s3cret"))
+    )
+    
+    with caplog.at_level(logging.ERROR, logger=config.names.logger("service")):
+        async with QueueService(config) as service:
+            result = await service.enqueue("scoped.sanitize", retries=0)
+
+    await result.refresh()
+    matching_records = [
+        rec for rec in caplog.records
+        if rec.message == "Queue task dependency scope cleanup failed"
+    ]
+    assert matching_records
+    record = matching_records[0]
+    payload = getattr(record, "queue_task_event_payload", {})
+    assert payload.get("error") == "[redacted]"
+    # ensure "s3cret" does not appear anywhere in logs
+    assert all("s3cret" not in rec.message for rec in caplog.records)
+
+
+async def test_provider_cannot_suppress_the_body_exception() -> "None":
+    """A truthy __aexit__ is ignored: there is no result to complete with."""
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class SuppressingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "SuppressingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append("cleanup")
+            return True
+
+    @task("scoped.suppress")
+    async def run() -> str:
+        events.append("body")
+        raise RuntimeError("boom")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=SuppressingProvider()
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.suppress", retries=0)
+
+    await result.refresh()
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status == "failed"
+    assert result.error and "boom" in result.error
+
+
+async def test_provider_cannot_suppress_cancellation() -> "None":
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    class SuppressingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "SuppressingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            return True
+
+    @task("scoped.cancel")
+    async def run() -> str:
+        await asyncio.sleep(1)
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        task_dependency_provider=SuppressingProvider()
+    )
+    async with QueueService(config) as service:
+        res = await service.enqueue("scoped.cancel", retries=0)
+        record = await service.get_queue_backend().claim_task(res.id)
+        assert record is not None
+        task_coro = asyncio.create_task(service.execute_record(record))
+        await asyncio.sleep(0)  # let it start
+        task_coro.cancel()
+        
+        try:
+            await task_coro
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("CancelledError did not propagate")
+            
+        await res.refresh()
+        # Should not be terminal because execution stopped cooperatively and didn't write failed
+        assert res.status not in {"completed", "failed"}
+
+
 async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     sink = InMemoryQueueEventSink()
     publisher = QueueEventPublisher(sink)
@@ -1366,3 +1768,184 @@ async def test_claim_tasks_forwards_queue_limits_to_backend() -> "None":
 
     assert len(claimed) == 1
     assert backend.claim_calls == [{"email": 1}]
+
+async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
+    """The attempt timeout cancels the body; the scope still closes exactly once."""
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class CapturingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append(exc_type.__name__ if exc_type else "None")
+            events.append("cleanup")
+            return False
+
+    @task("scoped.timeout", timeout=0.05)
+    async def run() -> str:
+        events.append("body")
+        await asyncio.sleep(5)
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=CapturingProvider()
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.timeout", retries=0)
+
+    await result.refresh()
+    assert events == ["acquire", "body", "CancelledError", "cleanup"]
+    assert result.status == "failed"
+    assert result.error is not None # TimeoutError string representation can be empty in older Python versions
+
+
+async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class SlowProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "SlowProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            await asyncio.sleep(5)
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append("cleanup")
+            return False
+
+    @task("scoped.timeout.acquire", timeout=0.05)
+    async def run() -> str:
+        events.append("body")
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=SlowProvider()
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.timeout.acquire", retries=0)
+
+    await result.refresh()
+    assert events == ["acquire"]
+    assert result.status == "failed"
+    assert result.error is not None # TimeoutError string representation can be empty in older Python versions
+
+
+async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task, TaskExecutionContext
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class CapturingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append(exc_type.__name__ if exc_type else "None")
+            events.append("cleanup")
+            return False
+
+    @task("scoped.cooperative_cancel")
+    async def run(_task_context: "TaskExecutionContext") -> str:
+        events.append("body")
+        _task_context.mark_cancelled()
+        _task_context.raise_if_cancelled()
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory", execution_backend="immediate",
+        task_dependency_provider=CapturingProvider()
+    )
+    async with QueueService(config) as service:
+        result = await service.enqueue("scoped.cooperative_cancel", retries=0)
+
+    await result.refresh()
+    assert events == ["acquire", "body", "JobCancelledError", "cleanup"]
+    assert result.status == "cancelled"
+
+
+async def test_provider_scope_closes_on_durable_cancellation() -> "None":
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.task import clear_task_registry
+    from litestar_queues.events.context import _cancel_task_context
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class CapturingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append(exc_type.__name__ if exc_type else "None")
+            events.append("cleanup")
+            return False
+
+    started = asyncio.Event()
+
+    @task("scoped.durable_cancel")
+    async def run() -> str:
+        events.append("body")
+        started.set()
+        await asyncio.sleep(5)
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        task_dependency_provider=CapturingProvider()
+    )
+    async with QueueService(config) as service:
+        res = await service.enqueue("scoped.durable_cancel", retries=0)
+        record = await service.get_queue_backend().claim_task(res.id)
+        assert record is not None
+        task_coro = asyncio.create_task(service.execute_record(record))
+        await started.wait()
+        
+        _cancel_task_context(str(record.id))
+        task_coro.cancel()
+        
+        try:
+            await task_coro
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("CancelledError did not propagate")
+            
+        # no terminal write happened from this attempt, so it stays scheduled/pending since we didn't write terminal status
+        await res.refresh()
+        assert res.status not in {"completed", "failed", "cancelled"}
+        assert events == ["acquire", "body", "CancelledError", "cleanup"]
+

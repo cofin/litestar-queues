@@ -802,11 +802,62 @@ class QueueService:
         task_context: "TaskExecutionContext",
         timeout: "object",
     ) -> "object":
-        extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
-        coroutine = task_obj.execute_record(
-            record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+        # Provider acquisition and cleanup ride inside the same timeout as the
+        # body: a provider that blocks on a pool checkout must not be able to
+        # hold a claim open past the attempt's deadline.
+        return await asyncio.wait_for(
+            self._run_task_body(record, task_obj, task_context),
+            timeout=timeout if isinstance(timeout, int | float) else None,
         )
-        return await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
+
+    async def _run_task_body(
+        self, record: "QueuedTaskRecord", task_obj: "Task[Any, Any]", task_context: "TaskExecutionContext"
+    ) -> "object":
+        provider = self._config.task_dependency_provider
+        if provider is None:
+            extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
+            return await task_obj.execute_record(
+                record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+            )
+        scope = provider(task_obj, record, task_context)
+        extra_kwargs = await scope.__aenter__()
+        try:
+            result = await task_obj.execute_record(
+                record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+            )
+        except BaseException as exc:
+            await self._close_dependency_scope(scope, record, exc)
+            raise
+        await self._close_dependency_scope(scope, record, None)
+        return result
+
+    async def _close_dependency_scope(
+        self,
+        scope: "contextlib.AbstractAsyncContextManager[Mapping[str, object]]",
+        record: "QueuedTaskRecord",
+        exc: "BaseException | None",
+    ) -> "None":
+        """Close one attempt's dependency scope without displacing its outcome.
+
+        A cleanup failure after a successful body fails the attempt: work that
+        could not release its resource did not succeed. A cleanup failure after
+        any other outcome is logged and dropped, because replacing a live
+        cancellation or task exception would lose the reason the attempt ended.
+        The ``__aexit__`` return value is deliberately ignored -- suppressing the
+        body exception would leave no result to complete the attempt with.
+        """
+        if exc is None:
+            await scope.__aexit__(None, None, None)
+            return
+        try:
+            await scope.__aexit__(type(exc), exc, exc.__traceback__)
+        except BaseException as cleanup_exc:
+            self._log_task_event(
+                "Queue task dependency scope cleanup failed",
+                record,
+                level=logging.ERROR,
+                payload={"error": self._error_message(cleanup_exc, record), "primary_error": type(exc).__name__},
+            )
 
     async def _fail_record_without_retry(
         self,
@@ -815,6 +866,7 @@ class QueueService:
         task_context: "TaskExecutionContext",
         telemetry: "_ExecutionObservability",
     ) -> "QueuedTaskRecord":
+        print(f"_fail_record_without_retry called with exc={exc!r}")
         error_message = self._error_message(exc, record)
         updated = await self.get_queue_backend().fail_task(
             record.id, error_message, retry=False, expected_retry_count=record.retry_count

@@ -1,3 +1,4 @@
+from unittest import mock
 import asyncio
 import logging
 import os
@@ -2532,3 +2533,365 @@ async def test_worker_nulls_heartbeats_for_tasks_that_survive_cancellation() -> 
 async def _has_heartbeat(backend: "BaseQueueBackend", task_id: "UUID") -> "bool":
     record = await backend.get_task(task_id)
     return record is not None and record.heartbeat_at is not None
+
+async def test_claim_loss_cancel_closes_the_dependency_scope() -> "None":
+    """mgy.1's claim-loss cancel must not strand an attempt-scoped resource."""
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.worker import Worker
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class CapturingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append(exc_type.__name__ if exc_type else "None")
+            events.append("cleanup")
+            return False
+
+    started = asyncio.Event()
+    block = asyncio.Event()
+
+    @task("scoped.claim_loss")
+    async def run() -> str:
+        events.append("body")
+        started.set()
+        await block.wait()
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(
+            placement="external",
+            heartbeat_miss_threshold=1,
+            cancel_on_claim_loss=True,
+            max_concurrency=1
+        ),
+        queue_backend="memory",
+        task_dependency_provider=CapturingProvider()
+    )
+    async with QueueService(config) as service:
+        worker = Worker(service)
+        record = await service.enqueue("scoped.claim_loss", retries=0)
+        
+        backend = service.get_queue_backend()
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        
+        exec_task = worker._track_execution(claimed)
+        await started.wait()
+        
+        # Force claim loss
+        from litestar_queues.backends.base import HeartbeatTouchResult
+
+        async def patched_touch(*args, **kwargs) -> HeartbeatTouchResult:
+            return HeartbeatTouchResult(missed_task_ids={record.id}, touched_task_ids=set())
+
+        with mock.patch("litestar_queues.backends.memory.backend.InMemoryQueueBackend.touch_heartbeats", autospec=True, side_effect=patched_touch):
+            await worker._heartbeat_manager._tick()
+            
+        try:
+            await asyncio.wait_for(exec_task, timeout=1.0)
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("Expected CancelledError")
+
+    assert events == ["acquire", "body", "CancelledError", "cleanup"]
+
+
+async def test_dependency_scope_closes_before_shutdown_requeue() -> "None":
+    """A resource is released before the record is handed back to the queue."""
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.worker import Worker
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class CapturingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append(exc_type.__name__ if exc_type else "None")
+            events.append("cleanup")
+            return False
+
+    started = asyncio.Event()
+
+    @task("scoped.shutdown")
+    async def run() -> str:
+        events.append("body")
+        started.set()
+        await asyncio.Event().wait()
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(
+            placement="external", requeue_on_shutdown=True,
+            max_concurrency=1, graceful_shutdown_timeout=0.05, 
+            final_cancel_timeout=1.0
+        ),
+        queue_backend="memory",
+        task_dependency_provider=CapturingProvider()
+    )
+    async with QueueService(config) as service:
+        original_interrupt = service.interrupt_task
+        async def patched_interrupt(*args, **kwargs) -> None:
+            events.append("interrupt")
+            await original_interrupt(*args, **kwargs)
+            
+        with mock.patch("litestar_queues.service.QueueService.interrupt_task", autospec=True, side_effect=patched_interrupt):
+            worker = Worker(service)
+            worker_task = asyncio.create_task(worker.start())
+            
+            record = await service.enqueue("scoped.shutdown", retries=0)
+            await started.wait()
+            
+            await worker.stop()
+            await worker_task
+        
+    assert events == ["acquire", "body", "CancelledError", "cleanup", "interrupt"]
+
+
+async def test_dependency_scope_closes_when_shutdown_requeue_is_disabled() -> "None":
+    """A resource is released before the record is handed back to the queue."""
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.worker import Worker
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+
+    class CapturingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "CapturingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            events.append("acquire")
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append("cleanup")
+            return False
+
+    started = asyncio.Event()
+
+    @task("scoped.shutdown_no_requeue")
+    async def run() -> str:
+        events.append("body")
+        started.set()
+        await asyncio.Event().wait()
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(
+            placement="external", requeue_on_shutdown=False,
+            max_concurrency=1, graceful_shutdown_timeout=0.05, 
+            final_cancel_timeout=1.0
+        ),
+        queue_backend="memory",
+        task_dependency_provider=CapturingProvider()
+    )
+    async with QueueService(config) as service:
+        original_interrupt = service.interrupt_task
+        async def patched_interrupt(*args, **kwargs) -> None:
+            events.append("interrupt")
+            await original_interrupt(*args, **kwargs)
+            
+        with mock.patch("litestar_queues.service.QueueService.interrupt_task", autospec=True, side_effect=patched_interrupt):
+            worker = Worker(service)
+            worker_task = asyncio.create_task(worker.start())
+            
+            record = await service.enqueue("scoped.shutdown_no_requeue", retries=0)
+            await started.wait()
+            
+            await worker.stop()
+            await worker_task
+        
+    assert events == ["acquire", "body", "cleanup"]
+    assert "interrupt" not in events
+
+
+async def test_second_cancel_during_cleanup_does_not_reenter_cleanup() -> "None":
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.worker import Worker
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    events: list[str] = []
+    cleanup_started = asyncio.Event()
+
+    class HangingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "HangingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            events.append("cleanup")
+            cleanup_started.set()
+            await asyncio.Event().wait()
+            return False
+
+    started = asyncio.Event()
+
+    @task("scoped.hanging_cleanup")
+    async def run() -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        task_dependency_provider=HangingProvider()
+    )
+    async with QueueService(config) as service:
+        worker = Worker(service)
+        task_result = await service.enqueue("scoped.hanging_cleanup", retries=0)
+        
+        exec_task = worker._track_execution(task_result.record)
+        await started.wait()
+        
+        exec_task.cancel()
+        await cleanup_started.wait()
+        
+        exec_task.cancel()
+        
+        try:
+            await exec_task
+        except asyncio.CancelledError:
+            pass
+
+    assert events.count("cleanup") == 1
+
+
+async def test_hanging_cleanup_does_not_block_worker_shutdown() -> "None":
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.worker import Worker
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    class HangingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "HangingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            await asyncio.Event().wait()
+            return False
+
+    started = asyncio.Event()
+
+    @task("scoped.hanging_shutdown")
+    async def run() -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(
+            placement="external", graceful_shutdown_timeout=0.05, final_cancel_timeout=0.2
+        ),
+        queue_backend="memory",
+        task_dependency_provider=HangingProvider()
+    )
+    async with QueueService(config) as service:
+        worker = Worker(service)
+        worker_task = asyncio.create_task(worker.start())
+        
+        await service.enqueue("scoped.hanging_shutdown", retries=0)
+        await started.wait()
+        
+        res = await asyncio.wait_for(worker.stop(), timeout=5.0)
+        assert res is True
+        assert len(worker._running_tasks) == 1
+        await worker_task
+
+
+async def test_cleanup_cancelled_midway_is_logged_not_raised(caplog: "pytest.LogCaptureFixture") -> "None":
+    import logging
+    import asyncio
+    from litestar_queues import QueueConfig, WorkerConfig, QueueService, task
+    from litestar_queues.worker import Worker
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    cleanup_started = asyncio.Event()
+
+    class HangingProvider:
+        def __call__(self, task_obj: "object", record: "object", context: "object") -> "HangingProvider":
+            return self
+
+        async def __aenter__(self) -> "dict[str, object]":
+            return {}
+
+        async def __aexit__(self, exc_type: "object", exc_val: "object", exc_tb: "object") -> bool:
+            cleanup_started.set()
+            raise RuntimeError("Midway crash")
+
+    started = asyncio.Event()
+
+    @task("scoped.midway_cancel")
+    async def run() -> str:
+        started.set()
+        await asyncio.sleep(5)
+        return "done"
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        task_dependency_provider=HangingProvider()
+    )
+    
+    with caplog.at_level(logging.ERROR, logger=config.names.logger("service")):
+        async with QueueService(config) as service:
+            worker = Worker(service)
+            task_result = await service.enqueue("scoped.midway_cancel", retries=0)
+            
+            exec_task = worker._track_execution(task_result.record)
+            await started.wait()
+            
+            exec_task.cancel()
+            await cleanup_started.wait()
+            
+            try:
+                await exec_task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("Expected CancelledError to propagate")
+                
+            matching_records = [
+                rec for rec in caplog.records
+                if rec.message == "Queue task dependency scope cleanup failed"
+            ]
+            assert matching_records
+    record = matching_records[0]
+    payload = getattr(record, "queue_task_event_payload", {})
+    assert payload.get("primary_error") == "CancelledError"
