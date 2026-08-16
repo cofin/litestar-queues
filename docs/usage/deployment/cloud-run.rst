@@ -314,6 +314,22 @@ that Job because it includes ``run.jobs.runWithOverrides``.
 If you use a custom IAM role instead, make sure it includes
 ``run.jobs.runWithOverrides``.
 
+To cancel a running execution, the dispatcher's service account additionally needs
+**``run.executions.cancel``** on the job's executions. It is *not* implied by the run-job
+permission. The predefined role carrying it is **Cloud Run Admin** (``roles/run.admin``); a
+least-privilege deployment grants a custom role holding ``run.jobs.run``,
+``run.executions.get`` (already required for reconciliation) and ``run.executions.cancel``.
+
+If this permission is missing, cancellation maps the permission error to
+``retryable``, so ``cancel_task()`` returns ``False`` and the record is deliberately
+left ``running`` rather than being marked cancelled while the container keeps
+running. The warning log and the ``litestar_queues.execution.cancel{queue.execution.status="retryable"}``
+counter are the signal.
+
+The resource name used for cancellation is the stored execution reference, so cancellation
+targets the exact execution this package created — including one created by a
+different execution profile's job.
+
 Database connectivity
 =====================
 

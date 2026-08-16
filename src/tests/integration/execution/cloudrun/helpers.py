@@ -76,15 +76,28 @@ class FakeJobsClient:
 
 
 class FakeExecutionsClient:
-    def __init__(self, execution: "FakeCloudRunExecution | Exception") -> "None":
+    def __init__(
+        self, execution: "FakeCloudRunExecution | Exception", *, cancel_error: "Exception | None" = None
+    ) -> "None":
         self.execution = execution
         self.names: "list[str]" = []
+        self.cancelled_names: "list[str]" = []
+        self.cancel_error = cancel_error
 
     async def get_execution(self, *, name: "str") -> "FakeCloudRunExecution":
         self.names.append(name)
         if isinstance(self.execution, Exception):
             raise self.execution
         return self.execution
+
+    async def cancel_execution(self, *, name: "str") -> "object":
+        self.cancelled_names.append(name)
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        # We need to return a FakeOperation, which requires a FakeCloudRunExecution.
+        # If self.execution is an Exception, we can just return a dummy execution.
+        execution = self.execution if isinstance(self.execution, FakeCloudRunExecution) else FakeCloudRunExecution()
+        return FakeOperation(execution)
 
 
 class NoopServiceContext:

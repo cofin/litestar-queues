@@ -14,6 +14,7 @@ from litestar_queues.events import QueueEvent
 from litestar_queues.exceptions import MissingDependencyError
 from litestar_queues.execution.base import (
     BaseExecutionBackend,
+    ExecutionCancelResult,
     _queue_metric_attributes,
     _queue_observability_attributes,
 )
@@ -167,6 +168,20 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             record.id, reservation_ref, "cloudrun", execution_ref, execution_profile=record.execution_profile
         )
         if finalized is None:
+            result = await self._cancel_execution_ref(execution_ref)
+            runtime.record_counter(
+                "litestar_queues.execution.cancel",
+                attributes={
+                    **metric_attributes,
+                    "queue.execution.status": result.status,
+                    "queue.cancel.trigger": "dispatch_race",
+                },
+            )
+            if result.status == "retryable":
+                self._logger.warning(
+                    "Cloud Run execution orphaned by a lost dispatch race could not be cancelled",
+                    extra={"queue_task_id": str(record.id), "cloudrun_execution_ref": execution_ref},
+                )
             runtime.record_counter(
                 "litestar_queues.execution.dispatch",
                 attributes={**metric_attributes, "queue.execution.status": "ownership_lost"},
@@ -177,6 +192,37 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             attributes={**metric_attributes, "queue.execution.status": "dispatched"},
         )
         return execution_ref
+
+    async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
+        """Cancel the Cloud Run execution backing this record's attempt.
+
+        Returns:
+            The provider's answer, mapped to the shared cancellation contract.
+        """
+        execution_ref = record.execution_ref
+        if execution_ref is None or execution_ref.startswith(EXTERNAL_DISPATCH_RESERVATION_PREFIX):
+            return ExecutionCancelResult.unsupported("no Cloud Run execution reference")
+        del service
+        return await self._cancel_execution_ref(execution_ref)
+
+    async def _cancel_execution_ref(self, execution_ref: "str") -> "ExecutionCancelResult":
+        """Cancel one Cloud Run execution by its full resource name.
+
+        Returns:
+            ``accepted`` once the cancellation operation is created,
+            ``already_cancelled`` when the execution no longer exists, and
+            ``retryable`` for anything else.
+        """
+        try:
+            await (await self._get_executions_client()).cancel_execution(name=execution_ref)
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                return ExecutionCancelResult.already_cancelled("Cloud Run execution not found")
+            self._logger.warning(
+                "Cloud Run cancellation failed", exc_info=True, extra={"cloudrun_execution_ref": execution_ref}
+            )
+            return ExecutionCancelResult.retryable(str(exc))
+        return ExecutionCancelResult.accepted(execution_ref)
 
     async def reconcile(self, service: "QueueService", record: "QueuedTaskRecord") -> "QueuedTaskRecord | None":
         """Reconcile a Cloud Run execution with the queue record.
@@ -226,9 +272,12 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
             return updated
 
         if status.cancelled:
-            updated = await queue_backend.fail_task(
-                current.id, "Cloud Run execution cancelled", retry=False, expected_retry_count=expected_retry_count
+            if current.status != "running":
+                return None
+            cancelled = await queue_backend.cancel_task(
+                current.id, include_running=True, expected_retry_count=expected_retry_count
             )
+            updated = await queue_backend.get_task(current.id) if cancelled else None
             _record_reconcile_result(runtime, metric_attributes, updated)
             return updated
 
