@@ -403,6 +403,32 @@ def test_task_dependency_resolver_config_surface() -> "None":
     assert litestar_queues.TaskErrorSanitizer is TaskErrorSanitizer
 
 
+def test_task_dependency_provider_is_re_exported_from_package_root() -> "None":
+    """TaskDependencyProvider is part of the package root surface."""
+    import litestar_queues
+    from litestar_queues import TaskDependencyProvider
+    from litestar_queues.config import TaskDependencyProvider as ConfigTaskDependencyProvider
+
+    assert TaskDependencyProvider is ConfigTaskDependencyProvider
+    assert "TaskDependencyProvider" in litestar_queues.__all__
+
+
+def test_task_dependency_provider_config_surface() -> "None":
+    """The provider alias and config field are part of the config module surface."""
+    from litestar_queues import config as config_module
+    from litestar_queues.config import QueueConfig
+
+    assert "TaskDependencyProvider" in config_module.__all__
+    assert QueueConfig().task_dependency_provider is None
+
+
+def test_task_dependency_provider_is_not_in_signature_namespace() -> "None":
+    """Only types named in this package's own DI providers belong there."""
+    from litestar_queues import QueueConfig
+
+    assert "TaskDependencyProvider" not in QueueConfig().signature_namespace
+
+
 def test_job_cancelled_helper_is_public() -> "None":
     """Cooperative cancellation is available from the package root."""
     import litestar_queues

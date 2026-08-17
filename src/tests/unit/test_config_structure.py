@@ -1,5 +1,11 @@
 import ast
+import contextlib
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 
 PACKAGE_ROOT = Path("src/litestar_queues")
 
@@ -208,3 +214,25 @@ def test_modules_declare_imports_and_exports_before_constants() -> None:
             out_of_order.append(f"{path}:{line}: {name} precedes __all__")
 
     assert out_of_order == []
+
+
+def test_queue_config_rejects_resolver_and_provider_together() -> "None":
+    """Two dependency mappings for one call have no defined precedence."""
+    import pytest
+
+    from litestar_queues import QueueConfig
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    async def resolver(task: "object", record: "object", context: "object") -> "dict[str, object]":
+        return {}
+
+    @contextlib.asynccontextmanager
+    async def provider(task: "object", record: "object", context: "object") -> "AsyncIterator[dict[str, object]]":
+        yield {}
+
+    with pytest.raises(QueueConfigurationError, match="task_dependency_provider"):
+        QueueConfig(task_dependency_resolver=resolver, task_dependency_provider=provider)
+
+    # each alone is accepted
+    assert QueueConfig(task_dependency_resolver=resolver).task_dependency_provider is None
+    assert QueueConfig(task_dependency_provider=provider).task_dependency_resolver is None

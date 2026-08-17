@@ -3,7 +3,7 @@ import logging
 import subprocess
 import sys
 import textwrap
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from litestar import Litestar
@@ -36,7 +36,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable
     from pathlib import Path
 
 pytestmark = pytest.mark.anyio
@@ -97,6 +97,49 @@ async def test_asgi_placement_creates_and_cleans_up_one_worker() -> "None":
         assert worker.is_running
 
     assert not worker.is_running
+
+
+async def test_plugin_lifecycle_manages_dependency_provider() -> "None":
+    import contextlib
+
+    class _LifecycleDependencyProvider:
+        def __init__(self, order: "list[str]") -> "None":
+            self.order = order
+
+        async def open(self) -> "None":
+            self.order.append("provider.open")
+
+        async def close(self) -> "None":
+            self.order.append("provider.close")
+
+        from collections.abc import AsyncIterator
+
+        from litestar_queues import Task, TaskExecutionContext
+        from litestar_queues.models import QueuedTaskRecord
+
+        def __call__(self, _task: "Any", _record: "Any", _context: "Any") -> "Any":
+            @contextlib.asynccontextmanager
+            async def _scope() -> "AsyncIterator[dict[str, object]]":
+                yield {}
+
+            return _scope()
+
+    order: "list[str]" = []
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="memory",
+            worker=WorkerConfig(placement="asgi", poll_interval=0.01),
+            task_dependency_provider=cast("Any", _LifecycleDependencyProvider(order)),
+        )
+    )
+    app = Litestar(plugins=[plugin])
+
+    async with AsyncTestClient(app=app):
+        assert "provider.open" in order
+        assert "provider.close" not in order
+
+    assert "provider.close" in order
+    assert order == ["provider.open", "provider.close"]
 
 
 def test_app_publisher_is_non_owning_and_worker_publisher_is_owning() -> "None":

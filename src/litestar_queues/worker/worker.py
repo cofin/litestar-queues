@@ -113,7 +113,7 @@ class Worker:
             service: Queue service used to reach the configured backends.
             config: Worker runtime configuration; ``None`` uses defaults.
         """
-        worker_config = config or WorkerConfig()
+        worker_config = config or service.config.worker
         self._service = service
         self._logger = logging.getLogger(service.config.names.logger("worker"))
         self._batch_size = worker_config.batch_size

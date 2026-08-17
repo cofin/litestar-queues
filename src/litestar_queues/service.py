@@ -78,6 +78,7 @@ _LOG_LEVELS = {
 }
 _UNVERIFIED_PERSISTENCE = object()
 _RESOURCE_BUFFER = "buffer"
+_RESOURCE_DEPENDENCY_PROVIDER = "dependency_provider"
 _RESOURCE_EVENT_LOG = "event_log"
 _RESOURCE_EXECUTION_BACKEND = "execution_backend"
 _RESOURCE_QUEUE_BACKEND = "queue_backend"
@@ -90,6 +91,7 @@ _ROLLBACK_ORDER = (
     _RESOURCE_EXECUTION_BACKEND,
     _RESOURCE_EVENT_LOG,
     _RESOURCE_QUEUE_BACKEND,
+    _RESOURCE_DEPENDENCY_PROVIDER,
 )
 _CLOSE_ORDER = (
     _RESOURCE_EXECUTION_BACKEND,
@@ -98,6 +100,7 @@ _CLOSE_ORDER = (
     _RESOURCE_QUEUE_BACKEND,
     _RESOURCE_SINK,
     _RESOURCE_SYNC_EXECUTOR,
+    _RESOURCE_DEPENDENCY_PROVIDER,
 )
 
 
@@ -230,6 +233,9 @@ class QueueService:
     async def open(self) -> "Self":
         """Open queue and execution backends.
 
+        If the configured task dependency provider exposes an ``open()`` method,
+        it is called first. If the provider fails to open, it will not be closed.
+
         Returns:
             The opened service.
         """
@@ -238,6 +244,9 @@ class QueueService:
         opened: "list[str]" = []
         try:
             preload_correlation_context()
+            provider = self._config.task_dependency_provider
+            if provider is not None and await _call_optional_lifecycle(provider, "open"):
+                opened.append(_RESOURCE_DEPENDENCY_PROVIDER)
             queue_backend = self.get_queue_backend()
             opened.append(_RESOURCE_QUEUE_BACKEND)
             await queue_backend.open()
@@ -298,6 +307,8 @@ class QueueService:
                 await _call_optional_lifecycle(self._event_publisher.sink, "close")
             elif resource == _RESOURCE_SYNC_EXECUTOR and self._sync_executor is not None:
                 self._sync_executor.shutdown(wait=True, cancel_futures=True)
+            elif resource == _RESOURCE_DEPENDENCY_PROVIDER:
+                await _call_optional_lifecycle(self._config.task_dependency_provider, "close")
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -802,11 +813,62 @@ class QueueService:
         task_context: "TaskExecutionContext",
         timeout: "object",
     ) -> "object":
-        extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
-        coroutine = task_obj.execute_record(
-            record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+        # Provider acquisition and cleanup ride inside the same timeout as the
+        # body: a provider that blocks on a pool checkout must not be able to
+        # hold a claim open past the attempt's deadline.
+        return await asyncio.wait_for(
+            self._run_task_body(record, task_obj, task_context),
+            timeout=timeout if isinstance(timeout, int | float) else None,
         )
-        return await asyncio.wait_for(coroutine, timeout=timeout if isinstance(timeout, int | float) else None)
+
+    async def _run_task_body(
+        self, record: "QueuedTaskRecord", task_obj: "Task[Any, Any]", task_context: "TaskExecutionContext"
+    ) -> "object":
+        provider = self._config.task_dependency_provider
+        if provider is None:
+            extra_kwargs = await self._resolve_task_dependencies(task_obj, record, task_context)
+            return await task_obj.execute_record(
+                record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+            )
+        scope = provider(task_obj, record, task_context)
+        extra_kwargs = await scope.__aenter__()
+        try:
+            result = await task_obj.execute_record(
+                record, task_context=task_context, extra_kwargs=extra_kwargs, sync_executor=self._sync_executor
+            )
+        except BaseException as exc:
+            await self._close_dependency_scope(scope, record, exc)
+            raise
+        await self._close_dependency_scope(scope, record, None)
+        return result
+
+    async def _close_dependency_scope(
+        self,
+        scope: "contextlib.AbstractAsyncContextManager[Mapping[str, object]]",
+        record: "QueuedTaskRecord",
+        exc: "BaseException | None",
+    ) -> "None":
+        """Close one attempt's dependency scope without displacing its outcome.
+
+        A cleanup failure after a successful body fails the attempt: work that
+        could not release its resource did not succeed. A cleanup failure after
+        any other outcome is logged and dropped, because replacing a live
+        cancellation or task exception would lose the reason the attempt ended.
+        The ``__aexit__`` return value is deliberately ignored -- suppressing the
+        body exception would leave no result to complete the attempt with.
+        """
+        if exc is None:
+            await scope.__aexit__(None, None, None)
+            return
+        try:
+            await scope.__aexit__(type(exc), exc, exc.__traceback__)
+        except BaseException as cleanup_exc:
+            self._log_task_event(
+                "Queue task dependency scope cleanup failed",
+                record,
+                level=logging.ERROR,
+                payload={"error": self._error_message(cleanup_exc, record), "primary_error": type(exc).__name__},
+            )
 
     async def _fail_record_without_retry(
         self,

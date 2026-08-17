@@ -153,3 +153,18 @@ Map ``listen_notify`` to ``notify``, ``listen_notify_durable`` to
         assert len(errors) == 1
         assert term in errors[0]
         migration.write_text(migration.read_text(encoding="utf-8").rsplit("\n", 2)[0] + "\n", encoding="utf-8")
+
+
+def test_task_dependency_docs_cover_both_hooks() -> None:
+    page = (DOCS / "usage" / "dependency-resolver.rst").read_text(encoding="utf-8")
+
+    for marker in (
+        "task_dependency_provider",
+        "task_dependency_resolver",
+        "QueueConfigurationError",
+        "asyncio.CancelledError",
+        "exactly once",
+    ):
+        assert marker in page
+    assert "signature_namespace" not in page
+    assert "Dishka" not in page

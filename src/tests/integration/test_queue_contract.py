@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import pytest
@@ -23,6 +23,8 @@ from litestar_queues.events import QueueEventPublisher, QueueEventsConfig
 from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from litestar_queues.backends import BaseQueueBackend
     from litestar_queues.models import QueuedTaskRecord
     from tests.integration._backends import BackendCase
@@ -514,6 +516,88 @@ async def test_task_dependency_resolver_merges_kwargs_into_task_call(queue_backe
     assert result.status == "completed"
     assert isinstance(result.result, dict)
     assert result.result["injected_service"] == "from-resolver"
+
+
+async def test_task_dependency_provider_scopes_a_successful_attempt(queue_backend: "BaseQueueBackend") -> "None":
+    clear_task_registry()
+
+    events: "list[str]" = []
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def provider(
+        _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
+    ) -> "AsyncIterator[dict[str, object]]":
+        events.append("acquire")
+        try:
+            yield {"injected_service": "from-provider"}
+        finally:
+            events.append("cleanup")
+
+    @task("contract.provider.success")
+    async def consume(**kwargs: "object") -> "dict[str, object]":
+        events.append("body")
+        return {"injected_service": kwargs["injected_service"]}
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=cast("Any", provider),
+    )
+    service = QueueService(config, queue_backend=queue_backend)
+
+    async with service:
+        result = await service.enqueue("contract.provider.success")
+        await result.refresh()
+
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status == "completed"
+    assert isinstance(result.result, dict)
+    assert result.result["injected_service"] == "from-provider"
+
+
+async def test_task_dependency_provider_closes_on_failure(queue_backend: "BaseQueueBackend") -> "None":
+    clear_task_registry()
+
+    events: "list[str]" = []
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def provider(
+        _task: "Task[..., object]", _record: "QueuedTaskRecord", _context: "TaskExecutionContext"
+    ) -> "AsyncIterator[dict[str, object]]":
+        events.append("acquire")
+        try:
+            yield {"injected_service": "from-provider"}
+        finally:
+            events.append("cleanup")
+
+    boom_msg = "boom"
+
+    @task("contract.provider.failure")
+    async def consume(**kwargs: "object") -> "dict[str, object]":
+        events.append("body")
+        raise RuntimeError(boom_msg)
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=cast("Any", provider),
+    )
+    service = QueueService(config, queue_backend=queue_backend)
+
+    async with service:
+        result = await service.enqueue("contract.provider.failure", retries=0)
+        await result.refresh()
+
+    assert events == ["acquire", "body", "cleanup"]
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "boom" in result.error
 
 
 async def test_task_dependency_resolver_cannot_override_task_context(queue_backend: "BaseQueueBackend") -> "None":

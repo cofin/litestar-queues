@@ -24,6 +24,15 @@ Unreleased
   are moved from ``litestar_queues.backends.sqlspec`` to ``litestar_queues.events``,
   and extra columns are declared on :class:`~litestar_queues.events.EventHistoryConfig`
   via ``extra_columns``. Querying undeclared extra keys raises ``QueueConfigurationError``.
+* ``QueueConfig.task_dependency_provider`` supplies task keyword arguments from
+  an attempt-scoped async context manager, so an application's dependency
+  container can open a child scope for each attempt and release it on every
+  outcome -- success, retry, terminal failure, timeout, cancellation, claim
+  loss, and shutdown interruption. Acquisition runs inside the attempt timeout.
+  A provider object that exposes ``open()``/``close()`` joins the
+  :class:`~litestar_queues.QueueService` lifecycle and its startup rollback.
+  ``task_dependency_resolver`` is unchanged for stateless injection; setting
+  both raises ``QueueConfigurationError``. See :doc:`usage/dependency-resolver`.
 
 0.9.0 - 2026-08-14
 ==================
