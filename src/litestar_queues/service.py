@@ -816,6 +816,7 @@ class QueueService:
         final_status = "failed"
         failure_exc: "BaseException | None" = None
         is_retryable = False
+        result: "object" = None
         try:
             await task_context.lifecycle("task.started")
             result = await self._execute_task(record, task_obj, task_context, timeout)

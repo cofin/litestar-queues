@@ -234,8 +234,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._control_channel = (
             config.names.database_channel("worker_control") if config is not None else DEFAULT_CONTROL_CHANNEL
         )
-        self._sync_executor = None
-        self._heartbeat_sync_executor = None
+        self._sync_executor: "ThreadPoolExecutor | None" = None
+        self._heartbeat_sync_executor: "ThreadPoolExecutor | None" = None
         self._opened = False
 
     async def open(self) -> "bool":

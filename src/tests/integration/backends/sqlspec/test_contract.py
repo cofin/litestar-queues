@@ -82,6 +82,7 @@ pytestmark = pytest.mark.anyio
 class FakeSQLSpecConfig(SimpleNamespace):
     """Structural config used by SQLSpec store dispatch tests."""
 
+    is_async: ClassVar[bool] = False
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
