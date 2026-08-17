@@ -177,8 +177,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         placeholders = ", ".join(f":{column}" for column in names)
         return f"INSERT INTO {self._quoted_table_name()} ({columns}) VALUES ({placeholders})"  # noqa: S608
 
-    def _select_columns(self) -> "tuple[str, ...]":
-        return tuple(self._select_column(column) for column in self._all_columns())
+    def _select_columns(self) -> "tuple[Any, ...]":
+        return tuple(self._col(column) if self._col(column) != column else column for column in self._all_columns())
 
     def select_events(
         self,
@@ -821,7 +821,7 @@ class SQLSpecQueueEventLog:
             actor_type=cast("str | None", row["actor_type"]),
             actor_id=cast("str | None", row["actor_id"]),
             stage=cast("str | None", row["stage"]),
-            level=cast("str | None", row["level"]),
+            level=cast("str | None", row.get("level", row.get("event_level"))),
             message=cast("str | None", row["message"]),
             detail=self._store.deserialize_detail(row["detail"]),
             progress_current=_optional_float(row["progress_current"]),
