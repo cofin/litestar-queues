@@ -178,8 +178,12 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         """Return a parametrized batch INSERT template for event rows."""
         names = self._all_columns()
         columns = ", ".join(self._quoted_col(column) for column in names)
-        placeholders = ", ".join(f":{column}" for column in names)
+        placeholders = ", ".join(f":{self.parameter_name(column)}" for column in names)
         return f"INSERT INTO {self._quoted_table_name()} ({columns}) VALUES ({placeholders})"  # noqa: S608
+
+    def parameter_name(self, column: "str") -> "str":
+        """Return the bind parameter name for a public event column."""
+        return self._col(column)
 
     def _select_columns(self) -> "tuple[Any, ...]":
         return tuple(self._col(column) if self._col(column) != column else column for column in self._all_columns())
@@ -805,6 +809,9 @@ class SQLSpecQueueEventLog:
         }
         for column in self._store.extra_columns:
             params[column.name] = _optional_str(detail.get(column.source))
+        level_parameter = self._store.parameter_name("level")
+        if level_parameter != "level":
+            params[level_parameter] = params.pop("level")
         return params
 
     def _record_from_row(self, row: "dict[str, Any]") -> "QueueEventLogRecord":
