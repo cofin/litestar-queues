@@ -1,5 +1,7 @@
 """Advanced Alchemy event-history query, summary, and filtered retention."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,8 +46,8 @@ def _event(event_id: str, *, offset: int, **kwargs: object) -> QueueEvent:
     )
 
 
-async def _log(tmp_path: Path, *events: QueueEvent) -> AdvancedAlchemyQueueEventLog:
-
+@asynccontextmanager
+async def _log(tmp_path: Path, *events: QueueEvent) -> AsyncIterator[AdvancedAlchemyQueueEventLog]:
     db_path = tmp_path / f"aa-event-history-{len(events)}.db"
     sqlalchemy_config = _sqlite_config(db_path)
     await create_tables(sqlalchemy_config, AAEventQueueEvent)
@@ -62,33 +64,33 @@ async def _log(tmp_path: Path, *events: QueueEvent) -> AdvancedAlchemyQueueEvent
     log = backend.get_event_log(event_history_config)
     assert isinstance(log, AdvancedAlchemyQueueEventLog)
 
-    for event in events:
-        await log.publish_event(event)
-    await log.flush_events()
-
-    return log
+    try:
+        for event in events:
+            await log.publish_event(event)
+        await log.flush_events()
+        yield log
+    finally:
+        await backend.close()
 
 
 async def test_query_filters_on_every_dimension(tmp_path: Path) -> None:
-    log = await _log(
+    async with _log(
         tmp_path,
         _event("a", offset=0, scope_key="acme", level="error"),
         _event("b", offset=1, scope_key="other", level="error"),
         _event("c", offset=2, scope_key="acme", level="info"),
-    )
-
-    page = await log.query_events(QueueEventQuery(scope_key="acme", level="error"))
+    ) as log:
+        page = await log.query_events(QueueEventQuery(scope_key="acme", level="error"))
 
     assert [record.event_id for record in page.items] == ["a"]
 
 
 async def test_query_orders_and_pages_stably(tmp_path: Path) -> None:
-    log = await _log(tmp_path, *[_event(str(index), offset=index) for index in range(5)])
-
-    first = await log.query_events(QueueEventQuery(limit=2))
-    second = await log.query_events(QueueEventQuery(limit=2, offset=2))
-    descending = await log.query_events(QueueEventQuery(order="desc", limit=2))
-    empty = await log.query_events(QueueEventQuery(limit=2, offset=50))
+    async with _log(tmp_path, *[_event(str(index), offset=index) for index in range(5)]) as log:
+        first = await log.query_events(QueueEventQuery(limit=2))
+        second = await log.query_events(QueueEventQuery(limit=2, offset=2))
+        descending = await log.query_events(QueueEventQuery(order="desc", limit=2))
+        empty = await log.query_events(QueueEventQuery(limit=2, offset=50))
 
     assert [r.event_id for r in first.items] == ["0", "1"] and first.total == 5
     assert [r.event_id for r in second.items] == ["2", "3"]
@@ -97,14 +99,13 @@ async def test_query_orders_and_pages_stably(tmp_path: Path) -> None:
 
 
 async def test_summaries_are_scoped_and_rank_levels(tmp_path: Path) -> None:
-    log = await _log(
+    async with _log(
         tmp_path,
         _event("a", offset=0, scope_key="acme", level="info", message="one", payload={"stage": "load"}),
         _event("b", offset=1, scope_key="acme", level="error", message="two", payload={"stage": "load"}),
         _event("c", offset=2, scope_key="other", level="critical", payload={"stage": "load"}),
-    )
-
-    summaries = await log.summarize_stages(QueueEventQuery(scope_key="acme"))
+    ) as log:
+        summaries = await log.summarize_stages(QueueEventQuery(scope_key="acme"))
 
     assert len(summaries) == 1
     assert summaries[0].stage == "load"
@@ -114,25 +115,23 @@ async def test_summaries_are_scoped_and_rank_levels(tmp_path: Path) -> None:
 
 
 async def test_summary_rejects_pagination(tmp_path: Path) -> None:
-    log = await _log(tmp_path, _event("a", offset=0))
-
     from litestar_queues.exceptions import QueueConfigurationError
 
-    with pytest.raises(QueueConfigurationError):
-        await log.summarize_stages(QueueEventQuery(limit=1))
+    async with _log(tmp_path, _event("a", offset=0)) as log:
+        with pytest.raises(QueueConfigurationError):
+            await log.summarize_stages(QueueEventQuery(limit=1))
 
 
 async def test_filtered_bounded_cleanup_converges_and_spares_unmatched(tmp_path: Path) -> None:
-    log = await _log(
+    async with _log(
         tmp_path,
         *[_event(f"m{index}", offset=index, scope_key="acme") for index in range(5)],
         *[_event(f"u{index}", offset=index, scope_key="other") for index in range(3)],
-    )
-    cutoff = BASE + timedelta(hours=1)
-    match = QueueEventQuery(scope_key="acme")
-
-    deleted = [await log.cleanup_events(before=cutoff, match=match, limit=2) for _ in range(4)]
-    remaining = await log.query_events()
+    ) as log:
+        cutoff = BASE + timedelta(hours=1)
+        match = QueueEventQuery(scope_key="acme")
+        deleted = [await log.cleanup_events(before=cutoff, match=match, limit=2) for _ in range(4)]
+        remaining = await log.query_events()
 
     assert deleted == [2, 2, 1, 0]
     assert {record.scope_key for record in remaining.items} == {"other"}
@@ -140,17 +139,16 @@ async def test_filtered_bounded_cleanup_converges_and_spares_unmatched(tmp_path:
 
 
 async def test_exclude_implements_first_match_wins(tmp_path: Path) -> None:
-    log = await _log(
+    async with _log(
         tmp_path,
         _event("a", offset=0, scope_key="acme", level="error"),
         _event("b", offset=1, scope_key="acme", level="info"),
-    )
-    cutoff = BASE + timedelta(hours=1)
-
-    deleted = await log.cleanup_events(
-        before=cutoff, match=QueueEventQuery(scope_key="acme"), exclude=(QueueEventQuery(level="error"),)
-    )
-    remaining = await log.query_events()
+    ) as log:
+        cutoff = BASE + timedelta(hours=1)
+        deleted = await log.cleanup_events(
+            before=cutoff, match=QueueEventQuery(scope_key="acme"), exclude=(QueueEventQuery(level="error"),)
+        )
+        remaining = await log.query_events()
 
     assert deleted == 1
     assert [record.event_id for record in remaining.items] == ["a"]
