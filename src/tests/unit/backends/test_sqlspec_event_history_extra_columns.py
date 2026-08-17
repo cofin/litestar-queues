@@ -201,12 +201,12 @@ def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
     statements = _store_for_dialect("oracle").create_statements()  # type: ignore[attr-defined]
 
     store = _store_for_dialect("oracle")
-    assert '"event_level" VARCHAR(255)' in statements[0]
-    assert '"event_level"' in store.insert_events_template()  # type: ignore[attr-defined]
+    assert "EVENT_LEVEL VARCHAR(255)" in statements[0]
+    assert "EVENT_LEVEL" in store.insert_events_template()  # type: ignore[attr-defined]
     selected = store.select_events().build(dialect="oracle").sql  # type: ignore[attr-defined]
     assert "event_level" in selected
     assert "event_level AS level" not in selected
-    assert '("task_id", "sequence", "occurred_at")' in statements[1]
+    assert "(TASK_ID, SEQUENCE, OCCURRED_AT)" in statements[1]
 
 
 def test_spanner_event_history_uses_backtick_quoted_identifiers() -> "None":

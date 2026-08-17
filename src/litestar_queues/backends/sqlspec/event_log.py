@@ -72,6 +72,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return "mssql" if dialect == "tsql" else dialect
 
     def _quote_identifier(self, identifier: "str") -> "str":
+        if self._event_dialect_name() == "oracle":
+            return ".".join(part.upper() for part in split_qualified_identifier(identifier) or (identifier,))
         quote = quote_backtick_identifier if self._event_dialect_name() in {"mysql", "spanner"} else quote_identifier
         parts = split_qualified_identifier(identifier)
         if not parts:
@@ -79,6 +81,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return ".".join(quote(part) for part in parts)
 
     def _quote_unsplit_identifier(self, identifier: "str") -> "str":
+        if self._event_dialect_name() == "oracle":
+            return identifier.upper()
         quote = quote_backtick_identifier if self._event_dialect_name() in {"mysql", "spanner"} else quote_identifier
         return quote(identifier)
 
