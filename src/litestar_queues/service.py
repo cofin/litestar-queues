@@ -814,6 +814,8 @@ class QueueService:
         task_context.actor = _resolve_task_actor(task_obj)
         execution_scope = _bind_execution_context(task_context, record.metadata)
         final_status = "failed"
+        failure_exc: "BaseException | None" = None
+        is_retryable = False
         try:
             await task_context.lifecycle("task.started")
             result = await self._execute_task(record, task_obj, task_context, timeout)
@@ -823,28 +825,22 @@ class QueueService:
             telemetry.finish(final_status)
             raise
         except JobCancelledError as exc:
-            # The process running this body *is* the external execution.
-            # Asking the provider to kill it would preempt the terminal write the handler is about to make.
-            cancelled = await self._cancel_task(
-                record.id, include_running=True, message=str(exc), cancel_external=False
-            )
-            if not cancelled:
-                final_status = "claim_lost"
-                current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
-                telemetry.finish(final_status)
-                return current
-            cancelled_record = await self._current_or_claimed(record)
-            final_status = cancelled_record.status
-            telemetry.finish(final_status)
-            return cancelled_record
+            return await self._handle_job_cancelled(record, exc, task_context, telemetry)
         except NonRetryableError as exc:
             telemetry.record_exception(exc)
-            return await self._fail_record_without_retry(record, exc, task_context, telemetry)
+            failure_exc = exc
+            is_retryable = False
         except Exception as exc:
             telemetry.record_exception(exc)
-            return await self._fail_record_with_retry(record, exc, task_context, telemetry)
+            failure_exc = exc
+            is_retryable = True
         finally:
             _reset_execution_context(execution_scope)
+
+        if failure_exc is not None:
+            if not is_retryable:
+                return await self._fail_record_without_retry(record, failure_exc, task_context, telemetry)
+            return await self._fail_record_with_retry(record, failure_exc, task_context, telemetry)
 
         completed_record = await self.get_queue_backend().complete_task(
             record.id, result=result, expected_retry_count=record.retry_count
@@ -863,6 +859,22 @@ class QueueService:
         await self._reschedule_if_needed(completed)
         telemetry.finish(final_status)
         return completed
+
+    async def _handle_job_cancelled(
+        self,
+        record: "QueuedTaskRecord",
+        exc: "JobCancelledError",
+        task_context: "TaskExecutionContext",
+        telemetry: "_ExecutionObservability",
+    ) -> "QueuedTaskRecord":
+        cancelled = await self._cancel_task(record.id, include_running=True, message=str(exc), cancel_external=False)
+        if not cancelled:
+            current = await self.publish_claim_lost(record, phase="cancel", task_context=task_context)
+            telemetry.finish("claim_lost")
+            return current
+        cancelled_record = await self._current_or_claimed(record)
+        telemetry.finish(cancelled_record.status)
+        return cancelled_record
 
     async def _execute_task(
         self,

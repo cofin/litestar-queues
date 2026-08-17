@@ -1,6 +1,7 @@
 """Advanced Alchemy custom queue model integration tests."""
 
 import asyncio
+import contextlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -373,7 +374,7 @@ def _index_names(model: "type[object]") -> "set[str]":
 
 
 def _sqlite_table_names(path: "Path") -> "set[str]":
-    with sqlite3.connect(path) as connection:
+    with contextlib.closing(sqlite3.connect(path)) as connection:
         rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         return {cast("str", row[0]) for row in rows}
 

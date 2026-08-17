@@ -217,13 +217,15 @@ def test_exit_removes_the_write_ahead_log_and_shared_memory_files() -> "None":
     with EphemeralServerContext(nonce="nonce-8") as context:
         path = context.path
         connection = sqlite3.connect(path, isolation_level=None)
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute("INSERT INTO queue_maintenance VALUES ('sweep', 'token', '2026-01-01T00:00:00+00:00')")
-        connection.execute("COMMIT")
-        sidecars = [path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")]
-        assert any(sidecar.exists() for sidecar in sidecars)
-        connection.close()
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("INSERT INTO queue_maintenance VALUES ('sweep', 'token', '2026-01-01T00:00:00+00:00')")
+            connection.execute("COMMIT")
+            sidecars = [path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")]
+            assert any(sidecar.exists() for sidecar in sidecars)
+        finally:
+            connection.close()
 
     assert not path.exists()
     assert not any(sidecar.exists() for sidecar in sidecars)

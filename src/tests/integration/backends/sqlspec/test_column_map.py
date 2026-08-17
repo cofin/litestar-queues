@@ -1,5 +1,6 @@
 """Tests for SQLSpec column remapping and adopter-owned tables."""
 
+import contextlib
 import importlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -220,7 +221,7 @@ async def test_column_map_operates_against_adopter_owned_sqlite_table(
     assert completed.result == {"ok": True}
     assert [item.id for item in completed_by_task] == [record.id]
 
-    with sqlite3.connect(db_path) as connection:
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
         row = connection.execute(
             'SELECT "function", "data", "outcome", "meta", "external_ref" FROM adopter_jobs'
         ).fetchone()
@@ -250,7 +251,7 @@ async def test_manage_schema_false_emits_no_schema_ddl(
     assert store.drop_statements() == []
     assert await migration.up(context) == []
     assert await migration.down(context) == []
-    with sqlite3.connect(db_path) as connection:
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
         tables = {table[0] for table in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert tables == set()
 
@@ -303,7 +304,7 @@ def test_backend_config_validates_column_map_and_native_json_columns(
 
 def _create_adopter_sqlite_schema(path: "Path") -> "None":
     columns = ADOPTER_COLUMN_MAP
-    with sqlite3.connect(path) as connection:
+    with contextlib.closing(sqlite3.connect(path)) as connection:
         connection.execute(
             f"""
             CREATE TABLE adopter_jobs (
