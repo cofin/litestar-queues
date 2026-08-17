@@ -6,6 +6,25 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+Unreleased
+==========
+
+**Added:**
+
+* Universal actor attachment and lifecycle propagation: ``@task(actor=...)``
+  accepts a literal ``QueueEventActor`` or zero-argument resolver,
+  ``TaskExecutionContext.actor`` provides attempt-scoped defaults, and
+  ``publish()``, ``progress()``, ``log()``, ``event()``, and module helpers
+  accept per-call ``actor=`` overrides. Worker lifecycle events automatically inherit
+  the context actor.
+* Backend-neutral event history ``extra=`` query surface: ``extra=`` is promoted
+  to the :class:`~litestar_queues.events.QueueEventLog` protocol and supported across
+  all six backends (Memory, Ephemeral, Redis, Valkey, Advanced Alchemy, SQLSpec).
+  **Breaking:** ``EventHistoryExtraColumn`` and ``validate_event_history_extra_columns``
+  are moved from ``litestar_queues.backends.sqlspec`` to ``litestar_queues.events``,
+  and extra columns are declared on :class:`~litestar_queues.events.EventHistoryConfig`
+  via ``extra_columns``. Querying undeclared extra keys raises ``QueueConfigurationError``.
+
 0.9.0 - 2026-08-14
 ==================
 

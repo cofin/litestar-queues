@@ -90,6 +90,7 @@ _EVENT_FIELDS = (
     "sequence",
     "occurred_at",
     "created_at",
+    "extra",
 )
 
 

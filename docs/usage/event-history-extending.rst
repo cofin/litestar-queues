@@ -15,27 +15,25 @@ text columns. Implementing :class:`~litestar_queues.events.QueueEventLog`
 replaces the store entirely and gives you your own schema, indexes, and query
 surface.
 
-Declaring extra columns on the built-in SQLSpec store
-=====================================================
+Declaring extra columns on event history
+=========================================
 
-If you want to keep the built-in SQLSpec store and only need indexed,
-filterable columns, declare them on the backend config:
+If you need indexed, filterable columns across any backend, declare them on
+``EventHistoryConfig``:
 
 .. code-block:: python
 
-   from litestar_queues.backends.sqlspec import EventHistoryExtraColumn, SQLSpecBackendConfig
+   from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn
 
-   backend_config = SQLSpecBackendConfig(
-       sqlspec_config=sqlspec_config,
-       event_history_extra_columns=(
+   history_config = EventHistoryConfig(
+       extra_columns=(
            EventHistoryExtraColumn(name="tenant_id", source="tenant_id", indexed=True),
        ),
    )
 
-``sqlspec_config`` is the SQLSpec database config for your own database; see
-:doc:`backends/sqlspec` for how to build one.
+``indexed`` is a SQL physical index hint; non-SQL backends safely ignore it.
 
-Each declaration adds one column to the event-history table. ``source`` is the
+Each declaration adds one column or extra mapping to event history. ``source`` is the
 key read from the event payload, so publishing carries the value automatically
 from inside a task body:
 
@@ -49,8 +47,7 @@ from inside a task body:
    async def import_catalog(tenant_id: str) -> None:
        await publish_task_log("importing", payload={"tenant_id": tenant_id})
 
-Query it with the additive ``extra`` filter on the SQLSpec event log. This
-continues from the ``backend_config`` declared above:
+Query it with the additive ``extra`` filter on any event log implementation:
 
 .. code-block:: python
 
@@ -60,8 +57,7 @@ continues from the ``backend_config`` declared above:
 
    async def tenant_history(tenant_id: str) -> None:
        queue_config = QueueConfig(
-           queue_backend=backend_config,
-           events=QueueEventsConfig(history=EventHistoryConfig()),
+           events=QueueEventsConfig(history=history_config),
        )
        async with QueueService(queue_config) as service:
            event_log = service.get_event_log()
@@ -73,8 +69,8 @@ continues from the ``backend_config`` declared above:
 
 ``extra`` uses equality and is ANDed with the built-in ``task_id``,
 ``task_name``, ``actor_id``, and ``actor_type`` filters. An undeclared key
-raises ``ValueError`` naming the declared columns, so the filter never reaches
-SQL unvalidated.
+raises ``QueueConfigurationError`` naming the declared columns, so the filter never reaches
+persistence unvalidated.
 
 A declared name must be a valid unquoted SQL identifier and must not collide
 with a column the package already owns — including ``actor_type`` and
@@ -91,10 +87,8 @@ Three things to know:
 * Values are stored as text and read from the event payload. They stay in
   ``detail`` too — the column is an indexable, filterable copy, and ``detail``
   remains the complete record.
-* The ``extra`` filter lives on the concrete SQLSpec event log, not on the
-  :class:`~litestar_queues.events.QueueEventLog` protocol. ``get_event_log()``
-  is annotated with the protocol, so a type checker needs a ``cast`` to the
-  concrete SQLSpec store before it accepts the keyword.
+* The ``extra`` filter lives directly on the :class:`~litestar_queues.events.QueueEventLog`
+  protocol and is supported by all backends.
 * ``summarize_stages`` does not accept the filter. Scoped aggregates are a
   reason to implement the protocol instead.
 

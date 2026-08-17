@@ -1228,8 +1228,9 @@ class _RecordingEventLog:
         actor_id: "str | None" = None,
         actor_type: "str | None" = None,
         limit: "int | None" = None,
+        extra: "Mapping[str, str] | None" = None,
     ) -> "list[QueueEventLogRecord]":
-        del task_id, task_name, actor_id, actor_type, limit
+        del task_id, task_name, actor_id, actor_type, limit, extra
         return []
 
     async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":

@@ -1,6 +1,5 @@
 """Schema and migration helpers for the SQLSpec queue backend."""
 
-from dataclasses import dataclass
 from hashlib import sha1
 from importlib.resources import files
 from pathlib import Path
@@ -11,7 +10,7 @@ from sqlspec.utils.text import quote_identifier, split_qualified_identifier
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
 __all__ = (
     "DEFAULT_COLUMN_MAP",
@@ -20,8 +19,6 @@ __all__ = (
     "DEFAULT_TABLE_NAME",
     "DEFAULT_TASK_RESERVATION_TABLE_SUFFIX",
     "EVENT_HISTORY_COLUMNS",
-    "RESERVED_EVENT_HISTORY_COLUMNS",
-    "EventHistoryExtraColumn",
     "event_history_table_name_for",
     "maintenance_table_name_for",
     "migration_directory",
@@ -29,7 +26,6 @@ __all__ = (
     "resolve_column_map",
     "task_reservation_table_name_for",
     "validate_column_map",
-    "validate_event_history_extra_columns",
     "validate_native_json_columns",
     "validate_table_name",
 )
@@ -98,70 +94,6 @@ EVENT_HISTORY_COLUMNS = (
 """Physical columns the package owns on the SQLSpec event-history table."""
 
 _EVENT_HISTORY_COLUMN_NAMES = frozenset(EVENT_HISTORY_COLUMNS)
-
-RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"entity", "scope", "scope_key"})
-"""Names held for built-in event-history scoping dimensions.
-
-These are not columns on the table yet. They are reserved so an adopter-declared
-extra column cannot claim a name the package intends to own.
-"""
-
-
-@dataclass(frozen=True, slots=True)
-class EventHistoryExtraColumn:
-    """Adopter-declared scoping column on the SQLSpec event-history table."""
-
-    name: "str"
-    """Physical column name; must be a valid unquoted SQL identifier."""
-
-    source: "str"
-    """Key looked up in the event payload (``QueueEvent.payload``)."""
-
-    indexed: "bool" = False
-    """Whether a ``(name, occurred_at)`` index is created."""
-
-
-def validate_event_history_extra_columns(
-    columns: "Sequence[EventHistoryExtraColumn]",
-) -> "tuple[EventHistoryExtraColumn, ...]":
-    """Validate adopter-declared extra event-history columns.
-
-    Returns:
-        The validated declarations as a tuple.
-
-    Raises:
-        QueueConfigurationError: If a name is not a valid unquoted SQL
-            identifier, collides with a package-owned column, uses a reserved
-            scoping-dimension name, repeats another declaration, or the payload
-            source key is empty.
-    """
-    seen: "set[str]" = set()
-    validated: "list[EventHistoryExtraColumn]" = []
-    for column in columns:
-        if not _is_unquoted_identifier_part(column.name):
-            msg = f"Invalid SQL identifier in event_history_extra_columns: {column.name!r}"
-            raise QueueConfigurationError(msg)
-        # Unquoted SQL identifiers fold case, so every name comparison below does
-        # too: ``TASK_ID`` and ``task_id`` are one column to the database.
-        folded = column.name.lower()
-        if folded in _EVENT_HISTORY_COLUMN_NAMES:
-            msg = f"event_history_extra_columns may not redeclare package-owned column {column.name!r}"
-            raise QueueConfigurationError(msg)
-        if folded in RESERVED_EVENT_HISTORY_COLUMNS:
-            msg = (
-                f"event_history_extra_columns may not use {column.name!r}: "
-                f"{sorted(RESERVED_EVENT_HISTORY_COLUMNS)!r} are reserved for built-in scoping dimensions"
-            )
-            raise QueueConfigurationError(msg)
-        if folded in seen:
-            msg = f"Duplicate column in event_history_extra_columns: {column.name!r}"
-            raise QueueConfigurationError(msg)
-        if not column.source:
-            msg = f"event_history_extra_columns entry {column.name!r} requires a non-empty payload source key"
-            raise QueueConfigurationError(msg)
-        seen.add(folded)
-        validated.append(column)
-    return tuple(validated)
 
 
 def validate_table_name(table_name: "str") -> "str":

@@ -4,12 +4,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from litestar_queues.backends.sqlspec.schema import (
-    EventHistoryExtraColumn,
     resolve_column_map,
-    validate_event_history_extra_columns,
     validate_native_json_columns,
     validate_table_name,
 )
+from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:

@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from litestar_queues.events.models import QueueEvent
+from litestar_queues.events.models import QueueEvent, QueueEventActor
 from litestar_queues.exceptions import JobCancelledError
 
 if TYPE_CHECKING:
@@ -56,6 +56,7 @@ class TaskExecutionContext:
     execution_profile: "str | None"
     attempt: "int"
     event_publisher: "QueueEventPublisher"
+    actor: "QueueEventActor | None" = None
     _sequence: "int" = field(default=0, init=False, repr=False)
     _cancelled: "asyncio.Event" = field(default_factory=asyncio.Event, init=False, repr=False)
 
@@ -85,6 +86,7 @@ class TaskExecutionContext:
         message: "str | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        actor: "QueueEventActor | None" = None,
         immediate: "bool" = False,
     ) -> "None":
         """Publish a task progress event."""
@@ -99,6 +101,7 @@ class TaskExecutionContext:
             progress_percent=progress_percent,
             payload=payload,
             channels=channels,
+            actor=actor,
             immediate=immediate,
         )
 
@@ -109,11 +112,18 @@ class TaskExecutionContext:
         level: "str" = "info",
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        actor: "QueueEventActor | None" = None,
         immediate: "bool" = False,
     ) -> "None":
         """Publish a task log event."""
         await self.publish(
-            "task.log", level=level, message=message, payload=payload, channels=channels, immediate=immediate
+            "task.log",
+            level=level,
+            message=message,
+            payload=payload,
+            channels=channels,
+            actor=actor,
+            immediate=immediate,
         )
 
     async def event(
@@ -123,10 +133,13 @@ class TaskExecutionContext:
         message: "str | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        actor: "QueueEventActor | None" = None,
         immediate: "bool" = False,
     ) -> "None":
         """Publish a custom task event."""
-        await self.publish(event_type, message=message, payload=payload, channels=channels, immediate=immediate)
+        await self.publish(
+            event_type, message=message, payload=payload, channels=channels, actor=actor, immediate=immediate
+        )
 
     async def lifecycle(
         self, event_type: "str", *, message: "str | None" = None, payload: "dict[str, Any] | None" = None
@@ -152,6 +165,7 @@ class TaskExecutionContext:
         progress_percent: "float | None" = None,
         payload: "dict[str, Any] | None" = None,
         channels: "Sequence[str] | None" = None,
+        actor: "QueueEventActor | None" = None,
         immediate: "bool" = False,
     ) -> "QueueEvent":
         """Build and publish an event for this task context.
@@ -176,6 +190,7 @@ class TaskExecutionContext:
             progress_total=progress_total,
             progress_percent=progress_percent,
             payload=dict(payload or {}),
+            actor=actor if actor is not None else self.actor,
         )
         await self.event_publisher.publish(event, channels=channels, immediate=immediate)
         return event
@@ -211,6 +226,7 @@ async def publish_task_progress(
     message: "str | None" = None,
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    actor: "QueueEventActor | None" = None,
     immediate: "bool" = False,
 ) -> "None":
     """Publish progress through the currently bound task context."""
@@ -221,6 +237,7 @@ async def publish_task_progress(
         message=message,
         payload=payload,
         channels=channels,
+        actor=actor,
         immediate=immediate,
     )
 
@@ -231,11 +248,12 @@ async def publish_task_log(
     level: "str" = "info",
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    actor: "QueueEventActor | None" = None,
     immediate: "bool" = False,
 ) -> "None":
     """Publish a log event through the currently bound task context."""
     await require_current_task_context().log(
-        message, level=level, payload=payload, channels=channels, immediate=immediate
+        message, level=level, payload=payload, channels=channels, actor=actor, immediate=immediate
     )
 
 
@@ -245,11 +263,12 @@ async def publish_task_event(
     message: "str | None" = None,
     payload: "dict[str, Any] | None" = None,
     channels: "Sequence[str] | None" = None,
+    actor: "QueueEventActor | None" = None,
     immediate: "bool" = False,
 ) -> "None":
     """Publish a custom event through the currently bound task context."""
     await require_current_task_context().event(
-        event_type, message=message, payload=payload, channels=channels, immediate=immediate
+        event_type, message=message, payload=payload, channels=channels, actor=actor, immediate=immediate
     )
 
 

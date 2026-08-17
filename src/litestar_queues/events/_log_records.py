@@ -3,9 +3,12 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
-from litestar_queues.events.history import QueueEventLogRecord
+from litestar_queues.events.history import QueueEventLogRecord, extract_event_extras
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from litestar_queues.events.history import EventHistoryExtraColumn
     from litestar_queues.events.models import QueueEvent
 
 __all__ = (
@@ -19,13 +22,19 @@ __all__ = (
 )
 
 
-def event_log_record_from_event(event: "QueueEvent", *, created_at: "datetime | None" = None) -> "QueueEventLogRecord":
+def event_log_record_from_event(
+    event: "QueueEvent",
+    *,
+    extra_columns: "Sequence[EventHistoryExtraColumn]" = (),
+    created_at: "datetime | None" = None,
+) -> "QueueEventLogRecord":
     """Convert a queue event envelope into a backend-neutral history record.
 
     Returns:
         Backend-neutral event-history record.
     """
     detail = dict(event.payload)
+    extra = extract_event_extras(detail, extra_columns)
     return QueueEventLogRecord(
         event_id=event.id,
         event_type=event.type,
@@ -48,6 +57,7 @@ def event_log_record_from_event(event: "QueueEvent", *, created_at: "datetime | 
         sequence=event.sequence,
         occurred_at=parse_datetime(event.occurred_at),
         created_at=created_at or utc_now(),
+        extra=extra,
     )
 
 

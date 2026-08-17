@@ -82,6 +82,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         task_name: "str | None" = None,
         actor_id: "str | None" = None,
         actor_type: "str | None" = None,
+        extra: "Mapping[str, str] | None" = None,
         limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return matching event-history records in ascending event order."""
@@ -99,10 +100,13 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         if criteria:
             statement = statement.where(*criteria)
         statement = statement.order_by(model_type.occurred_at, model_type.sequence, model_type.event_id)
-        if limit is not None:
+        if limit is not None and not extra:
             statement = statement.limit(limit)
         models = await self.get_many(statement=statement)
-        return [self.record_from_model(model) for model in models]
+        records = [self.record_from_model(model) for model in models]
+        if extra:
+            records = [record for record in records if all(record.extra.get(k) == v for k, v in extra.items())]
+        return records[:limit] if limit is not None else records
 
     async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete event-history records older than ``before``.
@@ -114,21 +118,21 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             Number of deleted event-history rows.
         """
         model_type = self.model_type
-        if limit is None:
-            result = await self.repository.session.execute(delete(model_type).where(model_type.occurred_at < before))
-            return int(result.rowcount or 0)
-        id_statement = (
-            select(model_type.id)
-            .where(model_type.occurred_at < before)
-            .order_by(model_type.occurred_at, model_type.id)
-            .limit(limit)
-        )
-        ids = (await self.repository.session.execute(id_statement)).scalars().all()
-        if not ids:
-            return 0
-        result = await self.repository.session.execute(
-            delete(model_type).where(model_type.id.in_(ids)).execution_options(synchronize_session=False)
-        )
+        if limit is not None:
+            bounded_query = (
+                select(model_type.event_id)
+                .where(model_type.occurred_at < before)
+                .order_by(model_type.occurred_at, model_type.sequence, model_type.event_id)
+                .limit(limit)
+            )
+            raw_result = await self.repository.session.execute(bounded_query)
+            target_ids = list(raw_result.scalars().all())
+            if not target_ids:
+                return 0
+            statement = delete(model_type).where(model_type.event_id.in_(target_ids))
+        else:
+            statement = delete(model_type).where(model_type.occurred_at < before)
+        result = await self.repository.session.execute(statement)
         return int(result.rowcount or 0)
 
     def model_from_record(self, record: "QueueEventLogRecord") -> "Any":
@@ -137,6 +141,9 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         Returns:
             Advanced Alchemy event-history model.
         """
+        detail = dict(record.detail)
+        if record.extra:
+            detail["__extra__"] = record.extra
         return self.model_type(
             event_id=record.event_id,
             event_type=record.event_type,
@@ -150,7 +157,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             actor_id=record.actor_id,
             level=record.level,
             message=record.message,
-            detail_json=_serialize_json(record.detail),
+            detail_json=_serialize_json(detail),
             progress_current=record.progress_current,
             progress_total=record.progress_total,
             progress_percent=record.progress_percent,
@@ -169,6 +176,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         detail = _deserialize_json(model.detail_json)
         if not isinstance(detail, dict):
             detail = {}
+        extra = dict(detail.pop("__extra__", None) or {})
         return QueueEventLogRecord(
             event_id=str(model.event_id),
             event_type=str(model.event_type),
@@ -191,6 +199,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             sequence=int(model.sequence) if model.sequence is not None else None,
             occurred_at=cast("datetime", _coerce_datetime(model.occurred_at)),
             created_at=cast("datetime", _coerce_datetime(model.created_at)),
+            extra=extra,
         )
 
 

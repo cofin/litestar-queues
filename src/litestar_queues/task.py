@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from types import ModuleType
     from uuid import UUID
 
-    from litestar_queues.events import TaskExecutionContext
+    from litestar_queues.events import QueueEventActor, TaskExecutionContext
     from litestar_queues.models import QueuedTaskRecord, TaskStatus
     from litestar_queues.service import QueueService
 
@@ -414,6 +414,7 @@ class Task(Generic[P, T]):
 
     __slots__ = (
         "__dict__",
+        "_actor",
         "_description",
         "_execution_backend",
         "_execution_profile",
@@ -461,6 +462,7 @@ class Task(Generic[P, T]):
         requeue_on_shutdown: "bool | None" = None,
         on_stale_failure: "StaleFailureHandler | None" = None,
         sync_to_thread: "bool | None" = None,
+        actor: "QueueEventActor | Callable[[], QueueEventActor] | None" = None,
     ) -> "None":
         _validate_uniqueness(name=name, key=key, unique_by=unique_by, unique_until=unique_until)
         self._sync_to_thread = sync_to_thread
@@ -484,6 +486,7 @@ class Task(Generic[P, T]):
         self._requeue_on_stale = requeue_on_stale
         self._requeue_on_shutdown = requeue_on_shutdown
         self._on_stale_failure = on_stale_failure
+        self._actor = actor
 
     @property
     def name(self) -> "str":
@@ -598,6 +601,11 @@ class Task(Generic[P, T]):
         inline on the event loop.
         """
         return self._sync_to_thread
+
+    @property
+    def actor(self) -> "QueueEventActor | Callable[[], QueueEventActor] | None":
+        """Task-specific declared actor or actor resolver."""
+        return self._actor
 
     async def __call__(self, *args: "P.args", **kwargs: "P.kwargs") -> "T":
         """Execute the wrapped callable directly.
@@ -869,6 +877,7 @@ def task(
     requeue_on_shutdown: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
     sync_to_thread: "bool | None" = None,
+    actor: "QueueEventActor | Callable[[], QueueEventActor] | None" = None,
     cron: "str | None" = None,
     interval: "float | timedelta | None" = None,
     timezone: "str" = "UTC",
@@ -900,6 +909,7 @@ def task(
     requeue_on_shutdown: "bool | None" = None,
     on_stale_failure: "StaleFailureHandler | None" = None,
     sync_to_thread: "bool | None" = None,
+    actor: "QueueEventActor | Callable[[], QueueEventActor] | None" = None,
     cron: "str | None" = None,
     interval: "float | timedelta | None" = None,
     timezone: "str" = "UTC",
@@ -958,6 +968,7 @@ def task(
             requeue_on_shutdown=requeue_on_shutdown,
             on_stale_failure=on_stale_failure,
             sync_to_thread=sync_to_thread,
+            actor=actor,
         )
         _task_registry[task_name] = task_obj
         if schedule is not None:

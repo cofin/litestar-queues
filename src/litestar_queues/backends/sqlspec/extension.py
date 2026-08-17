@@ -8,16 +8,16 @@ from litestar_queues.backends.sqlspec.schema import (
     maintenance_table_name_for,
     migration_directory,
     task_reservation_table_name_for,
-    validate_event_history_extra_columns,
     validate_table_name,
 )
+from litestar_queues.events import validate_event_history_extra_columns
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
     from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
-    from litestar_queues.backends.sqlspec.schema import EventHistoryExtraColumn
+    from litestar_queues.events import EventHistoryExtraColumn
 
 __all__ = (
     "QUEUE_EXTENSION_NAME",

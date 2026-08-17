@@ -840,3 +840,15 @@ async def test_backend_contract_stale_requeue_priority_policy(queue_backend: "Ba
     from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
 
     await assert_stale_requeue_priority_policy(queue_backend)
+
+
+async def test_backend_contract_event_extra(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._event_extra_contract import assert_event_extra_contract
+
+    await assert_event_extra_contract(queue_backend)
+
+
+async def test_backend_contract_event_actor(queue_backend: "BaseQueueBackend") -> "None":
+    from tests.integration._event_extra_contract import assert_event_actor_contract
+
+    await assert_event_actor_contract(queue_backend)

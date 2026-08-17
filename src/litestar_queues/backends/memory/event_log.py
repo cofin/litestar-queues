@@ -4,8 +4,10 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from litestar_queues.events._log_records import event_log_record_from_event, event_log_record_sort_key
+from litestar_queues.events.history import validate_event_extra_filter
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from datetime import datetime
 
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventLogRecord, QueueEventStageSummary
@@ -25,7 +27,7 @@ class InMemoryQueueEventLog:
 
     async def publish_event(self, event: "QueueEvent") -> "None":
         """Append an event history record and prune the oldest records."""
-        record = event_log_record_from_event(event)
+        record = event_log_record_from_event(event, extra_columns=self._config.extra_columns)
         async with self._lock:
             self._records.append(record)
             overflow = len(self._records) - self._config.memory_capacity
@@ -45,9 +47,11 @@ class InMemoryQueueEventLog:
         task_name: "str | None" = None,
         actor_id: "str | None" = None,
         actor_type: "str | None" = None,
+        extra: "Mapping[str, str] | None" = None,
         limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return matching event history records in ascending event order."""
+        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
         async with self._lock:
             records = [
                 record
@@ -56,6 +60,7 @@ class InMemoryQueueEventLog:
                 and (task_name is None or record.task_name == task_name)
                 and (actor_id is None or record.actor_id == actor_id)
                 and (actor_type is None or record.actor_type == actor_type)
+                and (not resolved_extra or all(record.extra.get(k) == v for k, v in resolved_extra.items()))
             ]
         records.sort(key=event_log_record_sort_key)
         return records[:limit] if limit is not None else records

@@ -6,9 +6,10 @@ import time
 from typing import TYPE_CHECKING
 
 from litestar_queues.events._log_records import event_log_record_from_event
+from litestar_queues.events.history import validate_event_extra_filter
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from contextlib import AbstractAsyncContextManager
     from datetime import datetime
 
@@ -35,8 +36,8 @@ class AdvancedAlchemyQueueEventLog:
 
     def __init__(
         self,
-        *,
         config: "EventHistoryConfig",
+        *,
         service_factory: 'Callable[[], AbstractAsyncContextManager["QueueEventLogService"]]',
         transaction_factory: 'Callable[[], AbstractAsyncContextManager["QueueEventLogService"]]',
         runtime_logger: "logging.Logger | None" = None,
@@ -53,7 +54,7 @@ class AdvancedAlchemyQueueEventLog:
         """Buffer a queue event and flush when configured thresholds are reached."""
         should_flush = False
         async with self._flush_lock:
-            self._pending.append(event_log_record_from_event(event))
+            self._pending.append(event_log_record_from_event(event, extra_columns=self._config.extra_columns))
             should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
         if should_flush:
             await self.flush_events()
@@ -82,13 +83,20 @@ class AdvancedAlchemyQueueEventLog:
         task_name: "str | None" = None,
         actor_id: "str | None" = None,
         actor_type: "str | None" = None,
+        extra: "Mapping[str, str] | None" = None,
         limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return durable event history records."""
+        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
         await self.flush_events()
         async with self._service_factory() as service:
             return await service.list_events(
-                task_id=task_id, task_name=task_name, actor_id=actor_id, actor_type=actor_type, limit=limit
+                task_id=task_id,
+                task_name=task_name,
+                actor_id=actor_id,
+                actor_type=actor_type,
+                extra=resolved_extra,
+                limit=limit,
             )
 
     async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":

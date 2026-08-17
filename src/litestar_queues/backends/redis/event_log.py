@@ -19,9 +19,11 @@ from litestar_queues.events._log_records import (
     optional_str,
     parse_datetime,
 )
-from litestar_queues.events.history import QueueEventLogRecord
+from litestar_queues.events.history import QueueEventLogRecord, validate_event_extra_filter
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from litestar_queues.backends._protocol import ClientLike, PipelineLike
     from litestar_queues.backends.redis.backend import RedisQueueBackend
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventStageSummary
@@ -48,7 +50,9 @@ class RedisQueueEventLog:
         """Buffer a queue event and flush when configured thresholds are reached."""
         should_flush = False
         async with self._flush_lock:
-            self._pending.append(self._mapping_from_record(event_log_record_from_event(event)))
+            self._pending.append(
+                self._mapping_from_record(event_log_record_from_event(event, extra_columns=self._config.extra_columns))
+            )
             should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
         if should_flush:
             await self.flush_events()
@@ -77,9 +81,11 @@ class RedisQueueEventLog:
         task_name: "str | None" = None,
         actor_id: "str | None" = None,
         actor_type: "str | None" = None,
+        extra: "Mapping[str, str] | None" = None,
         limit: "int | None" = None,
     ) -> "list[QueueEventLogRecord]":
         """Return durable event history records."""
+        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
         await self.flush_events()
         client = await self._backend._get_client()
         index_key = self._select_index_key(task_id=task_id, task_name=task_name)
@@ -92,6 +98,7 @@ class RedisQueueEventLog:
             and (task_name is None or record.task_name == task_name)
             and (actor_id is None or record.actor_id == actor_id)
             and (actor_type is None or record.actor_type == actor_type)
+            and (not resolved_extra or all(record.extra.get(k) == v for k, v in resolved_extra.items()))
         ]
         records.sort(key=event_log_record_sort_key)
         return records[:limit] if limit is not None else records
@@ -178,7 +185,7 @@ class RedisQueueEventLog:
             index_keys.append(self._backend._event_log_task_key(record.task_id))
         if record.task_name is not None:
             index_keys.append(self._backend._event_log_task_name_key(record.task_name))
-        return {
+        result_mapping = {
             "event_id": record.event_id,
             "event_type": record.event_type,
             "task_id": record.task_id or "",
@@ -200,6 +207,9 @@ class RedisQueueEventLog:
             "created_at": _serialize_datetime(record.created_at),
             "index_keys": _json_dumps(index_keys),
         }
+        for extra_key, extra_val in record.extra.items():
+            result_mapping[f"extra:{extra_key}"] = str(extra_val)
+        return result_mapping
 
     async def _records_from_ids(self, client: "ClientLike", event_ids: "list[Any]") -> "list[QueueEventLogRecord]":
         return [
@@ -232,6 +242,7 @@ def _record_from_mapping(mapping: "dict[str, Any]") -> "QueueEventLogRecord":
     detail = _json_loads(mapping.get("detail"), {})
     if not isinstance(detail, dict):
         detail = {}
+    extra = {key[6:]: str(val) for key, val in mapping.items() if key.startswith("extra:")}
     return QueueEventLogRecord(
         event_id=str(mapping["event_id"]),
         event_type=str(mapping["event_type"]),
@@ -254,6 +265,7 @@ def _record_from_mapping(mapping: "dict[str, Any]") -> "QueueEventLogRecord":
         sequence=optional_int(mapping.get("sequence") or None),
         occurred_at=parse_datetime(mapping["occurred_at"]),
         created_at=parse_datetime(mapping["created_at"]),
+        extra=extra,
     )
 
 

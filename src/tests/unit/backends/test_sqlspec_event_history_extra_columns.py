@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
-from litestar_queues.backends.sqlspec import EventHistoryExtraColumn, SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
-from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS, validate_event_history_extra_columns
+from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS
+from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -24,6 +25,12 @@ def _store(*extra: "EventHistoryExtraColumn") -> "object":
     return create_event_log_store(
         AiosqliteConfig(connection_config={"database": ":memory:"}), queue_table_name="queue_task", extra_columns=extra
     )
+
+
+def _store_for_dialect(dialect: "str") -> "object":
+    config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    config.statement_config.dialect = dialect
+    return create_event_log_store(config, queue_table_name="queue_task")
 
 
 def test_extra_column_declaration_validates() -> "None":
@@ -164,6 +171,50 @@ def test_store_without_extras_emits_unchanged_statements() -> "None":
     assert template.count(":") == len(EVENT_HISTORY_COLUMNS)
 
 
+def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None":
+    statements = _store_for_dialect("mysql").create_statements()  # type: ignore[attr-defined]
+
+    assert len(statements) == 1
+    assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
+    assert "INDEX `ix_queue_task_event_history_task_id`" in statements[0]
+    assert "CREATE INDEX IF NOT EXISTS" not in statements[0]
+
+
+def test_mysql_event_history_bounds_generated_index_names() -> "None":
+    config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    config.statement_config.dialect = "mysql"
+    store = create_event_log_store(config, queue_table_name="queue_task_mysql_aiomysql_637b5b4678")
+
+    assert len(store._index_name("occurred_at")) <= 63
+    assert store._quoted_index_name("occurred_at") in store.create_statements()[0]
+
+
+def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "None":
+    statements = _store_for_dialect("tsql").create_statements()  # type: ignore[attr-defined]
+
+    assert statements[0].lstrip().startswith("IF OBJECT_ID")
+    assert "DATETIME2(6)" in statements[0]
+    assert all("CREATE INDEX IF NOT EXISTS" not in statement for statement in statements[1:])
+
+
+def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
+    statements = _store_for_dialect("oracle").create_statements()  # type: ignore[attr-defined]
+
+    store = _store_for_dialect("oracle")
+    assert "EVENT_LEVEL VARCHAR(255)" in statements[0]
+    assert "EVENT_LEVEL" in store.insert_events_template()  # type: ignore[attr-defined]
+    selected = store.select_events().build(dialect="oracle").sql  # type: ignore[attr-defined]
+    assert "event_level" in selected
+    assert "event_level AS level" not in selected
+    assert "(TASK_ID, SEQUENCE, OCCURRED_AT)" in statements[1]
+
+
+def test_spanner_event_history_uses_backtick_quoted_identifiers() -> "None":
+    statements = _store_for_dialect("spanner").create_statements()  # type: ignore[attr-defined]
+
+    assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
+
+
 def test_extra_columns_appear_in_ddl_and_insert_template() -> "None":
     store = _store(_TENANT)
 
@@ -224,7 +275,7 @@ def test_select_events_filters_on_actor() -> "None":
 def test_select_events_rejects_undeclared_extra_filter() -> "None":
     store = _store(_TENANT)
 
-    with pytest.raises(ValueError, match="tenant_id"):
+    with pytest.raises(QueueConfigurationError):
         store.select_events(extra={"unknown": "x"})  # type: ignore[attr-defined]
 
 
