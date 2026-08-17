@@ -30,18 +30,20 @@ def _free_port() -> "int":
         return int(listener.getsockname()[1])
 
 
-def _json_request(url: str, *, method: str = "GET") -> "dict[str, Any]":
+def _json_request(url: str, *, method: str = "GET", timeout: float = 10.0) -> "dict[str, Any]":
+    """Execute an HTTP JSON request with an explicit timeout."""
     request = Request(url, method=method)
-    with urlopen(request, timeout=1) as response:
+    with urlopen(request, timeout=timeout) as response:
         return cast("dict[str, Any]", json.loads(response.read()))
 
 
-def _wait_for_json(url: str, *, timeout: float = 20) -> "dict[str, Any]":
+def _wait_for_json(url: str, *, timeout: float = 20.0) -> "dict[str, Any]":
+    """Poll a JSON endpoint until it responds or the overall timeout expires."""
     deadline = time.monotonic() + timeout
     last_error: "BaseException | None" = None
     while time.monotonic() < deadline:
         try:
-            return _json_request(url)
+            return _json_request(url, timeout=min(5.0, timeout))
         except (OSError, URLError, TimeoutError) as exc:  # noqa: PERF203
             last_error = exc
             time.sleep(0.02)
@@ -229,12 +231,15 @@ def test_server_placement_owns_exactly_one_fresh_queue_child(tmp_path: "Path", s
         assert len(web_pids) == workers
 
         token = uuid4().hex
-        task_id = str(_json_request(f"{running.base_url}/enqueue/{token}", method="POST")["task_id"])
+        task_id = str(_json_request(f"{running.base_url}/enqueue/{token}", method="POST", timeout=15.0)["task_id"])
         terminal: "dict[str, Any]" = {}
 
         def completed() -> "bool":
             nonlocal terminal
-            terminal = _json_request(f"{running.base_url}/tasks/{task_id}")
+            try:
+                terminal = _json_request(f"{running.base_url}/tasks/{task_id}", timeout=5.0)
+            except (OSError, URLError, TimeoutError):
+                return False
             return cast("str | None", terminal.get("status")) == "completed"
 
         _wait_for(completed, message="enqueued task did not complete")
