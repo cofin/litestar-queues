@@ -92,9 +92,13 @@ async def consume_one(
         await queue.publish_claim_lost(record, phase="claim")
         return TaskExitCode.CLAIM_LOST
 
+    task_registered = True
     try:
         queue.resolve_task(claimed.task_name)
     except KeyError:
+        task_registered = False
+
+    if not task_registered:
         return await _retire_unresolvable_record(queue, claimed)
 
     return await _execute_claimed_record(queue, claimed)

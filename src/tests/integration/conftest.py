@@ -30,8 +30,8 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
     if case.service_attr is not None:
         try:
             service = request.getfixturevalue(case.service_attr)
-        except pytest.FixtureLookupError:
-            pytest.skip(f"{case.name} requires fixture {case.service_attr}")
+        except Exception as exc:  # noqa: BLE001 - catch arbitrary service fixture failure (e.g. docker unavailability)
+            pytest.skip(f"{case.name} requires {case.service_attr} ({exc})")
         if service is None:
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 

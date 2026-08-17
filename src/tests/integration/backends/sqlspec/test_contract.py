@@ -15,7 +15,7 @@ import importlib
 import logging
 import sqlite3
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from subprocess import run
@@ -82,6 +82,7 @@ pytestmark = pytest.mark.anyio
 class FakeSQLSpecConfig(SimpleNamespace):
     """Structural config used by SQLSpec store dispatch tests."""
 
+    is_async: ClassVar[bool] = False
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
@@ -2124,7 +2125,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
 
     assert record.task_name == "tasks.migrated"
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         versions = [row[0] for row in connection.execute("SELECT version_num FROM ddl_migrations")]
 
     assert versions == ["ext_litestar_queues_0001"]
@@ -2173,7 +2174,7 @@ async def test_sqlspec_backend_uses_configured_table_name(
         await backend.close()
 
     assert record.task_name == "tasks.custom_table"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
     assert "queue_tasks" in table_names
@@ -2198,7 +2199,7 @@ async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_va
         await backend.close()
 
     assert record.task_name == "tasks.extension_config"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
     assert "extension_queue_tasks" in table_names
@@ -2223,7 +2224,7 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
         await backend.close()
 
     assert record.task_name == "tasks.explicit_config"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
     assert "explicit_queue_tasks" in table_names

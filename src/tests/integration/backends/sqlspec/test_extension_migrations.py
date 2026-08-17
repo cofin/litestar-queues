@@ -1,5 +1,6 @@
 """Extension-migration tests for the SQLSpec queue backend."""
 
+import contextlib
 import importlib
 import sqlite3
 from pathlib import Path
@@ -195,7 +196,7 @@ async def test_sqlspec_backend_initial_migration_includes_expiration() -> "None"
 
     assert "expires_at" in statements[0]
 
-    with sqlite3.connect(":memory:") as connection:
+    with contextlib.closing(sqlite3.connect(":memory:")) as connection:
         for statement in statements:
             connection.executescript(statement)
         columns = connection.execute("PRAGMA table_info(queue_task)").fetchall()

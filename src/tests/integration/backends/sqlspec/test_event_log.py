@@ -1,5 +1,6 @@
 """SQLSpec backend-managed queue event history tests."""
 
+import contextlib
 import importlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -262,6 +263,6 @@ async def test_sqlspec_event_log_migration_down_drops_event_table() -> "None":
 
 
 def _sqlite_table_names(db_path: "Path") -> "set[str]":
-    with sqlite3.connect(db_path) as connection:
+    with contextlib.closing(sqlite3.connect(db_path)) as connection:
         rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         return {cast("str", row[0]) for row in rows}

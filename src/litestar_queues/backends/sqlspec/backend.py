@@ -142,6 +142,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
+        "_heartbeat_sync_executor",
         "_maintenance_store",
         "_maintenance_table_name",
         "_manage_schema",
@@ -156,6 +157,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_sqlspec",
         "_sqlspec_config",
         "_store",
+        "_sync_executor",
         "_task_reservation_store",
         "_task_reservation_table_name",
         "_wakeup_backend",
@@ -232,6 +234,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._control_channel = (
             config.names.database_channel("worker_control") if config is not None else DEFAULT_CONTROL_CHANNEL
         )
+        self._sync_executor: "ThreadPoolExecutor | None" = None
+        self._heartbeat_sync_executor: "ThreadPoolExecutor | None" = None
         self._opened = False
 
     async def open(self) -> "bool":
@@ -248,6 +252,30 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._apply_sqlcommenter()
         self._configure_worker_wakeups()
         self._register_heartbeat_pool()
+        sqlspec_config = self._get_sqlspec_config()
+        if not sqlspec_config.is_async:
+            if self._sync_executor is None:
+                self._sync_executor = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix=(
+                        self.config.names.resource("sqlspec", "sync")
+                        if self.config is not None
+                        else "litestar-queues-sqlspec-sync"
+                    ),
+                )
+            if (
+                self._heartbeat_pool_enabled
+                and self._heartbeat_pool_config is not None
+                and self._heartbeat_sync_executor is None
+            ):
+                self._heartbeat_sync_executor = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix=(
+                        self.config.names.resource("sqlspec", "heartbeat-sync")
+                        if self.config is not None
+                        else "litestar-queues-sqlspec-heartbeat-sync"
+                    ),
+                )
         self._opened = True
         return True
 
@@ -264,6 +292,12 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if self._owns_sqlspec and self._sqlspec is not None:
             await self._sqlspec.close_all_pools()
             self._sqlspec = None
+        if self._sync_executor is not None:
+            self._sync_executor.shutdown(wait=True)
+            self._sync_executor = None
+        if self._heartbeat_sync_executor is not None:
+            self._heartbeat_sync_executor.shutdown(wait=True)
+            self._heartbeat_sync_executor = None
         self._opened = False
 
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
@@ -2203,6 +2237,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             sqlspec_config,
             skip_explicit_begin=store.skip_explicit_begin,
             skip_cleanup_rollback=store.skip_cleanup_rollback,
+            executor=self._sync_executor,
             thread_name_prefix=(
                 self.config.names.resource("sqlspec", "sync")
                 if self.config is not None
@@ -2232,10 +2267,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 cast("SQLSpecManager", self._sqlspec),
                 cast("SQLSpecSessionConfig", self._heartbeat_pool_config),
                 skip_cleanup_rollback=self._get_store().skip_cleanup_rollback,
+                executor=self._heartbeat_sync_executor or self._sync_executor,
                 thread_name_prefix=(
-                    self.config.names.resource("sqlspec", "sync")
+                    self.config.names.resource("sqlspec", "heartbeat-sync")
                     if self.config is not None
-                    else "litestar-queues-sqlspec-sync"
+                    else "litestar-queues-sqlspec-heartbeat-sync"
                 ),
             ) as driver:
                 yield driver
@@ -2630,6 +2666,7 @@ async def _bridge_session(
     *,
     skip_explicit_begin: "bool" = False,
     skip_cleanup_rollback: "bool" = False,
+    executor: "ThreadPoolExecutor | None" = None,
     thread_name_prefix: "str" = "litestar-queues-sqlspec-sync",
 ) -> "AsyncIterator[SQLSpecDriver]":
     """Yield a SQLSpec driver regardless of sync/async config.
@@ -2648,22 +2685,25 @@ async def _bridge_session(
         async with session_cm as driver:
             yield cast("SQLSpecDriver", driver)
     else:
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix)
-        driver = await async_(session_cm.__enter__, executor=executor)()
-        managed_driver = _ManagedAsyncDriver(driver, executor, skip_explicit_begin=skip_explicit_begin)
+        owns_executor = executor is None
+        sync_executor = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix)
         try:
-            yield managed_driver
-        except BaseException as exc:
-            if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
-                await _rollback_sync_session(driver, executor=executor)
-            if not await async_(session_cm.__exit__, executor=executor)(type(exc), exc, exc.__traceback__):
-                raise
-        else:
-            if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
-                await _rollback_sync_session(driver, executor=executor)
-            await async_(session_cm.__exit__, executor=executor)(None, None, None)
+            driver = await async_(session_cm.__enter__, executor=sync_executor)()
+            managed_driver = _ManagedAsyncDriver(driver, sync_executor, skip_explicit_begin=skip_explicit_begin)
+            try:
+                yield managed_driver
+            except BaseException as exc:
+                if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
+                    await _rollback_sync_session(driver, executor=sync_executor)
+                if not await async_(session_cm.__exit__, executor=sync_executor)(type(exc), exc, exc.__traceback__):
+                    raise
+            else:
+                if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
+                    await _rollback_sync_session(driver, executor=sync_executor)
+                await async_(session_cm.__exit__, executor=sync_executor)(None, None, None)
         finally:
-            executor.shutdown(wait=False)
+            if owns_executor:
+                sync_executor.shutdown(wait=True)
 
 
 async def _rollback_sync_session(driver: "object", *, executor: "ThreadPoolExecutor | None" = None) -> "None":
