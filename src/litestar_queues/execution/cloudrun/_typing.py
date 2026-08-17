@@ -37,3 +37,7 @@ class CloudRunExecutionsClient(Protocol):
     async def get_execution(self, *, name: "str") -> "CloudRunExecutionLike":
         """Return a Cloud Run execution."""
         ...
+
+    async def cancel_execution(self, *, name: "str") -> "Any":
+        """Cancel a Cloud Run execution and return its long-running operation."""
+        ...

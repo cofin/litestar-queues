@@ -699,6 +699,10 @@ local hkey = KEYS[1]
 if redis.call('HGET', hkey, 'execution_ref') ~= ARGV[1] then
     return {0}
 end
+local status = redis.call('HGET', hkey, 'status')
+if status ~= 'pending' and status ~= 'scheduled' then
+    return {0}
+end
 redis.call(
     'HSET',
     hkey,
@@ -1245,7 +1249,9 @@ class RedisQueueBackend(BaseQueueBackend):
         )
         return await self.get_task(task_id) if committed else None
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
+    ) -> "bool":
         """Cancel a task via a single fenced script.
 
         Returns:
@@ -1255,7 +1261,7 @@ class RedisQueueBackend(BaseQueueBackend):
         cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
         if record is None or record.status not in cancellable_statuses:
             return False
-        return await self._commit_cancel(record)
+        return await self._commit_cancel(record, expected_retry_count=expected_retry_count)
 
     async def cancel_tasks(
         self,
@@ -1281,16 +1287,17 @@ class RedisQueueBackend(BaseQueueBackend):
                 continue
             if not record_matches_filters(latest, task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata):
                 continue
-            if await self._commit_cancel(latest):
+            if await self._commit_cancel(latest, expected_retry_count=None):
                 cancelled += 1
         return cancelled
 
-    async def _commit_cancel(self, record: "QueuedTaskRecord") -> "bool":
+    async def _commit_cancel(self, record: "QueuedTaskRecord", expected_retry_count: "int | None" = None) -> "bool":
         now = _utc_now()
         return await self._commit_transition(
             record.id,
             expected_status=record.status,
             new_status="cancelled",
+            expected_retry_count=expected_retry_count,
             patch={
                 "completed_at": _serialize_datetime(now),
                 "completed_score": repr(_maintenance_score(now)),

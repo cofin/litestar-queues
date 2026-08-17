@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
 import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -8,8 +10,11 @@ import pytest
 
 from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.backends import InMemoryQueueBackend
+from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import EventHistoryConfig, QueueEventPublisher, QueueEventsConfig
+from litestar_queues.exceptions import JobCancelledError
 from litestar_queues.execution import BaseExecutionBackend
+from litestar_queues.execution.base import ExecutionCancelResult
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
@@ -2163,3 +2168,262 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
         await res.refresh()
         assert res.status not in {"completed", "failed", "cancelled"}
         assert events == ["acquire", "body", "CancelledError", "cleanup"]
+
+
+class _RecordingExecutionBackend(BaseExecutionBackend):
+    """External backend that records cancel calls and answers with a scripted result."""
+
+    __slots__ = ("_external", "calls", "result")
+
+    def __init__(self, result: "ExecutionCancelResult | None" = None, external: "bool" = True) -> "None":
+        super().__init__()
+        self.calls: "list[str]" = []
+        self.result = result or ExecutionCancelResult.accepted()
+        self._external = external
+
+    @property
+    def is_external(self) -> "bool":
+        return self._external
+
+    async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
+        # Assert ordering: the record must still be running in the durable store
+        stored = await service.get_queue_backend().get_task(record.id)
+        assert stored is not None and stored.status in ("pending", "running")
+        assert record.execution_ref is not None
+        self.calls.append(record.execution_ref)
+        return self.result
+
+
+async def _setup_external_record(service: "QueueService", status: "str" = "running") -> "QueuedTaskRecord":
+    from litestar_queues.task import task
+
+    @task("tasks.ext")
+    async def _ext() -> "None":
+        return None
+
+    record = await service.enqueue("tasks.ext")
+    backend = service.get_queue_backend()
+    reservation_ref = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}:{int(time.time()) + 900}:{uuid.uuid4()}"
+    await backend.reserve_external_dispatch(record.id, "recording", reservation_ref)
+
+    if status == "running":
+        ext_ref = str(uuid.uuid4())
+        await backend.finalize_external_dispatch(
+            record.id, reservation_ref, "recording", ext_ref, execution_profile=None
+        )
+
+    return await backend.get_task(record.id)  # type: ignore
+
+
+async def test_cancel_calls_provider_before_the_durable_write() -> "None":
+    backend = _RecordingExecutionBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend,
+    ) as service:
+        record = await _setup_external_record(service)
+
+        assert await service.cancel_task(record.id, include_running=True) is True
+        assert len(backend.calls) == 1
+        assert backend.calls[0] == record.execution_ref
+
+        stored = await service.get_queue_backend().get_task(record.id)
+        assert stored is not None and stored.status == "cancelled"
+
+
+async def test_retryable_provider_result_leaves_the_record_running() -> "None":
+    backend = _RecordingExecutionBackend(result=ExecutionCancelResult.retryable("api unavailable"))
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend,
+    ) as service:
+        record = await _setup_external_record(service)
+
+        assert await service.cancel_task(record.id, include_running=True) is False
+        assert len(backend.calls) == 1
+
+        stored = await service.get_queue_backend().get_task(record.id)
+        assert stored is not None and stored.status == "pending"
+
+
+async def test_already_cancelled_result_is_idempotent_success() -> "None":
+    backend = _RecordingExecutionBackend(result=ExecutionCancelResult.already_cancelled())
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend,
+    ) as service:
+        record = await _setup_external_record(service)
+        assert await service.cancel_task(record.id, include_running=True) is True
+        assert len(backend.calls) == 1
+
+
+async def test_unsupported_backend_still_cancels_durably() -> "None":
+    class _UnsupportedBackend(BaseExecutionBackend):
+        @property
+        def is_external(self) -> "bool":
+            return True
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="unsupported"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=_UnsupportedBackend(),
+    ) as service:
+        from litestar_queues.task import task
+
+        @task("tasks.ext")
+        async def _ext() -> "None":
+            return None
+
+        record = await service.enqueue("tasks.ext")
+        backend = service.get_queue_backend()
+        reservation_ref = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}:{int(time.time()) + 900}:{uuid.uuid4()}"
+        await backend.reserve_external_dispatch(record.id, "unsupported", reservation_ref)
+        await backend.finalize_external_dispatch(
+            record.id, reservation_ref, "unsupported", str(uuid.uuid4()), execution_profile=None
+        )
+
+        assert await service.cancel_task(record.id, include_running=True) is True
+        stored = await backend.get_task(record.id)
+        assert stored is not None and stored.status == "cancelled"
+
+
+async def test_pending_and_scheduled_records_never_reach_the_provider() -> "None":
+    backend = _RecordingExecutionBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend,
+    ) as service:
+        from litestar_queues.task import task
+
+        @task("tasks.ext")
+        async def _ext() -> "None":
+            return None
+
+        record = await service.enqueue("tasks.ext")
+
+        assert await service.cancel_task(record.id) is True
+        assert len(backend.calls) == 0
+
+
+async def test_local_running_record_never_reaches_the_provider() -> "None":
+    backend = _RecordingExecutionBackend(external=False)
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="asgi"), queue_backend="memory"), queue_backend=InMemoryQueueBackend()
+    ) as service:
+        from litestar_queues.task import task
+
+        @task("tasks.ext")
+        async def _ext() -> "None":
+            return None
+
+        record = await service.enqueue("tasks.ext")
+        claimed = await service.get_queue_backend().claim_task(record.id)
+        assert claimed is not None
+        await service.get_queue_backend().assign_worker(record.id, worker_id="worker-a", expected_retry_count=0)
+
+        assert await service.cancel_task(record.id, include_running=True) is True
+        assert len(backend.calls) == 0
+
+
+async def test_cancel_during_reservation_skips_the_provider() -> "None":
+    backend = _RecordingExecutionBackend()
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend,
+    ) as service:
+        record = await _setup_external_record(service, status="reserved")
+        assert record.execution_ref is not None and record.execution_ref.startswith(
+            EXTERNAL_DISPATCH_RESERVATION_PREFIX
+        )
+        assert await service.cancel_task(record.id, include_running=True) is True
+        assert len(backend.calls) == 0
+
+
+async def test_unknown_execution_backend_degrades_to_unsupported() -> "None":
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory"),
+        queue_backend=InMemoryQueueBackend(),
+    ) as service:
+        from litestar_queues.task import task
+
+        @task("tasks.ext")
+        async def _ext() -> "None":
+            return None
+
+        record = await service.enqueue("tasks.ext")
+        backend = service.get_queue_backend()
+        reservation_ref = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}:{int(time.time()) + 900}:{uuid.uuid4()}"
+        await backend.reserve_external_dispatch(record.id, "unknown", reservation_ref)
+        await backend.finalize_external_dispatch(
+            record.id, reservation_ref, "unknown", str(uuid.uuid4()), execution_profile=None
+        )
+
+        assert await service.cancel_task(record.id, include_running=True) is True
+
+
+async def test_self_cancellation_does_not_cancel_its_own_execution() -> "None":
+    backend = _RecordingExecutionBackend()
+
+    from litestar_queues.task import clear_task_registry, task
+
+    clear_task_registry()
+
+    @task("tasks.ext")
+    async def _ext() -> "None":
+        msg = "self cancelled"
+        raise JobCancelledError(msg)
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend,
+    ) as service:
+        record = await service.enqueue("tasks.ext")
+        reservation_ref = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}:{int(time.time()) + 900}:{uuid.uuid4()}"
+        await service.get_queue_backend().reserve_external_dispatch(record.id, "recording", reservation_ref)
+        await service.get_queue_backend().finalize_external_dispatch(
+            record.id, reservation_ref, "recording", str(uuid.uuid4()), execution_profile=None
+        )
+        claimed = await service.get_queue_backend().claim_task(record.id)
+        assert claimed is not None
+        await service.execute_record(claimed)
+
+        assert len(backend.calls) == 0
+        stored = await service.get_queue_backend().get_task(record.id)
+        assert stored is not None and stored.status == "cancelled"
+
+
+async def test_cancel_metric_labels_are_identical_across_result_statuses() -> "None":
+    backend_retryable = _RecordingExecutionBackend(result=ExecutionCancelResult.retryable("api unavailable"))
+    backend_unsupported = _RecordingExecutionBackend(result=ExecutionCancelResult.unsupported())
+
+    from tests.unit.test_observability import FakeObservabilityRuntime
+
+    obs = FakeObservabilityRuntime()
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend_retryable,
+        observability_runtime=obs,
+    ) as service:
+        record1 = await _setup_external_record(service)
+        await service.cancel_task(record1.id, include_running=True)
+
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="recording"),
+        queue_backend=InMemoryQueueBackend(),
+        execution_backend=backend_unsupported,
+        observability_runtime=obs,
+    ) as service:
+        record2 = await _setup_external_record(service)
+        await service.cancel_task(record2.id, include_running=True)
+
+    counters = [c for c in obs.counters if c[0] == "litestar_queues.execution.cancel"]
+    assert len(counters) == 2
+    assert set(counters[0][2].keys()) == set(counters[1][2].keys())

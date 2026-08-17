@@ -381,11 +381,17 @@ class InMemoryQueueBackend(BaseQueueBackend):
             record.heartbeat_at = None
             return record
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
+    ) -> "bool":
         async with self._lock:
             record = self._records.get(task_id)
             cancellable_statuses = {"pending", "scheduled", "running"} if include_running else {"pending", "scheduled"}
-            if record is None or record.status not in cancellable_statuses:
+            if (
+                record is None
+                or record.status not in cancellable_statuses
+                or (expected_retry_count is not None and record.retry_count != expected_retry_count)
+            ):
                 return False
             record.status = "cancelled"
             record.completed_at = _utc_now()
@@ -620,7 +626,11 @@ class InMemoryQueueBackend(BaseQueueBackend):
     ) -> "QueuedTaskRecord | None":
         async with self._lock:
             record = self._records.get(task_id)
-            if record is None or record.execution_ref != reservation_ref:
+            if (
+                record is None
+                or record.execution_ref != reservation_ref
+                or record.status not in {"pending", "scheduled"}
+            ):
                 return None
             record.execution_backend = execution_backend
             record.execution_profile = execution_profile

@@ -715,7 +715,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
             if row is None:
                 return None
             record = _decode(row)
-            if record.execution_ref != reservation_ref:
+            if record.execution_ref != reservation_ref or record.status not in _ACTIVE_STATUSES:
                 return None
             record.execution_backend = execution_backend
             record.execution_profile = execution_profile
@@ -786,7 +786,9 @@ class EphemeralQueueBackend(BaseQueueBackend):
 
         return await self._transaction(operation)
 
-    async def cancel_task(self, task_id: "UUID", *, include_running: "bool" = False) -> "bool":
+    async def cancel_task(
+        self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
+    ) -> "bool":
         """Cancel one record.
 
         Returns:
@@ -799,7 +801,9 @@ class EphemeralQueueBackend(BaseQueueBackend):
             if row is None:
                 return False
             record = _decode(row)
-            if record.status not in statuses:
+            if record.status not in statuses or (
+                expected_retry_count is not None and record.retry_count != expected_retry_count
+            ):
                 return False
             record.status = "cancelled"
             record.completed_at = _utc_now()

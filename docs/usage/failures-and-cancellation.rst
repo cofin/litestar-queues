@@ -77,6 +77,20 @@ Hints are lossy by contract. A dropped hint costs latency, never correctness,
 so a backend that cannot deliver one simply keeps polling. If you are writing a
 backend and want to add a transport, see :doc:`backends`.
 
+Cancelling an execution that runs elsewhere
+===========================================
+
+A provider cancellation applies to a record whose ``execution_ref`` names a live provider resource. Implementations answer with a result rather than raising an exception.
+
+The four results dictate whether the durable transition to ``cancelled`` proceeds:
+
+* ``accepted``: The provider accepted the cancellation. The durable transition proceeds.
+* ``already_cancelled``: The provider resource was not found or was already stopped. The durable transition proceeds.
+* ``retryable``: The provider refused or had a transient failure. The durable transition is blocked.
+* ``unsupported``: The transport has no cancellation control plane. The durable transition proceeds.
+
+A transport with no control plane inherits ``unsupported`` and is still cancelled durably, because the delivery carries only the record id and a cancelled record cannot be claimed.
+
 Inside a task, ``current_task_context().is_cancelled`` exposes the cooperative
 token; ``wait_cancelled()`` waits for it and ``raise_if_cancelled()`` raises
 ``JobCancelledError``. Threaded synchronous work must use these checkpoints.

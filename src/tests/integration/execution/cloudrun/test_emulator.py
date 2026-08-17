@@ -484,7 +484,7 @@ async def test_cloudrun_reconcile_recovers_stale_reservation_and_expires_task() 
             "failed",
             "container failed",
         ),
-        (FakeCloudRunExecution(cancelled_count=1), "failed", "Cloud Run execution cancelled"),
+        (FakeCloudRunExecution(cancelled_count=1), "cancelled", None),
     ],
 )
 async def test_cloudrun_reconcile_updates_terminal_statuses(
@@ -754,3 +754,233 @@ def test_cloudrun_factory_registration_and_import_boundary() -> "None":
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.strip() == "[]"
+
+
+async def test_cloudrun_cancel_execution_uses_the_stored_resource_name() -> "None":
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.models import QueuedTaskRecord
+
+    client = FakeExecutionsClient(FakeCloudRunExecution())
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
+    )
+    record = QueuedTaskRecord(
+        id=uuid4(),
+        task_name="tasks.ext",
+        status="running",
+        queued_at=datetime.now(timezone.utc),
+        execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
+        queue="default",
+        execution_backend="cloudrun",
+        retry_count=0,
+        max_retries=3,
+        kwargs={},
+        execution_profile=None,
+    )
+    result = await backend.cancel_execution(None, record)  # type: ignore
+    assert result.status == "accepted"
+    assert client.cancelled_names == [record.execution_ref]
+    assert client.names == []
+
+
+async def test_cloudrun_cancel_execution_not_found_is_idempotent() -> "None":
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.models import QueuedTaskRecord
+
+    not_found_error = type("NotFound", (Exception,), {})
+    client = FakeExecutionsClient(FakeCloudRunExecution(), cancel_error=not_found_error("gone"))
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
+    )
+    record = QueuedTaskRecord(
+        id=uuid4(),
+        task_name="tasks.ext",
+        status="running",
+        queued_at=datetime.now(timezone.utc),
+        execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
+        queue="default",
+        execution_backend="cloudrun",
+        retry_count=0,
+        max_retries=3,
+        kwargs={},
+        execution_profile=None,
+    )
+    result = await backend.cancel_execution(None, record)  # type: ignore
+    assert result.status == "already_cancelled"
+
+
+async def test_cloudrun_cancel_execution_transient_error_is_retryable() -> "None":
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.models import QueuedTaskRecord
+
+    client = FakeExecutionsClient(FakeCloudRunExecution(), cancel_error=RuntimeError("503 backend unavailable"))
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
+    )
+    record = QueuedTaskRecord(
+        id=uuid4(),
+        task_name="tasks.ext",
+        status="running",
+        queued_at=datetime.now(timezone.utc),
+        execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
+        queue="default",
+        execution_backend="cloudrun",
+        retry_count=0,
+        max_retries=3,
+        kwargs={},
+        execution_profile=None,
+    )
+    result = await backend.cancel_execution(None, record)  # type: ignore
+    assert result.status == "retryable"
+    assert result.detail and "503" in result.detail
+
+
+async def test_cloudrun_cancel_execution_without_a_reference_is_unsupported() -> "None":
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.models import QueuedTaskRecord
+
+    client = FakeExecutionsClient(FakeCloudRunExecution())
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
+    )
+    record = QueuedTaskRecord(
+        id=uuid4(),
+        task_name="tasks.ext",
+        status="running",
+        queued_at=datetime.now(timezone.utc),
+        execution_ref=None,
+        queue="default",
+        execution_backend="cloudrun",
+        retry_count=0,
+        max_retries=3,
+        kwargs={},
+        execution_profile=None,
+    )
+    result = await backend.cancel_execution(None, record)  # type: ignore
+    assert result.status == "unsupported"
+
+    record.execution_ref = f"{EXTERNAL_DISPATCH_RESERVATION_PREFIX}:res"
+    result = await backend.cancel_execution(None, record)  # type: ignore
+    assert result.status == "unsupported"
+
+
+async def test_cloudrun_cancel_execution_does_not_await_the_operation() -> "None":
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.models import QueuedTaskRecord
+
+    class InspectableFakeExecutionsClient(FakeExecutionsClient):
+        def __init__(self, execution: "FakeCloudRunExecution") -> "None":
+            super().__init__(execution)
+            self.last_op: "object" = None
+
+        async def cancel_execution(self, *, name: "str") -> "object":
+            op = await super().cancel_execution(name=name)
+            self.last_op = op
+            return op
+
+    client = InspectableFakeExecutionsClient(FakeCloudRunExecution())
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"), executions_client=client
+    )
+    record = QueuedTaskRecord(
+        id=uuid4(),
+        task_name="tasks.ext",
+        status="running",
+        queued_at=datetime.now(timezone.utc),
+        execution_ref="projects/test-project/locations/us-central1/jobs/worker/executions/run-1",
+        queue="default",
+        execution_backend="cloudrun",
+        retry_count=0,
+        max_retries=3,
+        kwargs={},
+        execution_profile=None,
+    )
+    result = await backend.cancel_execution(None, record)  # type: ignore
+    assert result.status == "accepted"
+    assert client.last_op is not None and not client.last_op.result_called  # type: ignore
+
+
+async def test_cancel_task_cancels_a_cloudrun_execution_before_the_durable_write() -> "None":
+    from typing import cast
+
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    executions_client = FakeExecutionsClient(FakeCloudRunExecution())
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+        executions_client=executions_client,
+    )
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    ) as service:
+        from litestar_queues.task import task
+
+        @task("tasks.ext")
+        async def _ext() -> "None":
+            return None
+
+        record = await queue_backend.enqueue("tasks.ext", execution_backend="cloudrun")
+        await backend.dispatch(service, record)
+
+        updated = await queue_backend.get_task(record.id)
+        assert updated and updated.execution_ref
+        assert await service.cancel_task(record.id, include_running=True) is True
+
+        assert executions_client.cancelled_names == [updated.execution_ref]
+        stored = await queue_backend.get_task(record.id)
+        assert stored and stored.status == "cancelled"
+
+
+async def test_cancel_task_leaves_the_record_running_when_cloud_run_refuses() -> "None":
+    from typing import cast
+
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    queue_backend = InMemoryQueueBackend()
+    jobs_client = FakeJobsClient()
+    executions_client = FakeExecutionsClient(FakeCloudRunExecution(), cancel_error=RuntimeError("boom"))
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        jobs_client=cast("CloudRunJobsClient", jobs_client),
+        executions_client=executions_client,
+    )
+    async with QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="cloudrun"),
+        queue_backend=queue_backend,
+        execution_backend=backend,
+    ) as service:
+        from litestar_queues.task import task
+
+        @task("tasks.ext")
+        async def _ext() -> "None":
+            return None
+
+        record = await queue_backend.enqueue("tasks.ext", execution_backend="cloudrun")
+        await backend.dispatch(service, record)
+
+        await queue_backend.get_task(record.id)
+        assert await service.cancel_task(record.id, include_running=True) is False
+
+        stored = await queue_backend.get_task(record.id)
+        assert stored and stored.status == "pending"
