@@ -19,14 +19,16 @@ from litestar_queues.events._log_records import (
     optional_str,
     parse_datetime,
 )
-from litestar_queues.events.history import QueueEventLogRecord, validate_event_extra_filter
+from litestar_queues.events.history import QueueEventLogRecord
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from litestar_queues.backends._protocol import ClientLike, PipelineLike
     from litestar_queues.backends.redis.backend import RedisQueueBackend
     from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventStageSummary
+    from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
 
 __all__ = ("RedisQueueEventLog",)
 
@@ -74,88 +76,128 @@ class RedisQueueEventLog:
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()
 
-    async def list_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-        limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records."""
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        """Return a filtered, ordered page of event history records.
+
+        Returns:
+            The matching page.
+        """
+        from litestar_queues.events.history import event_extra_filter_matches, validate_event_extra_filter
+        from litestar_queues.events.query import match_event_record, paginate_event_records, sort_event_records
+
         resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
         await self.flush_events()
         client = await self._backend._get_client()
-        index_key = self._select_index_key(task_id=task_id, task_name=task_name)
+        index_key = self._select_index_key(query)
         event_ids = await client.zrangebyscore(index_key, "-inf", "+inf")
-        records = await self._records_from_ids(client, event_ids)
         records = [
-            record
-            for record in records
-            if (task_id is None or record.task_id == task_id)
-            and (task_name is None or record.task_name == task_name)
-            and (actor_id is None or record.actor_id == actor_id)
-            and (actor_type is None or record.actor_type == actor_type)
-            and (not resolved_extra or all(record.extra.get(k) == v for k, v in resolved_extra.items()))
+            record for record in await self._records_from_ids(client, event_ids) if match_event_record(record, query)
         ]
-        records.sort(key=event_log_record_sort_key)
-        return records[:limit] if limit is not None else records
+        if resolved_extra:
+            records = [record for record in records if event_extra_filter_matches(record, resolved_extra)]
+        ordered = sort_event_records(records, order="asc" if query is None else query.order)
+        return paginate_event_records(ordered, query)
 
-    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
-        """Return no aggregate summaries for the Redis-protocol event log."""
-        del task_name
-        return []
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        """Return per-stage event history aggregates."""
+        from litestar_queues.events.query import match_event_record, require_unpaginated_query, summarize_event_records
 
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        require_unpaginated_query(query)
+        await self.flush_events()
+        client = await self._backend._get_client()
+        index_key = self._select_index_key(query)
+        event_ids = await client.zrangebyscore(index_key, "-inf", "+inf")
+        records = [
+            record for record in await self._records_from_ids(client, event_ids) if match_event_record(record, query)
+        ]
+        return summarize_event_records(records)
+
+    async def cleanup_events(  # noqa: C901
+        self,
+        *,
+        before: "datetime",
+        match: "QueueEventQuery | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
+        limit: "int | None" = None,
+    ) -> "int":
         """Delete event history older than ``before``.
-
-        The oldest matching events (lowest score) are read first and capped at
-        ``limit`` before any deletion so one maintenance batch is bounded.
 
         Returns:
             Number of removed event-history records.
         """
+        from litestar_queues.events.query import match_event_record
+
         await self.flush_events()
         client = await self._backend._get_client()
-        global_key = self._backend._event_log_global_key()
+        index_key = self._select_index_key(match)
         max_score = f"({_score_datetime(before)}"
-        if limit is not None:
-            event_ids = await client.zrangebyscore(global_key, "-inf", max_score, start=0, num=limit)
-        else:
-            event_ids = await client.zrangebyscore(global_key, "-inf", max_score)
+
+        # We read the entire expired window into memory, decode mappings, and filter,
+        # then apply the limit. Trade-off: the read window is unbounded but the write is bounded.
+        event_ids = await client.zrangebyscore(index_key, "-inf", max_score)
+
         mappings = await self._mappings_from_ids(client, event_ids)
-        removed = 0
-        pipeline = _create_pipeline(client)
+
+        # Identify valid records vs orphans
+        valid_records = []
+        orphans = []
         for event_id, mapping in zip(event_ids, mappings, strict=True):
-            decoded_event_id = str(_decode(event_id))
             if not mapping:
-                if pipeline is not None:
-                    pipeline.zrem(self._backend._event_log_global_key(), decoded_event_id)
-                else:
-                    await client.zrem(self._backend._event_log_global_key(), decoded_event_id)
+                orphans.append(_decode(event_id))
+            else:
+                record = _record_from_mapping(mapping)
+                if record.occurred_at < before:
+                    valid_records.append((record, mapping))
+
+        # Filter valid records
+        filtered = []
+        for record, mapping in valid_records:
+            if match and not match_event_record(record, match):
                 continue
-            record = _record_from_mapping(mapping)
-            if record.occurred_at >= before:
+            if exclude and any(match_event_record(record, ex) for ex in exclude):
                 continue
+            filtered.append((record, mapping))
+
+        # Sort ascending by stable key
+        filtered.sort(key=lambda item: event_log_record_sort_key(item[0]))
+
+        if limit is not None:
+            filtered = filtered[:limit]
+
+        pipeline = _create_pipeline(client)
+        removed = 0
+
+        # Cleanup orphans
+        for decoded_event_id in orphans:
+            if pipeline is not None:
+                pipeline.zrem(self._backend._event_log_global_key(), str(decoded_event_id))
+            else:
+                await client.zrem(self._backend._event_log_global_key(), str(decoded_event_id))
+
+        # Cleanup valid records
+        global_key = self._backend._event_log_global_key()
+        for record, mapping in filtered:
             index_keys = _json_loads(mapping.get("index_keys"), [])
             event_key = self._backend._event_log_event_key(record.event_id)
             if pipeline is not None:
                 pipeline.delete(event_key)
                 pipeline.zrem(global_key, record.event_id)
-                for index_key in index_keys:
-                    if str(index_key) != global_key:
-                        pipeline.zrem(str(index_key), record.event_id)
+                for i_key in index_keys:
+                    if str(i_key) != global_key:
+                        pipeline.zrem(str(i_key), record.event_id)
             else:
                 await client.delete(event_key)
                 await client.zrem(global_key, record.event_id)
-                for index_key in index_keys:
-                    if str(index_key) != global_key:
-                        await client.zrem(str(index_key), record.event_id)
+                for i_key in index_keys:
+                    if str(i_key) != global_key:
+                        await client.zrem(str(i_key), record.event_id)
             removed += 1
+
         if pipeline is not None:
             await _execute_pipeline(pipeline)
+
         return removed
 
     async def _write_batch(self, client: "ClientLike", batch: "list[dict[str, str]]") -> "None":
@@ -185,6 +227,10 @@ class RedisQueueEventLog:
             index_keys.append(self._backend._event_log_task_key(record.task_id))
         if record.task_name is not None:
             index_keys.append(self._backend._event_log_task_name_key(record.task_name))
+        if record.scope_key is not None:
+            index_keys.append(self._backend._event_log_scope_key_key(record.scope_key))
+        if record.entity is not None:
+            index_keys.append(self._backend._event_log_entity_key(record.entity))
         result_mapping = {
             "event_id": record.event_id,
             "event_type": record.event_type,
@@ -205,6 +251,10 @@ class RedisQueueEventLog:
             "sequence": "" if record.sequence is None else str(record.sequence),
             "occurred_at": _serialize_datetime(record.occurred_at),
             "created_at": _serialize_datetime(record.created_at),
+            "scope": record.scope or "",
+            "scope_key": record.scope_key or "",
+            "actor": record.actor or "",
+            "entity": record.entity or "",
             "index_keys": _json_dumps(index_keys),
         }
         for extra_key, extra_val in record.extra.items():
@@ -227,11 +277,19 @@ class RedisQueueEventLog:
             pipeline.hgetall(key)
         return [_decode_mapping(cast("dict[Any, Any]", result)) for result in await _execute_pipeline(pipeline)]
 
-    def _select_index_key(self, *, task_id: "str | None", task_name: "str | None") -> "str":
-        if task_id is not None:
-            return self._backend._event_log_task_key(task_id)
-        if task_name is not None:
-            return self._backend._event_log_task_name_key(task_name)
+    def _select_index_key(self, query: "QueueEventQuery | None") -> "str":
+        if query is None:
+            return self._backend._event_log_global_key()
+        if query.task_id is not None:
+            return self._backend._event_log_task_key(query.task_id)
+        if query.entity is not None:
+            return self._backend._event_log_entity_key(query.entity)
+        if query.scope_key is not None:
+            return self._backend._event_log_scope_key_key(query.scope_key)
+        if query.task_name is not None:
+            return self._backend._event_log_task_name_key(query.task_name)
+        if query.event_type is not None:
+            return self._backend._event_log_event_type_key(query.event_type)
         return self._backend._event_log_global_key()
 
     def _flush_interval_elapsed(self) -> "bool":
@@ -265,6 +323,10 @@ def _record_from_mapping(mapping: "dict[str, Any]") -> "QueueEventLogRecord":
         sequence=optional_int(mapping.get("sequence") or None),
         occurred_at=parse_datetime(mapping["occurred_at"]),
         created_at=parse_datetime(mapping["created_at"]),
+        scope=_optional_mapping_str(mapping.get("scope")),
+        scope_key=_optional_mapping_str(mapping.get("scope_key")),
+        actor=_optional_mapping_str(mapping.get("actor")),
+        entity=_optional_mapping_str(mapping.get("entity")),
         extra=extra,
     )
 

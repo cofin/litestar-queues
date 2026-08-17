@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from litestar_queues.events.models import QueueEvent
+    from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
 
 __all__ = (
     "RESERVED_EVENT_HISTORY_COLUMNS",
@@ -59,12 +61,15 @@ _EVENT_HISTORY_COLUMN_NAMES = frozenset({
 })
 
 
-RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"entity", "scope", "scope_key"})
+RESERVED_EVENT_HISTORY_COLUMNS = frozenset({"actor", "entity", "scope", "scope_key"})
 """Names held for built-in event-history scoping dimensions.
 
 These are not columns on the table yet. They are reserved so an adopter-declared
 extra column cannot claim a name the package intends to own.
 """
+
+BUILTIN_EVENT_EXTRA_FILTERS = frozenset({"actor_id", "actor_type"})
+"""Built-in dimensions retained on the compatibility ``extra=`` surface."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +141,7 @@ def validate_event_extra_filter(
     if not filter_map:
         return {}
     declared_map = {col.name.lower(): col.name for col in declared_columns}
+    declared_map.update({name: name for name in BUILTIN_EVENT_EXTRA_FILTERS})
     resolved: "dict[str, str]" = {}
     for key, value in filter_map.items():
         folded = key.lower()
@@ -144,6 +150,14 @@ def validate_event_extra_filter(
             raise QueueConfigurationError(msg)
         resolved[declared_map[folded]] = str(value)
     return resolved
+
+
+def event_extra_filter_matches(record: "QueueEventLogRecord", filters: "Mapping[str, str]") -> "bool":
+    """Return whether a record matches validated built-in and adopter filters."""
+    return all(
+        (getattr(record, key) if key in BUILTIN_EVENT_EXTRA_FILTERS else record.extra.get(key)) == value
+        for key, value in filters.items()
+    )
 
 
 def extract_event_extras(
@@ -221,6 +235,14 @@ class QueueEventLogRecord:
     sequence: "int | None"
     occurred_at: "datetime"
     created_at: "datetime"
+    scope: "str | None" = None
+    """Envelope scope of the event (``task``/``queue``/``worker``/...)."""
+    scope_key: "str | None" = None
+    """Adopter scoping key carried on the envelope (tenant, project, account)."""
+    actor: "str | None" = None
+    """The logical actor."""
+    entity: "str | None" = None
+    """Canonical entity key from :func:`event_entity_key`."""
     extra: "dict[str, str]" = field(default_factory=dict)
 
 
@@ -233,43 +255,28 @@ class QueueEventStageSummary:
     total_duration_ms: "float"
     first_event_at: "datetime | None"
     last_event_at: "datetime | None"
+    latest_sequence: "int | None" = None
+    """Sequence of the newest record in the stage by the stable order key."""
+    latest_message: "str | None" = None
+    """Message of the newest record in the stage by the stable order key."""
+    worst_level: "str | None" = None
+    """Highest-ranked level present in the stage; ``None`` when no record has one."""
 
 
 class QueueEventLog(Protocol):
     """Backend-owned queue event history writer and query interface."""
 
-    async def publish_event(self, event: "QueueEvent") -> "None":
-        """Record a queue event for durable history."""
-        ...
-
-    async def flush_events(self) -> "None":
-        """Flush any buffered queue event history writes."""
-        ...
-
-    async def list_events(
+    async def publish_event(self, event: "QueueEvent") -> "None": ...
+    async def flush_events(self) -> "None": ...
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]": ...
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]": ...
+    async def cleanup_events(
         self,
         *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
+        before: "datetime",
+        match: "QueueEventQuery | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
         limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records.
-
-        Every filter uses equality and is ANDed with the others.
-        """
-        ...
-
-    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
-        """Return per-stage event history aggregates."""
-        ...
-
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
-        """Delete event history older than ``before``.
-
-        ``limit`` bounds one bounded maintenance batch (oldest ``occurred_at``,
-        then record id); ``None`` preserves the historical unbounded behavior.
-        """
-        ...
+    ) -> "int": ...

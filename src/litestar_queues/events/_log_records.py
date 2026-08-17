@@ -1,5 +1,6 @@
 """Internal helpers for backend-managed queue event history records."""
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -9,9 +10,11 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from litestar_queues.events.history import EventHistoryExtraColumn
-    from litestar_queues.events.models import QueueEvent
+    from litestar_queues.events.models import QueueEvent, QueueEventActor, QueueEventEntityRef
 
 __all__ = (
+    "event_actor_key",
+    "event_entity_key",
     "event_log_record_from_event",
     "event_log_record_sort_key",
     "optional_float",
@@ -57,6 +60,9 @@ def event_log_record_from_event(
         sequence=event.sequence,
         occurred_at=parse_datetime(event.occurred_at),
         created_at=created_at or utc_now(),
+        scope=event.scope,
+        scope_key=event.scope_key,
+        entity=event_entity_key(event.entity),
         extra=extra,
     )
 
@@ -103,3 +109,29 @@ def optional_int(value: "Any") -> "int | None":
     if value is None:
         return None
     return int(cast("int", value))
+
+
+def event_entity_key(entity: "QueueEventEntityRef | Mapping[str, str] | None") -> "str | None":
+    """Return the canonical indexable key for an entity reference.
+
+    Returns:
+        ``"{type}:{id}"``, or ``None`` when no entity is set.
+    """
+    if entity is None:
+        return None
+    if isinstance(entity, Mapping):
+        return f"{entity['type']}:{entity['id']}"
+    return f"{entity.type}:{entity.id}"
+
+
+def event_actor_key(actor: "QueueEventActor | Mapping[str, str] | None") -> "str | None":
+    """Return the canonical indexable key for an actor reference.
+
+    Returns:
+        ``"{type}:{id}"``, or ``None`` when no actor is set.
+    """
+    if actor is None:
+        return None
+    if isinstance(actor, Mapping):
+        return f"{actor['type']}:{actor['id']}"
+    return f"{actor.type}:{actor.id}"

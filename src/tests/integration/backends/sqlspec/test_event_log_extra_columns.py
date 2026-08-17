@@ -13,6 +13,7 @@ from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
 from litestar_queues.backends.sqlspec.event_log import create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME, configure_queue_migration_extension
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEventsConfig, publish_task_log
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.task import clear_task_registry
 from tests.integration._names import table_name_for_test
@@ -90,14 +91,14 @@ async def _run_scoped_task(config: "Any", *, tenants: "tuple[str, ...]") -> "lis
         event_log = cast("SQLSpecQueueEventLog", service.get_queue_backend().get_event_log(history))
         await event_log.flush_events()
 
-        scoped = await event_log.list_events(extra={"tenant_id": tenants[0]})
-        everything = await event_log.list_events()
+        scoped = (await event_log.query_events(QueueEventQuery(), extra={"tenant_id": tenants[0]})).items
+        everything = (await event_log.query_events(QueueEventQuery())).items
 
         with pytest.raises(QueueConfigurationError):
-            await event_log.list_events(extra={"unknown": "x"})
+            await event_log.query_events(QueueEventQuery(), extra={"unknown": "x"})
 
     assert len(everything) > len(scoped)
-    return scoped
+    return list(scoped)
 
 
 async def test_extra_column_is_created_written_and_filterable(event_history_config: "Any") -> "None":
@@ -140,3 +141,32 @@ async def test_packaged_migration_ddl_matches_managed_schema(
     assert any("tenant_id" in statement for statement in expected)
     for statement in expected:
         assert statement in statements
+
+
+@pytest.mark.parametrize("adapter", ["aiosqlite", "duckdb", "psycopg"])
+async def test_packaged_migration_ddl_includes_dimensions(
+    adapter: "str", request: "pytest.FixtureRequest", tmp_path: "Path"
+) -> "None":
+    """The packaged migration DDL includes the package-owned dimensions."""
+    if adapter == "duckdb":
+        pytest.importorskip("duckdb")
+        from sqlspec.adapters.duckdb import DuckDBConfig
+
+        config: "Any" = DuckDBConfig(connection_config={"database": str(tmp_path / "extra.duckdb")})
+    else:
+        config = request.getfixturevalue(f"{adapter}_history_config")
+
+    configure_queue_migration_extension(
+        config, queue_table_name="queue_task", event_history_enabled=True, event_history_extra_columns=(_TENANT_COLUMN,)
+    )
+    settings = config.get_migration_commands().extension_configs[QUEUE_EXTENSION_NAME]
+    config.extension_config = {QUEUE_EXTENSION_NAME: settings}
+
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    statements = await migration.up(SimpleNamespace(config=config))
+
+    create_table = next(s for s in statements if s.startswith("CREATE TABLE") and "event_history" in s)
+    for dimension in ("scope", "scope_key", "actor", "entity"):
+        assert dimension in create_table
+    assert any("scope_key" in s and s.startswith("CREATE INDEX") for s in statements)
+    assert any("entity" in s and s.startswith("CREATE INDEX") for s in statements)

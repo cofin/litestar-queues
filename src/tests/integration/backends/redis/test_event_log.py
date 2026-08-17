@@ -12,6 +12,7 @@ from litestar_queues import EventHistoryConfig, QueueConfig, QueueService, Worke
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
 from litestar_queues.backends.redis.event_log import RedisQueueEventLog
 from litestar_queues.events import QueueEvent, QueueEventsConfig
+from litestar_queues.events.query import QueueEventQuery
 
 pytestmark = pytest.mark.anyio
 
@@ -40,10 +41,10 @@ async def test_redis_event_log_records_queries_and_cleans_up(redis_backend: "Red
     )
     await event_log.flush_events()
 
-    records = await event_log.list_events(task_id=task_id)
-    limited = await event_log.list_events(task_name="tasks.redis.history", limit=1)
-    deleted = await event_log.cleanup_before(datetime(2026, 1, 1, 0, 0, 3, tzinfo=timezone.utc))
-    remaining = await event_log.list_events(task_name="tasks.redis.history")
+    records = (await event_log.query_events(QueueEventQuery(task_id=task_id))).items
+    limited = (await event_log.query_events(QueueEventQuery(task_name="tasks.redis.history", limit=1))).items
+    deleted = await event_log.cleanup_events(before=datetime(2026, 1, 1, 0, 0, 3, tzinfo=timezone.utc))
+    remaining = (await event_log.query_events(QueueEventQuery(task_name="tasks.redis.history"))).items
     client = cast("Any", await redis_backend._get_client())
     global_remaining = await client.zrange(redis_backend._event_log_global_key(), 0, -1)
 
@@ -86,7 +87,7 @@ async def test_redis_event_cleanup_always_removes_the_global_index(redis_backend
     ]
     await client.hset(event_key, mapping={"index_keys": json.dumps(secondary_indexes)})
 
-    assert await event_log.cleanup_before(datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc), limit=1) == 1
+    assert await event_log.cleanup_events(before=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc), limit=1) == 1
     assert await client.zrange(redis_backend._event_log_global_key(), 0, -1) == []
 
 
@@ -99,13 +100,15 @@ async def test_redis_event_cleanup_continues_in_exact_bounded_batches(redis_back
         await event_log.publish_event(event)
 
     cutoff = datetime(2026, 1, 1, 0, 0, 6, tzinfo=timezone.utc)
-    assert await event_log.cleanup_before(cutoff, limit=2) == 2
-    assert [record.event_id for record in await event_log.list_events()] == [event.id for event in events[2:]]
-    assert await event_log.cleanup_before(cutoff, limit=2) == 2
-    assert [record.event_id for record in await event_log.list_events()] == [events[4].id]
-    assert await event_log.cleanup_before(cutoff, limit=2) == 1
-    assert await event_log.cleanup_before(cutoff, limit=2) == 0
-    assert await event_log.list_events() == []
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 2
+    assert [record.event_id for record in (await event_log.query_events(QueueEventQuery())).items] == [
+        event.id for event in events[2:]
+    ]
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 2
+    assert [record.event_id for record in (await event_log.query_events(QueueEventQuery())).items] == [events[4].id]
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 1
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 0
+    assert (await event_log.query_events(QueueEventQuery())).items == []
 
 
 async def test_redis_event_log_non_strict_flush_preserves_failed_batch() -> "None":

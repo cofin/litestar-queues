@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
-from litestar_queues.backends.sqlspec.event_log import create_event_log_store
+from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLogStore, create_event_log_store
 from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS
-from litestar_queues.events import EventHistoryExtraColumn, validate_event_history_extra_columns
+from litestar_queues.events import EventHistoryExtraColumn, QueueEventQuery, validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 _TENANT = EventHistoryExtraColumn(name="tenant_id", source="tenant_id", indexed=True)
 
 
-def _store(*extra: "EventHistoryExtraColumn") -> "object":
+def _store(*extra: "EventHistoryExtraColumn") -> "SQLSpecQueueEventLogStore":
     return create_event_log_store(
         AiosqliteConfig(connection_config={"database": ":memory:"}), queue_table_name="queue_task", extra_columns=extra
     )
@@ -91,7 +91,7 @@ def test_extra_column_duplicate_names_are_case_insensitive() -> "None":
         validate_event_history_extra_columns(columns)
 
 
-@pytest.mark.parametrize("reserved", ["scope", "scope_key", "entity"])
+@pytest.mark.parametrize("reserved", ["scope", "scope_key", "actor", "entity"])
 def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "None":
     """Names held for the built-in scoping dimensions cannot be claimed by adopters."""
     column = EventHistoryExtraColumn(name=reserved, source="x")
@@ -100,7 +100,7 @@ def test_extra_column_reserved_dimension_names_rejected(reserved: "str") -> "Non
         validate_event_history_extra_columns((column,))
 
 
-@pytest.mark.parametrize("reserved", ["Scope", "SCOPE_KEY", "ENTITY"])
+@pytest.mark.parametrize("reserved", ["Scope", "SCOPE_KEY", "Actor", "ENTITY"])
 def test_extra_column_reserved_names_are_case_insensitive(reserved: "str") -> "None":
     """Unquoted SQL identifiers are case-insensitive, so the reservation is too."""
     column = EventHistoryExtraColumn(name=reserved, source="x")
@@ -163,8 +163,8 @@ def test_backend_config_validates_extra_columns() -> "None":
 def test_store_without_extras_emits_unchanged_statements() -> "None":
     baseline = _store()
 
-    statements = baseline.create_statements()  # type: ignore[attr-defined]
-    template = baseline.insert_events_template()  # type: ignore[attr-defined]
+    statements = baseline.create_statements()
+    template = baseline.insert_events_template()
 
     assert not any("tenant_id" in statement for statement in statements)
     assert "tenant_id" not in template
@@ -177,6 +177,8 @@ def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None
     assert len(statements) == 1
     assert statements[0].startswith("CREATE TABLE IF NOT EXISTS `queue_task_event_history`")
     assert "INDEX `ix_queue_task_event_history_task_id`" in statements[0]
+    assert "`scope_key`" in statements[0]
+    assert "`entity`" in statements[0]
     assert "CREATE INDEX IF NOT EXISTS" not in statements[0]
 
 
@@ -194,6 +196,8 @@ def test_mssql_event_history_bypasses_sqlglot_for_native_datetime_type() -> "Non
 
     assert statements[0].lstrip().startswith("IF OBJECT_ID")
     assert "DATETIME2(6)" in statements[0]
+    assert '"scope_key"' in statements[0]
+    assert '"entity"' in statements[0]
     assert all("CREATE INDEX IF NOT EXISTS" not in statement for statement in statements[1:])
 
 
@@ -203,9 +207,11 @@ def test_oracle_event_history_prefixes_reserved_level_column() -> "None":
     store = _store_for_dialect("oracle")
     assert "EVENT_LEVEL VARCHAR(255)" in statements[0]
     assert "EVENT_LEVEL" in store.insert_events_template()  # type: ignore[attr-defined]
-    selected = store.select_events().build(dialect="oracle").sql  # type: ignore[attr-defined]
+    selected = store.select_events(QueueEventQuery()).build(dialect="oracle").sql  # type: ignore[attr-defined]
     assert "event_level" in selected
     assert "event_level AS level" not in selected
+    assert "SCOPE_KEY" in statements[0]
+    assert "ENTITY" in statements[0]
     assert "(TASK_ID, SEQUENCE, OCCURRED_AT)" in statements[1]
 
 
@@ -218,19 +224,19 @@ def test_spanner_event_history_uses_backtick_quoted_identifiers() -> "None":
 def test_extra_columns_appear_in_ddl_and_insert_template() -> "None":
     store = _store(_TENANT)
 
-    statements = store.create_statements()  # type: ignore[attr-defined]
-    template = store.insert_events_template()  # type: ignore[attr-defined]
+    statements = store.create_statements()
+    template = store.insert_events_template()
 
     assert any("tenant_id" in statement and statement.startswith("CREATE TABLE") for statement in statements)
     assert any("tenant_id" in statement and statement.startswith("CREATE INDEX") for statement in statements)
     assert ":tenant_id" in template
-    assert any("tenant_id" in statement for statement in store.drop_statements())  # type: ignore[attr-defined]
+    assert any("tenant_id" in statement for statement in store.drop_statements())
 
 
 def test_unindexed_extra_column_has_no_index_statement() -> "None":
     store = _store(EventHistoryExtraColumn(name="project_id", source="project_id"))
 
-    statements = store.create_statements()  # type: ignore[attr-defined]
+    statements = store.create_statements()
 
     assert any("project_id" in statement and statement.startswith("CREATE TABLE") for statement in statements)
     assert not any("project_id" in statement and statement.startswith("CREATE INDEX") for statement in statements)
@@ -239,8 +245,8 @@ def test_unindexed_extra_column_has_no_index_statement() -> "None":
 def test_actor_columns_are_created_and_indexed() -> "None":
     store = _store()
 
-    statements = store.create_statements()  # type: ignore[attr-defined]
-    template = store.insert_events_template()  # type: ignore[attr-defined]
+    statements = store.create_statements()
+    template = store.insert_events_template()
 
     create_table = next(statement for statement in statements if statement.startswith("CREATE TABLE"))
     assert "actor_type" in create_table
@@ -251,14 +257,14 @@ def test_actor_columns_are_created_and_indexed() -> "None":
     )
     assert ":actor_type" in template
     assert ":actor_id" in template
-    assert any("actor_id" in statement for statement in store.drop_statements())  # type: ignore[attr-defined]
+    assert any("actor_id" in statement for statement in store.drop_statements())
 
 
 def test_actor_name_is_not_persisted() -> "None":
     """Display names go stale against the event they are stamped on, so only type and id persist."""
     store = _store()
 
-    statements = store.create_statements()  # type: ignore[attr-defined]
+    statements = store.create_statements()
 
     assert "actor_name" not in next(statement for statement in statements if statement.startswith("CREATE TABLE"))
 
@@ -266,7 +272,12 @@ def test_actor_name_is_not_persisted() -> "None":
 def test_select_events_filters_on_actor() -> "None":
     store = _store()
 
-    rendered = store.select_events(actor_id="u-1", actor_type="user").build(dialect="sqlite").sql  # type: ignore[attr-defined]
+    rendered = (
+        store
+        .select_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "user"})
+        .build(dialect="sqlite")
+        .sql
+    )
 
     assert "actor_id" in rendered
     assert "actor_type" in rendered
@@ -276,13 +287,13 @@ def test_select_events_rejects_undeclared_extra_filter() -> "None":
     store = _store(_TENANT)
 
     with pytest.raises(QueueConfigurationError):
-        store.select_events(extra={"unknown": "x"})  # type: ignore[attr-defined]
+        store.select_events(QueueEventQuery(), extra={"unknown": "x"})
 
 
 def test_select_events_accepts_declared_extra_filter() -> "None":
     store = _store(_TENANT)
 
-    statement = store.select_events(extra={"tenant_id": "t-1"})  # type: ignore[attr-defined]
+    statement = store.select_events(QueueEventQuery(), extra={"tenant_id": "t-1"})
 
     assert "tenant_id" in statement.build(dialect="sqlite").sql
 

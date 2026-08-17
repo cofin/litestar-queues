@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
     from litestar_queues import Task, TaskDependencyProvider, TaskExecutionContext
     from litestar_queues.events import QueueEvent, QueueEventLog, QueueEventLogRecord, QueueEventStageSummary
+    from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
     from litestar_queues.models import QueuedTaskRecord
 
 pytestmark = pytest.mark.anyio
@@ -1827,25 +1829,27 @@ class _RecordingEventLog:
     async def flush_events(self) -> "None":
         self.flushed = True
 
-    async def list_events(
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        del query, extra
+        from litestar_queues.events.typing import OffsetPagination
+
+        return OffsetPagination(items=[], total=0, limit=1, offset=0)
+
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        del query
+        return []
+
+    async def cleanup_events(
         self,
         *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
+        before: "datetime",
+        match: "QueueEventQuery | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
         limit: "int | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        del task_id, task_name, actor_id, actor_type, limit, extra
-        return []
-
-    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
-        del task_name
-        return []
-
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
-        del before, limit
+    ) -> "int":
+        del before, match, exclude, limit
         return 0
 
 

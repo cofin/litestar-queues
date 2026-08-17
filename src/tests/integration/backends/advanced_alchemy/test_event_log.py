@@ -16,6 +16,7 @@ from litestar_queues import EventHistoryConfig, QueueConfig, QueueService, Worke
 from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackendConfig
 from litestar_queues.backends.advanced_alchemy.mixins import QueueEventHistoryModelMixin, QueueTaskModelMixin
 from litestar_queues.events import QueueEventsConfig, publish_task_event, publish_task_log, publish_task_progress
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 
@@ -73,17 +74,19 @@ async def test_advanced_alchemy_event_log_records_queries_and_cleans_up(tmp_path
         event_log = reader.get_queue_backend().get_event_log(event_log_config)
         assert event_log is not None
 
-        records = await event_log.list_events(task_id=str(result.id))
-        task_name_records = await event_log.list_events(task_name=aa_event_history_task.name, limit=2)
+        records = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        task_name_records = (
+            await event_log.query_events(QueueEventQuery(task_name=aa_event_history_task.name, limit=2))
+        ).items
         cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
-        first_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_first = await event_log.list_events(task_id=str(result.id))
-        second_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_second = await event_log.list_events(task_id=str(result.id))
-        third_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_third = await event_log.list_events(task_id=str(result.id))
-        final_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_final = await event_log.list_events(task_id=str(result.id))
+        first_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_first = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        second_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_second = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        third_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_third = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        final_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_final = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
 
     assert [record.event_type for record in records] == [
         "task.started",

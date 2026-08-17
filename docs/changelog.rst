@@ -38,12 +38,25 @@ Unreleased
   before writing durable cancellation state. Durable cancellation fencing and retry guards prevent
   out-of-order execution recovery from resurrecting cancelled work. See
   :doc:`usage/failures-and-cancellation`.
+* Unified event query protocol (:class:`~litestar_queues.events.query.QueueEventQuery`):
+  Replaced ``list_events`` across all six backends with a unified query interface supporting
+  multi-field filtering (event names, task IDs, statuses, timestamp ranges, actor types/IDs,
+  entity types/IDs, scope key-value pairs, extra column filters), configurable ordering, and
+  offset pagination.
+* Task lifecycle stage summaries (:class:`~litestar_queues.events.QueueEventStageSummary`):
+  Added ``query_stage_summaries`` to :class:`~litestar_queues.events.QueueEventLog` across all six
+  backends, aggregating attempt count, execution/wait/total duration percentiles, and terminal statuses.
+* Flexible, ordered event retention engine: Configurable :class:`~litestar_queues.events.RetentionRule`
+  definitions allow matching subsets of events by name pattern, status, age, or count caps.
+  ``QueueService.prune_events()`` executes rules in strict declaration order with safety caps and
+  observability counters. See :doc:`usage/event-history` and :doc:`usage/maintenance`.
 
 0.9.0 - 2026-08-14
 ==================
 
 **Added:**
 
+* Persisted event dimensions (entity, scope) and context APIs for query and retention rules (gh-129).
 * Apache Kafka is available as an optional execution backend through
   ``litestar-queues[kafka]``. Dispatch publishes only the task UUID, with the
   attempt fence travelling as a message header, and

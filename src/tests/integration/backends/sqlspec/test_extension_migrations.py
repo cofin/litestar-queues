@@ -247,3 +247,84 @@ async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_t
 async def _postgres_table_exists(driver: "Any", table_name: "str") -> "bool":
     table_ref = await driver.select_value(f"SELECT to_regclass('public.{table_name}')")
     return table_ref is not None
+
+
+async def test_sqlspec_psycopg_fresh_migration_serves_query(request: "FixtureRequest") -> "None":
+    try:
+        postgres_service = request.getfixturevalue("postgres_service")
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"Docker service not available: {e}")
+
+    pytest.importorskip("psycopg")
+    from sqlspec.adapters.psycopg import PsycopgAsyncConfig
+
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+    from litestar_queues.events import EventHistoryConfig, QueueEventQuery
+    from tests.integration._names import table_name_for_test
+
+    table = table_name_for_test("queue_task", "sqlspec_mig", request.node.nodeid)
+
+    config = PsycopgAsyncConfig(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "user": postgres_service.user,
+            "password": postgres_service.password,
+            "dbname": postgres_service.database,
+        }
+    )
+
+    configure_queue_migration_extension(config, queue_table_name=table, event_history_enabled=True)
+
+    settings = config.get_migration_commands().extension_configs[QUEUE_EXTENSION_NAME]
+    config.extension_config = {QUEUE_EXTENSION_NAME: settings}
+
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    statements = await migration.up(SimpleNamespace(config=config))
+
+    from sqlspec import SQLSpec
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+    from litestar_queues.backends.sqlspec.backend import _bridge_session
+
+    sqlspec_manager = SQLSpec()
+    try:
+        async with _bridge_session(sqlspec_manager, config) as driver:
+            for statement in statements:
+                await driver.execute_script(statement)
+
+        backend = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name=table)
+        )
+        await backend.open()
+
+        try:
+            event_log = backend.get_event_log(EventHistoryConfig(batch_size=1, flush_interval=60))
+            assert event_log is not None
+
+            from datetime import datetime, timezone
+
+            from litestar_queues.events.models import QueueEvent
+
+            event = QueueEvent(
+                id="mig-1",
+                occurred_at=datetime.now(timezone.utc),
+                type="task.log",
+                scope="task",
+                scope_key="acme-mig",
+                payload={"stage": "start"},
+            )
+            await event_log.publish_event(event)
+
+            if hasattr(event_log, "flush_events"):
+                await event_log.flush_events()
+
+            page = await event_log.query_events(QueueEventQuery(scope_key="acme-mig"))
+            assert len(page.items) == 1
+            assert page.items[0].event_id == "mig-1"
+            assert page.items[0].scope_key == "acme-mig"
+
+        finally:
+            await backend.close()
+    finally:
+        await sqlspec_manager.close_all_pools()

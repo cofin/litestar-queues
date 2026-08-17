@@ -11,6 +11,7 @@ pytest.importorskip("valkey")
 from litestar_queues import EventHistoryConfig
 from litestar_queues.backends.redis.event_log import RedisQueueEventLog
 from litestar_queues.events import QueueEvent
+from litestar_queues.events.query import QueueEventQuery
 
 if TYPE_CHECKING:
     from litestar_queues.backends.valkey import ValkeyQueueBackend
@@ -37,7 +38,7 @@ async def test_valkey_event_log_reuses_redis_protocol_implementation(valkey_back
     )
     await event_log.flush_events()
 
-    records = await event_log.list_events(task_name="tasks.valkey.history")
+    records = (await event_log.query_events(QueueEventQuery(task_name="tasks.valkey.history"))).items
 
     assert [record.event_id for record in records] == ["valkey-event-1"]
     assert records[0].detail == {"stage": "load", "duration_ms": 7}
@@ -69,7 +70,7 @@ async def test_valkey_event_cleanup_always_removes_the_global_index(valkey_backe
     ]
     await client.hset(event_key, mapping={"index_keys": json.dumps(secondary_indexes)})
 
-    assert await event_log.cleanup_before(datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc), limit=1) == 1
+    assert await event_log.cleanup_events(before=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc), limit=1) == 1
     assert await client.zrange(valkey_backend._event_log_global_key(), 0, -1) == []
 
 
@@ -94,10 +95,12 @@ async def test_valkey_event_cleanup_continues_in_exact_bounded_batches(valkey_ba
         await event_log.publish_event(event)
 
     cutoff = datetime(2026, 1, 1, 0, 0, 6, tzinfo=timezone.utc)
-    assert await event_log.cleanup_before(cutoff, limit=2) == 2
-    assert [record.event_id for record in await event_log.list_events()] == [event.id for event in events[2:]]
-    assert await event_log.cleanup_before(cutoff, limit=2) == 2
-    assert [record.event_id for record in await event_log.list_events()] == [events[4].id]
-    assert await event_log.cleanup_before(cutoff, limit=2) == 1
-    assert await event_log.cleanup_before(cutoff, limit=2) == 0
-    assert await event_log.list_events() == []
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 2
+    assert [record.event_id for record in (await event_log.query_events(QueueEventQuery())).items] == [
+        event.id for event in events[2:]
+    ]
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 2
+    assert [record.event_id for record in (await event_log.query_events(QueueEventQuery())).items] == [events[4].id]
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 1
+    assert await event_log.cleanup_events(before=cutoff, limit=2) == 0
+    assert (await event_log.query_events(QueueEventQuery())).items == []

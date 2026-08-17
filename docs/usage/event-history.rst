@@ -60,9 +60,10 @@ not delete event history, and vice versa.
 Filtering by actor
 ==================
 
-An event may carry a ``QueueEventActor`` naming who or what caused it. History
-stores the actor's ``type`` and ``id`` and lets you filter on either. Attach one
-by publishing a :class:`~litestar_queues.events.QueueEvent` you build yourself:
+An event may carry a ``QueueEventActor`` naming who or what caused it, an ``entity`` string
+naming the record it acted on, and a ``scope`` / ``scope_key`` pair to group related work.
+History stores these dimensions and lets you filter on them. Attach them by publishing a
+:class:`~litestar_queues.events.QueueEvent` you build yourself:
 
 .. code-block:: python
 
@@ -73,6 +74,7 @@ by publishing a :class:`~litestar_queues.events.QueueEvent` you build yourself:
        EventHistoryConfig,
        QueueEvent,
        QueueEventActor,
+       QueueEventQuery,
        QueueEventsConfig,
    )
 
@@ -94,7 +96,10 @@ by publishing a :class:`~litestar_queues.events.QueueEvent` you build yourself:
            await publisher.publish(
                QueueEvent(
                    type="task.log",
-                   scope="task",
+                   scope="import_batch",
+                   scope_key="batch-42",
+                   entity="user-csv",
+                   stage="processing",
                    task_id="import-42",
                    message="importing",
                    actor=QueueEventActor(type="user", id="u-1", name="Alice"),
@@ -102,18 +107,17 @@ by publishing a :class:`~litestar_queues.events.QueueEvent` you build yourself:
            )
            await event_log.flush_events()
 
-           records = await event_log.list_events(actor_id="u-1")
-           service_records = await event_log.list_events(
-               actor_type="service", task_name="catalog.import"
-           )
-           print(len(records), len(service_records))
+           # Query events by any dimension using QueueEventQuery
+           page = await event_log.query_events(QueueEventQuery(actor_id="u-1", scope_key="batch-42"))
+           print(len(page.items))
 
 
    asyncio.run(main())
 
-Filters use equality and are ANDed together. Every backend stores the actor and
-answers the filter; the SQLSpec and Advanced Alchemy tables index
-``(actor_id, occurred_at)`` to match the time-ordered read pattern.
+Filters use equality and are ANDed together. Every backend stores these fields and
+answers the query; the SQLSpec and Advanced Alchemy tables index
+``(actor_id, occurred_at)``, ``(scope_key, occurred_at)``, and ``(entity, occurred_at)``
+to match the time-ordered read pattern.
 
 The actor's ``name`` is not stored. It is mutable display text that would go
 stale against the event it was stamped on, so it travels on the live event
@@ -128,30 +132,34 @@ Configure a bounded event-history phase and run it from one external schedule:
 .. code-block:: python
 
    from litestar_queues import QueueConfig, QueueMaintenanceConfig
-   from litestar_queues.events import EventHistoryConfig, QueueEventsConfig
+   from litestar_queues.maintenance import QueueEventRetentionRule
+   from litestar_queues.events import EventHistoryConfig, QueueEventQuery, QueueEventsConfig
 
    queue_config = QueueConfig(
        queue_backend="redis",
        events=QueueEventsConfig(history=EventHistoryConfig()),
        maintenance=QueueMaintenanceConfig(
-           event_retention=30 * 24 * 60 * 60,
+           event_retention_rules=(
+               # Retain everything for 30 days
+               QueueEventRetentionRule(max_age=30 * 24 * 60 * 60),
+               # Retain debug events for only 7 days
+               QueueEventRetentionRule(
+                   match=QueueEventQuery(level="debug"),
+                   max_age=7 * 24 * 60 * 60,
+               ),
+           ),
            event_limit=1000,
        ),
    )
 
 Then schedule ``litestar queues run-maintenance``. It deletes at most
-``event_limit`` oldest matching rows in one invocation. Terminal-task retention
-is a separate setting, so the two policies can use different cutoffs. See
+``event_limit`` oldest matching rows in one invocation. The rules are evaluated
+so that the longest retention period matching an event applies. You can also use ``exclude``
+to build negative matches (e.g. retaining everything except "task.started").
+
+Terminal-task retention is a separate setting, so the two policies can use different cutoffs. See
 :doc:`maintenance` for coordination, cadence, backend, and migration requirements.
 
 Memory history is bounded by ``memory_capacity`` and disappears with the process.
 SQLSpec, Advanced Alchemy, Redis, and Valkey history is durable or shared, so
 those deployments should include cleanup in their backup and privacy policies.
-
-Extra scoping dimensions
-========================
-
-Some deployments scope events by a dimension the queue does not model — a
-tenant, project, or account. That is an extension of the package rather than a
-setting on it, so it lives on its own page: see
-:doc:`event-history-extending`. Nothing above requires it.

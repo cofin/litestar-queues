@@ -149,6 +149,8 @@ class QueueEventHistoryModelMixin:
             Index(f"ix_{table}_event_type", "event_type", "occurred_at"),
             Index(f"ix_{table}_actor_id", "actor_id", "occurred_at"),
             Index(f"ix_{table}_occurred_at", "occurred_at"),
+            Index(f"ix_{table}_scope_key", "scope_key", "occurred_at"),
+            Index(f"ix_{table}_entity", "entity", "occurred_at"),
         )
 
     @declared_attr
@@ -200,6 +202,26 @@ class QueueEventHistoryModelMixin:
         return mapped_column(Text(), default=None)
 
     @declared_attr
+    def stage(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def scope(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=255), default=None)
+
+    @declared_attr
+    def scope_key(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=500), default=None)
+
+    @declared_attr
+    def actor(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=500), default=None)
+
+    @declared_attr
+    def entity(cls) -> "Mapped[str | None]":
+        return mapped_column(String(length=500), default=None)
+
+    @declared_attr
     def detail_json(cls) -> "Mapped[dict[str, Any]]":
         return mapped_column(JsonB, default=dict, nullable=False)
 
@@ -213,6 +235,10 @@ class QueueEventHistoryModelMixin:
 
     @declared_attr
     def progress_percent(cls) -> "Mapped[float | None]":
+        return mapped_column(Float(), default=None)
+
+    @declared_attr
+    def duration_ms(cls) -> "Mapped[float | None]":
         return mapped_column(Float(), default=None)
 
     @declared_attr

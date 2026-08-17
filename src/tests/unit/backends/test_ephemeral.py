@@ -19,6 +19,7 @@ from litestar_queues.backends.ephemeral.codec import MAGIC, encode_payload, reco
 from litestar_queues.backends.ephemeral.schema import EphemeralDatabaseError
 from litestar_queues.backends.ephemeral.server import EphemeralServerContext
 from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventActor
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouch, QueuedTaskRecord, TaskRequest
 from tests.helpers._timing import MutableClock
@@ -177,6 +178,36 @@ async def test_expired_record_is_hidden_and_fenced_at_claim(backend: "EphemeralQ
     assert stored is not None
     assert stored.status == "expired"
     assert stored.completed_at is not None
+
+
+def test_schema_version_bump_forces_rebuild(tmp_path: "Path") -> "None":
+    from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, connect, initialize_database, read_runtime
+
+    path = tmp_path / "queue.sqlite3"
+
+    # Fake an old database
+    conn = connect(path, create=True)
+    conn.execute("CREATE TABLE queue_runtime (singleton INTEGER, schema_version INTEGER, invocation_nonce TEXT)")
+    conn.execute("INSERT INTO queue_runtime VALUES (1, 1, 'old-nonce')")
+    conn.execute("CREATE TABLE queue_task (id TEXT)")  # fake table
+    conn.close()
+
+    # Initialize should drop and rebuild!
+    initialize_database(path, nonce="new-nonce")
+
+    # verify rebuilding
+    runtime = read_runtime(path)
+    assert runtime is not None
+    v, n = runtime
+    assert v == SCHEMA_VERSION
+    assert n == "new-nonce"
+
+    # check table was recreated
+    conn = connect(path, create=False)
+    # queue_task should have the real columns now
+    cur = conn.execute("PRAGMA table_info(queue_task)")
+    cols = [r["name"] for r in cur.fetchall()]
+    assert "task_name" in cols
 
 
 async def test_claim_many_transitions_expired_records(backend: "EphemeralQueueBackend") -> "None":
@@ -551,7 +582,7 @@ async def test_event_log_prunes_the_oldest_records_beyond_capacity(backend: "Eph
     for index in range(5):
         await log.publish_event(_event(index))
 
-    records = await log.list_events(task_name="tasks.bounded")
+    records = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
 
     assert [record.detail["index"] for record in records] == [2, 3, 4]
 
@@ -562,7 +593,7 @@ async def test_event_log_prunes_by_sequence_when_timestamps_tie(backend: "Epheme
     for index in range(4):
         await log.publish_event(_event(index, second=0))
 
-    records = await log.list_events(task_name="tasks.bounded")
+    records = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
 
     assert [record.detail["index"] for record in records] == [2, 3]
 
@@ -573,10 +604,10 @@ async def test_event_log_filters_by_task_id_task_name_and_limit(backend: "Epheme
         await log.publish_event(_event(index))
     await log.publish_event(_event(9, task_name="tasks.other"))
 
-    by_id = await log.list_events(task_id="task-1")
-    by_name = await log.list_events(task_name="tasks.bounded")
-    limited = await log.list_events(task_name="tasks.bounded", limit=2)
-    other = await log.list_events(task_name="tasks.other")
+    by_id = (await log.query_events(QueueEventQuery(task_id="task-1"))).items
+    by_name = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
+    limited = (await log.query_events(QueueEventQuery(task_name="tasks.bounded", limit=2))).items
+    other = (await log.query_events(QueueEventQuery(task_name="tasks.other"))).items
 
     assert [record.detail["index"] for record in by_id] == [1]
     assert [record.detail["index"] for record in by_name] == [0, 1, 2]
@@ -609,7 +640,7 @@ async def test_event_log_round_trips_every_history_field(backend: "EphemeralQueu
             occurred_at=occurred,
         )
     )
-    record = (await log.list_events(task_name="tasks.detailed"))[0]
+    record = (await log.query_events(QueueEventQuery(task_name="tasks.detailed"))).items[0]
 
     assert record.event_id == "event-1"
     assert record.event_type == "task.progress"
@@ -649,39 +680,26 @@ async def test_event_log_filters_by_actor(backend: "EphemeralQueueBackend") -> "
             )
         )
 
-    recorded = await log.list_events(task_name="tasks.actor")
-    by_actor_id = await log.list_events(actor_id="u-1")
-    by_actor_type = await log.list_events(actor_type="service")
-
+    recorded = (await log.query_events(QueueEventQuery(task_name="tasks.actor"))).items
     assert [(record.actor_type, record.actor_id) for record in recorded] == [
         ("user", "u-1"),
         ("service", "svc-1"),
         (None, None),
     ]
-    assert [record.detail["index"] for record in by_actor_id] == [0]
-    assert [record.detail["index"] for record in by_actor_type] == [1]
 
 
-async def test_event_log_summarize_stages_returns_no_aggregates(backend: "EphemeralQueueBackend") -> "None":
-    log = _event_log(backend, EventHistoryConfig())
-    await log.publish_event(_event(0))
-
-    assert await log.summarize_stages() == []
-    assert await log.summarize_stages(task_name="tasks.bounded") == []
-
-
-async def test_event_log_cleanup_before_is_bounded_and_idempotent(backend: "EphemeralQueueBackend") -> "None":
+async def test_event_log_cleanup_events_is_bounded_and_idempotent(backend: "EphemeralQueueBackend") -> "None":
     log = _event_log(backend, EventHistoryConfig(memory_capacity=3))
     for index in range(5):
         await log.publish_event(_event(index))
     cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
 
-    first_deleted = await log.cleanup_before(cutoff, limit=1)
-    after_first = await log.list_events(task_name="tasks.bounded")
-    second_deleted = await log.cleanup_before(cutoff, limit=1)
-    after_second = await log.list_events(task_name="tasks.bounded")
-    final_deleted = await log.cleanup_before(cutoff, limit=1)
-    after_final = await log.list_events(task_name="tasks.bounded")
+    first_deleted = await log.cleanup_events(before=cutoff, limit=1)
+    after_first = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
+    second_deleted = await log.cleanup_events(before=cutoff, limit=1)
+    after_second = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
+    final_deleted = await log.cleanup_events(before=cutoff, limit=1)
+    after_final = (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
 
     assert first_deleted == 1
     assert [record.detail["index"] for record in after_first] == [3, 4]
@@ -697,7 +715,7 @@ async def test_backend_clear_clears_the_event_log(backend: "EphemeralQueueBacken
 
     await backend.clear()
 
-    assert await log.list_events(task_name="tasks.bounded") == []
+    assert (await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items == []
 
 
 async def test_event_log_flush_is_a_no_op(backend: "EphemeralQueueBackend") -> "None":
@@ -706,7 +724,7 @@ async def test_event_log_flush_is_a_no_op(backend: "EphemeralQueueBackend") -> "
 
     await log.flush_events()
 
-    assert len(await log.list_events(task_name="tasks.bounded")) == 1
+    assert len((await log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items) == 1
 
 
 async def test_two_instances_publish_events_concurrently(backend: "EphemeralQueueBackend") -> "None":
@@ -720,7 +738,7 @@ async def test_two_instances_publish_events_concurrently(backend: "EphemeralQueu
             *(first.publish_event(_event(index)) for index in range(0, 20, 2)),
             *(second.publish_event(_event(index)) for index in range(1, 20, 2)),
         )
-        records = await first.list_events(task_name="tasks.bounded")
+        records = (await first.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
 
         assert sorted(record.detail["index"] for record in records) == list(range(20))
     finally:

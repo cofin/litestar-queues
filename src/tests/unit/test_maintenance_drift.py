@@ -24,7 +24,7 @@ def test_retention_defaults_are_non_destructive() -> None:
     config = QueueMaintenanceConfig()
     assert config.stale_after is None
     assert config.terminal_retention is None
-    assert config.event_retention is None
+    assert config.event_retention_rules == ()
 
 
 def test_no_hidden_recurring_maintenance_task() -> None:

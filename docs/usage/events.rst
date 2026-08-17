@@ -111,7 +111,9 @@ optional, last-value-wins detail update for the next heartbeat write; it is not
 a liveness requirement and does not publish a task event by itself.
 
 The active task context adds the task ID, task name, queue, worker ID, attempt,
-execution backend, and sequence.
+execution backend, and sequence. All publish helpers also accept ``scope``,
+``scope_key``, ``entity``, and ``stage`` to attach domain grouping and
+lifecycle dimensions.
 
 A running task never has to bind that context. The service binds it before it
 calls the task body, so the module-level helpers resolve it on their own:

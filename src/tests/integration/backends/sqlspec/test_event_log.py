@@ -29,6 +29,7 @@ from litestar_queues.events import (
     publish_task_log,
     publish_task_progress,
 )
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.task import clear_task_registry
 from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema
 
@@ -77,18 +78,20 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
         event_log = reader.get_queue_backend().get_event_log(event_log_config)
         assert event_log is not None
 
-        records = await event_log.list_events(task_id=str(result.id))
-        task_name_records = await event_log.list_events(task_name=event_history_task.name, limit=2)
-        summaries = await event_log.summarize_stages(task_name=event_history_task.name)
+        records = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        task_name_records = (
+            await event_log.query_events(QueueEventQuery(task_name=event_history_task.name, limit=2))
+        ).items
+        summaries = await event_log.summarize_stages(QueueEventQuery(task_name=event_history_task.name))
         cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
-        first_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_first = await event_log.list_events(task_id=str(result.id))
-        second_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_second = await event_log.list_events(task_id=str(result.id))
-        third_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_third = await event_log.list_events(task_id=str(result.id))
-        final_deleted = await event_log.cleanup_before(cutoff, limit=2)
-        after_final = await event_log.list_events(task_id=str(result.id))
+        first_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_first = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        second_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_second = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        third_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_third = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
+        final_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
+        after_final = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
 
     assert [record.event_type for record in records] == [
         "task.started",
@@ -155,10 +158,12 @@ async def test_sqlspec_event_log_persists_and_filters_the_actor(
                 )
             )
 
-        recorded = await event_log.list_events(task_name="tasks.actor")
-        by_actor_id = await event_log.list_events(actor_id="u-1")
-        by_actor_type = await event_log.list_events(actor_type="service")
-        by_both = await event_log.list_events(actor_id="u-1", actor_type="service")
+        recorded = (await event_log.query_events(QueueEventQuery(task_name="tasks.actor"))).items
+        by_actor_id = (await event_log.query_events(QueueEventQuery(), extra={"actor_id": "u-1"})).items
+        by_actor_type = (await event_log.query_events(QueueEventQuery(), extra={"actor_type": "service"})).items
+        by_both = (
+            await event_log.query_events(QueueEventQuery(), extra={"actor_id": "u-1", "actor_type": "service"})
+        ).items
 
     assert [(record.actor_type, record.actor_id) for record in recorded] == [
         ("user", "u-1"),

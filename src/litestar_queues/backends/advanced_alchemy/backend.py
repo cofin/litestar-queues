@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.advanced_alchemy._notifications import NotificationListener
     from litestar_queues.config import QueueConfig
-    from litestar_queues.events import EventHistoryConfig, QueueEventLog
+    from litestar_queues.events import EventHistoryConfig
     from litestar_queues.models import (
         HeartbeatTouch,
         QueuedTaskRecord,
@@ -152,8 +152,8 @@ class SQLAlchemyBackend(BaseQueueBackend):
             await self._event_log.flush_events()
         self._opened = False
 
-    def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
-        """Return Advanced Alchemy-managed queue event history when enabled."""
+    def get_event_log(self, config: "EventHistoryConfig") -> "AdvancedAlchemyQueueEventLog":
+        """Return Advanced Alchemy-managed queue event history."""
         if self._event_log is None:
             self._event_log = AdvancedAlchemyQueueEventLog(
                 config=config,

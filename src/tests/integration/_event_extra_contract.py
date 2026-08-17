@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from litestar_queues.events import EventHistoryConfig, EventHistoryExtraColumn, QueueEvent, QueueEventActor
+from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
@@ -49,14 +50,14 @@ async def assert_event_extra_contract(queue_backend: "BaseQueueBackend") -> "Non
     await log.publish_event(_event(task_id="b", payload={"tenant_id": "other"}))
     await log.flush_events()
 
-    matched = await log.list_events(extra={"tenant": "acme"})
+    matched = (await log.query_events(QueueEventQuery(), extra={"tenant": "acme"})).items
     assert [r.task_id for r in matched] == ["a"]
     assert matched[0].extra == {"tenant": "acme"}
 
-    assert await log.list_events(extra={"tenant": "missing"}) == []
+    assert (await log.query_events(QueueEventQuery(), extra={"tenant": "missing"})).items == []
 
     with pytest.raises(QueueConfigurationError):
-        await log.list_events(extra={"undeclared": "x"})
+        await log.query_events(QueueEventQuery(), extra={"undeclared": "x"})
 
 
 async def assert_event_actor_contract(queue_backend: "BaseQueueBackend") -> "None":
@@ -69,9 +70,9 @@ async def assert_event_actor_contract(queue_backend: "BaseQueueBackend") -> "Non
     await log.publish_event(_event(task_id="b", actor=QueueEventActor(type="user", id="u2")))
     await log.flush_events()
 
-    matched_id = await log.list_events(actor_id="u1")
+    matched_id = (await log.query_events(QueueEventQuery(), extra={"actor_id": "u1"})).items
     assert [r.task_id for r in matched_id] == ["a"]
     assert matched_id[0].actor_type == "user"
 
-    matched_type = await log.list_events(actor_type="user")
+    matched_type = (await log.query_events(QueueEventQuery(), extra={"actor_type": "user"})).items
     assert {r.task_id for r in matched_type} >= {"a", "b"}

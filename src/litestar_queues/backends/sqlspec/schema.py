@@ -90,6 +90,10 @@ EVENT_HISTORY_COLUMNS = (
     "sequence",
     "occurred_at",
     "created_at",
+    "scope",
+    "scope_key",
+    "actor",
+    "entity",
 )
 """Physical columns the package owns on the SQLSpec event-history table."""
 

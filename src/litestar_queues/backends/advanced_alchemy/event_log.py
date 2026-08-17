@@ -6,10 +6,11 @@ import time
 from typing import TYPE_CHECKING
 
 from litestar_queues.events._log_records import event_log_record_from_event
-from litestar_queues.events.history import validate_event_extra_filter
+from litestar_queues.events.query import QueueEventQuery
+from litestar_queues.events.typing import OffsetPagination
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractAsyncContextManager
     from datetime import datetime
 
@@ -76,35 +77,36 @@ class AdvancedAlchemyQueueEventLog:
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()
 
-    async def list_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-        limit: "int | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records."""
-        resolved_extra = validate_event_extra_filter(extra, self._config.extra_columns)
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        """Query durable event history records."""
+        query = query or QueueEventQuery()
+
         await self.flush_events()
         async with self._service_factory() as service:
-            return await service.list_events(
-                task_id=task_id,
-                task_name=task_name,
-                actor_id=actor_id,
-                actor_type=actor_type,
-                extra=resolved_extra,
-                limit=limit,
+            total, items = await service.query_events(query)
+
+            page_items = items[: query.limit] if query.limit else items
+
+            return OffsetPagination(
+                items=page_items, total=total, offset=query.offset, limit=query.limit or len(page_items) or 1
             )
 
-    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
-        """Return no aggregate summaries for the Advanced Alchemy event log."""
-        del task_name
-        return []
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        """Return per-stage event history aggregates."""
+        await self.flush_events()
+        async with self._service_factory() as service:
+            return await service.summarize_stages(query)
 
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+    async def cleanup_events(
+        self,
+        *,
+        before: "datetime",
+        match: "QueueEventQuery | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
+        limit: "int | None" = None,
+    ) -> "int":
         """Delete event history older than ``before``.
 
         Returns:
@@ -112,7 +114,7 @@ class AdvancedAlchemyQueueEventLog:
         """
         await self.flush_events()
         async with self._transaction_factory() as service:
-            return await service.cleanup_before(before, limit=limit)
+            return await service.cleanup_events(before=before, limit=limit, match=match, exclude=tuple(exclude))
 
     def _flush_interval_elapsed(self) -> "bool":
         return self._config.flush_interval <= 0 or time.monotonic() - self._last_flush >= self._config.flush_interval

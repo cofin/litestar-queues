@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from litestar_queues import WorkerConfig
+from litestar_queues.events import QueueEventRetentionRule
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -451,7 +452,10 @@ async def test_maintain_narrows_selected_phases(monkeypatch: "pytest.MonkeyPatch
     from litestar_queues import _cli
 
     service = _FakeMaintenanceServiceHost(_FakeMaintenanceBackend())
-    plugin = _FakePlugin(_maintenance_config(terminal_retention=60, event_retention=60), service)
+    plugin = _FakePlugin(
+        _maintenance_config(terminal_retention=60, event_retention_rules=(QueueEventRetentionRule(max_age=60),)),
+        service,
+    )
     captured = _install_fake_maintenance(monkeypatch, _summary("completed"))
 
     await _cli._maintain_run(cast("Any", plugin), ("terminal", "events"), False)

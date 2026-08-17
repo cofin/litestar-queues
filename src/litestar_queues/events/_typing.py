@@ -1,6 +1,8 @@
 """Internal event backend typing helpers."""
 
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+import sys
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -56,3 +58,21 @@ ChannelsLike: TypeAlias = (
     | ChannelsSubscriptionBackend
     | ChannelsStreamBackend
 )
+
+
+T = TypeVar("T")
+
+if "sqlspec.core" in sys.modules:
+    OffsetPagination = sys.modules["sqlspec.core"].OffsetPagination
+elif "advanced_alchemy.service.pagination" in sys.modules:
+    OffsetPagination = sys.modules["advanced_alchemy.service.pagination"].OffsetPagination
+else:
+
+    @dataclass
+    class OffsetPagination(Generic[T]):  # type: ignore[no-redef]
+        """Offset-paginated result matching the sqlspec and Advanced Alchemy shape."""
+
+        items: "list[T]"
+        limit: int
+        offset: int
+        total: int

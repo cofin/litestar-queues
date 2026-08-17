@@ -12,6 +12,7 @@ from litestar_queues import (
     QueueMaintenanceService,
     QueueMaintenanceSummary,
 )
+from litestar_queues.events import QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.maintenance import MAINTENANCE_NAME, PHASE_ORDER
 from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryResult
@@ -19,6 +20,7 @@ from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryRe
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    from litestar_queues.events.query import QueueEventQuery
     from litestar_queues.maintenance import MaintenancePhase
     from litestar_queues.service import QueueService
 
@@ -38,14 +40,21 @@ class _Clock:
 
 
 class _StubEventLog:
-    """Event-log double recording ``cleanup_before`` calls."""
+    """Event-log double recording ``cleanup_events`` calls."""
 
     def __init__(self, *, deleted: "int" = 0, error: "Exception | None" = None) -> "None":
         self.deleted = deleted
         self.error = error
         self.calls: "list[tuple[datetime, int | None]]" = []
 
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+    async def cleanup_events(
+        self,
+        before: "datetime",
+        *,
+        match: "QueueEventQuery | None" = None,
+        exclude: "tuple[QueueEventQuery, ...] | None" = None,
+        limit: "int | None" = None,
+    ) -> "int":
         self.calls.append((before, limit))
         if self.error is not None:
             raise self.error
@@ -168,7 +177,7 @@ def test_config_defaults_disable_retention_phases() -> "None":
     config = QueueMaintenanceConfig()
     assert config.stale_after is None
     assert config.terminal_retention is None
-    assert config.event_retention is None
+    assert config.event_retention_rules == ()
     assert config.coordination_timeout > config.time_budget
 
 
@@ -183,7 +192,7 @@ def test_config_defaults_disable_retention_phases() -> "None":
         {"event_limit": 0},
         {"stale_after": 0},
         {"terminal_retention": -1},
-        {"event_retention": 0},
+        {"event_retention_rules": (0,)},
         {"coordination_timeout": 300.0, "time_budget": 300.0},
         {"coordination_timeout": 100.0, "time_budget": 300.0},
         {"time_budget": float("nan")},
@@ -192,7 +201,7 @@ def test_config_defaults_disable_retention_phases() -> "None":
         {"coordination_timeout": float("inf")},
         {"stale_after": float("nan")},
         {"terminal_retention": float("inf")},
-        {"event_retention": float("nan")},
+        {"event_retention_rules": (QueueEventRetentionRule,)},
         {"time_budget": True},
         {"stale_after": True},
         {"external_limit": 1.5},
@@ -207,7 +216,9 @@ def test_config_rejects_invalid_values(kwargs: "dict[str, object]") -> "None":
 
 
 def test_config_allows_positive_retention() -> "None":
-    config = QueueMaintenanceConfig(stale_after=60.0, terminal_retention=3600.0, event_retention=7200.0)
+    config = QueueMaintenanceConfig(
+        stale_after=60.0, terminal_retention=3600.0, event_retention_rules=(QueueEventRetentionRule(max_age=7200.0),)
+    )
     assert config.stale_after == 60.0
 
 
@@ -260,7 +271,12 @@ async def test_all_enabled_phases_run_once_in_fixed_order() -> "None":
     stub = _StubService(backend=backend, is_external=True, event_log=event_log)
     stub.reconcile_result = 2
     stub.recover_result = StaleTaskRecoveryResult(requeued=1, failed=1)
-    summary = await _run(stub, QueueMaintenanceConfig(stale_after=60, terminal_retention=3600, event_retention=7200))
+    summary = await _run(
+        stub,
+        QueueMaintenanceConfig(
+            stale_after=60, terminal_retention=3600, event_retention_rules=(QueueEventRetentionRule(max_age=7200),)
+        ),
+    )
 
     assert [phase.phase for phase in summary.phases] == list(PHASE_ORDER)
     assert [phase.status for phase in summary.phases] == ["completed", "completed", "completed", "completed"]
@@ -287,7 +303,7 @@ async def test_disabled_phases_are_skipped_without_backend_calls() -> "None":
 async def test_events_phase_skipped_when_no_event_log_configured() -> "None":
     backend = _StubBackend()
     stub = _StubService(backend=backend, event_log=None)
-    summary = await _run(stub, QueueMaintenanceConfig(event_retention=3600))
+    summary = await _run(stub, QueueMaintenanceConfig(event_retention_rules=(QueueEventRetentionRule(max_age=3600),)))
     events_result = next(phase for phase in summary.phases if phase.phase == "events")
     assert events_result.status == "skipped"
 
@@ -310,7 +326,10 @@ async def test_retention_cutoffs_are_computed_from_start_boundary() -> "None":
     backend = _StubBackend()
     event_log = _StubEventLog()
     stub = _StubService(backend=backend, event_log=event_log)
-    await _run(stub, QueueMaintenanceConfig(terminal_retention=120, event_retention=600))
+    await _run(
+        stub,
+        QueueMaintenanceConfig(terminal_retention=120, event_retention_rules=(QueueEventRetentionRule(max_age=600),)),
+    )
     assert backend.cleanup_calls[0][0] == FIXED_NOW - timedelta(seconds=120)
     assert event_log.calls[0][0] == FIXED_NOW - timedelta(seconds=600)
 
@@ -344,7 +363,10 @@ async def test_only_failed_phase_overrides_completed_outcome() -> "None":
     backend = _StubBackend()
     event_log = _StubEventLog(error=ValueError("boom"))
     stub = _StubService(backend=backend, event_log=event_log)
-    summary = await _run(stub, QueueMaintenanceConfig(terminal_retention=60, event_retention=60))
+    summary = await _run(
+        stub,
+        QueueMaintenanceConfig(terminal_retention=60, event_retention_rules=(QueueEventRetentionRule(max_age=60),)),
+    )
     assert summary.outcome == "failed"
     events = next(phase for phase in summary.phases if phase.phase == "events")
     assert events.error == "maintenance_phase_failed:ValueError"
@@ -365,7 +387,11 @@ async def test_budget_exhaustion_marks_later_phases_partial_without_running_them
     backend.clock = clock
 
     summary = await _run(
-        stub, QueueMaintenanceConfig(stale_after=60, terminal_retention=60, event_retention=60), monotonic=clock
+        stub,
+        QueueMaintenanceConfig(
+            stale_after=60, terminal_retention=60, event_retention_rules=(QueueEventRetentionRule(max_age=60),)
+        ),
+        monotonic=clock,
     )
 
     statuses = {phase.phase: phase.status for phase in summary.phases}

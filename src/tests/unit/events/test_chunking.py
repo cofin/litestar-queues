@@ -32,15 +32,13 @@ class _RecordingEventLog:
     async def flush_events(self) -> None:
         return None
 
-    async def list_events(
-        self, *, task_id: str | None = None, task_name: str | None = None, limit: int | None = None
-    ) -> list[Any]:
+    async def query_events(self, query: Any = None, *, extra: Any = None) -> Any:
+        return None
+
+    async def summarize_stages(self, query: Any = None) -> Any:
         return []
 
-    async def summarize_stages(self, *, task_name: str | None = None) -> list[Any]:
-        return []
-
-    async def cleanup_before(self, before: Any) -> int:
+    async def cleanup_events(self, *, before: Any, match: Any = None, exclude: Any = (), limit: Any = None) -> int:
         return 0
 
 

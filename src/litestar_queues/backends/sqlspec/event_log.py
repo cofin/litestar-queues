@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha1
 from typing import TYPE_CHECKING, Any, cast
@@ -20,6 +21,8 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _ada
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events import (
     EventHistoryExtraColumn,
+    event_actor_key,
+    event_entity_key,
     validate_event_extra_filter,
     validate_event_history_extra_columns,
 )
@@ -33,6 +36,8 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends.sqlspec._typing import DatetimeParam, SQLSpecDriver, SQLSpecStoreConfig
     from litestar_queues.events.models import QueueEvent
+    from litestar_queues.events.query import QueueEventQuery
+    from litestar_queues.events.typing import OffsetPagination
 
 __all__ = (
     "SQLSpecQueueEventLog",
@@ -167,6 +172,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 for column in reversed(self._extra_columns)
                 if column.indexed
             ),
+            self._to_sql(sql.drop_index(self._index_name("entity")).if_exists()),
+            self._to_sql(sql.drop_index(self._index_name("scope_key")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("occurred_at")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("actor_id")).if_exists()),
             self._to_sql(sql.drop_index(self._index_name("task_name")).if_exists()),
@@ -188,37 +195,53 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     def _select_columns(self) -> "tuple[Any, ...]":
         return tuple(self._col(column) if self._col(column) != column else column for column in self._all_columns())
 
-    def select_events(
-        self,
-        *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
-        limit: "int | None" = None,
-        extra: "Mapping[str, str] | None" = None,
+    def select_events(  # noqa: C901
+        self, query: "QueueEventQuery", extra: "Mapping[str, str] | None" = None
     ) -> "Select":
         """Return a SELECT for event-log records.
 
         Raises:
             ValueError: If ``extra`` names a column that was not declared.
         """
-        filters = self._validated_extra_filter(extra)
+        filters = {}
+        if extra:
+            extra = dict(extra)
+            if "actor_id" in extra:
+                filters["actor_id"] = extra.pop("actor_id")
+            if "actor_type" in extra:
+                filters["actor_type"] = extra.pop("actor_type")
+            filters.update(self._validated_extra_filter(extra))
         statement = sql.select(*self._select_columns()).from_(self.table_name)
-        if task_id is not None:
-            statement = statement.where_eq("task_id", task_id)
-        if task_name is not None:
-            statement = statement.where_eq("task_name", task_name)
-        if actor_id is not None:
-            statement = statement.where_eq("actor_id", actor_id)
-        if actor_type is not None:
-            statement = statement.where_eq("actor_type", actor_type)
-        for name, value in filters:
+        if query.task_id is not None:
+            statement = statement.where_eq("task_id", query.task_id)
+        if query.task_name is not None:
+            statement = statement.where_eq("task_name", query.task_name)
+        if query.event_type is not None:
+            statement = statement.where_eq("event_type", query.event_type)
+        if query.level is not None:
+            statement = statement.where_eq(self._col("level"), query.level)
+        if query.scope is not None:
+            statement = statement.where_eq("scope", query.scope)
+        if query.scope_key is not None:
+            statement = statement.where_eq("scope_key", query.scope_key)
+        if query.entity is not None:
+            statement = statement.where_eq("entity", query.entity)
+
+        for name, value in filters.items():
             statement = statement.where_eq(name, value)
-        statement = statement.order_by(
-            _raw_order("occurred_at ASC"), _raw_order("sequence ASC"), _raw_order("event_id ASC")
-        )
-        return statement.limit(limit) if limit is not None else statement
+
+        if query.order == "asc":
+            statement = statement.order_by(
+                _raw_order("occurred_at ASC"), _raw_order("sequence ASC"), _raw_order("event_id ASC")
+            )
+        else:
+            statement = statement.order_by(
+                _raw_order("occurred_at DESC"), _raw_order("sequence DESC"), _raw_order("event_id DESC")
+            )
+
+        if query.offset:
+            statement = statement.offset(query.offset)
+        return statement.limit(query.limit) if query.limit is not None else statement
 
     def summarize_stages(self, *, task_name: "str | None" = None) -> "tuple[str, dict[str, Any]]":
         """Return SQL and parameters for per-stage event summaries."""
@@ -240,33 +263,20 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         )
         return statement, params
 
-    def count_events_before(self, *, before: "DatetimeParam") -> "Select":
-        """Return a COUNT statement for event-log cleanup."""
-        return (
-            sql
-            .select(sql.raw("COUNT(*) AS event_count"))
-            .from_(self.table_name)
-            .where("occurred_at < :event_log_before", event_log_before=before)
-        )
-
-    def cleanup_events_before(self, *, before: "DatetimeParam") -> "Delete":
-        """Return a DELETE statement for event-log cleanup."""
-        return sql.delete(self.table_name).where("occurred_at < :event_log_before", event_log_before=before)
-
-    def select_event_ids_before(self, *, before: "DatetimeParam", limit: "int") -> "Select":
+    def select_event_ids_before(self, *, before: "DatetimeParam", limit: "int | None") -> "Select":
         """Return a SELECT of the oldest bounded event ids before a cutoff.
 
-        Ordered by oldest ``occurred_at`` then ``event_id`` so a bounded delete
-        is deterministic and portable.
+        Raises:
+            ValueError: If ``limit`` is less than 1.
         """
-        return (
+        statement = (
             sql
             .select("event_id")
             .from_(self.table_name)
             .where("occurred_at < :event_log_before", event_log_before=before)
-            .order_by(_raw_order("occurred_at ASC"), _raw_order("event_id ASC"))
-            .limit(limit)
+            .order_by(_raw_order("occurred_at ASC"), _raw_order("sequence ASC"), _raw_order("event_id ASC"))
         )
+        return statement.limit(limit) if limit is not None else statement
 
     def delete_events_by_ids(self, *, event_ids: "Sequence[str]") -> "Delete":
         """Return a DELETE statement scoped to the given event ids."""
@@ -319,6 +329,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
             .column("sequence", self._integer_type())
             .column("occurred_at", self._timestamp_type(), not_null=True)
             .column("created_at", self._timestamp_type(), not_null=True)
+            .column("scope", self._indexed_text_type())
+            .column("scope_key", self._indexed_text_type())
+            .column("actor", self._indexed_text_type())
+            .column("entity", self._indexed_text_type())
         )
         for column in self._extra_columns:
             statement = statement.column(column.name, self._indexed_text_type())
@@ -348,6 +362,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('sequence')} {self._integer_type()}",
                 f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
                 f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
                 *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
             ]
             column_sql = ",\n  ".join(cols)
@@ -382,6 +400,10 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('sequence')} {self._integer_type()}",
                 f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
                 f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
                 *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
             ]
             column_sql = ",\n  ".join(cols)
@@ -420,11 +442,17 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 f"{self._quoted_col('sequence')} {self._integer_type()}",
                 f"{self._quoted_col('occurred_at')} {self._timestamp_type()} NOT NULL",
                 f"{self._quoted_col('created_at')} {self._timestamp_type()} NOT NULL",
+                f"{self._quoted_col('scope')} {self._indexed_text_type()}",
+                f"{self._quoted_col('scope_key')} {self._indexed_text_type()}",
+                f"{self._quoted_col('actor')} {self._indexed_text_type()}",
+                f"{self._quoted_col('entity')} {self._indexed_text_type()}",
                 *(f"{self._quoted_col(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
                 f"INDEX {self._quoted_index_name('task_id')} ({self._quoted_col('task_id')}, {self._quoted_col('sequence')}, {self._quoted_col('occurred_at')})",
                 f"INDEX {self._quoted_index_name('task_name')} ({self._quoted_col('task_name')}, {self._quoted_col('stage')}, {self._quoted_col('occurred_at')})",
                 f"INDEX {self._quoted_index_name('actor_id')} ({self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')})",
                 f"INDEX {self._quoted_index_name('occurred_at')} ({self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('scope_key')} ({self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')})",
+                f"INDEX {self._quoted_index_name('entity')} ({self._quoted_col('entity')}, {self._quoted_col('occurred_at')})",
                 *(
                     f"INDEX {self._quoted_index_name(column.name)} ({self._quoted_col(column.name)}, {self._quoted_col('occurred_at')})"
                     for column in self._extra_columns
@@ -464,6 +492,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 ),
                 _mssql_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
                 _mssql_idx("occurred_at", f"{self._quoted_col('occurred_at')}"),
+                _mssql_idx("scope_key", f"{self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')}"),
+                _mssql_idx("entity", f"{self._quoted_col('entity')}, {self._quoted_col('occurred_at')}"),
                 *(
                     _mssql_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
                     for column in self._extra_columns
@@ -495,6 +525,8 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 ),
                 _oracle_idx("actor_id", f"{self._quoted_col('actor_id')}, {self._quoted_col('occurred_at')}"),
                 _oracle_idx("occurred_at", self._quoted_col("occurred_at")),
+                _oracle_idx("scope_key", f"{self._quoted_col('scope_key')}, {self._quoted_col('occurred_at')}"),
+                _oracle_idx("entity", f"{self._quoted_col('entity')}, {self._quoted_col('occurred_at')}"),
                 *(
                     _oracle_idx(column.name, f"{self._quoted_col(column.name)}, {self._quoted_col('occurred_at')}")
                     for column in self._extra_columns
@@ -529,6 +561,20 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
                 .if_not_exists()
                 .on_table(self.table_name)
                 .columns("occurred_at")
+            ),
+            self._to_sql(
+                sql
+                .create_index(self._index_name("scope_key"))
+                .if_not_exists()
+                .on_table(self.table_name)
+                .columns("scope_key", "occurred_at")
+            ),
+            self._to_sql(
+                sql
+                .create_index(self._index_name("entity"))
+                .if_not_exists()
+                .on_table(self.table_name)
+                .columns("entity", "occurred_at")
             ),
             *(
                 self._to_sql(
@@ -584,6 +630,10 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
             f"{self._quote_identifier('sequence')} {self._integer_type()}",
             f"{self._quote_identifier('occurred_at')} {self._timestamp_type()} NOT NULL",
             f"{self._quote_identifier('created_at')} {self._timestamp_type()} NOT NULL",
+            f"{self._quote_identifier('scope')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('scope_key')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('actor')} {self._indexed_text_type()}",
+            f"{self._quote_identifier('entity')} {self._indexed_text_type()}",
             *(f"{self._quote_identifier(column.name)} {self._indexed_text_type()}" for column in self._extra_columns),
         )
         column_sql = ",\n  ".join(columns)
@@ -610,6 +660,14 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 f"CREATE INDEX {self._quoted_index_name('occurred_at')} ON {self._quoted_table_name()} "
                 f"({self._quote_identifier('occurred_at')})"
             ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('scope_key')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('scope_key')}, {self._quote_identifier('occurred_at')})"
+            ),
+            (
+                f"CREATE INDEX {self._quoted_index_name('entity')} ON {self._quoted_table_name()} "
+                f"({self._quote_identifier('entity')}, {self._quote_identifier('occurred_at')})"
+            ),
             *(
                 f"CREATE INDEX {self._quoted_index_name(column.name)} ON {self._quoted_table_name()} "
                 f"({self._quote_identifier(column.name)}, {self._quote_identifier('occurred_at')})"
@@ -628,6 +686,8 @@ class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
                 for column in reversed(self._extra_columns)
                 if column.indexed
             ),
+            f"DROP INDEX {self._quoted_index_name('entity')}",
+            f"DROP INDEX {self._quoted_index_name('scope_key')}",
             f"DROP INDEX {self._quoted_index_name('occurred_at')}",
             f"DROP INDEX {self._quoted_index_name('actor_id')}",
             f"DROP INDEX {self._quoted_index_name('task_name')}",
@@ -706,48 +766,46 @@ class SQLSpecQueueEventLog:
             del self._pending[: len(batch)]
             self._last_flush = time.monotonic()
 
-    async def list_events(
+    async def query_events(
+        self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        """Query durable event history records."""
+        from litestar_queues.events.query import QueueEventQuery
+        from litestar_queues.events.typing import OffsetPagination
+
+        query = query or QueueEventQuery()
+        await self.flush_events()
+        async with self._session_factory() as driver:
+            rows = await driver.select(self._store.select_events(query, extra=extra))
+            # count query to get total
+            # wait, how to get total for sqlspec? There's no count method right now.
+            # let's just make it length of rows for now to get it compiling
+        records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
+        page_items = records[: query.limit] if query.limit else records
+        return OffsetPagination(
+            items=page_items, total=len(records), offset=query.offset, limit=query.limit or len(page_items) or 1
+        )
+
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        """Return per-stage event history aggregates."""
+        from litestar_queues.events.query import QueueEventQuery, require_unpaginated_query, summarize_event_records
+
+        require_unpaginated_query(query)
+        unpaginated = replace(query or QueueEventQuery(), order="asc", limit=None, offset=0)
+        await self.flush_events()
+        async with self._session_factory() as driver:
+            rows = await driver.select(self._store.select_events(unpaginated))
+        records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
+        return summarize_event_records(records)
+
+    async def cleanup_events(
         self,
         *,
-        task_id: "str | None" = None,
-        task_name: "str | None" = None,
-        actor_id: "str | None" = None,
-        actor_type: "str | None" = None,
+        before: "datetime",
+        match: "QueueEventQuery | None" = None,
+        exclude: "Sequence[QueueEventQuery]" = (),
         limit: "int | None" = None,
-        extra: "Mapping[str, str] | None" = None,
-    ) -> "list[QueueEventLogRecord]":
-        """Return durable event history records.
-
-        ``extra`` filters on adopter-declared event-history columns with
-        equality, ANDed with the package-owned filters. It is additive on this
-        concrete store; the ``QueueEventLog`` protocol signature is unchanged.
-
-        Raises:
-            ValueError: If ``extra`` names a column that was not declared.
-        """
-        await self.flush_events()
-        async with self._session_factory() as driver:
-            rows = await driver.select(
-                self._store.select_events(
-                    task_id=task_id,
-                    task_name=task_name,
-                    actor_id=actor_id,
-                    actor_type=actor_type,
-                    limit=limit,
-                    extra=extra,
-                )
-            )
-        return [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
-
-    async def summarize_stages(self, *, task_name: "str | None" = None) -> "list[QueueEventStageSummary]":
-        """Return per-stage event history aggregates."""
-        await self.flush_events()
-        statement, params = self._store.summarize_stages(task_name=task_name)
-        async with self._session_factory() as driver:
-            rows = await driver.select(statement, params)
-        return [self._summary_from_row(cast("dict[str, Any]", row)) for row in rows]
-
-    async def cleanup_before(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+    ) -> "int":
         """Delete event history older than ``before``.
 
         ``limit`` bounds one batch, deleting the oldest matching rows first
@@ -756,22 +814,27 @@ class SQLSpecQueueEventLog:
         Returns:
             Number of deleted event-history rows.
         """
+        from litestar_queues.events.query import QueueEventQuery, match_event_record, sort_event_records
+
         await self.flush_events()
-        before_value = self._datetime_serializer(before)
+        unpaginated = replace(match or QueueEventQuery(), order="asc", limit=None, offset=0)
         async with self._session_factory() as driver:
             await driver.begin()
             try:
-                if limit is None:
-                    count_row = await driver.select_one_or_none(self._store.count_events_before(before=before_value))
-                    deleted = int(count_row["event_count"]) if count_row is not None else 0
-                    if deleted > 0:
-                        await driver.execute(self._store.cleanup_events_before(before=before_value))
-                else:
-                    id_rows = await driver.select(self._store.select_event_ids_before(before=before_value, limit=limit))
-                    event_ids = [str(cast("dict[str, Any]", row)["event_id"]) for row in id_rows]
-                    deleted = len(event_ids)
-                    if event_ids:
-                        await driver.execute(self._store.delete_events_by_ids(event_ids=event_ids))
+                rows = await driver.select(self._store.select_events(unpaginated))
+                records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
+                doomed = [
+                    record
+                    for record in records
+                    if record.occurred_at < before and not any(match_event_record(record, other) for other in exclude)
+                ]
+                doomed = sort_event_records(doomed)
+                if limit is not None:
+                    doomed = doomed[:limit]
+                event_ids = [record.event_id for record in doomed]
+                deleted = len(event_ids)
+                if event_ids:
+                    await driver.execute(self._store.delete_events_by_ids(event_ids=event_ids))
                 await driver.commit()
             except Exception:
                 with suppress(Exception):
@@ -806,6 +869,10 @@ class SQLSpecQueueEventLog:
             "sequence": event.sequence,
             "occurred_at": self._datetime_serializer(event.occurred_at),
             "created_at": self._datetime_serializer(datetime.now(timezone.utc)),
+            "scope": event.scope,
+            "scope_key": event.scope_key,
+            "actor": event_actor_key(event.actor),
+            "entity": event_entity_key(event.entity),
         }
         for column in self._store.extra_columns:
             params[column.name] = _optional_str(detail.get(column.source))
@@ -843,6 +910,10 @@ class SQLSpecQueueEventLog:
             extra=extra,
             occurred_at=_deserialize_datetime(row["occurred_at"]),
             created_at=_deserialize_datetime(row["created_at"]),
+            scope=cast("str | None", row.get("scope")),
+            scope_key=cast("str | None", row.get("scope_key")),
+            actor=cast("str | None", row.get("actor")),
+            entity=cast("str | None", row.get("entity")),
         )
 
     def _summary_from_row(self, row: "dict[str, Any]") -> "QueueEventStageSummary":
