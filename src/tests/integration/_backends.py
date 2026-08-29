@@ -165,10 +165,7 @@ async def _build_sqlite(ctx: "FixtureCtx") -> "BaseQueueBackend":
 async def _build_duckdb(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.duckdb import DuckDBConfig
 
-    return _sqlspec_backend(
-        DuckDBConfig(connection_config={"database": str(ctx.tmp_path / "queue-duckdb.db")}),
-        queue_table_name=ctx.table_name,
-    )
+    return _sqlspec_backend(DuckDBConfig(connection_config={"database": ":memory:"}), queue_table_name=ctx.table_name)
 
 
 async def _build_postgres_asyncpg(ctx: "FixtureCtx") -> "BaseQueueBackend":
