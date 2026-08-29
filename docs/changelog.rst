@@ -51,6 +51,12 @@ Unreleased
   ``QueueService.prune_events()`` executes rules in strict declaration order with safety caps and
   observability counters. See :doc:`usage/event-history` and :doc:`usage/maintenance`.
 
+**Changed:**
+
+* **Breaking:** The SQLSpec ``litestar_queues`` extension setting for the primary
+  queue table is now ``queue_table_name`` instead of the ambiguous ``table_name``.
+  No compatibility alias is provided.
+
 0.9.0 - 2026-08-14
 ==================
 

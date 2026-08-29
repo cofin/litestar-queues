@@ -110,5 +110,5 @@ def _migration_settings(context: "MigrationContext | None") -> "tuple[Any, dict[
     config = cast("Any", context.config)
     extension_config = config.extension_config or {}
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    queue_table_name = validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
+    queue_table_name = validate_table_name(str(queue_settings.get("queue_table_name", DEFAULT_TABLE_NAME)))
     return config, queue_settings, queue_table_name

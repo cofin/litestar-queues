@@ -167,7 +167,7 @@ class SQLSpecBackendConfig:
 
         extension_config = sqlspec_config.extension_config or {}
         queue_settings = dict(extension_config.get("litestar_queues", {}) or {})
-        queue_table_name = self.queue_table_name or queue_settings.get("table_name") or DEFAULT_TABLE_NAME
+        queue_table_name = self.queue_table_name or queue_settings.get("queue_table_name") or DEFAULT_TABLE_NAME
         event_log_config = config.events.history if config.events is not None else None
         configure_queue_migration_extension(
             cast("SQLSpecConfig", sqlspec_config),

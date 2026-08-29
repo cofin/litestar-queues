@@ -1051,7 +1051,7 @@ async def test_sqlspec_oracle_queue_schema_uses_retry_safe_version_compatible_dd
         "oracledb",
         dialect="oracle",
         config_type_name=config_type_name,
-        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "queue_tasks"}},
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "queue_tasks"}},
     )
     store = create_task_reservation_store(config, queue_table_name="queue_tasks")
 
@@ -2187,7 +2187,7 @@ async def test_sqlspec_backend_uses_structured_extension_config_when_explicit_va
     db_path = tmp_path / "extension-config.db"
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(db_path)},
-        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "extension_queue_tasks"}},
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "extension_queue_tasks"}},
     )
     backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config))
 
@@ -2210,7 +2210,7 @@ async def test_sqlspec_backend_explicit_config_values_override_sqlspec_extension
     db_path = tmp_path / "explicit-config.db"
     sqlspec_config = AiosqliteConfig(
         connection_config={"database": str(db_path)},
-        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "extension_queue_tasks"}},
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "extension_queue_tasks"}},
     )
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(sqlspec_config=sqlspec_config, queue_table_name="explicit_queue_tasks")

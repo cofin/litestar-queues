@@ -73,14 +73,18 @@ def test_the_sqlspec_backend_registers_its_own_migrations_through_the_plugin() -
 
     from litestar_queues import QueueConfig, QueuePlugin
 
-    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    sqlspec_config = AiosqliteConfig(
+        connection_config={"database": ":memory:"},
+        extension_config={QUEUE_EXTENSION_NAME: {"table_name": "legacy_jobs"}},
+    )
     backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, queue_table_name="jobs")
 
     Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
 
     commands = sqlspec_config.get_migration_commands()
     queue_settings = commands.extension_configs[QUEUE_EXTENSION_NAME]
-    assert queue_settings["table_name"] == "jobs"
+    assert queue_settings["queue_table_name"] == "jobs"
+    assert "table_name" not in queue_settings
     assert queue_settings["maintenance_table_name"] == "jobs_maintenance"
     assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
 

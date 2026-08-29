@@ -98,7 +98,8 @@ def _configure_extension_settings(
 ) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
-    queue_settings["table_name"] = validate_table_name(queue_table_name)
+    queue_settings.pop("table_name", None)
+    queue_settings["queue_table_name"] = validate_table_name(queue_table_name)
     if event_history_enabled:
         queue_settings["event_history_enabled"] = True
         queue_settings["event_history_table_name"] = validate_table_name(

@@ -1424,7 +1424,7 @@ def _configured_table_name(config: "SQLSpecStoreConfig", table_name: "str | None
         return validate_table_name(table_name)
     extension_config = config.extension_config or {}
     queue_settings = extension_config.get(QUEUE_EXTENSION_NAME, {}) or {}
-    return validate_table_name(str(queue_settings.get("table_name", DEFAULT_TABLE_NAME)))
+    return validate_table_name(str(queue_settings.get("queue_table_name", DEFAULT_TABLE_NAME)))
 
 
 def _adapter_name(config: "object") -> "str":

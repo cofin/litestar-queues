@@ -55,7 +55,9 @@ def psycopg_history_config(postgres_service: "PostgresService", request: "pytest
             "dbname": postgres_service.database,
         },
         extension_config={
-            QUEUE_EXTENSION_NAME: {"table_name": table_name_for_test("lq_extra_cols", "psycopg", request.node.nodeid)}
+            QUEUE_EXTENSION_NAME: {
+                "queue_table_name": table_name_for_test("lq_extra_cols", "psycopg", request.node.nodeid)
+            }
         },
     )
 

@@ -108,7 +108,7 @@ async def test_sqlspec_backend_migration_uses_configured_table_names() -> "None"
             dialect="duckdb",
             extension_config={
                 QUEUE_EXTENSION_NAME: {
-                    "table_name": "custom_queue",
+                    "queue_table_name": "custom_queue",
                     "maintenance_table_name": "custom_maintenance",
                     "task_reservation_table_name": "custom_reservation",
                 }
@@ -144,7 +144,7 @@ async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned(
 
     queue_settings = sqlspec_config.get_migration_commands().extension_configs[QUEUE_EXTENSION_NAME]
     assert queue_settings == {
-        "table_name": "custom_queue",
+        "queue_table_name": "custom_queue",
         "maintenance_table_name": "custom_maintenance",
         "task_reservation_table_name": "custom_reservation",
     }
@@ -166,7 +166,7 @@ async def test_sqlspec_backend_migration_derives_names_from_custom_queue_table()
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
     context = SimpleNamespace(
         config=_fake_adapter_config(
-            "duckdb", dialect="duckdb", extension_config={QUEUE_EXTENSION_NAME: {"table_name": "custom_queue"}}
+            "duckdb", dialect="duckdb", extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "custom_queue"}}
         )
     )
 
@@ -224,7 +224,7 @@ async def test_sqlspec_backend_packaged_migration_down_drops_migrated_postgres_t
             "password": postgres_service.password,
             "database": postgres_service.database,
         },
-        extension_config={QUEUE_EXTENSION_NAME: {"table_name": table_name}},
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": table_name}},
     )
     context = SimpleNamespace(config=config)
     sqlspec_manager = SQLSpec()

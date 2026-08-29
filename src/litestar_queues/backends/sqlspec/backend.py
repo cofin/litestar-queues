@@ -2032,7 +2032,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     def _resolve_queue_table_name(self) -> "str":
         if self._queue_table_name is None:
             queue_settings = _queue_extension_settings(self._sqlspec_config)
-            configured_table_name = _setting(queue_settings, "table_name") or DEFAULT_TABLE_NAME
+            configured_table_name = _setting(queue_settings, "queue_table_name") or DEFAULT_TABLE_NAME
             self._queue_table_name = validate_table_name(str(configured_table_name))
         return self._queue_table_name
 
