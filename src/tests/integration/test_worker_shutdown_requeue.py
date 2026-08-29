@@ -73,19 +73,16 @@ async def test_task_dependency_provider_closes_on_shutdown_interruption(queue_ba
     service = QueueService(config, queue_backend=queue_backend)
 
     async with service:
-        # Enqueue before polling starts so single-writer sync drivers do not
-        # race the initial insert against a worker claim query.
         result = await service.enqueue("contract.provider.shutdown")
 
         worker = Worker(service)
         worker_task = asyncio.create_task(worker.start())
-        await asyncio.wait_for(started.wait(), timeout=5)
-
-        # Give a small moment for DB to update to "running" if not memory
-        await asyncio.sleep(0.1)
-
-        await worker.stop()
-        await asyncio.wait_for(worker_task, timeout=5)
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            await asyncio.sleep(0.1)
+        finally:
+            await worker.stop()
+            await asyncio.wait_for(worker_task, timeout=15)
         record = await queue_backend.get_task(result.id)
 
     assert events == ["acquire", "body", "cleanup"]

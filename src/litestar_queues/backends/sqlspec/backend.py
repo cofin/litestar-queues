@@ -287,7 +287,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         await self._close_control_stream()
         await self._close_heartbeat_pool()
         if self._owns_event_channel and self._event_channel is not None:
-            await _invoke_event_channel_method(self._event_channel, "shutdown")
+            await _invoke_event_channel_method(self._event_channel, "shutdown", executor=self._sync_executor)
             self._event_channel = None
         if self._owns_sqlspec and self._sqlspec is not None:
             await self._sqlspec.close_all_pools()
@@ -1894,6 +1894,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     self._resolve_wakeup_channel(),
                     {"event": "task_available"},
                     {"event_type": "litestar_queues.task_available"},
+                    executor=self._sync_executor,
                 )
             self._increment_queue_metric("notify")
             self._record_wakeup_emitted()
@@ -1917,7 +1918,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 self._resolve_wakeup_channel(), poll_interval=self._wakeup_poll_interval
             )
             self._event_stream = stream
-        task = await self._pending_read.race(lambda: _next_event(stream), timeout)
+        task = await self._pending_read.race(lambda: _next_event(stream, executor=self._sync_executor), timeout)
         if task is None:
             return False
         exc = task.exception()
@@ -1925,7 +1926,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await self._close_notification_stream()
             raise exc
         event = task.result()
-        await _invoke_event_channel_method(self._event_channel, "ack", event.event_id)
+        await _invoke_event_channel_method(self._event_channel, "ack", event.event_id, executor=self._sync_executor)
         return True
 
     async def notify_worker_control(self, worker_id: "str | None") -> "None":
@@ -1943,6 +1944,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._resolve_control_channel(),
             {"event": "worker_control", "worker_id": worker_id},
             {"event_type": "litestar_queues.worker_control"},
+            executor=self._sync_executor,
         )
 
     async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
@@ -1968,14 +1970,16 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 self._resolve_control_channel(), poll_interval=self._wakeup_poll_interval
             )
             self._control_stream = stream
-        task = await self._control_pending_read.race(lambda: _next_event(stream), timeout)
+        task = await self._control_pending_read.race(lambda: _next_event(stream, executor=self._sync_executor), timeout)
         if task is None:
             return False
         exc = task.exception()
         if exc is not None:
             await self._close_control_stream()
             raise exc
-        await _invoke_event_channel_method(self._event_channel, "ack", task.result().event_id)
+        await _invoke_event_channel_method(
+            self._event_channel, "ack", task.result().event_id, executor=self._sync_executor
+        )
         return True
 
     async def time_until_next_due(self, *, queues: "tuple[str, ...]" = ()) -> "float | None":
@@ -2615,15 +2619,29 @@ class _ManagedAsyncDriver:
         self._transaction_finalized = False
         if self._skip_explicit_begin:
             return None
-        return await async_(self._driver.begin, executor=self._executor)()
+        try:
+            return await async_(self._driver.begin, executor=self._executor)()
+        except RuntimeError:
+            begin = getattr(self._driver, "begin", None)
+            if callable(begin):
+                return begin()
+            return None
 
     async def commit(self) -> "Any":
-        result = await async_(self._driver.commit, executor=self._executor)()
+        try:
+            result = await async_(self._driver.commit, executor=self._executor)()
+        except RuntimeError:
+            commit = getattr(self._driver, "commit", None)
+            result = commit() if callable(commit) else None
         self._transaction_finalized = True
         return result
 
     async def rollback(self) -> "Any":
-        result = await async_(self._driver.rollback, executor=self._executor)()
+        try:
+            result = await async_(self._driver.rollback, executor=self._executor)()
+        except RuntimeError:
+            rollback = getattr(self._driver, "rollback", None)
+            result = rollback() if callable(rollback) else None
         self._transaction_finalized = True
         return result
 
@@ -2695,15 +2713,27 @@ async def _bridge_session(
             except BaseException as exc:
                 if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
                     await _rollback_sync_session(driver, executor=sync_executor)
-                if not await async_(session_cm.__exit__, executor=sync_executor)(type(exc), exc, exc.__traceback__):
+                if not await _exit_sync_session(session_cm, type(exc), exc, exc.__traceback__, executor=sync_executor):
                     raise
             else:
                 if not managed_driver.transaction_finalized and not skip_cleanup_rollback:
                     await _rollback_sync_session(driver, executor=sync_executor)
-                await async_(session_cm.__exit__, executor=sync_executor)(None, None, None)
+                await _exit_sync_session(session_cm, None, None, None, executor=sync_executor)
         finally:
             if owns_executor:
                 sync_executor.shutdown(wait=True)
+
+
+async def _exit_sync_session(
+    session_cm: "Any", exc_type: "Any", exc_val: "Any", exc_tb: "Any", *, executor: "ThreadPoolExecutor | None" = None
+) -> "bool":
+    """Exit a sync SQLSpec session with fallback to direct call if executor is shut down."""
+    try:
+        return bool(await async_(session_cm.__exit__, executor=executor)(exc_type, exc_val, exc_tb))
+    except RuntimeError:
+        with suppress(Exception):
+            return bool(session_cm.__exit__(exc_type, exc_val, exc_tb))
+        return False
 
 
 async def _rollback_sync_session(driver: "object", *, executor: "ThreadPoolExecutor | None" = None) -> "None":
@@ -2711,7 +2741,10 @@ async def _rollback_sync_session(driver: "object", *, executor: "ThreadPoolExecu
     rollback = getattr(driver, "rollback", None)
     if callable(rollback):
         with suppress(Exception):
-            await async_(rollback, executor=executor)()
+            try:
+                await async_(rollback, executor=executor)()
+            except RuntimeError:
+                rollback()
 
 
 async def _select_stream(
@@ -2926,7 +2959,9 @@ def _events_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "
     return dict(extension_config.get(_EVENT_EXTENSION_NAME, {}) or {})
 
 
-async def _invoke_event_channel_method(event_channel: "Any", method_name: "str", *args: "Any") -> "Any":
+async def _invoke_event_channel_method(
+    event_channel: "Any", method_name: "str", *args: "Any", executor: "ThreadPoolExecutor | None" = None
+) -> "Any":
     """Invoke a SQLSpec sync or async event-channel method without blocking the loop.
 
     Returns:
@@ -2935,13 +2970,13 @@ async def _invoke_event_channel_method(event_channel: "Any", method_name: "str",
     method = getattr(event_channel, method_name)
     if iscoroutinefunction(method):
         return await method(*args)
-    result = await async_(method)(*args)
+    result = await async_(method, executor=executor)(*args)
     if isawaitable(result):
         return await result
     return result
 
 
-async def _next_event(stream: "Any") -> "Any":
+async def _next_event(stream: "Any", *, executor: "ThreadPoolExecutor | None" = None) -> "Any":
     """Read from a SQLSpec sync or async event iterator.
 
     Returns:
@@ -2949,7 +2984,7 @@ async def _next_event(stream: "Any") -> "Any":
     """
     if hasattr(stream, "__anext__"):
         return await anext(stream)
-    has_event, event = await async_(_next_sync_event)(stream)
+    has_event, event = await async_(_next_sync_event, executor=executor)(stream)
     if not has_event:
         raise StopAsyncIteration
     return event
