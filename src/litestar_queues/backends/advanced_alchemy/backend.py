@@ -561,9 +561,10 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def acquire_maintenance(self, name: "str", token: "str", *, ttl: "timedelta") -> "bool":
         """Acquire maintenance ownership via a portable compare-and-set.
 
-        Updates an existing expired row for ``name`` to this token; if no row
-        was expired, inserts a fresh one inside a savepoint so a uniqueness race
-        (live ownership held elsewhere) is treated as a denied acquisition.
+        Updates an existing expired row for ``name`` to this token in one
+        transaction. If no row was expired, attempts a fresh insert in a
+        separate transaction so a uniqueness race (live ownership held
+        elsewhere) is treated as a denied acquisition.
 
         Returns:
             True when maintenance ownership is held under ``token``.
@@ -583,13 +584,14 @@ class SQLAlchemyBackend(BaseQueueBackend):
             )
             if result.rowcount == 1:
                 return True
-            try:
-                async with session.begin_nested():
-                    session.add(model(name=name, token=token, expires_at=new_expiry))
-                    await session.flush()
-            except SQLAlchemyIntegrityError:
-                return False
-            return True
+
+        try:
+            async with self._session() as session, session.begin():
+                session.add(model(name=name, token=token, expires_at=new_expiry))
+                await session.flush()
+        except SQLAlchemyIntegrityError:
+            return False
+        return True
 
     async def release_maintenance(self, name: "str", token: "str") -> "bool":
         """Release maintenance ownership only when ``token`` matches the holder.
