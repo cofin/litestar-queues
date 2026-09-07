@@ -22,6 +22,7 @@ from litestar_queues._correlation import (
 from litestar_queues._identity import IDENTITY_VERSION, arguments_identity, task_identity
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX, interruption_count
 from litestar_queues.config import execution_backend_name, queue_backend_name
+from litestar_queues.events._history_buffer import _in_event_release_callback
 from litestar_queues.events.context import TaskExecutionContext, bind_task_context
 from litestar_queues.events.models import QueueEvent, QueueEventActor
 from litestar_queues.events.producer import QueueEventProducer
@@ -91,15 +92,6 @@ _RESOURCE_EXECUTION_BACKEND = "execution_backend"
 _RESOURCE_QUEUE_BACKEND = "queue_backend"
 _RESOURCE_SINK = "sink"
 _RESOURCE_SYNC_EXECUTOR = "sync_executor"
-_ROLLBACK_ORDER = (
-    _RESOURCE_SYNC_EXECUTOR,
-    _RESOURCE_BUFFER,
-    _RESOURCE_SINK,
-    _RESOURCE_EXECUTION_BACKEND,
-    _RESOURCE_EVENT_LOG,
-    _RESOURCE_QUEUE_BACKEND,
-    _RESOURCE_DEPENDENCY_PROVIDER,
-)
 _CLOSE_ORDER = (
     _RESOURCE_EXECUTION_BACKEND,
     _RESOURCE_EVENT_LOG,
@@ -142,6 +134,7 @@ class QueueService:
         "_event_publisher",
         "_execution_backend",
         "_is_open",
+        "_lifecycle_lock",
         "_logger",
         "_observability_runtime",
         "_opened_resources",
@@ -166,6 +159,7 @@ class QueueService:
         self._event_log: "QueueEventLog | None" = None
         self._event_publisher = event_publisher
         self._is_open = False
+        self._lifecycle_lock = asyncio.Lock()
         self._opened_resources: "frozenset[str]" = frozenset()
         if observability_runtime is None and config.observability is not None:
             from litestar_queues.observability import create_observability_runtime
@@ -246,6 +240,11 @@ class QueueService:
         Returns:
             The opened service.
         """
+        self._require_lifecycle_boundary()
+        async with self._lifecycle_lock:
+            return await self._open_resources()
+
+    async def _open_resources(self) -> "Self":
         if self._is_open:
             return self
         opened: "list[str]" = []
@@ -257,9 +256,11 @@ class QueueService:
             queue_backend = self.get_queue_backend()
             opened.append(_RESOURCE_QUEUE_BACKEND)
             await queue_backend.open()
-            self._configure_event_log(queue_backend)
-            if self._event_log is not None:
-                opened.append(_RESOURCE_EVENT_LOG)
+            try:
+                self._configure_event_log(queue_backend)
+            finally:
+                if self._event_log is not None:
+                    opened.append(_RESOURCE_EVENT_LOG)
             execution_backend = self.get_execution_backend()
             opened.append(_RESOURCE_EXECUTION_BACKEND)
             await execution_backend.open()
@@ -275,7 +276,7 @@ class QueueService:
                 )
                 opened.append(_RESOURCE_SYNC_EXECUTOR)
         except BaseException:
-            await self._teardown_resources(frozenset(opened), rollback=True, raise_errors=False)
+            await self._teardown_resources(frozenset(opened), raise_errors=False)
             raise
         self._opened_resources = frozenset(opened)
         self._is_open = True
@@ -283,17 +284,24 @@ class QueueService:
 
     async def close(self) -> "None":
         """Close queue and execution backends."""
-        opened = self._opened_resources
-        if not self._is_open and not opened:
-            return
-        self._opened_resources = frozenset()
-        self._is_open = False
-        await self._teardown_resources(opened, rollback=False, raise_errors=True)
+        self._require_lifecycle_boundary()
+        async with self._lifecycle_lock:
+            opened = self._opened_resources
+            if not self._is_open and not opened:
+                return
+            self._opened_resources = frozenset()
+            self._is_open = False
+            await self._teardown_resources(opened, raise_errors=True)
 
-    async def _teardown_resources(self, opened: "frozenset[str]", *, rollback: "bool", raise_errors: "bool") -> "None":
+    @staticmethod
+    def _require_lifecycle_boundary() -> "None":
+        if _in_event_release_callback():
+            message = "Queue service lifecycle cannot change from an active event release callback."
+            raise QueueConfigurationError(message)
+
+    async def _teardown_resources(self, opened: "frozenset[str]", *, raise_errors: "bool") -> "None":
         errors: "list[BaseException]" = []
-        order = _ROLLBACK_ORDER if rollback else _CLOSE_ORDER
-        for resource in order:
+        for resource in _CLOSE_ORDER:
             if resource in opened:
                 await self._teardown_resource(resource, errors)
         error = _select_lifecycle_error(errors)
@@ -305,7 +313,8 @@ class QueueService:
             if resource == _RESOURCE_EXECUTION_BACKEND and self._execution_backend is not None:
                 await self._execution_backend.close()
             elif resource == _RESOURCE_EVENT_LOG and self._event_log is not None:
-                await self._event_log.flush_events()
+                event_log, self._event_log = self._event_log, None
+                await event_log.aclose()
             elif resource == _RESOURCE_BUFFER and self._event_publisher is not None:
                 await self._event_publisher.stop_buffer()
             elif resource == _RESOURCE_QUEUE_BACKEND and self._queue_backend is not None:
@@ -334,7 +343,7 @@ class QueueService:
             )
             raise QueueConfigurationError(msg)
         self._event_log = event_log
-        self.get_event_publisher().set_event_log(event_log, strict=event_log_config.strict)
+        self.get_event_publisher().set_event_log(event_log)
 
     async def __aenter__(self) -> "Self":
         await self.open()

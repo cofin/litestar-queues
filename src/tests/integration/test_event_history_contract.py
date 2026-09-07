@@ -5,12 +5,14 @@ pages, scoped summaries, latest-sequence ties, worst-level aggregation, and
 filtered bounded retention convergence, on all six backend families.
 """
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
+from litestar_queues import EventDeliveryConfig, QueueConfig, QueueService, WorkerConfig
 from litestar_queues.events import (
     EventHistoryConfig,
     QueueEvent,
@@ -26,15 +28,21 @@ pytestmark = pytest.mark.anyio
 
 BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
 FAMILIES = ("memory", "ephemeral", "sqlspec", "advanced_alchemy", "redis", "valkey")
+_HISTORY_BACKEND: pytest.StashKey[Any] = pytest.StashKey()
+
+
+@pytest.fixture
+def history_config(request: pytest.FixtureRequest) -> EventHistoryConfig:
+    return getattr(request, "param", EventHistoryConfig(batch_size=1, flush_interval=60))
 
 
 @pytest.fixture(params=FAMILIES)
-async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventLog]:  # noqa: PLR0915
+async def event_log(request: pytest.FixtureRequest, history_config: EventHistoryConfig) -> AsyncIterator[QueueEventLog]:  # noqa: PLR0915
     """Yield an opened event log for one backend family."""
     import uuid
 
     family = request.param
-    config = EventHistoryConfig(batch_size=1, flush_interval=60)
+    config = history_config
 
     if family == "memory":
         from litestar_queues.backends.memory import InMemoryQueueBackend
@@ -45,6 +53,7 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
             await backend_mem.create_schema()
         log_mem = backend_mem.get_event_log(config)
         assert log_mem is not None
+        request.node.stash[_HISTORY_BACKEND] = backend_mem
         yield log_mem
         await backend_mem.close()
 
@@ -60,6 +69,7 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
                 await backend_eph.create_schema()
             log_eph = backend_eph.get_event_log(config)
             assert log_eph is not None
+            request.node.stash[_HISTORY_BACKEND] = backend_eph
             yield log_eph
             await backend_eph.close()
 
@@ -105,17 +115,25 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
             await backend_sql.create_schema()
         log_sql = backend_sql.get_event_log(config)
         assert log_sql is not None
+        request.node.stash[_HISTORY_BACKEND] = backend_sql
         yield log_sql
         await backend_sql.close()
 
     elif family == "advanced_alchemy":
         pytest.importorskip("advanced_alchemy")
+        pytest.importorskip("asyncpg")
+        from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
+
         from litestar_queues.backends.advanced_alchemy import SQLAlchemyBackend, SQLAlchemyBackendConfig
 
         try:
-            aa_service = request.getfixturevalue("aa_service")
+            postgres = request.getfixturevalue("postgres_service")
         except Exception as e:  # noqa: BLE001
             pytest.skip(f"Docker service not available: {e}")
+
+        aa_service = SQLAlchemyAsyncConfig(
+            connection_string=f"postgresql+asyncpg://{postgres.user}:{postgres.password}@{postgres.host}:{postgres.port}/{postgres.database}"
+        )
 
         from advanced_alchemy.base import UUIDAuditBase
 
@@ -140,8 +158,21 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
         await backend_aa.open()
         log_aa = backend_aa.get_event_log(config)
         assert log_aa is not None
-        yield log_aa
-        await backend_aa.close()
+        request.node.stash[_HISTORY_BACKEND] = backend_aa
+        try:
+            yield log_aa
+        finally:
+            try:
+                await backend_aa.close()
+            finally:
+                engine = aa_service.get_engine()
+                try:
+                    async with engine.begin() as connection:
+                        await connection.run_sync(
+                            UUIDAuditBase.metadata.tables[event_history_table_name].drop, checkfirst=True
+                        )
+                finally:
+                    await engine.dispose()
 
     elif family == "redis":
         pytest.importorskip("redis.asyncio")
@@ -166,6 +197,7 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
             await backend_redis.create_schema()
         log_redis = backend_redis.get_event_log(config)
         assert log_redis is not None
+        request.node.stash[_HISTORY_BACKEND] = backend_redis
         yield log_redis
         await backend_redis.close()
 
@@ -192,11 +224,78 @@ async def event_log(request: pytest.FixtureRequest) -> AsyncIterator[QueueEventL
             await backend_valkey.create_schema()
         log_valkey = backend_valkey.get_event_log(config)
         assert log_valkey is not None
+        request.node.stash[_HISTORY_BACKEND] = backend_valkey
         yield log_valkey
         await backend_valkey.close()
 
     else:
         pytest.fail(f"Unknown family: {family}")
+
+
+async def _raw_history_contains(backend: Any, log: Any, event_id: str) -> bool:
+    """Read committed storage directly without invoking a writer's query/flush."""
+    name = type(log).__name__
+    if name == "InMemoryQueueEventLog":
+        async with log._lock:
+            return any(record.event_id == event_id for record in log._records)
+    if name == "EphemeralQueueEventLog":
+        return bool(
+            await backend._run(
+                lambda connection: connection.execute(
+                    "SELECT 1 FROM queue_event WHERE event_id = ?", (event_id,)
+                ).fetchone()
+            )
+        )
+    if name == "SQLSpecQueueEventLog":
+        async with log._session_factory() as reader:
+            return bool(await reader.select(log._store.select_existing_event_ids([event_id])))
+    if name == "AdvancedAlchemyQueueEventLog":
+        async with backend._event_log_service() as reader:
+            _, rows = await reader.query_events(QueueEventQuery())
+            return any(record.event_id == event_id for record in rows)
+    client = backend._client
+    return (
+        bool(await client.exists(backend._event_log_event_key(event_id)))
+        and await client.zscore(backend._event_log_global_key(), event_id) is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "history_config", [EventHistoryConfig(batch_size=20, flush_interval=0.02, strict=True)], indirect=True
+)
+@pytest.mark.parametrize("history_only", [False, True])
+async def test_service_owned_sparse_history_commits_before_live(
+    event_log: QueueEventLog, history_config: EventHistoryConfig, request: pytest.FixtureRequest, history_only: bool
+) -> None:
+    backend = request.node.stash[_HISTORY_BACKEND]
+    received = asyncio.Event()
+    event = QueueEvent(type="task.log", scope="task", task_id="sparse-service", message="sparse")
+
+    class Sink:
+        async def publish(self, delivered: QueueEvent, *, channels: Sequence[str]) -> None:
+            assert await _raw_history_contains(backend, event_log, delivered.id)
+            received.set()
+
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            execution_backend="immediate",
+            events=QueueEventsConfig(
+                history=history_config, delivery=None if history_only else EventDeliveryConfig(sinks=(Sink(),))
+            ),
+        ),
+        queue_backend=backend,
+    )
+    async with service:
+        await service.get_event_publisher().publish(event)
+        if history_only:
+            deadline = asyncio.get_running_loop().time() + 3
+            while not await _raw_history_contains(backend, event_log, event.id):
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0.01)
+        else:
+            await asyncio.wait_for(received.wait(), timeout=3)
+    assert service.get_event_log() is None
 
 
 async def seed_events(event_log: QueueEventLog) -> None:

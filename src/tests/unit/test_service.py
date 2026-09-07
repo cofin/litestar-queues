@@ -100,6 +100,16 @@ class _LifecycleEventLog:
         if self._flush_error is not None:
             raise self._flush_error
 
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: bool = False
+    ) -> None:
+        await release()
+
+    async def aclose(self) -> None:
+        self._lifecycle_order.append("event_log.close")
+        if self._flush_error is not None:
+            raise self._flush_error
+
 
 class _LifecycleSink:
     def __init__(
@@ -173,7 +183,76 @@ async def test_service_rolls_back_every_resource_when_execution_open_fails() -> 
         await service.open()
 
     await service.close()
-    assert order == ["queue.open", "execution.open", "execution.close", "event_log.flush", "queue.close"]
+    assert order == ["queue.open", "execution.open", "execution.close", "event_log.close", "queue.close"]
+
+
+async def test_service_closes_owned_history_and_detaches_reference() -> None:
+    order: list[str] = []
+    event_log = _LifecycleEventLog(order)
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        execution_backend=_LifecycleExecutionBackend(order),
+    )
+    await service.open()
+    await service.close()
+    assert "event_log.close" in order
+    assert "event_log.flush" not in order
+    assert service.get_event_log() is None
+
+
+async def test_service_configuration_failure_closes_acquired_history(monkeypatch: "pytest.MonkeyPatch") -> None:
+    order: list[str] = []
+    event_log = _LifecycleEventLog(order)
+    publisher = QueueEventPublisher(_LifecycleSink(order))
+    error = RuntimeError("history configuration failed")
+
+    def reject(*args: Any, **kwargs: Any) -> None:
+        raise error
+
+    monkeypatch.setattr(QueueEventPublisher, "set_event_log", reject)
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, event_log),
+        event_publisher=publisher,
+    )
+    with pytest.raises(RuntimeError) as caught:
+        await service.open()
+    assert caught.value is error
+    assert order == ["queue.open", "event_log.close", "queue.close"]
+    assert service.get_event_log() is None
+
+
+async def test_service_concurrent_close_waits_for_history_cleanup() -> None:
+    order: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingLog(_LifecycleEventLog):
+        async def aclose(self) -> None:
+            entered.set()
+            await release.wait()
+            await super().aclose()
+
+    service = QueueService(
+        QueueConfig(worker=WorkerConfig(placement="external"), events=QueueEventsConfig(history=EventHistoryConfig())),
+        queue_backend=_LifecycleQueueBackend(order, BlockingLog(order)),
+        execution_backend=_LifecycleExecutionBackend(order),
+    )
+    await service.open()
+    first = asyncio.create_task(service.close())
+    second: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        second = asyncio.create_task(service.close())
+        await asyncio.sleep(0)
+        assert not second.done()
+    finally:
+        release.set()
+        await first
+        if second is not None:
+            await second
+    assert order.count("event_log.close") == 1
 
 
 async def test_service_rolls_back_every_resource_when_sink_open_fails() -> "None":
@@ -198,10 +277,10 @@ async def test_service_rolls_back_every_resource_when_sink_open_fails() -> "None
         "queue.open",
         "execution.open",
         "sink.open",
-        "sink.close",
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "queue.close",
+        "sink.close",
     ]
 
 
@@ -224,7 +303,7 @@ async def test_service_rollback_preserves_primary_failure_and_attempts_every_clo
         await service.open()
 
     await service.close()
-    assert order == ["queue.open", "execution.open", "execution.close", "event_log.flush", "queue.close"]
+    assert order == ["queue.open", "execution.open", "execution.close", "event_log.close", "queue.close"]
 
 
 async def test_service_open_and_close_are_idempotent() -> "None":
@@ -253,7 +332,7 @@ async def test_service_open_and_close_are_idempotent() -> "None":
         "sink.open",
         "buffer.start",
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "buffer.stop",
         "queue.close",
         "sink.close",
@@ -291,7 +370,7 @@ async def test_service_close_attempts_every_resource_and_raises_first_error(
 
     assert order[-6:] == [
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "buffer.stop",
         "queue.close",
         "sink.close",
@@ -327,7 +406,7 @@ async def test_service_close_control_flow_takes_precedence_and_all_resources_clo
 
     assert order[-6:] == [
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "buffer.stop",
         "queue.close",
         "sink.close",
@@ -400,7 +479,7 @@ async def test_provider_opens_first_and_closes_last() -> "None":
         "sink.open",
         "buffer.start",
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "buffer.stop",
         "queue.close",
         "sink.close",
@@ -432,7 +511,7 @@ async def test_provider_is_rolled_back_when_a_later_resource_fails_to_open() -> 
         "queue.open",
         "execution.open",
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "queue.close",
         "provider.close",
     ]
@@ -462,7 +541,7 @@ async def test_provider_close_error_does_not_hide_the_primary_failure() -> "None
         "queue.open",
         "execution.open",
         "execution.close",
-        "event_log.flush",
+        "event_log.close",
         "queue.close",
         "provider.close",
     ]

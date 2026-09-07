@@ -1,6 +1,7 @@
 import logging
 import subprocess
 import sys
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 import pytest
@@ -11,12 +12,14 @@ from litestar_queues.events import (
     NoopQueueEventSink,
     QueueChannels,
     QueueEvent,
+    QueueEventActor,
+    QueueEventEntityRef,
     QueueEventPublisher,
     QueueEventSink,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
 pytestmark = pytest.mark.anyio
 
@@ -28,9 +31,68 @@ class FailingSink:
 
 
 class FailingEventLog:
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        await self.publish_event(event)
+
+    async def aclose(self) -> "None":
+        pass
+
     async def publish_event(self, event: "QueueEvent") -> "None":
         msg = f"history failed for {event.type}"
         raise RuntimeError(msg)
+
+
+async def test_publisher_isolates_the_entire_accepted_envelope() -> "None":
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=20))
+    actor = QueueEventActor(type="user", id="original-user")
+    entity = QueueEventEntityRef(type="file", id="original-file")
+    event = QueueEvent(
+        type="task.log",
+        scope="task",
+        task_id="original-task",
+        actor=actor,
+        entity=entity,
+        payload={"nested": {"values": [1]}},
+    )
+    accepted = deepcopy(event)
+    await publisher.publish(event)
+    event.task_id = "changed-task"
+    event.message = "changed-message"
+    actor.id = "changed-user"
+    entity.id = "changed-file"
+    event.payload["nested"]["values"].append(2)
+    await publisher.flush_buffer()
+    assert sink.events == [accepted]
+    assert sink.events_for(QueueChannels.task("original-task")) == [accepted]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+async def test_publisher_copy_failure_rejects_before_live_admission(strict: "bool") -> "None":
+    class Uncopyable:
+        def __deepcopy__(self, memo: "dict") -> "None":
+            message = "cannot snapshot event"
+            raise ValueError(message)
+
+    sink = InMemoryQueueEventSink()
+    publisher = QueueEventPublisher(sink, strict=strict, buffer_config=EventBufferConfig(batch_size=20))
+    with pytest.raises(ValueError, match="cannot snapshot"):
+        await publisher.publish(QueueEvent(type="task.log", scope="task", payload={"value": Uncopyable()}))
+    await publisher.flush_buffer()
+    assert sink.events == []
+
+
+async def test_legacy_history_provider_is_rejected_before_publication() -> "None":
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    class LegacyEventLog:
+        async def publish_event(self, event: "QueueEvent") -> "None":
+            pass
+
+    with pytest.raises(QueueConfigurationError, match="publish_event_after_commit"):
+        QueueEventPublisher(event_log=LegacyEventLog())  # type: ignore[arg-type]
 
 
 class TogglingBatchSink:
@@ -151,9 +213,7 @@ async def test_terminal_direct_publish_also_flushes() -> "None":
 
 async def test_strict_event_log_failure_prevents_buffering() -> "None":
     sink = InMemoryQueueEventSink()
-    publisher = QueueEventPublisher(
-        sink, event_log=FailingEventLog(), event_log_strict=True, buffer_config=EventBufferConfig(batch_size=10)
-    )
+    publisher = QueueEventPublisher(sink, event_log=FailingEventLog(), buffer_config=EventBufferConfig(batch_size=10))
 
     with pytest.raises(RuntimeError, match="history failed"):
         await publisher.publish(QueueEvent(type="task.progress", scope="task", task_id="task-a"))

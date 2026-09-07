@@ -9,7 +9,7 @@ from litestar_queues.events.channels_sink import ChannelsQueueEventSink
 from litestar_queues.events.chunking import estimate_event_payload_bytes, split_event_batch_by_size
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
 pytestmark = pytest.mark.anyio
 
@@ -28,6 +28,15 @@ class _RecordingEventLog:
 
     async def publish_event(self, event: QueueEvent) -> None:
         self.events.append(event)
+
+    async def publish_event_after_commit(
+        self, event: QueueEvent, *, release: "Callable[[], Awaitable[None]]", barrier: bool = False
+    ) -> None:
+        await self.publish_event(event)
+        await release()
+
+    async def aclose(self) -> None:
+        return None
 
     async def flush_events(self) -> None:
         return None

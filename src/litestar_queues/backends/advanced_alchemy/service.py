@@ -272,6 +272,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
                 )
             )
 
+        summaries.sort(key=lambda summary: (summary.stage is not None, summary.stage or ""))
         return summaries
 
     async def cleanup_events(
@@ -300,7 +301,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             for ex in exclude:
                 ex_criteria = self._criteria(ex)
                 if ex_criteria:
-                    criteria.append(~and_(*ex_criteria))
+                    criteria.append(case((and_(*ex_criteria), 1), else_=0) == 0)
 
         if limit is not None:
             bounded_query = (

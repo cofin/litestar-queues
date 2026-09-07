@@ -5,10 +5,11 @@ import contextlib
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
-from litestar_queues.exceptions import QueueEventBufferFull
+from litestar_queues.exceptions import QueueConfigurationError, QueueEventBufferFull
 
 if TYPE_CHECKING:
     from litestar_queues.events.models import QueueEvent
@@ -30,12 +31,40 @@ class _BufferedEvent:
     channels: "tuple[str, ...]"
 
 
+@dataclass(slots=True)
+class _Delivery:
+    items: "list[_BufferedEvent]"
+    release: "Callable[[], Awaitable[None]] | None" = None
+
+    @property
+    def size(self) -> "int":
+        return max(1, len(self.items))
+
+
+@dataclass(slots=True)
+class _DrainToken:
+    owner: "LiveEventBuffer"
+    active: "bool" = True
+
+
+_active_drain: "ContextVar[_DrainToken | None]" = ContextVar("queue_live_event_drain", default=None)
+
+
+def _in_live_event_callback() -> "bool":
+    """Return whether this call descends from a still-active live drain."""
+    token = _active_drain.get()
+    return token is not None and token.active
+
+
 class LiveEventBuffer:
     """Bounded producer-side buffer for live queue event delivery."""
 
     __slots__ = (
         "_condition",
         "_config",
+        "_deferred",
+        "_deferred_size",
+        "_drain_lock",
         "_logger",
         "_order",
         "_pending",
@@ -59,6 +88,9 @@ class LiveEventBuffer:
         self._sink_publish = sink_publish
         self._record_drop = record_drop
         self._condition = asyncio.Condition()
+        self._drain_lock = asyncio.Lock()
+        self._deferred: "deque[_Delivery]" = deque()
+        self._deferred_size = 0
         self._order: "deque[_BufferedEvent]" = deque()
         self._pending: "dict[EventBufferKey, list[_BufferedEvent]]" = {}
         self._stop_event = asyncio.Event()
@@ -81,19 +113,128 @@ class LiveEventBuffer:
                 if overflow == "error":
                     msg = f"Queue event buffer is full at {self._max_pending} pending events."
                     raise QueueEventBufferFull(msg)
+                if self._drain_token() is not None:
+                    msg = "A reentrant live event callback cannot block on its own full buffer."
+                    raise QueueEventBufferFull(msg)
                 await self._condition.wait()
+            if (
+                self._drain_token() is not None
+                and len(self._order) + 1 >= self._batch_size
+                and self._deferred_size + len(self._order) + 1 > self._max_pending
+            ):
+                msg = "The reentrant live event delivery queue is full."
+                raise QueueEventBufferFull(msg)
             self._append(item)
             should_flush = len(self._order) >= self._batch_size
         if should_flush:
             await self.flush()
 
     async def flush(self, *, key: "EventBufferKey | None" = None) -> "None":
-        """Drain all buffered events, or only events matching ``key``."""
-        async with self._condition:
-            items = self._drain(key=key)
-            self._condition.notify_all()
-        if items:
-            await self._sink_publish(tuple((item.event, item.channels) for item in items))
+        """Finish prior live delivery and drain buffered events matching ``key``."""
+        await self._dispatch(key=key, release=None)
+
+    async def publish_immediate(self, *, key: "EventBufferKey", release: "Callable[[], Awaitable[None]]") -> "None":
+        """Deliver after earlier batches; reentrant callbacks queue bounded work.
+
+        A callback cannot block on its own full queue: explicit overflow raises
+        ``QueueEventBufferFull`` while ordinary producer overflow is unchanged.
+        """
+        await self._dispatch(key=key, release=release)
+
+    def bind_release(self, release: "Callable[[], Awaitable[None]]") -> "Callable[[], Awaitable[None]]":
+        """Carry an active drain into a history worker's delayed live callback."""
+        token = self._drain_token()
+
+        async def bound_release() -> "None":
+            # A long-lived history worker may carry an unrelated active token.
+            # Install the captured context even when it is empty or expired.
+            reset = _active_drain.set(token if token is not None and token.active else None)
+            try:
+                await release()
+            finally:
+                _active_drain.reset(reset)
+
+        return bound_release
+
+    def _drain_token(self) -> "_DrainToken | None":
+        token = _active_drain.get()
+        return token if token is not None and token.owner is self and token.active else None
+
+    async def _dispatch(
+        self, *, key: "EventBufferKey | None", release: "Callable[[], Awaitable[None]] | None"
+    ) -> "None":
+        if self._drain_token() is not None:
+            async with self._condition:
+                count = len(self._order) if key is None else len(self._pending.get(key, ()))
+                if not count and release is None:
+                    return
+                if self._deferred_size + max(1, count) > self._max_pending:
+                    msg = "The reentrant live event delivery queue is full."
+                    raise QueueEventBufferFull(msg)
+                operation = _Delivery(self._drain(key=key), release)
+                self._deferred.append(operation)
+                self._deferred_size += operation.size
+                self._condition.notify_all()
+            return
+        # Acquire before extracting: a waiting terminal must account for the
+        # active batch, and blocked producers cannot accumulate extracted batches.
+        async with self._drain_lock:
+            token = _DrainToken(self)
+            reset = _active_drain.set(token)
+            try:
+                error = await self._drain_deferred()
+                async with self._condition:
+                    operation = _Delivery(self._drain(key=key), release)
+                    self._condition.notify_all()
+                error = self._retain_error(error, await self._deliver(operation))
+                error = self._retain_error(error, await self._drain_deferred())
+                if error is not None:
+                    raise error
+            finally:
+                token.active = False
+                _active_drain.reset(reset)
+
+    async def _drain_deferred(self) -> "Exception | None":
+        error: Exception | None = None
+        while self._deferred:
+            operation = self._deferred.popleft()
+            self._deferred_size -= operation.size
+            error = self._retain_error(error, await self._deliver(operation))
+        return error
+
+    async def _deliver(self, operation: "_Delivery") -> "Exception | None":
+        error: Exception | None = None
+        if operation.release is not None:
+            # Reserve its control slot until invocation, including cancellation
+            # during the preceding batch's live delivery attempt.
+            self._deferred_size += 1
+        if operation.items:
+            try:
+                await self._sink_publish(tuple((item.event, item.channels) for item in operation.items))
+            except asyncio.CancelledError:
+                if operation.release is not None:
+                    self._deferred.appendleft(_Delivery([], operation.release))
+                raise
+            except Exception as exc:  # noqa: BLE001 - attempt the accepted terminal before reraising.
+                error = exc
+        if operation.release is not None:
+            self._deferred_size -= 1
+            try:
+                await operation.release()
+            except Exception as exc:  # noqa: BLE001 - preserve the first delivery error.
+                error = self._retain_error(error, exc)
+        return error
+
+    def _retain_error(self, primary: "Exception | None", secondary: "Exception | None") -> "Exception | None":
+        if primary is None:
+            return secondary
+        if secondary is not None:
+            with contextlib.suppress(Exception):
+                self._logger.warning(
+                    "Additional live event delivery failed.",
+                    exc_info=(type(secondary), secondary, secondary.__traceback__),
+                )
+        return primary
 
     def start(self) -> "None":
         """Start the interval flush loop if it is not already running."""
@@ -105,21 +246,40 @@ class LiveEventBuffer:
 
     async def stop(self) -> "None":
         """Stop the interval loop and drain all remaining buffered events."""
-        task = self._task
+        if self._drain_token() is not None:
+            msg = "Cannot stop the live event buffer from its active delivery callback."
+            raise QueueConfigurationError(msg)
+        task, self._task = self._task, None
         self._stop_event.set()
+        error: BaseException | None = None
         if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-            self._task = None
-        await self.flush()
+            try:
+                outcomes = await asyncio.gather(task, return_exceptions=True)
+                if isinstance(outcomes[0], BaseException) and not isinstance(outcomes[0], asyncio.CancelledError):
+                    error = outcomes[0]
+            except asyncio.CancelledError as exc:
+                error = exc
+        try:
+            await self.flush()
+        except (Exception, asyncio.CancelledError) as exc:
+            if error is None:
+                error = exc
+            else:
+                secondary = exc
+                if isinstance(error, Exception) and isinstance(exc, asyncio.CancelledError):
+                    secondary, error = error, exc
+                with contextlib.suppress(Exception):
+                    self._logger.warning(
+                        "Final live event drain also failed.",
+                        exc_info=(type(secondary), secondary, secondary.__traceback__),
+                    )
+        if error is not None:
+            raise error
 
     async def _run(self) -> "None":
-        try:
-            while not self._stop_event.is_set():
-                if await self._wait_until_next_flush():
-                    await self.flush()
-        finally:
-            await self.flush()
+        while not self._stop_event.is_set():
+            if await self._wait_until_next_flush():
+                await self.flush()
 
     async def _wait_until_next_flush(self) -> "bool":
         try:

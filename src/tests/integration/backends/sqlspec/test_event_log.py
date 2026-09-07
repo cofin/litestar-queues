@@ -75,6 +75,63 @@ async def test_sparse_history_commits_without_another_publication(tmp_path: "Pat
         await backend.close()
 
 
+async def test_service_close_waits_for_history_flush_and_reopens_fresh(
+    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLog
+
+    path = tmp_path / "service-history-lifecycle.db"
+    backend_config = SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig(connection_config={"database": str(path)}))
+    await bootstrap_queue_schema(backend_config, event_history_enabled=True)
+    service = QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend=backend_config,
+            events=QueueEventsConfig(history=EventHistoryConfig(batch_size=20, flush_interval=60, strict=True)),
+        )
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    write = SQLSpecQueueEventLog._write_transaction
+
+    async def blocked_write(log: SQLSpecQueueEventLog, records: Any) -> None:
+        entered.set()
+        await release.wait()
+        await write(log, records)
+
+    monkeypatch.setattr(SQLSpecQueueEventLog, "_write_transaction", blocked_write)
+    await service.open()
+    first = service.get_event_log()
+    assert first is not None
+    await service.get_event_publisher().publish(QueueEvent(type="task.log", scope="task"))
+    flushing = asyncio.create_task(first.flush_events())
+    closing: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        closing = asyncio.create_task(service.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        release.set()
+        await flushing
+        if closing is not None:
+            await closing
+        else:
+            await service.close()
+    assert service.get_event_log() is None
+    await service.open()
+    fresh = service.get_event_log()
+    assert fresh is not None and fresh is not first
+    try:
+        await service.get_event_publisher().publish(QueueEvent(type="task.log", scope="task"))
+    finally:
+        await service.close()
+    with sqlite3.connect(path) as reader:
+        assert reader.execute("SELECT COUNT(*) FROM queue_task_event_history").fetchone()[0] == 2
+
+
 async def test_sqlspec_event_log_records_and_queries_task_history(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory"
 ) -> "None":

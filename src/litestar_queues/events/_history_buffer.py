@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from litestar_queues.events.buffer import _in_live_event_callback
 from litestar_queues.exceptions import QueueConfigurationError, QueueEventBufferFull
 
 if TYPE_CHECKING:
@@ -39,6 +40,12 @@ class _ReleaseToken:
 
 
 _release_context: ContextVar[_ReleaseToken | None] = ContextVar("queue_history_release", default=None)
+
+
+def _in_event_release_callback() -> bool:
+    """Identify an active callback that cannot await its owning lifecycle."""
+    token = _release_context.get()
+    return (token is not None and token.active) or _in_live_event_callback()
 
 
 class _HistoryBuffer:
@@ -143,7 +150,7 @@ class _HistoryBuffer:
     async def stop(self) -> None:
         """Stop admission and finish cleanup even if the caller is cancelled."""
         token = _release_context.get()
-        if token is not None and token.owner is self and token.active:
+        if (token is not None and token.owner is self and token.active) or _in_live_event_callback():
             msg = "Queue event history cannot close from its own release callback."
             raise QueueConfigurationError(msg)
         if self._state == "closed":
@@ -193,7 +200,9 @@ class _HistoryBuffer:
             error = exc
         if reentrant and inherited is not None:
             inherited.boundary = max(inherited.boundary, boundary)
-        elif not background:
+        # A live callback may be holding the drain needed by an earlier history
+        # release. Confirm persistence here and let release finish after it returns.
+        elif not background and not _in_live_event_callback():
             error = await self._wait_for_releases(targets, error)
         if error is not None:
             if not background and self._background_error is error:

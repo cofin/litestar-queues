@@ -2,17 +2,18 @@
 
 import logging
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from litestar_queues.events.buffer import LiveEventBuffer, event_buffer_key
 from litestar_queues.events.channels import QueueChannels
 from litestar_queues.events.sinks import NoopQueueEventSink, QueueEventSink, default_publish_many
-from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.exceptions import QueueConfigurationError, QueueEventBufferFull
 from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from litestar_queues.events.models import QueueEvent
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
@@ -21,8 +22,13 @@ __all__ = ("EventBufferConfig", "QueueEventPublisher")
 
 
 class _QueueEventHistoryWriter(Protocol):
-    async def publish_event(self, event: "QueueEvent") -> "None":
-        """Record a queue event for durable history."""
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        """Release an accepted event only after its history commits."""
+
+    async def aclose(self) -> "None":
+        """Drain and close owned history resources."""
 
 
 @runtime_checkable
@@ -85,7 +91,6 @@ class QueueEventPublisher:
     __slots__ = (
         "_buffer",
         "_event_log",
-        "_event_log_strict",
         "_live_failure_signature",
         "_logger",
         "_namespace",
@@ -103,7 +108,6 @@ class QueueEventPublisher:
         sink: "QueueEventSink | None" = None,
         *,
         event_log: "_QueueEventHistoryWriter | None" = None,
-        event_log_strict: "bool" = False,
         buffer_config: "EventBufferConfig | None" = None,
         strict: "bool" = False,
         publish_task_channel: "bool" = True,
@@ -120,8 +124,8 @@ class QueueEventPublisher:
         self._sink = sink or NoopQueueEventSink()
         self._observability_runtime = observability_runtime
         self._transport = transport or _event_transport(self._sink)
+        self._validate_event_log(event_log)
         self._event_log = event_log
-        self._event_log_strict = event_log_strict
         self._buffer = (
             LiveEventBuffer(
                 buffer_config,
@@ -143,10 +147,10 @@ class QueueEventPublisher:
         """Configured event sink."""
         return self._sink
 
-    def set_event_log(self, event_log: "_QueueEventHistoryWriter", *, strict: "bool" = False) -> "None":
+    def set_event_log(self, event_log: "_QueueEventHistoryWriter") -> "None":
         """Attach backend-owned durable event history to this publisher."""
+        self._validate_event_log(event_log)
         self._event_log = event_log
-        self._event_log_strict = strict
 
     def set_observability_runtime(self, runtime: "QueueObservabilityRuntimeProtocol") -> "None":
         """Attach the service-owned runtime used for live delivery metrics."""
@@ -156,32 +160,47 @@ class QueueEventPublisher:
         self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None, immediate: "bool" = False
     ) -> "None":
         """Publish an event to canonical and explicitly supplied channels."""
-        resolved_channels = self.resolve_channels(event, channels=channels)
-        await self._record_event(event)
-        if self._buffer is not None and not immediate and event.type not in _TERMINAL_EVENT_TYPES:
+        snapshot = deepcopy(event)
+        resolved_channels = self.resolve_channels(snapshot, channels=channels)
+        barrier = immediate or snapshot.type in _TERMINAL_EVENT_TYPES
+
+        async def deliver() -> None:
+            await self._deliver_live(snapshot, resolved_channels)
+
+        async def release() -> None:
+            if self._buffer is None:
+                await deliver()
+                return
             try:
-                await self._buffer.add(event, resolved_channels)
+                if barrier:
+                    await self._buffer.publish_immediate(key=event_buffer_key(snapshot), release=deliver)
+                else:
+                    await self._buffer.add(snapshot, resolved_channels)
+            except (QueueConfigurationError, QueueEventBufferFull):
+                raise
             except Exception:
                 if self.strict:
                     raise
                 self._logger.warning(
                     "Queue event buffer publish failed",
                     exc_info=True,
-                    extra={"queue_event_type": event.type, "queue_event_id": event.id},
+                    extra={"queue_event_type": snapshot.type, "queue_event_id": snapshot.id},
                 )
-            return
-        if self._buffer is not None:
-            try:
-                await self._buffer.flush(key=event_buffer_key(event))
-            except Exception:
-                if self.strict:
-                    raise
-                self._logger.warning(
-                    "Queue event buffer flush failed",
-                    exc_info=True,
-                    extra={"queue_event_type": event.type, "queue_event_id": event.id},
-                )
-        await self._deliver_live(event, resolved_channels)
+
+        retained_release = self._buffer.bind_release(release) if self._buffer is not None else release
+        if self._event_log is None:
+            await retained_release()
+        else:
+            await self._event_log.publish_event_after_commit(snapshot, release=retained_release, barrier=barrier)
+
+    @staticmethod
+    def _validate_event_log(event_log: "_QueueEventHistoryWriter | None") -> None:
+        if event_log is not None and (
+            not callable(getattr(event_log, "publish_event_after_commit", None))
+            or not callable(getattr(event_log, "aclose", None))
+        ):
+            message = "Queue event history providers must implement publish_event_after_commit() and aclose()."
+            raise QueueConfigurationError(message)
 
     async def flush_buffer(self) -> "None":
         """Flush all buffered live events."""
@@ -255,20 +274,6 @@ class QueueEventPublisher:
             return
         self._live_failure_signature = signature
         self._logger.warning("Queue event batch publish failed", exc_info=exc, extra={"queue_event_count": count})
-
-    async def _record_event(self, event: "QueueEvent") -> "None":
-        if self._event_log is None:
-            return
-        try:
-            await self._event_log.publish_event(event)
-        except Exception:
-            if self._event_log_strict:
-                raise
-            self._logger.warning(
-                "Queue event history publish failed",
-                exc_info=True,
-                extra={"queue_event_type": event.type, "queue_event_id": event.id},
-            )
 
     def resolve_channels(self, event: "QueueEvent", *, channels: "Sequence[str] | None" = None) -> "tuple[str, ...]":
         """Return canonical publish channels for an event plus explicit extras."""
