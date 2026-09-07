@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from litestar_queues.backends import BaseQueueBackend
+    from litestar_queues.events.producer import _ExternalProducer
 
 pytestmark = pytest.mark.anyio
 
@@ -338,3 +339,252 @@ class _RecordingSyncSqlSpecEventChannel:
         self.publish_many_calls += 1
         self.published.extend(events)
         return [f"event-{index + 1}" for index in range(len(events))]
+
+
+class _LifecycleResource:
+    def __init__(
+        self,
+        name: "str",
+        calls: "list[str]",
+        *,
+        open_error: "BaseException | None" = None,
+        close_error: "BaseException | None" = None,
+    ) -> None:
+        self.name = name
+        self.calls = calls
+        self.open_error = open_error
+        self.close_error = close_error
+
+    async def open(self) -> None:
+        self.calls.append(f"{self.name}.open")
+        if self.open_error is not None:
+            raise self.open_error
+
+    async def close(self) -> None:
+        self.calls.append(f"{self.name}.close")
+        if self.close_error is not None:
+            raise self.close_error
+
+    async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> None:
+        self.calls.append(f"{self.name}.publish")
+
+
+def _external_for(resources: "Sequence[_LifecycleResource]") -> "_ExternalProducer":
+    from litestar_queues.events import create_event_producer
+
+    return create_event_producer(
+        _ExplodingBackendConfig(
+            events=QueueEventsConfig(delivery=EventDeliveryConfig(buffer=None, sinks=tuple(resources)))
+        )
+    )
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_partial_open_unwinds_only_successfully_acquired_resources(position: int, cancel: bool) -> None:
+    import asyncio
+
+    calls: "list[str]" = []
+    original = asyncio.CancelledError() if cancel else RuntimeError("original open failure")
+    resources = [
+        _LifecycleResource(str(index), calls, close_error=ValueError("secondary close failure")) for index in range(3)
+    ]
+    resources[position].open_error = original
+    external = _external_for(resources)
+    with pytest.raises(type(original)) as raised:
+        await external.__aenter__()
+    assert raised.value is original
+    expected = [f"{index}.open" for index in range(position + 1)] + [
+        f"{index}.close" for index in reversed(range(position))
+    ]
+    assert calls == expected
+    await external.aclose()
+    assert calls == expected
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+async def test_close_failure_attempts_all_acquired_resources_once(position: int) -> None:
+    calls: "list[str]" = []
+    original = RuntimeError("close failure")
+    resources = [_LifecycleResource(str(index), calls) for index in range(3)]
+    resources[position].close_error = original
+    external = _external_for(resources)
+    await external.__aenter__()
+    with pytest.raises(RuntimeError) as raised:
+        await external.aclose()
+    assert raised.value is original
+    assert calls == ["0.open", "1.open", "2.open", "2.close", "1.close", "0.close"]
+    await external.aclose()
+    assert len(calls) == 6
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_context_body_error_wins_over_all_cleanup_errors(cancel: bool) -> None:
+    import asyncio
+
+    calls: "list[str]" = []
+    original = asyncio.CancelledError() if cancel else LookupError("body failure")
+    resources = [_LifecycleResource(str(index), calls, close_error=RuntimeError("close failure")) for index in range(3)]
+    external = _external_for(resources)
+    with pytest.raises(type(original)) as raised:
+        async with external:
+            raise original
+    assert raised.value is original
+    assert calls == ["0.open", "1.open", "2.open", "2.close", "1.close", "0.close"]
+    await external.aclose()
+
+
+async def test_duplicate_resource_identity_is_acquired_and_closed_once() -> None:
+    calls: "list[str]" = []
+    resource = _LifecycleResource("same", calls)
+    async with _external_for((resource, resource)) as producer:
+        await producer.task("task").log("one", immediate=True)
+    assert calls == ["same.open", "same.publish", "same.publish", "same.close"]
+
+
+async def test_close_only_resource_remains_unowned() -> None:
+    from types import SimpleNamespace
+    from typing import Any, cast
+    from unittest.mock import AsyncMock
+
+    resource = SimpleNamespace(publish=AsyncMock(), close=AsyncMock())
+    external = _external_for((cast("Any", resource),))
+    async with external:
+        pass
+    resource.close.assert_not_awaited()
+
+
+async def test_buffer_stop_failure_still_attempts_every_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from litestar_queues.events.publisher import QueueEventPublisher
+
+    calls: "list[str]" = []
+    first = RuntimeError("buffer stop failure")
+    cancellation = asyncio.CancelledError()
+    resources = [_LifecycleResource(str(index), calls) for index in range(3)]
+    resources[1].close_error = cancellation
+    resources[2].close_error = ValueError("first close failure")
+
+    async def stop(_publisher: QueueEventPublisher) -> None:
+        calls.append("buffer.stop")
+        raise first
+
+    monkeypatch.setattr(QueueEventPublisher, "stop_buffer", stop)
+    external = _external_for(resources)
+    await external.__aenter__()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await external.aclose()
+    assert raised.value is cancellation
+    assert calls == ["0.open", "1.open", "2.open", "buffer.stop", "2.close", "1.close", "0.close"]
+    await external.aclose()
+
+
+async def test_failed_publisher_start_unwinds_acquired_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    from litestar_queues.events.publisher import QueueEventPublisher
+
+    calls: "list[str]" = []
+    original = RuntimeError("buffer start failure")
+
+    def start(_publisher: QueueEventPublisher) -> None:
+        raise original
+
+    monkeypatch.setattr(QueueEventPublisher, "start_buffer", start)
+    external = _external_for([_LifecycleResource(str(index), calls) for index in range(3)])
+    with pytest.raises(RuntimeError) as raised:
+        await external.__aenter__()
+    assert raised.value is original
+    assert calls == ["0.open", "1.open", "2.open", "2.close", "1.close", "0.close"]
+    await external.aclose()
+
+
+async def test_actual_cancellation_during_close_attempts_remaining_resources() -> None:
+    import asyncio
+
+    calls: "list[str]" = []
+    waiting = asyncio.Event()
+
+    class BlockingResource(_LifecycleResource):
+        async def close(self) -> None:
+            self.calls.append(f"{self.name}.close")
+            waiting.set()
+            await asyncio.Event().wait()
+
+    resources = [
+        _LifecycleResource("0", calls),
+        BlockingResource("1", calls),
+        _LifecycleResource("2", calls, close_error=RuntimeError("earlier close failed")),
+    ]
+    external = _external_for(resources)
+    await external.__aenter__()
+    closing = asyncio.create_task(external.aclose())
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=1)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(closing, timeout=1)
+        assert calls == ["0.open", "1.open", "2.open", "2.close", "1.close", "0.close"]
+        await external.aclose()
+        assert len(calls) == 6
+    finally:
+        if not closing.done():
+            closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
+
+
+async def test_secondary_logging_failure_cannot_replace_body_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import litestar_queues.events.producer as producer_module
+
+    calls: "list[str]" = []
+    original = LookupError("body failed")
+
+    def fail_logging(*args: object, **kwargs: object) -> None:
+        message = "logging failed"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(producer_module.logger, "warning", fail_logging)
+    external = _external_for([
+        _LifecycleResource(str(index), calls, close_error=ValueError("close failed")) for index in range(3)
+    ])
+    with pytest.raises(LookupError) as raised:
+        async with external:
+            raise original
+    assert raised.value is original
+    assert calls == ["0.open", "1.open", "2.open", "2.close", "1.close", "0.close"]
+    await external.aclose()
+
+
+@pytest.mark.parametrize("outer_cleanup", [False, True])
+async def test_live_callback_cannot_close_its_own_producer_during_outer_cleanup(outer_cleanup: bool) -> None:
+    from litestar_queues.events import create_event_producer
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    calls: "list[str]" = []
+
+    class ReentrantResource(_LifecycleResource):
+        async def publish(self, event: "QueueEvent", *, channels: "Sequence[str]") -> None:
+            calls.append("sink.publish")
+            with pytest.raises(QueueConfigurationError, match="active event release"):
+                await external.aclose()
+            with pytest.raises(QueueConfigurationError, match="active event release"):
+                await external.__aenter__()
+            assert calls == ["sink.open", "sink.publish"]
+
+    sink = ReentrantResource("sink", calls)
+    external = create_event_producer(
+        _ExplodingBackendConfig(
+            events=QueueEventsConfig(
+                delivery=EventDeliveryConfig(
+                    sinks=(sink,), strict=True, buffer=EventBufferConfig(batch_size=10, flush_interval=60)
+                )
+            )
+        )
+    )
+    producer = await external.__aenter__()
+    await producer.task("task").log("buffered")
+    if not outer_cleanup:
+        assert external._publisher is not None
+        await external._publisher.flush_buffer()
+    await external.aclose()
+    assert calls == ["sink.open", "sink.publish", "sink.close"]
+    await external.aclose()

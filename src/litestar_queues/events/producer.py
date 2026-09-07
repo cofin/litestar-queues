@@ -1,9 +1,13 @@
 """Producer facade for queue event publishing."""
 
+import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
 
+from litestar_queues.events._history_buffer import _in_event_release_callback
 from litestar_queues.events.models import QueueEvent
-from litestar_queues.events.sinks import _call_optional_lifecycle
+from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -12,6 +16,8 @@ if TYPE_CHECKING:
     from litestar_queues.events.publisher import QueueEventPublisher
 
 __all__ = ("QueueEventProducer", "create_event_producer")
+
+logger = logging.getLogger(__name__)
 
 
 class QueueEventProducer:
@@ -54,13 +60,20 @@ class _ExternalProducer:
         self._resources: "tuple[object, ...]" = ()
 
     async def __aenter__(self) -> "QueueEventProducer":
+        self._require_lifecycle_boundary()
+        if self._producer is not None:
+            return self._producer
         publisher, resources = self._build_publisher()
-        self._resources = resources
-        for resource in resources:
-            await _call_optional_lifecycle(resource, "open", "on_startup")
-        publisher.start_buffer()
-        self._publisher = publisher
-        self._producer = QueueEventProducer(publisher)
+        try:
+            for resource in resources:
+                if await _call_optional_lifecycle(resource, "open", "on_startup"):
+                    self._resources += (resource,)
+            publisher.start_buffer()
+            self._publisher = publisher
+            self._producer = QueueEventProducer(publisher)
+        except BaseException as primary:
+            await self._close(primary=primary)
+            raise
         return self._producer
 
     async def __aexit__(
@@ -69,21 +82,45 @@ class _ExternalProducer:
         exc_val: "BaseException | None",  # noqa: PYI036
         exc_tb: "TracebackType | None",  # noqa: PYI036
     ) -> "None":
-        await self.aclose()
+        await self._close(primary=exc_val)
 
     async def aclose(self) -> "None":
-        """Close the external producer transport if it is open."""
-        publisher = self._publisher
-        resources = self._resources
+        """Drain live delivery and close acquired transports in reverse order."""
+        await self._close()
+
+    async def _close(self, *, primary: "BaseException | None" = None) -> "None":
+        self._require_lifecycle_boundary()
+        publisher, self._publisher = self._publisher, None
+        resources, self._resources = self._resources, ()
         self._producer = None
-        self._publisher = None
-        self._resources = ()
-        try:
-            if publisher is not None:
+        errors: list[BaseException] = []
+        if publisher is not None:
+            try:
                 await publisher.stop_buffer()
-        finally:
-            for resource in reversed(resources):
+            except BaseException as exc:  # noqa: BLE001 - complete all acquired cleanup before selecting the error.
+                errors.append(exc)
+        for resource in reversed(resources):
+            try:
                 await _call_optional_lifecycle(resource, "close", "on_shutdown")
+            except BaseException as exc:  # noqa: BLE001, PERF203 - every acquired resource gets one cleanup attempt.
+                errors.append(exc)
+        selected = primary if primary is not None else _select_lifecycle_error(errors)
+        for error in errors:
+            if error is not selected:
+                # Reporting must never replace the primary or interrupt cleanup.
+                with suppress(BaseException):
+                    logger.warning(
+                        "External queue event producer cleanup also failed.",
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+        if primary is None and selected is not None:
+            raise selected
+
+    @staticmethod
+    def _require_lifecycle_boundary() -> "None":
+        if _in_event_release_callback():
+            message = "External queue event producer lifecycle cannot change from an active event release callback."
+            raise QueueConfigurationError(message)
 
     def _build_publisher(self) -> "tuple[QueueEventPublisher, tuple[object, ...]]":
         events_config = self._config.events
@@ -94,7 +131,13 @@ class _ExternalProducer:
         if events_config.channels is not None:
             resources.append(events_config.channels)
         resources.extend(events_config.delivery.sinks)
-        return publisher, tuple(resources)
+        seen: set[int] = set()
+        unique = []
+        for resource in resources:
+            if id(resource) not in seen:
+                seen.add(id(resource))
+                unique.append(resource)
+        return publisher, tuple(unique)
 
 
 class _ScopeEventHandle:
