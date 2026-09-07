@@ -61,7 +61,7 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Generator, Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping, Sequence
 
     from litestar_queues.backends.sqlspec._typing import (
         SQLSpecConfig,
@@ -284,24 +284,53 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close SQLSpec resources."""
-        if self._event_log is not None:
-            await self._event_log.flush_events()
-        await self._close_notification_stream()
-        await self._close_control_stream()
-        await self._close_heartbeat_pool()
+        error: BaseException | None = None
+
+        async def close_resource(close: "Callable[[], Any]") -> "None":
+            nonlocal error
+            try:
+                result = close()
+                if isawaitable(result):
+                    await result
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+                else:
+                    secondary = exc
+                    if isinstance(error, Exception) and not isinstance(exc, Exception):
+                        secondary, error = error, exc
+                    with suppress(Exception):
+                        self._logger.warning(
+                            "SQLSpec resource cleanup failed.",
+                            exc_info=(type(secondary), secondary, secondary.__traceback__),
+                        )
+
+        event_log = self._event_log
+        self._event_log = None
+        if event_log is not None:
+            await close_resource(event_log.aclose)
+        await close_resource(self._close_notification_stream)
+        await close_resource(self._close_control_stream)
+        await close_resource(self._close_heartbeat_pool)
         if self._owns_event_channel and self._event_channel is not None:
-            await _invoke_event_channel_method(self._event_channel, "shutdown")
+            event_channel = self._event_channel
             self._event_channel = None
+            await close_resource(lambda: _invoke_event_channel_method(event_channel, "shutdown"))
         if self._owns_sqlspec and self._sqlspec is not None:
-            await self._sqlspec.close_all_pools()
+            sqlspec = self._sqlspec
             self._sqlspec = None
+            await close_resource(sqlspec.close_all_pools)
         if self._sync_executor is not None:
-            self._sync_executor.shutdown(wait=True)
+            executor = self._sync_executor
             self._sync_executor = None
+            await close_resource(lambda: executor.shutdown(wait=True))
         if self._heartbeat_sync_executor is not None:
-            self._heartbeat_sync_executor.shutdown(wait=True)
+            heartbeat_executor = self._heartbeat_sync_executor
             self._heartbeat_sync_executor = None
+            await close_resource(lambda: heartbeat_executor.shutdown(wait=True))
         self._opened = False
+        if error is not None:
+            raise error
 
     def get_event_log(self, config: "EventHistoryConfig") -> "QueueEventLog | None":
         """Return SQLSpec-managed durable queue event history when enabled."""

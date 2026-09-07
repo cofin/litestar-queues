@@ -1,11 +1,12 @@
 """SQLSpec backend-managed queue event history tests."""
 
+import asyncio
 import contextlib
 import importlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -40,6 +41,38 @@ if TYPE_CHECKING:
     from tests.integration.backends.sqlspec.conftest import SqliteConfigFactory
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.mark.parametrize("adapter", ["aiosqlite", "sqlite"])
+async def test_sparse_history_commits_without_another_publication(tmp_path: "Path", adapter: "str") -> "None":
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+    from sqlspec.adapters.sqlite import SqliteConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+
+    path = tmp_path / f"sparse-{adapter}.db"
+    config_class = AiosqliteConfig if adapter == "aiosqlite" else SqliteConfig
+    backend_config = SQLSpecBackendConfig(sqlspec_config=config_class(connection_config={"database": str(path)}))
+    await bootstrap_queue_schema(backend_config, event_history_enabled=True)
+    backend = SQLSpecQueueBackend(backend_config=backend_config)
+    history = EventHistoryConfig(batch_size=20, flush_interval=0.02, strict=True)
+    try:
+        await backend.open()
+        log = cast("Any", backend.get_event_log(history))
+        event = QueueEvent(type="task.log", scope="task", message="sparse")
+        await log.publish_event(event)
+        deadline = asyncio.get_running_loop().time() + 1
+        while True:
+            with sqlite3.connect(path) as reader:
+                count = reader.execute(
+                    "SELECT COUNT(*) FROM queue_task_event_history WHERE event_id = ?", (event.id,)
+                ).fetchone()[0]
+            if count == 1 or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.01)
+        assert count == 1
+    finally:
+        await backend.close()
 
 
 async def test_sqlspec_event_log_records_and_queries_task_history(
@@ -266,3 +299,213 @@ def _sqlite_table_names(db_path: "Path") -> "set[str]":
     with contextlib.closing(sqlite3.connect(db_path)) as connection:
         rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         return {cast("str", row[0]) for row in rows}
+
+
+@pytest.fixture(params=["aiosqlite", "sqlite", "postgres", "mysql"])
+async def replay_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "Any":
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+    from sqlspec.adapters.asyncmy import AsyncmyConfig
+    from sqlspec.adapters.psycopg import PsycopgAsyncConfig
+    from sqlspec.adapters.sqlite import SqliteConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+    from tests.integration._names import table_name_for_test
+
+    adapter = request.param
+    adapter_config: Any
+    if adapter == "postgres":
+        service = request.getfixturevalue("postgres_service")
+        adapter_config = PsycopgAsyncConfig(
+            connection_config={
+                "host": service.host,
+                "port": service.port,
+                "user": service.user,
+                "password": service.password,
+                "dbname": service.database,
+            }
+        )
+    elif adapter == "mysql":
+        service = request.getfixturevalue("mysql_84_service")
+        adapter_config = AsyncmyConfig(
+            connection_config={
+                "host": service.host,
+                "port": service.port,
+                "user": service.user,
+                "password": service.password,
+                "db": service.db,
+            }
+        )
+    else:
+        config_class = AiosqliteConfig if adapter == "aiosqlite" else SqliteConfig
+        adapter_config = config_class(connection_config={"database": str(tmp_path / "replay.db")})
+    backend_config = SQLSpecBackendConfig(
+        sqlspec_config=adapter_config, queue_table_name=table_name_for_test("history", adapter, request.node.nodeid)
+    )
+    config = QueueConfig(queue_backend=backend_config, events=QueueEventsConfig(history=EventHistoryConfig()))
+    backend = SQLSpecQueueBackend(config=config, backend_config=backend_config)
+    await backend.open()
+    await backend.create_schema()
+    try:
+        yield backend
+    finally:
+        await backend.close()
+
+
+async def test_history_replays_actual_commit_and_releases_to_independent_reader(
+    replay_backend: "Any", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    backend = replay_backend
+    log = backend.get_event_log(EventHistoryConfig(batch_size=1, flush_interval=60, strict=True))
+    event = QueueEvent(
+        type="task.log",
+        scope="task",
+        occurred_at=datetime(2026, 1, 2, 3, 4, 5, 987654, tzinfo=timezone.utc),
+        actor=QueueEventActor(type="user", id="same"),
+        payload={"nested": {"value": 1}},
+    )
+    factory = log._session_factory
+    commit_calls = 0
+
+    class UncertainCommit:
+        def __init__(self, driver: "Any") -> "None":
+            self.driver = driver
+
+        def __getattr__(self, name: "str") -> "Any":
+            return getattr(self.driver, name)
+
+        async def commit(self) -> "None":
+            nonlocal commit_calls
+            await self.driver.commit()
+            commit_calls += 1
+            if commit_calls == 1:
+                message = "lost acknowledgement after commit"
+                raise ConnectionError(message)
+
+    @contextlib.asynccontextmanager
+    async def uncertain_session() -> "Any":
+        async with factory() as driver:
+            yield UncertainCommit(driver)
+
+    monkeypatch.setattr(log, "_session_factory", uncertain_session)
+    visible = []
+
+    async def release() -> "None":
+        async with factory() as reader:
+            rows = await reader.select(log._store.select_existing_event_ids([event.id]))
+        visible.append(rows)
+
+    with pytest.raises(ConnectionError, match="lost acknowledgement"):
+        await log.publish_event_after_commit(event, release=release, barrier=True)
+    assert visible == []
+    async with factory() as reader:
+        first = await reader.select(log._store.select_existing_event_ids([event.id]))
+    assert len(first) == 1
+    await log.flush_events()
+    assert len(visible) == 1 and len(visible[0]) == 1
+    assert visible[0][0]["created_at"] == first[0]["created_at"]
+    await log.publish_event(event)
+    async with factory() as reader:
+        final = await reader.select(log._store.select_existing_event_ids([event.id]))
+    assert len(final) == 1 and final[0]["created_at"] == first[0]["created_at"]
+
+
+async def test_conflicting_history_id_is_fatal_without_live_release(replay_backend: "Any") -> "None":
+    from msgspec.structs import replace
+
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    log = replay_backend.get_event_log(EventHistoryConfig(batch_size=1, strict=True))
+    event = QueueEvent(type="task.log", scope="task", payload={"value": "first"})
+    await log.publish_event(event)
+    released = []
+
+    async def release() -> "None":
+        released.append(True)
+
+    with pytest.raises(QueueConfigurationError, match="Conflicting immutable"):
+        await log.publish_event_after_commit(replace(event, payload={"value": "second"}), release=release, barrier=True)
+    assert released == []
+    with pytest.raises(QueueConfigurationError):
+        await log.aclose()
+    async with replay_backend._session() as reader:
+        rows = await reader.select(log._store.select_existing_event_ids([event.id]))
+    assert log._record_from_row(rows[0]).detail == {"value": "first"}
+
+
+async def test_history_close_failure_reopens_with_a_distinct_log(
+    replay_backend: "Any", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    backend = replay_backend
+    history = EventHistoryConfig(batch_size=20, flush_interval=60, strict=True)
+    old_log = backend.get_event_log(history)
+    await old_log.publish_event(QueueEvent(type="task.log", scope="task"))
+
+    async def fail_write(records: "Any") -> "None":
+        message = "history unavailable"
+        raise ConnectionError(message)
+
+    monkeypatch.setattr(old_log._buffer, "_write_batch", fail_write)
+    with pytest.raises(ConnectionError, match="history unavailable"):
+        await backend.close()
+    await backend.open()
+    fresh_log = backend.get_event_log(history)
+    assert fresh_log is not old_log
+    with pytest.raises(QueueConfigurationError, match="closing or closed"):
+        await old_log.publish_event(QueueEvent(type="task.log", scope="task"))
+    event = QueueEvent(type="task.log", scope="task", message="reopened")
+    await fresh_log.publish_event(event)
+    await fresh_log.flush_events()
+    async with backend._session() as reader:
+        rows = await reader.select(fresh_log._store.select_existing_event_ids([event.id]))
+    assert len(rows) == 1
+
+
+async def test_duplicate_insert_race_retries_in_a_fresh_transaction(
+    replay_backend: "Any", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    log = replay_backend.get_event_log(EventHistoryConfig(batch_size=1, flush_interval=60, strict=True))
+    event = QueueEvent(type="task.log", scope="task", payload={"preserved": True})
+    await log.publish_event(event)
+    factory = log._session_factory
+    sessions = 0
+    insert_errors = []
+
+    class RaceDriver:
+        def __init__(self, driver: "Any", first: "bool") -> "None":
+            self.driver = driver
+            self.first = first
+
+        def __getattr__(self, name: "str") -> "Any":
+            return getattr(self.driver, name)
+
+        async def select(self, statement: "Any", *args: "Any", **kwargs: "Any") -> "Any":
+            # A row committed after the existence snapshot causes an actual
+            # native duplicate-key error below; only the first lookup is stale.
+            if self.first:
+                self.first = False
+                return []
+            return await self.driver.select(statement, *args, **kwargs)
+
+        async def execute_many(self, statement: "Any", params: "Any") -> "Any":
+            try:
+                return await self.driver.execute_many(statement, params)
+            except Exception as exc:
+                insert_errors.append(exc)
+                raise
+
+    @contextlib.asynccontextmanager
+    async def raced_session() -> "Any":
+        nonlocal sessions
+        sessions += 1
+        async with factory() as driver:
+            yield RaceDriver(driver, sessions == 1)
+
+    monkeypatch.setattr(log, "_session_factory", raced_session)
+    await log.publish_event(event)
+    assert sessions == 2
+    assert len(insert_errors) == 1
+    async with factory() as reader:
+        rows = await reader.select(log._store.select_existing_event_ids([event.id]))
+    assert len(rows) == 1

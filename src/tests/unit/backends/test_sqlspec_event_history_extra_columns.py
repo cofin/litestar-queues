@@ -1,15 +1,20 @@
 """Unit tests for adopter-declared extra columns on the SQLSpec event-history table."""
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 
 pytest.importorskip("sqlspec")
 pytest.importorskip("aiosqlite")
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.backend import SQLSpecQueueBackend
 from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLogStore, create_event_log_store
 from litestar_queues.backends.sqlspec.schema import EVENT_HISTORY_COLUMNS
 from litestar_queues.events import EventHistoryExtraColumn, QueueEventQuery, validate_event_history_extra_columns
@@ -19,6 +24,75 @@ if TYPE_CHECKING:
     from litestar_queues.events import QueueEventLog
 
 _TENANT = EventHistoryExtraColumn(name="tenant_id", source="tenant_id", indexed=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_close_releases_all_owned_resources_after_history_failure(
+    cancel: "bool", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    backend = SQLSpecQueueBackend()
+    error = asyncio.CancelledError() if cancel else RuntimeError("history drain failed")
+    history = SimpleNamespace(aclose=AsyncMock(side_effect=error), flush_events=AsyncMock(side_effect=error))
+    pool: Any = SimpleNamespace(close_all_pools=AsyncMock(side_effect=RuntimeError("pool close failed")))
+    channel = SimpleNamespace(shutdown=AsyncMock())
+    executor = Mock()
+    heartbeat_executor = Mock()
+    backend._event_log = history  # type: ignore[assignment]
+    backend._sqlspec = pool
+    backend._event_channel = channel  # type: ignore[assignment]
+    monkeypatch.setattr(backend, "_sync_executor", executor)
+    monkeypatch.setattr(backend, "_heartbeat_sync_executor", heartbeat_executor)
+    backend._opened = True
+
+    async def fail_history_close() -> "None":
+        assert backend._event_log is None
+        assert id(backend._sqlspec) == id(pool)
+        pool.close_all_pools.assert_not_awaited()
+        raise error
+
+    history.aclose.side_effect = fail_history_close
+
+    with pytest.raises(type(error)) as raised:
+        await backend.close()
+
+    assert raised.value is error
+    history.aclose.assert_awaited_once()
+    pool.close_all_pools.assert_awaited_once()
+    channel.shutdown.assert_awaited_once()
+    executor.shutdown.assert_called_once_with(wait=True)
+    heartbeat_executor.shutdown.assert_called_once_with(wait=True)
+    assert backend._event_log is None
+    assert backend._sqlspec is None
+    assert backend._event_channel is None
+    assert backend._sync_executor is None
+    assert backend._heartbeat_sync_executor is None
+    assert backend._opened is False
+    await backend.close()
+    history.aclose.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_cancellation_during_pool_cleanup_survives_prior_history_error() -> "None":
+    backend = SQLSpecQueueBackend()
+    waiting = asyncio.Event()
+
+    async def close_pool() -> "None":
+        waiting.set()
+        await asyncio.Event().wait()
+
+    backend._event_log = SimpleNamespace(aclose=AsyncMock(side_effect=RuntimeError("history failed")))  # type: ignore[assignment]
+    backend._sqlspec = SimpleNamespace(close_all_pools=close_pool)  # type: ignore[assignment]
+    executor = Mock()
+    backend._sync_executor = executor
+    closing = asyncio.create_task(backend.close())
+    await asyncio.wait_for(waiting.wait(), timeout=1)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    executor.shutdown.assert_called_once_with(wait=True)
+    assert backend._event_log is None
+    assert backend._sqlspec is None
 
 
 def _store(*extra: "EventHistoryExtraColumn") -> "SQLSpecQueueEventLogStore":
