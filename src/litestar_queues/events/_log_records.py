@@ -1,6 +1,7 @@
 """Internal helpers for backend-managed queue event history records."""
 
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
@@ -36,7 +37,7 @@ def event_log_record_from_event(
     Returns:
         Backend-neutral event-history record.
     """
-    detail = dict(event.payload)
+    detail = deepcopy(dict(event.payload))
     extra = extract_event_extras(detail, extra_columns)
     return QueueEventLogRecord(
         event_id=event.id,

@@ -15,7 +15,7 @@ from litestar_queues.events.query import (
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
     from datetime import datetime
 
     from litestar_queues.backends.ephemeral.backend import EphemeralQueueBackend
@@ -92,6 +92,16 @@ class EphemeralQueueEventLog:
             )
 
         await self._backend._transaction(operation)  # noqa: SLF001
+
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        """Commit the event before attempting its live delivery callback."""
+        await self.publish_event(event)
+        await release()
+
+    async def aclose(self) -> "None":
+        """Finish immediate history writes; this log owns no background resources."""
 
     async def flush_events(self) -> "None":
         """Flush buffered events.
