@@ -6,6 +6,7 @@ from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    DispatchRepairCandidates,
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
@@ -15,6 +16,7 @@ from litestar_queues.backends.base import (
     stale_requeue_priority,
 )
 from litestar_queues.backends.memory.event_log import InMemoryQueueEventLog
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueueBackendCapabilities,
@@ -537,6 +539,61 @@ class InMemoryQueueBackend(BaseQueueBackend):
                 _expire_record(record, now)
                 expired.append(record)
         return expired
+
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        """Select and mark a bounded set of active deliveries for fair repair.
+
+        Raises:
+            QueueConfigurationError: If the limit is negative.
+        """
+        if limit < 0:
+            message = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(message)
+        if limit == 0:
+            return DispatchRepairCandidates()
+        async with self._lock:
+            now = _utc_now()
+            records = sorted(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.execution_backend == execution_backend
+                    and record.status in {"pending", "scheduled"}
+                    and (record.expires_at is None or record.expires_at > now)
+                ),
+                key=lambda record: (record.dispatch_checked_at or record.created_at, str(record.id)),
+            )[:limit]
+            for record in records:
+                if record.dispatch_checked_at is None or record.dispatch_checked_at < now:
+                    record.dispatch_checked_at = now
+            return DispatchRepairCandidates(tuple(records), len(records), len(records) == limit)
+
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        """Atomically reserve the exact active attempt, including future tasks."""
+        async with self._lock:
+            record = self._records.get(task_id)
+            now = _utc_now()
+            if (
+                record is None
+                or record.execution_backend != execution_backend
+                or record.retry_count != expected_retry_count
+                or record.execution_ref != expected_execution_ref
+                or record.status not in {"pending", "scheduled"}
+                or (record.expires_at is not None and record.expires_at <= now)
+            ):
+                return None
+            record.execution_ref = execution_ref
+            return record
 
     async def reserve_external_dispatch(
         self,

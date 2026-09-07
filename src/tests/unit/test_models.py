@@ -34,3 +34,14 @@ def test_queued_task_record_coerces_naive_expires_at_to_utc() -> "None":
     )
 
     assert record.expires_at == datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+
+
+def test_dispatch_checked_at_normalizes_to_utc() -> "None":
+    naive = datetime(2026, 9, 7, 12, 0)  # noqa: DTZ001 - exercise naive coercion
+    offset = timezone(timedelta(hours=2))
+    expected = naive.replace(tzinfo=timezone.utc)
+    assert QueuedTaskRecord("task").dispatch_checked_at is None
+    assert QueuedTaskRecord("task", dispatch_checked_at=naive).dispatch_checked_at == expected
+    assert QueuedTaskRecord(
+        "task", dispatch_checked_at=naive.replace(tzinfo=offset)
+    ).dispatch_checked_at == expected - timedelta(hours=2)

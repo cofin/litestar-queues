@@ -33,7 +33,7 @@ __all__ = (
     "sqlite_errors",
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
 
 PATH_ENV_VAR = "LITESTAR_QUEUES_EPHEMERAL_PATH"
@@ -133,6 +133,7 @@ _STATEMENTS = (
         queued_at TEXT NOT NULL,
         completed_at TEXT,
         heartbeat_at TEXT,
+        dispatch_checked_at TEXT,
         task_key TEXT,
         payload BLOB NOT NULL
     )

@@ -875,3 +875,112 @@ def test_the_ephemeral_sources_never_import_pickle_or_an_optional_database_packa
 
     assert offenders == {}
     assert set(sources) == {"__init__.py", "backend.py", "codec.py", "event_log.py", "schema.py", "server.py"}
+
+
+async def test_dispatch_repair_candidates(backend: "EphemeralQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_dispatch_repair_candidates
+
+    await assert_dispatch_repair_candidates(backend)
+
+
+async def test_scheduled_execution_ref_contenders(backend: "EphemeralQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_contenders
+
+    second = await _second_backend()
+    try:
+        await assert_scheduled_execution_ref_contenders(backend, second)
+    finally:
+        await second.close()
+
+
+async def test_scheduled_execution_ref_rejects_mismatches(backend: "EphemeralQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
+
+    await assert_scheduled_execution_ref_rejects_mismatches(backend)
+
+
+async def test_dispatch_repair_equal_timestamps_rotate(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    from uuid import UUID
+
+    from tests.helpers._timing import MutableClock
+
+    clock = MutableClock()
+    monkeypatch.setattr("litestar_queues.backends.ephemeral.backend._utc_now", clock)
+    for number in (3, 1, 2):
+        await backend.enqueue("repair.equal", execution_backend="cloudtasks", id=UUID(int=number))
+    clock.advance(timedelta(seconds=1))
+    selected = [await backend.list_dispatch_repair_candidates("cloudtasks", limit=1) for _ in range(3)]
+    assert [result.records[0].id for result in selected] == [UUID(int=number) for number in (1, 2, 3)]
+    assert all(result.records[0].dispatch_checked_at == clock() for result in selected)
+
+
+async def test_dispatch_repair_concurrent_marks_preserve_newest(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    record = await backend.enqueue("repair.clock", execution_backend="cloudtasks")
+    newer = datetime.now(timezone.utc) + timedelta(seconds=1)
+    older = newer - timedelta(seconds=1)
+    times = iter((newer, older))
+    monkeypatch.setattr("litestar_queues.backends.ephemeral.backend._utc_now", lambda: next(times))
+    results = await asyncio.gather(
+        backend.list_dispatch_repair_candidates("cloudtasks", limit=1),
+        backend.list_dispatch_repair_candidates("cloudtasks", limit=1),
+    )
+    assert all(result.examined == 1 for result in results)
+    stored = await backend.get_task(record.id)
+    assert stored is not None
+    assert stored.dispatch_checked_at == newer
+
+
+async def test_dispatch_repair_zero_does_not_open_database() -> "None":
+    from litestar_queues.backends.base import DispatchRepairCandidates
+
+    unopened = EphemeralQueueBackend(QueueConfig(queue_backend="ephemeral"))
+    assert await unopened.list_dispatch_repair_candidates("cloudtasks", limit=0) == DispatchRepairCandidates()
+    with pytest.raises(QueueConfigurationError, match="non-negative"):
+        await unopened.list_dispatch_repair_candidates("cloudtasks", limit=-1)
+
+
+async def test_dispatch_repair_marks_persist_across_instances(backend: "EphemeralQueueBackend") -> "None":
+    first = await backend.enqueue("repair.first", execution_backend="cloudtasks")
+    second = await backend.enqueue("repair.second", execution_backend="cloudtasks")
+    selected = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    assert selected.records[0].id == first.id
+    fresh = await _second_backend()
+    try:
+        next_pass = await fresh.list_dispatch_repair_candidates("cloudtasks", limit=1)
+        assert next_pass.records[0].id == second.id
+        await fresh.complete_task(first.id)
+        stored = await fresh.get_task(first.id)
+        assert stored is not None
+        assert stored.dispatch_checked_at == selected.records[0].dispatch_checked_at
+    finally:
+        await fresh.close()
+
+
+async def test_dispatch_repair_hydrates_only_selected_rows(
+    backend: "EphemeralQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    for _ in range(5):
+        await backend.enqueue("repair.bounded", execution_backend="cloudtasks")
+    decoded = []
+    original_decode = ephemeral_backend_module._decode
+
+    def count_decodes(row: "sqlite3.Row") -> "QueuedTaskRecord":
+        decoded.append(row)
+        return original_decode(row)
+
+    monkeypatch.setattr(ephemeral_backend_module, "_decode", count_decodes)
+    result = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    assert len(decoded) == result.examined == 1
+
+
+def test_dispatch_checked_at_codec_round_trip() -> "None":
+    stamp = datetime(2026, 9, 7, 12, 0, tzinfo=timezone(timedelta(hours=2)))
+    record = QueuedTaskRecord("repair.codec", dispatch_checked_at=stamp)
+    restored = record_from_payload(record_to_payload(record))
+    assert restored.dispatch_checked_at == stamp.astimezone(timezone.utc)
+    assert restored.dispatch_checked_at is not None
+    assert restored.dispatch_checked_at.tzinfo == timezone.utc

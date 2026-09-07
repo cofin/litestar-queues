@@ -762,3 +762,72 @@ async def test_memory_worker_control_uses_its_own_primitive() -> "None":
     assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is True
     assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False
     await backend.close()
+
+
+async def test_dispatch_repair_candidates() -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_dispatch_repair_candidates
+
+    await assert_dispatch_repair_candidates(InMemoryQueueBackend())
+
+
+async def test_scheduled_execution_ref_contenders() -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_contenders
+
+    await assert_scheduled_execution_ref_contenders(InMemoryQueueBackend())
+
+
+async def test_scheduled_execution_ref_rejects_mismatches() -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
+
+    await assert_scheduled_execution_ref_rejects_mismatches(InMemoryQueueBackend())
+
+
+async def test_dispatch_repair_equal_timestamps_rotate(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    from uuid import UUID
+
+    from tests.helpers._timing import MutableClock
+
+    backend = InMemoryQueueBackend()
+    clock = MutableClock()
+    monkeypatch.setattr("litestar_queues.backends.memory.backend._utc_now", clock)
+    for number in (3, 1, 2):
+        await backend.enqueue("repair.equal", execution_backend="cloudtasks", id=UUID(int=number))
+    clock.advance(timedelta(seconds=1))
+    selected = [await backend.list_dispatch_repair_candidates("cloudtasks", limit=1) for _ in range(3)]
+    assert [result.records[0].id for result in selected] == [UUID(int=number) for number in (1, 2, 3)]
+    assert all(result.records[0].dispatch_checked_at == clock() for result in selected)
+
+
+async def test_dispatch_repair_concurrent_marks_preserve_newest(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    backend = InMemoryQueueBackend()
+    record = await backend.enqueue("repair.clock", execution_backend="cloudtasks")
+    newer = datetime.now(timezone.utc) + timedelta(seconds=1)
+    older = newer - timedelta(seconds=1)
+    times = iter((newer, older))
+    monkeypatch.setattr("litestar_queues.backends.memory.backend._utc_now", lambda: next(times))
+    results = await asyncio.gather(
+        backend.list_dispatch_repair_candidates("cloudtasks", limit=1),
+        backend.list_dispatch_repair_candidates("cloudtasks", limit=1),
+    )
+    assert all(result.examined == 1 for result in results)
+    stored = await backend.get_task(record.id)
+    assert stored is not None
+    assert stored.dispatch_checked_at == newer
+
+
+async def test_dispatch_repair_base_defaults_fail_closed() -> "None":
+    from uuid import uuid4
+
+    from litestar_queues.backends.base import BaseQueueBackend, DispatchRepairCandidates
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    backend = BaseQueueBackend()
+    assert await backend.list_dispatch_repair_candidates("cloudtasks", limit=0) == DispatchRepairCandidates()
+    with pytest.raises(QueueConfigurationError, match="non-negative"):
+        await backend.list_dispatch_repair_candidates("cloudtasks", limit=-1)
+    with pytest.raises(NotImplementedError):
+        await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    with pytest.raises(NotImplementedError):
+        await backend.reserve_scheduled_execution_ref(
+            uuid4(), "cloudtasks", "reference", expected_retry_count=0, expected_execution_ref=None
+        )

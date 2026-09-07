@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,7 @@ __all__ = (
     "EXTERNAL_DISPATCH_RESERVATION_PREFIX",
     "STALE_REQUEUE_PRIORITY",
     "BaseQueueBackend",
+    "DispatchRepairCandidates",
     "attempts_consumed",
     "interruption_count",
     "is_external_dispatch_reservation",
@@ -39,6 +41,20 @@ __all__ = (
 
 EXTERNAL_DISPATCH_RESERVATION_PREFIX = "__litestar_queues_dispatching__:"
 STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchRepairCandidates:
+    """A bounded page of scheduled deliveries to inspect.
+
+    ``examined`` includes selected records that became ineligible before they
+    could be returned. ``limit_reached`` signals a full allowance, not a known
+    backlog size, so callers need not count or scan the remaining records.
+    """
+
+    records: "tuple[QueuedTaskRecord, ...]" = ()
+    examined: "int" = 0
+    limit_reached: "bool" = False
 
 
 def interruption_count(record: "QueuedTaskRecord") -> "int":
@@ -624,6 +640,29 @@ class BaseQueueBackend:
         """
         return None
 
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        """Atomically reserve a delivery for an unexpired pending attempt.
+
+        Compare the backend, retry count and exact nullable reference while
+        requiring pending/scheduled status. Future schedules are eligible;
+        only the reference changes. No read-then-write fallback is safe.
+
+        Returns:
+            The updated record, or ``None`` when any predicate no longer holds.
+
+        Raises:
+            NotImplementedError: If the backend does not support this fence.
+        """
+        raise NotImplementedError
+
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
@@ -678,6 +717,30 @@ class BaseQueueBackend:
         Raises:
             NotImplementedError: Always; every backend must answer this.
         """
+        raise NotImplementedError
+
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        """Select and mark a bounded, fair page of pending deliveries.
+
+        Include pending/scheduled, unexpired records for the exact backend,
+        including future schedules and NULL references. Order by the last
+        dispatch check (creation time when unset), then id. Persist check times
+        before returning without overwriting newer concurrent marks.
+
+        Returns:
+            Eligible records and the allowance consumed selecting them.
+
+        Raises:
+            QueueConfigurationError: If ``limit`` is negative.
+            NotImplementedError: If the backend cannot perform bounded repair.
+        """
+        if limit < 0:
+            msg = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if limit == 0:
+            return DispatchRepairCandidates()
         raise NotImplementedError
 
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":

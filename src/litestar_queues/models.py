@@ -164,10 +164,13 @@ class QueuedTaskRecord:
     error: "str | None" = None
     key: "str | None" = None
     metadata: "dict[str, Any]" = field(default_factory=dict)
+    dispatch_checked_at: "datetime | None" = None
 
     def __post_init__(self) -> "None":
         self.created_at = _ensure_utc_datetime(self.created_at)
         self.queued_at = _ensure_utc_datetime(self.queued_at)
+        if self.dispatch_checked_at is not None:
+            self.dispatch_checked_at = _ensure_utc_datetime(self.dispatch_checked_at)
         if self.scheduled_at is not None:
             self.scheduled_at = _ensure_utc_datetime(self.scheduled_at)
         if self.expires_at is not None:

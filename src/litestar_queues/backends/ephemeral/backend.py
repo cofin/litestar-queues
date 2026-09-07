@@ -18,6 +18,7 @@ from litestar_queues.backends._notification_wait import PendingNativeRead
 from litestar_queues.backends.base import (
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    DispatchRepairCandidates,
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
@@ -96,6 +97,7 @@ def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
         _iso(record.queued_at),
         _iso(record.completed_at),
         _iso(record.heartbeat_at),
+        _iso(record.dispatch_checked_at),
         record.key,
         record_to_payload(record),
     )
@@ -104,14 +106,14 @@ def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
 _INSERT = """
 INSERT INTO queue_task (
     id, task_name, queue, execution_backend, worker_id, status, priority, retry_count,
-    scheduled_at, expires_at, created_at, queued_at, completed_at, heartbeat_at, task_key, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    scheduled_at, expires_at, created_at, queued_at, completed_at, heartbeat_at, dispatch_checked_at, task_key, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _UPDATE = """
 UPDATE queue_task SET
     task_name = ?, queue = ?, execution_backend = ?, worker_id = ?, status = ?, priority = ?, retry_count = ?,
-    scheduled_at = ?, expires_at = ?, created_at = ?, queued_at = ?, completed_at = ?, heartbeat_at = ?, task_key = ?, payload = ?
+    scheduled_at = ?, expires_at = ?, created_at = ?, queued_at = ?, completed_at = ?, heartbeat_at = ?, dispatch_checked_at = ?, task_key = ?, payload = ?
 WHERE id = ?
 """
 
@@ -595,6 +597,66 @@ class EphemeralQueueBackend(BaseQueueBackend):
                 _expire_record(record, now)
                 _write(connection, record)
             return expired
+
+        return await self._transaction(operation)
+
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        """Commit bounded examination marks before returning repair candidates.
+
+        Raises:
+            QueueConfigurationError: If the limit is negative.
+        """
+        if limit < 0:
+            message = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(message)
+        if limit == 0:
+            return DispatchRepairCandidates()
+
+        def operation(connection: "sqlite3.Connection") -> "DispatchRepairCandidates":
+            now = _utc_now()
+            rows = connection.execute(
+                "SELECT payload FROM queue_task WHERE execution_backend = ? "
+                "AND status IN ('pending', 'scheduled') AND (expires_at IS NULL OR expires_at > ?) "
+                "ORDER BY COALESCE(dispatch_checked_at, created_at), id LIMIT ?",
+                (execution_backend, _iso(now), limit),
+            ).fetchall()
+            records = _decode_all(rows)
+            for record in records:
+                if record.dispatch_checked_at is None or record.dispatch_checked_at < now:
+                    record.dispatch_checked_at = now
+                    _write(connection, record)
+            return DispatchRepairCandidates(tuple(records), len(rows), len(rows) == limit)
+
+        return await self._transaction(operation)
+
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        """Atomically reserve the exact active attempt, including future tasks."""
+
+        def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
+            now = _utc_now()
+            row = connection.execute(
+                "SELECT payload FROM queue_task WHERE id = ? AND execution_backend = ? AND retry_count = ? "
+                "AND status IN ('pending', 'scheduled') AND (expires_at IS NULL OR expires_at > ?)",
+                (str(task_id), execution_backend, expected_retry_count, _iso(now)),
+            ).fetchone()
+            if row is None:
+                return None
+            record = _decode(row)
+            if record.execution_ref != expected_execution_ref:
+                return None
+            record.execution_ref = execution_ref
+            _write(connection, record)
+            return record
 
         return await self._transaction(operation)
 

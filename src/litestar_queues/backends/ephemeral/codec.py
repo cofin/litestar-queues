@@ -28,7 +28,7 @@ __all__ = (
 )
 
 MAGIC = b"LQEP\x03"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SERIALIZATION_ERROR = (
     "The ephemeral SQLite backend requires JSON-serializable task arguments, metadata, events, and results."
@@ -54,6 +54,7 @@ _RECORD_FIELDS = (
     "started_at",
     "completed_at",
     "heartbeat_at",
+    "dispatch_checked_at",
     "result",
     "error",
     "key",
@@ -67,6 +68,7 @@ _RECORD_DATETIMES = (
     "started_at",
     "completed_at",
     "heartbeat_at",
+    "dispatch_checked_at",
 )
 _EVENT_FIELDS = (
     "event_id",
