@@ -2520,3 +2520,90 @@ async def test_cancel_metric_labels_are_identical_across_result_statuses() -> "N
     counters = [c for c in obs.counters if c[0] == "litestar_queues.execution.cancel"]
     assert len(counters) == 2
     assert set(counters[0][2].keys()) == set(counters[1][2].keys())
+
+
+@pytest.mark.parametrize("cron", [False, True])
+@pytest.mark.parametrize("retries", [0, 2])
+async def test_schedule_initial_retry_budget_matches_manual_enqueue(cron: bool, retries: int) -> None:
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("schedule.budget", cron="* * * * *" if cron else None, interval=None if cron else 60, retries=retries)
+    async def probe() -> None:
+        return None
+
+    async with QueueService(QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")) as service:
+        first = (await service.initialize_schedules())[0]
+        manual = await service.enqueue(probe)
+        manual_record = await service.get_task(manual.id)
+        assert manual_record is not None
+        assert first.max_retries == manual_record.max_retries == retries
+        assert (await service.initialize_schedules())[0].id == first.id
+
+
+@pytest.mark.parametrize(
+    "budget,state,consumed,cron",
+    [
+        (0, "pending", False, False),
+        (0, "scheduled", False, True),
+        (0, "running", False, False),
+        (2, "pending", True, True),
+        (2, "scheduled", True, False),
+        (2, "running", True, True),
+    ],
+)
+async def test_schedule_restart_preserves_persisted_retry_policy(
+    budget: int, state: str, consumed: bool, cron: bool
+) -> None:
+    from copy import deepcopy
+
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry, get_scheduled_tasks
+
+    clear_task_registry()
+
+    @task(
+        "schedule.restart",
+        cron="* * * * *" if cron else None,
+        interval=None if cron else 60,
+        retries=4,
+        retry_backoff=99,
+    )
+    async def probe() -> None:
+        return None
+
+    config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
+    backend = InMemoryQueueBackend()
+    async with QueueService(config, queue_backend=backend):
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        record = await backend.enqueue(
+            probe.name,
+            key=f"scheduled:{probe.name}",
+            max_retries=budget,
+            scheduled_at=future if state == "scheduled" and not consumed else None,
+            metadata={
+                "schedule": get_scheduled_tasks()[probe.name].as_metadata(),
+                "retry_backoff": {"initial_delay": 7.0, "multiplier": 1.0, "max_delay": None},
+            },
+        )
+        if consumed:
+            assert await backend.claim_task(record.id) is not None
+            assert (
+                await backend.fail_task(
+                    record.id, "previous failure", retry_at=future if state == "scheduled" else None
+                )
+                is not None
+            )
+        if state == "running":
+            assert await backend.claim_task(record.id) is not None
+        snapshot = deepcopy(record)
+    async with QueueService(config, queue_backend=backend) as restarted:
+        for _ in range(2):
+            reused = (await restarted.initialize_schedules())[0]
+            assert reused == snapshot
+            assert reused.status == state
+            assert reused.max_retries == budget
+            assert reused.retry_count == int(consumed)
+        assert (await backend.get_statistics()).total == 1

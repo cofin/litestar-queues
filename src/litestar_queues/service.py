@@ -1218,6 +1218,9 @@ class QueueService:
     async def initialize_schedules(self) -> "list[QueuedTaskRecord]":
         """Create queue records for registered recurring schedules.
 
+        New occurrences snapshot the registered retry budget. Reusing a
+        nonterminal occurrence preserves its existing budget and backoff.
+
         Returns:
             The created or reused schedule records.
         """
@@ -1244,7 +1247,7 @@ class QueueService:
                 await self._persist_scheduled_record(
                     task_name,
                     key=schedule_key,
-                    max_retries=0,
+                    max_retries=task_obj.retries,
                     priority=task_obj.priority,
                     scheduled_at=scheduled_at,
                     expires_at=_resolve_expires_at(
@@ -1341,6 +1344,7 @@ class QueueService:
         return await resolver(task, record, task_context)
 
     async def _reschedule_if_needed(self, record: "QueuedTaskRecord") -> "None":
+        """Create a successor with current retries, retaining the persisted backoff."""
         schedule_data = record.metadata.get("schedule")
         if not isinstance(schedule_data, dict) or record.completed_at is None:
             return
@@ -1365,7 +1369,7 @@ class QueueService:
             record.task_name,
             key=record.key,
             queue=record.queue,
-            max_retries=record.max_retries,
+            max_retries=task_obj.retries,
             priority=record.priority,
             scheduled_at=scheduled_at,
             expires_at=expires_at,

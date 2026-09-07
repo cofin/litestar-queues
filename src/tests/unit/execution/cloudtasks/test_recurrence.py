@@ -391,3 +391,75 @@ async def test_a_delivery_failure_after_a_retry_transition_reaches_the_caller(ha
 
     with pytest.raises(QueueDispatchError):
         await live.service.execute_record(await live.claim(record))
+
+
+@pytest.mark.parametrize(
+    "cron,budget,exhaust", [(False, 0, False), (True, 0, True), (False, 2, True), (True, 2, False)]
+)
+async def test_schedule_retry_finishes_same_occurrence_before_current_budget_successor(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch", cron: bool, budget: int, exhaust: bool
+) -> None:
+    import importlib
+
+    from litestar_queues import RetryBackoff
+
+    now = [datetime.now(timezone.utc)]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: "Any" = None) -> "Clock":
+            return cls.fromtimestamp(now[0].timestamp(), tz)
+
+    for module in ("service", "models", "task", "backends.memory.backend", "execution.cloudtasks.backend"):
+        monkeypatch.setattr(importlib.import_module(f"litestar_queues.{module}"), "datetime", Clock)
+    calls = 0
+
+    async def body() -> None:
+        nonlocal calls
+        calls += 1
+        if exhaust or calls <= budget:
+            message = "retry this occurrence"
+            raise RuntimeError(message)
+
+    schedule_args: dict[str, Any] = {"cron": "* * * * *"} if cron else {"interval": 60}
+    original = task(
+        "cloudtasks.recurrence.policy", retries=budget, retry_backoff=RetryBackoff(initial_delay=7), **schedule_args
+    )(body)
+    live = await harness()
+    backend = live.service.get_queue_backend()
+    schedule = get_scheduled_tasks()[original.name]
+    first = await backend.enqueue(
+        original.name,
+        key=f"scheduled:{original.name}",
+        max_retries=budget,
+        execution_backend="cloudtasks",
+        metadata=original.metadata({"schedule": schedule.as_metadata(), "timeout": DEFAULT_TASK_TIMEOUT}),
+    )
+    # Registration changes affect the next occurrence, never this one's attempt policy.
+    assert first.key is not None
+    task(original.name, retries=4, retry_backoff=99, **schedule_args)(body)
+    for retry_count in range(budget + 1):
+        updated = await live.service.execute_record(await live.claim(first))
+        assert updated.id == first.id
+        assert updated.max_retries == budget
+        if retry_count < budget:
+            assert updated.status == "scheduled"
+            assert updated.retry_count == retry_count + 1
+            assert updated.scheduled_at == now[0] + timedelta(seconds=7)
+            current = await backend.get_task_by_key(first.key)
+            assert current is not None
+            assert current.id == first.id
+            assert (await backend.get_statistics()).total == 1
+            assert await backend.claim_task(first.id) is None
+            assert len(live.deliveries_for(first)) == retry_count + 1
+            now[0] = updated.scheduled_at
+    assert updated.status == ("failed" if exhaust else "completed")
+    following = await backend.get_task_by_key(first.key)
+    assert following is not None
+    assert following.id != first.id
+    assert following.max_retries == 4
+    assert following.retry_count == 0
+    assert following.scheduled_at == schedule.get_next_run(now[0])
+    assert following.metadata["retry_backoff"] == first.metadata["retry_backoff"]
+    assert len(live.deliveries_for(following)) == 1
+    assert (await live.service.initialize_schedules())[0].id == following.id
