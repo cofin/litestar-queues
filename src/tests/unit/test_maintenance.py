@@ -14,6 +14,7 @@ from litestar_queues import (
 )
 from litestar_queues.events import QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.execution.base import DispatchRepairResult, ExternalReconciliationResult
 from litestar_queues.maintenance import MAINTENANCE_NAME, PHASE_ORDER
 from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryResult
 
@@ -117,6 +118,7 @@ class _StubService:
         self.reconcile_calls: "list[int | None]" = []
         self.recover_calls: "list[tuple[timedelta, int | None]]" = []
         self.reconcile_result = 0
+        self.repair_result = DispatchRepairResult()
         self.reconcile_error: "Exception | None" = None
         self.recover_result = StaleTaskRecoveryResult()
         self.recover_error: "Exception | None" = None
@@ -150,6 +152,10 @@ class _StubService:
         if self.recover_error is not None:
             raise self.recover_error
         return self.recover_result
+
+    async def reconcile_external_result(self, *, limit: "int") -> "ExternalReconciliationResult":
+        reconciled = await self.reconcile_external(limit=limit)
+        return ExternalReconciliationResult(repair=self.repair_result, reconciled=reconciled)
 
 
 async def _run(
@@ -372,6 +378,44 @@ async def test_only_failed_phase_overrides_completed_outcome() -> "None":
     assert events.error == "maintenance_phase_failed:ValueError"
 
 
+@pytest.mark.parametrize(
+    ("repair", "status"),
+    [
+        (DispatchRepairResult(examined=2, changed=2), "completed"),
+        (DispatchRepairResult(examined=2, unchanged=2), "completed"),
+        (DispatchRepairResult(examined=2, failed=2), "failed"),
+        (DispatchRepairResult(examined=3, changed=1, failed=1, unchanged=1, limit_reached=True), "failed"),
+        (DispatchRepairResult(examined=3, unchanged=3, limit_reached=True), "partial"),
+    ],
+)
+async def test_repair_mixed_and_budget_outcomes_survive_maintenance(
+    repair: "DispatchRepairResult", status: "str"
+) -> "None":
+    backend = _StubBackend()
+    backend.cleanup_deleted = 4
+    stub = _StubService(backend=backend, is_external=True)
+    stub.repair_result = repair
+    summary = await _run(stub, QueueMaintenanceConfig(external_limit=3, terminal_retention=60))
+    external = summary.phases[0]
+    assert external.status == status
+    assert external.changed == repair.changed
+    assert external.repair == repair
+    assert external.error == ("maintenance_repair_failed" if repair.failed else None)
+    assert summary.outcome == status
+    terminal = next(phase for phase in summary.phases if phase.phase == "terminal")
+    assert terminal.status == "completed" and terminal.changed == 4
+    assert len(backend.release_calls) == 1
+
+
+async def test_repair_mixed_preserves_reconciliation_changes() -> "None":
+    stub = _StubService(backend=_StubBackend(), is_external=True)
+    stub.repair_result = DispatchRepairResult(examined=2, changed=1, failed=1)
+    stub.reconcile_result = 2
+    summary = await _run(stub, QueueMaintenanceConfig(external_limit=10))
+    assert summary.outcome == "failed"
+    assert summary.phases[0].changed == 3
+
+
 # --------------------------------------------------------------------------- #
 # Budget exhaustion with injected monotonic clock
 # --------------------------------------------------------------------------- #
@@ -467,7 +511,7 @@ async def test_summary_payload_is_json_native() -> "None":
     assert isinstance(restored["duration_ms"], (int, float))
     assert {phase["phase"] for phase in restored["phases"]} == set(PHASE_ORDER)
     for phase in restored["phases"]:
-        assert set(phase) == {"phase", "status", "changed", "duration_ms", "error"}
+        assert set(phase) == {"phase", "status", "changed", "duration_ms", "error", "repair"}
 
 
 def test_phase_result_payload_shape() -> "None":
@@ -478,4 +522,5 @@ def test_phase_result_payload_shape() -> "None":
         "changed": 3,
         "duration_ms": 1.5,
         "error": None,
+        "repair": None,
     }

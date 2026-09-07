@@ -159,7 +159,7 @@ async def test_null_ref_survives_a_fresh_service(harness: "Callable[..., Any]", 
     try:
         await fresh.open()
         result = await live.backend.repair(fresh, limit=1)
-        assert result == DispatchRepairResult(examined=1, changed=1)
+        assert result == DispatchRepairResult(examined=1, changed=1, limit_reached=True)
         assert len(live.client.create_calls) == 1
         assert decode_json(live.client.create_calls[0].body)["task_id"] == str(record.id)
     finally:
@@ -220,7 +220,7 @@ async def test_lookup_cannot_reserve_a_changed_attempt(harness: "Callable[..., A
 
     live.client.on_get = change_during_lookup
     result = await live.repair(limit=1)
-    assert result == DispatchRepairResult(examined=1, changed=0)
+    assert result == DispatchRepairResult(examined=1, unchanged=1, limit_reached=True)
     assert len(live.client.create_calls) == 1
 
 
@@ -243,7 +243,7 @@ async def test_stale_page_counts_raw_examined(
         return DispatchRepairCandidates(examined=limit, limit_reached=True)
 
     monkeypatch.setattr(type(live.service.get_queue_backend()), "list_dispatch_repair_candidates", stale_page)
-    assert await live.repair(limit=3) == DispatchRepairResult(examined=3, changed=0)
+    assert await live.repair(limit=3) == DispatchRepairResult(examined=3, unchanged=3, limit_reached=True)
 
 
 async def test_page_attempt_snapshots_survive_an_earlier_candidate_await(harness: "Callable[..., Any]") -> "None":
@@ -258,7 +258,7 @@ async def test_page_attempt_snapshots_survive_an_earlier_candidate_await(harness
         await storage.fail_task(second.id, "retry", retry=True)
 
     live.client.on_create = advance_second_attempt
-    assert await live.repair(limit=2) == DispatchRepairResult(examined=2, changed=1)
+    assert await live.repair(limit=2) == DispatchRepairResult(examined=2, changed=1, unchanged=1, limit_reached=True)
     assert len(live.client.create_calls) == 1
 
 
@@ -270,12 +270,14 @@ async def test_healthy_prefix_rotates_across_execution_instances(harness: "Calla
     healthy = await storage.enqueue("cloudtasks.healthy", execution_backend="cloudtasks")
     await live.backend.schedule(live.service, healthy)
     missing = await storage.enqueue("cloudtasks.missing", execution_backend="cloudtasks")
-    assert await live.repair(limit=1) == DispatchRepairResult(examined=1, changed=0)
+    assert await live.repair(limit=1) == DispatchRepairResult(examined=1, unchanged=1, limit_reached=True)
     fresh = CloudTasksExecutionBackend(execution_config=live.backend.execution_config, client=live.client)
     fresh_service = QueueService(live.service.config, queue_backend=storage, execution_backend=fresh)
     try:
         await fresh_service.open()
-        assert await fresh.repair(fresh_service, limit=1) == DispatchRepairResult(examined=1, changed=1)
+        assert await fresh.repair(fresh_service, limit=1) == DispatchRepairResult(
+            examined=1, changed=1, limit_reached=True
+        )
     finally:
         await fresh_service.close()
     assert decode_json(live.client.create_calls[-1].body)["task_id"] == str(missing.id)
@@ -313,7 +315,7 @@ async def test_repair_rechecks_ownership_after_cas_before_rpc(
             await live.repair(limit=1)
         assert record.execution_ref is not None and record.status == "pending"
     else:
-        assert await live.repair(limit=1) == DispatchRepairResult(examined=1, changed=0)
+        assert await live.repair(limit=1) == DispatchRepairResult(examined=1, unchanged=1, limit_reached=True)
     assert live.client.create_calls == []
 
 
@@ -341,7 +343,7 @@ async def test_a_delivery_the_transport_still_holds_is_left_alone(harness: "Call
 
     outcome = await live.repair(limit=10)
 
-    assert outcome == DispatchRepairResult(examined=1, changed=0)
+    assert outcome == DispatchRepairResult(examined=1, unchanged=1)
     assert live.client.get_calls == [record.execution_ref]
     assert len(live.client.create_calls) == 1
 
@@ -356,7 +358,7 @@ async def test_a_pass_never_examines_more_records_than_its_budget(harness: "Call
 
     outcome = await live.repair(limit=2)
 
-    assert outcome == DispatchRepairResult(examined=2, changed=2)
+    assert outcome == DispatchRepairResult(examined=2, changed=2, limit_reached=True)
     assert len(live.client.get_calls) == 2
 
 
@@ -395,7 +397,7 @@ async def test_a_record_that_went_terminal_before_repair_is_never_re_delivered(
 
     outcome = await live.repair(limit=10)
 
-    assert outcome == DispatchRepairResult(examined=1, changed=0)
+    assert outcome == DispatchRepairResult(examined=1, unchanged=1)
     assert live.client.get_calls == []
 
 
@@ -426,7 +428,7 @@ async def test_a_candidate_is_attempted_once_per_pass(harness: "Callable[..., An
 
     outcome = await live.repair(limit=10)
 
-    assert outcome == DispatchRepairResult(examined=1, changed=0)
+    assert outcome == DispatchRepairResult(examined=1, failed=1)
     assert len(live.client.create_calls) == 2
 
 
@@ -447,7 +449,7 @@ async def test_one_failing_candidate_does_not_end_the_pass(harness: "Callable[..
 
     outcome = await live.repair(limit=10)
 
-    assert outcome == DispatchRepairResult(examined=2, changed=1)
+    assert outcome == DispatchRepairResult(examined=2, changed=1, failed=1)
 
 
 async def test_a_failed_repair_is_reported_once_without_the_target(harness: "Callable[..., Any]") -> "None":
@@ -486,7 +488,7 @@ async def test_a_lookup_failure_is_reported_and_creates_nothing(harness: "Callab
 
     outcome = await live.repair(limit=10)
 
-    assert outcome == DispatchRepairResult(examined=1, changed=0)
+    assert outcome == DispatchRepairResult(examined=1, failed=1)
     assert len(live.client.create_calls) == 1
     assert len(live.repair_failures()) == 1
 
@@ -529,7 +531,7 @@ async def test_a_bounded_sweep_hands_reconciliation_only_what_repair_left(
     changed = await live.service.reconcile_external(limit=3)
 
     assert changed == 3
-    assert budgets == [0]
+    assert budgets == []
 
 
 async def test_a_partial_repair_leaves_the_rest_of_the_budget_for_reconciliation(
@@ -574,3 +576,218 @@ async def test_a_polled_backend_repairs_nothing(backend_name: "str") -> "None":
     backend = get_execution_backend_class(backend_name)()
 
     assert await backend.repair(cast("Any", _ForbiddenService()), limit=10) == DispatchRepairResult()
+
+
+@pytest.mark.parametrize("failure_at", ["lookup", "create"])
+async def test_repair_failure_reaches_real_maintenance(harness: "Callable[..., Any]", failure_at: "str") -> "None":
+    from litestar_queues import QueueMaintenanceConfig, QueueMaintenanceService
+    from litestar_queues._cli import _maintenance_exit_code
+
+    _register("cloudtasks.repair.maintenance_failure")
+    live = await harness()
+    for _ in range(2):
+        if failure_at == "lookup":
+            await live.enqueue("cloudtasks.repair.maintenance_failure")
+        else:
+            await live.service.get_queue_backend().enqueue(
+                "cloudtasks.repair.maintenance_failure", execution_backend="cloudtasks"
+            )
+
+    async def fail_provider(value: "Any") -> "None":
+        msg = "credentials=must-not-reach-maintenance"
+        raise ServiceUnavailable(msg)
+
+    if failure_at == "lookup":
+        live.client.on_get = fail_provider
+    else:
+        live.client.on_create = fail_provider
+    summary = await QueueMaintenanceService(live.service, QueueMaintenanceConfig(external_limit=5)).run()
+
+    assert summary.outcome == "failed"
+    assert _maintenance_exit_code(summary) == 1
+    assert "must-not-reach-maintenance" not in str(summary.to_payload())
+
+
+@pytest.mark.parametrize("failure_at", ["get", "reserve", "client", "request"])
+async def test_repair_failure_before_create_is_counted_and_continues(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch", failure_at: "str"
+) -> "None":
+    from litestar_queues.execution.cloudtasks import backend as cloudtasks_module
+
+    live = await harness()
+    storage = live.service.get_queue_backend()
+    for _ in range(2):
+        await storage.enqueue("cloudtasks.repair.boundary", execution_backend="cloudtasks")
+
+    async def refuse_async(*args: "Any", **kwargs: "Any") -> "Any":
+        msg = "credential-bearing-provider-failure"
+        raise RuntimeError(msg)
+
+    def refuse_sync(*args: "Any", **kwargs: "Any") -> "Any":
+        msg = "credential-bearing-provider-failure"
+        raise RuntimeError(msg)
+
+    if failure_at == "get":
+        monkeypatch.setattr(type(storage), "get_task", refuse_async)
+    elif failure_at == "reserve":
+        monkeypatch.setattr(type(storage), "reserve_scheduled_execution_ref", refuse_async)
+    elif failure_at == "client":
+        monkeypatch.setattr(type(live.backend), "_get_client", refuse_async)
+    else:
+        monkeypatch.setattr(cloudtasks_module, "_create_task_request", refuse_sync)
+
+    result = await live.repair(limit=5)
+
+    assert result == DispatchRepairResult(examined=2, failed=2)
+    assert len(live.repair_failures()) == 2
+    assert live.client.create_calls == []
+
+
+async def test_repair_failure_diagnostics_do_not_double_count(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    live = await harness()
+    for _ in range(2):
+        await live.service.get_queue_backend().enqueue("cloudtasks.repair.diagnostics", execution_backend="cloudtasks")
+
+    async def refuse(*args: "Any", **kwargs: "Any") -> "Any":
+        msg = "private-provider-or-sink-text"
+        raise RuntimeError(msg)
+
+    live.client.on_create = refuse
+    monkeypatch.setattr(type(live.events), "publish", refuse)
+
+    assert await live.repair(limit=5) == DispatchRepairResult(examined=2, failed=2)
+    assert len(live.client.create_calls) == 2
+
+
+async def test_repair_mixed_structured_and_integer_failure_results(harness: "Callable[..., Any]") -> "None":
+    from litestar_queues import QueueDispatchRepairError
+
+    _register("cloudtasks.repair.mixed_present")
+    live = await harness()
+    await live.enqueue("cloudtasks.repair.mixed_present")
+    storage = live.service.get_queue_backend()
+    await storage.enqueue("cloudtasks.repair.mixed_repaired", execution_backend="cloudtasks")
+    failed = await storage.enqueue("cloudtasks.repair.mixed_failed", execution_backend="cloudtasks")
+
+    async def fail_one(call: "CreateCall") -> "None":
+        if decode_json(call.body)["task_id"] == str(failed.id):
+            msg = "credential-bearing-provider-failure"
+            raise ServiceUnavailable(msg)
+
+    live.client.on_create = fail_one
+    result = await live.service.reconcile_external_result(limit=5)
+    assert result.repair == DispatchRepairResult(examined=3, changed=1, failed=1, unchanged=1)
+    assert result.reconciled == 0
+    assert result.changed == 1
+    with pytest.raises(QueueDispatchRepairError, match="Queue delivery repair failed") as raised:
+        await live.service.reconcile_external(limit=5)
+    assert raised.value.result.repair == DispatchRepairResult(examined=3, failed=1, unchanged=2)
+    assert "credential" not in str(raised.value)
+
+
+async def test_repair_budget_stale_page_skips_reconciliation(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    live = await harness()
+
+    async def stale_page(self: "Any", execution_backend: "str", *, limit: "int") -> "DispatchRepairCandidates":
+        return DispatchRepairCandidates(examined=limit, limit_reached=True)
+
+    async def forbidden(*args: "Any", **kwargs: "Any") -> "Any":
+        pytest.fail("The consumed budget must not query reconciliation or providers.")
+
+    storage = live.service.get_queue_backend()
+    monkeypatch.setattr(type(storage), "list_dispatch_repair_candidates", stale_page)
+    monkeypatch.setattr(type(storage), "list_running_external", forbidden)
+    live.client.on_get = forbidden
+    live.client.on_create = forbidden
+    result = await live.service.reconcile_external_result(limit=3)
+    assert result.repair == DispatchRepairResult(examined=3, unchanged=3, limit_reached=True)
+    assert result.changed == 0
+
+
+async def test_repair_budget_zero_and_negative_do_not_access_backends(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    live = await harness()
+
+    def forbidden(*args: "Any", **kwargs: "Any") -> "Any":
+        pytest.fail("A nonpositive budget must not access storage or execution backends.")
+
+    monkeypatch.setattr(QueueService, "get_queue_backend", forbidden)
+    monkeypatch.setattr(QueueService, "get_execution_backend", forbidden)
+    result = await live.service.reconcile_external_result(limit=0)
+    assert result.repair == DispatchRepairResult(limit_reached=True)
+    assert result.changed == 0
+    assert await live.service.reconcile_external(limit=0) == 0
+    with pytest.raises(QueueConfigurationError, match="non-negative"):
+        await live.service.reconcile_external_result(limit=-1)
+
+
+async def test_repair_budget_preserves_legacy_result_defaults(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    live = await harness()
+    budgets: "list[int | None]" = []
+
+    async def legacy_repair(self: "Any", service: "Any", *, limit: "int") -> "DispatchRepairResult":
+        return DispatchRepairResult(examined=2, changed=1)
+
+    async def reconcile(self: "Any", *, limit: "int | None") -> "int":
+        budgets.append(limit)
+        return 2
+
+    monkeypatch.setattr(type(live.backend), "repair", legacy_repair)
+    monkeypatch.setattr(QueueService, "_reconcile_external_records", reconcile)
+    result = await live.service.reconcile_external_result(limit=5)
+    assert result.repair == DispatchRepairResult(examined=2, changed=1)
+    assert result.reconciled == 2
+    assert result.changed == 3
+    assert budgets == [3]
+
+
+async def test_repair_failure_in_success_diagnostics_counts_candidate_once(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    from litestar_queues.execution.cloudtasks import backend as cloudtasks_module
+
+    live = await harness()
+    storage = live.service.get_queue_backend()
+    first = await storage.enqueue("cloudtasks.repair.metric_failure", execution_backend="cloudtasks")
+    await storage.enqueue("cloudtasks.repair.metric_success", execution_backend="cloudtasks")
+    original = cloudtasks_module._record_outcome
+
+    def fail_first_success(service: "Any", record: "Any", operation: "Any", outcome: "str") -> "None":
+        if record.id == first.id and outcome == operation.created:
+            msg = "diagnostic failure after provider creation"
+            raise RuntimeError(msg)
+        original(service, record, operation, outcome)
+
+    monkeypatch.setattr(cloudtasks_module, "_record_outcome", fail_first_success)
+    result = await live.repair(limit=5)
+    assert result == DispatchRepairResult(examined=2, changed=1, failed=1)
+    assert len(live.client.create_calls) == 2
+    assert len(live.repair_failures()) == 1
+
+
+async def test_repair_failure_cancellation_propagates_and_releases_maintenance(harness: "Callable[..., Any]") -> "None":
+    from litestar_queues import QueueMaintenanceConfig, QueueMaintenanceService
+
+    live = await harness()
+    await live.service.get_queue_backend().enqueue("cloudtasks.repair.cancel", execution_backend="cloudtasks")
+
+    async def cancelled(call: "CreateCall") -> "None":
+        raise asyncio.CancelledError
+
+    live.client.on_create = cancelled
+    maintenance = QueueMaintenanceService(live.service, QueueMaintenanceConfig(external_limit=5))
+    with pytest.raises(asyncio.CancelledError):
+        await maintenance.run()
+    assert live.repair_failures() == []
+    live.client.on_create = None
+    recovered = await maintenance.run()
+    assert recovered.acquired is True
+    assert recovered.outcome == "completed"
+    assert recovered.phases[0].changed == 1

@@ -3,12 +3,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from litestar_queues.execution.base import ExternalReconciliationResult
+
 __all__ = (
     "JobCancelledError",
     "MissingDependencyError",
     "NonRetryableError",
     "QueueConfigurationError",
     "QueueDispatchError",
+    "QueueDispatchRepairError",
     "QueueError",
     "QueueEventBufferFull",
     "QueueWarning",
@@ -50,6 +53,15 @@ class QueueDispatchError(QueueError):
         super().__init__(message)
         self.task_id = task_id
         self.committed = committed
+
+
+class QueueDispatchRepairError(QueueError):
+    """Raised when a bounded reconciliation contains delivery repair failures."""
+
+    def __init__(self, result: "ExternalReconciliationResult") -> "None":
+        """Retain structured evidence without provider messages or task arguments."""
+        super().__init__("Queue delivery repair failed.")
+        self.result = result
 
 
 class TaskIdentityError(QueueError):

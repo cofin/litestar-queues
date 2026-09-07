@@ -415,6 +415,70 @@ async def test_maintain_completed_exits_0_and_emits_json(
     assert set(payload) == {"outcome", "acquired", "duration_ms", "phases"}
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("as_json", [False, True])
+async def test_repair_failure_real_maintenance_exits_1(
+    capsys: "pytest.CaptureFixture[str]", mixed: "bool", as_json: "bool"
+) -> "None":
+    """Provider repair failures reach the actual maintenance CLI with partial progress."""
+    from litestar_queues import QueueConfig, QueueMaintenanceConfig, QueueService, _cli
+    from litestar_queues.backends.memory import InMemoryQueueBackend
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig
+    from tests.unit.execution.cloudtasks._fakes import CreateCall, FakeCloudTasksClient, ServiceUnavailable
+
+    execution_config = CloudTasksExecutionConfig(
+        project_id="example-project",
+        location="us-central1",
+        queue_id="queue-consumer",
+        service_url="https://queue-consumer-abcdef-uc.a.run.app",
+        service_account_email="queues@example-project.iam.gserviceaccount.com",
+        trust_platform_auth=True,
+    )
+    # Inject a shared-store stand-in; provider and maintenance orchestration stay real.
+    storage = InMemoryQueueBackend()
+    client = FakeCloudTasksClient()
+    execution = CloudTasksExecutionBackend(execution_config=execution_config, client=client)
+    config = QueueConfig(
+        queue_backend="redis",
+        execution_backend=execution_config,
+        worker=WorkerConfig(placement="external"),
+        maintenance=QueueMaintenanceConfig(external_limit=10),
+    )
+    service = QueueService(config, queue_backend=storage, execution_backend=execution)
+    first = await storage.enqueue("repair.first", execution_backend="cloudtasks")
+    await storage.enqueue("repair.second", execution_backend="cloudtasks")
+
+    async def fail_delivery(call: "CreateCall") -> "None":
+        if not mixed or json.loads(call.body)["task_id"] == str(first.id):
+            msg = "secret-provider-credential"
+            raise ServiceUnavailable(msg)
+
+    client.on_create = fail_delivery
+    plugin = _FakePlugin(config, cast("Any", service))
+    code = await _cli._maintain_run(cast("Any", plugin), (), as_json)
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "secret-provider-credential" not in output
+    failed = 1 if mixed else 2
+    changed = 1 if mixed else 0
+    if as_json:
+        payload = json.loads(output)
+        assert payload["outcome"] == "failed"
+        external = payload["phases"][0]
+        assert external["changed"] == changed
+        assert external["repair"] == {
+            "examined": 2,
+            "changed": changed,
+            "failed": failed,
+            "unchanged": 0,
+            "limit_reached": False,
+        }
+    else:
+        assert "outcome: failed" in output
+        assert f"failed={failed}" in output
+        assert f"changed={changed}" in output
+
+
 async def test_maintain_human_output_is_one_summary_table(
     monkeypatch: "pytest.MonkeyPatch", capsys: "pytest.CaptureFixture[str]"
 ) -> "None":

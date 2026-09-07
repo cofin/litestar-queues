@@ -26,9 +26,15 @@ from litestar_queues.events.context import TaskExecutionContext, bind_task_conte
 from litestar_queues.events.models import QueueEvent, QueueEventActor
 from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
-from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError, QueueDispatchError
+from litestar_queues.exceptions import (
+    JobCancelledError,
+    NonRetryableError,
+    QueueConfigurationError,
+    QueueDispatchError,
+    QueueDispatchRepairError,
+)
 from litestar_queues.execution import get_execution_backend
-from litestar_queues.execution.base import ExecutionCancelResult
+from litestar_queues.execution.base import DispatchRepairResult, ExecutionCancelResult, ExternalReconciliationResult
 from litestar_queues.task import (
     ScheduleConfig,
     Task,
@@ -1032,11 +1038,41 @@ class QueueService:
 
         Returns:
             Number of records repaired or brought to a terminal queue status.
+
+        Raises:
+            QueueDispatchRepairError: If any bounded repair failed. The error
+                carries the structured result, including successful changes.
         """
         if limit is None:
             return await self._reconcile_external_records(limit=None)
+        result = await self.reconcile_external_result(limit=limit)
+        if result.repair.failed:
+            raise QueueDispatchRepairError(result)
+        return result.changed
+
+    async def reconcile_external_result(self, *, limit: "int") -> "ExternalReconciliationResult":
+        """Repair and reconcile external records within one shared allowance.
+
+        A zero allowance returns a deferred result without accessing storage or
+        the execution backend. Exhausting a repair page conservatively signals
+        more work may remain; it does not count a backlog. Provider calls are
+        not interrupted by the maintenance phase's time budget.
+
+        Returns:
+            Repair counts and the number of records reconciled afterward.
+
+        Raises:
+            QueueConfigurationError: If the allowance is negative.
+        """
+        if limit < 0:
+            msg = "External reconciliation limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if limit == 0:
+            return ExternalReconciliationResult(repair=DispatchRepairResult(limit_reached=True))
         repair = await self.get_execution_backend().repair(self, limit=limit)
-        return repair.changed + await self._reconcile_external_records(limit=max(0, limit - repair.examined))
+        remaining = max(0, limit - repair.examined)
+        reconciled = await self._reconcile_external_records(limit=remaining) if remaining else 0
+        return ExternalReconciliationResult(repair=repair, reconciled=reconciled)
 
     async def _reconcile_external_records(self, *, limit: "int | None") -> "int":
         """Reconcile outstanding external records against their execution backends.

@@ -372,6 +372,13 @@ def _emit_maintenance_summary(summary: "QueueMaintenanceSummary", as_json: "bool
         click.echo(
             f"{phase.phase:<10}{phase.status:<12}{phase.changed:>9}{phase.duration_ms:>14.1f}  {phase.error or '-'}"
         )
+        if phase.repair is not None:
+            repair = phase.repair
+            click.echo(
+                f"  repair: examined={repair.examined} changed={repair.changed} "
+                f"failed={repair.failed} unchanged={repair.unchanged} "
+                f"limit_reached={str(repair.limit_reached).lower()}"
+            )
 
 
 def _maintenance_exit_code(summary: "QueueMaintenanceSummary") -> "int":

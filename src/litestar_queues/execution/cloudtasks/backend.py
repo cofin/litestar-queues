@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from litestar.serialization import encode_json
@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from litestar_queues.service import QueueService
 
 __all__ = ("CloudTasksExecutionBackend",)
+
+_RepairOutcome = Literal["changed", "failed", "unchanged"]
 
 _GOOGLE_CLOUD_TASKS_PACKAGE = "google-cloud-tasks"
 _CLOUD_TASKS_EXTRA = "cloud-tasks"
@@ -254,11 +256,23 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         page = await service.get_queue_backend().list_dispatch_repair_candidates(_BACKEND_NAME, limit=limit)
         candidates = tuple(replace(record) for record in page.records)
         config = self.execution_config
-        changed = 0
+        changed = failed = 0
+        unchanged = page.examined - len(candidates)
         for candidate in candidates:
-            if await self._repair_one(service, candidate, config):
+            outcome = await self._repair_one(service, candidate, config)
+            if outcome == "changed":
                 changed += 1
-        return DispatchRepairResult(examined=page.examined, changed=changed)
+            elif outcome == "failed":
+                failed += 1
+            else:
+                unchanged += 1
+        return DispatchRepairResult(
+            examined=page.examined,
+            changed=changed,
+            failed=failed,
+            unchanged=unchanged,
+            limit_reached=page.limit_reached,
+        )
 
     async def close(self) -> "None":
         """Release a client this backend created.
@@ -272,7 +286,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
 
     async def _repair_one(
         self, service: "QueueService", record: "QueuedTaskRecord", config: "CloudTasksExecutionConfig"
-    ) -> "bool":
+    ) -> "_RepairOutcome":
         """Re-deliver one candidate when Cloud Tasks no longer holds its delivery.
 
         The candidate list is a snapshot, so the record is re-read: between the
@@ -280,27 +294,29 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         whose delivery Cloud Tasks is still holding open for the response.
 
         Returns:
-            True when a new delivery was created.
+            One exclusive outcome, including failures before provider creation.
         """
         snapshot = replace(record)
         try:
             current = await service.get_queue_backend().get_task(snapshot.id)
             if current is None or not _same_attempt(current, snapshot, snapshot.execution_ref):
-                return False
+                return "unchanged"
             current = replace(current)
             _validate_schedulable(current, config)
             if current.execution_ref is not None and await self._delivery_exists(current.execution_ref, config):
                 _record_outcome(service, current, _REPAIR, _REPAIR_PRESENT)
-                return False
+                return "unchanged"
             task_name = await self._reserve_delivery_name(service, current, config)
             if task_name is None:
-                return False
-            return await self._create_delivery(service, current, config, task_name, operation=_REPAIR) is not None
+                return "unchanged"
+            delivery = await self._create_delivery(service, current, config, task_name, operation=_REPAIR)
         except QueueDispatchError:
-            return False
+            return "failed"
         except Exception as exc:  # noqa: BLE001 - one broken candidate must not end the pass.
             await self._report_delivery_failure(service, snapshot, exc, operation=_REPAIR)
-            return False
+            return "failed"
+        else:
+            return "changed" if delivery is not None else "unchanged"
 
     async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
         """Delete the Cloud Tasks delivery holding this record's attempt.

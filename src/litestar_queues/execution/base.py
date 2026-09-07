@@ -20,6 +20,7 @@ __all__ = (
     "DispatchRepairResult",
     "ExecutionCancelResult",
     "ExecutionCancelStatus",
+    "ExternalReconciliationResult",
 )
 
 _MESSAGING_SYSTEM = "litestar_queues"
@@ -71,10 +72,32 @@ class DispatchRepairResult:
     ``examined`` is how much of the caller's budget the pass consumed, whether
     or not a candidate needed anything done, so the caller can spend what is
     left on its other work.
+
+    Built-in Cloud Tasks repair partitions ``examined`` into ``changed``,
+    ``failed`` and ``unchanged``. Legacy backends may populate only the first
+    two original fields; their unchanged counts are not inferred. A full
+    selection allowance sets ``limit_reached`` conservatively: more work may
+    remain, but no backlog count is performed.
     """
 
     examined: "int" = 0
     changed: "int" = 0
+    failed: "int" = 0
+    unchanged: "int" = 0
+    limit_reached: "bool" = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalReconciliationResult:
+    """Repair evidence and completed reconciliation under one shared budget."""
+
+    repair: "DispatchRepairResult"
+    reconciled: "int" = 0
+
+    @property
+    def changed(self) -> "int":
+        """Total records repaired or reconciled."""
+        return self.repair.changed + self.reconciled
 
 
 ExecutionCancelStatus = Literal["accepted", "already_cancelled", "retryable", "unsupported"]

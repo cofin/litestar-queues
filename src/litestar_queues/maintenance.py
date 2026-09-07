@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from litestar_queues.events import QueueEventLog, QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
+from litestar_queues.execution.base import DispatchRepairResult, ExternalReconciliationResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -54,6 +55,9 @@ A failed phase records ``maintenance_phase_failed:<ExceptionType>`` only. The
 exception message, arguments, results, DSNs, and credentials are never included.
 """
 
+REPAIR_ERROR_CODE = "maintenance_repair_failed"
+"""Bounded error code for a phase containing failed delivery repairs."""
+
 
 @dataclass(slots=True)
 class QueueMaintenanceConfig:
@@ -67,7 +71,7 @@ class QueueMaintenanceConfig:
     """
 
     time_budget: "float" = 300.0
-    """Maximum wall-clock duration of one maintenance run in seconds."""
+    """Budget checked before each phase; in-flight operations can run longer."""
 
     coordination_timeout: "float" = 360.0
     """Distributed ownership duration in seconds; must exceed ``time_budget``."""
@@ -153,6 +157,7 @@ class QueueMaintenancePhaseResult:
     changed: "int" = 0
     duration_ms: "float" = 0.0
     error: "str | None" = None
+    repair: "DispatchRepairResult | None" = None
 
     def to_payload(self) -> "dict[str, object]":
         """Return a JSON-native mapping of this phase result."""
@@ -162,6 +167,15 @@ class QueueMaintenancePhaseResult:
             "changed": self.changed,
             "duration_ms": self.duration_ms,
             "error": self.error,
+            "repair": {
+                "examined": self.repair.examined,
+                "changed": self.repair.changed,
+                "failed": self.repair.failed,
+                "unchanged": self.repair.unchanged,
+                "limit_reached": self.repair.limit_reached,
+            }
+            if self.repair is not None
+            else None,
         }
 
 
@@ -225,8 +239,9 @@ class QueueMaintenanceService:
 
         Returns:
             A summary whose outcome is ``already_running`` when ownership is denied,
-            ``failed`` when any phase failed, ``partial`` when the budget skipped
-            an enabled phase, else ``completed``.
+            ``failed`` when any phase or repair failed, ``partial`` when a scan
+            exhausted its allowance or the time budget skipped an enabled phase,
+            else ``completed``.
 
         Raises:
             QueueConfigurationError: If a requested phase name is unknown or the
@@ -311,7 +326,7 @@ class QueueMaintenanceService:
     ) -> "QueueMaintenancePhaseResult":
         phase_start = self._monotonic()
         try:
-            changed = await self._execute_phase(phase, cutoffs, started_at)
+            result = await self._execute_phase(phase, cutoffs, started_at)
         except Exception as exc:  # noqa: BLE001 - phase failures are contained and sanitized.
             return QueueMaintenancePhaseResult(
                 phase=phase,
@@ -320,15 +335,28 @@ class QueueMaintenanceService:
                 duration_ms=self._elapsed_ms(phase_start),
                 error=f"{PHASE_ERROR_CODE}:{type(exc).__name__}",
             )
+        if isinstance(result, ExternalReconciliationResult):
+            repair = result.repair
+            status: "MaintenancePhaseStatus" = (
+                "failed" if repair.failed else "partial" if repair.limit_reached else "completed"
+            )
+            return QueueMaintenancePhaseResult(
+                phase=phase,
+                status=status,
+                changed=result.changed,
+                duration_ms=self._elapsed_ms(phase_start),
+                error=REPAIR_ERROR_CODE if repair.failed else None,
+                repair=repair,
+            )
         return QueueMaintenancePhaseResult(
-            phase=phase, status="completed", changed=changed, duration_ms=self._elapsed_ms(phase_start)
+            phase=phase, status="completed", changed=result, duration_ms=self._elapsed_ms(phase_start)
         )
 
     async def _execute_phase(
         self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime"
-    ) -> "int":
+    ) -> "int | ExternalReconciliationResult":
         if phase == "external":
-            return await self._service.reconcile_external(limit=self._config.external_limit)
+            return await self._service.reconcile_external_result(limit=self._config.external_limit)
         if phase == "stale":
             result = await self._service.recover_stale_tasks(
                 stale_after=timedelta(seconds=cast("float", self._config.stale_after)), limit=self._config.stale_limit
