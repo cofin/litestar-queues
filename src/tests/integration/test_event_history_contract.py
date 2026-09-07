@@ -444,15 +444,17 @@ async def test_offset_limit_and_empty_pages(event_log: QueueEventLog) -> None:
 
     page1 = await event_log.query_events(QueueEventQuery(limit=3))
     assert [r.event_id for r in page1.items] == expected_ids[:3]
-    assert page1.total >= len(page1.items)
+    assert page1.total == len(expected_ids)
 
     page2 = await event_log.query_events(QueueEventQuery(offset=3, limit=3))
     assert [r.event_id for r in page2.items] == expected_ids[3:6]
+    assert page2.total == len(expected_ids)
 
     assert [r.event_id for r in page1.items] + [r.event_id for r in page2.items] == expected_ids[:6]
 
     page_empty = await event_log.query_events(QueueEventQuery(offset=99))
     assert page_empty.items == []
+    assert page_empty.total == len(expected_ids)
 
 
 async def test_scoped_summaries(event_log: QueueEventLog) -> None:

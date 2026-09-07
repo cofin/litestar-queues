@@ -62,14 +62,16 @@ def test_pagination_reports_total_and_empty_pages() -> "None":
     records = sort_event_records([_record(str(i), offset=i) for i in range(5)])
 
     first = paginate_event_records(records, QueueEventQuery(limit=2))
+    middle = paginate_event_records(records, QueueEventQuery(limit=2, offset=2))
     last = paginate_event_records(records, QueueEventQuery(limit=2, offset=4))
     past_end = paginate_event_records(records, QueueEventQuery(limit=2, offset=99))
 
     assert [r.event_id for r in first.items] == ["0", "1"]
+    assert [r.event_id for r in middle.items] == ["2", "3"]
     assert [r.event_id for r in last.items] == ["4"]
     assert past_end.items == []
     # total is the match count, independent of the window - including past the end.
-    assert (first.total, last.total, past_end.total) == (5, 5, 5)
+    assert (first.total, middle.total, last.total, past_end.total) == (5, 5, 5, 5)
 
 
 def test_summary_latest_and_worst_level() -> "None":

@@ -205,40 +205,13 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
     def _select_columns(self) -> "tuple[Any, ...]":
         return tuple(self._col(column) if self._col(column) != column else column for column in self._all_columns())
 
-    def select_events(  # noqa: C901
-        self, query: "QueueEventQuery", extra: "Mapping[str, str] | None" = None
-    ) -> "Select":
+    def select_events(self, query: "QueueEventQuery", extra: "Mapping[str, str] | None" = None) -> "Select":
         """Return a SELECT for event-log records.
 
         Raises:
             ValueError: If ``extra`` names a column that was not declared.
         """
-        filters = {}
-        if extra:
-            extra = dict(extra)
-            if "actor_id" in extra:
-                filters["actor_id"] = extra.pop("actor_id")
-            if "actor_type" in extra:
-                filters["actor_type"] = extra.pop("actor_type")
-            filters.update(self._validated_extra_filter(extra))
-        statement = sql.select(*self._select_columns()).from_(self.table_name)
-        if query.task_id is not None:
-            statement = statement.where_eq("task_id", query.task_id)
-        if query.task_name is not None:
-            statement = statement.where_eq("task_name", query.task_name)
-        if query.event_type is not None:
-            statement = statement.where_eq("event_type", query.event_type)
-        if query.level is not None:
-            statement = statement.where_eq(self._col("level"), query.level)
-        if query.scope is not None:
-            statement = statement.where_eq("scope", query.scope)
-        if query.scope_key is not None:
-            statement = statement.where_eq("scope_key", query.scope_key)
-        if query.entity is not None:
-            statement = statement.where_eq("entity", query.entity)
-
-        for name, value in filters.items():
-            statement = statement.where_eq(name, value)
+        statement = self._filter_events(sql.select(*self._select_columns()).from_(self.table_name), query, extra)
 
         if query.order == "asc":
             statement = statement.order_by(
@@ -252,6 +225,24 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         if query.offset:
             statement = statement.offset(query.offset)
         return statement.limit(query.limit) if query.limit is not None else statement
+
+    def count_events(self, query: "QueueEventQuery", extra: "Mapping[str, str] | None" = None) -> "Select":
+        """Count matching event-log records before ordering and pagination."""
+        return self._filter_events(sql.select(sql.count("*").as_("total")).from_(self.table_name), query, extra)
+
+    def _filter_events(
+        self, statement: "Select", query: "QueueEventQuery", extra: "Mapping[str, str] | None"
+    ) -> "Select":
+        filters = dict(query.filters())
+        if extra:
+            extra = dict(extra)
+            for name in ("actor_id", "actor_type"):
+                if name in extra:
+                    filters[name] = extra.pop(name)
+            filters.update(self._validated_extra_filter(extra))
+        for name, value in filters.items():
+            statement = statement.where_eq(self._col(name), value)
+        return statement
 
     def summarize_stages(self, *, task_name: "str | None" = None) -> "tuple[str, dict[str, Any]]":
         """Return SQL and parameters for per-stage event summaries."""
@@ -822,7 +813,15 @@ class SQLSpecQueueEventLog:
                 _require_identical_event(stored, candidate)
                 missing.pop(stored.event_id, None)
         if missing:
-            await driver.execute_many(self._store.insert_events_template(), [item[1] for item in missing.values()])
+            statement = self._store.insert_events_template()
+            values = [item[1] for item in missing.values()]
+            if _adapter_name(self._store._config) == "arrow_odbc":  # noqa: SLF001
+                # Arrow ODBC has no row-oriented executemany. Keep these bound
+                # inserts inside the caller's single explicit transaction.
+                for params in values:
+                    await driver.execute(statement, params)
+            else:
+                await driver.execute_many(statement, values)
 
     async def _comparison_records(
         self, driver: "SQLSpecDriver", records: "Sequence[QueueEventLogRecord]"
@@ -869,7 +868,11 @@ class SQLSpecQueueEventLog:
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
     ) -> "OffsetPagination[QueueEventLogRecord]":
-        """Query durable event history records."""
+        """Query durable event history with the total before pagination.
+
+        Page and count statements share a session; their consistency under
+        concurrent writes follows the configured transaction isolation.
+        """
         from litestar_queues.events.query import QueueEventQuery
         from litestar_queues.events.typing import OffsetPagination
 
@@ -877,13 +880,13 @@ class SQLSpecQueueEventLog:
         await self.flush_events()
         async with self._session_factory() as driver:
             rows = await driver.select(self._store.select_events(query, extra=extra))
-            # count query to get total
-            # wait, how to get total for sqlspec? There's no count method right now.
-            # let's just make it length of rows for now to get it compiling
+            count_rows = await driver.select(self._store.count_events(query, extra=extra))
         records = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
-        page_items = records[: query.limit] if query.limit else records
         return OffsetPagination(
-            items=page_items, total=len(records), offset=query.offset, limit=query.limit or len(page_items) or 1
+            items=records,
+            total=int(count_rows[0]["total"]),
+            offset=query.offset,
+            limit=query.limit or len(records) or 1,
         )
 
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":

@@ -27,10 +27,55 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from litestar_queues.backends import BaseQueueBackend
+    from litestar_queues.events.query import QueueEventOrder
     from litestar_queues.models import QueuedTaskRecord
     from tests.integration._backends import BackendCase
 
 pytestmark = pytest.mark.anyio
+
+
+async def test_backend_contract_event_pagination_total(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> None:
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+    from litestar_queues.events import EventHistoryConfig, QueueEvent, QueueEventActor, QueueEventQuery
+
+    if not isinstance(queue_backend, SQLSpecQueueBackend):
+        pytest.skip(f"{queue_backend_case.name}: SQLSpec pagination adapter contract")
+    history = EventHistoryConfig(batch_size=1, strict=True)
+    queue_backend.config = QueueConfig(events=QueueEventsConfig(history=history))
+    log = queue_backend.get_event_log(history)
+    assert log is not None
+    await queue_backend.create_schema()
+    started_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    for index in range(6):
+        await log.publish_event(
+            QueueEvent(
+                id=f"page-{index}",
+                type="task.log",
+                scope="task",
+                task_id="matching" if index < 5 else "other",
+                actor=QueueEventActor(type="user", id="actor"),
+                occurred_at=started_at + timedelta(seconds=index),
+                sequence=index,
+            )
+        )
+    orders: "tuple[QueueEventOrder, ...]" = ("asc", "desc")
+    for order in orders:
+        expected = [f"page-{index}" for index in range(5)]
+        if order == "desc":
+            expected.reverse()
+        for offset in (0, 2, 8):
+            page = await log.query_events(
+                QueueEventQuery(task_id="matching", order=order, offset=offset, limit=2), extra={"actor_id": "actor"}
+            )
+            assert page.total == 5, (queue_backend_case.name, order, offset, page)
+            assert [item.event_id for item in page.items] == expected[offset : offset + 2]
+        unpaginated = await log.query_events(QueueEventQuery(task_id="matching", order=order))
+        assert unpaginated.total == 5
+        assert [item.event_id for item in unpaginated.items] == expected
+    missing = await log.query_events(QueueEventQuery(task_id="absent", limit=2))
+    assert missing.total == 0 and missing.items == []
 
 
 async def test_backend_contract_claim_many_claims_owned_ordered_running_records(

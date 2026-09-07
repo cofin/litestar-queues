@@ -172,3 +172,86 @@ async def test_packaged_migration_ddl_includes_dimensions(
         assert dimension in create_table
     assert any("scope_key" in s and s.startswith("CREATE INDEX") for s in statements)
     assert any("entity" in s and s.startswith("CREATE INDEX") for s in statements)
+
+
+@pytest.mark.parametrize("descending", [False, True])
+@pytest.mark.parametrize("offset,limit", [(0, 2), (2, 2), (8, 2), (0, None)])
+async def test_filtered_history_total_precedes_page_window(
+    aiosqlite_history_config: "Any", *, descending: bool, offset: int, limit: "int | None"
+) -> None:
+    from datetime import datetime, timezone
+
+    from msgspec.structs import replace as replace_event
+
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+    from litestar_queues.events import QueueEvent, QueueEventActor, QueueEventEntityRef
+    from litestar_queues.events._log_records import event_entity_key
+
+    backend_config = SQLSpecBackendConfig(
+        sqlspec_config=aiosqlite_history_config, event_history_extra_columns=(_TENANT_COLUMN,)
+    )
+    await bootstrap_queue_schema(backend_config, event_history_enabled=True)
+    backend = SQLSpecQueueBackend(backend_config=backend_config)
+    await backend.open()
+    try:
+        log = backend.get_event_log(EventHistoryConfig(batch_size=20, extra_columns=(_TENANT_COLUMN,), strict=True))
+        assert log is not None
+        entity = QueueEventEntityRef(type="document", id="1")
+        base = QueueEvent(
+            type="task.log",
+            scope="task",
+            task_id="task",
+            task_name="demo",
+            scope_key="scope",
+            level="info",
+            entity=entity,
+            actor=QueueEventActor(type="user", id="actor"),
+            payload={"tenant_id": "tenant"},
+            occurred_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            sequence=1,
+        )
+        for index in range(5):
+            await log.publish_event(replace_event(base, id=f"match-{index}"))
+        mismatches: list[dict[str, Any]] = [
+            {"task_id": "other"},
+            {"task_name": "other"},
+            {"type": "task.progress"},
+            {"scope": "queue"},
+            {"scope_key": "other"},
+            {"level": "error"},
+            {"entity": QueueEventEntityRef(type="document", id="2")},
+            {"actor": QueueEventActor(type="other", id="actor")},
+            {"actor": QueueEventActor(type="user", id="other")},
+            {"payload": {"tenant_id": "other"}},
+        ]
+        for index, changes in enumerate(mismatches):
+            await log.publish_event(replace_event(base, id=f"other-{index}", **changes))
+        query = QueueEventQuery(
+            task_id="task",
+            task_name="demo",
+            event_type="task.log",
+            scope="task",
+            scope_key="scope",
+            level="info",
+            entity=event_entity_key(entity),
+            order="desc" if descending else "asc",
+            limit=limit,
+            offset=offset,
+        )
+        extra = {"tenant_id": "tenant", "actor_id": "actor", "actor_type": "user"}
+        page = await log.query_events(query, extra=extra)
+        expected = [f"match-{index}" for index in range(5)]
+        if descending:
+            expected.reverse()
+        expected = expected[offset:] if limit is None else expected[offset : offset + limit]
+        assert [record.event_id for record in page.items] == expected
+        assert page.total == 5
+        assert page.offset == offset
+        assert page.limit == (5 if limit is None else limit)
+        empty = await log.query_events(query, extra={**extra, "tenant_id": "absent"})
+        assert empty.total == 0
+        assert empty.items == []
+        with pytest.raises(QueueConfigurationError):
+            await log.query_events(query, extra={"undeclared": "value"})
+    finally:
+        await backend.close()

@@ -372,6 +372,24 @@ def test_select_events_accepts_declared_extra_filter() -> "None":
     assert "tenant_id" in statement.build(dialect="sqlite").sql
 
 
+def test_event_count_excludes_page_window_and_preserves_extra_validation() -> None:
+    store = _store(_TENANT)
+    statement = (
+        store
+        .count_events(
+            QueueEventQuery(level="info", order="desc", limit=2, offset=8),
+            extra={"actor_id": "actor", "tenant_id": "tenant"},
+        )
+        .build(dialect="sqlite")
+        .sql.upper()
+    )
+    assert 'COUNT(*) AS "TOTAL"' in statement
+    assert all(clause not in statement for clause in ("ORDER BY", "LIMIT", "OFFSET"))
+    assert all(column in statement for column in ("LEVEL", "ACTOR_ID", "TENANT_ID"))
+    with pytest.raises(QueueConfigurationError):
+        store.count_events(QueueEventQuery(), extra={"unknown": "value"})
+
+
 def test_sqlspec_event_log_still_satisfies_the_frozen_protocol() -> "None":
     """The extra filter is additive: the concrete store still matches ``QueueEventLog``."""
     from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLog
@@ -381,3 +399,43 @@ def test_sqlspec_event_log_still_satisfies_the_frozen_protocol() -> "None":
 
     event_log = SQLSpecQueueEventLog.__new__(SQLSpecQueueEventLog)
     assert accepts_protocol(event_log) is event_log
+
+
+@pytest.mark.anyio
+async def test_arrow_history_second_row_failure_rolls_back_the_batch(monkeypatch: "pytest.MonkeyPatch") -> None:
+    from contextlib import asynccontextmanager
+
+    from sqlspec.exceptions import NotNullViolationError
+
+    import litestar_queues.backends.sqlspec.event_log as event_log_module
+    from litestar_queues.events import EventHistoryConfig, QueueEvent
+
+    monkeypatch.setattr(event_log_module, "_adapter_name", lambda _config: "arrow_odbc")
+    driver = AsyncMock()
+    driver.select.return_value = []
+    primary = NotNullViolationError("second row failed")
+    driver.execute.side_effect = [None, primary]
+
+    @asynccontextmanager
+    async def session() -> "Any":
+        yield driver
+
+    log = event_log_module.SQLSpecQueueEventLog(
+        session_factory=session,
+        datetime_serializer=lambda value: value,
+        config=EventHistoryConfig(strict=True),
+        store=_store(_TENANT),
+    )
+    records = [
+        log._record_from_event(QueueEvent(type="task.log", scope="task", payload={"tenant_id": str(index)}))
+        for index in range(2)
+    ]
+    with pytest.raises(NotNullViolationError) as caught:
+        await log._write_history_batch(records)
+    assert caught.value is primary
+    assert driver.execute.await_count == 2
+    assert [call.args[1]["tenant_id"] for call in driver.execute.await_args_list] == ["0", "1"]
+    driver.begin.assert_awaited_once()
+    driver.rollback.assert_awaited_once()
+    driver.commit.assert_not_awaited()
+    driver.execute_many.assert_not_awaited()

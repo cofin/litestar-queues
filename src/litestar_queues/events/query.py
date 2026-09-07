@@ -204,8 +204,6 @@ def paginate_event_records(
     if query.limit is None:
         return OffsetPagination(items=list(window), limit=matched, offset=query.offset, total=matched)
     items = list(window[: query.limit])
-    # `records` is the already-filtered sequence, so the true match count is free
-    # here. A SQL backend that cannot say the same passes `total=len(items)`.
     return OffsetPagination(items=items, limit=query.limit, offset=query.offset, total=matched)
 
 
