@@ -32,9 +32,10 @@ Provide Channels or one or more additive sinks:
 worker and the web server are separate processes, swap it for a shared backend —
 see `Topology and security`_.
 
-Without a configured sink or Channels backend, publishing does nothing. By
-default, a live-delivery failure does not fail the task. Set ``strict=True``
-only when the caller must receive a sink error.
+History can be enabled without a live sink or Channels backend. With neither
+history nor live delivery configured, publishing does nothing. By default, a
+live-delivery failure does not fail the task. Set delivery ``strict=True``
+when the caller must receive a sink error.
 
 Publish from a task
 ===================
@@ -147,10 +148,24 @@ payload.
 Buffering and external producers
 ================================
 
-When enabled, history is written before live delivery. Non-terminal live events
-are sent in small batches, and the buffer is flushed before the final event.
-Sinks with ``publish_many`` receive a batch; other sinks receive the events one
-at a time in order.
+When enabled, history commits before live delivery. Publication snapshots the
+event, so later mutation of its payload cannot change accepted history or live
+delivery. Ordinary publication may return after bounded acceptance. A terminal
+or immediate event, explicit flush, and clean close attempt a history barrier;
+a non-strict write failure retains the event and withholds its live delivery.
+See :doc:`event-history` for capacity, retry and shutdown behavior.
+
+Non-terminal live events are sent in small batches. A final event follows the
+earlier live batch, including a batch already being delivered. Sinks with
+``publish_many`` receive a batch; other sinks receive the events one at a time
+in order. A sink failure does not replay committed history.
+
+Sink callbacks may publish more events. If such a callback fills a live buffer
+configured with blocking overflow, admission raises ``QueueEventBufferFull``
+instead of waiting on the callback's own drain. During a history or live-buffer
+drain, open or close services and external producers outside the event callback;
+lifecycle calls from that callback raise ``QueueConfigurationError`` before
+changing ownership.
 
 Retries may produce another ``task.started`` for the same task ID.
 ``task.failed`` includes ``will_retry`` so a consumer can distinguish an
@@ -179,8 +194,10 @@ Code outside a worker should use this context manager. It takes the same
        async with create_event_producer(queue_config) as events:
            await events.task(task_id).progress(current=1, total=2, message="Started")
 
-The context manager opens the resource, starts it, flushes pending events, and
-closes it. ``QueueEventProducer`` does not manage resources by itself.
+The context manager opens its delivery resources, flushes pending live events,
+and attempts every acquired resource's cleanup. It does not provision backend
+history. ``QueueEventProducer`` does not manage resources by itself; see
+:doc:`events-standalone` for acquisition and failure behavior.
 
 .. _live-delivery-vs-history:
 

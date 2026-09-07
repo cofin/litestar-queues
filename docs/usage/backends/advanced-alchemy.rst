@@ -106,6 +106,52 @@ Event history uses a separate concrete model. Compose
 must expose the columns required by the mixin contract and belong to the same
 database lifecycle as the queue model.
 
+Upgrade existing queue tables
+-----------------------------
+
+Delivery repair now persists a nullable ``dispatch_checked_at`` timestamp and
+uses a composite dispatch-repair index. Upgrading the Python mixin or running
+``create_all`` does not alter an existing table. Apply an application-owned
+Alembic migration before opening queue services with the new model.
+
+For the ``AppQueueTask`` model above, the upgrade body is:
+
+.. code-block:: python
+
+   import sqlalchemy as sa
+   from alembic import op
+   from sqlalchemy.dialects import mysql, oracle
+
+
+   def upgrade() -> None:
+       checked_type = (
+           sa.DateTime(timezone=True)
+           .with_variant(mysql.DATETIME(fsp=6), "mysql", "mariadb")
+           .with_variant(oracle.TIMESTAMP(timezone=True), "oracle")
+       )
+       op.add_column(
+           "app_queue_task",
+           sa.Column("dispatch_checked_at", checked_type, nullable=True),
+       )
+       op.create_index(
+           op.f("ix_app_queue_task_dispatch_repair"),
+           "app_queue_task",
+           ["execution_backend", "status", "dispatch_checked_at", "created_at", "id"],
+       )
+
+Use the actual queue table name and schema. ``op.f`` preserves the final index
+name, matching the mixin's ``conv`` naming behavior. A custom model that does
+not use ``QueueTaskModelMixin`` must declare the same nullable column/type and
+index. Keep the MySQL/MariaDB ``DATETIME(6)`` and Oracle timezone-aware
+``TIMESTAMP`` variants: losing fractional seconds weakens persisted fair-check
+ordering. Existing rows may retain ``NULL``; selection falls back to their
+creation time until first checked. See :doc:`../maintenance` for repair budgets.
+
+Event history is committed before its live release callback runs. The backend
+drains pending history before releasing its database resources; the application
+still owns the SQLAlchemy engine. See :doc:`../event-history` for admission and
+retry behavior.
+
 Wakeups and heartbeats
 ======================
 

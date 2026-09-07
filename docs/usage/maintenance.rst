@@ -23,7 +23,7 @@ Phases
 
 Every invocation runs the configured phases once, in this fixed order:
 
-#. **external** — reconcile externally dispatched records against their
+#. **external** — repair missing deliveries, then reconcile dispatched records against their
    execution backend. Enabled only for external execution backends (skipped for
    immediate/local execution).
 #. **stale** — recover running tasks whose heartbeats are stale. Enabled when
@@ -60,7 +60,7 @@ until you supply their thresholds.
        maintenance=QueueMaintenanceConfig(
            time_budget=300.0,          # seconds; bounds one whole invocation
            coordination_timeout=360.0, # seconds; must exceed time_budget
-           external_limit=100,         # max external records reconciled per run
+           external_limit=100,         # max external records examined per run
            stale_after=900.0,          # recover heartbeats older than 15 minutes
            stale_limit=100,            # max stale records recovered per run
            terminal_retention=None,    # None disables terminal cleanup
@@ -79,13 +79,37 @@ disables that phase.
 Bounded batches and the time budget
 ===================================
 
-Each phase mutates at most its configured limit of rows (``external_limit``,
-``stale_limit``, ``terminal_limit``, ``event_limit``) ordered oldest-first, and
-the service checks the wall-clock ``time_budget`` between phases. When the budget
+Each phase uses its configured limit (``external_limit``, ``stale_limit``,
+``terminal_limit``, ``event_limit``), and the service checks the wall-clock
+``time_budget`` between phases. When the budget
 is exhausted, the remaining enabled phases are reported ``partial`` and no
 further backend operation starts. The budget does not interrupt a phase already
 in progress. Keep the schedule frequent enough that new work does not outpace
 one batch, or raise the limits.
+
+For Cloud Tasks, the external limit bounds records **examined**, shared between
+delivery repair and subsequent reconciliation. Repair selects unexpired pending
+or scheduled records, including future schedules and records without a delivery
+reference. It orders by the last persisted ``dispatch_checked_at`` (falling back
+to ``created_at``), then record ID, and advances the check timestamp before
+returning candidates. Repeated passes therefore revisit the least recently
+checked records, including after a process restart. Stale index entries consume
+the scan budget; the pass does not refill its page by scanning the backlog.
+
+Repair results expose ``examined``, ``changed``, ``failed``, ``unchanged``, and
+``limit_reached``. A full scan budget conservatively reports ``partial``; it
+does not prove more records remain. A repair failure reports ``failed`` with
+``maintenance_repair_failed``, preserving successful changes from that same
+pass. Failure takes precedence over a partial result.
+
+For programmatic use, ``QueueService.reconcile_external_result(limit=100)``
+returns an ``ExternalReconciliationResult`` containing ``repair`` and
+``reconciled``; its ``changed`` includes both. A zero limit returns deferred
+work (``repair.limit_reached=True``) without querying storage or the provider.
+The older ``reconcile_external(limit=100)`` returns an integer on success and
+raises ``QueueDispatchRepairError`` carrying that structured ``result`` if
+repair fails. Calling it without a limit retains reconciliation-only behavior;
+it does not run delivery repair.
 
 Distributed coordination
 ========================
@@ -126,12 +150,16 @@ threshold. ``--json`` emits one compact object matching
 outcome, ownership state, duration, and one result per selected phase, and never
 includes task payloads.
 
+When repair runs, text output includes its counts and JSON includes them under
+the external phase's ``repair`` object. A positive ``changed`` count does not
+make a phase successful if its ``failed`` count is also positive.
+
 ============  ==================================================================
 Code          Meaning
 ============  ==================================================================
 ``0``         Completed, a clean no-op, or maintenance was already running.
 ``1``         Configuration error, lifecycle failure, or a phase failed.
-``2``         The time budget was exhausted and later phases were skipped.
+``2``         Partial: time budget exhausted or the repair scan limit reached.
 ============  ==================================================================
 
 Backend support and schema ownership
@@ -170,7 +198,9 @@ tests and same-process applications.
 Provision SQL maintenance tables before scheduling the command:
 
 * **SQLSpec** — run the application's normal migrations, including the packaged
-  ``0001_create_queue_tasks`` migration. Override the table name with
+  ``0001_create_queue_tasks`` and ``0002_add_dispatch_checked_at`` migrations.
+  See :doc:`backends/sqlspec` for custom tables and Spanner native DDL.
+  Override the table name with
   ``SQLSpecBackendConfig.maintenance_table_name``.
 * **Advanced Alchemy** — include ``QueueMaintenanceModel`` in application
   metadata, or compose
@@ -179,6 +209,8 @@ Provision SQL maintenance tables before scheduling the command:
   ``SQLAlchemyBackendConfig.maintenance_model_class``. Create the table
   with the same Alembic or ``create_all`` workflow that owns the queue model;
   the queue backend never creates it.
+  Existing task tables also need the timestamp and repair index described in
+  :doc:`backends/advanced-alchemy`.
 
 A missing maintenance table fails closed instead of falling back to a process-local
 lock.

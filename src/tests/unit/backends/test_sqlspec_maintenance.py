@@ -216,11 +216,7 @@ async def test_scheduled_execution_ref_unknown_rowcount_does_not_accept_existing
         # Some adapters cannot distinguish zero affected rows from unknown rowcount.
         monkeypatch.setattr(SQLSpecQueueBackend, "_resolve_rows_affected", lambda _self, _result: -1)
         rejected = await backend.reserve_scheduled_execution_ref(
-            record.id,
-            "cloudtasks",
-            "already-reserved",
-            expected_retry_count=0,
-            expected_execution_ref=None,
+            record.id, "cloudtasks", "already-reserved", expected_retry_count=0, expected_execution_ref=None
         )
         assert rejected is None
     finally:

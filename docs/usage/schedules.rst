@@ -6,7 +6,7 @@ Tasks can declare a recurring interval or cron schedule. The process registers
 these tasks. At startup, it writes their schedules to the queue backend when
 ``QueueConfig.initialize_schedules`` is enabled.
 
-Interval Schedules
+Interval schedules
 ==================
 
 Use ``interval`` for fixed-delay recurring work:
@@ -17,11 +17,11 @@ Use ``interval`` for fixed-delay recurring work:
    from litestar_queues import task
 
 
-   @task("reports.refresh", interval=timedelta(minutes=15), jitter=30)
+   @task("reports.refresh", interval=timedelta(minutes=15), jitter=30, retries=3)
    async def refresh_reports() -> None:
        print("refreshing every report")
 
-Cron Schedules
+Cron schedules
 ==============
 
 Use ``cron`` for calendar-based schedules:
@@ -38,7 +38,7 @@ Use ``cron`` for calendar-based schedules:
 Cron aliases such as ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, and
 ``@yearly`` are supported.
 
-Supported Cron Syntax
+Supported cron syntax
 ---------------------
 
 Litestar Queues accepts standard five-field cron expressions:
@@ -61,7 +61,7 @@ When both ``day-of-month`` and ``day-of-week`` are restricted, either field may
 match. For example, ``0 0 1 * MON`` runs at midnight on the first day of the
 month and on Mondays.
 
-Unsupported Cron Syntax
+Unsupported cron syntax
 -----------------------
 
 Litestar Queues rejects cron extensions that are not part of the v1 grammar,
@@ -79,17 +79,30 @@ including:
 Use multiple schedules or application code for calendar rules that require
 unsupported cron extensions.
 
-Startup Synchronization
+Startup synchronization
 =======================
 
-During startup synchronization, Litestar Queues creates a pending record with
+During startup synchronization, Litestar Queues creates a queue record with
 the key ``scheduled:<task-name>``. It reuses an active record when its schedule
 metadata still matches. If the schedule changed, it cancels the old record and
 creates a new one.
 
-After a scheduled task completes or fails, Litestar Queues reads the saved
-schedule metadata and creates its next run. Keeping the schedule with the
-queue record lets persistent backends recover after a process restart.
+After a scheduled task completes or exhausts its retries, Litestar Queues reads
+the saved schedule metadata and creates its next run. A retry keeps the same
+occurrence ID and follows its persisted backoff; it does not advance the
+recurring schedule. Keeping the schedule with the queue record lets persistent
+backends recover after a process restart.
+
+Initial and following occurrences take ``retries`` from the task registration
+when they are created. Restart and repeated initialization preserve an existing
+occurrence's identity, retry budget and backoff, including an active retry.
+Changing only ``retries`` does not cancel or recreate that occurrence. Its next
+logical occurrence receives the newly configured budget; the saved backoff
+metadata remains in effect.
+
+When upgrading from a version that created recurring tasks with zero retries,
+an already persisted occurrence may therefore run once with that zero budget.
+Its successor receives the configured retries.
 
 Scheduled records include the same task metadata used by normal enqueue calls.
 When a task does not set ``log_success``, schedule startup stores

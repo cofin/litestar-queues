@@ -60,10 +60,11 @@ Maintenance index upgrade
 
 Positive maintenance limits use versioned indexes so each run examines only
 the requested number of records. A new or empty ``key_prefix`` initializes
-these indexes automatically.
+these indexes automatically. Index version ``3`` includes the dispatch-repair
+indexes used to revisit missing Cloud Tasks deliveries fairly.
 
-When upgrading a populated prefix created before this release, bounded
-maintenance fails closed until the indexes are rebuilt. Stop every Redis or
+When upgrading a populated prefix created before this release,
+ordinary backend opening fails closed until the indexes are rebuilt. Stop every Redis or
 Valkey queue writer using that prefix, then run the rebuild once as a
 standalone script. ``queue_config`` is the configuration from the example
 above:
@@ -72,20 +73,23 @@ above:
 
    import asyncio
 
-   from litestar_queues import QueueService
-
-
    async def rebuild_indexes() -> None:
-       async with QueueService(queue_config) as queue_service:
-           rebuilt = await queue_service.get_queue_backend().rebuild_maintenance_indexes()
+       backend = queue_config.get_queue_backend()
+       try:
+           rebuilt = await backend.rebuild_maintenance_indexes()
            print(f"reindexed {rebuilt} queue records")
+       finally:
+           await backend.close()
 
 
    asyncio.run(rebuild_indexes())
 
 The return value is the number of queue records examined. The rebuild is
 explicit, unbounded, and idempotent, so an interrupted call is safe to repeat.
-Restart the writers only after it completes.
+Run it before opening a ``QueueService``: entering that service would hit the
+old-version guard before the rebuild could run. The rebuild invalidates the
+old marker first and publishes version ``3`` only after rebuilding every
+index. Restart the writers only after it completes.
 
 Worker wakeups
 ==============
@@ -100,6 +104,12 @@ Event history and live delivery
 Backend-managed event history is supported. You choose how long Redis or
 Valkey keeps history, what it backs up, and when it removes old records. The
 library cannot make an otherwise temporary service durable.
+
+History becomes eligible for live delivery after the record hash and its query
+indexes are acknowledged. Retrying the same event ID preserves the first
+record and repairs missing index entries; conflicting content is rejected.
+This does not add an fsync or replication guarantee to the service's own
+configuration. See :doc:`../event-history` for buffering and failure behavior.
 
 A Redis or Valkey queue backend does not automatically send events to browsers.
 For standalone workers or multiple web processes, configure a shared Channels

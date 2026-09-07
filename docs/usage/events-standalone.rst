@@ -87,8 +87,10 @@ Actor attachment
 ================
 
 Attach a :class:`~litestar_queues.events.QueueEventActor` to identify who or what
-triggered the work. The actor persists to durable event history and is queryable
-via :meth:`~litestar_queues.events.QueueEventLog.query_events`.
+triggered the work. When a history provider is attached, it stores the actor's
+type and ID. Filter with ``query_events(query, extra={"actor_id": "usr_123"})``
+or ``actor_type``; ``QueueEventQuery`` has no typed actor parameter. A standalone
+delivery producer does not create a queue backend or history provider.
 
 There are three ways to attach an actor, evaluated in precedence order:
 
@@ -121,6 +123,26 @@ There are three ways to attach an actor, evaluated in precedence order:
        total=100,
        actor=QueueEventActor(type="user", id="usr_123"),
    )
+
+Producer resource ownership
+===========================
+
+Use ``async with create_event_producer(queue_config)`` when this integration
+owns its delivery resources. Each distinct resource is acquired once by object
+identity, even when it appears in several delivery positions. Delivery itself
+still follows the configured fan-out.
+
+If startup fails, the context manager unwinds resources whose startup completed,
+in reverse order. A resource whose own startup fails is responsible for its
+partial acquisition. Cleanup attempts the live-buffer stop and every acquired
+resource's close, even if an earlier cleanup raises. Repeated close is harmless.
+
+An exception or cancellation from the body or startup remains the primary
+error; secondary cleanup failures are logged. Without a primary error, cleanup
+failure propagates, with cancellation taking precedence over ordinary errors.
+Do not open or close the producer from a callback draining its live buffer;
+finish that callback first. The context manager owns live delivery only, so
+configure and close any separate history provider through its own owner.
 
 Cancellation
 ============

@@ -77,7 +77,7 @@ The default queue table is ``queue_task``. When event history is enabled,
 SQLSpec derives its table by adding ``_event_history`` to the queue table,
 so the default is ``queue_task_event_history``. Set
 ``event_history_table_name`` only when the application needs a different name.
-The single packaged ``0001_create_queue_tasks`` migration creates the queue
+The packaged ``0001_create_queue_tasks`` migration creates the queue
 task table, enabled event history, ``queue_maintenance`` for distributed
 maintenance coordination, and ``queue_task_reservation`` for permanent task
 identity reservations. Override the names with ``maintenance_table_name`` and
@@ -85,6 +85,59 @@ identity reservations. Override the names with ``maintenance_table_name`` and
 schema and add the corresponding suffix to the table part.
 See :doc:`../maintenance` before scheduling maintenance and
 :doc:`../migration` before using forever uniqueness.
+
+Upgrade existing queue tables
+-----------------------------
+
+Run ``0002_add_dispatch_checked_at`` through the application's migration command
+before starting upgraded queue services. It adds the missing nullable
+``dispatch_checked_at`` column and an index over ``execution_backend``,
+``status``, ``dispatch_checked_at``, ``created_at``, and ``id``. Fresh schemas
+already contain these artifacts; the additive migration checks the catalog and
+does not recreate them.
+
+For a standalone migration command, register the same backend configuration
+used by the application so custom table names and column mappings are retained:
+
+.. code-block:: python
+
+   backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config)
+   queue_config = QueueConfig(queue_backend=backend_config)
+   backend_config.configure_migrations(queue_config)
+   await sqlspec_config.migrate_up(echo=False)
+
+Keep the application's migration ``script_location``. With
+``manage_schema=False``, packaged migrations leave the application-owned schema
+untouched: add the nullable column and matching index in your own migration,
+using the configured physical column names. ``open()`` does not perform this
+upgrade, and ``create_schema()`` does not advance migration history.
+
+Spanner native DDL
+~~~~~~~~~~~~~~~~~~
+
+Spanner requires its administrative DDL API; do not send these statements
+through the generic migration runner's DML execution path. With the application's
+``SpannerSyncConfig`` registered as above, generate the additive migration using
+an active catalog session, then submit its statements:
+
+.. code-block:: python
+
+   import importlib
+   from sqlspec.migrations.context import MigrationContext
+
+   migration = importlib.import_module(
+       "litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at"
+   )
+   with sqlspec_config.provide_session() as driver:
+       statements = await migration.up(
+           MigrationContext(config=sqlspec_config, driver=driver)
+       )
+   if statements:
+       sqlspec_config.get_database().update_ddl(statements).result(120)
+
+Run this in the deployment migration process. Generating statements does not
+apply them, and native DDL submission does not update generic migration revision
+tracking; record completion through the application's migration workflow.
 
 Wakeups
 -------
@@ -148,5 +201,10 @@ SQLSpec event history uses the queue schema, the packaged SQLSpec migration,
 and the SQLSpec session lifecycle. Its table naming follows the queue-table
 ``_event_history`` suffix described above. ``event_history_table_name`` customizes the
 table.
+History batches commit before live delivery is released, including sparse
+publications that flush on the configured interval. Query ``total`` counts all
+matching records before ``limit`` and ``offset``; an empty page may still have a
+nonzero total. Page and count queries share a session, but consistency during
+concurrent writes depends on the configured transaction isolation.
 Live SSE/WebSocket delivery still needs a Channels backend. See
 :doc:`../event-history`.

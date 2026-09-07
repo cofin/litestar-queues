@@ -263,17 +263,20 @@ before you send.
 When a delivery goes missing
 ============================
 
-Nothing polls these records. If a delivery disappears while its record is still
-active, the record waits forever and no error is ever raised — which is the one
-failure mode this topology has that a polled queue does not.
+There is no worker polling these records for execution. Without scheduled
+repair, a record whose delivery was never created or has disappeared can remain
+pending indefinitely.
 
 Deliveries disappear for ordinary reasons: a create call that errored after
 Google had already accepted it, an operator purging the queue, a retention
 window closing before the schedule time arrived.
 
-Bounded maintenance repairs them. It re-checks active records against the
-transport and re-creates the deliveries that are gone, sharing the existing
-external phase's budget:
+Bounded maintenance repairs them. It checks unexpired pending and scheduled
+records, including future schedules and records with a ``NULL`` delivery
+reference after an initial create failure. It creates missing deliveries for
+the current attempt while preserving the queued task's identity. Conditional
+updates prevent a stale repair from replacing a newer attempt or delivery.
+Repair and reconciliation share the external phase's examined-record budget:
 
 .. code-block:: bash
 
@@ -285,6 +288,18 @@ container — sized to how quickly you need a lost record noticed. Drop
 ``--phase external`` to run every configured phase in the same pass. Repair is
 also the reason maintenance matters more here than on a polled queue, where a
 missed record is picked up by the next poll.
+
+Candidates are selected by their persisted last-check time, with creation time
+as the initial fallback, so successive bounded runs make progress across
+restarts. A provider error counts as a repair failure: maintenance exits ``1``
+even if other records were repaired successfully. With no repair failure, a scan
+that reaches its limit reports ``partial`` and exits ``2``. See :doc:`../maintenance` for structured
+counts and schema/index upgrades required by existing stores. Unbounded worker
+reconciliation does not perform this repair pass.
+
+Provider creation and queue-record updates are separate transactions. A lookup
+failure preserves the current reference for a later repair attempt. Repeated
+delivery remains possible; execution uses the queue backend's durable task claim.
 
 Costs
 =====
