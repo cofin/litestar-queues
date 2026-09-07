@@ -15,6 +15,24 @@ if TYPE_CHECKING:
     from litestar_queues.models import QueuedTaskRecord
 
 
+async def _persisted_creation_order(
+    backend: "BaseQueueBackend", records: "tuple[QueuedTaskRecord, ...]"
+) -> "list[QueuedTaskRecord]":
+    persisted = [await backend.get_task(record.id) for record in records]
+    assert all(record is not None for record in persisted)
+    expected = sorted(
+        (record for record in persisted if record is not None), key=lambda record: (record.created_at, str(record.id))
+    )
+    # MySQL's existing second-precision created_at can round into the future.
+    # Start scans after every persisted creation time so a new precise check
+    # mark sorts after the never-checked records in this rotation assertion.
+    delay = (max(record.created_at for record in expected) - datetime.now(timezone.utc)).total_seconds()
+    assert delay <= 1
+    if delay >= 0:
+        await asyncio.sleep(delay + 0.001)
+    return expected
+
+
 async def assert_dispatch_repair_candidates(backend: "BaseQueueBackend") -> "None":
     now = datetime.now(timezone.utc)
     pending = await backend.enqueue("repair.pending", execution_backend="cloudtasks")
@@ -34,7 +52,7 @@ async def assert_dispatch_repair_candidates(backend: "BaseQueueBackend") -> "Non
     cancelled = await backend.enqueue("repair.cancelled", execution_backend="cloudtasks")
     await backend.cancel_task(cancelled.id)
 
-    expected = sorted((pending, future, healthy), key=lambda record: (record.created_at, str(record.id)))
+    expected = await _persisted_creation_order(backend, (pending, future, healthy))
     first = await backend.list_dispatch_repair_candidates("cloudtasks", limit=2)
     assert [record.id for record in first.records] == [record.id for record in expected[:2]]
     assert first.examined == 2
@@ -47,7 +65,11 @@ async def assert_dispatch_repair_candidates(backend: "BaseQueueBackend") -> "Non
         assert stored is not None
         assert stored.dispatch_checked_at == check_time
     second = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
-    assert [record.id for record in second.records] == [expected[2].id]
+    assert [record.id for record in second.records] == [expected[2].id], (
+        [(record.id, record.created_at, record.dispatch_checked_at) for record in expected],
+        [(record.id, record.created_at, record.dispatch_checked_at) for record in first.records],
+        [(record.id, record.created_at, record.dispatch_checked_at) for record in second.records],
+    )
     assert second.examined == 1
     assert second.limit_reached is True
     all_candidates = await backend.list_dispatch_repair_candidates("cloudtasks", limit=10)
@@ -127,7 +149,9 @@ async def assert_scheduled_execution_ref_contenders(
 
 async def assert_scheduled_execution_ref_rejects_mismatches(backend: "BaseQueueBackend") -> "None":
     record = await backend.enqueue("repair.cas_mismatch", execution_backend="cloudtasks")
-    before = asdict(record)
+    snapshot = await backend.get_task(record.id)
+    assert snapshot is not None
+    before = asdict(snapshot)
     for task_id, backend_name, retry_count, reference in (
         (uuid4(), "cloudtasks", 0, None),
         (record.id, "cloudrun", 0, None),

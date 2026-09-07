@@ -21,6 +21,7 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     STALE_REQUEUE_PRIORITY,
+    DispatchRepairCandidates,
     attempts_consumed,
     interruption_count,
     record_matches_filters,
@@ -30,6 +31,7 @@ from litestar_queues.backends.base import (
 )
 from litestar_queues.events import QueueEventLogRecord
 from litestar_queues.events._log_records import optional_float
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import (
     HeartbeatTouchResult,
     QueuedTaskRecord,
@@ -1235,6 +1237,100 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
 
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        """Mark a bounded selection while preserving progress from newer scans.
+
+        Raises:
+            QueueConfigurationError: If the limit is negative.
+        """
+        if limit < 0:
+            message = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(message)
+        if limit == 0:
+            return DispatchRepairCandidates()
+        now = _utc_now()
+        model_type = self.model_type
+        criteria = (
+            model_type.execution_backend == execution_backend,
+            model_type.status.in_(_DUE_STATUSES),
+            or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+        )
+        selected = await self.repository.session.execute(
+            select(model_type.id)
+            .where(*criteria)
+            .order_by(func.coalesce(model_type.dispatch_checked_at, model_type.created_at), model_type.id)
+            .limit(limit)
+        )
+        task_ids = list(selected.scalars().all())
+        if not task_ids:
+            return DispatchRepairCandidates()
+        checked_at = case(
+            (or_(model_type.dispatch_checked_at.is_(None), model_type.dispatch_checked_at < now), now),
+            else_=model_type.dispatch_checked_at,
+        )
+        await self.repository.session.execute(
+            update(model_type)
+            .where(model_type.id.in_(task_ids), *criteria)
+            .values(_update_values(model_type, {"dispatch_checked_at": checked_at}, now=now))
+            .execution_options(synchronize_session=False)
+        )
+        # A current read also discards transitions committed after the initial
+        # selection on databases whose ordinary reads retain an older snapshot.
+        models = (
+            (
+                await self.repository.session.execute(
+                    select(model_type)
+                    .where(model_type.id.in_(task_ids), *criteria)
+                    .order_by(model_type.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {model.id: self.record_from_model(model) for model in models}
+        return DispatchRepairCandidates(
+            tuple(by_id[task_id] for task_id in task_ids if task_id in by_id), len(task_ids), len(task_ids) == limit
+        )
+
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        """Fence reference creation against the exact active scheduled attempt."""
+        now = _utc_now()
+        model_type = self.model_type
+        reference_matches = (
+            model_type.execution_ref.is_(None)
+            if expected_execution_ref is None
+            else model_type.execution_ref == expected_execution_ref
+        )
+        result = await self.repository.session.execute(
+            update(model_type)
+            .where(
+                model_type.id == task_id,
+                model_type.execution_backend == execution_backend,
+                model_type.retry_count == expected_retry_count,
+                reference_matches,
+                model_type.status.in_(_DUE_STATUSES),
+                or_(model_type.expires_at.is_(None), model_type.expires_at > now),
+            )
+            .values(_update_values(model_type, {"execution_ref": execution_ref}, now=now))
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return None
+        model = await self._select_task(task_id)
+        return self.record_from_model(model) if model is not None else None
+
     async def reserve_external_dispatch(
         self,
         task_id: "UUID",
@@ -1485,6 +1581,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             started_at=record.started_at,
             completed_at=record.completed_at,
             heartbeat_at=record.heartbeat_at,
+            dispatch_checked_at=record.dispatch_checked_at,
             result_json=_serialize_json(record.result),
             error=record.error,
             task_key=record.key,
@@ -1522,6 +1619,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             started_at=_coerce_datetime(model.started_at),
             completed_at=_coerce_datetime(model.completed_at),
             heartbeat_at=_coerce_datetime(model.heartbeat_at),
+            dispatch_checked_at=_coerce_datetime(model.dispatch_checked_at),
             result=_deserialize_json(model.result_json),
             error=model.error,
             key=model.task_key,

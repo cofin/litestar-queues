@@ -28,7 +28,7 @@ from litestar_queues.backends.advanced_alchemy.service import (
     QueueTaskReservationService,
     QueueTaskService,
 )
-from litestar_queues.backends.base import BaseQueueBackend
+from litestar_queues.backends.base import BaseQueueBackend, DispatchRepairCandidates
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import HeartbeatTouchResult, QueueBackendCapabilities, TaskReservation
 from litestar_queues.observability import create_observability_runtime
@@ -426,6 +426,41 @@ class SQLAlchemyBackend(BaseQueueBackend):
                 task_id, execution_backend, execution_ref, execution_profile=execution_profile
             )
 
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        """Commit examination marks before exposing bounded repair candidates.
+
+        Raises:
+            QueueConfigurationError: If the limit is negative.
+        """
+        if limit < 0:
+            message = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(message)
+        if limit == 0:
+            return DispatchRepairCandidates()
+        async with self._operation() as service:
+            return await service.list_dispatch_repair_candidates(execution_backend, limit=limit)
+
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        """Atomically reserve the exact active attempt, including future tasks."""
+        async with self._operation() as service:
+            return await service.reserve_scheduled_execution_ref(
+                task_id,
+                execution_backend,
+                execution_ref,
+                expected_retry_count=expected_retry_count,
+                expected_execution_ref=expected_execution_ref,
+            )
+
     async def reserve_external_dispatch(
         self,
         task_id: "UUID",
@@ -711,6 +746,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
             "started_at",
             "completed_at",
             "heartbeat_at",
+            "dispatch_checked_at",
             "result_json",
             "error",
             "task_key",

@@ -5,7 +5,9 @@ from typing import Any, Protocol, TypeAlias, cast
 
 from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Float, Index, Integer, String, Text
+from sqlalchemy.dialects import mysql, oracle
 from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
+from sqlalchemy.schema import conv
 
 __all__ = (
     "QueueEventHistoryModelMixin",
@@ -43,6 +45,14 @@ class QueueTaskModelMixin:
             ),
             Index(f"ix_{table}_heartbeat", "status", "heartbeat_at"),
             Index(f"ix_{table}_execution", "status", "execution_ref", mysql_length={"execution_ref": 255}),
+            Index(
+                conv(f"ix_{table}_dispatch_repair"),
+                "execution_backend",
+                "status",
+                "dispatch_checked_at",
+                "created_at",
+                "id",
+            ),
         )
 
     @declared_attr
@@ -116,6 +126,16 @@ class QueueTaskModelMixin:
     @declared_attr
     def heartbeat_at(cls) -> "Mapped[datetime | None]":
         return mapped_column(DateTime(timezone=True), default=None)
+
+    @declared_attr
+    def dispatch_checked_at(cls) -> "Mapped[datetime | None]":
+        return mapped_column(
+            DateTime(timezone=True)
+            .with_variant(mysql.DATETIME(fsp=6), "mysql", "mariadb")
+            .with_variant(oracle.TIMESTAMP(timezone=True), "oracle"),
+            default=None,
+            nullable=True,
+        )
 
     @declared_attr
     def result_json(cls) -> "Mapped[JSONValue]":

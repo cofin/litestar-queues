@@ -1090,3 +1090,34 @@ async def test_advanced_alchemy_stale_requeue_priority_policy(advanced_alchemy_b
     from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
 
     await assert_stale_requeue_priority_policy(advanced_alchemy_backend)
+
+
+async def test_dispatch_repair_candidates(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_dispatch_repair_candidates
+
+    await assert_dispatch_repair_candidates(advanced_alchemy_backend)
+
+
+async def test_scheduled_execution_ref_contenders(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_contenders
+
+    first = advanced_alchemy_backend
+    second = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(
+            sqlalchemy_config=first._sqlalchemy_config,
+            model_class=first._model_class,
+            maintenance_model_class=first._maintenance_model_class,
+            task_reservation_model_class=first._task_reservation_model_class,
+        )
+    )
+    await second.open()
+    try:
+        await assert_scheduled_execution_ref_contenders(first, second)
+    finally:
+        await second.close()
+
+
+async def test_scheduled_execution_ref_rejects_mismatches(advanced_alchemy_backend: "SQLAlchemyBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
+
+    await assert_scheduled_execution_ref_rejects_mismatches(advanced_alchemy_backend)

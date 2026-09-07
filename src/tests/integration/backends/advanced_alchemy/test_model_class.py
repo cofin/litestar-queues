@@ -28,7 +28,7 @@ from tests.integration.backends.advanced_alchemy._aa_schema import create_tables
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from sqlalchemy import Table
+    from sqlalchemy import Connection, Table
 
 pytestmark = pytest.mark.anyio
 
@@ -387,3 +387,124 @@ def _as_utc(value: "datetime") -> "datetime":
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def test_dispatch_checked_column_and_repair_index() -> "None":
+    from sqlalchemy.dialects import mysql, oracle, postgresql
+
+    from litestar_queues.backends.advanced_alchemy import QueueTaskModel
+
+    for model in (QueueTaskModel, CustomQueueTaskModel):
+        table = _table(model)
+        column = table.c.dispatch_checked_at
+        assert column.nullable is True
+        assert str(column.type.compile(dialect=cast("Any", mysql.dialect)())) == "DATETIME(6)"
+        assert str(column.type.compile(dialect=cast("Any", oracle.dialect)())) == "TIMESTAMP WITH TIME ZONE"
+        assert str(column.type.compile(dialect=cast("Any", postgresql.dialect)())) == "TIMESTAMP WITH TIME ZONE"
+        repair_index = next(index for index in table.indexes if index.name == f"ix_{table.name}_dispatch_repair")
+        assert [column.name for column in repair_index.columns] == [
+            "execution_backend",
+            "status",
+            "dispatch_checked_at",
+            "created_at",
+            "id",
+        ]
+
+
+async def test_dispatch_checked_upgrade_preserves_populated_custom_table(tmp_path: "Path") -> "None":
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import Column, MetaData, Table
+
+    config = _sqlite_config(tmp_path / "repair-upgrade.db")
+    current = _table(CustomQueueTaskModel)
+    legacy = Table(
+        current.name,
+        MetaData(),
+        *(column._copy() for column in current.columns if column.name != "dispatch_checked_at"),
+    )
+    task_id = uuid4()
+    stamp = datetime.now(timezone.utc)
+    engine = config.get_engine()
+    async with engine.begin() as connection:
+        await connection.run_sync(legacy.create)
+        await connection.execute(
+            legacy.insert().values(
+                id=task_id,
+                task_name="repair.legacy",
+                task_args=[],
+                task_kwargs={},
+                metadata={},
+                queue="default",
+                execution_backend="cloudtasks",
+                execution_ref=None,
+                status="scheduled",
+                priority=0,
+                retry_count=0,
+                max_retries=3,
+                created_at=stamp,
+                queued_at=stamp,
+                updated_at=stamp,
+                scheduled_at=stamp + timedelta(hours=1),
+            )
+        )
+
+    def upgrade(connection: "Connection") -> "None":
+        operations = Operations(MigrationContext.configure(connection))
+        operations.add_column(
+            current.name, Column("dispatch_checked_at", current.c.dispatch_checked_at.type, nullable=True)
+        )
+        operations.create_index(
+            operations.f(f"ix_{current.name}_dispatch_repair"),
+            current.name,
+            ["execution_backend", "status", "dispatch_checked_at", "created_at", "id"],
+        )
+
+    async with engine.begin() as connection:
+        await connection.run_sync(upgrade)
+    backend = SQLAlchemyBackend(
+        backend_config=SQLAlchemyBackendConfig(sqlalchemy_config=config, model_class=CustomQueueTaskModel)
+    )
+    await backend.open()
+    try:
+        stored = await backend.get_task(task_id)
+        assert stored is not None
+        assert stored.task_name == "repair.legacy"
+        assert stored.status == "scheduled"
+        assert stored.max_retries == 3
+        assert stored.dispatch_checked_at is None
+        repaired = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+        assert [record.id for record in repaired.records] == [task_id]
+        assert repaired.records[0].dispatch_checked_at is not None
+    finally:
+        await backend.close()
+    with contextlib.closing(sqlite3.connect(tmp_path / "repair-upgrade.db")) as sqlite_connection:
+        names = {row[1] for row in sqlite_connection.execute(f"PRAGMA index_list({current.name})")}
+    assert f"ix_{current.name}_dispatch_repair" in names
+
+
+def test_dispatch_checked_missing_custom_mapping_fails_configuration(tmp_path: "Path") -> "None":
+    class MissingDispatchMapping(UUIDAuditBase, QueueTaskModelMixin):
+        __tablename__ = "missing_dispatch_mapping"
+        __mapper_args__ = {"exclude_properties": ["dispatch_checked_at"]}
+
+    with pytest.raises(QueueConfigurationError, match="dispatch_checked_at"):
+        SQLAlchemyBackend(
+            backend_config=SQLAlchemyBackendConfig(
+                sqlalchemy_config=_sqlite_config(tmp_path / "missing-dispatch.db"), model_class=MissingDispatchMapping
+            )
+        )
+
+
+def test_dispatch_repair_index_compiles_for_long_custom_table_name() -> "None":
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    class LongNameQueueTask(UUIDAuditBase, QueueTaskModelMixin):
+        __tablename__ = "q" * 49
+
+    table = _table(LongNameQueueTask)
+    index = next(index for index in table.indexes if str(index.name).endswith("_dispatch_repair"))
+    dialect = cast("Any", postgresql.dialect)()
+    assert "dispatch_checked_at" in str(CreateIndex(index).compile(dialect=dialect))
+    assert len(dialect.identifier_preparer.format_index(index)) <= 63
