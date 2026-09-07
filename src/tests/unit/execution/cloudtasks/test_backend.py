@@ -18,7 +18,7 @@ import pytest
 
 from litestar_queues import QueueConfig, QueueService, WorkerConfig
 from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
-from litestar_queues.exceptions import QueueConfigurationError, QueueDispatchError
+from litestar_queues.exceptions import QueueDispatchError
 from tests.unit.execution.cloudtasks._fakes import AlreadyExists, FakeCloudTasksClient, ServiceUnavailable
 
 if TYPE_CHECKING:
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig
     from litestar_queues.models import QueuedTaskRecord
+    from tests.unit.execution.cloudtasks._fakes import CreateCall
 
 pytestmark = pytest.mark.anyio
 
@@ -385,6 +386,32 @@ async def test_an_already_exists_for_a_superseded_name_is_a_failure(harness: "Ca
         await live.schedule(record)
 
 
+@pytest.mark.parametrize("change", ["running", "retry", "backend", "expired"])
+async def test_already_exists_requires_the_same_eligible_attempt(
+    harness: "Callable[..., Any]", change: "str"
+) -> "None":
+    live = await harness()
+    record = await live.enqueue(max_retries=2)
+    storage = live.service.get_queue_backend()
+
+    async def collision_after_change(call: "CreateCall") -> "None":
+        if change in {"running", "retry"}:
+            await storage.claim_task(record.id)
+            if change == "retry":
+                await storage.fail_task(record.id, "retry", retry=True)
+        elif change == "backend":
+            record.execution_backend = "cloudrun"
+        else:
+            record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        message = "provider collision"
+        raise AlreadyExists(message)
+
+    live.client.on_create = collision_after_change
+    with pytest.raises(QueueDispatchError) as error:
+        await live.schedule(record)
+    assert error.value.task_id == record.id and error.value.committed
+
+
 async def test_a_lost_response_raises_a_committed_dispatch_error(harness: "Callable[..., Any]") -> "None":
     """The record is durable, so the caller must not retry the whole enqueue."""
     live = await harness()
@@ -506,8 +533,9 @@ async def test_a_record_beyond_the_schedule_horizon_is_refused(harness: "Callabl
     live = await harness()
     record = await live.enqueue(scheduled_at=datetime.now(timezone.utc) + timedelta(days=31))
 
-    with pytest.raises(QueueConfigurationError):
+    with pytest.raises(QueueDispatchError) as error:
         await live.schedule(record)
+    assert error.value.task_id == record.id and error.value.committed
 
     assert live.client.create_calls == []
 
@@ -517,8 +545,9 @@ async def test_a_record_naming_another_backend_is_refused(harness: "Callable[...
     record = await live.enqueue()
     await live.service.get_queue_backend().set_execution_backend(record.id, "local")
 
-    with pytest.raises(QueueConfigurationError):
+    with pytest.raises(QueueDispatchError) as error:
         await live.schedule(await live.reload(record))
+    assert error.value.task_id == record.id and error.value.committed
 
     assert live.client.create_calls == []
 

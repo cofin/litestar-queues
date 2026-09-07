@@ -26,7 +26,7 @@ from litestar_queues.events.context import TaskExecutionContext, bind_task_conte
 from litestar_queues.events.models import QueueEvent, QueueEventActor
 from litestar_queues.events.producer import QueueEventProducer
 from litestar_queues.events.sinks import _call_optional_lifecycle, _select_lifecycle_error
-from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError
+from litestar_queues.exceptions import JobCancelledError, NonRetryableError, QueueConfigurationError, QueueDispatchError
 from litestar_queues.execution import get_execution_backend
 from litestar_queues.execution.base import ExecutionCancelResult
 from litestar_queues.task import (
@@ -601,12 +601,21 @@ class QueueService:
 
         Returns:
             The live record.
+
+        Raises:
+            QueueDispatchError: If dispatch or the final reload fails after the
+                record was committed. The error retains the original task ID.
         """
         backend = self.get_execution_backend()
         if not backend.schedules_on_enqueue:
             return record
+        task_id = record.id
         await backend.schedule(self, record)
-        return await self.get_queue_backend().get_task(record.id) or record
+        try:
+            return await self.get_queue_backend().get_task(task_id) or record
+        except Exception as exc:
+            msg = f"Dispatched task {task_id} could not be reloaded."
+            raise QueueDispatchError(msg, task_id=task_id, committed=True) from exc
 
     def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
         if name == execution_backend_name(self._config.execution_backend):

@@ -10,7 +10,7 @@ leaves a handle to look the delivery up by.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from litestar_queues.config import QueueConfig
     from litestar_queues.execution.cloudtasks._typing import CloudTasksClient
     from litestar_queues.models import QueuedTaskRecord
+    from litestar_queues.observability import QueueObservabilityRuntimeProtocol
     from litestar_queues.service import QueueService
 
 __all__ = ("CloudTasksExecutionBackend",)
@@ -171,29 +172,39 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             longer eligible.
 
         Raises:
-            Exception: Whatever prevented the delivery from being created,
-                after the failure has been marked on the span. The record is
-                committed, so the caller must not retry the enqueue.
+            QueueDispatchError: An ordinary dispatch failure after commit. The
+                original task identity is retained; do not retry the enqueue.
         """
-        current = await service.get_queue_backend().get_task(record.id)
-        if current is None or current.is_terminal:
-            _record_outcome(service, record, _SCHEDULE, _DISPATCH_SKIPPED)
-            return None
-
-        runtime = service.observability_runtime
-        span = runtime.start_span(
-            "litestar_queues.dispatch", kind="producer", attributes=_queue_observability_attributes("dispatch", current)
-        )
+        snapshot = replace(record)
+        runtime = None
+        span = None
         try:
+            runtime = service.observability_runtime
+            current = await service.get_queue_backend().get_task(snapshot.id)
+            if current is None or current.status not in _REPAIRABLE_STATUSES:
+                _record_outcome(service, snapshot, _SCHEDULE, _DISPATCH_SKIPPED)
+                return None
+            current = replace(current)
+            span = runtime.start_span(
+                "litestar_queues.dispatch",
+                kind="producer",
+                attributes=_queue_observability_attributes("dispatch", current),
+            )
             return await self._schedule_delivery(service, current)
-        except Exception:
-            # The phase, never the exception object. A span serializes the
-            # message of anything recorded onto it, and Google's own errors
-            # quote the target URL and the calling service account.
-            runtime.set_status_error(span, _SCHEDULE.phase)
+        except QueueDispatchError:
+            _mark_dispatch_span_error(runtime, span)
             raise
+        except Exception as exc:
+            _mark_dispatch_span_error(runtime, span)
+            await self._report_delivery_failure(service, snapshot, exc, operation=_SCHEDULE)
+            msg = f"Cloud Tasks delivery could not be created for task {snapshot.id}."
+            raise QueueDispatchError(msg, task_id=snapshot.id, committed=True) from exc
         finally:
-            runtime.end_span(span)
+            if span is not None and runtime is not None:
+                try:
+                    runtime.end_span(span)
+                except Exception:  # noqa: BLE001 - diagnostics must not mask the committed task identity.
+                    logger.warning("Cloud Tasks dispatch span finalization failed")
 
     async def _schedule_delivery(self, service: "QueueService", current: "QueuedTaskRecord") -> "str | None":
         """Reserve a name for the current attempt and create its delivery.
@@ -207,11 +218,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                 would accept a delivery that can never run.
         """
         config = self.execution_config
-        try:
-            _validate_schedulable(current, config)
-        except QueueConfigurationError:
-            _record_outcome(service, current, _SCHEDULE, _SCHEDULE.failed)
-            raise
+        _validate_schedulable(current, config)
 
         task_name = current.execution_ref
         if task_name is None or not _is_current_delivery_name(task_name, config, current):
@@ -239,13 +246,19 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         Returns:
             How many records the pass looked at, and how many it re-delivered.
         """
-        candidates = await service.get_queue_backend().list_running_external(limit=limit)
+        if limit < 0:
+            msg = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if limit == 0:
+            return DispatchRepairResult(examined=0, changed=0)
+        page = await service.get_queue_backend().list_dispatch_repair_candidates(_BACKEND_NAME, limit=limit)
+        candidates = tuple(replace(record) for record in page.records)
         config = self.execution_config
         changed = 0
         for candidate in candidates:
             if await self._repair_one(service, candidate, config):
                 changed += 1
-        return DispatchRepairResult(examined=len(candidates), changed=changed)
+        return DispatchRepairResult(examined=page.examined, changed=changed)
 
     async def close(self) -> "None":
         """Release a client this backend created.
@@ -269,32 +282,25 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         Returns:
             True when a new delivery was created.
         """
-        current = await service.get_queue_backend().get_task(record.id)
-        if (
-            current is None
-            or current.execution_ref is None
-            or current.status not in _REPAIRABLE_STATUSES
-            or current.execution_backend != _BACKEND_NAME
-        ):
-            return False
+        snapshot = replace(record)
         try:
-            if await self._delivery_exists(current.execution_ref, config):
+            current = await service.get_queue_backend().get_task(snapshot.id)
+            if current is None or not _same_attempt(current, snapshot, snapshot.execution_ref):
+                return False
+            current = replace(current)
+            _validate_schedulable(current, config)
+            if current.execution_ref is not None and await self._delivery_exists(current.execution_ref, config):
                 _record_outcome(service, current, _REPAIR, _REPAIR_PRESENT)
                 return False
             task_name = await self._reserve_delivery_name(service, current, config)
             if task_name is None:
                 return False
-            await self._create_delivery(service, current, config, task_name, operation=_REPAIR)
+            return await self._create_delivery(service, current, config, task_name, operation=_REPAIR) is not None
         except QueueDispatchError:
-            # Already counted and reported with a sanitized payload where it was
-            # raised. The record keeps the name it reserved, and the next
-            # maintenance pass tries again.
             return False
         except Exception as exc:  # noqa: BLE001 - one broken candidate must not end the pass.
-            _record_outcome(service, current, _REPAIR, _REPAIR.failed)
-            await self._publish_delivery_failure(service, current, exc, operation=_REPAIR)
+            await self._report_delivery_failure(service, snapshot, exc, operation=_REPAIR)
             return False
-        return True
 
     async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
         """Delete the Cloud Tasks delivery holding this record's attempt.
@@ -351,11 +357,22 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         Returns:
             The reserved name, or ``None`` when the record no longer exists.
         """
-        task_name = _delivery_name(config, record)
-        stored = await service.get_queue_backend().set_execution_ref(
-            record.id, record.execution_backend, task_name, execution_profile=record.execution_profile
+        snapshot = replace(record)
+        task_name = _delivery_name(config, snapshot)
+        stored = await service.get_queue_backend().reserve_scheduled_execution_ref(
+            snapshot.id,
+            snapshot.execution_backend,
+            task_name,
+            expected_retry_count=snapshot.retry_count,
+            expected_execution_ref=snapshot.execution_ref,
         )
-        return None if stored is None else task_name
+        if stored is None:
+            return None
+        stored = replace(stored)
+        if not _same_attempt(stored, snapshot, task_name):
+            return None
+        _validate_schedulable(stored, config)
+        return task_name
 
     async def _create_delivery(
         self,
@@ -365,42 +382,67 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         task_name: "str",
         *,
         operation: "_DeliveryOperation",
-    ) -> "str":
+    ) -> "str | None":
         """Create the named delivery on the queue.
 
+        Ownership is checked just before the RPC, but cancellation or a claim
+        can still race with provider creation. The wire carries only task_id:
+        atomic consumer claims reject terminal, expired, or already-running
+        work; an old delivery can wake a later due attempt. This is neither a
+        cross-provider transaction nor an exactly-once transport guarantee.
+
         Returns:
-            The delivery's full resource name.
+            The delivery's full resource name, or None after ownership is lost.
 
         Raises:
             QueueDispatchError: If the delivery could not be created. The record
                 is committed, so the caller must not retry the enqueue.
         """
-        client = await self._get_client()
+        snapshot = replace(record)
         try:
+            client = await self._get_client()
+            current = await service.get_queue_backend().get_task(snapshot.id)
+            if current is None or not _same_attempt(current, snapshot, task_name):
+                return None
+            current = replace(current)
+            _validate_schedulable(current, config)
             await client.create_task(
-                request=_create_task_request(config, record, task_name), timeout=config.api_timeout
+                request=_create_task_request(config, current, task_name), timeout=config.api_timeout
             )
         except Exception as exc:
-            if _is_already_exists(exc) and await self._owns_delivery(service, record, task_name):
-                # This attempt's own name: a previous create reached Google after
-                # all, so the delivery it describes is already in flight.
-                _record_outcome(service, record, operation, operation.already_present)
+            if _is_already_exists(exc) and await self._owns_delivery(service, snapshot, task_name):
+                _record_outcome(service, snapshot, operation, operation.already_present)
                 return task_name
-            _record_outcome(service, record, operation, operation.failed)
-            await self._publish_delivery_failure(service, record, exc, operation=operation)
-            msg = f"Cloud Tasks delivery could not be created for task {record.id}."
-            raise QueueDispatchError(msg, task_id=record.id, committed=True) from exc
-        _record_outcome(service, record, operation, operation.created)
+            await self._report_delivery_failure(service, snapshot, exc, operation=operation)
+            msg = f"Cloud Tasks delivery could not be created for task {snapshot.id}."
+            raise QueueDispatchError(msg, task_id=snapshot.id, committed=True) from exc
+        _record_outcome(service, snapshot, operation, operation.created)
         return task_name
 
     async def _owns_delivery(self, service: "QueueService", record: "QueuedTaskRecord", task_name: "str") -> "bool":
-        """Whether the record still names ``task_name`` as its delivery.
+        """Check the exact still-eligible attempt after an ambiguous provider result.
 
         Returns:
-            True when the collision proves this attempt's delivery exists.
+            Whether the durable attempt still owns the name.
         """
-        current = await service.get_queue_backend().get_task(record.id)
-        return current is not None and current.execution_ref == task_name
+        snapshot = replace(record)
+        current = await service.get_queue_backend().get_task(snapshot.id)
+        return current is not None and _same_attempt(current, snapshot, task_name)
+
+    async def _report_delivery_failure(
+        self,
+        service: "QueueService",
+        record: "QueuedTaskRecord",
+        exc: "BaseException",
+        *,
+        operation: "_DeliveryOperation",
+    ) -> "None":
+        """Keep diagnostics from replacing the durable dispatch failure."""
+        try:
+            _record_outcome(service, record, operation, operation.failed)
+            await self._publish_delivery_failure(service, record, exc, operation=operation)
+        except Exception:  # noqa: BLE001 - diagnostics must not mask the committed task identity.
+            logger.warning("Cloud Tasks dispatch diagnostics failed")
 
     async def _get_client(self) -> "CloudTasksClient":
         """Return the Cloud Tasks client, creating it on first use.
@@ -484,6 +526,25 @@ def _record_outcome(
     """
     service.observability_runtime.record_counter(
         operation.metric, attributes={**_queue_metric_attributes(record), operation.outcome_label: outcome}
+    )
+
+
+def _mark_dispatch_span_error(runtime: "QueueObservabilityRuntimeProtocol | None", span: "Any") -> "None":
+    if span is not None and runtime is not None:
+        try:
+            runtime.set_status_error(span, _SCHEDULE.phase)
+        except Exception:  # noqa: BLE001 - observability cannot replace the durable error.
+            logger.warning("Cloud Tasks dispatch span status failed")
+
+
+def _same_attempt(current: "QueuedTaskRecord", snapshot: "QueuedTaskRecord", reference: "str | None") -> "bool":
+    return (
+        current.id == snapshot.id
+        and current.execution_backend == snapshot.execution_backend == _BACKEND_NAME
+        and current.retry_count == snapshot.retry_count
+        and current.execution_ref == reference
+        and current.status in _REPAIRABLE_STATUSES
+        and (current.expires_at is None or current.expires_at > datetime.now(timezone.utc))
     )
 
 

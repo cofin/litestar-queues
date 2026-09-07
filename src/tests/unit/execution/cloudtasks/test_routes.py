@@ -17,6 +17,7 @@ see rather than a queue outcome.
 """
 
 from contextlib import AsyncExitStack
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -488,6 +489,27 @@ async def test_a_delivery_that_loses_the_claim_is_acknowledged(delivery: "Callab
 
     assert response.status_code == HTTP_NO_CONTENT
     assert executions == []
+
+
+@pytest.mark.parametrize("eligibility", ["future", "expired"])
+async def test_a_delivery_cannot_bypass_due_or_expiry_guards(
+    delivery: "Callable[..., Any]", eligibility: "str"
+) -> "None":
+    """The task-ID-only wire protocol still relies on the atomic storage claim."""
+    live = await delivery()
+    now = datetime.now(timezone.utc)
+    record = await live.service.get_queue_backend().enqueue(
+        SUCCEEDS,
+        execution_backend="cloudtasks",
+        scheduled_at=now + timedelta(hours=1) if eligibility == "future" else None,
+        expires_at=now - timedelta(seconds=1) if eligibility == "expired" else None,
+    )
+    response = await live.deliver(record.id)
+    assert response.status_code == HTTP_NO_CONTENT
+    assert executions == []
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert stored.status == ("scheduled" if eligibility == "future" else "expired")
 
 
 async def test_a_second_delivery_after_completion_is_acknowledged(delivery: "Callable[..., Any]") -> "None":
