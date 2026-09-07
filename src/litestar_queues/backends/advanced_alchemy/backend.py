@@ -1,6 +1,7 @@
 """Advanced Alchemy queue backend."""
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -145,12 +146,28 @@ class SQLAlchemyBackend(BaseQueueBackend):
 
     async def close(self) -> "None":
         """Close backend-owned resources."""
-        if self._notification_listener is not None:
-            await self._notification_listener.close()
-            self._notification_listener = None
-        if self._event_log is not None:
-            await self._event_log.flush_events()
-        self._opened = False
+        event_log, self._event_log = self._event_log, None
+        listener, self._notification_listener = self._notification_listener, None
+        primary: BaseException | None = None
+        try:
+            if event_log is not None:
+                try:
+                    await event_log.aclose()
+                except (Exception, asyncio.CancelledError) as error:  # noqa: BLE001 - finish listener cleanup first.
+                    primary = error
+            if listener is not None:
+                try:
+                    await listener.close()
+                except (Exception, asyncio.CancelledError) as error:
+                    if primary is None or isinstance(error, asyncio.CancelledError):
+                        primary = error
+                    else:
+                        with suppress(Exception):
+                            self._logger.warning("Advanced Alchemy notification cleanup also failed", exc_info=True)
+        finally:
+            self._opened = False
+        if primary is not None:
+            raise primary
 
     def get_event_log(self, config: "EventHistoryConfig") -> "AdvancedAlchemyQueueEventLog":
         """Return Advanced Alchemy-managed queue event history."""

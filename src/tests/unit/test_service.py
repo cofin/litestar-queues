@@ -18,7 +18,7 @@ from litestar_queues.execution.base import ExecutionCancelResult
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
     from uuid import UUID
 
     from litestar_queues import Task, TaskDependencyProvider, TaskExecutionContext
@@ -1828,6 +1828,16 @@ class _RecordingEventLog:
 
     async def flush_events(self) -> "None":
         self.flushed = True
+
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        del barrier
+        await self.publish_event(event)
+        await release()
+
+    async def aclose(self) -> "None":
+        await self.flush_events()
 
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None

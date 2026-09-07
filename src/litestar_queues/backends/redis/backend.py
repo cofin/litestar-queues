@@ -42,7 +42,7 @@ from litestar_queues.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from litestar_queues.backends._protocol import ClientLike, PipelineLike, PubSubLike
     from litestar_queues.config import QueueConfig
@@ -975,25 +975,47 @@ class RedisQueueBackend(BaseQueueBackend):
         return True
 
     async def close(self) -> "None":
-        """Close owned Redis-protocol client resources."""
-        if self._event_log is not None:
-            await self._event_log.flush_events()
-        await self._pending_read.aclose()
-        await self._control_pending_read.aclose()
-        await self._close_completion_subscriber()
-        if self._pubsub is not None:
-            await _close_pubsub(self._pubsub, self._wakeup_channel)
-            self._pubsub = None
-        if self._control_pubsub is not None:
-            await _close_pubsub(self._control_pubsub, self._control_channel)
-            self._control_pubsub = None
-        if self._owns_client and self._client is not None:
-            close = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
-            if close is not None:
+        """Drain history and attempt every owned resource cleanup."""
+        error: BaseException | None = None
+
+        async def close_resource(close: "Callable[[], Any]") -> "None":
+            nonlocal error
+            try:
                 result = close()
                 if inspect.isawaitable(result):
                     await result
-            self._client = None
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+                else:
+                    secondary = exc
+                    if isinstance(error, Exception) and not isinstance(exc, Exception):
+                        secondary, error = error, exc
+                    with suppress(Exception):
+                        self._logger.warning(
+                            "Redis resource cleanup failed.",
+                            exc_info=(type(secondary), secondary, secondary.__traceback__),
+                        )
+
+        event_log, self._event_log = self._event_log, None
+        if event_log is not None:
+            await close_resource(event_log.aclose)
+        await close_resource(self._pending_read.aclose)
+        await close_resource(self._control_pending_read.aclose)
+        await close_resource(self._close_completion_subscriber)
+        pubsub, self._pubsub = self._pubsub, None
+        if pubsub is not None:
+            await close_resource(lambda: _close_pubsub(pubsub, self._wakeup_channel))
+        control_pubsub, self._control_pubsub = self._control_pubsub, None
+        if control_pubsub is not None:
+            await close_resource(lambda: _close_pubsub(control_pubsub, self._control_channel))
+        if self._owns_client and self._client is not None:
+            client, self._client = self._client, None
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if close is not None:
+                await close_resource(close)
+        if error is not None:
+            raise error
 
     def get_event_log(self, config: "EventHistoryConfig") -> "RedisQueueEventLog":
         if self._event_log is None:
@@ -2085,7 +2107,11 @@ class RedisQueueBackend(BaseQueueBackend):
             return False
         exc = task.exception()
         if exc is not None:
-            await self._reset_pubsub()
+            try:
+                await self._reset_pubsub()
+            except Exception:
+                with suppress(Exception):
+                    self._logger.warning("Redis subscription cleanup after receive failure failed.", exc_info=True)
             raise exc
         return bool(task.result())
 
@@ -2122,7 +2148,11 @@ class RedisQueueBackend(BaseQueueBackend):
             return False
         exc = task.exception()
         if exc is not None:
-            await self._reset_control_pubsub()
+            try:
+                await self._reset_control_pubsub()
+            except Exception:
+                with suppress(Exception):
+                    self._logger.warning("Redis subscription cleanup after receive failure failed.", exc_info=True)
             raise exc
         return bool(task.result())
 
@@ -2236,12 +2266,24 @@ class RedisQueueBackend(BaseQueueBackend):
     async def _stop_completion_subscriber(
         self, reader: "asyncio.Task[None] | None", pubsub: "PubSubLike | None"
     ) -> "None":
+        error: BaseException | None = None
         if reader is not None:
             reader.cancel()
-            with suppress(asyncio.CancelledError):
-                await reader
+            try:
+                results = await asyncio.gather(reader, return_exceptions=True)
+                outcome = results[0]
+                if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                    error = outcome
+            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - finish owned cleanup before reraising.
+                error = exc
         if pubsub is not None:
-            await _close_pubsub(pubsub, self._completion_channel)
+            try:
+                await _close_pubsub(pubsub, self._completion_channel)
+            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - finish owned cleanup before reraising.
+                if error is None or (isinstance(error, Exception) and not isinstance(exc, Exception)):
+                    error = exc
+        if error is not None:
+            raise error
 
     def _create_client(self, url: "str") -> "ClientLike":
         from redis import asyncio as redis_asyncio
@@ -2790,16 +2832,24 @@ async def _receive_pubsub_message(pubsub: "PubSubLike") -> "bool":
 
 
 async def _close_pubsub(pubsub: "PubSubLike", channel: "str") -> "None":
-    """Best-effort unsubscribe + close on a pubsub connection."""
+    """Attempt both unsubscribe and close, retaining cancellation priority."""
+    error: BaseException | None = None
     unsubscribe = getattr(pubsub, "unsubscribe", None)
     if unsubscribe is not None:
-        result = unsubscribe(channel)
-        if inspect.isawaitable(result):
-            with suppress(Exception):
+        try:
+            result = unsubscribe(channel)
+            if inspect.isawaitable(result):
                 await result
+        except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - finish owned cleanup before reraising.
+            error = exc
     close = getattr(pubsub, "aclose", None) or getattr(pubsub, "close", None)
     if close is not None:
-        result = close()
-        if inspect.isawaitable(result):
-            with suppress(Exception):
+        try:
+            result = close()
+            if inspect.isawaitable(result):
                 await result
+        except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - finish owned cleanup before reraising.
+            if error is None or (isinstance(error, Exception) and not isinstance(exc, Exception)):
+                error = exc
+    if error is not None:
+        raise error

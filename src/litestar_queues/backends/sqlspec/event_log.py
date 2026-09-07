@@ -827,19 +827,44 @@ class SQLSpecQueueEventLog:
     async def _comparison_records(
         self, driver: "SQLSpecDriver", records: "Sequence[QueueEventLogRecord]"
     ) -> "list[QueueEventLogRecord]":
-        if not records or self._store._event_dialect_name() != "mysql":  # noqa: SLF001
+        if not records:
             return list(records)
-        # TIMESTAMP(0) follows server SQL mode. Normalize only replay conflicts,
-        # in one bounded projection, not one round-trip per newly written event.
-        parameters = {
-            f"time_{index}": self._datetime_serializer(record.occurred_at) for index, record in enumerate(records)
-        }
-        projection = ", ".join(f"CAST(:{name} AS DATETIME) AS {name}" for name in parameters)
-        rows = await driver.select(f"SELECT {projection}", parameters)
-        return [
-            replace(record, occurred_at=_deserialize_datetime(rows[0][f"time_{index}"]))
-            for index, record in enumerate(records)
-        ]
+        dialect = self._store._event_dialect_name()  # noqa: SLF001
+        float_type = self._store._float_type()  # noqa: SLF001
+        normalized: list[QueueEventLogRecord] = []
+        # Match both timestamp and numeric storage precision. Restrict casts to
+        # compared records, with at most 500 binds per projection.
+        for start in range(0, len(records), 100):
+            batch = records[start : start + 100]
+            parameters: dict[str, Any] = {}
+            projections = []
+            changes: list[dict[str, Any]] = [{} for _ in batch]
+            bindings: list[tuple[int, str, str]] = []
+            for index, record in enumerate(batch):
+                columns = [
+                    (column, getattr(record, column), float_type)
+                    for column in ("progress_current", "progress_total", "progress_percent", "duration_ms")
+                    if getattr(record, column) is not None
+                ]
+                if dialect == "mysql":
+                    columns.append(("occurred_at", self._datetime_serializer(record.occurred_at), "DATETIME"))
+                for column, value, data_type in columns:
+                    name = f"value_{len(parameters)}"
+                    parameters[name] = value
+                    projections.append(f"CAST(:{name} AS {data_type}) AS {name}")
+                    bindings.append((index, column, name))
+            if parameters:
+                statement = "SELECT " + ", ".join(projections)
+                if dialect == "oracle":
+                    statement += " FROM DUAL"
+                rows = await driver.select(statement, parameters)
+                for index, column, name in bindings:
+                    value = rows[0][name]
+                    changes[index][column] = (
+                        _deserialize_datetime(value) if column == "occurred_at" else _optional_float(value)
+                    )
+            normalized.extend(replace(record, **change) for record, change in zip(batch, changes, strict=True))
+        return normalized
 
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None

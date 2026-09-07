@@ -361,6 +361,7 @@ async def test_history_replays_actual_commit_and_releases_to_independent_reader(
         scope="task",
         occurred_at=datetime(2026, 1, 2, 3, 4, 5, 987654, tzinfo=timezone.utc),
         actor=QueueEventActor(type="user", id="same"),
+        progress_current=0.123456789,
         payload={"nested": {"value": 1}},
     )
     factory = log._session_factory

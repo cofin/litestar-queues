@@ -19,6 +19,14 @@ def test_protocol_declares_extra() -> "None":
     assert signature.parameters["extra"].default is None
 
 
+def test_protocol_declares_explicit_commit_release_and_close() -> "None":
+    signature = inspect.signature(QueueEventLog.publish_event_after_commit)
+    assert signature.parameters["release"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["release"].default is inspect.Parameter.empty
+    assert signature.parameters["barrier"].default is False
+    assert inspect.iscoroutinefunction(QueueEventLog.aclose)
+
+
 @pytest.fixture(params=["memory", "ephemeral"])
 async def immediate_logs(
     request: pytest.FixtureRequest,

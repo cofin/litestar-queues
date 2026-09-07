@@ -2,15 +2,20 @@
 
 import asyncio
 import logging
-import time
+from contextlib import suppress
+from sqlite3 import IntegrityError as SQLiteIntegrityError
 from typing import TYPE_CHECKING
 
+from advanced_alchemy.exceptions import DuplicateKeyError
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
+
+from litestar_queues.events._history_buffer import _HistoryBuffer
 from litestar_queues.events._log_records import event_log_record_from_event
 from litestar_queues.events.query import QueueEventQuery
 from litestar_queues.events.typing import OffsetPagination
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
     from contextlib import AbstractAsyncContextManager
     from datetime import datetime
 
@@ -20,20 +25,13 @@ if TYPE_CHECKING:
 __all__ = ("AdvancedAlchemyQueueEventLog",)
 
 logger = logging.getLogger(__name__)
+_MYSQL_DUPLICATE_KEY = 1062
 
 
 class AdvancedAlchemyQueueEventLog:
     """Buffered Advanced Alchemy event-history writer and query interface."""
 
-    __slots__ = (
-        "_config",
-        "_flush_lock",
-        "_last_flush",
-        "_logger",
-        "_pending",
-        "_service_factory",
-        "_transaction_factory",
-    )
+    __slots__ = ("_buffer", "_config", "_logger", "_service_factory", "_transaction_factory")
 
     def __init__(
         self,
@@ -46,36 +44,61 @@ class AdvancedAlchemyQueueEventLog:
         self._config = config
         self._service_factory = service_factory
         self._transaction_factory = transaction_factory
-        self._pending: "list[QueueEventLogRecord]" = []
-        self._last_flush = time.monotonic()
-        self._flush_lock = asyncio.Lock()
         self._logger = runtime_logger or logger
+        self._buffer = _HistoryBuffer(config, self._write_history_batch)
 
     async def publish_event(self, event: "QueueEvent") -> "None":
-        """Buffer a queue event and flush when configured thresholds are reached."""
-        should_flush = False
-        async with self._flush_lock:
-            self._pending.append(event_log_record_from_event(event, extra_columns=self._config.extra_columns))
-            should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
-        if should_flush:
-            await self.flush_events()
+        """Accept a bounded snapshot for size- or deadline-triggered persistence."""
+        await self._buffer.enqueue(event_log_record_from_event(event, extra_columns=self._config.extra_columns))
+
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        """Release live delivery only after the history transaction commits."""
+        await self._buffer.enqueue(
+            event_log_record_from_event(event, extra_columns=self._config.extra_columns),
+            release=release,
+            barrier=barrier,
+        )
+
+    async def aclose(self) -> "None":
+        """Stop admission and finish the owned history coordinator."""
+        await self._buffer.stop()
 
     async def flush_events(self) -> "None":
-        """Flush buffered queue events through an Advanced Alchemy session."""
-        async with self._flush_lock:
-            if not self._pending:
-                return
-            batch = list(self._pending)
+        """Attempt persistence and live release of previously accepted events."""
+        await self._buffer.flush()
+
+    async def _write_history_batch(self, records: "Sequence[QueueEventLogRecord]") -> "None":
+        for attempt in range(2):
             try:
-                async with self._transaction_factory() as service:
-                    await service.add_records(batch)
-            except Exception:
-                if self._config.strict:
+                await self._write_history_transaction(records)
+            except Exception as error:  # noqa: PERF203 - one fresh transaction retries a unique-key race.
+                if attempt or not _is_duplicate_event_error(error):
                     raise
-                self._logger.warning("Advanced Alchemy queue event history flush failed", exc_info=True)
+            else:
                 return
-            del self._pending[: len(batch)]
-            self._last_flush = time.monotonic()
+
+    async def _write_history_transaction(self, records: "Sequence[QueueEventLogRecord]") -> "None":
+        primary: BaseException | None = None
+        try:
+            async with self._transaction_factory() as service:
+                try:
+                    await service.add_records(records)
+                except BaseException as error:
+                    primary = error
+                    raise
+        except BaseException as cleanup:
+            if isinstance(cleanup, asyncio.CancelledError):
+                raise
+            if primary is not None and cleanup is not primary:
+                with suppress(Exception):
+                    self._logger.warning("Advanced Alchemy history transaction cleanup also failed", exc_info=True)
+                raise primary from None
+            raise
+
+        if primary is not None:
+            raise primary
 
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
@@ -116,5 +139,31 @@ class AdvancedAlchemyQueueEventLog:
         async with self._transaction_factory() as service:
             return await service.cleanup_events(before=before, limit=limit, match=match, exclude=tuple(exclude))
 
-    def _flush_interval_elapsed(self) -> "bool":
-        return self._config.flush_interval <= 0 or time.monotonic() - self._last_flush >= self._config.flush_interval
+
+def _is_duplicate_event_error(error: "BaseException") -> "bool":
+    seen: set[int] = set()
+    native_integrity = False
+    while id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, DuplicateKeyError):
+            return True
+        if isinstance(error, SQLAlchemyIntegrityError) and isinstance(error.orig, BaseException):
+            native_integrity = True
+            error = error.orig
+            continue
+        if isinstance(error, SQLiteIntegrityError):
+            code = getattr(error, "sqlite_errorcode", None)
+            if code is not None:
+                return code in {1555, 2067}
+            return str(error).startswith(("UNIQUE constraint failed:", "PRIMARY KEY must be unique"))
+        if getattr(error, "sqlstate", None) == "23505" or getattr(error, "pgcode", None) == "23505":
+            return True
+        if native_integrity and error.args and error.args[0] == _MYSQL_DUPLICATE_KEY:
+            return True
+        if native_integrity and error.args and getattr(error.args[0], "code", None) == 1:
+            return True
+        cause = error.__cause__
+        if cause is None:
+            return False
+        error = cause
+    return False

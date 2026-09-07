@@ -104,3 +104,59 @@ async def test_valkey_event_cleanup_continues_in_exact_bounded_batches(valkey_ba
     assert await event_log.cleanup_events(before=cutoff, limit=2) == 1
     assert await event_log.cleanup_events(before=cutoff, limit=2) == 0
     assert (await event_log.query_events(QueueEventQuery())).items == []
+
+
+async def test_valkey_sparse_history_commits(valkey_backend: "ValkeyQueueBackend") -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_sparse_history_commits
+
+    await _assert_sparse_history_commits(valkey_backend)
+
+
+async def test_valkey_duplicate_preserves_first_record(valkey_backend: "ValkeyQueueBackend") -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_duplicate_preserves_first_record
+
+    await _assert_duplicate_preserves_first_record(valkey_backend)
+
+
+@pytest.mark.parametrize("pipeline", [False, True])
+async def test_valkey_partial_history_replay(
+    valkey_backend: "ValkeyQueueBackend", monkeypatch: pytest.MonkeyPatch, pipeline: bool
+) -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_partial_history_replay
+
+    await _assert_partial_history_replay(valkey_backend, monkeypatch, pipeline)
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_valkey_concurrent_history_initializers(valkey_backend: "ValkeyQueueBackend", conflict: bool) -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_concurrent_history_initializers
+
+    await _assert_concurrent_history_initializers(valkey_backend, conflict)
+
+
+async def test_valkey_history_failed_close_reopens(
+    valkey_backend: "ValkeyQueueBackend", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_history_failed_close_reopens
+
+    await _assert_history_failed_close_reopens(valkey_backend, monkeypatch)
+
+
+async def test_valkey_returned_pipeline_error_retains_history(
+    valkey_backend: "ValkeyQueueBackend", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_partial_history_replay
+
+    await _assert_partial_history_replay(valkey_backend, monkeypatch, True, returned_errors=True)
+
+
+async def test_valkey_conflicting_replay_repairs_stored_indices(valkey_backend: "ValkeyQueueBackend") -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_conflicting_replay_repairs_stored_indices
+
+    await _assert_conflicting_replay_repairs_stored_indices(valkey_backend)
+
+
+async def test_valkey_close_continues_after_later_cancellation(valkey_backend: "ValkeyQueueBackend") -> None:
+    from tests.integration.backends.redis.test_event_log import _assert_close_continues_after_later_cancellation
+
+    await _assert_close_continues_after_later_cancellation(valkey_backend)

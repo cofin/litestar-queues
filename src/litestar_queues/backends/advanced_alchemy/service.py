@@ -1,5 +1,6 @@
 """Advanced Alchemy queue persistence service."""
 
+from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -8,8 +9,10 @@ from advanced_alchemy.operations import OnConflictUpsert
 from advanced_alchemy.service import SQLAlchemyAsyncRepositoryService
 from advanced_alchemy.utils.serialization import decode_json as _decode_json
 from advanced_alchemy.utils.serialization import encode_json as _encode_json
-from sqlalchemy import and_, case, delete, desc, func, literal, or_, select, update
+from sqlalchemy import and_, case, delete, desc, func, literal, or_, select, text, update
+from sqlalchemy import cast as sql_cast
 from sqlalchemy import inspect as sqlalchemy_inspect
+from sqlalchemy.dialects import mysql, oracle
 from sqlalchemy.orm.exc import UnmappedColumnError
 
 from litestar_queues.backends.advanced_alchemy.repository import (
@@ -60,6 +63,7 @@ _SKIP_LOCKED_CLAIM_DIALECTS = frozenset({"oracle", "postgresql"})
 _NATIVE_KEYED_ENQUEUE_DIALECTS = frozenset({"mariadb", "mysql", "oracle", "postgresql"})
 _ORACLE_CLAIM_CANDIDATE_LIMIT = 10
 _CAS_CLAIM_BATCH_SIZE = 10
+_MICROSECOND_PRECISION = 6
 
 
 class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
@@ -75,8 +79,81 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         )
 
     async def add_records(self, records: "Sequence[QueueEventLogRecord]") -> "None":
-        """Persist event-history records."""
-        self.repository.session.add_all([self.model_from_record(record) for record in records])
+        """Add missing immutable events within the caller-owned transaction."""
+        incoming: dict[str, QueueEventLogRecord] = {}
+        for record in records:
+            canonical = self.record_from_model(self.model_from_record(record))
+            previous = incoming.get(record.event_id)
+            if previous is not None:
+                normalized = await self._comparison_records((previous, canonical))
+                _require_identical_history(*normalized)
+            else:
+                incoming[record.event_id] = canonical
+        missing = dict(incoming)
+        event_ids = tuple(incoming)
+        for start in range(0, len(event_ids), 500):
+            statement = select(self.model_type).where(self.model_type.event_id.in_(event_ids[start : start + 500]))
+            models = (await self.repository.session.execute(statement)).scalars().all()
+            stored = [self.record_from_model(model) for model in models]
+            compared = await self._comparison_records([incoming[record.event_id] for record in stored])
+            for original, candidate in zip(stored, compared, strict=True):
+                _require_identical_history(original, candidate)
+                missing.pop(original.event_id)
+        self.repository.session.add_all([self.model_from_record(record) for record in missing.values()])
+
+    async def _comparison_records(self, records: "Sequence[QueueEventLogRecord]") -> "list[QueueEventLogRecord]":
+        session = self.repository.session
+        dialect = session.get_bind().dialect
+        if not records:
+            return list(records)
+        comparison_type = self._comparison_timestamp_type()
+        # Match actual timestamp and numeric storage precision only for replay
+        # comparisons. 100 records cap the projection at 500 bound scalars.
+        normalized: list[QueueEventLogRecord] = []
+        for start in range(0, len(records), 100):
+            batch = records[start : start + 100]
+            projections: list[Any] = []
+            projected_fields: list[tuple[int, str]] = []
+            changes: list[dict[str, Any]] = [{} for _ in batch]
+            for index, record in enumerate(batch):
+                if comparison_type is not None:
+                    projections.append(sql_cast(literal(record.occurred_at), comparison_type))
+                    projected_fields.append((index, "occurred_at"))
+                for name in ("progress_current", "progress_total", "progress_percent", "duration_ms"):
+                    value = getattr(record, name)
+                    if value is not None:
+                        type_name = getattr(self.model_type, name).type.compile(dialect=dialect)
+                        parameter = f"history_{index}_{name}"
+                        # SQLAlchemy's MySQL compiler skips CAST(Float). The
+                        # native CAST preserves the same returned FLOAT codec.
+                        projections.append(text(f"CAST(:{parameter} AS {type_name})").bindparams(**{parameter: value}))
+                        projected_fields.append((index, name))
+                if dialect.name == "oracle":
+                    changes[index].update({
+                        field.name: None for field in fields(record) if getattr(record, field.name) == ""
+                    })
+            if projections:
+                row = (await session.execute(select(*projections))).one()
+                for (index, name), value in zip(projected_fields, row, strict=True):
+                    changes[index][name] = _coerce_datetime(value) if name == "occurred_at" else optional_float(value)
+            normalized.extend(replace(record, **values) for record, values in zip(batch, changes, strict=True))
+        return normalized
+
+    def _comparison_timestamp_type(self) -> "Any":
+        dialect = self.repository.session.get_bind().dialect
+        mapped_type = self.model_type.occurred_at.type
+        column_type = mapped_type.dialect_impl(dialect)
+        if dialect.name == "postgresql":
+            # Async driver adaptations can discard TIMESTAMP.precision;
+            # compile the actual mapped type, including with_variant choices.
+            declaration = mapped_type.compile(dialect=dialect)
+            if "(" in declaration and f"({_MICROSECOND_PRECISION})" not in declaration:
+                return mapped_type
+        elif dialect.name in {"mysql", "mariadb"}:
+            return mysql.DATETIME(fsp=getattr(column_type, "fsp", None) or 0)
+        elif dialect.name == "oracle":
+            return oracle.DATE() if isinstance(column_type, oracle.DATE) else mapped_type
+        return None
 
     def _criteria(self, query: "QueueEventQuery") -> "list[Any]":
         model = self.model_type
@@ -1784,6 +1861,17 @@ def _model_insert_values(model: "Any", model_type: "type[Any]") -> "dict[str, An
             continue
         values[column.name] = value
     return values
+
+
+def _require_identical_history(stored: "QueueEventLogRecord", incoming: "QueueEventLogRecord") -> "None":
+    conflicts = [
+        field.name
+        for field in fields(stored)
+        if field.name != "created_at" and getattr(stored, field.name) != getattr(incoming, field.name)
+    ]
+    if conflicts:
+        message = f"Conflicting immutable queue event history record for event ID {incoming.event_id!r}: {', '.join(conflicts)}."
+        raise QueueConfigurationError(message)
 
 
 def _utc_now() -> "datetime":

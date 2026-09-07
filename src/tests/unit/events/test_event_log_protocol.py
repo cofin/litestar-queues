@@ -11,7 +11,15 @@ def test_protocol_members() -> "None":
     if hasattr(QueueEventLog, "__protocol_attrs__"):
         members = set(QueueEventLog.__protocol_attrs__)
 
-    assert members == {"publish_event", "flush_events", "query_events", "summarize_stages", "cleanup_events"}
+    assert members == {
+        "publish_event",
+        "publish_event_after_commit",
+        "flush_events",
+        "aclose",
+        "query_events",
+        "summarize_stages",
+        "cleanup_events",
+    }
 
 
 def test_every_backend_event_log_satisfies_the_protocol() -> "None":

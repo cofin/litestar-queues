@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
     from datetime import datetime
 
     from litestar_queues.events.models import QueueEvent
@@ -271,10 +271,24 @@ class QueueEventStageSummary:
 
 
 class QueueEventLog(Protocol):
-    """Backend-owned queue event history writer and query interface."""
+    """Backend-owned history with explicit commit acknowledgement and closure.
+
+    Custom providers must implement commit-aware publication and closure;
+    accepting an event through ``publish_event`` alone is not a commit signal.
+    """
 
     async def publish_event(self, event: "QueueEvent") -> "None": ...
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        """Release live delivery after commitment, waiting through a barrier when requested."""
+        ...
+
     async def flush_events(self) -> "None": ...
+    async def aclose(self) -> "None":
+        """Finish owned history work and release its lifecycle resources."""
+        ...
+
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
     ) -> "OffsetPagination[QueueEventLogRecord]": ...

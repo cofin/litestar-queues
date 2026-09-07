@@ -2,15 +2,14 @@
 
 # ruff: noqa: SLF001
 
-import asyncio
 import hashlib
 import inspect
 import json
-import logging
-import time
+from dataclasses import fields
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
+from litestar_queues.events._history_buffer import _HistoryBuffer
 from litestar_queues.events._log_records import (
     event_log_record_from_event,
     event_log_record_sort_key,
@@ -20,9 +19,10 @@ from litestar_queues.events._log_records import (
     parse_datetime,
 )
 from litestar_queues.events.history import QueueEventLogRecord
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from litestar_queues.backends._protocol import ClientLike, PipelineLike
     from litestar_queues.backends.redis.backend import RedisQueueBackend
@@ -32,49 +32,45 @@ if TYPE_CHECKING:
 
 __all__ = ("RedisQueueEventLog",)
 
-logger = logging.getLogger(__name__)
+_INITIALIZE_EVENT_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    redis.call('HSET', KEYS[1], unpack(ARGV))
+end
+return redis.call('HGETALL', KEYS[1])
+"""
 
 
 class RedisQueueEventLog:
     """Buffered Redis-protocol event-history writer and query interface."""
 
-    __slots__ = ("_backend", "_config", "_flush_lock", "_last_flush", "_logger", "_pending")
+    __slots__ = ("_backend", "_buffer", "_config")
 
     def __init__(self, *, backend: "RedisQueueBackend", config: "EventHistoryConfig") -> "None":
         self._backend = backend
         self._config = config
-        self._pending: "list[dict[str, str]]" = []
-        self._last_flush = time.monotonic()
-        self._flush_lock = asyncio.Lock()
-        self._logger = backend._logger
+        self._buffer = _HistoryBuffer(config, self._write_history_batch)
 
     async def publish_event(self, event: "QueueEvent") -> "None":
-        """Buffer a queue event and flush when configured thresholds are reached."""
-        should_flush = False
-        async with self._flush_lock:
-            self._pending.append(
-                self._mapping_from_record(event_log_record_from_event(event, extra_columns=self._config.extra_columns))
-            )
-            should_flush = len(self._pending) >= max(1, self._config.batch_size) or self._flush_interval_elapsed()
-        if should_flush:
-            await self.flush_events()
+        """Accept an immutable event for bounded, timed persistence."""
+        await self._buffer.enqueue(event_log_record_from_event(event, extra_columns=self._config.extra_columns))
+
+    async def publish_event_after_commit(
+        self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
+    ) -> "None":
+        """Release live publication after the hash and all indexes are acknowledged."""
+        await self._buffer.enqueue(
+            event_log_record_from_event(event, extra_columns=self._config.extra_columns),
+            release=release,
+            barrier=barrier,
+        )
 
     async def flush_events(self) -> "None":
-        """Flush buffered queue events through a Redis pipeline."""
-        async with self._flush_lock:
-            if not self._pending:
-                return
-            batch = list(self._pending)
-            try:
-                client = await self._backend._get_client()
-                await self._write_batch(client, batch)
-            except Exception:
-                if self._config.strict:
-                    raise
-                self._logger.warning("Redis queue event history flush failed", exc_info=True)
-                return
-            del self._pending[: len(batch)]
-            self._last_flush = time.monotonic()
+        """Attempt accepted history and its ordered live releases."""
+        await self._buffer.flush()
+
+    async def aclose(self) -> "None":
+        """Stop admission and drain history before its client closes."""
+        await self._buffer.stop()
 
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
@@ -200,26 +196,48 @@ class RedisQueueEventLog:
 
         return removed
 
-    async def _write_batch(self, client: "ClientLike", batch: "list[dict[str, str]]") -> "None":
+    async def _write_history_batch(self, records: "Sequence[QueueEventLogRecord]") -> "None":
+        client = await self._backend._get_client()
+        mappings = [self._mapping_from_record(record) for record in records]
         pipeline = _create_pipeline(client)
+        initialized = []
+        for mapping in mappings:
+            arguments = [item for pair in mapping.items() for item in pair]
+            event_key = self._backend._event_log_event_key(mapping["event_id"])
+            if pipeline is not None:
+                pipeline.eval(_INITIALIZE_EVENT_SCRIPT, 1, event_key, *arguments)
+            else:
+                result = client.eval(_INITIALIZE_EVENT_SCRIPT, 1, event_key, *arguments)
+                initialized.append(await result if inspect.isawaitable(result) else result)
         if pipeline is not None:
-            for mapping in batch:
-                self._queue_write(pipeline, mapping)
-            await _execute_pipeline(pipeline)
-            return
-        for mapping in batch:
-            event_id = mapping["event_id"]
-            await client.hset(self._backend._event_log_event_key(event_id), mapping=mapping)
-            score = _score_datetime(parse_datetime(mapping["occurred_at"]))
-            for index_key in _json_loads(mapping["index_keys"], []):
-                await client.zadd(str(index_key), {event_id: score})
+            initialized = await _execute_pipeline(pipeline)
 
-    def _queue_write(self, pipeline: "PipelineLike", mapping: "dict[str, str]") -> "None":
-        event_id = mapping["event_id"]
-        pipeline.hset(self._backend._event_log_event_key(event_id), mapping=mapping)
-        score = _score_datetime(parse_datetime(mapping["occurred_at"]))
-        for index_key in _json_loads(mapping["index_keys"], []):
-            pipeline.zadd(str(index_key), {event_id: score})
+        conflict: QueueConfigurationError | None = None
+        pipeline = _create_pipeline(client)
+        for incoming, raw in zip(mappings, initialized, strict=True):
+            stored_mapping = _decode_mapping(dict(zip(raw[::2], raw[1::2], strict=True)))
+            stored = _record_from_mapping(stored_mapping)
+            candidate = _record_from_mapping(incoming)
+            if any(
+                getattr(stored, field.name) != getattr(candidate, field.name)
+                for field in fields(stored)
+                if field.name != "created_at"
+            ):
+                message = f"Conflicting immutable queue event history record for event ID {candidate.event_id!r}."
+                conflict = conflict or QueueConfigurationError(message)
+            # A hash may survive an earlier partial index write. Rebuild every
+            # membership from its winning record, including on a conflicting replay.
+            mapping = self._mapping_from_record(stored)
+            score = _score_datetime(stored.occurred_at)
+            for index_key in _json_loads(mapping["index_keys"], []):
+                if pipeline is not None:
+                    pipeline.zadd(str(index_key), {stored.event_id: score})
+                else:
+                    await client.zadd(str(index_key), {stored.event_id: score})
+        if pipeline is not None:
+            await _execute_pipeline(pipeline)
+        if conflict is not None:
+            raise conflict
 
     def _mapping_from_record(self, record: "QueueEventLogRecord") -> "dict[str, str]":
         index_keys = [self._backend._event_log_global_key(), self._backend._event_log_event_type_key(record.event_type)]
@@ -291,9 +309,6 @@ class RedisQueueEventLog:
         if query.event_type is not None:
             return self._backend._event_log_event_type_key(query.event_type)
         return self._backend._event_log_global_key()
-
-    def _flush_interval_elapsed(self) -> "bool":
-        return self._config.flush_interval <= 0 or time.monotonic() - self._last_flush >= self._config.flush_interval
 
 
 def _record_from_mapping(mapping: "dict[str, Any]") -> "QueueEventLogRecord":
@@ -386,9 +401,11 @@ def _create_pipeline(client: "ClientLike") -> "PipelineLike | None":
 
 async def _execute_pipeline(pipeline: "PipelineLike") -> "list[Any]":
     result = pipeline.execute()
-    if inspect.isawaitable(result):
-        return list(await result)
-    return list(cast("list[Any]", result))
+    results = list(await result) if inspect.isawaitable(result) else list(cast("list[Any]", result))
+    for item in results:
+        if isinstance(item, BaseException):
+            raise item
+    return results
 
 
 def hashed_index_value(value: "str") -> "str":
