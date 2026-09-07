@@ -47,12 +47,17 @@ async def test_valkey_bounded_maintenance_does_not_enumerate_status_sets(
     assert await valkey_backend.claim_task(terminal.id) is not None
     assert await valkey_backend.complete_task(terminal.id) is not None
 
+    repair = await valkey_backend.enqueue("tasks.maintenance.repair", execution_backend="cloudtasks")
+
     async def fail_full_status_scan(*_args: "Any", **_kwargs: "Any") -> "list[Any]":
         msg = "bounded maintenance enumerated a complete status set"
         raise AssertionError(msg)
 
     monkeypatch.setattr(type(valkey_backend), "_list_records_by_statuses", fail_full_status_scan)
 
+    assert [
+        record.id for record in (await valkey_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)).records
+    ] == [repair.id]
     assert [record.id for record in await valkey_backend.list_running_external(limit=1)] == [external.id]
     stale_result = await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=1)
     assert stale_result.requeued + stale_result.failed == 1
@@ -88,6 +93,39 @@ async def test_valkey_bounded_maintenance_fails_closed_until_legacy_indexes_are_
 
 async def test_valkey_backend_coordination_expiry(valkey_backend: "ValkeyQueueBackend") -> "None":
     await assert_coordination_expiry(valkey_backend)
+
+
+async def test_valkey_dispatch_repair_upgrade_from_closed_backend(valkey_backend: "ValkeyQueueBackend") -> "None":
+    """Valkey shares the explicit upgrade path for old NULL-reference records."""
+    record = await valkey_backend.enqueue("repair.upgrade", execution_backend="cloudtasks")
+    client = cast("Any", await valkey_backend._get_client())
+    await client.set(valkey_backend._maintenance_index_version_key, "2")
+    await valkey_backend.close()
+    with pytest.raises(QueueConfigurationError, match="rebuild_maintenance_indexes"):
+        await valkey_backend.open()
+    await valkey_backend.close()
+    assert await valkey_backend.rebuild_maintenance_indexes() == 1
+    await valkey_backend.close()
+    await valkey_backend.open()
+    result = await valkey_backend.list_dispatch_repair_candidates("cloudtasks", limit=2)
+    assert [item.id for item in result.records] == [record.id]
+    assert result.records[0].execution_ref is None
+    assert result.examined == 1
+    assert result.limit_reached is False
+
+
+async def test_valkey_dispatch_repair_stale_page_consumes_budget(valkey_backend: "ValkeyQueueBackend") -> "None":
+    """Inherited Lua must count deleted hashes without refilling the page."""
+    record = await valkey_backend.enqueue("repair.live", execution_backend="cloudtasks")
+    client = cast("Any", await valkey_backend._get_client())
+    await client.zadd(valkey_backend._dispatch_repair_key("cloudtasks"), {str(uuid.UUID(int=1)): 0})
+    result = await valkey_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    assert result.records == ()
+    assert result.examined == 1
+    assert result.limit_reached is True
+    assert [
+        item.id for item in (await valkey_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)).records
+    ] == [record.id]
 
 
 async def test_valkey_backend_coordination_is_not_process_local(valkey_service: "ValkeyService") -> "None":

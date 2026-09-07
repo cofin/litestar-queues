@@ -731,3 +731,29 @@ async def test_redis_stale_requeue_priority_policy(redis_backend: "Any") -> "Non
     from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
 
     await assert_stale_requeue_priority_policy(redis_backend)
+
+
+async def test_redis_dispatch_repair_candidates(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_dispatch_repair_candidates
+
+    await assert_dispatch_repair_candidates(redis_backend)
+
+
+async def test_redis_scheduled_execution_ref_contenders(redis_backend: "RedisQueueBackend") -> "None":
+    from litestar_queues.backends.redis import RedisBackendConfig
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_contenders
+
+    second = type(redis_backend)(
+        backend_config=RedisBackendConfig(url=redis_backend._url, key_prefix=redis_backend._key_prefix)
+    )
+    await second.open()
+    try:
+        await assert_scheduled_execution_ref_contenders(redis_backend, second)
+    finally:
+        await second.close()
+
+
+async def test_redis_scheduled_execution_ref_rejects_mismatches(redis_backend: "RedisQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
+
+    await assert_scheduled_execution_ref_rejects_mismatches(redis_backend)

@@ -48,12 +48,17 @@ async def test_redis_bounded_maintenance_does_not_enumerate_status_sets(
     assert await redis_backend.claim_task(terminal.id) is not None
     assert await redis_backend.complete_task(terminal.id) is not None
 
+    repair = await redis_backend.enqueue("tasks.maintenance.repair", execution_backend="cloudtasks")
+
     async def fail_full_status_scan(*_args: "Any", **_kwargs: "Any") -> "list[Any]":
         msg = "bounded maintenance enumerated a complete status set"
         raise AssertionError(msg)
 
     monkeypatch.setattr(type(redis_backend), "_list_records_by_statuses", fail_full_status_scan)
 
+    assert [
+        record.id for record in (await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)).records
+    ] == [repair.id]
     assert [record.id for record in await redis_backend.list_running_external(limit=1)] == [external.id]
     stale_result = await redis_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=1)
     assert stale_result.requeued + stale_result.failed == 1
@@ -163,6 +168,179 @@ async def test_redis_bounded_maintenance_fails_closed_until_legacy_indexes_are_r
 
 async def test_redis_backend_coordination_expiry(redis_backend: "RedisQueueBackend") -> "None":
     await assert_coordination_expiry(redis_backend)
+
+
+async def test_redis_dispatch_repair_upgrade_from_closed_backend(redis_backend: "RedisQueueBackend") -> "None":
+    """An old populated namespace can be explicitly upgraded without opening it."""
+    future = await redis_backend.enqueue(
+        "repair.upgrade", execution_backend="cloudtasks", scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1)
+    )
+    client = cast("Any", await redis_backend._get_client())
+    await client.set(redis_backend._maintenance_index_version_key, "2")
+    await redis_backend.close()
+    with pytest.raises(QueueConfigurationError, match="rebuild_maintenance_indexes"):
+        await redis_backend.open()
+    await redis_backend.close()
+
+    assert await redis_backend.rebuild_maintenance_indexes() == 1
+    await redis_backend.close()
+    await redis_backend.open()
+    result = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=2)
+    assert [record.id for record in result.records] == [future.id]
+    assert result.records[0].execution_ref is None
+    assert result.records[0].scheduled_at == future.scheduled_at
+    checked_at = result.records[0].dispatch_checked_at
+    assert checked_at is not None
+    assert await redis_backend.rebuild_maintenance_indexes() == 1
+    stored = await redis_backend.get_task(future.id)
+    assert stored is not None and stored.dispatch_checked_at == checked_at
+
+
+async def test_redis_dispatch_repair_interrupted_rebuild_fails_closed(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """An interrupted rebuild invalidates even a previously current marker."""
+    from litestar_queues.backends.redis import backend as backend_module
+
+    await redis_backend.enqueue("repair.interrupted", execution_backend="cloudtasks")
+    client = cast("Any", await redis_backend._get_client())
+    original_execute = backend_module._execute_pipeline
+
+    async def interrupt_pipeline(_pipeline: "Any") -> "Any":
+        msg = "interrupted rebuild"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(backend_module, "_execute_pipeline", interrupt_pipeline)
+    with pytest.raises(RuntimeError, match="interrupted rebuild"):
+        await redis_backend.rebuild_maintenance_indexes()
+    assert await client.get(redis_backend._maintenance_index_version_key) is None
+    with pytest.raises(QueueConfigurationError, match="rebuild_maintenance_indexes"):
+        await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+
+    monkeypatch.setattr(backend_module, "_execute_pipeline", original_execute)
+    ghost_key = redis_backend._dispatch_repair_key("removed-backend")
+    await client.sadd(redis_backend._dispatch_repair_registry_key, ghost_key)
+    await client.zadd(ghost_key, {str(UUID(int=1)): 0})
+    assert await redis_backend.rebuild_maintenance_indexes() == 1
+    assert await client.exists(ghost_key) == 0
+    assert (await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)).examined == 1
+
+
+async def test_redis_dispatch_repair_stale_page_consumes_budget(redis_backend: "RedisQueueBackend") -> "None":
+    """A full stale page never refills from eligible records beyond its limit."""
+    live = await redis_backend.enqueue("repair.live", execution_backend="cloudtasks")
+    client = cast("Any", await redis_backend._get_client())
+    key = redis_backend._dispatch_repair_key("cloudtasks")
+    await client.zadd(key, {str(UUID(int=1)): 0, str(UUID(int=2)): 0})
+    result = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=2)
+    assert result.records == ()
+    assert result.examined == 2
+    assert result.limit_reached is True
+    next_page = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=2)
+    assert [record.id for record in next_page.records] == [live.id]
+    assert next_page.examined == 1
+    assert next_page.limit_reached is False
+
+
+async def test_redis_dispatch_checked_precision_and_backward_clock(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Lua and rebuild retain fractional-millisecond scores and the newest mark."""
+    from litestar_queues.backends.redis import backend as backend_module
+
+    created = datetime.now(timezone.utc).replace(microsecond=123456)
+    monkeypatch.setattr(backend_module, "_utc_now", lambda: created)
+    high = await redis_backend.enqueue("repair.high", id=UUID(int=2), execution_backend="cloudtasks")
+    low = await redis_backend.enqueue("repair.low", id=UUID(int=1), execution_backend="cloudtasks")
+    checked = created + timedelta(seconds=1, microseconds=111)
+    monkeypatch.setattr(backend_module, "_utc_now", lambda: checked)
+    first = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    assert [record.id for record in first.records] == [low.id]
+    assert first.records[0].dispatch_checked_at == checked
+    client = cast("Any", await redis_backend._get_client())
+    key = redis_backend._dispatch_repair_key("cloudtasks")
+    assert await client.zscore(key, str(low.id)) == checked.timestamp() * 1000
+    second = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    assert [record.id for record in second.records] == [high.id]
+
+    monkeypatch.setattr(backend_module, "_utc_now", lambda: created)
+    delayed = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=2)
+    assert all(record.dispatch_checked_at == checked for record in delayed.records)
+    assert await redis_backend.rebuild_maintenance_indexes() == 2
+    await redis_backend.close()
+    await redis_backend.open()
+    client = cast("Any", await redis_backend._get_client())
+    assert await client.zscore(key, str(low.id)) == checked.timestamp() * 1000
+    stored = await redis_backend.get_task(low.id)
+    assert stored is not None and stored.dispatch_checked_at == checked
+
+
+@pytest.mark.parametrize("transition", ["set_backend", "reserve", "release", "finalize"])
+async def test_redis_dispatch_repair_follows_backend_changes(
+    redis_backend: "RedisQueueBackend", transition: "str"
+) -> "None":
+    """Every backend-changing path moves membership and retains the check score."""
+    record = await redis_backend.enqueue("repair.move", execution_backend="cloudtasks")
+    selected = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+    checked_at = selected.records[0].dispatch_checked_at
+    assert checked_at is not None
+    if transition == "set_backend":
+        changed = await redis_backend.set_execution_backend(record.id, "cloudrun")
+    elif transition == "reserve":
+        changed = await redis_backend.reserve_external_dispatch(record.id, "cloudrun", "reservation")
+    else:
+        assert await redis_backend.reserve_external_dispatch(record.id, "cloudtasks", "reservation") is not None
+        if transition == "release":
+            changed = await redis_backend.release_external_dispatch(record.id, "reservation", "cloudrun")
+        else:
+            changed = await redis_backend.finalize_external_dispatch(record.id, "reservation", "cloudrun", "delivery")
+    assert changed is not None
+    client = cast("Any", await redis_backend._get_client())
+    assert await client.zscore(redis_backend._dispatch_repair_key("cloudtasks"), str(record.id)) is None
+    assert await client.zscore(redis_backend._dispatch_repair_key("cloudrun"), str(record.id)) == (
+        checked_at.timestamp() * 1000
+    )
+    assert (await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=1)).examined == 0
+    assert [item.id for item in (await redis_backend.list_dispatch_repair_candidates("cloudrun", limit=1)).records] == [
+        record.id
+    ]
+
+
+async def test_redis_dispatch_repair_keyed_retry_and_terminal_membership(redis_backend: "RedisQueueBackend") -> "None":
+    """Keyed enqueue, claims, retries, cancellation and cleanup maintain the index."""
+    record = await redis_backend.enqueue(
+        "repair.keyed", key="repair-key", execution_backend="cloudtasks", max_retries=1
+    )
+    duplicate = await redis_backend.enqueue("repair.keyed", key="repair-key", execution_backend="cloudtasks")
+    assert duplicate.id == record.id
+    client = cast("Any", await redis_backend._get_client())
+    key = redis_backend._dispatch_repair_key("cloudtasks")
+    assert await client.zcard(key) == 1
+    assert await redis_backend.claim_task(record.id) is not None
+    assert await client.zcard(key) == 0
+    assert await redis_backend.fail_task(record.id, error="retry") is not None
+    assert await client.zcard(key) == 1
+    assert await redis_backend.cancel_task(record.id) is not None
+    assert await client.zcard(key) == 0
+    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
+    assert await client.zcard(key) == 0
+
+
+async def test_redis_dispatch_repair_nonpositive_limit_does_not_open(
+    redis_backend: "RedisQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Validation and empty requests require no storage connection."""
+    await redis_backend.close()
+
+    async def unexpected_client(_self: "Any") -> "Any":
+        msg = "nonpositive limit opened storage"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(type(redis_backend), "_get_client", unexpected_client)
+    result = await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=0)
+    assert result.records == () and result.examined == 0 and result.limit_reached is False
+    with pytest.raises(QueueConfigurationError, match="non-negative"):
+        await redis_backend.list_dispatch_repair_candidates("cloudtasks", limit=-1)
 
 
 async def test_redis_backend_coordination_is_not_process_local(redis_service: "RedisService") -> "None":

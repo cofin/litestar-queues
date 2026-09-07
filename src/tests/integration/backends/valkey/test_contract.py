@@ -607,3 +607,29 @@ async def test_valkey_stale_requeue_priority_policy(valkey_backend: "Any") -> "N
     from tests.integration._interrupt_contract import assert_stale_requeue_priority_policy
 
     await assert_stale_requeue_priority_policy(valkey_backend)
+
+
+async def test_valkey_dispatch_repair_candidates(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_dispatch_repair_candidates
+
+    await assert_dispatch_repair_candidates(valkey_backend)
+
+
+async def test_valkey_scheduled_execution_ref_contenders(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from litestar_queues.backends.valkey import ValkeyBackendConfig
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_contenders
+
+    second = type(valkey_backend)(
+        backend_config=ValkeyBackendConfig(url=valkey_backend._url, key_prefix=valkey_backend._key_prefix)
+    )
+    await second.open()
+    try:
+        await assert_scheduled_execution_ref_contenders(valkey_backend, second)
+    finally:
+        await second.close()
+
+
+async def test_valkey_scheduled_execution_ref_rejects_mismatches(valkey_backend: "ValkeyQueueBackend") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import assert_scheduled_execution_ref_rejects_mismatches
+
+    await assert_scheduled_execution_ref_rejects_mismatches(valkey_backend)

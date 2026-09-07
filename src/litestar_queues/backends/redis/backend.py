@@ -19,6 +19,7 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    DispatchRepairCandidates,
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
@@ -53,9 +54,82 @@ __all__ = ("RedisQueueBackend",)
 _DUE_STATUSES = {"pending", "scheduled"}
 _STATUS_VALUES = {"cancelled", "completed", "expired", "failed", "pending", "running", "scheduled"}
 _TERMINAL_STATUSES = {"cancelled", "completed", "expired", "failed"}
-_MAINTENANCE_INDEX_VERSION = "2"
+_MAINTENANCE_INDEX_VERSION = "3"
 _CLAIMED_OUTCOME = 1
 _EXPIRED_OUTCOME = 2
+_DISPATCH_REPAIR_INDEX_SCRIPT = """
+local function remove_dispatch_repair(hkey, task_id)
+    local index_key = redis.call('HGET', hkey, 'repair_index_key')
+    if index_key and index_key ~= '' then
+        redis.call('ZREM', index_key, task_id)
+    end
+end
+
+local function sync_dispatch_repair(hkey, task_id, registry, previous_key)
+    local index_key = redis.call('HGET', hkey, 'repair_index_key')
+    if previous_key and previous_key ~= '' and previous_key ~= index_key then
+        redis.call('ZREM', previous_key, task_id)
+    end
+    if not index_key or index_key == '' then return end
+    local status = redis.call('HGET', hkey, 'status')
+    local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+    local created = redis.call('HGET', hkey, 'created_score') or '0'
+    if (status == 'pending' or status == 'scheduled') and (expires <= 0 or expires > tonumber(created)) then
+        local score = redis.call('HGET', hkey, 'dispatch_checked_score')
+        if not score or score == '' then score = created end
+        redis.call('ZADD', index_key, score, task_id)
+        redis.call('SADD', registry, index_key)
+    else
+        redis.call('ZREM', index_key, task_id)
+    end
+end
+"""
+_DISPATCH_REPAIR_CANDIDATES_SCRIPT = """
+local prefix = ARGV[1]
+local backend = ARGV[2]
+local limit = tonumber(ARGV[3])
+local now_score = ARGV[4]
+local now_iso = ARGV[5]
+local ids = redis.call('ZRANGE', KEYS[1], 0, limit - 1)
+local records = {}
+for _, id in ipairs(ids) do
+    local hkey = prefix .. ':task:' .. id
+    local status = redis.call('HGET', hkey, 'status')
+    local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+    if redis.call('HGET', hkey, 'execution_backend') == backend
+            and (status == 'pending' or status == 'scheduled')
+            and (expires <= 0 or expires > tonumber(now_score)) then
+        local checked_score = redis.call('HGET', hkey, 'dispatch_checked_score')
+        if not checked_score or checked_score == '' or tonumber(checked_score) < tonumber(now_score) then
+            checked_score = now_score
+            redis.call('HSET', hkey, 'dispatch_checked_at', now_iso, 'dispatch_checked_score', checked_score)
+        end
+        redis.call('ZADD', KEYS[1], checked_score, id)
+        records[#records + 1] = redis.call('HGETALL', hkey)
+    else
+        redis.call('ZREM', KEYS[1], id)
+    end
+end
+return {#ids, records}
+"""
+_RESERVE_SCHEDULED_EXECUTION_REF_SCRIPT = """
+local hkey = KEYS[1]
+local status = redis.call('HGET', hkey, 'status')
+if status ~= 'pending' and status ~= 'scheduled' then return {} end
+if redis.call('HGET', hkey, 'execution_backend') ~= ARGV[2] then return {} end
+if redis.call('HGET', hkey, 'retry_count') ~= ARGV[4] then return {} end
+local reference = redis.call('HGET', hkey, 'execution_ref') or ''
+if reference ~= ARGV[5] then return {} end
+local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
+if expires > 0 and expires <= tonumber(ARGV[6]) then return {} end
+redis.call('HSET', hkey, 'execution_ref', ARGV[3])
+if ARGV[3] ~= '' then
+    redis.call('ZADD', KEYS[2], redis.call('HGET', hkey, 'created_score') or '0', ARGV[1])
+else
+    redis.call('ZREM', KEYS[2], ARGV[1])
+end
+return redis.call('HGETALL', hkey)
+"""
 _TOUCH_HEARTBEAT_SCRIPT = """
 local status = redis.call('HGET', KEYS[1], 'status')
 if status ~= 'running' then
@@ -100,7 +174,9 @@ redis.call('ZADD', prefix .. ':maintenance:running', heartbeat_score, task_id)
 
 return 1
 """
-_CLAIM_SCRIPT = """
+_CLAIM_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local ready = KEYS[1]
 local scheduled = KEYS[2]
 local prefix = ARGV[1]
@@ -147,6 +223,7 @@ for _, id in ipairs(due) do
             redis.call('ZREM', ready, id)
             redis.call('ZREM', prefix .. ':maintenance:running', id)
             redis.call('ZREM', prefix .. ':maintenance:external', id)
+            remove_dispatch_repair(hkey, id)
             redis.call('ZREM', prefix .. ':maintenance:expiry', id)
             redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
             redis.call('PUBLISH', prefix .. ':completions', id)
@@ -202,6 +279,7 @@ while #claimed < limit do
                     redis.call('ZREM', scheduled, id)
                     redis.call('ZREM', prefix .. ':maintenance:running', id)
                     redis.call('ZREM', prefix .. ':maintenance:external', id)
+                    remove_dispatch_repair(hkey, id)
                     redis.call('ZREM', prefix .. ':maintenance:expiry', id)
                     redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
                     redis.call('PUBLISH', prefix .. ':completions', id)
@@ -219,6 +297,7 @@ while #claimed < limit do
                         redis.call('ZREM', prefix .. ':maintenance:terminal', id)
                         redis.call('ZREM', prefix .. ':maintenance:expiry', id)
                         redis.call('ZREM', prefix .. ':maintenance:external', id)
+                        remove_dispatch_repair(hkey, id)
                         claimed[#claimed + 1] = id
                         if cap ~= nil then caps[q] = cap - 1 end
                     end
@@ -237,7 +316,10 @@ for _, id in ipairs(expired) do
 end
 return outcome
 """
-_CLAIM_TASK_SCRIPT = """
+)
+_CLAIM_TASK_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 local ready = KEYS[2]
 local scheduled = KEYS[3]
@@ -265,6 +347,7 @@ if scheduled_score and tonumber(scheduled_score) > now_ms then
 end
 local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
 if (not execution_ref or execution_ref == '') and expires_score > 0 and expires_score <= now_ms then
+    remove_dispatch_repair(hkey, task_id)
     redis.call('HSET', hkey, 'status', 'expired', 'completed_at', now_iso,
         'completed_score', now_ms, 'heartbeat_at', '', 'heartbeat_score', '0')
     redis.call('SREM', prefix .. ':status:' .. status, task_id)
@@ -279,6 +362,7 @@ if (not execution_ref or execution_ref == '') and expires_score > 0 and expires_
     return {2}
 end
 
+remove_dispatch_repair(hkey, task_id)
 redis.call('HSET', hkey, 'status', 'running', 'started_at', now_iso, 'heartbeat_at', now_iso,
     'started_score', now_ms, 'heartbeat_score', now_ms)
 redis.call('SREM', prefix .. ':status:' .. status, task_id)
@@ -296,6 +380,7 @@ else
 end
 return {1}
 """
+)
 
 _CLEAR_EXECUTION_REF_SCRIPT = """
 local status = redis.call('HGET', KEYS[1], 'status')
@@ -314,7 +399,9 @@ if redis.call('HGET', KEYS[1], 'execution_ref') ~= ARGV[2] then return {0} end
 redis.call('HSET', KEYS[1], 'execution_ref', ARGV[3])
 return {1}
 """
-_COMPLETE_SCRIPT = """
+_COMPLETE_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 local prefix = ARGV[1]
 local task_id = ARGV[2]
@@ -334,6 +421,7 @@ if expected ~= '' then
         return {0}
     end
 end
+remove_dispatch_repair(hkey, task_id)
 redis.call('HSET', hkey, 'status', 'completed', 'completed_at', completed_at,
     'completed_score', completed_score, 'heartbeat_at', '', 'heartbeat_score', '0',
     'result', result_json, 'error', '')
@@ -345,7 +433,10 @@ redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
 redis.call('PUBLISH', channel, task_id)
 return {1}
 """
-_FAIL_SCRIPT = """
+)
+_FAIL_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 local ready = KEYS[2]
 local prefix = ARGV[1]
@@ -404,8 +495,10 @@ if retry == '1' and (retry_count - interruptions) < max_retries then
         redis.call('ZREM', KEYS[3], task_id)
         redis.call('ZADD', ready, ready_score, task_id)
     end
+    sync_dispatch_repair(hkey, task_id, prefix .. ':maintenance:dispatch-repair:keys')
     return {1, retry_status}
 end
+remove_dispatch_repair(hkey, task_id)
 redis.call('HSET', hkey, 'status', 'failed', 'completed_at', completed_at,
     'completed_score', completed_score, 'heartbeat_at', '', 'heartbeat_score', '0')
 redis.call('SREM', prefix .. ':status:running', task_id)
@@ -416,7 +509,10 @@ redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
 redis.call('PUBLISH', channel, task_id)
 return {1, 'failed'}
 """
-_ENQUEUE_SCRIPT = """
+)
+_ENQUEUE_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local ready = KEYS[1]
 local scheduled = KEYS[2]
 local prefix = ARGV[1]
@@ -436,6 +532,7 @@ redis.call('SADD', KEYS[3], task_id)
 if expires_score > 0 then
     redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
 end
+sync_dispatch_repair(hkey, task_id, prefix .. ':maintenance:dispatch-repair:keys')
 if due == '1' then
     redis.call('ZADD', ready, score, task_id)
     if publish == '1' then
@@ -446,7 +543,10 @@ else
 end
 return {1}
 """
-_ENQUEUE_KEYED_SCRIPT = """
+)
+_ENQUEUE_KEYED_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local ready = KEYS[1]
 local scheduled = KEYS[2]
 local prefix = ARGV[1]
@@ -476,6 +576,7 @@ redis.call('SADD', KEYS[3], task_id)
 if expires_score > 0 then
     redis.call('ZADD', prefix .. ':maintenance:expiry', expires_score, task_id)
 end
+sync_dispatch_repair(hkey, task_id, prefix .. ':maintenance:dispatch-repair:keys')
 if due == '1' then
     redis.call('ZADD', ready, score, task_id)
     if publish == '1' then
@@ -486,7 +587,10 @@ else
 end
 return {1, task_id}
 """
-_TRANSITION_SCRIPT = """
+)
+_TRANSITION_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 local ready = KEYS[2]
 local scheduled = KEYS[3]
@@ -520,6 +624,7 @@ if expected_worker ~= '' then
         return {0}
     end
 end
+local previous_repair_key = redis.call('HGET', hkey, 'repair_index_key')
 if new_status ~= '' then
     redis.call('SREM', prefix .. ':status:' .. status, task_id)
     redis.call('SADD', prefix .. ':status:' .. new_status, task_id)
@@ -579,9 +684,13 @@ if execution_ref and execution_ref ~= ''
 else
     redis.call('ZREM', prefix .. ':maintenance:external', task_id)
 end
+sync_dispatch_repair(hkey, task_id, prefix .. ':maintenance:dispatch-repair:keys', previous_repair_key)
 return {1}
 """
-_DELETE_TERMINAL_SCRIPT = """
+)
+_DELETE_TERMINAL_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 local prefix = ARGV[1]
 local task_id = ARGV[2]
@@ -591,6 +700,7 @@ if status ~= 'completed' and status ~= 'failed' and status ~= 'cancelled' and st
 end
 local dedup_key = redis.call('HGET', hkey, 'key')
 local queue_index_key = redis.call('HGET', hkey, 'queue_index_key')
+remove_dispatch_repair(hkey, task_id)
 redis.call('DEL', hkey)
 redis.call('SREM', prefix .. ':tasks', task_id)
 redis.call('ZREM', prefix .. ':ready', task_id)
@@ -610,6 +720,7 @@ if dedup_key and dedup_key ~= '' then
 end
 return {1}
 """
+)
 _QUEUE_STATISTICS_SCRIPT = """
 local counts = {}
 for index = 2, #KEYS do
@@ -642,7 +753,9 @@ return {redis.call('HDEL', KEYS[1], ARGV[1])}
 """
 
 
-_RESERVE_EXTERNAL_DISPATCH_SCRIPT = """
+_RESERVE_EXTERNAL_DISPATCH_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'pending' and status ~= 'scheduled' then
@@ -659,9 +772,11 @@ if scheduled > now or (expires > 0 and expires <= now)
         or (execution_ref and execution_ref ~= '') then
     return {0}
 end
+local previous_repair_key = redis.call('HGET', hkey, 'repair_index_key')
 redis.call(
     'HSET',
     hkey,
+    'repair_index_key', KEYS[4],
     'execution_backend', ARGV[3],
     'execution_profile', ARGV[4],
     'execution_ref', ARGV[5]
@@ -669,18 +784,24 @@ redis.call(
 redis.call('ZREM', KEYS[2], ARGV[1])
 local created = tonumber(redis.call('HGET', hkey, 'created_score')) or 0
 redis.call('ZADD', KEYS[3], created, ARGV[1])
+sync_dispatch_repair(hkey, ARGV[1], KEYS[5], previous_repair_key)
 return {1}
 """
+)
 
 
-_RELEASE_EXTERNAL_DISPATCH_SCRIPT = """
+_RELEASE_EXTERNAL_DISPATCH_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 if redis.call('HGET', hkey, 'execution_ref') ~= ARGV[2] then
     return {0}
 end
+local previous_repair_key = redis.call('HGET', hkey, 'repair_index_key')
 redis.call(
     'HSET',
     hkey,
+    'repair_index_key', KEYS[4],
     'execution_backend', ARGV[3],
     'execution_profile', ARGV[4],
     'execution_ref', ''
@@ -691,10 +812,14 @@ local expires = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
 if (status == 'pending' or status == 'scheduled') and expires > 0 then
     redis.call('ZADD', KEYS[2], expires, ARGV[1])
 end
+sync_dispatch_repair(hkey, ARGV[1], KEYS[5], previous_repair_key)
 return {1}
 """
+)
 
-_FINALIZE_EXTERNAL_DISPATCH_SCRIPT = """
+_FINALIZE_EXTERNAL_DISPATCH_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local hkey = KEYS[1]
 if redis.call('HGET', hkey, 'execution_ref') ~= ARGV[1] then
     return {0}
@@ -703,15 +828,19 @@ local status = redis.call('HGET', hkey, 'status')
 if status ~= 'pending' and status ~= 'scheduled' then
     return {0}
 end
+local previous_repair_key = redis.call('HGET', hkey, 'repair_index_key')
 redis.call(
     'HSET',
     hkey,
+    'repair_index_key', KEYS[2],
     'execution_backend', ARGV[2],
     'execution_profile', ARGV[3],
     'execution_ref', ARGV[4]
 )
+sync_dispatch_repair(hkey, ARGV[5], KEYS[3], previous_repair_key)
 return {1}
 """
+)
 
 
 _RELEASE_MAINTENANCE_SCRIPT = """
@@ -1505,7 +1634,13 @@ class RedisQueueBackend(BaseQueueBackend):
         outcome = await _eval_script(
             client,
             _RESERVE_EXTERNAL_DISPATCH_SCRIPT,
-            [self._task_key(task_id), self._maintenance_expiry_key, self._maintenance_external_key],
+            [
+                self._task_key(task_id),
+                self._maintenance_expiry_key,
+                self._maintenance_external_key,
+                self._dispatch_repair_key(execution_backend),
+                self._dispatch_repair_registry_key,
+            ],
             [
                 str(task_id),
                 repr(_maintenance_score(_utc_now())),
@@ -1562,7 +1697,13 @@ class RedisQueueBackend(BaseQueueBackend):
         outcome = await _eval_script(
             client,
             _RELEASE_EXTERNAL_DISPATCH_SCRIPT,
-            [self._task_key(task_id), self._maintenance_expiry_key, self._maintenance_external_key],
+            [
+                self._task_key(task_id),
+                self._maintenance_expiry_key,
+                self._maintenance_external_key,
+                self._dispatch_repair_key(execution_backend),
+                self._dispatch_repair_registry_key,
+            ],
             [str(task_id), reservation_ref, execution_backend, execution_profile or ""],
         )
         if not outcome or int(outcome[0]) != 1:
@@ -1585,8 +1726,8 @@ class RedisQueueBackend(BaseQueueBackend):
         outcome = await _eval_script(
             client,
             _FINALIZE_EXTERNAL_DISPATCH_SCRIPT,
-            [self._task_key(task_id)],
-            [reservation_ref, execution_backend, execution_profile or "", execution_ref],
+            [self._task_key(task_id), self._dispatch_repair_key(execution_backend), self._dispatch_repair_registry_key],
+            [reservation_ref, execution_backend, execution_profile or "", execution_ref, str(task_id)],
         )
         if not outcome or int(outcome[0]) != 1:
             return None
@@ -1619,6 +1760,53 @@ class RedisQueueBackend(BaseQueueBackend):
             publish_payload=_json_dumps({"event": "task_available"}),
         )
         return record
+
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        """Atomically mark and return one bounded backend-specific repair page."""
+        if limit < 0:
+            msg = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if limit == 0:
+            return DispatchRepairCandidates()
+        client = await self._get_client()
+        await self._require_maintenance_indexes()
+        now = _utc_now()
+        outcome = await _eval_script(
+            client,
+            _DISPATCH_REPAIR_CANDIDATES_SCRIPT,
+            [self._dispatch_repair_key(execution_backend)],
+            [self._key_prefix, execution_backend, str(limit), repr(_maintenance_score(now)), _serialize_datetime(now)],
+        )
+        examined = int(outcome[0])
+        records = tuple(self._record_from_mapping(_decode_flat_mapping(values)) for values in outcome[1])
+        return DispatchRepairCandidates(records=records, examined=examined, limit_reached=examined == limit)
+
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        """Compare the pending attempt and nullable reference in one server operation."""
+        outcome = await _eval_script(
+            await self._get_client(),
+            _RESERVE_SCHEDULED_EXECUTION_REF_SCRIPT,
+            [self._task_key(task_id), self._maintenance_external_key],
+            [
+                str(task_id),
+                execution_backend,
+                execution_ref,
+                str(expected_retry_count),
+                expected_execution_ref or "",
+                repr(_maintenance_score(_utc_now())),
+            ],
+        )
+        return self._record_from_mapping(_decode_flat_mapping(outcome)) if outcome else None
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
         """Return externally dispatched tasks with references to reconcile."""
@@ -1744,24 +1932,43 @@ class RedisQueueBackend(BaseQueueBackend):
         Returns:
             Number of queue records indexed.
         """
-        client = await self._get_client()
+        if self._client is None:
+            self._client = self._create_client(self._url)
+            self._owns_client = True
+        client = self._client
+        await client.delete(self._maintenance_index_version_key)
+        repair_keys = [str(_decode(key)) for key in await client.smembers(self._dispatch_repair_registry_key)]
         records = await self._list_records_by_statuses(tuple(sorted(_STATUS_VALUES)))
         pipeline = _create_pipeline(client)
         pipeline.delete(
+            self._dispatch_repair_registry_key,
+            *repair_keys,
             self._maintenance_running_key,
             self._maintenance_external_key,
             self._maintenance_terminal_key,
             self._maintenance_expiry_key,
         )
+        now = _utc_now()
         for record in records:
             task_id = str(record.id)
             timestamp_scores = {
+                "repair_index_key": self._dispatch_repair_key(record.execution_backend),
+                "dispatch_checked_at": _serialize_datetime(record.dispatch_checked_at),
+                "dispatch_checked_score": repr(_maintenance_score(record.dispatch_checked_at))
+                if record.dispatch_checked_at is not None
+                else "",
                 "created_score": repr(_maintenance_score(record.created_at)),
                 "started_score": repr(_maintenance_score(record.started_at)),
                 "completed_score": repr(_maintenance_score(record.completed_at)),
                 "heartbeat_score": repr(_maintenance_score(record.heartbeat_at)),
             }
             pipeline.hset(self._task_key(record.id), mapping=timestamp_scores)
+            if record.status in _DUE_STATUSES and (record.expires_at is None or record.expires_at > now):
+                repair_key = self._dispatch_repair_key(record.execution_backend)
+                pipeline.zadd(
+                    repair_key, {task_id: _maintenance_score(record.dispatch_checked_at or record.created_at)}
+                )
+                pipeline.sadd(self._dispatch_repair_registry_key, repair_key)
             if record.status == "running":
                 pipeline.zadd(self._maintenance_running_key, {task_id: _maintenance_score(record.heartbeat_at)})
             if record.status in _DUE_STATUSES and record.expires_at is not None and record.execution_ref is None:
@@ -2092,6 +2299,8 @@ class RedisQueueBackend(BaseQueueBackend):
             expected_worker_id,
         ]
         if patch:
+            if "execution_backend" in patch:
+                args.extend(("repair_index_key", self._dispatch_repair_key(patch["execution_backend"])))
             for field, value in patch.items():
                 args.append(field)
                 args.append(value)
@@ -2278,6 +2487,13 @@ class RedisQueueBackend(BaseQueueBackend):
     def _maintenance_index_version_key(self) -> "str":
         return f"{self._key_prefix}:maintenance:index-version"
 
+    def _dispatch_repair_key(self, execution_backend: "str") -> "str":
+        return f"{self._key_prefix}:maintenance:dispatch-repair:{hashed_index_value(execution_backend)}"
+
+    @property
+    def _dispatch_repair_registry_key(self) -> "str":
+        return f"{self._key_prefix}:maintenance:dispatch-repair:keys"
+
     @property
     def _maintenance_external_key(self) -> "str":
         return f"{self._key_prefix}:maintenance:external"
@@ -2336,6 +2552,7 @@ class RedisQueueBackend(BaseQueueBackend):
             "queue": record.queue,
             "queue_index_key": self._queue_index_key(record.queue),
             "execution_backend": record.execution_backend,
+            "repair_index_key": self._dispatch_repair_key(record.execution_backend),
             "execution_profile": record.execution_profile or "",
             "execution_ref": record.execution_ref or "",
             "worker_id": record.worker_id or "",
@@ -2346,6 +2563,10 @@ class RedisQueueBackend(BaseQueueBackend):
             "scheduled_at": _serialize_datetime(record.scheduled_at),
             "expires_at": _serialize_datetime(record.expires_at),
             "expires_score": repr(_maintenance_score(record.expires_at)),
+            "dispatch_checked_at": _serialize_datetime(record.dispatch_checked_at),
+            "dispatch_checked_score": repr(_maintenance_score(record.dispatch_checked_at))
+            if record.dispatch_checked_at is not None
+            else "",
             "created_at": _serialize_datetime(record.created_at),
             "created_score": repr(_maintenance_score(record.created_at)),
             "queued_at": _serialize_datetime(record.queued_at),
@@ -2379,6 +2600,7 @@ class RedisQueueBackend(BaseQueueBackend):
             retry_count=int(str(mapping.get("retry_count") or 0)),
             scheduled_at=_deserialize_datetime(mapping.get("scheduled_at")),
             expires_at=_deserialize_datetime(mapping.get("expires_at")),
+            dispatch_checked_at=_deserialize_datetime(mapping.get("dispatch_checked_at")),
             created_at=_deserialize_datetime(mapping.get("created_at")) or _utc_now(),
             queued_at=_deserialize_datetime(mapping.get("queued_at")) or _utc_now(),
             started_at=_deserialize_datetime(mapping.get("started_at")),
@@ -2503,6 +2725,10 @@ def _decode(value: "Any") -> "Any":
     if isinstance(value, bytes):
         return value.decode()
     return value
+
+
+def _decode_flat_mapping(values: "Sequence[Any]") -> "dict[str, Any]":
+    return {str(_decode(values[index])): _decode(values[index + 1]) for index in range(0, len(values), 2)}
 
 
 def _decode_mapping(mapping: "dict[Any, Any]") -> "dict[str, Any]":
