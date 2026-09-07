@@ -147,6 +147,7 @@ async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned(
         "queue_table_name": "custom_queue",
         "maintenance_table_name": "custom_maintenance",
         "task_reservation_table_name": "custom_reservation",
+        "column_map": dict(backend_config.column_map),
     }
 
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
@@ -178,7 +179,7 @@ async def test_sqlspec_backend_migration_derives_names_from_custom_queue_table()
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
     paths = tuple(Path(path) for path in migration_paths())
 
-    assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
+    assert [path.name for path in paths] == ["0001_create_queue_tasks.py", "0002_add_dispatch_checked_at.py"]
     migration_content = paths[0].read_text()
     assert "create_queue_store" in migration_content
     assert "create_maintenance_store" in migration_content
@@ -329,3 +330,175 @@ async def test_sqlspec_psycopg_fresh_migration_serves_query(request: "FixtureReq
             await backend.close()
     finally:
         await sqlspec_manager.close_all_pools()
+
+
+async def test_dispatch_checked_migration_fresh_mapped_and_downgrade(tmp_path: "Path") -> "None":
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+    from sqlspec.migrations.context import MigrationContext
+
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+
+    config = AiosqliteConfig(connection_config={"database": str(tmp_path / "mapped.db")})
+    configure_queue_migration_extension(
+        config,
+        queue_table_name="MappedTasks",
+        column_map={
+            "dispatch_checked_at": "ScanTime",
+            "execution_backend": "ExecutionBackend",
+            "status": "Lifecycle",
+            "created_at": "Created",
+            "id": "RecordId",
+        },
+    )
+    initial = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    additive = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at")
+    async with config.provide_session() as driver:
+        context = MigrationContext(config=config, driver=driver)
+        for statement in await initial.up(context):
+            await driver.execute_script(statement)
+        await driver.commit()
+        assert await additive.up(context) == []
+        down = await additive.down(context)
+        assert len(down) == 2 and "scantime" in down[1]
+        for statement in down:
+            await driver.execute_script(statement)
+        await driver.commit()
+        assert await additive.down(context) == []
+        for statement in await additive.up(context):
+            await driver.execute_script(statement)
+        await driver.commit()
+        assert await additive.up(context) == []
+
+
+async def test_dispatch_checked_migration_upgrades_frozen_schema(tmp_path: "Path") -> "None":
+    from sqlspec.adapters.sqlite import SqliteConfig
+    from sqlspec.migrations.context import MigrationContext
+
+    config = SqliteConfig(connection_config={"database": str(tmp_path / "legacy.db")})
+    additive = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at")
+    # Frozen pre-upgrade shape: independent of the current store's CREATE TABLE.
+    legacy = """CREATE TABLE queue_task (
+        id VARCHAR(64) PRIMARY KEY, task_name VARCHAR(255) NOT NULL,
+        task_args TEXT NOT NULL, task_kwargs TEXT NOT NULL, queue VARCHAR(255) NOT NULL,
+        execution_backend VARCHAR(255) NOT NULL, execution_profile VARCHAR(255), execution_ref VARCHAR(255),
+        worker_id VARCHAR(255), status VARCHAR(255) NOT NULL, priority INTEGER NOT NULL,
+        max_retries INTEGER NOT NULL, retry_count INTEGER NOT NULL, scheduled_at TEXT, expires_at TEXT,
+        created_at TEXT NOT NULL, queued_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+        heartbeat_at TEXT, result TEXT NOT NULL, error TEXT, task_key VARCHAR(255) UNIQUE, metadata TEXT NOT NULL
+    ); CREATE INDEX legacy_status ON queue_task(status);
+    INSERT INTO queue_task(id, task_name, task_args, task_kwargs, queue, execution_backend, status,
+        priority, max_retries, retry_count, created_at, queued_at, result, metadata)
+        VALUES ('original', 'recover', '[]', '{}', 'default', 'cloudtasks', 'pending', 0, 3, 0,
+        '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', 'null', '{"kept": true}');"""
+    with config.provide_session() as driver:
+        driver.execute_script(legacy)
+        driver.commit()
+        context = MigrationContext(config=config, driver=driver)
+        assert len(await additive.up(context)) == 2
+        for statement in await additive.up(context):
+            driver.execute_script(statement)
+        driver.commit()
+        row = driver.select_one("SELECT id, metadata, dispatch_checked_at FROM queue_task")
+        assert row == {"id": "original", "metadata": '{"kept": true}', "dispatch_checked_at": None}
+        assert await additive.up(context) == []
+        for statement in await additive.down(context):
+            driver.execute_script(statement)
+        driver.commit()
+        assert driver.select_value("SELECT COUNT(*) FROM queue_task") == 1
+        assert driver.select_value("SELECT COUNT(*) FROM sqlite_master WHERE name = 'legacy_status'") == 1
+
+
+async def test_dispatch_checked_migration_requires_driver() -> "None":
+    from sqlspec.adapters.sqlite import SqliteConfig
+    from sqlspec.exceptions import SQLSpecError
+    from sqlspec.migrations.context import MigrationContext
+
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at")
+    context = MigrationContext(config=SqliteConfig(connection_config={"database": ":memory:"}))
+    for function in (migration.up, migration.down):
+        with pytest.raises(SQLSpecError, match="active migration driver"):
+            await function(context)
+
+
+async def test_dispatch_checked_spanner_native_upgrade(spanner_service: "Any", request: "FixtureRequest") -> "None":
+    pytest.importorskip("google.cloud.spanner")
+    from sqlspec.adapters.spanner import SpannerSyncConfig
+    from sqlspec.migrations.context import MigrationContext
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+    from tests.integration.backends.sqlspec.test_spanner_contract import (
+        _ensure_spanner_emulator_database,
+        _spanner_emulator_connection_config,
+    )
+
+    _ensure_spanner_emulator_database(spanner_service)
+    table = table_name_for_test("dispatch_upgrade", "spanner", request.node.nodeid)
+    config = SpannerSyncConfig(
+        connection_config=_spanner_emulator_connection_config(spanner_service),
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": table}},
+    )
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name=table))
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at")
+    await backend.open()
+    try:
+        await backend.create_schema()
+        record = await backend.enqueue("native.upgrade", execution_backend="cloudtasks")
+        database = cast("Any", config.get_database())
+        with config.provide_session() as driver:
+            context = MigrationContext(config=config, driver=driver)
+            assert await migration.up(context) == []
+            statements = await migration.down(context)
+        database.update_ddl(statements).result(120)
+        with config.provide_session() as driver:
+            statements = await migration.up(MigrationContext(config=config, driver=driver))
+        database.update_ddl(statements).result(120)
+        page = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+        assert page.records[0].id == record.id
+        with config.provide_session() as driver:
+            statements = await migration.down(MigrationContext(config=config, driver=driver))
+        database.update_ddl(statements).result(120)
+        initial = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+        database.update_ddl(await initial.down(MigrationContext(config=config))).result(120)
+    finally:
+        await backend.close()
+
+
+async def test_dispatch_checked_long_postgres_table_is_idempotent(postgres_service: "PostgresService") -> "None":
+    from uuid import uuid4
+
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+    from sqlspec.migrations.context import MigrationContext
+
+    table = "dispatch_" + uuid4().hex + "_" + "x" * 20
+    config = AsyncpgConfig(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "user": postgres_service.user,
+            "password": postgres_service.password,
+            "database": postgres_service.database,
+        },
+        extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": table}},
+    )
+    initial = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    additive = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at")
+    async with config.provide_session() as driver:
+        context = MigrationContext(config=config, driver=driver)
+        try:
+            for statement in await initial.up(context):
+                await driver.execute_script(statement)
+            await driver.commit()
+            assert await additive.up(context) == []
+            down = await additive.down(context)
+            assert len(down) == 2
+            for statement in down:
+                await driver.execute_script(statement)
+            await driver.commit()
+            for statement in await additive.up(context):
+                await driver.execute_script(statement)
+            await driver.commit()
+            assert await additive.up(context) == []
+        finally:
+            for statement in await initial.down(context):
+                await driver.execute_script(statement)
+            await driver.commit()

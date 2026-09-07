@@ -100,6 +100,13 @@ class _OracledbQueueStore(SQLSpecQueueStore):
                 ),
             ),
             _create_index_block(self, "heartbeat", f"{self._col('status')}, {self._col('heartbeat_at')}"),
+            _create_index_block(
+                self,
+                "dispatch_repair",
+                ", ".join(
+                    self._col(c) for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
+                ),
+            ),
         ]
 
     async def _detect_json_storage_type(self, driver: "Any") -> "_OracleJSONStorageType":
@@ -341,6 +348,7 @@ def _create_table_block(
             {store._col("started_at")} {store._timestamp_type()},
             {store._col("completed_at")} {store._timestamp_type()},
             {store._col("heartbeat_at")} {store._timestamp_type()},
+            {store._col("dispatch_checked_at")} {store._dispatch_checked_type()},
             {store._col("result_json")} {_json_column_type(store._col("result_json"), storage_type)} NOT NULL,
             {store._col("error")} {store._error_type()},
             {store._col("task_key")} {store._indexed_text_type()} UNIQUE,

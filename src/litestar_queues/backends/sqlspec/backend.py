@@ -2,7 +2,7 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -18,6 +18,7 @@ from litestar_queues.backends.base import (
     EXTERNAL_DISPATCH_RESERVATION_PREFIX,
     STALE_HEARTBEAT_ERROR,
     BaseQueueBackend,
+    DispatchRepairCandidates,
     attempts_consumed,
     interruption_count,
     is_external_dispatch_reservation,
@@ -158,6 +159,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_sqlspec_config",
         "_store",
         "_sync_executor",
+        "_sync_session_lock",
         "_task_reservation_store",
         "_task_reservation_table_name",
         "_wakeup_backend",
@@ -174,6 +176,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self, config: "QueueConfig | None" = None, *, backend_config: "SQLSpecBackendConfig | None" = None
     ) -> "None":
         super().__init__(config=config)
+        self._sync_session_lock = asyncio.Lock()
         backend_config = backend_config or SQLSpecBackendConfig()
         self._column_map = resolve_column_map(backend_config.column_map)
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
@@ -446,6 +449,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return self._get_store().bulk_values([self._params_from_record(record)])[0]
 
     async def _enqueue_keyed(self, record: "QueuedTaskRecord", key: "str") -> "QueuedTaskRecord":
+        conflict: Exception | None = None
         with self._observe_queue_operation("enqueue", queue=record.queue, task_name=record.task_name):
             async with self._session() as driver:
                 await driver.begin()
@@ -462,11 +466,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 except Exception as exc:
                     with suppress(Exception):
                         await driver.rollback()
-                    if _is_unique_violation(exc):
-                        winner = await self.get_task_by_key(key)
-                        if winner is not None and not winner.is_terminal:
-                            return winner
-                    raise
+                    if not _is_unique_violation(exc):
+                        raise
+                    conflict = exc
+            if conflict is not None:
+                winner = await self.get_task_by_key(key)
+                if winner is not None and not winner.is_terminal:
+                    return winner
+                raise conflict
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
         return record
@@ -1557,6 +1564,114 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 raise
         return self._record_from_row(row) if row is not None else None
 
+    async def list_dispatch_repair_candidates(
+        self, execution_backend: "str", *, limit: "int"
+    ) -> "DispatchRepairCandidates":
+        if limit < 0:
+            msg = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if limit == 0:
+            return DispatchRepairCandidates()
+        now = self._serialize_datetime(_utc_now())
+        store = self._get_store()
+        records: list[QueuedTaskRecord] = []
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                selected = await driver.select(
+                    store.list_dispatch_repair_candidates(execution_backend=execution_backend, now=now, limit=limit)
+                )
+                for candidate in selected:
+                    task_id = UUID(str(candidate["id"]))
+                    await driver.execute(
+                        store.mark_dispatch_checked(task_id=str(task_id), execution_backend=execution_backend, now=now)
+                    )
+                    row = await driver.select_one_or_none(
+                        store.get_dispatch_repair_candidate(
+                            task_id=str(task_id), execution_backend=execution_backend, now=now
+                        )
+                    )
+                    if row is not None:
+                        record = self._record_from_row(row)
+                        if record.status in {"pending", "scheduled"} and record.execution_backend == execution_backend:
+                            records.append(record)
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        return DispatchRepairCandidates(tuple(records), len(selected), len(selected) == limit)
+
+    async def reserve_scheduled_execution_ref(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        try:
+            return await self._reserve_scheduled_execution_ref_once(
+                task_id,
+                execution_backend,
+                execution_ref,
+                expected_retry_count=expected_retry_count,
+                expected_execution_ref=expected_execution_ref,
+            )
+        except Exception as exc:
+            if resolve_adapter_name(self._get_sqlspec_config()) != "duckdb":
+                raise
+            from duckdb import TransactionException
+
+            # SQLSpec currently wraps this native MVCC conflict in SQLSpecError.
+            # One fresh transaction can observe the contender's committed fence.
+            if not isinstance(exc.__cause__, TransactionException) or "Conflict on update!" not in str(exc.__cause__):
+                raise
+        await asyncio.sleep(0.01)
+        return await self._reserve_scheduled_execution_ref_once(
+            task_id,
+            execution_backend,
+            execution_ref,
+            expected_retry_count=expected_retry_count,
+            expected_execution_ref=expected_execution_ref,
+        )
+
+    async def _reserve_scheduled_execution_ref_once(
+        self,
+        task_id: "UUID",
+        execution_backend: "str",
+        execution_ref: "str",
+        *,
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+    ) -> "QueuedTaskRecord | None":
+        async with self._session() as driver:
+            await driver.begin()
+            try:
+                store = self._get_store()
+                statement = store.reserve_scheduled_execution_ref(
+                    task_id=str(task_id),
+                    execution_backend=execution_backend,
+                    execution_ref=execution_ref,
+                    expected_retry_count=expected_retry_count,
+                    expected_execution_ref=expected_execution_ref,
+                    now=self._serialize_datetime(_utc_now()),
+                )
+                if store.data_dictionary_dialect in {"sqlite", "mssql"}:
+                    changed = await driver.select_one_or_none(statement) is not None
+                else:
+                    result = await driver.execute(statement)
+                    changed = self._resolve_rows_affected(result) > 0
+                row = await self._select_task(driver, task_id) if changed else None
+                await driver.commit()
+            except Exception:
+                with suppress(Exception):
+                    await driver.rollback()
+                raise
+        record = self._record_from_row(row) if row is not None else None
+        return record if record is not None and record.execution_ref == execution_ref else None
+
     async def reserve_external_dispatch(
         self,
         task_id: "UUID",
@@ -2232,18 +2347,28 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
         store = self._get_store()
-        async with _bridge_session(
-            cast("SQLSpecManager", self._get_or_create_sqlspec()),
-            sqlspec_config,
-            skip_explicit_begin=store.skip_explicit_begin,
-            skip_cleanup_rollback=store.skip_cleanup_rollback,
-            executor=self._sync_executor,
-            thread_name_prefix=(
-                self.config.names.resource("sqlspec", "sync")
-                if self.config is not None
-                else "litestar-queues-sqlspec-sync"
-            ),
-        ) as driver:
+        adapter = resolve_adapter_name(sqlspec_config)
+        adbc_sqlite = adapter == "adbc" and store.data_dictionary_dialect == "sqlite"
+        serialize = adbc_sqlite or adapter == "duckdb"
+        async with (
+            self._sync_session_lock if serialize else nullcontext(),
+            _bridge_session(
+                cast("SQLSpecManager", self._get_or_create_sqlspec()),
+                sqlspec_config,
+                skip_explicit_begin=store.skip_explicit_begin,
+                skip_cleanup_rollback=store.skip_cleanup_rollback,
+                executor=self._sync_executor,
+                thread_name_prefix=(
+                    self.config.names.resource("sqlspec", "sync")
+                    if self.config is not None
+                    else "litestar-queues-sqlspec-sync"
+                ),
+            ) as driver,
+        ):
+            if adbc_sqlite:
+                timeout = await driver.select_one_or_none("PRAGMA busy_timeout")
+                if timeout is None or int(timeout["timeout"]) <= 0:
+                    await driver.select_one_or_none("PRAGMA busy_timeout = 1000")
             yield driver
 
     @asynccontextmanager
@@ -2543,6 +2668,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             "execution_ref": record.execution_ref,
             "worker_id": record.worker_id,
             "heartbeat_at": self._serialize_datetime(record.heartbeat_at),
+            "dispatch_checked_at": self._serialize_datetime(record.dispatch_checked_at),
             "id": str(record.id),
             "kwargs_json": store.serialize_json("kwargs_json", record.kwargs),
             "max_retries": record.max_retries,
@@ -2586,6 +2712,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             started_at=_deserialize_datetime(row["started_at"]),
             completed_at=_deserialize_datetime(row["completed_at"]),
             heartbeat_at=_deserialize_datetime(row["heartbeat_at"]),
+            dispatch_checked_at=_deserialize_datetime(row["dispatch_checked_at"]),
             result=store.deserialize_json("result_json", row["result_json"]),
             error=cast("str | None", row["error"]),
             key=cast("str | None", row["task_key"]),

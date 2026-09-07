@@ -177,4 +177,5 @@ class SQLSpecBackendConfig:
             event_history_extra_columns=self.event_history_extra_columns,
             maintenance_table_name=self.maintenance_table_name,
             task_reservation_table_name=self.task_reservation_table_name,
+            column_map=self.column_map,
         )

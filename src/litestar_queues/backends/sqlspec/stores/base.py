@@ -2,9 +2,12 @@
 
 from dataclasses import dataclass
 from functools import cache
+from hashlib import sha256
 from importlib.util import find_spec
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from sqlglot import exp
+from sqlglot.dialects import Dialect
 from sqlspec import sql
 from sqlspec.data_dictionary import get_dialect_config
 from sqlspec.utils.serializers import from_json, to_json
@@ -50,12 +53,14 @@ _TASK_COLUMNS = (
     "started_at",
     "completed_at",
     "heartbeat_at",
+    "dispatch_checked_at",
     "result_json",
     "error",
     "task_key",
     "metadata_json",
 )
 _DUE_STATUSES = ("pending", "scheduled")
+_MAX_REPAIR_INDEX_LENGTH = 63
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +108,10 @@ class SQLSpecQueueStore:
     ) -> "None":
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
-        self._column_map = resolve_column_map(column_map)
+        extension = config.extension_config or {}
+        settings = cast("Mapping[str, Any]", extension.get(QUEUE_EXTENSION_NAME, {}) or {})
+        configured_map = cast("Mapping[str, str] | None", settings.get("column_map"))
+        self._column_map = resolve_column_map(column_map if column_map is not None else configured_map)
         configured = validate_native_json_columns(native_json_columns or frozenset())
         self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
@@ -1084,6 +1092,146 @@ RETURNING {target}.{id_col} AS id
             .where_eq(self._col("id"), task_id)
         )
 
+    def list_dispatch_repair_candidates(
+        self, *, execution_backend: "str", now: "DatetimeParam", limit: "int"
+    ) -> "Select":
+        """Select a bounded page of eligible delivery records, including unnamed attempts."""
+        checked_order = f"COALESCE({self._col('dispatch_checked_at')}, {self._col('created_at')})"
+        orders = (
+            (
+                exp.Ordered(this=sql.raw(checked_order), desc=False, nulls_first=True),
+                exp.Ordered(this=exp.column(self._col("id")), desc=False, nulls_first=True),
+            )
+            if self.data_dictionary_dialect == "spanner"
+            else (_raw_order(f"{checked_order} ASC"), _raw_order(f"{self._col('id')} ASC"))
+        )
+        return (
+            self
+            ._select_all()
+            .where_eq(self._col("execution_backend"), execution_backend)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :repair_now", repair_now=now)
+            .order_by(*orders)
+            .limit(limit)
+        )
+
+    def mark_dispatch_checked(self, *, task_id: "str", execution_backend: "str", now: "DatetimeParam") -> "Update":
+        """Advance an eligible record's scan time without overwriting a newer mark."""
+        return (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"dispatch_checked_at": now}))
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("execution_backend"), execution_backend)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :repair_now", repair_now=now)
+            .where(
+                f"{self._col('dispatch_checked_at')} IS NULL OR {self._col('dispatch_checked_at')} < :checked_now",
+                checked_now=now,
+            )
+        )
+
+    def get_dispatch_repair_candidate(
+        self, *, task_id: "str", execution_backend: "str", now: "DatetimeParam"
+    ) -> "Select":
+        """Recheck eligibility using a current read on snapshot-isolated databases."""
+        statement = (
+            self
+            ._select_all()
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("execution_backend"), execution_backend)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :repair_now", repair_now=now)
+        )
+        dialect = self._dialect_config()
+        if dialect is not None and dialect.get_feature_flag("supports_for_update"):
+            return statement.for_update()
+        return statement
+
+    def reserve_scheduled_execution_ref(
+        self,
+        *,
+        task_id: "str",
+        execution_backend: "str",
+        execution_ref: "str",
+        expected_retry_count: "int",
+        expected_execution_ref: "str | None",
+        now: "DatetimeParam",
+    ) -> "Update":
+        """Fence a reference change without requiring the delivery to be due."""
+        statement = (
+            sql
+            .update(self.table_name)
+            .set(**self._mapped_values({"execution_ref": execution_ref}))
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("execution_backend"), execution_backend)
+            .where_eq(self._col("retry_count"), expected_retry_count)
+            .where_in(self._col("status"), _DUE_STATUSES)
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :repair_now", repair_now=now)
+        )
+        statement = (
+            statement.where(f"{self._col('execution_ref')} IS NULL")
+            if expected_execution_ref is None
+            else statement.where_eq(self._col("execution_ref"), expected_execution_ref)
+        )
+        if self._data_dictionary_dialect_name() == "sqlite":
+            return statement.returning(self._col("id"))
+        if self._data_dictionary_dialect_name() == "mssql":
+            return statement.returning(f"inserted.{self._col('id')}")
+        return statement
+
+    def dispatch_repair_index_sql(self) -> "str":
+        """Return the additive repair index DDL, with no unsupported existence clause."""
+        columns = ", ".join(
+            self._quote_identifier(self._dispatch_ddl_name(self._col(c)))
+            for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
+        )
+        return f"CREATE INDEX {self._quote_identifier(self.dispatch_repair_index_name)} ON {self._quote_identifier(self.dispatch_repair_table_name)} ({columns})"
+
+    def dispatch_checked_column_sql(self, *, drop: "bool" = False) -> "str":
+        """Return the dialect-specific additive column or removal statement."""
+        table, column = (
+            self._quote_identifier(self.dispatch_repair_table_name),
+            self._quote_identifier(self.dispatch_checked_column_name),
+        )
+        if drop:
+            return f"ALTER TABLE {table} DROP COLUMN {column}"
+        dialect = self._data_dictionary_dialect_name()
+        if dialect == "oracle":
+            return f"ALTER TABLE {table} ADD ({column} {self._dispatch_checked_type()})"
+        add = "ADD" if dialect == "mssql" else "ADD COLUMN"
+        return f"ALTER TABLE {table} {add} {column} {self._dispatch_checked_type()}"
+
+    def drop_dispatch_repair_index_sql(self) -> "str":
+        """Return the dialect-specific repair index removal statement."""
+        statement = f"DROP INDEX {self._quote_identifier(self.dispatch_repair_index_name)}"
+        if self._data_dictionary_dialect_name() in {"mysql", "mssql"}:
+            statement += f" ON {self._quote_identifier(self.dispatch_repair_table_name)}"
+        return statement
+
+    def _dispatch_checked_type(self) -> "str":
+        return "DATETIME(6)" if self._data_dictionary_dialect_name() == "mysql" else self._timestamp_type()
+
+    @property
+    def dispatch_checked_column_name(self) -> "str":
+        """Physical check-time name emitted by this store's table DDL."""
+        return self._dispatch_ddl_name(self._col("dispatch_checked_at"))
+
+    @property
+    def dispatch_repair_table_name(self) -> "str":
+        """Physical table name used by additive dispatch DDL."""
+        return ".".join(self._dispatch_ddl_name(part) for part in split_qualified_identifier(self.table_name))
+
+    @property
+    def dispatch_repair_index_name(self) -> "str":
+        """Physical repair index name emitted by this store's DDL."""
+        return self._dispatch_ddl_name(self._index_name("dispatch_repair"))
+
+    def _dispatch_ddl_name(self, name: "str") -> "str":
+        if self._data_dictionary_dialect_name() not in {"oracle", "mysql", "mssql", "spanner"}:
+            return str(Dialect.get_or_raise(self.dialect_name).normalize_identifier(exp.to_identifier(name)).name)
+        return name
+
     def list_running_external(self, *, limit: "int | None" = None) -> "Select":
         """Return a SELECT statement for externally dispatched records."""
         statement = (
@@ -1256,6 +1404,7 @@ RETURNING {target}.{id_col} AS id
             .column(self._col("started_at"), self._timestamp_type())
             .column(self._col("completed_at"), self._timestamp_type())
             .column(self._col("heartbeat_at"), self._timestamp_type())
+            .column(self._col("dispatch_checked_at"), self._dispatch_checked_type())
             .column(self._col("result_json"), self._result_json_type("result_json"), not_null=True)
             .column(self._col("error"), self._error_type())
             .column(self._col("task_key"), self._indexed_text_type(), unique=self._inline_unique_task_key())
@@ -1285,6 +1434,15 @@ RETURNING {target}.{id_col} AS id
         return [
             self._to_sql(
                 sql
+                .create_index(self._index_name("dispatch_repair"))
+                .if_not_exists()
+                .on_table(self.table_name)
+                .columns(
+                    *(self._col(c) for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id"))
+                )
+            ),
+            self._to_sql(
+                sql
                 .create_index(self._index_name("pending"))
                 .if_not_exists()
                 .on_table(self.table_name)
@@ -1309,7 +1467,10 @@ RETURNING {target}.{id_col} AS id
         return {self._col(column): value for column, value in values.items()}
 
     def _index_name(self, suffix: "str") -> "str":
-        return f"ix_{self.table_name.replace('.', '_')}_{suffix}"
+        name = f"ix_{self.table_name.replace('.', '_')}_{suffix}"
+        if suffix == "dispatch_repair" and len(name) > _MAX_REPAIR_INDEX_LENGTH:
+            return f"{name[: _MAX_REPAIR_INDEX_LENGTH - 9]}_{sha256(name.encode()).hexdigest()[:8]}"
+        return name
 
     def _id_type(self) -> "str":
         return self._string_type(64)

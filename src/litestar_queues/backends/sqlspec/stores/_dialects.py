@@ -36,6 +36,13 @@ class MssqlQueueStore(SQLSpecQueueStore):
             self._create_mssql_unique_task_key_index_statement(),
             self._create_mssql_index_statement("pending"),
             self._create_mssql_index_statement("heartbeat"),
+            self._create_mssql_index_statement_sql(
+                "dispatch_repair",
+                ", ".join(
+                    self._quoted_col(c)
+                    for c in ("execution_backend", "status", "dispatch_checked_at", "created_at", "id")
+                ),
+            ),
         ]
 
     def drop_statements(self) -> "list[str]":
@@ -85,6 +92,7 @@ class MssqlQueueStore(SQLSpecQueueStore):
                 {self._quoted_col("started_at")} {self._timestamp_type()},
                 {self._quoted_col("completed_at")} {self._timestamp_type()},
                 {self._quoted_col("heartbeat_at")} {self._timestamp_type()},
+                {self._quoted_col("dispatch_checked_at")} {self._dispatch_checked_type()},
                 {self._quoted_col("result_json")} {self._result_json_type("result_json")} NOT NULL,
                 {self._quoted_col("error")} {self._error_type()},
                 {self._quoted_col("task_key")} {self._indexed_text_type()},
@@ -264,6 +272,7 @@ class PostgresQueueStore(SQLSpecQueueStore):
     def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
         table_name = self._quoted_table_name()
         return [
+            self.dispatch_repair_index_sql().replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1),
             (
                 f"CREATE INDEX IF NOT EXISTS {self._quoted_index_name('pending')} "
                 f"ON {table_name} ({self._quoted_col('queue')}, {self._quoted_col('execution_backend')}, "
@@ -369,6 +378,7 @@ class MySQLQueueStore(SQLSpecQueueStore):
             {self._quoted_col("started_at")} {self._timestamp_type()},
             {self._quoted_col("completed_at")} {self._timestamp_type()},
             {self._quoted_col("heartbeat_at")} {self._timestamp_type()},
+                {self._quoted_col("dispatch_checked_at")} {self._dispatch_checked_type()},
             {self._quoted_col("result_json")} {self._result_json_type("result_json")} NOT NULL,
             {self._quoted_col("error")} {self._error_type()},
             {self._quoted_col("task_key")} {self._indexed_text_type()} UNIQUE,
@@ -377,6 +387,10 @@ class MySQLQueueStore(SQLSpecQueueStore):
                 {self._prefixed_col("status", 32)}, {self._prefixed_col("queue", 191)},
                 {self._prefixed_col("execution_backend", 191)}, {self._quoted_col("scheduled_at")},
                 {self._quoted_col("priority")}, {self._quoted_col("queued_at")}, {self._quoted_col("created_at")}
+            ),
+            INDEX {self._quoted_index_name("dispatch_repair")} (
+                {self._quoted_col("execution_backend")}, {self._quoted_col("status")},
+                {self._quoted_col("dispatch_checked_at")}, {self._quoted_col("created_at")}, {self._quoted_col("id")}
             ),
             INDEX {self._quoted_index_name("heartbeat")} (
                 {self._prefixed_col("status", 32)}, {self._quoted_col("heartbeat_at")}

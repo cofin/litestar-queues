@@ -131,3 +131,29 @@ async def test_sqlspec_worker_control_falls_back_to_polling_without_wakeups() ->
         assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False
     finally:
         await backend.close()
+
+
+def test_dispatch_checked_mapping_is_carried_into_migrations() -> None:
+    from litestar_queues import QueueConfig
+
+    config = AiosqliteConfig(
+        connection_config={"database": ":memory:"}, extension_config={"unrelated": {"enabled": True}}
+    )
+    backend_config = SQLSpecBackendConfig(sqlspec_config=config, column_map={"dispatch_checked_at": "last_scan"})
+    backend_config.configure_migrations(QueueConfig(queue_backend=backend_config))
+    settings = cast("dict[str, Any]", config.extension_config[QUEUE_EXTENSION_NAME])
+    assert settings["column_map"]["dispatch_checked_at"] == "last_scan"
+    assert config.extension_config["unrelated"] == {"enabled": True}
+
+
+def test_dispatch_checked_store_mapping_precedence() -> None:
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+    from litestar_queues.backends.sqlspec.stores import create_queue_store
+
+    config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_queue_migration_extension(config, column_map={"dispatch_checked_at": "configured_check"})
+    configure_queue_migration_extension(config)
+    inherited = create_queue_store(config)
+    overridden = create_queue_store(config, column_map={"dispatch_checked_at": "explicit_check"})
+    assert "configured_check" in inherited.dispatch_checked_column_sql()
+    assert "explicit_check" in overridden.dispatch_checked_column_sql()

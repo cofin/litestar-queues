@@ -1,6 +1,7 @@
 """Unit tests for SQLSpec maintenance table naming and ownership fencing."""
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -13,6 +14,7 @@ from litestar_queues.backends.sqlspec.schema import maintenance_table_name_for, 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from pytest import MonkeyPatch
 
@@ -119,3 +121,107 @@ async def test_release_reports_false_when_successor_replaces_token_before_delete
     backend = SQLSpecQueueBackend()
 
     assert await backend.release_maintenance("maintenance", "token-a") is False
+
+
+@pytest.mark.anyio
+async def test_dispatch_repair_zero_budget_does_not_open_storage() -> None:
+    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+    from litestar_queues.exceptions import QueueConfigurationError
+
+    backend = SQLSpecQueueBackend()
+    result = await backend.list_dispatch_repair_candidates("cloudtasks", limit=0)
+    assert result.records == ()
+    assert result.examined == 0
+    assert result.limit_reached is False
+    with pytest.raises(QueueConfigurationError, match="non-negative"):
+        await backend.list_dispatch_repair_candidates("cloudtasks", limit=-1)
+
+
+@pytest.mark.anyio
+async def test_dispatch_repair_discarded_candidate_consumes_budget(
+    tmp_path: "Path", monkeypatch: "MonkeyPatch"
+) -> None:
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=AiosqliteConfig(connection_config={"database": str(tmp_path / "repair.db")})
+        )
+    )
+    await backend.open()
+    await backend.create_schema()
+    try:
+        selected = await backend.enqueue("selected", execution_backend="cloudtasks")
+        deferred = await backend.enqueue("deferred", execution_backend="cloudtasks")
+        original_session = SQLSpecQueueBackend._session
+        page_sizes: list[int] = []
+
+        @asynccontextmanager
+        async def session(instance: "SQLSpecQueueBackend") -> "AsyncIterator[Any]":
+            async with original_session(instance) as driver:
+
+                async def select(statement: Any) -> Any:
+                    rows = await driver.select(statement)
+                    page_sizes.append(len(rows))
+                    # A selected record can cease to be eligible before its guarded mark.
+                    await driver.execute(
+                        "UPDATE queue_task SET status = 'cancelled' WHERE id = :task_id", task_id=str(selected.id)
+                    )
+                    return rows
+
+                yield SimpleNamespace(
+                    begin=driver.begin,
+                    commit=driver.commit,
+                    rollback=driver.rollback,
+                    execute=driver.execute,
+                    select=select,
+                    select_one_or_none=driver.select_one_or_none,
+                )
+
+        with monkeypatch.context() as patch:
+            patch.setattr(SQLSpecQueueBackend, "_session", session)
+            result = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+        assert result.records == ()
+        assert result.examined == 1
+        assert result.limit_reached is True
+        assert page_sizes == [1]
+        stored = await backend.get_task(deferred.id)
+        assert stored is not None and stored.dispatch_checked_at is None
+        following = await backend.list_dispatch_repair_candidates("cloudtasks", limit=1)
+        assert [record.id for record in following.records] == [deferred.id]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.anyio
+async def test_scheduled_execution_ref_unknown_rowcount_does_not_accept_existing_reference(
+    tmp_path: "Path", monkeypatch: "MonkeyPatch"
+) -> None:
+    from sqlspec.adapters.aiosqlite import AiosqliteConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=AiosqliteConfig(connection_config={"database": str(tmp_path / "cas.db")})
+        )
+    )
+    await backend.open()
+    await backend.create_schema()
+    try:
+        record = await backend.enqueue("existing_reference", execution_backend="cloudtasks")
+        await backend.set_execution_ref(record.id, "cloudtasks", "already-reserved")
+        # Some adapters cannot distinguish zero affected rows from unknown rowcount.
+        monkeypatch.setattr(SQLSpecQueueBackend, "_resolve_rows_affected", lambda _self, _result: -1)
+        rejected = await backend.reserve_scheduled_execution_ref(
+            record.id,
+            "cloudtasks",
+            "already-reserved",
+            expected_retry_count=0,
+            expected_execution_ref=None,
+        )
+        assert rejected is None
+    finally:
+        await backend.close()

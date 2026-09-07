@@ -41,6 +41,7 @@ class SpannerQueueStore(SQLSpecQueueStore):
         if not self._manage_schema:
             return []
         return [
+            self.drop_dispatch_repair_index_sql().replace("DROP INDEX ", "DROP INDEX IF EXISTS ", 1),
             f"DROP INDEX {self._quoted_index_name('task_key')}",
             f"DROP INDEX {self._quoted_index_name('heartbeat')}",
             f"DROP INDEX {self._quoted_index_name('pending')}",
@@ -107,6 +108,7 @@ class SpannerQueueStore(SQLSpecQueueStore):
             f"{self._quoted_col('started_at')} {self._timestamp_type()}",
             f"{self._quoted_col('completed_at')} {self._timestamp_type()}",
             f"{self._quoted_col('heartbeat_at')} {self._timestamp_type()}",
+            f"{self._quoted_col('dispatch_checked_at')} {self._dispatch_checked_type()}",
             f"{self._quoted_col('result_json')} {self._result_json_type('result_json')}",
             f"{self._quoted_col('error')} {self._error_type()}",
             f"{self._quoted_col('task_key')} {self._indexed_text_type()}",
@@ -117,6 +119,7 @@ class SpannerQueueStore(SQLSpecQueueStore):
 
     def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
         return [
+            self.dispatch_repair_index_sql(),
             (
                 f"CREATE INDEX {self._quoted_index_name('pending')} ON {self._quoted_table_name()} "
                 f"({self._quoted_col('status')}, {self._quoted_col('queue')}, "

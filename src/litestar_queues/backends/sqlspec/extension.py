@@ -7,13 +7,14 @@ from litestar_queues.backends.sqlspec.schema import (
     event_history_table_name_for,
     maintenance_table_name_for,
     migration_directory,
+    resolve_column_map,
     task_reservation_table_name_for,
     validate_table_name,
 )
 from litestar_queues.events import validate_event_history_extra_columns
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from litestar_queues.backends.sqlspec._typing import SQLSpecConfig
@@ -64,6 +65,7 @@ def configure_queue_migration_extension(
     event_history_extra_columns: "Sequence[EventHistoryExtraColumn]" = (),
     maintenance_table_name: "str | None" = None,
     task_reservation_table_name: "str | None" = None,
+    column_map: "Mapping[str, str] | None" = None,
 ) -> "None":
     """Register the packaged queue migrations with SQLSpec's extension runner."""
     queue_settings = _configure_extension_settings(
@@ -74,6 +76,7 @@ def configure_queue_migration_extension(
         event_history_extra_columns=event_history_extra_columns,
         maintenance_table_name=maintenance_table_name,
         task_reservation_table_name=task_reservation_table_name,
+        column_map=column_map,
     )
     commands = sqlspec_config.get_migration_commands()
     commands.extension_configs[QUEUE_EXTENSION_NAME] = queue_settings
@@ -95,6 +98,7 @@ def _configure_extension_settings(
     event_history_extra_columns: "Sequence[EventHistoryExtraColumn]" = (),
     maintenance_table_name: "str | None" = None,
     task_reservation_table_name: "str | None" = None,
+    column_map: "Mapping[str, str] | None" = None,
 ) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
@@ -115,4 +119,8 @@ def _configure_extension_settings(
     queue_settings["task_reservation_table_name"] = validate_table_name(
         task_reservation_table_name or task_reservation_table_name_for(queue_table_name)
     )
+    if column_map is not None:
+        queue_settings["column_map"] = resolve_column_map(column_map)
+    extension_config[QUEUE_EXTENSION_NAME] = queue_settings
+    sqlspec_config.extension_config = extension_config
     return queue_settings
