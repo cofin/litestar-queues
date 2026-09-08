@@ -2478,25 +2478,102 @@ async def test_sqlspec_duckdb_independent_scheduled_execution_ref(tmp_path: "Pat
         await first.close()
 
 
+@pytest.mark.parametrize("commit_contender", [True, False], ids=["commit", "rollback"])
+@pytest.mark.parametrize("clear_cause", [True, False], ids=["mapped", "chained"])
+async def test_sqlspec_duckdb_scheduled_execution_ref_open_contender(
+    duckdb_backend: "SQLSpecQueueBackend",
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+    commit_contender: "bool",
+    clear_cause: "bool",
+) -> "None":
+    """Verify contender handling when competing write is uncommitted or native cause is cleared."""
+    from sqlspec.adapters.duckdb import DuckDBConfig
+    from sqlspec.exceptions import SQLSpecError
+
+    if clear_cause:
+        reserve_once = SQLSpecQueueBackend._reserve_scheduled_execution_ref_once
+
+        async def without_native_cause(
+            self: "SQLSpecQueueBackend", *args: "Any", **kwargs: "Any"
+        ) -> "QueuedTaskRecord | None":
+            try:
+                return await reserve_once(self, *args, **kwargs)
+            except SQLSpecError as exc:
+                raise exc from None
+
+        monkeypatch.setattr(SQLSpecQueueBackend, "_reserve_scheduled_execution_ref_once", without_native_cause)
+
+    second = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=DuckDBConfig(connection_config={"database": str(tmp_path / "queue.duckdb")})
+        )
+    )
+    await second.open()
+    try:
+        record = await duckdb_backend.enqueue("held-reservation", execution_backend="cloudtasks")
+        async with duckdb_backend._session() as driver:
+            await driver.begin()
+            await driver.execute(
+                duckdb_backend._get_store().reserve_scheduled_execution_ref(
+                    task_id=str(record.id),
+                    execution_backend="cloudtasks",
+                    execution_ref="contender",
+                    expected_retry_count=0,
+                    expected_execution_ref=None,
+                    now=datetime.now(timezone.utc),
+                )
+            )
+            assert (
+                await second.reserve_scheduled_execution_ref(
+                    record.id, "cloudtasks", "loser", expected_retry_count=0, expected_execution_ref=None
+                )
+                is None
+            )
+            if commit_contender:
+                await driver.commit()
+            else:
+                await driver.rollback()
+
+        stored = await second.get_task(record.id)
+        assert stored is not None
+        assert stored.execution_ref == ("contender" if commit_contender else None)
+        replacement = await second.reserve_scheduled_execution_ref(
+            record.id, "cloudtasks", "replacement", expected_retry_count=0, expected_execution_ref=stored.execution_ref
+        )
+        assert replacement is not None
+        assert replacement.execution_ref == "replacement"
+    finally:
+        await second.close()
+
+
+@pytest.mark.parametrize("failure_kind", ["native", "mapped", "untyped"])
 async def test_sqlspec_duckdb_dispatch_nonconflict_is_not_retried(
-    duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+    duckdb_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch", failure_kind: "str"
 ) -> "None":
     from duckdb import TransactionException
     from sqlspec.exceptions import SQLSpecError
 
     calls = 0
+    error = (
+        RuntimeError("DuckDB database error: TransactionContext Error: Conflict on update!")
+        if failure_kind == "untyped"
+        else SQLSpecError("transaction failed")
+    )
+    if failure_kind == "native":
+        error.__cause__ = TransactionException("cannot start a transaction within a transaction")
 
     async def broken_transaction(*args: "Any", **kwargs: "Any") -> "None":
         nonlocal calls
         calls += 1
-        message = "transaction failed"
-        raise SQLSpecError(message) from TransactionException("cannot start a transaction within a transaction")
+        raise error
 
     monkeypatch.setattr(SQLSpecQueueBackend, "_reserve_scheduled_execution_ref_once", broken_transaction)
-    with pytest.raises(SQLSpecError, match="transaction failed"):
+    with pytest.raises(type(error)) as caught:
         await duckdb_backend.reserve_scheduled_execution_ref(
             uuid4(), "cloudtasks", "new", expected_retry_count=0, expected_execution_ref=None
         )
+    assert caught.value is error
     assert calls == 1
 
 

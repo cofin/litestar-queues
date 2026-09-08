@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID, uuid4
 
 from sqlspec import SQLSpec
-from sqlspec.exceptions import SerializationConflictError
+from sqlspec.exceptions import SerializationConflictError, SQLSpecError
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
@@ -1640,6 +1640,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         expected_retry_count: "int",
         expected_execution_ref: "str | None",
     ) -> "QueuedTaskRecord | None":
+        """Reserve the execution reference under CAS fencing, returning None on contention.
+
+        Serialization conflicts and DuckDB MVCC update collisions indicate another transaction
+        contended for the same row, in which case the rolled back attempt yields ownership.
+        SQLSpec deferred exception handling may clear the native cause, so mapped SQLSpecError
+        messages are also checked.
+        """
         try:
             return await self._reserve_scheduled_execution_ref_once(
                 task_id,
@@ -1649,22 +1656,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 expected_execution_ref=expected_execution_ref,
             )
         except Exception as exc:
-            if resolve_adapter_name(self._get_sqlspec_config()) != "duckdb":
-                raise
-            from duckdb import TransactionException
+            if _is_serialization_conflict(exc):
+                return None
+            if resolve_adapter_name(self._get_sqlspec_config()) == "duckdb":
+                from duckdb import TransactionException
 
-            # SQLSpec currently wraps this native MVCC conflict in SQLSpecError.
-            # One fresh transaction can observe the contender's committed fence.
-            if not isinstance(exc.__cause__, TransactionException) or "Conflict on update!" not in str(exc.__cause__):
-                raise
-        await asyncio.sleep(0.01)
-        return await self._reserve_scheduled_execution_ref_once(
-            task_id,
-            execution_backend,
-            execution_ref,
-            expected_retry_count=expected_retry_count,
-            expected_execution_ref=expected_execution_ref,
-        )
+                native_conflict = isinstance(exc.__cause__, TransactionException) and "Conflict on update!" in str(
+                    exc.__cause__
+                )
+                mapped_conflict = isinstance(exc, SQLSpecError) and "Conflict on update!" in str(exc)
+                if native_conflict or mapped_conflict:
+                    return None
+            raise
 
     async def _reserve_scheduled_execution_ref_once(
         self,

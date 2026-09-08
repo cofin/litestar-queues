@@ -656,7 +656,8 @@ class BaseQueueBackend:
         only the reference changes. No read-then-write fallback is safe.
 
         Returns:
-            The updated record, or ``None`` when any predicate no longer holds.
+            The updated record, or ``None`` when a predicate no longer holds
+            or a concurrent transaction prevents reservation.
 
         Raises:
             NotImplementedError: If the backend does not support this fence.
