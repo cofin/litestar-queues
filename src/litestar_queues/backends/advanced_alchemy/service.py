@@ -1344,8 +1344,10 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         task_ids = list(selected.scalars().all())
         if not task_ids:
             return DispatchRepairCandidates()
+        # A bare datetime CASE result binds as Oracle DATE and loses fractions.
+        checked_now = literal(now, type_=model_type.dispatch_checked_at.type)
         checked_at = case(
-            (or_(model_type.dispatch_checked_at.is_(None), model_type.dispatch_checked_at < now), now),
+            (or_(model_type.dispatch_checked_at.is_(None), model_type.dispatch_checked_at < checked_now), checked_now),
             else_=model_type.dispatch_checked_at,
         )
         await self.repository.session.execute(

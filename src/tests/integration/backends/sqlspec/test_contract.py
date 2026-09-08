@@ -2498,3 +2498,25 @@ async def test_sqlspec_duckdb_dispatch_nonconflict_is_not_retried(
             uuid4(), "cloudtasks", "new", expected_retry_count=0, expected_execution_ref=None
         )
     assert calls == 1
+
+
+async def test_sqlspec_registry_dispatch_mark_preserves_fractional_newer_time(
+    queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
+) -> "None":
+    if queue_backend_case.name != "oracle-oracledb":
+        pytest.skip("Oracle timestamp binding regression")
+    assert isinstance(queue_backend, SQLSpecQueueBackend)
+    record = await queue_backend.enqueue("fractional-check", execution_backend="cloudtasks")
+    newer = (datetime.now(timezone.utc) + timedelta(minutes=1)).replace(microsecond=654321)
+    older = newer.replace(microsecond=123456)
+    store = queue_backend._get_store()
+    async with queue_backend._session() as driver:
+        await driver.begin()
+        for stamp in (newer, older, newer):
+            await driver.execute(
+                store.mark_dispatch_checked(task_id=str(record.id), execution_backend="cloudtasks", now=stamp)
+            )
+        await driver.commit()
+    persisted = await queue_backend.get_task(record.id)
+    assert persisted is not None
+    assert persisted.dispatch_checked_at == newer

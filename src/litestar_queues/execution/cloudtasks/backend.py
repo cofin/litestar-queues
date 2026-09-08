@@ -10,6 +10,7 @@ leaves a handle to look the delivery up by.
 """
 
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
@@ -206,7 +207,8 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                 try:
                     runtime.end_span(span)
                 except Exception:  # noqa: BLE001 - diagnostics must not mask the committed task identity.
-                    logger.warning("Cloud Tasks dispatch span finalization failed")
+                    with suppress(Exception):
+                        logger.warning("Cloud Tasks dispatch span finalization failed")
 
     async def _schedule_delivery(self, service: "QueueService", current: "QueuedTaskRecord") -> "str | None":
         """Reserve a name for the current attempt and create its delivery.
@@ -458,7 +460,8 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             _record_outcome(service, record, operation, operation.failed)
             await self._publish_delivery_failure(service, record, exc, operation=operation)
         except Exception:  # noqa: BLE001 - diagnostics must not mask the committed task identity.
-            logger.warning("Cloud Tasks dispatch diagnostics failed")
+            with suppress(Exception):
+                logger.warning("Cloud Tasks dispatch diagnostics failed")
 
     async def _get_client(self) -> "CloudTasksClient":
         """Return the Cloud Tasks client, creating it on first use.
@@ -550,7 +553,8 @@ def _mark_dispatch_span_error(runtime: "QueueObservabilityRuntimeProtocol | None
         try:
             runtime.set_status_error(span, _SCHEDULE.phase)
         except Exception:  # noqa: BLE001 - observability cannot replace the durable error.
-            logger.warning("Cloud Tasks dispatch span status failed")
+            with suppress(Exception):
+                logger.warning("Cloud Tasks dispatch span status failed")
 
 
 def _same_attempt(current: "QueuedTaskRecord", snapshot: "QueuedTaskRecord", reference: "str | None") -> "bool":

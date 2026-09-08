@@ -79,6 +79,7 @@ class ExampleServer:
 
         global SHARED_ASSETS_INSTALLED  # noqa: PLW0603
 
+        self.port = find_free_port()
         env = self._environment()
         if not SHARED_ASSETS_INSTALLED:
             self._run_cli(["assets", "install"], env=env)
@@ -86,8 +87,10 @@ class ExampleServer:
 
         if self.mode == "production":
             self._run_cli(["assets", "build"], env=env)
+        else:
+            # A previous sidecar's hotfile must not satisfy this server's readiness probe.
+            (REPO_ROOT / "examples" / "shared" / "public" / "hot").unlink(missing_ok=True)
 
-        self.port = find_free_port()
         command = ["uv", "run", "litestar", "run", "--host", "127.0.0.1", "--port", str(self.port)]
         self._process = subprocess.Popen(
             command,
@@ -157,6 +160,7 @@ class ExampleServer:
             "PYTHONUNBUFFERED": "1",
         })
         env.update(self._extra_environment)
+        env.update({"APP_URL": self.base_url, "LITESTAR_HOST": "127.0.0.1", "LITESTAR_PORT": str(self.port)})
         return env
 
     def _run_cli(self, arguments: list[str], *, env: dict[str, str]) -> None:

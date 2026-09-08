@@ -14,6 +14,7 @@ carrying the delivery name repair will look for.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -306,6 +307,70 @@ async def test_post_commit_result_read_preserves_identity(
     assert decode_json(live.client.create_calls[0].body)["task_id"] == str(excinfo.value.task_id)
     monkeypatch.setattr(storage_type, "get_task", original_get_task)
     assert await live.reader.get_task(excinfo.value.task_id) is not None
+
+
+@pytest.mark.parametrize("failure_point", ["status", "end_span", "report", "cancel"])
+async def test_fallback_logging_preserves_committed_dispatch_failure(
+    harness: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch", failure_point: "str"
+) -> "None":
+    from litestar_queues.execution.cloudtasks import backend as backend_module
+
+    class RaisingHandler(logging.Handler):
+        def emit(self, record: "logging.LogRecord") -> "None":
+            msg = "diagnostic log unavailable"
+            raise OSError(msg)
+
+    live = await harness()
+    record = await live.service.get_queue_backend().enqueue(
+        TASK_NAME, execution_backend="cloudtasks", metadata={"timeout": 1740}
+    )
+    backend = live.service.get_execution_backend()
+    runtime_type = type(live.service.observability_runtime)
+    span = object()
+    monkeypatch.setattr(runtime_type, "start_span", lambda *_args, **_kwargs: span)
+    monkeypatch.setattr(runtime_type, "set_status_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime_type, "end_span", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backend_module.logger, "handlers", [RaisingHandler()])
+    monkeypatch.setattr(backend_module.logger, "propagate", False)
+    monkeypatch.setattr(backend_module.logger, "level", logging.WARNING)
+
+    def fail_diagnostic(*_args: "Any", **_kwargs: "Any") -> "None":
+        msg = "telemetry unavailable"
+        raise RuntimeError(msg)
+
+    async def fail_publication(*_args: "Any", **_kwargs: "Any") -> "None":
+        fail_diagnostic()
+
+    primary: BaseException
+    if failure_point == "cancel":
+        primary = asyncio.CancelledError("dispatch cancelled")
+    elif failure_point == "report":
+        primary = ServiceUnavailable("provider unavailable")
+    else:
+        primary = QueueDispatchError("dispatch failed", task_id=record.id, committed=True)
+
+    async def fail_dispatch(*_args: "Any", **_kwargs: "Any") -> "None":
+        raise primary
+
+    if failure_point == "report":
+        live.client.on_create = fail_dispatch
+        monkeypatch.setattr(type(backend), "_publish_delivery_failure", fail_publication)
+    else:
+        monkeypatch.setattr(type(backend), "_schedule_delivery", fail_dispatch)
+        method = "set_status_error" if failure_point == "status" else "end_span"
+        monkeypatch.setattr(runtime_type, method, fail_diagnostic)
+
+    expected = asyncio.CancelledError if failure_point == "cancel" else QueueDispatchError
+    with pytest.raises(expected) as excinfo:
+        await backend.schedule(live.service, record)
+    if failure_point == "report":
+        assert excinfo.value.__cause__ is primary
+    else:
+        assert excinfo.value is primary
+    if isinstance(excinfo.value, QueueDispatchError):
+        assert excinfo.value.task_id == record.id
+        assert excinfo.value.committed is True
+    assert await live.reader.get_task(record.id) is not None
 
 
 # --------------------------------------------------------------------------- records never delivered

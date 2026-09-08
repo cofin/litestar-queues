@@ -1,8 +1,9 @@
 """oracledb SQLSpec queue stores."""
 
+from datetime import datetime, timezone
 from enum import Enum
 from inspect import isawaitable
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from sqlspec import sql
 from sqlspec.utils.serializers import from_json, to_json
@@ -11,6 +12,11 @@ from sqlspec.utils.sync_tools import async_
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 from litestar_queues.exceptions import QueueConfigurationError
+
+if TYPE_CHECKING:
+    from sqlspec.builder import Update
+
+    from litestar_queues.backends.sqlspec._typing import DatetimeParam
 
 __all__ = ("OracledbAsyncQueueStore", "OracledbSyncQueueStore")
 
@@ -27,6 +33,26 @@ class _OracledbQueueStore(SQLSpecQueueStore):
 
     data_dictionary_dialect: "ClassVar[str | None]" = "oracle"
     identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "none"
+
+    def mark_dispatch_checked(self, *, task_id: "str", execution_backend: "str", now: "DatetimeParam") -> "Update":
+        """Preserve scan microseconds instead of binding Python datetimes as Oracle DATE."""
+        stamp = datetime.fromisoformat(now) if isinstance(now, str) else now
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        checked_now = stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+        timestamp_sql = "TO_TIMESTAMP(:checked_now, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6')"
+        comparison_sql = "TO_TIMESTAMP(:checked_before, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6')"
+        checked_column = self._col("dispatch_checked_at")
+        return (
+            sql
+            .update(self.table_name)
+            .set(**{checked_column: sql.raw(timestamp_sql, checked_now=checked_now)})
+            .where_eq(self._col("id"), task_id)
+            .where_eq(self._col("execution_backend"), execution_backend)
+            .where_in(self._col("status"), ("pending", "scheduled"))
+            .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :repair_now", repair_now=now)
+            .where(f"{checked_column} IS NULL OR {checked_column} < {comparison_sql}", checked_before=checked_now)
+        )
 
     def create_statements(self) -> "list[str]":
         """Return statements that create Oracle queue artifacts."""

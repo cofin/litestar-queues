@@ -22,7 +22,7 @@ _APPROVED_NESTED_IMPORTS = {
     "backends/advanced_alchemy/service.py": {"litestar_queues.events", "litestar_queues.exceptions"},
     "backends/redis/backend.py": {"redis"},
     "backends/redis/event_log.py": {"litestar_queues.events.history", "litestar_queues.events.query"},
-    "backends/sqlspec/backend.py": {"sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
+    "backends/sqlspec/backend.py": {"duckdb", "sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
     "backends/sqlspec/config.py": {
         "litestar_queues.backends.sqlspec.backend",
         "litestar_queues.backends.sqlspec.extension",

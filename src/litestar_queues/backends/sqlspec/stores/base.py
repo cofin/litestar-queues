@@ -1177,7 +1177,7 @@ RETURNING {target}.{id_col} AS id
         if self._data_dictionary_dialect_name() == "sqlite":
             return statement.returning(self._col("id"))
         if self._data_dictionary_dialect_name() == "mssql":
-            return statement.returning(f"inserted.{self._col('id')}")
+            return statement.returning(exp.column(self._col("id"), table="inserted"))
         return statement
 
     def dispatch_repair_index_sql(self) -> "str":

@@ -2378,7 +2378,9 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         store = self._get_store()
         adapter = resolve_adapter_name(sqlspec_config)
         adbc_sqlite = adapter == "adbc" and store.data_dictionary_dialect == "sqlite"
-        serialize = adbc_sqlite or adapter == "duckdb"
+        # A blocked transaction must not occupy the sole sync worker while
+        # another transaction's commit is queued behind it.
+        serialize = not sqlspec_config.is_async
         async with (
             self._sync_session_lock if serialize else nullcontext(),
             _bridge_session(
