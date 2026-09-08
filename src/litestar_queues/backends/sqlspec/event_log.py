@@ -10,7 +10,7 @@ from sqlite3 import IntegrityError as SQLiteIntegrityError
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec import sql
-from sqlspec.exceptions import UniqueViolationError
+from sqlspec.exceptions import SQLSpecError, UniqueViolationError
 from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.schema import (
@@ -763,7 +763,7 @@ class SQLSpecQueueEventLog:
                     await driver.begin()
                     await self._insert_missing_records(driver, records)
                     await driver.commit()
-                except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - retain primary through context cleanup.
+                except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
                     primary = exc
                     try:
                         await driver.rollback()
@@ -772,7 +772,7 @@ class SQLSpecQueueEventLog:
                     except Exception:
                         with suppress(Exception):
                             self._logger.warning("SQLSpec event history rollback failed", exc_info=True)
-                    raise primary from None
+                    raise primary from primary.__cause__
         except BaseException as cleanup:
             if isinstance(cleanup, asyncio.CancelledError):
                 raise
@@ -780,7 +780,7 @@ class SQLSpecQueueEventLog:
                 if cleanup is not primary:
                     with suppress(Exception):
                         self._logger.warning("SQLSpec event history session cleanup also failed", exc_info=True)
-                raise primary from None
+                raise primary from primary.__cause__
             raise
         if primary is not None:
             raise primary
@@ -1051,19 +1051,24 @@ def _require_identical_event(stored: "QueueEventLogRecord", incoming: "QueueEven
 
 
 def _is_duplicate_event_error(error: "BaseException") -> "bool":
+    """Return True if the error represents a duplicate primary-key or unique violation.
+
+    SQLSpec 0.62 maps SQLite's UNIQUE code (2067) but not its distinct PRIMARYKEY
+    code (1555). We inspect the native cause, context, and the mapped SQLSpecError message.
+    """
     seen: set[int] = set()
     while id(error) not in seen:
         seen.add(id(error))
         if isinstance(error, UniqueViolationError):
             return True
-        # SQLSpec 0.62 maps SQLite's UNIQUE code but not its distinct PRIMARYKEY
-        # code. Inspect the native cause, never arbitrary integrity-error text.
         if (
             isinstance(error, SQLiteIntegrityError)
             and getattr(error, "sqlite_errorcode", None) == _SQLITE_CONSTRAINT_PRIMARYKEY
         ):
             return True
-        cause = error.__cause__
+        if isinstance(error, SQLSpecError) and f"[code {_SQLITE_CONSTRAINT_PRIMARYKEY}]" in str(error):
+            return True
+        cause = error.__cause__ or error.__context__
         if cause is None:
             return False
         error = cause
