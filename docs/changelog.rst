@@ -6,83 +6,74 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
-Unreleased
-==========
+0.11.0 - 2026-09-08
+===================
+
+**Changed:**
+
+* **Breaking:** Custom :class:`~litestar_queues.events.QueueEventLog` providers must implement
+  ``publish_event_after_commit()`` and ``aclose()``. History strictness is configured via
+  :class:`~litestar_queues.events.EventHistoryConfig`; publisher ``event_log_strict`` and
+  ``set_event_log(strict=...)`` are removed. See :doc:`usage/event-history`.
+* Maintenance external phase bounds records examined. Time budget exhaustion or reaching
+  the external scan limit reports partial execution (CLI exit code ``2``).
+  See :doc:`usage/maintenance`.
+* Recurring tasks inherit configured retries on startup and succession; persisted
+  occurrences retain their budget and backoff until completion.
+  See :doc:`usage/schedules`.
+
+**Fixed:**
+
+* Cloud Tasks delivery repair selects unexpired pending and scheduled records (including
+  records without delivery references), preserves task identity, and uses bounded fair selection
+  with persisted check timestamps. Existing stores require the SQLSpec ``0002`` migration, the
+  documented Advanced Alchemy column/index update, or a Redis/Valkey version-3 index rebuild.
+  See :doc:`usage/deployment/cloud-tasks` and backend guides.
+* DuckDB scheduled-reference reservation handles native CAS transaction conflicts gracefully.
+* Sparse event history flushes on timer deadlines, enforces commit-before-live delivery ordering,
+  and bounds failure buffering (:attr:`~litestar_queues.events.EventHistoryConfig.max_pending`).
+  See :doc:`usage/event-history` and :doc:`usage/events`.
+* SQLSpec history pagination totals count all matching records before pagination, including
+  empty pages.
+* SQLSpec Arrow ODBC history uses transactional bound inserts.
+* External event producers unwind partial startup and attempt all cleanup steps,
+  preserving primary exceptions and cancellation. See :doc:`usage/events-standalone`.
+* Added runnable event history example (``examples/event_history.py``) and aligned documentation
+  with supported public query APIs. See :doc:`usage/event-history`.
+
+0.10.0 - 2026-08-30
+===================
 
 **Added:**
 
-* Universal actor attachment and lifecycle propagation: ``@task(actor=...)``
-  accepts a literal ``QueueEventActor`` or zero-argument resolver,
-  ``TaskExecutionContext.actor`` provides attempt-scoped defaults, and
-  ``publish()``, ``progress()``, ``log()``, ``event()``, and module helpers
-  accept per-call ``actor=`` overrides. Worker lifecycle events automatically inherit
-  the context actor.
-* Backend-neutral event history ``extra=`` query surface: ``extra=`` is promoted
-  to the :class:`~litestar_queues.events.QueueEventLog` protocol and supported across
-  all six backends (Memory, Ephemeral, Redis, Valkey, Advanced Alchemy, SQLSpec).
+* Universal actor attachment: ``@task(actor=...)`` accepts a :class:`~litestar_queues.events.QueueEventActor`
+  or zero-argument resolver, ``TaskExecutionContext.actor`` provides attempt-scoped defaults, and
+  per-call ``actor=`` overrides are supported across event publishing helpers. Worker lifecycle
+  events inherit the context actor.
+* Backend-neutral event history ``extra=`` query surface across all backends.
   **Breaking:** ``EventHistoryExtraColumn`` and ``validate_event_history_extra_columns``
-  are moved from ``litestar_queues.backends.sqlspec`` to ``litestar_queues.events``,
-  and extra columns are declared on :class:`~litestar_queues.events.EventHistoryConfig`
-  via ``extra_columns``. Querying undeclared extra keys raises ``QueueConfigurationError``.
-* ``QueueConfig.task_dependency_provider`` supplies task keyword arguments from
-  an attempt-scoped async context manager, so an application's dependency
-  container can open a child scope for each attempt and release it on every
-  outcome -- success, retry, terminal failure, timeout, cancellation, claim
-  loss, and shutdown interruption. Acquisition runs inside the attempt timeout.
-  A provider object that exposes ``open()``/``close()`` joins the
-  :class:`~litestar_queues.QueueService` lifecycle and its startup rollback.
-  ``task_dependency_resolver`` is unchanged for stateless injection; setting
-  both raises ``QueueConfigurationError``. See :doc:`usage/dependency-resolver`.
-* Remote execution cancellation with provider-first ordering: When cancelling a task,
-  Litestar Queues cancels active provider execution (via Cloud Run jobs API or Cloud Tasks deletion)
-  before writing durable cancellation state. Durable cancellation fencing and retry guards prevent
-  out-of-order execution recovery from resurrecting cancelled work. See
-  :doc:`usage/failures-and-cancellation`.
-* Unified event query protocol (:class:`~litestar_queues.events.query.QueueEventQuery`):
-  Replaced ``list_events`` across all six backends with a unified query interface supporting
-  equality filtering by task ID/name, event type, level, scope/key and canonical
-  entity key, with actor and declared-column filters through ``extra=``.
-  Ordering and offset pagination are configurable.
-* Task lifecycle stage summaries (:class:`~litestar_queues.events.QueueEventStageSummary`):
-  Added ``summarize_stages`` to :class:`~litestar_queues.events.QueueEventLog` across all six
-  backends, reporting event count, total duration, first/last occurrence,
-  latest sequence/message and worst level per stage.
-* Ordered event retention: :class:`~litestar_queues.events.QueueEventRetentionRule`
-  combines equality filters and exclusions with an age cutoff. Maintenance
-  applies the first matching rule under one shared deletion budget.
-  See :doc:`usage/event-history` and :doc:`usage/maintenance`.
+  moved to ``litestar_queues.events``, and extra columns are declared on
+  :class:`~litestar_queues.events.EventHistoryConfig` via ``extra_columns``. Querying undeclared extra
+  keys raises :exc:`~litestar_queues.exceptions.QueueConfigurationError`.
+* Attempt-scoped task dependency injection via ``QueueConfig.task_dependency_provider``, providing
+  an async context manager scope per attempt across all execution outcomes.
+  See :doc:`usage/dependency-resolver`.
+* Remote execution cancellation with provider-first ordering: active provider execution
+  (Cloud Run Jobs / Cloud Tasks) is cancelled before writing durable cancellation state.
+  See :doc:`usage/failures-and-cancellation`.
+* Cross-backend event query protocol (:class:`~litestar_queues.events.query.QueueEventQuery`)
+  supporting multi-field filtering, configurable ordering, and offset pagination.
+* Task lifecycle stage summaries (:class:`~litestar_queues.events.QueueEventStageSummary` /
+  ``summarize_stages``) reporting event counts, duration, and terminal statuses per stage.
+* Ordered event retention engine (:class:`~litestar_queues.events.QueueEventRetentionRule`)
+  with prioritized rules under a shared deletion budget. See :doc:`usage/event-history` and
+  :doc:`usage/maintenance`.
 
 **Changed:**
 
 * **Breaking:** The SQLSpec ``litestar_queues`` extension setting for the primary
-  queue table is now ``queue_table_name`` instead of the ambiguous ``table_name``.
-  No compatibility alias is provided.
-* **Breaking:** Custom history providers must implement commit-aware publication
-  and ``aclose()``. History strictness belongs to ``EventHistoryConfig``; publisher
-  ``event_log_strict`` and ``set_event_log(strict=...)`` were removed.
-  See :doc:`usage/event-history`.
+  queue table is renamed from ``table_name`` to ``queue_table_name``.
 
-**Fixed:**
-
-* Cloud Tasks repair includes committed jobs with no delivery reference, preserves
-  task identity, and uses bounded, persisted fair selection. Existing deployments
-  need the SQLSpec ``0002`` migration, the documented Advanced Alchemy column/index
-  upgrade, or a Redis/Valkey version-3 index rebuild with writers stopped.
-  See :doc:`usage/deployment/cloud-tasks` and the backend guides.
-* Maintenance reports failed and mixed repairs accurately, exposes repair counts,
-  and returns a failing CLI exit status for failures. See :doc:`usage/maintenance`.
-* Sparse history flushes on its timer, live delivery follows commit, and bounded
-  failure buffering preserves accepted events through retries and orderly cleanup.
-  See :doc:`usage/event-history` and :doc:`usage/events`.
-* SQLSpec history pagination totals count all matches, including empty pages;
-  Arrow ODBC history uses transactional bound inserts.
-* New recurring occurrences use configured retries. Persisted occurrences keep
-  their budget until completion; successors adopt current retries.
-  See :doc:`usage/schedules`.
-* External producers unwind partial startup and attempt every acquired cleanup
-  while preserving primary errors and cancellation. See :doc:`usage/events-standalone`.
-* The history guide includes a runnable public-API example using typed entities,
-  stage payloads and supported query filters. See :doc:`usage/event-history`.
 
 0.9.0 - 2026-08-14
 ==================
