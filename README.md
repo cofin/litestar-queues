@@ -34,18 +34,12 @@ async def sync_account(account_id: str) -> dict[str, str]:
 
 
 @post("/accounts/{account_id:str}/sync")
-async def create_sync_job(
-    account_id: str,
-    queue_service: NamedDependency[QueueService],
-) -> dict[str, str]:
+async def create_sync_job(account_id: str, queue_service: NamedDependency[QueueService]) -> dict[str, str]:
     result = await queue_service.enqueue(sync_account, account_id)
     return {"task_id": str(result.id), "status": result.status or "pending"}
 
 
-app = Litestar(
-    route_handlers=[create_sync_job],
-    plugins=[QueuePlugin(config=QueueConfig())],
-)
+app = Litestar(route_handlers=[create_sync_job], plugins=[QueuePlugin(config=QueueConfig())])
 ```
 
 Run the application:
