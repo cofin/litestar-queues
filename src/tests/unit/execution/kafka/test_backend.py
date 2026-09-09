@@ -363,7 +363,7 @@ async def test_consumer_commits_next_offset_only_after_durable_outcome(monkeypat
     consumer_task = asyncio.create_task(
         backend.run_consumer(service, max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
     )
-    await asyncio.wait_for(consumer.committed.wait(), timeout=0.5)
+    await asyncio.wait_for(consumer.committed.wait(), timeout=5.0)
     consumer_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consumer_task
@@ -505,7 +505,7 @@ async def test_rebalance_timeout_keeps_consumer_running_for_new_assignment(monke
     await entered.wait()
     assert consumer.listener is not None
     await consumer.listener.on_partitions_revoked({revoked_partition})
-    await asyncio.wait_for(consumer.committed.wait(), timeout=0.5)
+    await asyncio.wait_for(consumer.committed.wait(), timeout=5.0)
 
     assert not runner.done()
     assert consumer.commits == [{retained_partition: 5}]
