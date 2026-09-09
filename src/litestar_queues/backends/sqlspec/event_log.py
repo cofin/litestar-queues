@@ -18,7 +18,7 @@ from litestar_queues.backends.sqlspec.schema import (
     event_history_table_name_for,
     validate_table_name,
 )
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name, _render_ddl_statement
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events import (
     EventHistoryExtraColumn,
@@ -594,8 +594,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return self._dialect_type("float", fallback="REAL")
 
     def _to_sql(self, statement: "CreateIndex | CreateTable | DropIndex | DropTable") -> "str":
-        built = statement.build(dialect=self.dialect_name)
-        return built.sql
+        return _render_ddl_statement(statement, self.dialect_name)
 
 
 class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):

@@ -1534,8 +1534,7 @@ RETURNING {target}.{id_col} AS id
         return to_json(value)
 
     def _to_sql(self, statement: "CreateIndex | CreateTable | DropIndex | DropTable") -> "str":
-        built = statement.build(dialect=self.dialect_name)
-        return built.sql
+        return _render_ddl_statement(statement, self.dialect_name)
 
     def _data_dictionary_dialect_name(self) -> "str | None":
         return type(self).data_dictionary_dialect or self.dialect_name
@@ -1604,3 +1603,21 @@ def _raw_order(expression: "str") -> "Any":
 def _pyarrow_available() -> "bool":
     """Return whether ``pyarrow`` is importable, caching the lookup."""
     return find_spec("pyarrow") is not None
+
+
+def _render_ddl_statement(
+    statement: "CreateIndex | CreateTable | DropIndex | DropTable", dialect: "str | None"
+) -> "str":
+    """Render a DDL builder statement to a dialect-specific SQL string.
+
+    Adapts DropIndex and DropTable expressions so sqlglot>=30.18.0 multi-table
+    DROP generator correctly retains target table and index identifiers.
+    """
+    if hasattr(statement, "_create_base_expression") and hasattr(statement, "set_expression"):
+        expr = statement.get_expression() or statement._create_base_expression()
+        if expr.this and not expr.args.get("tables"):
+            kind = expr.args.get("kind")
+            expr.set("tables", [exp.to_table(expr.this) if kind == "TABLE" else expr.this])
+            statement.set_expression(expr)
+    built = statement.build(dialect=dialect)
+    return built.sql
