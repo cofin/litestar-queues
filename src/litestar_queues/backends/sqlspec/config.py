@@ -163,6 +163,7 @@ class SQLSpecBackendConfig:
                 cast("SQLSpecConfig", sqlspec_config),
                 backend=events_backend,
                 queue_table=(self.worker_wakeups.queue_table_name if self.worker_wakeups is not None else None),
+                manage_schema=self.manage_schema,
             )
 
         extension_config = sqlspec_config.extension_config or {}
@@ -178,4 +179,5 @@ class SQLSpecBackendConfig:
             maintenance_table_name=self.maintenance_table_name,
             task_reservation_table_name=self.task_reservation_table_name,
             column_map=self.column_map,
+            manage_schema=self.manage_schema,
         )

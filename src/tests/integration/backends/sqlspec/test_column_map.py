@@ -1,10 +1,8 @@
 """Tests for SQLSpec column remapping and adopter-owned tables."""
 
 import contextlib
-import importlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -236,22 +234,25 @@ async def test_manage_schema_false_emits_no_schema_ddl(
     tmp_path: "Path", sqlite_config_factory: 'Callable[["Path"], AiosqliteConfig]'
 ) -> "None":
     """Schema creation, drop, migrations, and open() stay hands-off when opted out."""
+    from litestar_queues import QueueConfig
+    from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
+
     db_path = tmp_path / "no-schema.db"
     config = sqlite_config_factory(db_path)
-    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=config, manage_schema=False))
-    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
-    context = SimpleNamespace(config=config)
-    setattr(config, "manage_schema", False)
+    backend_config = SQLSpecBackendConfig(sqlspec_config=config, manage_schema=False)
+    backend = SQLSpecQueueBackend(backend_config=backend_config)
 
     store = create_queue_store(config, manage_schema=False)
+    backend_config.configure_migrations(QueueConfig(queue_backend=backend_config))
     await backend.open()
     await backend.create_schema()
     await backend.close()
 
     assert store.create_statements() == []
     assert store.drop_statements() == []
-    assert await migration.up(context) == []
-    assert await migration.down(context) == []
+    commands = config.get_migration_commands()
+    assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
     with contextlib.closing(sqlite3.connect(db_path)) as connection:
         tables = {table[0] for table in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert tables == set()

@@ -1,4 +1,9 @@
-"""Create all Litestar Queues tables."""
+"""Create all Litestar Queues tables.
+
+This revision is only discoverable when the queue extension is registered, and
+registration happens only when the library owns the queue schema. The stores it
+builds are therefore always schema-managing.
+"""
 
 from typing import TYPE_CHECKING, Any, cast
 
@@ -54,7 +59,7 @@ def _load_queue_store(context: "MigrationContext | None") -> "SQLSpecQueueStore"
         msg = "Migration context with SQLSpec adapter configuration is required"
         raise SQLSpecError(msg)
     config = cast("Any", context.config)
-    return create_queue_store(config, manage_schema=bool(getattr(config, "manage_schema", True)))
+    return create_queue_store(config, manage_schema=True)
 
 
 def _load_event_log_store(context: "MigrationContext | None") -> "SQLSpecQueueEventLogStore | None":
@@ -74,7 +79,7 @@ def _load_event_log_store(context: "MigrationContext | None") -> "SQLSpecQueueEv
         config,
         queue_table_name=queue_table_name,
         event_history_table_name=event_history_table_name,
-        manage_schema=bool(getattr(config, "manage_schema", True)),
+        manage_schema=True,
         extra_columns=extra_columns,
     )
 
@@ -84,10 +89,7 @@ def _load_maintenance_store(context: "MigrationContext | None") -> "SQLSpecMaint
     configured = queue_settings.get("maintenance_table_name")
     maintenance_table_name = str(configured) if configured is not None else None
     return create_maintenance_store(
-        config,
-        queue_table_name=queue_table_name,
-        maintenance_table_name=maintenance_table_name,
-        manage_schema=bool(getattr(config, "manage_schema", True)),
+        config, queue_table_name=queue_table_name, maintenance_table_name=maintenance_table_name, manage_schema=True
     )
 
 
@@ -99,7 +101,7 @@ def _load_reservation_store(context: "MigrationContext | None") -> "SQLSpecTaskR
         config,
         queue_table_name=queue_table_name,
         task_reservation_table_name=task_reservation_table_name,
-        manage_schema=bool(getattr(config, "manage_schema", True)),
+        manage_schema=True,
     )
 
 

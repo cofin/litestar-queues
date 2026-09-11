@@ -11,6 +11,8 @@ from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.models import QueuedTaskRecord
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sqlspec.extensions.events import AsyncEventChannel
 
 
@@ -157,3 +159,133 @@ def test_dispatch_checked_store_mapping_precedence() -> None:
     overridden = create_queue_store(config, column_map={"dispatch_checked_at": "explicit_check"})
     assert "configured_check" in inherited.dispatch_checked_column_sql()
     assert "explicit_check" in overridden.dispatch_checked_column_sql()
+
+
+def test_manage_schema_false_registers_no_packaged_queue_migration() -> None:
+    """An application that owns its schema receives no packaged queue revision."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, manage_schema=False)
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
+    assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
+
+
+def test_manage_schema_false_registers_no_packaged_events_migration() -> None:
+    """The package-owned events queue table is schema-managing and follows the same rule."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend_config = SQLSpecBackendConfig(
+        sqlspec_config=sqlspec_config,
+        worker_wakeups=SQLSpecWorkerWakeupConfig(transport="poll_queue"),
+        manage_schema=False,
+    )
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    assert "events" not in (sqlspec_config.extension_config or {})
+
+
+def test_manage_schema_true_still_registers_both_packaged_migrations() -> None:
+    """Owning the schema keeps packaged migrations registered with unchanged settings."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    backend_config = SQLSpecBackendConfig(
+        sqlspec_config=sqlspec_config,
+        queue_table_name="jobs",
+        worker_wakeups=SQLSpecWorkerWakeupConfig(transport="poll_queue"),
+    )
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    queue_settings = commands.extension_configs[QUEUE_EXTENSION_NAME]
+    assert queue_settings["queue_table_name"] == "jobs"
+    assert queue_settings["maintenance_table_name"] == "jobs_maintenance"
+    assert queue_settings["task_reservation_table_name"] == "jobs_reservation"
+    assert QUEUE_EXTENSION_NAME in commands.runner.extension_migrations
+    assert commands.runner.extension_configs[QUEUE_EXTENSION_NAME] == queue_settings
+    events_settings = cast("dict[str, Any]", (sqlspec_config.extension_config or {})["events"])
+    assert events_settings["backend"] == "poll_queue"
+
+
+def test_manage_schema_false_on_the_direct_extension_call_registers_nothing() -> None:
+    """The documented standalone migration path honors adopter-owned schema too."""
+    from litestar_queues.backends.sqlspec.extension import (
+        configure_events_migration_extension,
+        configure_queue_migration_extension,
+    )
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_queue_migration_extension(sqlspec_config, queue_table_name="jobs", manage_schema=False)
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue", manage_schema=False)
+
+    commands = sqlspec_config.get_migration_commands()
+    assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
+    assert sqlspec_config.extension_config in (None, {})
+
+
+@pytest.mark.anyio
+async def test_manage_schema_switching_to_false_leaves_the_applied_revision_alone(tmp_path: "Path") -> None:
+    """Switching an already-migrated database to adopter-owned schema is a no-op.
+
+    SQLSpec's ``auto_sync`` reconciliation does not delete the applied
+    ``ext_litestar_queues_0001`` row when the revision stops being discoverable,
+    and it drops no packaged table: the second ``migrate_up`` simply finds
+    nothing to do.
+    """
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+
+    database = str(tmp_path / "queue.db")
+    script_location = tmp_path / "migrations"
+    script_location.mkdir()
+
+    def make_config() -> AiosqliteConfig:
+        return AiosqliteConfig(
+            connection_config={"database": database}, migration_config={"script_location": str(script_location)}
+        )
+
+    async def applied_revisions(config: AiosqliteConfig) -> "list[str]":
+        async with config.provide_session() as driver:
+            rows = await driver.select("SELECT version_num FROM ddl_migrations ORDER BY version_num")
+        return [str(row["version_num"]) for row in rows]
+
+    async def table_names(config: AiosqliteConfig) -> "list[str]":
+        async with config.provide_session() as driver:
+            rows = await driver.select("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        return [str(row["name"]) for row in rows]
+
+    owned = make_config()
+    configure_queue_migration_extension(owned, queue_table_name="queue_task")
+    await owned.migrate_up(echo=False)
+    try:
+        assert await applied_revisions(owned) == ["ext_litestar_queues_0001"]
+        migrated_tables = await table_names(owned)
+    finally:
+        await owned.close_pool()
+    assert "queue_task" in migrated_tables
+
+    adopter = make_config()
+    configure_queue_migration_extension(adopter, queue_table_name="queue_task", manage_schema=False)
+    await adopter.migrate_up(echo=False)
+    try:
+        assert await applied_revisions(adopter) == ["ext_litestar_queues_0001"]
+        assert await table_names(adopter) == migrated_tables
+    finally:
+        await adopter.close_pool()

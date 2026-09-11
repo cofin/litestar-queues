@@ -32,7 +32,7 @@ _EVENTS_EXTENSION_NAME = "events"
 
 
 def configure_events_migration_extension(
-    sqlspec_config: "SQLSpecConfig", *, backend: "str", queue_table: "str | None" = None
+    sqlspec_config: "SQLSpecConfig", *, backend: "str", queue_table: "str | None" = None, manage_schema: "bool" = True
 ) -> "None":
     """Register SQLSpec's events queue migration for native wakeup provisioning.
 
@@ -40,7 +40,12 @@ def configure_events_migration_extension(
     events queue migration on migrate-up, so a capability-native backend gets its
     durable events queue table with no manual step. Existing events settings are
     preserved; only unset keys are filled in.
+
+    The events queue table is package-owned, so ``manage_schema=False`` registers
+    nothing: an application that owns its schema receives no packaged revision.
     """
+    if not manage_schema:
+        return
     extension_config = dict(sqlspec_config.extension_config or {})
     events_settings = dict(extension_config.get(_EVENTS_EXTENSION_NAME, {}) or {})
     events_settings.setdefault("backend", backend)
@@ -66,8 +71,16 @@ def configure_queue_migration_extension(
     maintenance_table_name: "str | None" = None,
     task_reservation_table_name: "str | None" = None,
     column_map: "Mapping[str, str] | None" = None,
+    manage_schema: "bool" = True,
 ) -> "None":
-    """Register the packaged queue migrations with SQLSpec's extension runner."""
+    """Register the packaged queue migrations with SQLSpec's extension runner.
+
+    ``manage_schema=False`` declares that the application owns the queue schema,
+    so nothing is registered: no extension settings, no migration directory, and
+    therefore no packaged revision for SQLSpec to discover or apply.
+    """
+    if not manage_schema:
+        return
     queue_settings = _configure_extension_settings(
         sqlspec_config,
         queue_table_name=queue_table_name,
