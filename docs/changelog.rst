@@ -6,6 +6,26 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+0.12.0 (unreleased)
+===================
+
+**Breaking:**
+
+* The SQLSpec backend now ships exactly one packaged migration,
+  ``0001_create_queue_tasks``. The separate additive revision that added
+  ``dispatch_checked_at`` is removed, and ``manage_schema=False`` now registers no
+  migration directory and no packaged revision at all, on the Litestar plugin path and
+  the standalone migration command alike.
+  Schemas created by v0.11.0 or later are unaffected: they already carry
+  ``dispatch_checked_at`` and its index. Schemas created by v0.10.0 or earlier have no
+  packaged forward path, because ``0001_create_queue_tasks`` uses
+  ``CREATE TABLE IF NOT EXISTS`` and cannot retrofit an existing table. Those deployments
+  must add the nullable ``dispatch_checked_at`` column and an index over
+  ``execution_backend``, ``status``, ``dispatch_checked_at``, ``created_at``, and ``id``
+  by hand, using the configured physical column names, or recreate the schema. The
+  Advanced Alchemy and Redis/Valkey upgrade paths are unchanged.
+  See :doc:`usage/backends/sqlspec`.
+
 0.11.0 - 2026-09-08
 ===================
 
@@ -26,8 +46,9 @@ project is pre-1.0, so minor releases may make intentional API breaks.
 
 * Cloud Tasks delivery repair selects unexpired pending and scheduled records (including
   records without delivery references), preserves task identity, and uses bounded fair selection
-  with persisted check timestamps. Existing stores require the SQLSpec ``0002`` migration, the
-  documented Advanced Alchemy column/index update, or a Redis/Valkey version-3 index rebuild.
+  with persisted check timestamps. Existing stores require the documented SQLSpec column/index
+  update, the documented Advanced Alchemy column/index update, or a Redis/Valkey version-3
+  index rebuild.
   See :doc:`usage/deployment/cloud-tasks` and backend guides.
 * DuckDB scheduled-reference reservation handles native CAS transaction conflicts gracefully.
 * Sparse event history flushes on timer deadlines, enforces commit-before-live delivery ordering,

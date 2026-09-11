@@ -198,8 +198,8 @@ tests and same-process applications.
 Provision SQL maintenance tables before scheduling the command:
 
 * **SQLSpec** — run the application's normal migrations, including the packaged
-  ``0001_create_queue_tasks`` and ``0002_add_dispatch_checked_at`` migrations.
-  See :doc:`backends/sqlspec` for custom tables and Spanner native DDL.
+  ``0001_create_queue_tasks`` migration.
+  See :doc:`backends/sqlspec` for custom tables and Spanner schema provisioning.
   Override the table name with
   ``SQLSpecBackendConfig.maintenance_table_name``.
 * **Advanced Alchemy** — include ``QueueMaintenanceModel`` in application

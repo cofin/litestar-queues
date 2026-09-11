@@ -77,7 +77,7 @@ The default queue table is ``queue_task``. When event history is enabled,
 SQLSpec derives its table by adding ``_event_history`` to the queue table,
 so the default is ``queue_task_event_history``. Set
 ``event_history_table_name`` only when the application needs a different name.
-The packaged ``0001_create_queue_tasks`` migration creates the queue
+``0001_create_queue_tasks`` is the only packaged revision. It creates the queue
 task table, enabled event history, ``queue_maintenance`` for distributed
 maintenance coordination, and ``queue_task_reservation`` for permanent task
 identity reservations. Override the names with ``maintenance_table_name`` and
@@ -85,16 +85,6 @@ identity reservations. Override the names with ``maintenance_table_name`` and
 schema and add the corresponding suffix to the table part.
 See :doc:`../maintenance` before scheduling maintenance and
 :doc:`../migration` before using forever uniqueness.
-
-Upgrade existing queue tables
------------------------------
-
-Run ``0002_add_dispatch_checked_at`` through the application's migration command
-before starting upgraded queue services. It adds the missing nullable
-``dispatch_checked_at`` column and an index over ``execution_backend``,
-``status``, ``dispatch_checked_at``, ``created_at``, and ``id``. Fresh schemas
-already contain these artifacts; the additive migration checks the catalog and
-does not recreate them.
 
 For a standalone migration command, register the same backend configuration
 used by the application so custom table names and column mappings are retained:
@@ -107,37 +97,33 @@ used by the application so custom table names and column mappings are retained:
    await sqlspec_config.migrate_up(echo=False)
 
 Keep the application's migration ``script_location``. With
-``manage_schema=False``, packaged migrations leave the application-owned schema
-untouched: add the nullable column and matching index in your own migration,
-using the configured physical column names. ``open()`` does not perform this
-upgrade, and ``create_schema()`` does not advance migration history.
+``manage_schema=False`` the backend registers nothing: no extension settings, no
+migration directory, and no packaged revision for SQLSpec to discover or apply.
+This holds for the Litestar plugin and the standalone migration command alike.
+The application owns the queue schema outright and must create every table,
+column, and index itself, using the configured physical names. ``open()`` does
+not create or alter schema, and ``create_schema()`` does not advance migration
+history.
 
-Spanner native DDL
-~~~~~~~~~~~~~~~~~~
+Schemas created by v0.10.0 and earlier have no packaged forward path to
+``dispatch_checked_at``. ``0001_create_queue_tasks`` uses
+``CREATE TABLE IF NOT EXISTS``, so re-running it cannot retrofit the column.
+Add the nullable ``dispatch_checked_at`` column and an index over
+``execution_backend``, ``status``, ``dispatch_checked_at``, ``created_at``, and
+``id`` in your own migration, using the configured physical column names, or
+recreate the schema. Schemas created by v0.11.0 or later already contain both.
 
-Spanner requires its administrative DDL API; do not send these statements
-through the generic migration runner's DML execution path. With the application's
-``SpannerSyncConfig`` registered as above, generate the additive migration using
-an active catalog session, then submit its statements:
+Spanner schema provisioning
+---------------------------
 
-.. code-block:: python
-
-   import importlib
-   from sqlspec.migrations.context import MigrationContext
-
-   migration = importlib.import_module(
-       "litestar_queues.backends.sqlspec.migrations.0002_add_dispatch_checked_at"
-   )
-   with sqlspec_config.provide_session() as driver:
-       statements = await migration.up(
-           MigrationContext(config=sqlspec_config, driver=driver)
-       )
-   if statements:
-       sqlspec_config.get_database().update_ddl(statements).result(120)
-
-Run this in the deployment migration process. Generating statements does not
-apply them, and native DDL submission does not update generic migration revision
-tracking; record completion through the application's migration workflow.
+Spanner requires its administrative DDL API; do not send queue DDL through the
+generic migration runner's DML execution path. The generic migration runner is
+not the Spanner path. Provision the Spanner queue schema with the backend's
+``create_schema()`` operation, which routes through
+``SpannerQueueStore.create_schema_for_config`` and submits each statement
+through the native DDL operation API. Run it from the deployment process that
+owns schema changes. It does not record a migration revision, so track
+completion through the application's own deployment workflow.
 
 Wakeups
 -------
