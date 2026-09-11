@@ -33,7 +33,7 @@ from sqlspec.adapters.aiosqlite import AiosqliteConfig
 
 from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import migration_paths
@@ -2618,3 +2618,143 @@ async def test_sqlspec_registry_dispatch_mark_preserves_fractional_newer_time(
     persisted = await queue_backend.get_task(record.id)
     assert persisted is not None
     assert persisted.dispatch_checked_at == newer
+
+
+@asynccontextmanager
+async def _asyncpg_config(postgres_service: "PostgresService") -> "AsyncIterator[Any]":
+    """Yield an asyncpg SQLSpec config bound to the integration PostgreSQL service.
+
+    Yields:
+        The config, with its pool closed on exit.
+    """
+    from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+    config = AsyncpgConfig(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "user": postgres_service.user,
+            "password": postgres_service.password,
+            "database": postgres_service.database,
+        }
+    )
+    try:
+        yield config
+    finally:
+        await config.close_pool()
+
+
+async def test_sqlspec_postgres_events_queue_missing_table_raises_configuration_error(
+    postgres_service: "PostgresService", request: "FixtureRequest"
+) -> "None":
+    """A durable wakeup transport whose events queue table is absent must say so."""
+    pytest.importorskip("asyncpg")
+    queue_table = table_name_for_test("lq_evqmiss", "asyncpg", request.node.nodeid)
+    events_table = table_name_for_test("lq_evqmissev", "asyncpg", request.node.nodeid)
+
+    async with _asyncpg_config(postgres_service) as owner_config:
+        owner = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(
+                sqlspec_config=owner_config, queue_table_name=queue_table, worker_wakeups=None
+            )
+        )
+        await owner.open()
+        await owner.create_schema()
+        await owner.close()
+
+    async with _asyncpg_config(postgres_service) as config:
+        backend = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(
+                sqlspec_config=config,
+                queue_table_name=queue_table,
+                manage_schema=False,
+                worker_wakeups=SQLSpecWorkerWakeupConfig(queue_table_name=events_table),
+            )
+        )
+        await backend.open()
+        try:
+            assert backend._wakeup_backend == "notify_queue"
+            with pytest.raises(QueueConfigurationError) as caught:
+                await backend.enqueue("tasks.events_queue_missing.probe")
+        finally:
+            await backend.close()
+
+    message = str(caught.value)
+    assert events_table in message
+    assert "notify_queue" in message
+    assert "migration" in message
+    assert "worker_wakeups=None" in message
+
+
+async def test_sqlspec_postgres_events_queue_missing_check_reads_catalog_once_when_present(
+    postgres_service: "PostgresService", request: "FixtureRequest", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """A provisioned events queue table is verified once and never blocks enqueue."""
+    pytest.importorskip("asyncpg")
+    queue_table = table_name_for_test("lq_evqok", "asyncpg", request.node.nodeid)
+    events_table = table_name_for_test("lq_evqokev", "asyncpg", request.node.nodeid)
+
+    async with _asyncpg_config(postgres_service) as config:
+        backend = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(
+                sqlspec_config=config,
+                queue_table_name=queue_table,
+                worker_wakeups=SQLSpecWorkerWakeupConfig(queue_table_name=events_table),
+            )
+        )
+        await backend.open()
+        await backend.create_schema()
+        calls = _count_events_queue_catalog_reads(monkeypatch)
+        try:
+            first = await backend.enqueue("tasks.events_queue_missing.present.first")
+            second = await backend.enqueue("tasks.events_queue_missing.present.second")
+        finally:
+            await backend.close()
+
+    assert first.status == "pending"
+    assert second.status == "pending"
+    assert calls == [1]
+
+
+async def test_sqlspec_postgres_events_queue_missing_check_skipped_without_wakeups(
+    postgres_service: "PostgresService", request: "FixtureRequest", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """A backend that needs no events queue table must never read the catalog."""
+    pytest.importorskip("asyncpg")
+    queue_table = table_name_for_test("lq_evqoff", "asyncpg", request.node.nodeid)
+
+    async with _asyncpg_config(postgres_service) as config:
+        backend = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(
+                sqlspec_config=config, queue_table_name=queue_table, worker_wakeups=None
+            )
+        )
+        await backend.open()
+        await backend.create_schema()
+        calls = _count_events_queue_catalog_reads(monkeypatch)
+        try:
+            await backend.enqueue("tasks.events_queue_missing.disabled")
+            assert await backend.wait_for_wakeups(timeout=0.01) is False
+        finally:
+            await backend.close()
+
+    assert calls == [0]
+
+
+def _count_events_queue_catalog_reads(monkeypatch: "pytest.MonkeyPatch") -> "list[int]":
+    """Patch the data-dictionary read used by the events queue check with a counter.
+
+    Returns:
+        A single-element list holding the number of catalog reads performed.
+    """
+    from litestar_queues.backends.sqlspec import backend as sqlspec_backend_module
+
+    counter = [0]
+    original = sqlspec_backend_module._events_queue_table_names
+
+    async def counting_read(driver: "Any", schema: "str | None") -> "set[str]":
+        counter[0] += 1
+        return await original(driver, schema)
+
+    monkeypatch.setattr(sqlspec_backend_module, "_events_queue_table_names", counting_read)
+    return counter

@@ -140,6 +140,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_event_log",
         "_event_log_store",
         "_event_stream",
+        "_events_queue_verified",
         "_heartbeat_pool_config",
         "_heartbeat_pool_enabled",
         "_heartbeat_pool_registered",
@@ -196,6 +197,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._worker_wakeups_configured = worker_wakeups is not None
         self._event_channel = worker_wakeups.channel if worker_wakeups is not None else None
         self._owns_event_channel = self._event_channel is None
+        self._events_queue_verified = False
         self._wakeup_channel = worker_wakeups.channel_name if worker_wakeups is not None else None
         if self._wakeup_channel is None and config is not None:
             self._wakeup_channel = config.names.database_channel("tasks")
@@ -329,6 +331,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._heartbeat_sync_executor = None
             await close_resource(lambda: heartbeat_executor.shutdown(wait=True))
         self._opened = False
+        self._events_queue_verified = False
         if error is not None:
             raise error
 
@@ -2034,6 +2037,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             and record.status in _DUE_STATUSES
             and record.is_due
         ):
+            await self._ensure_events_queue_table()
             with self._observe_queue_operation("notify", queue=record.queue):
                 await _invoke_event_channel_method(
                     self._event_channel,
@@ -2058,6 +2062,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         if not self._worker_wakeups_enabled or self._event_channel is None:
             return await super().wait_for_wakeups(timeout=timeout)
 
+        await self._ensure_events_queue_table()
         stream = self._event_stream
         if stream is None:
             stream = self._event_channel.iter_events(
@@ -2229,6 +2234,47 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return (
             self._worker_wakeups_enabled and self._owns_event_channel and self._wakeup_backend in _EVENTS_TABLE_BACKENDS
         )
+
+    async def _ensure_events_queue_table(self) -> "None":
+        """Verify the events queue table exists before the first wakeup uses it.
+
+        The durable ``notify_queue`` and ``poll_queue`` transports read and write
+        the SQLSpec events queue table, which only a migration creates. This
+        reads the adapter's data dictionary once, emits no DDL, and never
+        consults ``manage_schema``: an application that owns its schema may have
+        provisioned the table itself, and a packaged migration may not have been
+        applied even when the backend manages its own queue tables.
+
+        The check runs lazily rather than at ``open()`` so the documented
+        ``open()`` then ``create_schema()`` bootstrap still provisions the table
+        in time. A verified table is remembered for the life of the open backend,
+        so repeated wakeups issue no further catalog reads. A missing table is
+        not remembered, so an operator who applies the migration against a
+        running deployment recovers without a restart.
+
+        Raises:
+            QueueConfigurationError: When the events queue table does not exist.
+        """
+        if self._events_queue_verified or not self._should_provision_events_queue():
+            return
+        sqlspec_config = self._get_sqlspec_config()
+        qualified_name = _events_queue_store(sqlspec_config).table_name
+        schema_name, _, table_name = qualified_name.rpartition(".")
+        async with self._session() as driver:
+            present = await _events_queue_table_names(driver, schema_name or None)
+        if table_name.casefold() not in present:
+            transport = self._wakeup_backend
+            msg = (
+                f"The SQLSpec events queue table {qualified_name!r} does not exist. The {transport!r} worker wakeup "
+                f"transport stores and reads queue wakeups in that table, and litestar-queues never creates it "
+                f"implicitly. Apply SQLSpec's packaged events migration to this database from the deployment step "
+                f"that owns schema changes, then start the application again. To run without native wakeups and let "
+                f"workers poll on their configured interval instead, set worker_wakeups=None on the SQLSpec backend "
+                f"configuration. Setting manage_schema=False does not remove this requirement: the table must exist "
+                f"either way."
+            )
+            raise QueueConfigurationError(msg)
+        self._events_queue_verified = True
 
     def _select_wakeup_transport(self, sqlspec_config: "SQLSpecConfig") -> "str":
         """Resolve the effective wakeup transport.
@@ -2827,6 +2873,14 @@ class _ManagedAsyncDriver:
         for row in await self.select(statement):
             yield row
 
+    async def table_names(self, schema: "str | None" = None) -> "set[str]":
+        """Read table names from the wrapped sync driver's data dictionary.
+
+        Returns:
+            Case-folded table names visible in ``schema``.
+        """
+        return await async_(_sync_table_names, executor=self._executor)(self._driver, schema)
+
     def __getattr__(self, name: "str") -> "Any":
         attr = getattr(self._driver, name)
         if callable(attr):
@@ -3088,17 +3142,15 @@ def resolve_events_migration_backend(
     return transport if transport in _EVENTS_TABLE_BACKENDS else None
 
 
-def _events_queue_create_statements(sqlspec_config: "SQLSpecConfig") -> "list[str]":
-    """Return the DDL provisioning the durable events queue table for this adapter.
+def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
+    """Return the adapter's SQLSpec events queue store for this configuration.
 
     Resolves the adapter's :class:`~sqlspec.extensions.events.BaseEventQueueStore`
-    the same way SQLSpec's events extension migration does and returns its
-    dialect-correct ``CREATE TABLE``/``CREATE INDEX`` statements. Emitting these
-    alongside the queue table makes the durable ``notify_queue`` / ``poll_queue``
-    wakeup transports work on a fresh database with no separate migration step.
+    the same way SQLSpec's events extension migration does, so the resolved table
+    name and DDL match what that migration records.
 
     Returns:
-        The ``CREATE`` statements for the events queue table and its index.
+        The adapter's events queue store bound to ``sqlspec_config``.
     """
     from sqlspec.utils.module_loader import import_string
 
@@ -3106,7 +3158,50 @@ def _events_queue_create_statements(sqlspec_config: "SQLSpecConfig") -> "list[st
     adapter_name = config_class.__module__.split(".")[2]
     store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
     store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
-    return cast("list[str]", store_class(sqlspec_config).create_statements())
+    return store_class(sqlspec_config)
+
+
+def _events_queue_create_statements(sqlspec_config: "SQLSpecConfig") -> "list[str]":
+    """Return the DDL provisioning the durable events queue table for this adapter.
+
+    Emitting these alongside the queue table makes the durable ``notify_queue`` /
+    ``poll_queue`` wakeup transports work on a fresh database with no separate
+    migration step.
+
+    Returns:
+        The ``CREATE`` statements for the events queue table and its index.
+    """
+    return cast("list[str]", _events_queue_store(sqlspec_config).create_statements())
+
+
+async def _events_queue_table_names(driver: "SQLSpecDriver", schema: "str | None") -> "set[str]":
+    """Return the table names SQLSpec's data dictionary reports for ``schema``.
+
+    Returns:
+        Case-folded table names visible to the adapter's data dictionary.
+    """
+    if isinstance(driver, _ManagedAsyncDriver):
+        return await driver.table_names(schema)
+    tables = await cast("Any", driver).data_dictionary.get_tables(driver, schema)
+    return _table_names_from_metadata(tables)
+
+
+def _table_names_from_metadata(tables: "Sequence[Any]") -> "set[str]":
+    """Return the case-folded table names carried by data-dictionary rows.
+
+    Returns:
+        The case-folded ``table_name`` of every row.
+    """
+    return {str(table["table_name"]).casefold() for table in tables}
+
+
+def _sync_table_names(driver: "Any", schema: "str | None") -> "set[str]":
+    """Read table names from a synchronous adapter's data dictionary.
+
+    Returns:
+        Case-folded table names visible to the driver's data dictionary.
+    """
+    return _table_names_from_metadata(driver.data_dictionary.get_tables(driver, schema))
 
 
 def _events_extension_settings(sqlspec_config: "SQLSpecStoreConfig | None") -> "dict[str, Any]":

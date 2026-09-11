@@ -64,9 +64,16 @@ Schema ownership
 Packaged migrations run through SQLSpec's extension system. Do not replace the
 application's migration ``script_location``. When migrations run outside the
 Litestar app, call ``configure_queue_migration_extension(sqlspec_config)``
-before the normal SQLSpec migration command. If the application owns an
-existing table, set ``manage_schema=False``. Map that table with
-``queue_table_name``, ``column_map``, and ``native_json_columns``.
+before the normal SQLSpec migration command; it registers the packaged revision
+because its ``manage_schema`` parameter defaults to ``True``.
+
+If the application owns an existing table, pass ``manage_schema=False`` to that
+same call -- ``configure_queue_migration_extension(sqlspec_config,
+manage_schema=False)`` -- so it registers nothing, and set ``manage_schema=False``
+on ``SQLSpecBackendConfig`` as well. The flag belongs on both; setting it only on
+the backend configuration still leaves the standalone call registering the
+packaged revision. Map the application's table with ``queue_table_name``,
+``column_map``, and ``native_json_columns``.
 
 For a small local bootstrap without a migration command, call the backend's
 explicit ``create_schema()`` operation after ``open()``. This emits adapter-
@@ -139,12 +146,32 @@ these compare with the other queue backends.
 
 The durable ``notify_queue`` and ``poll_queue`` transports ride a SQLSpec events
 queue table (``sqlspec_event_queue`` by default). It is provisioned the same way
-as the queue table: the packaged migration path registers SQLSpec's events
-migration for capable adapters automatically, and the ``create_schema()``
-bootstrap emits its DDL directly. A zero-config capable backend therefore works
-on a fresh database with no manual step. Set
-``SQLSpecWorkerWakeupConfig.queue_table_name`` to override the events queue
-table name.
+as the queue table: with ``manage_schema=True`` the packaged migration path
+registers SQLSpec's events migration for capable adapters automatically, and the
+``create_schema()`` bootstrap emits its DDL directly. A zero-config capable
+backend on ``manage_schema=True`` therefore works on a fresh database with no
+manual step. Set ``SQLSpecWorkerWakeupConfig.queue_table_name`` to override the
+events queue table name.
+
+With ``manage_schema=False`` the backend registers no migrations at all, so the
+events queue table is the application's to create, exactly like the queue table.
+The library never creates it implicitly and emits no DDL for it outside
+``create_schema()``.
+
+When that table is absent, the first wakeup a worker publishes or waits for
+raises ``QueueConfigurationError`` naming the table and the transport that needs
+it, instead of a raw driver error. The check reads the adapter's data dictionary
+once per backend and creates nothing. Two remedies:
+
+- Apply SQLSpec's packaged events migration to the database from the deployment
+  step that owns schema changes, then start the application again.
+- Set ``worker_wakeups=None`` to run without native wakeups; workers then poll on
+  their configured interval and need no events queue table.
+
+Whether ``manage_schema`` is ``True`` or ``False`` makes no difference to this
+requirement: a durable wakeup transport needs the table to exist either way. An
+application with ``manage_schema=False`` that provisioned the table through its
+own migration run passes the check like any other deployment.
 
 To turn native wakeups off and fall back to interval polling, set
 ``worker_wakeups=None``. The default ``SQLSpecWorkerWakeupConfig()`` selects the
