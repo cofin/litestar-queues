@@ -241,6 +241,81 @@ def test_manage_schema_false_on_the_direct_extension_call_registers_nothing() ->
     assert sqlspec_config.extension_config in (None, {})
 
 
+def test_manage_schema_false_removes_an_earlier_queue_registration() -> None:
+    """A registration made before the plugin runs does not survive adopter-owned schema."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_queue_migration_extension(sqlspec_config)
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, manage_schema=False)
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
+    assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
+
+
+def test_manage_schema_false_on_the_direct_extension_call_removes_an_earlier_registration() -> None:
+    """The documented standalone recipe is undone by a later adopter-owned call."""
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_queue_migration_extension(sqlspec_config, queue_table_name="jobs")
+    configure_queue_migration_extension(sqlspec_config, queue_table_name="jobs", manage_schema=False)
+
+    commands = sqlspec_config.get_migration_commands()
+    assert QUEUE_EXTENSION_NAME not in commands.extension_configs
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_migrations
+    assert QUEUE_EXTENSION_NAME not in commands.runner.extension_configs
+    assert QUEUE_EXTENSION_NAME not in (sqlspec_config.extension_config or {})
+
+
+def test_manage_schema_false_removes_an_earlier_events_registration() -> None:
+    """The packaged events queue migration is deregistered the same way."""
+    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue")
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue", manage_schema=False)
+
+    commands = sqlspec_config.get_migration_commands()
+    assert "events" not in commands.extension_configs
+    assert "events" not in commands.runner.extension_migrations
+    assert "events" not in commands.runner.extension_configs
+    assert "events" not in (sqlspec_config.extension_config or {})
+    assert "events" not in (sqlspec_config.migration_config or {}).get("include_extensions", [])
+
+
+def test_manage_schema_false_removes_an_earlier_events_registration_through_the_plugin() -> None:
+    """The plugin path deregisters an events registration made before it ran."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue")
+    backend_config = SQLSpecBackendConfig(
+        sqlspec_config=sqlspec_config,
+        worker_wakeups=SQLSpecWorkerWakeupConfig(transport="poll_queue"),
+        manage_schema=False,
+    )
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    assert "events" not in commands.extension_configs
+    assert "events" not in commands.runner.extension_migrations
+    assert "events" not in commands.runner.extension_configs
+    assert "events" not in (sqlspec_config.extension_config or {})
+
+
 @pytest.mark.anyio
 async def test_manage_schema_switching_to_false_leaves_the_applied_revision_alone(tmp_path: "Path") -> None:
     """Switching an already-migrated database to adopter-owned schema is a no-op.
