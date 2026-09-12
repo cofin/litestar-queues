@@ -22,7 +22,6 @@ __all__ = (
     "event_history_table_name_for",
     "maintenance_table_name_for",
     "migration_directory",
-    "migration_paths",
     "resolve_column_map",
     "task_reservation_table_name_for",
     "validate_column_map",
@@ -239,12 +238,6 @@ def task_reservation_table_name_for(table_name: "str") -> "str":
         return validate_table_name(_bounded_table_part(validated, DEFAULT_TASK_RESERVATION_TABLE_SUFFIX))
     schema, table = parts
     return validate_table_name(f"{schema}.{_bounded_table_part(table, DEFAULT_TASK_RESERVATION_TABLE_SUFFIX)}")
-
-
-def migration_paths() -> "tuple[str, ...]":
-    """Return packaged SQLSpec migration file paths."""
-    directory = migration_directory()
-    return (str(directory.joinpath("0001_create_queue_tasks.py")),)
 
 
 def migration_directory() -> "Path":

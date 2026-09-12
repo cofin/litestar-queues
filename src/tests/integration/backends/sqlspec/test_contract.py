@@ -18,7 +18,6 @@ import sys
 from contextlib import asynccontextmanager, closing
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -36,7 +35,7 @@ from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_cla
 from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend, SQLSpecWorkerWakeupConfig
 from litestar_queues.backends.sqlspec.backend import _bridge_session
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.schema import migration_paths
+from litestar_queues.backends.sqlspec.schema import migration_directory
 from litestar_queues.backends.sqlspec.stores import create_queue_store
 from litestar_queues.backends.sqlspec.stores.aiomysql import AiomysqlQueueStore
 from litestar_queues.backends.sqlspec.stores.aiosqlite import AiosqliteQueueStore
@@ -69,6 +68,7 @@ from tests.integration.backends.sqlspec._schema import bootstrap_queue_schema, r
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
+    from pathlib import Path
     from uuid import UUID
 
     from pytest import FixtureRequest
@@ -2127,7 +2127,8 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     assert record.task_name == "tasks.migrated"
 
     discovered = [
-        f"ext_{QUEUE_EXTENSION_NAME}_{Path(path).name.split('_', maxsplit=1)[0]}" for path in migration_paths()
+        f"ext_{QUEUE_EXTENSION_NAME}_{path.name.split('_', maxsplit=1)[0]}"
+        for path in sorted(migration_directory().glob("[0-9]*.py"))
     ]
 
     with closing(sqlite3.connect(db_path)) as connection:

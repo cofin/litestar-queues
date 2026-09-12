@@ -157,8 +157,8 @@ def test_dispatch_checked_store_mapping_precedence() -> None:
     configure_queue_migration_extension(config)
     inherited = create_queue_store(config)
     overridden = create_queue_store(config, column_map={"dispatch_checked_at": "explicit_check"})
-    assert "configured_check" in inherited.dispatch_checked_column_sql()
-    assert "explicit_check" in overridden.dispatch_checked_column_sql()
+    assert "configured_check" in inherited.dispatch_repair_index_sql()
+    assert "explicit_check" in overridden.dispatch_repair_index_sql()
 
 
 def test_manage_schema_false_registers_no_packaged_queue_migration() -> None:
@@ -314,6 +314,43 @@ def test_manage_schema_false_removes_an_earlier_events_registration_through_the_
     assert "events" not in commands.runner.extension_migrations
     assert "events" not in commands.runner.extension_configs
     assert "events" not in (sqlspec_config.extension_config or {})
+
+
+def test_manage_schema_false_removes_an_earlier_events_registration_without_wakeups() -> None:
+    """Disabled wakeups do not exempt an events registration from adopter-owned schema."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue")
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, worker_wakeups=None, manage_schema=False)
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    commands = sqlspec_config.get_migration_commands()
+    assert "events" not in commands.extension_configs
+    assert "events" not in commands.runner.extension_migrations
+    assert "events" not in commands.runner.extension_configs
+    assert "events" not in (sqlspec_config.extension_config or {})
+
+
+def test_an_adopter_events_registration_survives_a_transport_that_needs_no_events_table() -> None:
+    """A polling adapter leaves SQLSpec's own events extension registration alone."""
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueuePlugin
+    from litestar_queues.backends.sqlspec.extension import configure_events_migration_extension
+
+    sqlspec_config = AiosqliteConfig(connection_config={"database": ":memory:"})
+    configure_events_migration_extension(sqlspec_config, backend="poll_queue")
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config)
+
+    Litestar(plugins=[QueuePlugin(QueueConfig(queue_backend=backend_config))])
+
+    events_settings = cast("dict[str, Any]", (sqlspec_config.extension_config or {})["events"])
+    assert events_settings["backend"] == "poll_queue"
 
 
 @pytest.mark.anyio

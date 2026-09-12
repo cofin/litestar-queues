@@ -3,7 +3,6 @@
 import contextlib
 import importlib
 import sqlite3
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -13,7 +12,7 @@ pytest.importorskip("sqlspec")
 
 from litestar_queues import WorkerConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
-from litestar_queues.backends.sqlspec.schema import migration_paths
+from litestar_queues.backends.sqlspec.schema import migration_directory
 from tests.integration._names import table_name_for_test
 
 if TYPE_CHECKING:
@@ -177,7 +176,7 @@ async def test_sqlspec_backend_migration_derives_names_from_custom_queue_table()
 
 
 async def test_sqlspec_backend_exposes_packaged_migration_assets() -> "None":
-    paths = tuple(Path(path) for path in migration_paths())
+    paths = sorted(migration_directory().glob("[0-9]*.py"))
 
     assert [path.name for path in paths] == ["0001_create_queue_tasks.py"]
     migration_content = paths[0].read_text()

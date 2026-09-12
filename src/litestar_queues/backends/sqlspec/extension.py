@@ -32,7 +32,11 @@ _EVENTS_EXTENSION_NAME = "events"
 
 
 def configure_events_migration_extension(
-    sqlspec_config: "SQLSpecConfig", *, backend: "str", queue_table: "str | None" = None, manage_schema: "bool" = True
+    sqlspec_config: "SQLSpecConfig",
+    *,
+    backend: "str | None",
+    queue_table: "str | None" = None,
+    manage_schema: "bool" = True,
 ) -> "None":
     """Register SQLSpec's events queue migration for native wakeup provisioning.
 
@@ -44,10 +48,18 @@ def configure_events_migration_extension(
     The events queue table is package-owned, so ``manage_schema=False`` leaves
     nothing registered: any events settings and packaged revision already on the
     config are removed, so an application that owns its schema receives no
-    packaged revision whatever ran before.
+    packaged revision whatever ran before. That holds whether or not a durable
+    events table would otherwise be provisioned.
+
+    A ``backend`` of ``None`` means no durable events table is needed and leaves
+    the config untouched. The events extension is SQLSpec's own rather than this
+    package's, so an application may have registered it for its own use, and a
+    transport that needs no events table is not grounds for removing it.
     """
     if not manage_schema:
         _deregister_extension(sqlspec_config, _EVENTS_EXTENSION_NAME)
+        return
+    if backend is None:
         return
     extension_config = dict(sqlspec_config.extension_config or {})
     events_settings = dict(extension_config.get(_EVENTS_EXTENSION_NAME, {}) or {})

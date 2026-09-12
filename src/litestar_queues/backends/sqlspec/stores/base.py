@@ -1188,20 +1188,6 @@ RETURNING {target}.{id_col} AS id
         )
         return f"CREATE INDEX {self._quote_identifier(self.dispatch_repair_index_name)} ON {self._quote_identifier(self.dispatch_repair_table_name)} ({columns})"
 
-    def dispatch_checked_column_sql(self, *, drop: "bool" = False) -> "str":
-        """Return the dialect-specific additive column or removal statement."""
-        table, column = (
-            self._quote_identifier(self.dispatch_repair_table_name),
-            self._quote_identifier(self.dispatch_checked_column_name),
-        )
-        if drop:
-            return f"ALTER TABLE {table} DROP COLUMN {column}"
-        dialect = self._data_dictionary_dialect_name()
-        if dialect == "oracle":
-            return f"ALTER TABLE {table} ADD ({column} {self._dispatch_checked_type()})"
-        add = "ADD" if dialect == "mssql" else "ADD COLUMN"
-        return f"ALTER TABLE {table} {add} {column} {self._dispatch_checked_type()}"
-
     def drop_dispatch_repair_index_sql(self) -> "str":
         """Return the dialect-specific repair index removal statement."""
         statement = f"DROP INDEX {self._quote_identifier(self.dispatch_repair_index_name)}"
@@ -1211,11 +1197,6 @@ RETURNING {target}.{id_col} AS id
 
     def _dispatch_checked_type(self) -> "str":
         return "DATETIME(6)" if self._data_dictionary_dialect_name() == "mysql" else self._timestamp_type()
-
-    @property
-    def dispatch_checked_column_name(self) -> "str":
-        """Physical check-time name emitted by this store's table DDL."""
-        return self._dispatch_ddl_name(self._col("dispatch_checked_at"))
 
     @property
     def dispatch_repair_table_name(self) -> "str":
