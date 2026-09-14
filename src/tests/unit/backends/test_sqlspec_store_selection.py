@@ -108,3 +108,195 @@ def test_adbc_rejects_non_sqlite_dialects() -> "None":
 def test_unsupported_adapter_is_rejected() -> "None":
     with pytest.raises(QueueConfigurationError, match="not supported"):
         _adapter_store_type(_fake_config("nonexistent_driver"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize(("version", "expected"), [("5.7.44", False), ("8.0.1", True)])
+async def test_connected_locking_capability_uses_server_version(is_async: bool, version: str, expected: bool) -> None:
+    """The real dictionary resolves version gates once on the session's thread."""
+    import threading
+    from contextlib import asynccontextmanager, contextmanager
+    from datetime import datetime, timezone
+
+    from sqlspec.adapters.aiomysql import AiomysqlConfig
+    from sqlspec.adapters.aiomysql.data_dictionary import AiomysqlDataDictionary
+    from sqlspec.adapters.pymysql import PyMysqlConfig
+    from sqlspec.adapters.pymysql.data_dictionary import PyMysqlDataDictionary
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    calls: list[int] = []
+
+    def version_value(*args: Any) -> str:
+        calls.append(threading.get_ident())
+        return version
+
+    async def async_version(*args: Any) -> str:
+        return version_value()
+
+    driver = types.SimpleNamespace(
+        data_dictionary=AiomysqlDataDictionary() if is_async else PyMysqlDataDictionary(),
+        select_value_or_none=async_version if is_async else version_value,
+        rollback=lambda: None,
+    )
+
+    @asynccontextmanager
+    async def async_session(config: Any) -> Any:
+        yield driver
+
+    @contextmanager
+    def sync_session(config: Any) -> Any:
+        calls.append(threading.get_ident())
+        yield driver
+        calls.append(threading.get_ident())
+
+    config: Any = AiomysqlConfig() if is_async else PyMysqlConfig()
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=config))
+    backend._sqlspec = types.SimpleNamespace(  # type: ignore[assignment]
+        provide_session=async_session if is_async else sync_session, close_all_pools=lambda: None
+    )
+    try:
+        await backend.open()
+        store = backend._get_store()
+        assert store.supports_skip_locked is expected
+        statement = store.select_claimable(now=datetime.now(timezone.utc), limit=1).build(dialect="mysql").sql
+        assert ("SKIP LOCKED" in statement) is expected
+        assert len(calls) == (1 if is_async else 3)
+        assert len(set(calls)) == 1
+        assert (calls[0] == threading.get_ident()) is is_async
+    finally:
+        await backend.close()
+
+
+@pytest.mark.anyio
+async def test_locking_capability_resets_on_reopen_and_gates_repair_reads() -> None:
+    from contextlib import asynccontextmanager
+    from datetime import datetime, timezone
+    from typing import cast
+
+    from sqlspec.adapters.aiomysql import AiomysqlConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    flags = {"supports_for_update": True, "supports_skip_locked": True}
+    calls: list[str] = []
+
+    async def feature(driver: Any, name: str) -> bool:
+        calls.append(name)
+        return flags[name]
+
+    @asynccontextmanager
+    async def session(config: Any) -> Any:
+        yield types.SimpleNamespace(data_dictionary=types.SimpleNamespace(get_feature_flag=feature))
+
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=AiomysqlConfig()))
+    backend._owns_sqlspec = False
+    backend._sqlspec = cast("Any", types.SimpleNamespace(provide_session=session))
+    store = backend._get_store()
+
+    def repair_sql() -> str:
+        return (
+            store
+            .get_dispatch_repair_candidate(
+                task_id="task", execution_backend="cloudtasks", now=datetime.now(timezone.utc)
+            )
+            .build(dialect="mysql")
+            .sql
+        )
+
+    assert backend._get_store().supports_skip_locked is False
+    assert "FOR UPDATE" not in repair_sql()
+    try:
+        await backend.open()
+        assert backend._get_store().supports_skip_locked is True
+        assert "FOR UPDATE" in repair_sql()
+        await backend.open()
+        assert len(calls) == 2
+        await backend.close()
+        assert backend._get_store().supports_skip_locked is False
+        assert "FOR UPDATE" not in repair_sql()
+        flags["supports_for_update"] = False
+        await backend.open()
+        assert backend._get_store().supports_skip_locked is False
+        assert "FOR UPDATE" not in repair_sql()
+        assert len(calls) == 4
+    finally:
+        await backend.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_locking_probe_failure_cleans_owned_resources(cancelled: bool) -> None:
+    import asyncio
+    from contextlib import contextmanager
+    from typing import cast
+
+    from sqlspec.adapters.pymysql import PyMysqlConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    failure = asyncio.CancelledError() if cancelled else RuntimeError("probe failed")
+    closed: list[str] = []
+
+    def feature(driver: Any, name: str) -> bool:
+        raise failure
+
+    @contextmanager
+    def session(config: Any) -> Any:
+        try:
+            yield types.SimpleNamespace(
+                data_dictionary=types.SimpleNamespace(get_feature_flag=feature), rollback=lambda: None
+            )
+        finally:
+            closed.append("session")
+
+    def close_pools() -> None:
+        closed.append("pools")
+        msg = "secondary cleanup failure"
+        raise ValueError(msg)
+
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=PyMysqlConfig()))
+    backend._sqlspec = cast("Any", types.SimpleNamespace(provide_session=session, close_all_pools=close_pools))
+    with pytest.raises(type(failure)) as caught:
+        await backend.open()
+    assert caught.value is failure
+    assert closed == ["session", "pools"]
+    assert backend._opened is False
+    assert backend._sync_executor is None
+    assert backend._sqlspec is None
+    assert backend._get_store().supports_skip_locked is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("major", [11, 23])
+async def test_oracle_locking_capability_uses_actual_dictionary_flags(major: int) -> None:
+    from contextlib import asynccontextmanager
+    from typing import cast
+
+    from sqlspec.adapters.oracledb import OracleAsyncConfig
+    from sqlspec.adapters.oracledb.data_dictionary import (
+        OracledbAsyncDataDictionary,
+        OracleVersionCache,
+        OracleVersionInfo,
+    )
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+
+    cache = OracleVersionCache()
+    cache.resolved = True
+    cache.version = OracleVersionInfo(major)
+    driver = types.SimpleNamespace(data_dictionary=OracledbAsyncDataDictionary(), _oracle_version_cache=cache)
+
+    @asynccontextmanager
+    async def session(config: Any) -> Any:
+        yield driver
+
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=OracleAsyncConfig()))
+    backend._sqlspec = cast("Any", types.SimpleNamespace(provide_session=session, close_all_pools=lambda: None))
+    try:
+        await backend.open()
+        assert backend._get_store().supports_for_update is True
+        assert backend._get_store().supports_skip_locked is True
+    finally:
+        await backend.close()

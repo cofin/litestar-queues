@@ -282,6 +282,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     ),
                 )
         self._opened = True
+        try:
+            await self._resolve_locking_capabilities()
+        except BaseException:
+            try:
+                await self.close()
+            except BaseException:
+                self._logger.warning("SQLSpec startup cleanup failed.", exc_info=True)
+            raise
         return True
 
     async def close(self) -> "None":
@@ -331,6 +339,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._heartbeat_sync_executor = None
             await close_resource(lambda: heartbeat_executor.shutdown(wait=True))
         self._opened = False
+        self._reset_locking_capabilities()
         self._events_queue_verified = False
         if error is not None:
             raise error
@@ -2343,6 +2352,23 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         """Return :func:`_rows_affected` normalized for this backend's configured adapter."""
         return _rows_affected(result, resolve_adapter_name(self._get_sqlspec_config()))
 
+    def _reset_locking_capabilities(self) -> "None":
+        if self._store is not None:
+            self._store.set_locking_capabilities(for_update=False, skip_locked=False)
+
+    async def _resolve_locking_capabilities(self) -> "None":
+        store = self._get_store()
+        if not store.requires_locking_capability_probe:
+            return
+        async with self._session() as driver:
+            if isinstance(driver, _ManagedAsyncDriver):
+                for_update, skip_locked = await driver.locking_capabilities()
+            else:
+                dictionary = cast("Any", driver).data_dictionary
+                for_update = await dictionary.get_feature_flag(driver, "supports_for_update")
+                skip_locked = await dictionary.get_feature_flag(driver, "supports_skip_locked")
+        store.set_locking_capabilities(for_update=bool(for_update), skip_locked=bool(skip_locked))
+
     def _get_store(self) -> "SQLSpecQueueStore":
         if self._store is None:
             self._store = create_queue_store(
@@ -2861,6 +2887,18 @@ class _ManagedAsyncDriver:
         del chunk_size
         for row in await self.select(statement):
             yield row
+
+    async def locking_capabilities(self) -> "tuple[bool, bool]":
+        """Probe the raw sync driver on its session-bound executor."""
+
+        def probe() -> "tuple[bool, bool]":
+            dictionary = self._driver.data_dictionary
+            return (
+                dictionary.get_feature_flag(self._driver, "supports_for_update"),
+                dictionary.get_feature_flag(self._driver, "supports_skip_locked"),
+            )
+
+        return await async_(probe, executor=self._executor)()
 
     async def table_names(self, schema: "str | None" = None) -> "set[str]":
         """Read table names from the wrapped sync driver's data dictionary.

@@ -74,7 +74,16 @@ class BulkHeartbeatStatement:
 class SQLSpecQueueStore:
     """Base SQLSpec queue statement store."""
 
-    __slots__ = ("_cached_sql", "_column_map", "_config", "_manage_schema", "_native_json_columns", "_table_name")
+    __slots__ = (
+        "_cached_sql",
+        "_column_map",
+        "_config",
+        "_manage_schema",
+        "_native_json_columns",
+        "_supports_for_update",
+        "_supports_skip_locked",
+        "_table_name",
+    )
 
     data_dictionary_dialect: "ClassVar[str | None]" = None
     identifier_quote_style: 'ClassVar[Literal["double", "backtick", "none"]]' = "double"
@@ -116,6 +125,8 @@ class SQLSpecQueueStore:
         self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
         self._cached_sql: "dict[str, str]" = {}
+        self._supports_for_update = False
+        self._supports_skip_locked = False
 
     @property
     def table_name(self) -> "str":
@@ -130,20 +141,26 @@ class SQLSpecQueueStore:
         return str(dialect) if dialect is not None else None
 
     @property
-    def supports_skip_locked(self) -> "bool":
-        """Whether the adapter supports ``SELECT ... FOR UPDATE SKIP LOCKED``.
+    def requires_locking_capability_probe(self) -> "bool":
+        """Whether this dialect has row-locking paths requiring live resolution."""
+        dialect = self._dialect_config()
+        return dialect is not None and dialect.get_feature_flag("supports_for_update") is not False
 
-        Resolved from SQLSpec's data dictionary. Some dialects expose
-        ``supports_skip_locked`` as a static flag; version-gated dialects
-        expose the minimum supported version instead, which is treated as an
-        adapter capability until live server-version checks are introduced.
-        """
-        dialect_config = self._dialect_config()
-        if dialect_config is None or dialect_config.get_feature_flag("supports_for_update") is not True:
-            return False
-        return dialect_config.get_feature_flag("supports_skip_locked") is True or (
-            dialect_config.get_feature_version("supports_skip_locked") is not None
-        )
+    def set_locking_capabilities(self, *, for_update: "bool", skip_locked: "bool") -> "None":
+        """Cache connected-server capabilities and invalidate rendered statements."""
+        self._supports_for_update = for_update
+        self._supports_skip_locked = for_update and skip_locked
+        self._cached_sql.clear()
+
+    @property
+    def supports_for_update(self) -> "bool":
+        """Whether the opened backend resolved row-locking support."""
+        return self._supports_for_update
+
+    @property
+    def supports_skip_locked(self) -> "bool":
+        """Whether the opened backend resolved skip-locked row support."""
+        return self._supports_skip_locked
 
     @property
     def supports_native_bulk_ingest(self) -> "bool":
@@ -493,17 +510,13 @@ class SQLSpecQueueStore:
     def select_claimable(
         self, *, now: "DatetimeParam", limit: "int", queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "Select":
-        """Return a due-task SELECT that locks rows with ``FOR UPDATE SKIP LOCKED``.
+        """Return a due-task SELECT using resolved skip-locked support.
 
-        Mirrors :meth:`list_pending` but adds row-level locking so competing
-        workers each claim a distinct row instead of colliding on the optimistic
-        CAS claim. Callers must only use this on adapters that report
-        :attr:`supports_skip_locked`; on dialects without locking support
-        sqlglot drops the clause, so it is never relied upon as a guarantee.
+        Add row-level locking when the connected server supports it; unresolved
+        or unsupported stores retain the ordinary pending-row selection.
         """
-        return self.list_pending(now=now, limit=limit, queue=queue, execution_backend=execution_backend).for_update(
-            skip_locked=True
-        )
+        statement = self.list_pending(now=now, limit=limit, queue=queue, execution_backend=execution_backend)
+        return statement.for_update(skip_locked=True) if self.supports_skip_locked else statement
 
     def claim_task(
         self,
@@ -1143,8 +1156,7 @@ RETURNING {target}.{id_col} AS id
             .where_in(self._col("status"), _DUE_STATUSES)
             .where(f"{self._col('expires_at')} IS NULL OR {self._col('expires_at')} > :repair_now", repair_now=now)
         )
-        dialect = self._dialect_config()
-        if dialect is not None and dialect.get_feature_flag("supports_for_update"):
+        if self.supports_for_update:
             return statement.for_update()
         return statement
 

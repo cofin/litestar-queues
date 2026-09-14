@@ -1095,33 +1095,33 @@ async def test_sqlspec_oracle_queue_schema_uses_retry_safe_version_compatible_dd
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "expected"),
     (
-        ("asyncpg", "postgres", True),
-        ("asyncmy", "mysql", True),
-        ("pymysql", "mysql", True),
-        ("psqlpy", "postgres", True),
+        ("asyncpg", "postgres", False),
+        ("asyncmy", "mysql", False),
+        ("pymysql", "mysql", False),
+        ("psqlpy", "postgres", False),
         ("spanner", "spanner", False),
         ("aiosqlite", "sqlite", False),
         ("duckdb", "duckdb", False),
     ),
 )
-def test_sqlspec_store_supports_skip_locked_follows_data_dictionary_flags(
+def test_sqlspec_store_locking_capability_is_unresolved_before_open(
     adapter_name: "str", dialect: "str", expected: "bool"
 ) -> "None":
-    """``supports_skip_locked`` gates off SQLSpec data-dictionary feature flags."""
+    """An unopened store has not established connected-server capabilities."""
     store = create_queue_store(_fake_adapter_config(adapter_name, dialect=dialect), table_name="queue_tasks")
 
     assert store.supports_skip_locked is expected
 
 
 def test_sqlspec_oracledb_async_store_supports_skip_locked_from_data_dictionary() -> "None":
-    """Async Oracle uses SQLSpec 0.52's Oracle SKIP LOCKED capability."""
+    """Async Oracle resolves its locking capability when opened."""
     store = create_queue_store(
         _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleAsyncConfig"),
         table_name="queue_tasks",
     )
 
     assert isinstance(store, OracledbAsyncQueueStore)
-    assert store.supports_skip_locked is True
+    assert store.supports_skip_locked is False
     assert store.claim_select_stream_chunk_size == 1
 
 
@@ -1181,6 +1181,7 @@ def test_sqlspec_store_supports_skip_locked_defaults_false_without_dialect() -> 
 def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect() -> "None":
     """``select_claimable`` builds a due-task SELECT that locks rows with SKIP LOCKED."""
     store = create_queue_store(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+    store.set_locking_capabilities(for_update=True, skip_locked=True)
 
     built = store.select_claimable(now="2026-01-01T00:00:00+00:00", limit=1, queue="default").build(dialect="postgres")
 
