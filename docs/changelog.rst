@@ -30,6 +30,24 @@ project is pre-1.0, so minor releases may make intentional API breaks.
   Advanced Alchemy and Redis/Valkey upgrade paths are unchanged.
   See :doc:`usage/backends/sqlspec`.
 
+**Fixed:**
+
+* SQLSpec duplicate handling preserves uniqueness conflicts while propagating
+  foreign-key, check-constraint and other unrelated database errors.
+* SQLSpec claims use locking capabilities reported by the connected database version.
+  Unsupported servers retain conditional task claims; reopening refreshes capabilities.
+* Application-defined SQLSpec config subclasses retain the correct
+  sync or async queue store. PostgreSQL subclass wakeups retain the upstream
+  durable polling fallback; default configs retain native notifications.
+* Toggling SQLSpec schema management updates migration registration
+  without losing unrelated extension settings or existing migration records.
+* SQLSpec mutation outcomes use the configured driver's rowcount
+  reliability while preserving task ownership checks.
+* Synchronous Psycopg mutations that return rows persist before the
+  session closes, including enqueue, batch claims, completion and retries.
+* SQLSpec PostgreSQL migrations use distinct index names within
+  the server's 63-byte limit for long queue table names.
+
 0.11.0 - 2026-09-08
 ===================
 
