@@ -18,6 +18,7 @@ class SQLSpecConfig(Protocol):
     extension_config: Any
     migration_config: Any
     is_async: ClassVar[bool]
+    supports_reliable_rowcount: ClassVar[bool]
 
     def add_extension_migrations(
         self, name: str, migrations_path: "str | Path", settings: "dict[str, Any] | None" = None

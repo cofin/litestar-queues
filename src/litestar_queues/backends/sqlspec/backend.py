@@ -95,10 +95,6 @@ _WAKEUP_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
 # Durable event transports that ride the SQLSpec events queue table and must have
 # it provisioned before a worker can publish or consume wakeups.
 _EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
-# Arrow ODBC exposes no portable rowcount API, and ADBC SQLite reports ``-1``
-# for updates. Their cancellation path therefore verifies both the eligible
-# before-image and the persisted after-image.
-_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"adbc", "arrow_odbc"})
 
 
 def _adapter_wakeup_transport(adapter_name: "str | None") -> "str":
@@ -1312,10 +1308,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                adapter_name = _adapter_name(self._get_sqlspec_config())
-                before_row = (
-                    await self._select_task(driver, task_id) if adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS else None
-                )
+                supports_reliable_rowcount = self._get_sqlspec_config().supports_reliable_rowcount
+                before_row = await self._select_task(driver, task_id) if not supports_reliable_rowcount else None
                 result = await driver.execute(
                     self._get_store().cancel_task(
                         task_id=str(task_id),
@@ -1938,8 +1932,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 if limit is None:
-                    # Some drivers (see _UNRELIABLE_ROWCOUNT_ADAPTERS) cannot
-                    # reliably report ``rows_affected`` for DELETE. Count
+                    # Some drivers cannot reliably report DELETE rowcounts. Count
                     # first inside the same transaction so the cleanup count is
                     # always exact.
                     count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
@@ -2350,8 +2343,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return cast("SQLSpecConfig", self._sqlspec_config)
 
     def _resolve_rows_affected(self, result: "Any") -> "int":
-        """Return :func:`_rows_affected` normalized for this backend's configured adapter."""
-        return _rows_affected(result, _adapter_name(self._get_sqlspec_config()))
+        """Return the affected-row count using the configured reliability capability."""
+        return _rows_affected(result, supports_reliable_rowcount=self._get_sqlspec_config().supports_reliable_rowcount)
 
     def _reset_locking_capabilities(self) -> "None":
         if self._store is not None:
@@ -3013,15 +3006,10 @@ def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
 
-def _rows_affected(result: "Any", adapter_name: "str | None" = None) -> "int":
-    """Return the reported affected-row count.
-
-    Normalized to ``-1`` (the existing "unknown, verify" sentinel) when
-    ``adapter_name`` is one of :data:`_UNRELIABLE_ROWCOUNT_ADAPTERS`, whose
-    driver can report a genuine ``0`` and an unparsable result identically.
-    """
+def _rows_affected(result: "Any", *, supports_reliable_rowcount: "bool") -> "int":
+    """Preserve reported counts, treating unreliable zero as unknown."""
     rows_affected = int(getattr(result, "rows_affected", 0) or 0)
-    if rows_affected == 0 and adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS:
+    if rows_affected == 0 and not supports_reliable_rowcount:
         return -1
     return rows_affected
 

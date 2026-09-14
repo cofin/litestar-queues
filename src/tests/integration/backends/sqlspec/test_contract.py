@@ -1635,6 +1635,45 @@ async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(
     assert failed.completed_at is not None
 
 
+@pytest.mark.parametrize("reported_count", [0, -1])
+async def test_sqlspec_cancel_verifies_configured_unreliable_rowcount(
+    sqlspec_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch", reported_count: "int"
+) -> "None":
+    pending = await sqlspec_backend.enqueue("tasks.cancel_unknown")
+    config = sqlspec_backend._get_sqlspec_config()
+    monkeypatch.setattr(type(config), "supports_reliable_rowcount", False)
+    resolve_count = SQLSpecQueueBackend._resolve_rows_affected
+    monkeypatch.setattr(
+        SQLSpecQueueBackend,
+        "_resolve_rows_affected",
+        lambda self, _result: resolve_count(self, SimpleNamespace(rows_affected=reported_count)),
+    )
+
+    assert not await sqlspec_backend.cancel_task(pending.id, expected_retry_count=1)
+    unchanged = await sqlspec_backend.get_task(pending.id)
+    assert unchanged is not None and unchanged.status == "pending"
+    assert await sqlspec_backend.cancel_task(pending.id, expected_retry_count=0)
+    assert not await sqlspec_backend.cancel_task(pending.id, expected_retry_count=0)
+    assert not await sqlspec_backend.cancel_task(uuid4())
+    cancelled = await sqlspec_backend.get_task(pending.id)
+    assert cancelled is not None and cancelled.status == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("reliable", "reported_count", "expected"),
+    [(True, 0, 0), (False, 0, -1), (True, -1, -1), (False, -1, -1), (True, 1, 1), (False, 2, 2)],
+)
+async def test_sqlspec_rowcount_uses_actual_config_capability(
+    sqlspec_backend: "SQLSpecQueueBackend",
+    monkeypatch: "pytest.MonkeyPatch",
+    reliable: "bool",
+    reported_count: "int",
+    expected: "int",
+) -> "None":
+    monkeypatch.setattr(type(sqlspec_backend._get_sqlspec_config()), "supports_reliable_rowcount", reliable)
+    assert sqlspec_backend._resolve_rows_affected(SimpleNamespace(rows_affected=reported_count)) == expected
+
+
 async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
     sqlspec_backend: "SQLSpecQueueBackend",
 ) -> "None":
