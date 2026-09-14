@@ -1,35 +1,23 @@
-"""Certification of the postgres-psycopg autocommit connection variant.
+"""PostgreSQL durability across async and sync Psycopg transaction modes.
 
-Beads litestar-queues-dh8.6: autocommit removes psycopg's implicit
-per-statement ``BEGIN``/``COMMIT`` for the single-round-trip RETURNING fast
-paths (plain ``enqueue``, ``complete_task``, ``fail_task``). A prior 50-job
-roundtrip probe proved those fast paths correct but did not exercise the
-explicit ``driver.begin()``/``driver.commit()`` call sites in
-``SQLSpecQueueBackend``: keyed-enqueue dedupe (``_enqueue_keyed``), the
-``enqueue_many`` bulk insert, and the claim/complete/fail transactional
-fallbacks (``claim_task``, ``_claim_next_optimistic``,
-``_claim_next_skip_locked``, ``_complete_task_without_returning``, ``_fail_task_without_returning``).
-This module exercises every one of those against the real Postgres container
-under both the plain and the autocommit psycopg configs so the two variants
-can be compared directly.
-
-``_complete_task_without_returning``/``_fail_task_without_returning`` are never reached through the
-public dispatch on a Postgres-family adapter --
-``PostgresQueueStore.supports_dml_returning`` is ``True``, so
-``complete_task``/``fail_task`` always take the RETURNING fast path instead.
-They are invoked directly here so the transaction plumbing itself is still
-certified under autocommit even though production traffic on this adapter
-never reaches it.
+Canonical and application config subclasses share commit and fencing contracts.
+Direct fallback calls exercise explicit transactions otherwise bypassed by the
+PostgreSQL RETURNING paths.
 """
 
-from typing import TYPE_CHECKING, cast
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 
 pytest.importorskip("psycopg")
 pytest.importorskip("sqlspec")
 
+from sqlspec.adapters.psycopg import PsycopgSyncConfig
+
 from litestar_queues import TaskRequest
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
 from tests.integration._backends import QUEUE_BACKENDS, FixtureCtx
 from tests.integration._names import table_name_for_test
 
@@ -37,24 +25,53 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
 
-    from litestar_queues.backends.sqlspec import SQLSpecQueueBackend
+    from litestar_queues.models import QueuedTaskRecord
     from tests.integration._backends import PostgresService
 
 pytestmark = pytest.mark.anyio
 
 _CASES_BY_NAME = {case.name: case for case in QUEUE_BACKENDS}
-_PSYCOPG_CASE_NAMES = ("postgres-psycopg", "postgres-psycopg-autocommit")
+_PSYCOPG_CASE_NAMES = (
+    "postgres-psycopg",
+    "postgres-psycopg-autocommit",
+    "sync",
+    "sync-autocommit",
+    "subclass-sync",
+    "subclass-sync-autocommit",
+)
+
+
+class ApplicationDatabase(PsycopgSyncConfig):
+    """An adopter's arbitrarily named synchronous config."""
 
 
 @pytest.fixture(params=_PSYCOPG_CASE_NAMES)
 async def psycopg_backend(
     request: "pytest.FixtureRequest", postgres_service: "PostgresService", tmp_path: "Path"
 ) -> "AsyncIterator[SQLSpecQueueBackend]":
-    """Yield an opened backend for one of the two psycopg registry cases."""
-    case = _CASES_BY_NAME[request.param]
-    table_name = table_name_for_test("lq_psycopg_hotpath", case.name, request.node.nodeid)
-    ctx = FixtureCtx(tmp_path=tmp_path, service=postgres_service, table_name=table_name)
-    backend = cast("SQLSpecQueueBackend", await case.build(ctx))
+    """Yield a real Psycopg backend for each adapter and autocommit mode."""
+    name = request.param
+    table_name = table_name_for_test("lq_psycopg_hotpath", name, request.node.nodeid)
+    if name in _CASES_BY_NAME:
+        ctx = FixtureCtx(tmp_path=tmp_path, service=postgres_service, table_name=table_name)
+        backend = cast("SQLSpecQueueBackend", await _CASES_BY_NAME[name].build(ctx))
+    else:
+        config_type = ApplicationDatabase if name.startswith("subclass") else PsycopgSyncConfig
+        config = config_type(
+            connection_config={
+                "host": postgres_service.host,
+                "port": postgres_service.port,
+                "user": postgres_service.user,
+                "password": postgres_service.password,
+                "dbname": postgres_service.database,
+                "autocommit": name.endswith("autocommit"),
+                "min_size": 1,
+                "max_size": 2,
+            }
+        )
+        backend = SQLSpecQueueBackend(
+            backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name=table_name)
+        )
     await backend.open()
     await backend.create_schema()
     try:
@@ -126,7 +143,7 @@ async def test_claim_task_and_claim_next_skip_locked_commit_under_the_configured
 
     second = await psycopg_backend.enqueue("tasks.claim.next")
     store = psycopg_backend._get_store()
-    assert store.supports_skip_locked is True  # postgres dialect always advertises SKIP LOCKED
+    assert store.supports_skip_locked is True  # resolved from the connected PostgreSQL server
 
     claimed_next = await psycopg_backend.claim_next()
     assert claimed_next is not None
@@ -233,3 +250,139 @@ async def test_explicit_transaction_restores_pooled_connection_autocommit(
         assert reread.status == "pending"
     finally:
         await backend.close()
+
+
+async def test_returning_enqueue_is_visible_before_wakeup(
+    psycopg_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Publication only observes a persisted enqueue, including sync sessions."""
+    observed: list[UUID] = []
+
+    async def notify(backend: "SQLSpecQueueBackend", record: "QueuedTaskRecord") -> None:
+        stored = await backend.get_task(record.id)
+        assert stored is not None
+        assert stored.status == "pending"
+        observed.append(stored.id)
+
+    monkeypatch.setattr(type(psycopg_backend), "notify_new_task", notify)
+    record = await psycopg_backend.enqueue("tasks.durable")
+    assert observed == [record.id]
+    stored = await psycopg_backend.get_task(record.id)
+    assert stored is not None
+    claimed = await psycopg_backend.claim_next()
+    assert claimed is not None and claimed.id == record.id
+
+
+@pytest.mark.parametrize("with_expired", [False, True])
+async def test_returning_batch_claim_persists_filtered_fenced_outcomes(
+    psycopg_backend: "SQLSpecQueueBackend", with_expired: bool
+) -> None:
+    due = await psycopg_backend.enqueue("due", queue="selected")
+    capped = await psycopg_backend.enqueue("capped", queue="selected")
+    other = await psycopg_backend.enqueue("other", queue="excluded")
+    external = await psycopg_backend.enqueue("external", queue="selected", execution_backend="cloudtasks")
+    expired = await psycopg_backend.enqueue(
+        "expired", queue="selected", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+    if with_expired:
+        claimed, expired_records = await psycopg_backend.claim_many_with_expired(
+            limit=10, queues=("selected",), execution_backend="local", queue_limits={"selected": 1}
+        )
+        assert [record.id for record in expired_records] == [expired.id]
+        persisted_expired = await psycopg_backend.get_task(expired.id)
+        assert persisted_expired is not None and persisted_expired.status == "expired"
+    else:
+        claimed = await psycopg_backend.claim_many(
+            limit=10, queues=("selected",), execution_backend="local", queue_limits={"selected": 1}
+        )
+    assert [record.id for record in claimed] == [due.id]
+    persisted = await psycopg_backend.get_task(due.id)
+    assert persisted is not None and persisted.status == "running" and persisted.retry_count == 0
+    for untouched in (capped, other, external):
+        stored = await psycopg_backend.get_task(untouched.id)
+        assert stored is not None and stored.status == "pending"
+    assert await psycopg_backend.claim_many(limit=1, queues=("empty",)) == []
+    assert await psycopg_backend.claim_many_with_expired(limit=0) == ([], [])
+
+
+async def test_returning_complete_retry_and_terminal_fail_persist_with_fences(
+    psycopg_backend: "SQLSpecQueueBackend",
+) -> None:
+    record = await psycopg_backend.enqueue("retry", max_retries=1)
+    assert await psycopg_backend.claim_task(record.id) is not None
+    assert await psycopg_backend.fail_task(record.id, "stale", expected_retry_count=9) is None
+    unchanged = await psycopg_backend.get_task(record.id)
+    assert unchanged is not None and unchanged.status == "running" and unchanged.retry_count == 0
+    retried = await psycopg_backend.fail_task(record.id, "retry", expected_retry_count=0)
+    assert retried is not None and retried.retry_count == 1
+    persisted_retry = await psycopg_backend.get_task(record.id)
+    assert persisted_retry is not None and persisted_retry.status == retried.status and persisted_retry.retry_count == 1
+    assert await psycopg_backend.claim_task(record.id, expected_retry_count=1) is not None
+    assert await psycopg_backend.complete_task(record.id, result="stale", expected_retry_count=0) is None
+    completed = await psycopg_backend.complete_task(record.id, result={"ok": True}, expected_retry_count=1)
+    assert completed is not None and completed.status == "completed"
+    persisted_complete = await psycopg_backend.get_task(record.id)
+    assert persisted_complete is not None and persisted_complete.result == {"ok": True}
+    terminal = await psycopg_backend.enqueue("terminal")
+    assert await psycopg_backend.claim_task(terminal.id) is not None
+    failed = await psycopg_backend.fail_task(terminal.id, "terminal", retry=False, expected_retry_count=0)
+    assert failed is not None and failed.status == "failed"
+    persisted_failure = await psycopg_backend.get_task(terminal.id)
+    assert persisted_failure is not None and persisted_failure.status == "failed"
+
+
+@pytest.mark.parametrize("psycopg_backend", ["sync", "sync-autocommit"], indirect=True)
+@pytest.mark.parametrize("operation", ["enqueue", "retry"])
+async def test_failed_returning_write_never_publishes_success(
+    psycopg_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch", operation: str
+) -> None:
+    """Uncommitted writes roll back; failing autocommit SQL never publishes."""
+    from sqlspec.exceptions import SQLSpecError
+
+    from litestar_queues.backends.sqlspec.backend import _ManagedAsyncDriver
+
+    record_id = uuid4()
+    if operation == "retry":
+        record = await psycopg_backend.enqueue("retry failure", max_retries=1)
+        record_id = record.id
+        assert await psycopg_backend.claim_task(record_id) is not None
+    notifications: list[UUID] = []
+
+    async def notify(backend: "SQLSpecQueueBackend", record: "QueuedTaskRecord") -> None:
+        notifications.append(record.id)
+
+    config = cast("Any", psycopg_backend._get_sqlspec_config())
+    autocommit = bool(config.connection_config["autocommit"])
+    failure = RuntimeError("before commit")
+
+    async def fail_commit(driver: _ManagedAsyncDriver) -> None:
+        raise failure
+
+    method = "execute" if operation == "enqueue" else "select"
+    original = getattr(_ManagedAsyncDriver, method)
+
+    async def fail_sql(driver: _ManagedAsyncDriver, *args: Any, **kwargs: Any) -> Any:
+        return await original(driver, "INVALID SQL FOR DURABILITY TEST")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(psycopg_backend), "notify_new_task", notify)
+        if autocommit:
+            patch.setattr(_ManagedAsyncDriver, method, fail_sql)
+        else:
+            patch.setattr(_ManagedAsyncDriver, "commit", fail_commit)
+        with pytest.raises(SQLSpecError if autocommit else RuntimeError) as caught:
+            if operation == "enqueue":
+                await psycopg_backend.enqueue("failed enqueue", id=record_id)
+            else:
+                await psycopg_backend.fail_task(record_id, "retry", expected_retry_count=0)
+        if not autocommit:
+            assert caught.value is failure
+        assert notifications == []
+
+    stored = await psycopg_backend.get_task(record_id)
+    if operation == "enqueue":
+        assert stored is None
+    else:
+        assert stored is not None and stored.status == "running" and stored.retry_count == 0
+    recovered = await psycopg_backend.enqueue("pool recovered")
+    assert await psycopg_backend.get_task(recovered.id) is not None
