@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+    from pathlib import Path
 
     from sqlspec.adapters.asyncpg import AsyncpgConfig
     from sqlspec.adapters.sqlite import SqliteConfig
@@ -17,6 +18,12 @@ class SQLSpecConfig(Protocol):
     extension_config: Any
     migration_config: Any
     is_async: ClassVar[bool]
+
+    def add_extension_migrations(
+        self, name: str, migrations_path: "str | Path", settings: "dict[str, Any] | None" = None
+    ) -> None: ...
+
+    def remove_extension_migrations(self, name: str) -> bool: ...
 
     def close_pool(self) -> Any: ...
 

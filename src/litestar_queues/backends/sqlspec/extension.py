@@ -57,7 +57,7 @@ def configure_events_migration_extension(
     transport that needs no events table is not grounds for removing it.
     """
     if not manage_schema:
-        _deregister_extension(sqlspec_config, _EVENTS_EXTENSION_NAME)
+        sqlspec_config.remove_extension_migrations(_EVENTS_EXTENSION_NAME)
         return
     if backend is None:
         return
@@ -97,7 +97,7 @@ def configure_queue_migration_extension(
     postcondition holds regardless of call order.
     """
     if not manage_schema:
-        _deregister_extension(sqlspec_config, QUEUE_EXTENSION_NAME)
+        sqlspec_config.remove_extension_migrations(QUEUE_EXTENSION_NAME)
         return
     queue_settings = _configure_extension_settings(
         sqlspec_config,
@@ -109,42 +109,7 @@ def configure_queue_migration_extension(
         task_reservation_table_name=task_reservation_table_name,
         column_map=column_map,
     )
-    commands = sqlspec_config.get_migration_commands()
-    commands.extension_configs[QUEUE_EXTENSION_NAME] = queue_settings
-
-    runner = commands.runner
-    runner.extension_migrations[QUEUE_EXTENSION_NAME] = queue_migration_directory()
-    runner.extension_configs[QUEUE_EXTENSION_NAME] = queue_settings
-
-    if runner.context is not None:
-        runner.context.extension_config = commands.extension_configs
-
-
-def _deregister_extension(sqlspec_config: "SQLSpecConfig", extension_name: "str") -> "None":
-    """Remove every trace of an extension registration from a SQLSpec config.
-
-    ``SQLSpecConfig`` caches its ``MigrationCommands``, so settings written by an
-    earlier ``manage_schema=True`` call outlive a later skip and keep the packaged
-    revision discoverable. Removal covers the cached commands, the migration
-    runner, the config's extension settings, and SQLSpec's auto-included extension
-    list, and does nothing when the extension was never registered.
-    """
-    extension_config = sqlspec_config.extension_config or {}
-    if extension_name in extension_config:
-        remaining = dict(extension_config)
-        del remaining[extension_name]
-        sqlspec_config.extension_config = remaining
-    migration_config = sqlspec_config.migration_config or {}
-    included = migration_config.get("include_extensions")
-    if included is not None and extension_name in included:
-        migration_config["include_extensions"] = [name for name in included if name != extension_name]
-    commands = sqlspec_config.get_migration_commands()
-    commands.extension_configs.pop(extension_name, None)
-    runner = commands.runner
-    runner.extension_configs.pop(extension_name, None)
-    runner.extension_migrations.pop(extension_name, None)
-    if runner.context is not None:
-        runner.context.extension_config = commands.extension_configs
+    sqlspec_config.add_extension_migrations(QUEUE_EXTENSION_NAME, queue_migration_directory(), queue_settings)
 
 
 def _configure_extension_settings(

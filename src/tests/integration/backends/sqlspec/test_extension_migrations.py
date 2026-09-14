@@ -149,6 +149,7 @@ async def test_queue_plugin_keeps_runtime_and_migration_table_overrides_aligned(
         "maintenance_table_name": "custom_maintenance",
         "task_reservation_table_name": "custom_reservation",
         "column_map": dict(backend_config.column_map),
+        "migrations_path": migration_directory(),
     }
 
     migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")

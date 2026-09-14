@@ -401,3 +401,51 @@ async def test_manage_schema_switching_to_false_leaves_the_applied_revision_alon
         assert await table_names(adopter) == migrated_tables
     finally:
         await adopter.close_pool()
+
+
+@pytest.mark.anyio
+async def test_migration_registration_toggle_preserves_adopter_options_and_history(tmp_path: "Path") -> None:
+    from litestar_queues.backends.sqlspec.extension import configure_queue_migration_extension
+
+    scripts = tmp_path / "application_migrations"
+    scripts.mkdir()
+    unrelated = tmp_path / "other_migrations"
+    unrelated.mkdir()
+    config = AiosqliteConfig(
+        connection_config={"database": str(tmp_path / "toggle.db")},
+        migration_config={"script_location": str(scripts), "version_table_name": "application_revisions"},
+    )
+    config.add_extension_migrations("unrelated", unrelated, {"application_option": "preserved"})
+    config.get_migration_commands()
+    configure_queue_migration_extension(config, queue_table_name="jobs", manage_schema=False)
+    try:
+        await config.migrate_up(echo=False)
+        async with config.provide_session() as driver:
+            assert await driver.select("SELECT version_num FROM application_revisions") == []
+            assert await driver.select("SELECT name FROM sqlite_master WHERE name='jobs'") == []
+
+        configure_queue_migration_extension(config, queue_table_name="jobs")
+        commands = config.get_migration_commands()
+        assert commands.extension_configs[QUEUE_EXTENSION_NAME]["queue_table_name"] == "jobs"
+        await config.migrate_up(echo=False)
+        async with config.provide_session() as driver:
+            before = await driver.select("SELECT * FROM application_revisions ORDER BY version_num")
+            tables = await driver.select("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        assert [row["version_num"] for row in before] == ["ext_litestar_queues_0001"]
+
+        for manage_schema in (False, False, True):
+            config.get_migration_commands()
+            configure_queue_migration_extension(config, queue_table_name="jobs", manage_schema=manage_schema)
+            commands = config.get_migration_commands()
+            assert (QUEUE_EXTENSION_NAME in commands.runner.extension_migrations) is manage_schema
+            unrelated_settings = cast("dict[str, Any]", config.extension_config["unrelated"])
+            assert unrelated_settings["application_option"] == "preserved"
+            assert config.migration_config["script_location"] == str(scripts)
+            assert config.migration_config["version_table_name"] == "application_revisions"
+            assert "unrelated" in config.migration_config["include_extensions"]
+            await config.migrate_up(echo=False)
+            async with config.provide_session() as driver:
+                assert await driver.select("SELECT * FROM application_revisions ORDER BY version_num") == before
+                assert await driver.select("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") == tables
+    finally:
+        await config.close_pool()

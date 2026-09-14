@@ -2235,7 +2235,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     assert after_second == discovered
 
 
-async def test_sqlspec_backend_packaged_migrations_publish_extension_without_changing_migration_options(
+async def test_sqlspec_backend_packaged_migrations_publish_extension_preserving_other_migration_options(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory", caplog: "pytest.LogCaptureFixture"
 ) -> "None":
     db_path = tmp_path / "migrated-config.db"
@@ -2260,6 +2260,9 @@ async def test_sqlspec_backend_packaged_migrations_publish_extension_without_cha
     queue_settings = cast("dict[str, Any]", configured.pop(QUEUE_EXTENSION_NAME))
     assert queue_settings["queue_table_name"] == "queue_task"
     assert configured == original_extension_config
+    expected_included = list(original_migration_config.get("include_extensions", []))
+    expected_included.append(QUEUE_EXTENSION_NAME)
+    original_migration_config["include_extensions"] = expected_included
     assert deepcopy(sqlspec_config.migration_config) == original_migration_config
 
 
