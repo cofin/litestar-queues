@@ -2288,7 +2288,7 @@ class RedisQueueBackend(BaseQueueBackend):
     def _create_client(self, url: "str") -> "ClientLike":
         from redis import asyncio as redis_asyncio
 
-        return cast("ClientLike", redis_asyncio.from_url(url, decode_responses=True))  # type: ignore[no-untyped-call]
+        return cast("ClientLike", redis_asyncio.from_url(url, decode_responses=True))
 
     async def _get_client(self) -> "ClientLike":
         if self._client is None:

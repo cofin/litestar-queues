@@ -11,6 +11,8 @@ project is pre-1.0, so minor releases may make intentional API breaks.
 
 **Breaking:**
 
+* The Redis backend now requires ``redis>=8.1.0``.
+
 * The SQLSpec backend requires SQLSpec 0.63.0 or later.
 
 * The SQLSpec backend now ships exactly one packaged migration,
