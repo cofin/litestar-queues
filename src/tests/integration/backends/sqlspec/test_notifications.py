@@ -1051,3 +1051,74 @@ async def test_sqlspec_backend_postgres_worker_wakeups_none_forces_polling(
         assert time.monotonic() - start >= 0.04
     finally:
         await _drop_postgres_tables(backend, table_name)
+
+
+async def test_sqlspec_duckdb_config_subclass_native_wakeup(tmp_path: "Path") -> "None":
+    from sqlspec.adapters.duckdb import DuckDBConfig
+
+    class ApplicationConfig(DuckDBConfig):
+        pass
+
+    config = ApplicationConfig(connection_config={"database": str(tmp_path / "subclass.db")})
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=config,
+            worker_wakeups=SQLSpecWorkerWakeupConfig(queue_table_name="application_events", poll_interval=0.01),
+        )
+    )
+    await backend.open()
+    try:
+        await backend.create_schema()
+        waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=2))
+        await backend.enqueue("tasks.subclass")
+        assert await waiter is True
+    finally:
+        await backend.close()
+
+
+@pytest.mark.parametrize("config_name", ["AsyncpgConfig", "PsycopgAsyncConfig", "PsycopgSyncConfig"])
+async def test_sqlspec_postgres_config_subclass_durable_wakeup(
+    config_name: "str", postgres_service: "PostgresService"
+) -> "None":
+    from importlib import import_module
+
+    adapter = "asyncpg" if config_name == "AsyncpgConfig" else "psycopg"
+    config_type = getattr(import_module(f"sqlspec.adapters.{adapter}"), config_name)
+    application_type = type("ApplicationConfig", (config_type,), {"__module__": "application"})
+    database_key = "database" if adapter == "asyncpg" else "dbname"
+    # Use the supported autocommit mode; default sync transaction durability is
+    # exercised by the separate returning-DML regression.
+    transaction_settings = {"autocommit": True} if config_name == "PsycopgSyncConfig" else {}
+    config = application_type(
+        connection_config={
+            "host": postgres_service.host,
+            "port": postgres_service.port,
+            "user": postgres_service.user,
+            "password": postgres_service.password,
+            database_key: postgres_service.database,
+            **transaction_settings,
+        }
+    )
+    table_name = f"lq_subclass_{config_name.lower()}"
+    events_table = f"{table_name}_events"
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=config,
+            queue_table_name=table_name,
+            worker_wakeups=SQLSpecWorkerWakeupConfig(queue_table_name=events_table, poll_interval=0.01),
+        )
+    )
+    await backend.open()
+    try:
+        await backend.create_schema()
+        # SQLSpec 0.63.0 falls back to its durable table transport for subclasses.
+        assert backend.capabilities.wakeup_backend == "poll_queue"
+        waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
+        task = await backend.enqueue("tasks.subclass", kwargs={"payload": {"source": config_name}})
+        assert await waiter is True
+        claimed = await backend.claim_task(task.id)
+        assert claimed is not None
+        assert claimed.id == task.id
+        assert claimed.kwargs == {"payload": {"source": config_name}}
+    finally:
+        await _drop_postgres_tables(backend, table_name, events_table)

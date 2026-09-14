@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from sqlspec import SQLSpec
 from sqlspec.exceptions import SerializationConflictError, UniqueViolationError
-from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
+from sqlspec.extensions.events import normalize_event_channel_name
 from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends._notification_wait import PendingNativeRead
@@ -46,6 +46,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_native_json_columns,
     validate_table_name,
 )
+from litestar_queues.backends.sqlspec.stores.base import _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.events import validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
@@ -1311,7 +1312,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                adapter_name = resolve_adapter_name(self._get_sqlspec_config())
+                adapter_name = _adapter_name(self._get_sqlspec_config())
                 before_row = (
                     await self._select_task(driver, task_id) if adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS else None
                 )
@@ -2350,7 +2351,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
     def _resolve_rows_affected(self, result: "Any") -> "int":
         """Return :func:`_rows_affected` normalized for this backend's configured adapter."""
-        return _rows_affected(result, resolve_adapter_name(self._get_sqlspec_config()))
+        return _rows_affected(result, _adapter_name(self._get_sqlspec_config()))
 
     def _reset_locking_capabilities(self) -> "None":
         if self._store is not None:
@@ -2440,7 +2441,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
         store = self._get_store()
-        adapter = resolve_adapter_name(sqlspec_config)
+        adapter = _adapter_name(sqlspec_config)
         adbc_sqlite = adapter == "adbc" and store.data_dictionary_dialect == "sqlite"
         # A blocked transaction must not occupy the sole sync worker while
         # another transaction's commit is queued behind it.
@@ -3120,7 +3121,7 @@ def _resolve_wakeup_transport(*, explicit_transport: "str | None", sqlspec_confi
     """
     if explicit_transport is not None:
         return explicit_transport
-    return _adapter_wakeup_transport(resolve_adapter_name(sqlspec_config))
+    return _adapter_wakeup_transport(_adapter_name(sqlspec_config))
 
 
 def resolve_events_migration_backend(
@@ -3158,10 +3159,24 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     """
     from sqlspec.utils.module_loader import import_string
 
-    config_class = type(sqlspec_config)
+    config_class = next(
+        (
+            config_type
+            for config_type in type(sqlspec_config).__mro__
+            if config_type.__module__.startswith("sqlspec.adapters.")
+        ),
+        None,
+    )
+    if config_class is None:
+        msg = f"SQLSpec config {type(sqlspec_config).__name__!r} has no supported native events queue store."
+        raise QueueConfigurationError(msg)
     adapter_name = config_class.__module__.split(".")[2]
     store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
-    store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
+    try:
+        store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
+    except ImportError as exc:
+        msg = f"SQLSpec config {config_class.__name__!r} has no supported native events queue store."
+        raise QueueConfigurationError(msg) from exc
     return store_class(sqlspec_config)
 
 

@@ -43,7 +43,9 @@ _RETURNING_CLAIM = {"asyncpg", "psqlpy", "psycopg"}
 def _fake_config(adapter: "str", *, is_async: "bool" = True, dialect: "str | None" = None) -> "Any":
     """Build a stand-in SQLSpec adapter config that only carries its module path."""
     module_name = f"sqlspec.adapters.{adapter}.config"
-    config_type = type(f"{'Async' if is_async else 'Sync'}Config", (), {"__module__": module_name})
+    config_type = type(
+        f"{'Async' if is_async else 'Sync'}Config", (), {"__module__": module_name, "is_async": is_async}
+    )
     config = config_type()
     config.statement_config = types.SimpleNamespace(dialect=dialect)
     config.extension_config = {}
@@ -300,3 +302,50 @@ async def test_oracle_locking_capability_uses_actual_dictionary_flags(major: int
         assert backend._get_store().supports_skip_locked is True
     finally:
         await backend.close()
+
+
+@pytest.mark.parametrize("adapter", ["cockroach_psycopg", "mysqlconnector", "oracledb", "psycopg"])
+@pytest.mark.parametrize("is_async", [True, False])
+@pytest.mark.parametrize("subclass_name", ["ApplicationConfig", "MisleadingAsyncConfig"])
+def test_config_subclass_store_selection_uses_declared_mode(
+    adapter: "str", is_async: "bool", subclass_name: "str"
+) -> "None":
+    canonical = _fake_config(adapter, is_async=is_async)
+    canonical.is_async = is_async
+    application_type = type(subclass_name, (type(canonical),), {"__module__": "application", "is_async": is_async})
+
+    assert _adapter_store_type(application_type()) is _adapter_store_type(canonical)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "config_name", "store_name"),
+    [
+        ("duckdb", "DuckDBConfig", "DuckDBEventQueueStore"),
+        ("asyncpg", "AsyncpgConfig", "AsyncpgEventQueueStore"),
+        ("psycopg", "PsycopgAsyncConfig", "PsycopgAsyncEventQueueStore"),
+        ("psycopg", "PsycopgSyncConfig", "PsycopgSyncEventQueueStore"),
+    ],
+)
+def test_config_subclass_native_event_store_uses_canonical_ancestry(
+    adapter: "str", config_name: "str", store_name: "str"
+) -> "None":
+    from importlib import import_module
+
+    from litestar_queues.backends.sqlspec.backend import _events_queue_store
+
+    config_type = getattr(import_module(f"sqlspec.adapters.{adapter}"), config_name)
+    application_type = type("ApplicationConfig", (config_type,), {"__module__": "application"})
+    config = application_type(extension_config={"events": {"queue_table": "application_events"}})
+
+    store = _events_queue_store(config)
+
+    expected_type = getattr(import_module(f"sqlspec.adapters.{adapter}.events.store"), store_name)
+    assert isinstance(store, expected_type)
+    assert store.table_name == "application_events"
+
+
+def test_unsupported_config_native_event_store_has_configuration_error() -> "None":
+    from litestar_queues.backends.sqlspec.backend import _events_queue_store
+
+    with pytest.raises(QueueConfigurationError, match="no supported native events queue store"):
+        _events_queue_store(_fake_config("nonexistent_driver"))

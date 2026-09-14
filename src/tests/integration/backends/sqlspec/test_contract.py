@@ -100,12 +100,13 @@ def _fake_adapter_config(
     *,
     dialect: "str | None" = None,
     config_type_name: "str | None" = None,
+    is_async: "bool" = False,
     connection_config: "dict[str, object] | None" = None,
     extension_config: "dict[str, object] | None" = None,
     driver_features: "dict[str, object] | None" = None,
     supports_native_arrow_import: "bool | None" = None,
 ) -> "FakeSQLSpecConfig":
-    class_attrs: "dict[str, object]" = {"__module__": f"sqlspec.adapters.{adapter_name}.config"}
+    class_attrs: "dict[str, object]" = {"__module__": f"sqlspec.adapters.{adapter_name}.config", "is_async": is_async}
     if supports_native_arrow_import is not None:
         class_attrs["supports_native_arrow_import"] = supports_native_arrow_import
     config_type = cast(
@@ -424,8 +425,8 @@ from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 
-def fake_config(adapter_name, dialect, config_type_name):
-    config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config"})
+def fake_config(adapter_name, dialect, config_type_name, is_async):
+    config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config", "is_async": is_async})
     config = config_type()
     config.extension_config = {}
     config.statement_config = SimpleNamespace(dialect=dialect)
@@ -454,7 +455,7 @@ expected = (
 )
 
 for adapter_name, dialect, config_type_name, expected_store in expected:
-    store = create_queue_store(fake_config(adapter_name, dialect, config_type_name), table_name="queue_tasks")
+    store = create_queue_store(fake_config(adapter_name, dialect, config_type_name, "Async" in config_type_name), table_name="queue_tasks")
     assert isinstance(store, expected_store), adapter_name
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
@@ -725,7 +726,10 @@ def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
     adapter_name: "str", dialect: "str | None", config_type_name: "str", expected_store_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+        _fake_adapter_config(
+            adapter_name, dialect=dialect, config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
+        table_name="queue_tasks",
     )
 
     assert store.__class__.__name__ == expected_store_name
@@ -740,7 +744,10 @@ def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
     adapter_name: "str", dialect: "str | None", config_type_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+        _fake_adapter_config(
+            adapter_name, dialect=dialect, config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
+        table_name="queue_tasks",
     )
 
     ddl = "\n".join(store.create_statements())
@@ -760,7 +767,9 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
 ) -> "None":
     with pytest.raises(QueueConfigurationError, match=adapter_name):
         create_queue_store(
-            _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
+            _fake_adapter_config(
+                adapter_name, dialect=dialect, config_type_name=config_type_name, is_async="Async" in config_type_name
+            ),
             table_name="queue_tasks",
         )
 
@@ -833,7 +842,9 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
     adapter_name: "str", config_type_name: "str", expected_store_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        _fake_adapter_config(
+            adapter_name, dialect="postgres", config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
         table_name="queue_tasks",
     )
 
@@ -857,7 +868,9 @@ def test_postgres_native_json_array_bind_shape_matches_adapter(
     adapter_name: "str", config_type_name: "str", expected: "object"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        _fake_adapter_config(
+            adapter_name, dialect="postgres", config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
         table_name="queue_tasks",
     )
 
@@ -927,7 +940,11 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
 ) -> "None":
     store = create_queue_store(
         _fake_adapter_config(
-            adapter_name, dialect=dialect, config_type_name=config_type_name, connection_config=connection_config
+            adapter_name,
+            dialect=dialect,
+            config_type_name=config_type_name,
+            is_async="Async" in config_type_name,
+            connection_config=connection_config,
         ),
         table_name="queue_tasks",
     )
@@ -1053,6 +1070,7 @@ async def test_sqlspec_oracle_queue_schema_uses_retry_safe_version_compatible_dd
         "oracledb",
         dialect="oracle",
         config_type_name=config_type_name,
+        is_async="Async" in config_type_name,
         extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "queue_tasks"}},
     )
     store = create_task_reservation_store(config, queue_table_name="queue_tasks")
@@ -1116,7 +1134,7 @@ def test_sqlspec_store_locking_capability_is_unresolved_before_open(
 def test_sqlspec_oracledb_async_store_supports_skip_locked_from_data_dictionary() -> "None":
     """Async Oracle resolves its locking capability when opened."""
     store = create_queue_store(
-        _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleAsyncConfig"),
+        _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleAsyncConfig", is_async=True),
         table_name="queue_tasks",
     )
 
@@ -1432,6 +1450,7 @@ def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
             adapter_name,
             dialect=dialect,
             config_type_name=config_type_name,
+            is_async="Async" in config_type_name,
             connection_config=connection_config,
             supports_native_arrow_import=True,
         ),
@@ -1457,7 +1476,10 @@ async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(
     adapter_name: "str", config_type_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="mysql", config_type_name=config_type_name), table_name="queue_tasks"
+        _fake_adapter_config(
+            adapter_name, dialect="mysql", config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
+        table_name="queue_tasks",
     )
 
     ddl = "\n".join(store.create_statements())

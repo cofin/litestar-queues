@@ -1,7 +1,7 @@
 """SQLSpec schema-qualified table quoting regression test."""
 
 from types import SimpleNamespace
-from typing import cast
+from typing import ClassVar, cast
 
 import pytest
 
@@ -13,6 +13,7 @@ from litestar_queues.backends.sqlspec.stores import create_queue_store
 class FakeSQLSpecConfig(SimpleNamespace):
     """Structural SQLSpec config used by the quoting regression test."""
 
+    is_async: ClassVar[bool] = True
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"

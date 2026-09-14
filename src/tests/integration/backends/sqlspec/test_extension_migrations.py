@@ -4,7 +4,7 @@ import contextlib
 import importlib
 import sqlite3
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 
@@ -26,6 +26,7 @@ pytestmark = pytest.mark.anyio
 class FakeSQLSpecConfig(SimpleNamespace):
     """Structural config used by SQLSpec store dispatch tests."""
 
+    is_async: ClassVar[bool] = False
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
@@ -36,6 +37,7 @@ def _fake_adapter_config(
     *,
     dialect: "str | None" = None,
     config_type_name: "str | None" = None,
+    is_async: "bool" = False,
     connection_config: "dict[str, object] | None" = None,
     extension_config: "dict[str, object] | None" = None,
 ) -> "FakeSQLSpecConfig":
@@ -44,7 +46,7 @@ def _fake_adapter_config(
         type(
             config_type_name or f"Fake{adapter_name.title().replace('_', '')}Config",
             (),
-            {"__module__": f"sqlspec.adapters.{adapter_name}.config"},
+            {"__module__": f"sqlspec.adapters.{adapter_name}.config", "is_async": is_async},
         ),
     )
     config = config_type()

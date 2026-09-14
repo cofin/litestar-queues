@@ -32,6 +32,7 @@ class SQLSpecConfig(Protocol):
 class SQLSpecStoreConfig(Protocol):
     """Structural subset needed by queue stores and the store factory."""
 
+    is_async: ClassVar[bool]
     statement_config: Any
     extension_config: Any
 
