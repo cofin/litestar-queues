@@ -81,14 +81,6 @@ class FixtureCtx:
     table_name: "str | None" = None
 
 
-class _NoMigrationComponentsMixin:
-    """Test-only mixin that skips SQLSpec migration bootstrap."""
-
-    def _initialize_migration_components(self) -> None:
-        setattr(self, "_migration_loader", None)
-        setattr(self, "_migration_commands", None)
-
-
 @dataclass(frozen=True, slots=True)
 class BackendCase:
     """One row in the parametrize matrix."""
@@ -384,16 +376,10 @@ async def _build_oracle_oracledb(ctx: "FixtureCtx") -> "BaseQueueBackend":
 async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.pymssql import PymssqlConfig
 
-    class PymssqlConfigNoMigrations(_NoMigrationComponentsMixin, PymssqlConfig):
-        """pymssql config wrapper without migration bootstrap."""
-
-        __module__ = "sqlspec.adapters.pymssql.config"
-        __slots__ = ()
-
     svc = cast("MSSQLService", ctx.service)
     assert svc is not None
     return _sqlspec_backend(
-        PymssqlConfigNoMigrations(
+        PymssqlConfig(
             connection_config={
                 "host": svc.host,
                 "port": svc.port,
@@ -409,16 +395,10 @@ async def _build_mssql_pymssql(ctx: "FixtureCtx") -> "BaseQueueBackend":
 async def _build_mssql_python(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from sqlspec.adapters.mssql_python import MssqlPythonConfig
 
-    class MssqlPythonConfigNoMigrations(_NoMigrationComponentsMixin, MssqlPythonConfig):
-        """mssql-python config wrapper without migration bootstrap."""
-
-        __module__ = "sqlspec.adapters.mssql_python.config"
-        __slots__ = ()
-
     svc = cast("MSSQLService", ctx.service)
     assert svc is not None
     return _sqlspec_backend(
-        MssqlPythonConfigNoMigrations(
+        MssqlPythonConfig(
             connection_config={
                 "server": svc.host,
                 "port": svc.port,

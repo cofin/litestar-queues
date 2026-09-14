@@ -2884,3 +2884,68 @@ def _count_events_queue_catalog_reads(monkeypatch: "pytest.MonkeyPatch") -> "lis
 
     monkeypatch.setattr(sqlspec_backend_module, "_events_queue_table_names", counting_read)
     return counter
+
+
+@pytest.mark.parametrize("autocommit", [False, True])
+async def test_pymssql_native_commit_rollback_after_write_error(
+    request: "FixtureRequest", autocommit: "bool"
+) -> "None":
+    from sqlspec import SQLSpec
+    from sqlspec.adapters.pymssql import PymssqlConfig
+    from sqlspec.exceptions import UniqueViolationError
+
+    svc = request.getfixturevalue("mssql_service")
+    config = PymssqlConfig(
+        connection_config={
+            "host": svc.host,
+            "port": svc.port,
+            "user": svc.user,
+            "password": svc.password,
+            "database": svc.database,
+            "autocommit": autocommit,
+        }
+    )
+    manager = SQLSpec()
+    manager.add_config(config)
+    table = "queue_native_tx_" + uuid4().hex
+    try:
+        with manager.provide_session(config) as driver:
+            driver.execute_script(f"CREATE TABLE [{table}] (id INT PRIMARY KEY)")
+            driver.commit()
+        with manager.provide_session(config) as driver:
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (1)")
+            driver.commit()
+            if autocommit:
+                assert driver.select_value("SELECT @@TRANCOUNT") == 0
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{table}] WHERE id=1") == 1
+            driver.rollback()
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (2)")
+            driver.rollback()
+            if autocommit:
+                assert driver.select_value("SELECT @@TRANCOUNT") == 0
+        with manager.provide_session(config) as driver:
+            driver.rollback()
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (3)")
+            with pytest.raises(UniqueViolationError):
+                driver.execute(f"INSERT INTO [{table}] (id) VALUES (1)")
+            driver.rollback()
+            if autocommit:
+                assert driver.select_value("SELECT @@TRANCOUNT") == 0
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{table}] WHERE id=3") == 0
+            driver.rollback()
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (4)")
+            driver.commit()
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{table}]") == 2
+            driver.rollback()
+    finally:
+        with manager.provide_session(config) as driver:
+            driver.execute_script(f"DROP TABLE IF EXISTS [{table}]")
+            driver.commit()
+        await manager.close_all_pools()

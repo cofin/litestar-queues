@@ -9,5 +9,3 @@ class PymssqlQueueStore(MssqlQueueStore):
     """pymssql SQLSpec queue statement store."""
 
     __slots__ = ()
-
-    skip_explicit_begin = True

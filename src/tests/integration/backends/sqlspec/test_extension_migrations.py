@@ -332,3 +332,109 @@ async def test_sqlspec_psycopg_fresh_migration_serves_query(request: "FixtureReq
             await backend.close()
     finally:
         await sqlspec_manager.close_all_pools()
+
+
+@pytest.mark.parametrize("adapter,autocommit", [("pymssql", False), ("pymssql", True), ("mssql_python", False)])
+async def test_sqlserver_native_migration_schema_and_queue_cycle(
+    request: "FixtureRequest", adapter: "str", autocommit: "bool"
+) -> "None":
+    """Native SQL Server configs migrate twice and serve queues in an explicit schema."""
+    from uuid import uuid4
+
+    from sqlspec import SQLSpec
+    from sqlspec.adapters.mssql_python import MssqlPythonConfig
+    from sqlspec.adapters.pymssql import PymssqlConfig
+
+    from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecQueueBackend
+    from tests.integration.backends.sqlspec._schema import run_queue_migrations
+
+    svc = request.getfixturevalue("mssql_service")
+    schema = f"queue_native_{uuid4().hex[:12]}"
+    connection = {
+        "host" if adapter == "pymssql" else "server": svc.host,
+        "port": svc.port,
+        "user": svc.user,
+        "password": svc.password,
+        "database": svc.database,
+        "autocommit": autocommit,
+    }
+    if adapter == "mssql_python":
+        connection["trust_server_certificate"] = True
+    config_type = PymssqlConfig if adapter == "pymssql" else MssqlPythonConfig
+    admin_config = config_type(connection_config={**connection, "autocommit": True})
+    connection["user"] = schema
+    config = config_type(
+        connection_config=connection, migration_config={"default_schema": schema, "version_table_schema": schema}
+    )
+    manager = SQLSpec()
+    manager.add_config(config)
+    table = f"{schema}.tasks"
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name=table, worker_wakeups=None)
+    )
+    try:
+        with manager.provide_session(admin_config) as driver:
+            driver.execute_script(f"CREATE LOGIN [{schema}] WITH PASSWORD = '{svc.password}'")
+            driver.execute_script(f"CREATE USER [{schema}] FOR LOGIN [{schema}]")
+            driver.execute_script(f"ALTER ROLE db_owner ADD MEMBER [{schema}]")
+            driver.execute_script(f"CREATE SCHEMA [{schema}]")
+            driver.commit()
+        await run_queue_migrations(config, queue_table_name=table)
+        await run_queue_migrations(config, queue_table_name=table)
+        await backend.open()
+        record = await backend.enqueue("tasks.native_sqlserver")
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        await backend.complete_task(record.id, result={"ok": True})
+        stored = await backend.get_task(record.id)
+        assert stored is not None and stored.status == "completed"
+        if adapter == "pymssql":
+            await _assert_sqlserver_failed_batch_is_atomic(backend, manager, config, schema)
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{schema}].[ddl_migrations]") == 1
+            driver.rollback()
+    finally:
+        await backend.close()
+        await manager.close_all_pools()
+        _drop_sqlserver_test_schema(manager, admin_config, schema)
+        await manager.close_all_pools()
+
+
+async def _assert_sqlserver_failed_batch_is_atomic(
+    backend: "Any", manager: "Any", config: "Any", schema: "str"
+) -> "None":
+    """A real failing second insert cannot persist the first batch member."""
+    from sqlspec.exceptions import IntegrityError
+
+    from litestar_queues import TaskRequest
+
+    with manager.provide_session(config) as driver:
+        driver.execute_script(
+            f"ALTER TABLE [{schema}].[tasks] ADD CONSTRAINT [reject_task] CHECK (task_name <> 'tasks.reject')"
+        )
+        driver.commit()
+    with pytest.raises(IntegrityError):
+        await backend.enqueue_many([TaskRequest(task_name="tasks.first"), TaskRequest(task_name="tasks.reject")])
+    with manager.provide_session(config) as driver:
+        assert driver.select_value(f"SELECT COUNT(*) FROM [{schema}].[tasks] WHERE task_name = 'tasks.first'") == 0
+        driver.rollback()
+    record = await backend.enqueue("tasks.after_failure")
+    assert await backend.get_task(record.id) is not None
+
+
+def _drop_sqlserver_test_schema(manager: "Any", config: "Any", schema: "str") -> "None":
+    """Drop only this test principal and its schema, including pooled sessions."""
+    with manager.provide_session(config) as driver:
+        tables = driver.select("SELECT name FROM sys.tables WHERE schema_id = SCHEMA_ID(:schema)", {"schema": schema})
+        for row in tables:
+            name = str(row["name"]).replace("]", "]]")
+            driver.execute_script(f"DROP TABLE [{schema}].[{name}]")
+        driver.execute_script(f"DROP USER [{schema}]")
+        driver.execute_script(f"DROP SCHEMA [{schema}]")
+        sessions = driver.select(
+            "SELECT session_id FROM sys.dm_exec_sessions WHERE login_name = :login", {"login": schema}
+        )
+        for session in sessions:
+            driver.execute_script(f"KILL {int(session['session_id'])}")
+        driver.execute_script(f"DROP LOGIN [{schema}]")
+        driver.commit()
