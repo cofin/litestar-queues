@@ -29,6 +29,7 @@ pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
+from sqlspec.exceptions import UniqueViolationError
 
 from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
@@ -1511,6 +1512,64 @@ async def test_sqlspec_backend_reuses_winner_when_key_insert_races(monkeypatch: 
     assert driver.rolled_back is True
 
 
+@pytest.mark.parametrize("constraint", ["foreign key", "check", "not null"])
+async def test_sqlspec_keyed_enqueue_propagates_nonduplicate_integrity_error(
+    monkeypatch: "pytest.MonkeyPatch", constraint: "str"
+) -> "None":
+    from sqlspec.exceptions import IntegrityError
+
+    class ConstraintError(IntegrityError):
+        sqlstate = "23000"
+
+    error = ConstraintError(f"{constraint} constraint failed")
+    driver = _UniqueViolationDriver(error)
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig()))
+    winner = await InMemoryQueueBackend().enqueue("tasks.race", key="sync:race")
+
+    @asynccontextmanager
+    async def fake_session(_self: "SQLSpecQueueBackend") -> "AsyncIterator[_UniqueViolationDriver]":
+        yield driver
+
+    async def select_no_winner(_self: "SQLSpecQueueBackend", _driver: "Any", _key: "str") -> "None":
+        return None
+
+    async def get_winner(_self: "SQLSpecQueueBackend", _key: "str") -> "QueuedTaskRecord":
+        return winner
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", fake_session)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_task_by_key", select_no_winner)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _self: _InsertOnlyStore())
+    monkeypatch.setattr(SQLSpecQueueBackend, "get_task_by_key", get_winner)
+
+    with pytest.raises(ConstraintError) as caught:
+        await backend.enqueue("tasks.race", key="sync:race")
+    assert caught.value is error
+    assert driver.rolled_back is True
+
+
+@pytest.mark.parametrize("message", ["duplicate key in unrelated operation", "serialization setup failed"])
+async def test_sqlspec_identity_reservation_propagates_untyped_failure(
+    monkeypatch: "pytest.MonkeyPatch", message: "str"
+) -> "None":
+    from sqlspec.exceptions import SQLSpecError
+
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig()))
+    error = SQLSpecError(message)
+    calls = 0
+
+    async def fail_reservation(*args: "Any", **kwargs: "Any") -> "None":
+        nonlocal calls
+        calls += 1
+        raise error
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_task_reservation_store", lambda _self: object())
+    monkeypatch.setattr(SQLSpecQueueBackend, "_reserve_identity_once", fail_reservation)
+    with pytest.raises(SQLSpecError) as caught:
+        await backend.reserve_identity("key", task_id=uuid4(), task_name="tasks.race")
+    assert caught.value is error
+    assert calls == 1
+
+
 async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
@@ -2309,8 +2368,9 @@ class _InsertOnlyStore:
 
 
 class _UniqueViolationDriver:
-    def __init__(self) -> "None":
+    def __init__(self, error: "Exception | None" = None) -> "None":
         self.rolled_back = False
+        self.error = error
 
     async def begin(self) -> "None":
         return None
@@ -2324,7 +2384,7 @@ class _UniqueViolationDriver:
     async def execute(self, statement: "object") -> "None":
         del statement
         msg = "UNIQUE constraint failed: queue_task.task_key"
-        raise sqlite3.IntegrityError(msg)
+        raise self.error or UniqueViolationError(msg)
 
 
 class _FakeSyncConfig:

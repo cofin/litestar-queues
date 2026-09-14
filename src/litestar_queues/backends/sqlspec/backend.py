@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID, uuid4
 
 from sqlspec import SQLSpec
-from sqlspec.exceptions import SerializationConflictError, SQLSpecError
+from sqlspec.exceptions import SerializationConflictError, UniqueViolationError
 from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
 from sqlspec.utils.sync_tools import async_
 
@@ -1645,10 +1645,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "QueuedTaskRecord | None":
         """Reserve the execution reference under CAS fencing, returning None on contention.
 
-        Serialization conflicts and DuckDB MVCC update collisions indicate another transaction
-        contended for the same row, in which case the rolled back attempt yields ownership.
-        SQLSpec deferred exception handling may clear the native cause, so mapped SQLSpecError
-        messages are also checked.
+        SQLSpec normalizes serialization and MVCC update conflicts. A rolled-back
+        conflicting transaction yields ownership to the competing reservation.
         """
         try:
             return await self._reserve_scheduled_execution_ref_once(
@@ -1661,15 +1659,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         except Exception as exc:
             if _is_serialization_conflict(exc):
                 return None
-            if resolve_adapter_name(self._get_sqlspec_config()) == "duckdb":
-                from duckdb import TransactionException
-
-                native_conflict = isinstance(exc.__cause__, TransactionException) and "Conflict on update!" in str(
-                    exc.__cause__
-                )
-                mapped_conflict = isinstance(exc, SQLSpecError) and "Conflict on update!" in str(exc)
-                if native_conflict or mapped_conflict:
-                    return None
             raise
 
     async def _reserve_scheduled_execution_ref_once(
@@ -2999,34 +2988,11 @@ def _rows_affected(result: "Any", adapter_name: "str | None" = None) -> "int":
 
 
 def _is_unique_violation(exc: "BaseException") -> "bool":
-    current: "BaseException | None" = exc
-    while current is not None:
-        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
-        if sqlstate in {"23000", "23505"}:
-            return True
-        message = str(current).lower()
-        if any(
-            token in message
-            for token in ("duplicate entry", "duplicate key", "unique constraint", "unique violation", "ora-00001")
-        ):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    return isinstance(exc, UniqueViolationError)
 
 
 def _is_serialization_conflict(exc: "BaseException") -> "bool":
-    current: "BaseException | None" = exc
-    while current is not None:
-        if isinstance(current, SerializationConflictError):
-            return True
-        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
-        if sqlstate == "40001":
-            return True
-        message = str(current).lower()
-        if "restart transaction" in message or "writetooold" in message or "serialization" in message:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    return isinstance(exc, SerializationConflictError)
 
 
 def _coerce_record_args(value: "Any") -> "tuple[Any, ...]":
