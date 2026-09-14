@@ -11,6 +11,8 @@ project is pre-1.0, so minor releases may make intentional API breaks.
 
 **Breaking:**
 
+* The SQLSpec backend requires SQLSpec 0.63.0 or later.
+
 * The SQLSpec backend now ships exactly one packaged migration,
   ``0001_create_queue_tasks``. The separate additive revision that added
   ``dispatch_checked_at`` is removed, and ``manage_schema=False`` now registers no
