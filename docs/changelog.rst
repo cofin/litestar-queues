@@ -6,7 +6,7 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
-0.12.0 (unreleased)
+0.12.0 - 2026-09-14
 ===================
 
 **Breaking:**
@@ -15,20 +15,11 @@ project is pre-1.0, so minor releases may make intentional API breaks.
 
 * The SQLSpec backend requires SQLSpec 0.63.0 or later.
 
-* The SQLSpec backend now ships exactly one packaged migration,
-  ``0001_create_queue_tasks``. The separate additive revision that added
-  ``dispatch_checked_at`` is removed, and ``manage_schema=False`` now registers no
-  migration directory and no packaged revision at all, on the Litestar plugin path and
-  the standalone migration command alike.
-  Schemas created by v0.11.0 or later are unaffected: they already carry
-  ``dispatch_checked_at`` and its index. Schemas created by v0.10.0 or earlier have no
-  packaged forward path, because ``0001_create_queue_tasks`` uses
-  ``CREATE TABLE IF NOT EXISTS`` and cannot retrofit an existing table. Those deployments
-  must add the nullable ``dispatch_checked_at`` column and an index over
-  ``execution_backend``, ``status``, ``dispatch_checked_at``, ``created_at``, and ``id``
-  by hand, using the configured physical column names, or recreate the schema. The
-  Advanced Alchemy and Redis/Valkey upgrade paths are unchanged.
-  See :doc:`usage/backends/sqlspec`.
+* The SQLSpec backend consolidates packaged migrations into a single revision
+  (``0001_create_queue_tasks``), removing the separate additive ``dispatch_checked_at``
+  revision. Setting ``manage_schema=False`` registers no migration directory or
+  revisions. Schemas created on v0.10.0 or earlier must add ``dispatch_checked_at``
+  and its index manually or recreate the schema. See :doc:`usage/backends/sqlspec`.
 
 **Fixed:**
 
@@ -45,8 +36,13 @@ project is pre-1.0, so minor releases may make intentional API breaks.
   reliability while preserving task ownership checks.
 * Synchronous Psycopg mutations that return rows persist before the
   session closes, including enqueue, batch claims, completion and retries.
+* SQLSpec SQL Server (pymssql) stores use native transaction management without
+  skipping explicit transaction blocks.
 * SQLSpec PostgreSQL migrations use distinct index names within
   the server's 63-byte limit for long queue table names.
+* SQLSpec wakeup transports validate the presence of the events queue table prior to
+  first use, raising a descriptive :exc:`~litestar_queues.exceptions.QueueConfigurationError`
+  instead of raw database missing-relation errors.
 
 0.11.0 - 2026-09-08
 ===================
