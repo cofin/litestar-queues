@@ -29,6 +29,11 @@ repos:
       - id: ruff-check
         args: ["--fix"]
       - id: ruff-format
+        types_or: [python, pyi, jupyter]
+      - id: ruff-format
+        name: ruff-format-markdown
+        types_or: [markdown]
+        args: ["--line-length", "80"]
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:

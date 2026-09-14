@@ -276,7 +276,7 @@ sqlglotc = false
 sqlspec = false
 
 [tool.ruff]
-exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build", "*.md"]
+exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build"]
 include = [
   "pyproject.toml",
   "src/litestar_queues/**/*.py",
