@@ -63,8 +63,8 @@ rabbitmq = ["aio-pika>=10.0.1; python_version >= '3.11'"]
 sqs = ["aiobotocore>=3.8.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
-redis = ["redis>=5.0.0"]
-sqlspec = ["sqlspec>=0.58.0"]
+redis = ["redis>=8.1.0"]
+sqlspec = ["sqlspec>=0.63.0"]
 valkey = ["valkey>=6.0.0"]
 
 ######################
@@ -143,12 +143,13 @@ benchmark-backends = [
   "libvalkey>=4.0.1",
   "psutil",
   "psycopg[binary,pool]>=3.2.0",
-  "redis>=5.0.0",
+  "redis>=8.1.0",
   "sqlalchemy>=2.0.0",
-  "sqlspec[performance]>=0.58.0",
+  "sqlspec[performance]>=0.63.0",
   "valkey>=6.0.0",
 ]
-benchmark-frameworks = ["arq", "celery", "dramatiq", "rq", "saq", "taskiq", "taskiq-redis"]
+# ARQ runs in its pinned isolated script because its Redis <6 requirement conflicts.
+benchmark-frameworks = ["celery", "dramatiq", "rq", "saq", "taskiq", "taskiq-redis"]
 benchmarks = [{ include-group = "benchmark-backends" }, { include-group = "benchmark-frameworks" }]
 build = ["bump-my-version"]
 dev = [
@@ -188,8 +189,8 @@ test-adapters = [
   "pyarrow",
   "aio-pika>=10.0.1; python_version >= '3.11'",
   "pytest-databases[postgres,mysql,mssql,oracle,redis,valkey,cockroachdb,spanner]>=0.19.0",
-  "redis>=5.0.0",
-  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.58.0",
+  "redis>=8.1.0",
+  "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.63.0",
   "valkey>=6.0.0",
 ]
 test-core = [

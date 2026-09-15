@@ -6,7 +6,7 @@ constructed fake configs (no Oracle service required).
 """
 
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -21,6 +21,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 class FakeOracleConfig(SimpleNamespace):
     """Structural config used by Oracle store dispatch tests."""
 
+    is_async: ClassVar[bool] = False
     extension_config: "dict[str, object]"
     statement_config: "SimpleNamespace"
     connection_config: "dict[str, object]"
@@ -77,7 +78,11 @@ def _fake_oracle_config(
 ) -> "FakeOracleConfig":
     config_type = cast(
         "type[FakeOracleConfig]",
-        type(config_type_name, (FakeOracleConfig,), {"__module__": "sqlspec.adapters.oracledb.config"}),
+        type(
+            config_type_name,
+            (FakeOracleConfig,),
+            {"__module__": "sqlspec.adapters.oracledb.config", "is_async": "Async" in config_type_name},
+        ),
     )
     config = config_type()
     config.extension_config = extension_config or {}

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID, uuid4
 
 from sqlspec import SQLSpec
-from sqlspec.exceptions import SerializationConflictError, SQLSpecError
-from sqlspec.extensions.events import normalize_event_channel_name, resolve_adapter_name
+from sqlspec.exceptions import SerializationConflictError, UniqueViolationError
+from sqlspec.extensions.events import normalize_event_channel_name
 from sqlspec.utils.sync_tools import async_
 
 from litestar_queues.backends._notification_wait import PendingNativeRead
@@ -46,6 +46,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_native_json_columns,
     validate_table_name,
 )
+from litestar_queues.backends.sqlspec.stores.base import _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import create_queue_store
 from litestar_queues.events import validate_event_history_extra_columns
 from litestar_queues.exceptions import QueueConfigurationError
@@ -94,10 +95,6 @@ _WAKEUP_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
 # Durable event transports that ride the SQLSpec events queue table and must have
 # it provisioned before a worker can publish or consume wakeups.
 _EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
-# Arrow ODBC exposes no portable rowcount API, and ADBC SQLite reports ``-1``
-# for updates. Their cancellation path therefore verifies both the eligible
-# before-image and the persisted after-image.
-_UNRELIABLE_ROWCOUNT_ADAPTERS = frozenset({"adbc", "arrow_odbc"})
 
 
 def _adapter_wakeup_transport(adapter_name: "str | None") -> "str":
@@ -282,6 +279,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     ),
                 )
         self._opened = True
+        try:
+            await self._resolve_locking_capabilities()
+        except BaseException:
+            try:
+                await self.close()
+            except BaseException:
+                self._logger.warning("SQLSpec startup cleanup failed.", exc_info=True)
+            raise
         return True
 
     async def close(self) -> "None":
@@ -331,6 +336,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._heartbeat_sync_executor = None
             await close_resource(lambda: heartbeat_executor.shutdown(wait=True))
         self._opened = False
+        self._reset_locking_capabilities()
         self._events_queue_verified = False
         if error is not None:
             raise error
@@ -473,6 +479,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("enqueue", queue=queue, task_name=task_name):
             async with self._session() as driver:
                 await driver.execute(store.insert_returning_sql(), self._insert_params(record))
+                if isinstance(driver, _ManagedAsyncDriver):
+                    await driver.commit()
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
         return record
@@ -843,6 +851,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("claim", execution_backend=execution_backend):
             async with self._session() as driver:
                 rows = await self._select_rows(driver, sql_text, parameters)
+                if isinstance(driver, _ManagedAsyncDriver):
+                    await driver.commit()
         records = [self._record_from_row(row) for row in rows]
         if records:
             self._increment_queue_metric("claim", float(len(records)))
@@ -939,6 +949,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("claim", execution_backend=execution_backend):
             async with self._session() as driver:
                 rows = await self._select_rows(driver, sql_text, parameters)
+                if isinstance(driver, _ManagedAsyncDriver):
+                    await driver.commit()
         claimed: "list[QueuedTaskRecord]" = []
         expired: "list[QueuedTaskRecord]" = []
         for row in rows:
@@ -1050,6 +1062,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("complete", task_id=str(task_id)):
             async with self._session() as driver:
                 row = await self._select_one_row(driver, sql_text, parameters)
+                if isinstance(driver, _ManagedAsyncDriver):
+                    await driver.commit()
         completed = self._record_from_row(row) if row is not None else None
         if completed is not None:
             self._increment_queue_metric("complete")
@@ -1131,6 +1145,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):
             async with self._session() as driver:
                 row = await self._select_one_row(driver, sql_text, parameters)
+                if isinstance(driver, _ManagedAsyncDriver):
+                    await driver.commit()
         updated = self._record_from_row(row) if row is not None else None
         if updated is None:
             self._increment_queue_metric("claim_lost")
@@ -1302,10 +1318,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         async with self._session() as driver:
             await driver.begin()
             try:
-                adapter_name = resolve_adapter_name(self._get_sqlspec_config())
-                before_row = (
-                    await self._select_task(driver, task_id) if adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS else None
-                )
+                supports_reliable_rowcount = self._get_sqlspec_config().supports_reliable_rowcount
+                before_row = await self._select_task(driver, task_id) if not supports_reliable_rowcount else None
                 result = await driver.execute(
                     self._get_store().cancel_task(
                         task_id=str(task_id),
@@ -1645,10 +1659,8 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     ) -> "QueuedTaskRecord | None":
         """Reserve the execution reference under CAS fencing, returning None on contention.
 
-        Serialization conflicts and DuckDB MVCC update collisions indicate another transaction
-        contended for the same row, in which case the rolled back attempt yields ownership.
-        SQLSpec deferred exception handling may clear the native cause, so mapped SQLSpecError
-        messages are also checked.
+        SQLSpec normalizes serialization and MVCC update conflicts. A rolled-back
+        conflicting transaction yields ownership to the competing reservation.
         """
         try:
             return await self._reserve_scheduled_execution_ref_once(
@@ -1661,15 +1673,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         except Exception as exc:
             if _is_serialization_conflict(exc):
                 return None
-            if resolve_adapter_name(self._get_sqlspec_config()) == "duckdb":
-                from duckdb import TransactionException
-
-                native_conflict = isinstance(exc.__cause__, TransactionException) and "Conflict on update!" in str(
-                    exc.__cause__
-                )
-                mapped_conflict = isinstance(exc, SQLSpecError) and "Conflict on update!" in str(exc)
-                if native_conflict or mapped_conflict:
-                    return None
             raise
 
     async def _reserve_scheduled_execution_ref_once(
@@ -1939,8 +1942,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 if limit is None:
-                    # Some drivers (see _UNRELIABLE_ROWCOUNT_ADAPTERS) cannot
-                    # reliably report ``rows_affected`` for DELETE. Count
+                    # Some drivers cannot reliably report DELETE rowcounts. Count
                     # first inside the same transaction so the cleanup count is
                     # always exact.
                     count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
@@ -2351,8 +2353,25 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return cast("SQLSpecConfig", self._sqlspec_config)
 
     def _resolve_rows_affected(self, result: "Any") -> "int":
-        """Return :func:`_rows_affected` normalized for this backend's configured adapter."""
-        return _rows_affected(result, resolve_adapter_name(self._get_sqlspec_config()))
+        """Return the affected-row count using the configured reliability capability."""
+        return _rows_affected(result, supports_reliable_rowcount=self._get_sqlspec_config().supports_reliable_rowcount)
+
+    def _reset_locking_capabilities(self) -> "None":
+        if self._store is not None:
+            self._store.set_locking_capabilities(for_update=False, skip_locked=False)
+
+    async def _resolve_locking_capabilities(self) -> "None":
+        store = self._get_store()
+        if not store.requires_locking_capability_probe:
+            return
+        async with self._session() as driver:
+            if isinstance(driver, _ManagedAsyncDriver):
+                for_update, skip_locked = await driver.locking_capabilities()
+            else:
+                dictionary = cast("Any", driver).data_dictionary
+                for_update = await dictionary.get_feature_flag(driver, "supports_for_update")
+                skip_locked = await dictionary.get_feature_flag(driver, "supports_skip_locked")
+        store.set_locking_capabilities(for_update=bool(for_update), skip_locked=bool(skip_locked))
 
     def _get_store(self) -> "SQLSpecQueueStore":
         if self._store is None:
@@ -2425,7 +2444,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             raise RuntimeError(msg)
         sqlspec_config = self._get_sqlspec_config()
         store = self._get_store()
-        adapter = resolve_adapter_name(sqlspec_config)
+        adapter = _adapter_name(sqlspec_config)
         adbc_sqlite = adapter == "adbc" and store.data_dictionary_dialect == "sqlite"
         # A blocked transaction must not occupy the sole sync worker while
         # another transaction's commit is queued behind it.
@@ -2873,6 +2892,18 @@ class _ManagedAsyncDriver:
         for row in await self.select(statement):
             yield row
 
+    async def locking_capabilities(self) -> "tuple[bool, bool]":
+        """Probe the raw sync driver on its session-bound executor."""
+
+        def probe() -> "tuple[bool, bool]":
+            dictionary = self._driver.data_dictionary
+            return (
+                dictionary.get_feature_flag(self._driver, "supports_for_update"),
+                dictionary.get_feature_flag(self._driver, "supports_skip_locked"),
+            )
+
+        return await async_(probe, executor=self._executor)()
+
     async def table_names(self, schema: "str | None" = None) -> "set[str]":
         """Read table names from the wrapped sync driver's data dictionary.
 
@@ -2985,48 +3016,20 @@ def _utc_now() -> "datetime":
     return datetime.now(timezone.utc)
 
 
-def _rows_affected(result: "Any", adapter_name: "str | None" = None) -> "int":
-    """Return the reported affected-row count.
-
-    Normalized to ``-1`` (the existing "unknown, verify" sentinel) when
-    ``adapter_name`` is one of :data:`_UNRELIABLE_ROWCOUNT_ADAPTERS`, whose
-    driver can report a genuine ``0`` and an unparsable result identically.
-    """
+def _rows_affected(result: "Any", *, supports_reliable_rowcount: "bool") -> "int":
+    """Preserve reported counts, treating unreliable zero as unknown."""
     rows_affected = int(getattr(result, "rows_affected", 0) or 0)
-    if rows_affected == 0 and adapter_name in _UNRELIABLE_ROWCOUNT_ADAPTERS:
+    if rows_affected == 0 and not supports_reliable_rowcount:
         return -1
     return rows_affected
 
 
 def _is_unique_violation(exc: "BaseException") -> "bool":
-    current: "BaseException | None" = exc
-    while current is not None:
-        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
-        if sqlstate in {"23000", "23505"}:
-            return True
-        message = str(current).lower()
-        if any(
-            token in message
-            for token in ("duplicate entry", "duplicate key", "unique constraint", "unique violation", "ora-00001")
-        ):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    return isinstance(exc, UniqueViolationError)
 
 
 def _is_serialization_conflict(exc: "BaseException") -> "bool":
-    current: "BaseException | None" = exc
-    while current is not None:
-        if isinstance(current, SerializationConflictError):
-            return True
-        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
-        if sqlstate == "40001":
-            return True
-        message = str(current).lower()
-        if "restart transaction" in message or "writetooold" in message or "serialization" in message:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    return isinstance(exc, SerializationConflictError)
 
 
 def _coerce_record_args(value: "Any") -> "tuple[Any, ...]":
@@ -3116,7 +3119,7 @@ def _resolve_wakeup_transport(*, explicit_transport: "str | None", sqlspec_confi
     """
     if explicit_transport is not None:
         return explicit_transport
-    return _adapter_wakeup_transport(resolve_adapter_name(sqlspec_config))
+    return _adapter_wakeup_transport(_adapter_name(sqlspec_config))
 
 
 def resolve_events_migration_backend(
@@ -3154,10 +3157,24 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     """
     from sqlspec.utils.module_loader import import_string
 
-    config_class = type(sqlspec_config)
+    config_class = next(
+        (
+            config_type
+            for config_type in type(sqlspec_config).__mro__
+            if config_type.__module__.startswith("sqlspec.adapters.")
+        ),
+        None,
+    )
+    if config_class is None:
+        msg = f"SQLSpec config {type(sqlspec_config).__name__!r} has no supported native events queue store."
+        raise QueueConfigurationError(msg)
     adapter_name = config_class.__module__.split(".")[2]
     store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
-    store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
+    try:
+        store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
+    except ImportError as exc:
+        msg = f"SQLSpec config {config_class.__name__!r} has no supported native events queue store."
+        raise QueueConfigurationError(msg) from exc
     return store_class(sqlspec_config)
 
 

@@ -161,3 +161,30 @@ def _ensure_spanner_emulator_database(spanner_service: "SpannerService") -> "Non
             database.create().result()
     finally:
         client.close()
+
+
+async def test_sqlspec_spanner_emulator_dispatch_repair_current_schema(spanner_service: "SpannerService") -> "None":
+    from tests.integration.backends._dispatch_repair_asserts import (
+        assert_dispatch_repair_candidates,
+        assert_scheduled_execution_ref_contenders,
+        assert_scheduled_execution_ref_rejects_mismatches,
+    )
+
+    _ensure_spanner_emulator_database(spanner_service)
+    backend = SQLSpecQueueBackend(
+        backend_config=SQLSpecBackendConfig(
+            sqlspec_config=SpannerSyncConfig(
+                connection_config=_spanner_emulator_connection_config(spanner_service),
+                driver_features={"timeout": 30.0},
+            ),
+            queue_table_name=table_name_for_test("lq_spanner_repair", "emulator", __name__),
+        )
+    )
+    try:
+        await backend.open()
+        await backend.create_schema()
+        await assert_dispatch_repair_candidates(backend)
+        await assert_scheduled_execution_ref_contenders(backend)
+        await assert_scheduled_execution_ref_rejects_mismatches(backend)
+    finally:
+        await backend.close()

@@ -29,6 +29,7 @@ pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlspec")
 
 from sqlspec.adapters.aiosqlite import AiosqliteConfig
+from sqlspec.exceptions import UniqueViolationError
 
 from litestar_queues import EventHistoryConfig, HeartbeatTouch, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend, get_queue_backend_class, list_queue_backends
@@ -99,12 +100,13 @@ def _fake_adapter_config(
     *,
     dialect: "str | None" = None,
     config_type_name: "str | None" = None,
+    is_async: "bool" = False,
     connection_config: "dict[str, object] | None" = None,
     extension_config: "dict[str, object] | None" = None,
     driver_features: "dict[str, object] | None" = None,
     supports_native_arrow_import: "bool | None" = None,
 ) -> "FakeSQLSpecConfig":
-    class_attrs: "dict[str, object]" = {"__module__": f"sqlspec.adapters.{adapter_name}.config"}
+    class_attrs: "dict[str, object]" = {"__module__": f"sqlspec.adapters.{adapter_name}.config", "is_async": is_async}
     if supports_native_arrow_import is not None:
         class_attrs["supports_native_arrow_import"] = supports_native_arrow_import
     config_type = cast(
@@ -423,8 +425,8 @@ from litestar_queues.backends.sqlspec.stores.duckdb import DuckDBQueueStore
 from litestar_queues.backends.sqlspec.stores.oracledb import OracledbAsyncQueueStore, OracledbSyncQueueStore
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 
-def fake_config(adapter_name, dialect, config_type_name):
-    config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config"})
+def fake_config(adapter_name, dialect, config_type_name, is_async):
+    config_type = type(config_type_name, (), {"__module__": f"sqlspec.adapters.{adapter_name}.config", "is_async": is_async})
     config = config_type()
     config.extension_config = {}
     config.statement_config = SimpleNamespace(dialect=dialect)
@@ -453,7 +455,7 @@ expected = (
 )
 
 for adapter_name, dialect, config_type_name, expected_store in expected:
-    store = create_queue_store(fake_config(adapter_name, dialect, config_type_name), table_name="queue_tasks")
+    store = create_queue_store(fake_config(adapter_name, dialect, config_type_name, "Async" in config_type_name), table_name="queue_tasks")
     assert isinstance(store, expected_store), adapter_name
 """
     result = run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
@@ -724,7 +726,10 @@ def test_sqlspec_backend_store_factory_supports_sql_server_adapters(
     adapter_name: "str", dialect: "str | None", config_type_name: "str", expected_store_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+        _fake_adapter_config(
+            adapter_name, dialect=dialect, config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
+        table_name="queue_tasks",
     )
 
     assert store.__class__.__name__ == expected_store_name
@@ -739,7 +744,10 @@ def test_sqlspec_sql_server_queue_store_uses_sql_server_types(
     adapter_name: "str", dialect: "str | None", config_type_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name), table_name="queue_tasks"
+        _fake_adapter_config(
+            adapter_name, dialect=dialect, config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
+        table_name="queue_tasks",
     )
 
     ddl = "\n".join(store.create_statements())
@@ -759,7 +767,9 @@ def test_sqlspec_backend_rejects_unsupported_sqlspec_adapter(
 ) -> "None":
     with pytest.raises(QueueConfigurationError, match=adapter_name):
         create_queue_store(
-            _fake_adapter_config(adapter_name, dialect=dialect, config_type_name=config_type_name),
+            _fake_adapter_config(
+                adapter_name, dialect=dialect, config_type_name=config_type_name, is_async="Async" in config_type_name
+            ),
             table_name="queue_tasks",
         )
 
@@ -832,7 +842,9 @@ def test_sqlspec_backend_accepts_cockroach_sqlspec_adapters(
     adapter_name: "str", config_type_name: "str", expected_store_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        _fake_adapter_config(
+            adapter_name, dialect="postgres", config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
         table_name="queue_tasks",
     )
 
@@ -856,7 +868,9 @@ def test_postgres_native_json_array_bind_shape_matches_adapter(
     adapter_name: "str", config_type_name: "str", expected: "object"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="postgres", config_type_name=config_type_name),
+        _fake_adapter_config(
+            adapter_name, dialect="postgres", config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
         table_name="queue_tasks",
     )
 
@@ -926,7 +940,11 @@ async def test_sqlspec_backend_store_factory_covers_sqlspec_adapter_modules(
 ) -> "None":
     store = create_queue_store(
         _fake_adapter_config(
-            adapter_name, dialect=dialect, config_type_name=config_type_name, connection_config=connection_config
+            adapter_name,
+            dialect=dialect,
+            config_type_name=config_type_name,
+            is_async="Async" in config_type_name,
+            connection_config=connection_config,
         ),
         table_name="queue_tasks",
     )
@@ -1052,6 +1070,7 @@ async def test_sqlspec_oracle_queue_schema_uses_retry_safe_version_compatible_dd
         "oracledb",
         dialect="oracle",
         config_type_name=config_type_name,
+        is_async="Async" in config_type_name,
         extension_config={QUEUE_EXTENSION_NAME: {"queue_table_name": "queue_tasks"}},
     )
     store = create_task_reservation_store(config, queue_table_name="queue_tasks")
@@ -1094,33 +1113,33 @@ async def test_sqlspec_oracle_queue_schema_uses_retry_safe_version_compatible_dd
 @pytest.mark.parametrize(
     ("adapter_name", "dialect", "expected"),
     (
-        ("asyncpg", "postgres", True),
-        ("asyncmy", "mysql", True),
-        ("pymysql", "mysql", True),
-        ("psqlpy", "postgres", True),
+        ("asyncpg", "postgres", False),
+        ("asyncmy", "mysql", False),
+        ("pymysql", "mysql", False),
+        ("psqlpy", "postgres", False),
         ("spanner", "spanner", False),
         ("aiosqlite", "sqlite", False),
         ("duckdb", "duckdb", False),
     ),
 )
-def test_sqlspec_store_supports_skip_locked_follows_data_dictionary_flags(
+def test_sqlspec_store_locking_capability_is_unresolved_before_open(
     adapter_name: "str", dialect: "str", expected: "bool"
 ) -> "None":
-    """``supports_skip_locked`` gates off SQLSpec data-dictionary feature flags."""
+    """An unopened store has not established connected-server capabilities."""
     store = create_queue_store(_fake_adapter_config(adapter_name, dialect=dialect), table_name="queue_tasks")
 
     assert store.supports_skip_locked is expected
 
 
 def test_sqlspec_oracledb_async_store_supports_skip_locked_from_data_dictionary() -> "None":
-    """Async Oracle uses SQLSpec 0.52's Oracle SKIP LOCKED capability."""
+    """Async Oracle resolves its locking capability when opened."""
     store = create_queue_store(
-        _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleAsyncConfig"),
+        _fake_adapter_config("oracledb", dialect="oracle", config_type_name="FakeOracleAsyncConfig", is_async=True),
         table_name="queue_tasks",
     )
 
     assert isinstance(store, OracledbAsyncQueueStore)
-    assert store.supports_skip_locked is True
+    assert store.supports_skip_locked is False
     assert store.claim_select_stream_chunk_size == 1
 
 
@@ -1180,6 +1199,7 @@ def test_sqlspec_store_supports_skip_locked_defaults_false_without_dialect() -> 
 def test_sqlspec_store_select_claimable_uses_skip_locked_on_supporting_dialect() -> "None":
     """``select_claimable`` builds a due-task SELECT that locks rows with SKIP LOCKED."""
     store = create_queue_store(_fake_adapter_config("asyncpg", dialect="postgres"), table_name="queue_tasks")
+    store.set_locking_capabilities(for_update=True, skip_locked=True)
 
     built = store.select_claimable(now="2026-01-01T00:00:00+00:00", limit=1, queue="default").build(dialect="postgres")
 
@@ -1430,6 +1450,7 @@ def test_sqlspec_store_capability_matrix_pins_json_and_bulk_capabilities(
             adapter_name,
             dialect=dialect,
             config_type_name=config_type_name,
+            is_async="Async" in config_type_name,
             connection_config=connection_config,
             supports_native_arrow_import=True,
         ),
@@ -1455,7 +1476,10 @@ async def test_sqlspec_mysql_queue_store_uses_safe_index_prefixes(
     adapter_name: "str", config_type_name: "str"
 ) -> "None":
     store = create_queue_store(
-        _fake_adapter_config(adapter_name, dialect="mysql", config_type_name=config_type_name), table_name="queue_tasks"
+        _fake_adapter_config(
+            adapter_name, dialect="mysql", config_type_name=config_type_name, is_async="Async" in config_type_name
+        ),
+        table_name="queue_tasks",
     )
 
     ddl = "\n".join(store.create_statements())
@@ -1511,6 +1535,64 @@ async def test_sqlspec_backend_reuses_winner_when_key_insert_races(monkeypatch: 
     assert driver.rolled_back is True
 
 
+@pytest.mark.parametrize("constraint", ["foreign key", "check", "not null"])
+async def test_sqlspec_keyed_enqueue_propagates_nonduplicate_integrity_error(
+    monkeypatch: "pytest.MonkeyPatch", constraint: "str"
+) -> "None":
+    from sqlspec.exceptions import IntegrityError
+
+    class ConstraintError(IntegrityError):
+        sqlstate = "23000"
+
+    error = ConstraintError(f"{constraint} constraint failed")
+    driver = _UniqueViolationDriver(error)
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig()))
+    winner = await InMemoryQueueBackend().enqueue("tasks.race", key="sync:race")
+
+    @asynccontextmanager
+    async def fake_session(_self: "SQLSpecQueueBackend") -> "AsyncIterator[_UniqueViolationDriver]":
+        yield driver
+
+    async def select_no_winner(_self: "SQLSpecQueueBackend", _driver: "Any", _key: "str") -> "None":
+        return None
+
+    async def get_winner(_self: "SQLSpecQueueBackend", _key: "str") -> "QueuedTaskRecord":
+        return winner
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_session", fake_session)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_select_task_by_key", select_no_winner)
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_store", lambda _self: _InsertOnlyStore())
+    monkeypatch.setattr(SQLSpecQueueBackend, "get_task_by_key", get_winner)
+
+    with pytest.raises(ConstraintError) as caught:
+        await backend.enqueue("tasks.race", key="sync:race")
+    assert caught.value is error
+    assert driver.rolled_back is True
+
+
+@pytest.mark.parametrize("message", ["duplicate key in unrelated operation", "serialization setup failed"])
+async def test_sqlspec_identity_reservation_propagates_untyped_failure(
+    monkeypatch: "pytest.MonkeyPatch", message: "str"
+) -> "None":
+    from sqlspec.exceptions import SQLSpecError
+
+    backend = SQLSpecQueueBackend(backend_config=SQLSpecBackendConfig(sqlspec_config=AiosqliteConfig()))
+    error = SQLSpecError(message)
+    calls = 0
+
+    async def fail_reservation(*args: "Any", **kwargs: "Any") -> "None":
+        nonlocal calls
+        calls += 1
+        raise error
+
+    monkeypatch.setattr(SQLSpecQueueBackend, "_get_task_reservation_store", lambda _self: object())
+    monkeypatch.setattr(SQLSpecQueueBackend, "_reserve_identity_once", fail_reservation)
+    with pytest.raises(SQLSpecError) as caught:
+        await backend.reserve_identity("key", task_id=uuid4(), task_name="tasks.race")
+    assert caught.value is error
+    assert calls == 1
+
+
 async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     later = datetime.now(timezone.utc) + timedelta(minutes=5)
 
@@ -1551,6 +1633,45 @@ async def test_sqlspec_backend_fail_task_retries_then_fails_permanently(
     assert failed.status == "failed"
     assert failed.error == "second failure"
     assert failed.completed_at is not None
+
+
+@pytest.mark.parametrize("reported_count", [0, -1])
+async def test_sqlspec_cancel_verifies_configured_unreliable_rowcount(
+    sqlspec_backend: "SQLSpecQueueBackend", monkeypatch: "pytest.MonkeyPatch", reported_count: "int"
+) -> "None":
+    pending = await sqlspec_backend.enqueue("tasks.cancel_unknown")
+    config = sqlspec_backend._get_sqlspec_config()
+    monkeypatch.setattr(type(config), "supports_reliable_rowcount", False)
+    resolve_count = SQLSpecQueueBackend._resolve_rows_affected
+    monkeypatch.setattr(
+        SQLSpecQueueBackend,
+        "_resolve_rows_affected",
+        lambda self, _result: resolve_count(self, SimpleNamespace(rows_affected=reported_count)),
+    )
+
+    assert not await sqlspec_backend.cancel_task(pending.id, expected_retry_count=1)
+    unchanged = await sqlspec_backend.get_task(pending.id)
+    assert unchanged is not None and unchanged.status == "pending"
+    assert await sqlspec_backend.cancel_task(pending.id, expected_retry_count=0)
+    assert not await sqlspec_backend.cancel_task(pending.id, expected_retry_count=0)
+    assert not await sqlspec_backend.cancel_task(uuid4())
+    cancelled = await sqlspec_backend.get_task(pending.id)
+    assert cancelled is not None and cancelled.status == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("reliable", "reported_count", "expected"),
+    [(True, 0, 0), (False, 0, -1), (True, -1, -1), (False, -1, -1), (True, 1, 1), (False, 2, 2)],
+)
+async def test_sqlspec_rowcount_uses_actual_config_capability(
+    sqlspec_backend: "SQLSpecQueueBackend",
+    monkeypatch: "pytest.MonkeyPatch",
+    reliable: "bool",
+    reported_count: "int",
+    expected: "int",
+) -> "None":
+    monkeypatch.setattr(type(sqlspec_backend._get_sqlspec_config()), "supports_reliable_rowcount", reliable)
+    assert sqlspec_backend._resolve_rows_affected(SimpleNamespace(rows_affected=reported_count)) == expected
 
 
 async def test_sqlspec_backend_cancels_heartbeats_and_requeues_stale_running(
@@ -2153,7 +2274,7 @@ async def test_sqlspec_backend_can_start_with_packaged_migrations(
     assert after_second == discovered
 
 
-async def test_sqlspec_backend_packaged_migrations_publish_extension_without_changing_migration_options(
+async def test_sqlspec_backend_packaged_migrations_publish_extension_preserving_other_migration_options(
     tmp_path: "Path", sqlite_config_factory: "SqliteConfigFactory", caplog: "pytest.LogCaptureFixture"
 ) -> "None":
     db_path = tmp_path / "migrated-config.db"
@@ -2178,6 +2299,9 @@ async def test_sqlspec_backend_packaged_migrations_publish_extension_without_cha
     queue_settings = cast("dict[str, Any]", configured.pop(QUEUE_EXTENSION_NAME))
     assert queue_settings["queue_table_name"] == "queue_task"
     assert configured == original_extension_config
+    expected_included = list(original_migration_config.get("include_extensions", []))
+    expected_included.append(QUEUE_EXTENSION_NAME)
+    original_migration_config["include_extensions"] = expected_included
     assert deepcopy(sqlspec_config.migration_config) == original_migration_config
 
 
@@ -2309,8 +2433,9 @@ class _InsertOnlyStore:
 
 
 class _UniqueViolationDriver:
-    def __init__(self) -> "None":
+    def __init__(self, error: "Exception | None" = None) -> "None":
         self.rolled_back = False
+        self.error = error
 
     async def begin(self) -> "None":
         return None
@@ -2324,7 +2449,7 @@ class _UniqueViolationDriver:
     async def execute(self, statement: "object") -> "None":
         del statement
         msg = "UNIQUE constraint failed: queue_task.task_key"
-        raise sqlite3.IntegrityError(msg)
+        raise self.error or UniqueViolationError(msg)
 
 
 class _FakeSyncConfig:
@@ -2759,3 +2884,68 @@ def _count_events_queue_catalog_reads(monkeypatch: "pytest.MonkeyPatch") -> "lis
 
     monkeypatch.setattr(sqlspec_backend_module, "_events_queue_table_names", counting_read)
     return counter
+
+
+@pytest.mark.parametrize("autocommit", [False, True])
+async def test_pymssql_native_commit_rollback_after_write_error(
+    request: "FixtureRequest", autocommit: "bool"
+) -> "None":
+    from sqlspec import SQLSpec
+    from sqlspec.adapters.pymssql import PymssqlConfig
+    from sqlspec.exceptions import UniqueViolationError
+
+    svc = request.getfixturevalue("mssql_service")
+    config = PymssqlConfig(
+        connection_config={
+            "host": svc.host,
+            "port": svc.port,
+            "user": svc.user,
+            "password": svc.password,
+            "database": svc.database,
+            "autocommit": autocommit,
+        }
+    )
+    manager = SQLSpec()
+    manager.add_config(config)
+    table = "queue_native_tx_" + uuid4().hex
+    try:
+        with manager.provide_session(config) as driver:
+            driver.execute_script(f"CREATE TABLE [{table}] (id INT PRIMARY KEY)")
+            driver.commit()
+        with manager.provide_session(config) as driver:
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (1)")
+            driver.commit()
+            if autocommit:
+                assert driver.select_value("SELECT @@TRANCOUNT") == 0
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{table}] WHERE id=1") == 1
+            driver.rollback()
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (2)")
+            driver.rollback()
+            if autocommit:
+                assert driver.select_value("SELECT @@TRANCOUNT") == 0
+        with manager.provide_session(config) as driver:
+            driver.rollback()
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (3)")
+            with pytest.raises(UniqueViolationError):
+                driver.execute(f"INSERT INTO [{table}] (id) VALUES (1)")
+            driver.rollback()
+            if autocommit:
+                assert driver.select_value("SELECT @@TRANCOUNT") == 0
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{table}] WHERE id=3") == 0
+            driver.rollback()
+            driver.begin()
+            driver.execute(f"INSERT INTO [{table}] (id) VALUES (4)")
+            driver.commit()
+        with manager.provide_session(config) as driver:
+            assert driver.select_value(f"SELECT COUNT(*) FROM [{table}]") == 2
+            driver.rollback()
+    finally:
+        with manager.provide_session(config) as driver:
+            driver.execute_script(f"DROP TABLE IF EXISTS [{table}]")
+            driver.commit()
+        await manager.close_all_pools()

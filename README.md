@@ -34,12 +34,17 @@ async def sync_account(account_id: str) -> dict[str, str]:
 
 
 @post("/accounts/{account_id:str}/sync")
-async def create_sync_job(account_id: str, queue_service: NamedDependency[QueueService]) -> dict[str, str]:
+async def create_sync_job(
+    account_id: str, queue_service: NamedDependency[QueueService]
+) -> dict[str, str]:
     result = await queue_service.enqueue(sync_account, account_id)
     return {"task_id": str(result.id), "status": result.status or "pending"}
 
 
-app = Litestar(route_handlers=[create_sync_job], plugins=[QueuePlugin(config=QueueConfig())])
+app = Litestar(
+    route_handlers=[create_sync_job],
+    plugins=[QueuePlugin(config=QueueConfig())],
+)
 ```
 
 Run the application:
@@ -54,20 +59,27 @@ Enqueue a task:
 curl -X POST http://127.0.0.1:8000/accounts/acct-123/sync
 ```
 
-The response contains a task ID and an initial status. `QueueConfig()` starts
-one fresh queue-worker child for this `litestar run` invocation and shares a
-private temporary SQLite file with it. No queue socket or port is exposed, and
-the temporary queue is removed on normal shutdown; it is not durable across
-server restarts.
+The response contains a task ID and an initial status:
+
+```json
+{"task_id": "...", "status": "pending"}
+```
+
+By default, `QueueConfig()` starts a dedicated worker process alongside the
+server and uses an ephemeral SQLite database. The database is removed on
+normal shutdown and does not persist across restarts.
 
 ## Production boundary
 
-Choose where tasks are stored separately from where they run. For durable
-deployments use a shared backend such as SQLSpec, Advanced Alchemy, Redis, or
-Valkey. Use standalone workers when the web app and task workers must scale
-separately. The process-local memory backend remains useful for inline tests
-or an explicitly single-ASGI-process worker. Cloud Run runs tasks; it does not
-store them.
+The default setup uses a temporary SQLite database and a local worker to get
+started quickly.
+
+In production, decouple task storage from execution:
+
+- **Storage**: Use Redis, Valkey, SQLSpec, or Advanced Alchemy so tasks
+  persist across deploys and restarts.
+- **Workers**: Run standalone worker processes or Cloud Run jobs so background
+  work scales independently from web requests.
 
 ## Next steps
 

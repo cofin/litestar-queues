@@ -39,7 +39,7 @@ Install test dependencies before running the full integration matrix:
 .. code-block:: bash
 
    make install-test-adapters
-   uv run pytest src/tests/integration
+   uv run pytest src/tests/integration -m "not e2e"
 
 Browser E2E tests are intentionally separate from the unit and integration
 tiers. Install their Python dependencies and Chromium, then run:

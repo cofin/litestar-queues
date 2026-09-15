@@ -6,11 +6,10 @@ from contextlib import suppress
 from dataclasses import fields, replace
 from datetime import datetime, timezone
 from hashlib import sha1
-from sqlite3 import IntegrityError as SQLiteIntegrityError
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlspec import sql
-from sqlspec.exceptions import SQLSpecError, UniqueViolationError
+from sqlspec.exceptions import UniqueViolationError
 from sqlspec.utils.text import quote_backtick_identifier, quote_identifier, split_qualified_identifier
 
 from litestar_queues.backends.sqlspec.schema import (
@@ -18,7 +17,7 @@ from litestar_queues.backends.sqlspec.schema import (
     event_history_table_name_for,
     validate_table_name,
 )
-from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name, _render_ddl_statement
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.spanner import SpannerQueueStore
 from litestar_queues.events import (
     EventHistoryExtraColumn,
@@ -51,7 +50,6 @@ __all__ = (
 )
 
 _PORTABLE_INDEX_NAME_LENGTH = 63
-_SQLITE_CONSTRAINT_PRIMARYKEY = 1555
 
 logger = logging.getLogger(__name__)
 
@@ -594,7 +592,7 @@ class SQLSpecQueueEventLogStore(SQLSpecQueueStore):
         return self._dialect_type("float", fallback="REAL")
 
     def _to_sql(self, statement: "CreateIndex | CreateTable | DropIndex | DropTable") -> "str":
-        return _render_ddl_statement(statement, self.dialect_name)
+        return statement.build(dialect=self.dialect_name).sql
 
 
 class SpannerQueueEventLogStore(SQLSpecQueueEventLogStore, SpannerQueueStore):
@@ -1050,28 +1048,7 @@ def _require_identical_event(stored: "QueueEventLogRecord", incoming: "QueueEven
 
 
 def _is_duplicate_event_error(error: "BaseException") -> "bool":
-    """Return True if the error represents a duplicate primary-key or unique violation.
-
-    SQLSpec 0.62 maps SQLite's UNIQUE code (2067) but not its distinct PRIMARYKEY
-    code (1555). We inspect the native cause, context, and the mapped SQLSpecError message.
-    """
-    seen: set[int] = set()
-    while id(error) not in seen:
-        seen.add(id(error))
-        if isinstance(error, UniqueViolationError):
-            return True
-        if (
-            isinstance(error, SQLiteIntegrityError)
-            and getattr(error, "sqlite_errorcode", None) == _SQLITE_CONSTRAINT_PRIMARYKEY
-        ):
-            return True
-        if isinstance(error, SQLSpecError) and f"[code {_SQLITE_CONSTRAINT_PRIMARYKEY}]" in str(error):
-            return True
-        cause = error.__cause__ or error.__context__
-        if cause is None:
-            return False
-        error = cause
-    return False
+    return isinstance(error, UniqueViolationError)
 
 
 def _deserialize_datetime(value: "Any") -> "datetime":

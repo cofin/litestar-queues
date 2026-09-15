@@ -195,7 +195,7 @@ clean:                                              ## Cleanup temporary build a
 .PHONY: test
 test:                                               ## Run the tests
 	@echo "${INFO} Running test cases... 🧪"
-	@uv run pytest src/tests/unit src/tests/integration
+	@uv run pytest src/tests/unit src/tests/integration -m "not e2e"
 	@echo "${OK} Tests complete 🧪"
 
 .PHONY: test-all
@@ -210,13 +210,13 @@ test-unit:                                          ## Run unit tests only (no D
 .PHONY: test-integration
 test-integration:                                   ## Run integration tests only (autoskips without Docker)
 	@echo "${INFO} Running integration tests... 🧪"
-	@uv run pytest src/tests/integration -n auto
+	@uv run pytest src/tests/integration -m "not e2e" -n auto
 	@echo "${OK} Integration tests complete 🧪"
 
 .PHONY: coverage
 coverage:                                           ## Run tests with coverage report
 	@echo "${INFO} Running tests with coverage... 🧪"
-	@uv run pytest src/tests/unit src/tests/integration --cov -n auto
+	@uv run pytest src/tests/unit src/tests/integration -m "not e2e" --cov -n auto
 	@uv run coverage html >/dev/null 2>&1
 	@uv run coverage xml >/dev/null 2>&1
 	@echo "${OK} Coverage report generated 📊"

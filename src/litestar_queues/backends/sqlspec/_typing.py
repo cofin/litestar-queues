@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+    from pathlib import Path
 
     from sqlspec.adapters.asyncpg import AsyncpgConfig
     from sqlspec.adapters.sqlite import SqliteConfig
@@ -17,6 +18,13 @@ class SQLSpecConfig(Protocol):
     extension_config: Any
     migration_config: Any
     is_async: ClassVar[bool]
+    supports_reliable_rowcount: ClassVar[bool]
+
+    def add_extension_migrations(
+        self, name: str, migrations_path: "str | Path", settings: "dict[str, Any] | None" = None
+    ) -> None: ...
+
+    def remove_extension_migrations(self, name: str) -> bool: ...
 
     def close_pool(self) -> Any: ...
 
@@ -32,6 +40,7 @@ class SQLSpecConfig(Protocol):
 class SQLSpecStoreConfig(Protocol):
     """Structural subset needed by queue stores and the store factory."""
 
+    is_async: ClassVar[bool]
     statement_config: Any
     extension_config: Any
 

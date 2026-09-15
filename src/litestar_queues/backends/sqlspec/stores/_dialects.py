@@ -1,5 +1,6 @@
 """Shared SQLSpec queue store implementations, one per SQL dialect."""
 
+from hashlib import sha256
 from typing import ClassVar, Literal
 
 from sqlspec import sql
@@ -10,6 +11,7 @@ from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore
 __all__ = ("CockroachQueueStore", "MssqlQueueStore", "MySQLQueueStore", "PostgresQueueStore")
 
 _NVARCHAR_MAX_THRESHOLD = 4000
+_POSTGRES_IDENTIFIER_BYTES = 63
 
 
 def _quote_tsql_identifier(identifier: "str") -> "str":
@@ -258,6 +260,14 @@ class PostgresQueueStore(SQLSpecQueueStore):
             )
         return statements
 
+    def _index_name(self, suffix: "str") -> "str":
+        name = f"ix_{self.table_name.replace('.', '_')}_{suffix}"
+        encoded = name.encode("utf-8")
+        if len(encoded) <= _POSTGRES_IDENTIFIER_BYTES:
+            return name
+        prefix = encoded[: _POSTGRES_IDENTIFIER_BYTES - 9].decode("utf-8", errors="ignore")
+        return f"{prefix}_{sha256(encoded).hexdigest()[:8]}"
+
     def drop_statements(self) -> "list[str]":
         """Return statements that drop Postgres-family queue artifacts."""
         if not self._manage_schema:
@@ -318,6 +328,9 @@ class CockroachQueueStore(PostgresQueueStore):
     table_storage_parameters: "ClassVar[bool]" = False
     supports_returning_claim: "ClassVar[bool]" = False
     supports_combined_expiry_claim: "ClassVar[bool]" = False
+
+    def _index_name(self, suffix: "str") -> "str":
+        return SQLSpecQueueStore._index_name(self, suffix)
 
     @property
     def supports_skip_locked(self) -> "bool":

@@ -127,7 +127,6 @@ def _async_or_sync_store_type(
     async_store_type: "type[SQLSpecQueueStore]",
     sync_store_type: "type[SQLSpecQueueStore]",
 ) -> "type[SQLSpecQueueStore]":
-    config_type_name = type(config).__name__.lower()
-    if "async" in config_type_name:
+    if config.is_async:
         return async_store_type
     return sync_store_type
