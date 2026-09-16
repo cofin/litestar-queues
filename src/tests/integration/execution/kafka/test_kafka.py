@@ -1,5 +1,6 @@
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import pytest
 
@@ -7,9 +8,16 @@ from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.execution.kafka import KafkaExecutionBackend, KafkaExecutionConfig
 
+if TYPE_CHECKING:
+    from tests.plugins.redpanda import RedpandaService
 
-async def assert_kafka_transport_contract(*, bootstrap_servers: "str", topic: "str") -> "None":
-    """Assert dispatch, execution, and durable group-offset settlement."""
+pytestmark = pytest.mark.anyio
+
+
+async def test_kafka_dispatch_consume_and_commit(redpanda_service: "RedpandaService") -> "None":
+    """Dispatch, execute, and durably commit the consumer-group offset."""
+    bootstrap_servers = redpanda_service.bootstrap_servers
+    topic = f"{redpanda_service.topic_prefix}dispatch_{uuid4().hex}"
     aiokafka = pytest.importorskip("aiokafka")
 
     @task(f"tests.kafka.{topic}.delivered")
