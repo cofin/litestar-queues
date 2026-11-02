@@ -254,9 +254,13 @@ async def publish_task_progress(
     actor: "QueueEventActor | None" = None,
     entity: "QueueEventEntityRef | None" = None,
     immediate: "bool" = False,
+    strict: "bool" = False,
 ) -> "None":
-    """Publish progress through the currently bound task context."""
-    await require_current_task_context().progress(
+    """Publish progress through the currently bound task context, if any."""
+    context = require_current_task_context() if strict else get_current_task_context()
+    if context is None:
+        return
+    await context.progress(
         current=current,
         total=total,
         percent=percent,
@@ -280,9 +284,13 @@ async def publish_task_log(
     actor: "QueueEventActor | None" = None,
     entity: "QueueEventEntityRef | None" = None,
     immediate: "bool" = False,
+    strict: "bool" = False,
 ) -> "None":
-    """Publish a log event through the currently bound task context."""
-    await require_current_task_context().log(
+    """Publish a log event through the currently bound task context, if any."""
+    context = require_current_task_context() if strict else get_current_task_context()
+    if context is None:
+        return
+    await context.log(
         message,
         level=level,
         payload=payload,
@@ -304,9 +312,13 @@ async def publish_task_event(
     actor: "QueueEventActor | None" = None,
     entity: "QueueEventEntityRef | None" = None,
     immediate: "bool" = False,
+    strict: "bool" = False,
 ) -> "None":
-    """Publish a custom event through the currently bound task context."""
-    await require_current_task_context().event(
+    """Publish a custom event through the currently bound task context, if any."""
+    context = require_current_task_context() if strict else get_current_task_context()
+    if context is None:
+        return
+    await context.event(
         event_type,
         message=message,
         payload=payload,

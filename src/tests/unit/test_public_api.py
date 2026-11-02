@@ -566,3 +566,21 @@ if loaded:
     result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_public_cli_facade_reexports_click_commands() -> "None":
+    from litestar_queues import _cli, cli
+
+    expected = {
+        "queues_group",
+        "register",
+        "run_command",
+        "run_consumer_command",
+        "run_maintenance_command",
+        "run_task_command",
+        "scheduler_health_command",
+        "status_command",
+    }
+    assert set(cli.__all__) == expected
+    for name in expected:
+        assert getattr(cli, name) is getattr(_cli, name)

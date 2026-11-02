@@ -2837,3 +2837,49 @@ async def test_recover_stale_tasks_records_failed_repair_when_redispatch_raises(
         assert recovery.repair.changed == 0
         assert recovery.repair.failed == 1
 
+
+async def test_task_execute_record_filters_extra_kwargs_against_signature() -> None:
+    from contextlib import asynccontextmanager
+
+    from litestar_queues import task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    received: dict[str, Any] = {}
+
+    @task("di.filtered")
+    async def needs_only_db_session(item_id: int, *, db_session: str) -> str:
+        received["item_id"] = item_id
+        received["db_session"] = db_session
+        return f"{item_id}:{db_session}"
+
+    @task("di.var_keyword")
+    async def accepts_all_kwargs(item_id: int, **kwargs: Any) -> dict[str, Any]:
+        kwargs.pop("_task_context", None)
+        return {"item_id": item_id, **kwargs}
+
+    @asynccontextmanager
+    async def provide_deps(_task: Any, _record: "QueuedTaskRecord", _ctx: Any) -> Any:
+        yield {"db_session": "sess-1", "settings": "cfg-1", "extra_unused": 99}
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="memory",
+        execution_backend="immediate",
+        task_dependency_provider=provide_deps,
+    )
+    async with QueueService(config) as service:
+        res1 = await service.enqueue(needs_only_db_session, 7)
+        res2 = await service.enqueue(accepts_all_kwargs, 9)
+
+    assert res1.status == "completed"
+    assert res1.result == "7:sess-1"
+    assert received == {"item_id": 7, "db_session": "sess-1"}
+    assert res2.status == "completed"
+    assert res2.result == {
+        "item_id": 9,
+        "db_session": "sess-1",
+        "settings": "cfg-1",
+        "extra_unused": 99,
+    }
+
