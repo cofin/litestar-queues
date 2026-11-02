@@ -91,10 +91,7 @@ async def consume_one(
         return TaskExitCode.CLAIM_LOST
     if claimed is None:
         claimed, recovered_exit = await _recover_and_claim_stale_record(
-            queue,
-            record,
-            expected_retry_count=expected_retry_count,
-            expected_execution_ref=expected_execution_ref,
+            queue, record, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
         )
         if recovered_exit is not None:
             return recovered_exit

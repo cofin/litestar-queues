@@ -803,4 +803,5 @@ async def test_repair_failure_cancellation_propagates_and_releases_maintenance(h
     recovered = await maintenance.run()
     assert recovered.acquired is True
     assert recovered.outcome == "completed"
-    assert recovered.phases[0].changed == 1
+    external_phase = next(phase for phase in recovered.phases if phase.phase == "external")
+    assert external_phase.changed == 1

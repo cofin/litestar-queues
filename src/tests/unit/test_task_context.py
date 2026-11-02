@@ -146,9 +146,9 @@ def test_beat_outside_context_is_noop() -> "None":
 
 
 async def test_publish_task_helpers_outside_context_are_noop_by_default_and_raise_when_strict() -> "None":
-    assert await publish_task_progress(current=1, total=2) is None
-    assert await publish_task_log("outside") is None
-    assert await publish_task_event("task.custom") is None
+    await publish_task_progress(current=1, total=2)
+    await publish_task_log("outside")
+    await publish_task_event("task.custom")
 
     with pytest.raises(RuntimeError, match="No queue task execution context is currently bound"):
         await publish_task_progress(current=1, total=2, strict=True)

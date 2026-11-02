@@ -216,11 +216,7 @@ async def _wait_for_stream_tasks(
     tasks = {event_task, heartbeat_task}
     rolled_over = False
     try:
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=max_stream_duration,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        done, pending = await asyncio.wait(tasks, timeout=max_stream_duration, return_when=asyncio.FIRST_COMPLETED)
         if not done:
             rolled_over = True
         for task in done:
@@ -584,11 +580,7 @@ def _sse_frame(
     if len(seen_dedup_keys) > _STREAM_DEDUP_MAX_KEYS:
         seen_dedup_keys.popitem(last=False)
     _record_metric(stream_metrics, "on_event", scope)
-    frame: "dict[str, Any]" = {
-        "id": event.id,
-        "event": event.type,
-        "data": event.to_json().decode("utf-8"),
-    }
+    frame: "dict[str, Any]" = {"id": event.id, "event": event.type, "data": event.to_json().decode("utf-8")}
     if retry_ms is not None:
         frame["retry"] = retry_ms
     return frame

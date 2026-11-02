@@ -404,7 +404,9 @@ async def test_cloudrun_dispatch_records_span_and_metrics() -> "None":
         return "ok"
 
     backend = CloudRunExecutionBackend(
-        execution_config=CloudRunExecutionConfig(project_id="project", region="us-central1", job_name="worker"),
+        execution_config=CloudRunExecutionConfig(
+            project_id="project", region="us-central1", job_name="worker", schedules_on_enqueue=False
+        ),
         jobs_client=_FakeCloudRunJobsClient(),
     )
     async with QueueService(

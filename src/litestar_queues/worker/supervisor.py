@@ -286,11 +286,7 @@ async def _run_child(
         if hasattr(plugin, "open_worker_service"):
             async with plugin.open_worker_service(cast("Any", app)) as service:
                 await _runner(
-                    service,
-                    plugin.config,
-                    graceful_stop=graceful_stop,
-                    force_stop=force_stop,
-                    ready=signal_ready,
+                    service, plugin.config, graceful_stop=graceful_stop, force_stop=force_stop, ready=signal_ready
                 )
         else:
             await _runner(

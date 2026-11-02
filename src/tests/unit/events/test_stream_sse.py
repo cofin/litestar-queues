@@ -187,12 +187,7 @@ async def test_sse_emits_id_and_retry_hint_and_rolls_over_at_max_stream_duration
             queue_backend="memory",
             events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
         ),
-        EventStreamConfig(
-            scopes={"task"},
-            heartbeat_interval=0,
-            max_stream_duration=0.03,
-            retry_ms=2500,
-        ),
+        EventStreamConfig(scopes={"task"}, heartbeat_interval=0, max_stream_duration=0.03, retry_ms=2500),
     )
 
     response = await _sse_handler(router, "/sse/tasks/{task_id:str}").fn(_Connection(), task_id="task-1")
@@ -222,7 +217,7 @@ async def test_sse_shields_subscription_cleanup_under_anyio_cancel_scope() -> No
                 async def iter_events(self) -> "AsyncIterator[bytes]":
                     entered.set()
                     await asyncio.Future()
-                    if False:
+                    if not entered.is_set():
                         yield b""
 
             try:

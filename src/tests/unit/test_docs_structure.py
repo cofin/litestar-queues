@@ -168,3 +168,35 @@ def test_task_dependency_docs_cover_both_hooks() -> None:
         assert marker in page
     assert "signature_namespace" not in page
     assert "Dishka" not in page
+
+
+def test_scale_to_zero_and_runtime_hardening_docs_coverage() -> None:
+    cloud_tasks = (DOCS / "usage" / "deployment" / "cloud-tasks.rst").read_text(encoding="utf-8")
+    cloud_run = (DOCS / "usage" / "deployment" / "cloud-run.rst").read_text(encoding="utf-8")
+    maintenance = (DOCS / "usage" / "maintenance.rst").read_text(encoding="utf-8")
+    event_streams = (DOCS / "usage" / "event-streams.rst").read_text(encoding="utf-8")
+    events = (DOCS / "usage" / "events.rst").read_text(encoding="utf-8")
+    workers = (DOCS / "usage" / "workers.rst").read_text(encoding="utf-8")
+
+    for marker in (
+        "mount_route",
+        "verify_oidc",
+        "CloudTasksOIDCGuard",
+        "execution_backends",
+        "--cpu-throttling",
+        "dispatch_deadline",
+    ):
+        assert marker in cloud_tasks, f"missing {marker!r} in cloud-tasks.rst"
+
+    for marker in ("schedules_on_enqueue", "execution_backends"):
+        assert marker in cloud_run, f"missing {marker!r} in cloud-run.rst"
+
+    for marker in ("expire", "external", "stale", "schedules", "terminal", "events", "mount_route"):
+        assert marker in maintenance, f"missing {marker!r} in maintenance.rst"
+
+    for marker in ("max_stream_duration", "retry_ms"):
+        assert marker in event_streams, f"missing {marker!r} in event-streams.rst"
+
+    assert "strict" in events
+    for marker in ("run_app_lifespan", "litestar_queues.cli"):
+        assert marker in workers, f"missing {marker!r} in workers.rst"

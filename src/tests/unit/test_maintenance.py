@@ -600,9 +600,7 @@ async def test_stale_phase_propagates_repair_result_and_fails_when_repair_fails(
     backend = _StubBackend()
     stub = _StubService(backend=backend, is_external=False)
     stub.recover_result = StaleTaskRecoveryResult(
-        requeued=2,
-        failed=0,
-        repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0),
+        requeued=2, failed=0, repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
     )
     summary = await _run(stub, QueueMaintenanceConfig(stale_after=60.0), phases=["stale"])
     assert summary.outcome == "failed"
@@ -619,9 +617,7 @@ async def test_schedules_phase_propagates_repair_result_and_fails_when_repair_fa
     backend = _StubBackend()
     stub = _StubService(backend=backend, is_external=False, has_schedules=True)
     stub.schedules_result = ScheduleAssertionResult(
-        created=1,
-        repaired=1,
-        repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0),
+        created=1, repaired=1, repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
     )
     summary = await _run(stub, QueueMaintenanceConfig(schedules_limit=50), phases=["schedules"])
     assert summary.outcome == "failed"
@@ -681,11 +677,7 @@ async def test_maintenance_http_route_executes_six_phase_pass_and_returns_summar
             queue_backend="memory",
             execution_backend="local",
             worker=WorkerConfig(placement="external"),
-            maintenance=QueueMaintenanceConfig(
-                mount_route=True,
-                trust_platform_auth=True,
-                stale_after=60.0,
-            ),
+            maintenance=QueueMaintenanceConfig(mount_route=True, trust_platform_auth=True, stale_after=60.0),
         )
         plugin = QueuePlugin(config)
         route = build_maintenance_route(config)
@@ -696,8 +688,7 @@ async def test_maintenance_http_route_executes_six_phase_pass_and_returns_summar
         async with AsyncTestClient(app=app) as client:
             service = app.state[config.service_state_key]
             await service.get_queue_backend().enqueue(
-                "tests.maintenance.expiring",
-                expires_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+                "tests.maintenance.expiring", expires_at=datetime.now(timezone.utc) - timedelta(seconds=10)
             )
             response = await client.post("/_litestar-queues/maintenance")
             assert response.status_code == 200
@@ -714,5 +705,3 @@ async def test_maintenance_http_route_executes_six_phase_pass_and_returns_summar
             assert scheduled is not None
     finally:
         clear_task_registry()
-
-

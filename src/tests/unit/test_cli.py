@@ -697,4 +697,3 @@ async def test_cli_maintain_run_enters_app_lifespan_when_configured(
     assert events == ["startup:True", "shutdown"]
     assert get_default_service() is None
     assert json.loads(capsys.readouterr().out)["outcome"] == "completed"
-

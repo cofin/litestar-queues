@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService, WorkerConfig
+from litestar_queues import EventDeliveryConfig, InMemoryQueueEventSink, QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import EventHistoryConfig, QueueEventPublisher, QueueEventsConfig
@@ -16,6 +16,7 @@ from litestar_queues.exceptions import JobCancelledError
 from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.execution.base import ExecutionCancelResult
 from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+from litestar_queues.task import clear_task_registry
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -2740,9 +2741,7 @@ async def test_recover_stale_tasks_redispatches_self_scheduling_backends() -> No
 
     cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="heavy")
     config = QueueConfig(
-        worker=WorkerConfig(placement="external"),
-        queue_backend="redis",
-        execution_backend=cloudrun_cfg,
+        worker=WorkerConfig(placement="external"), queue_backend="redis", execution_backend=cloudrun_cfg
     )
     queue_backend = InMemoryQueueBackend()
     service = QueueService(config, queue_backend=queue_backend)
@@ -2798,9 +2797,7 @@ async def test_recover_stale_tasks_records_failed_repair_when_redispatch_raises(
 
     cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="heavy")
     config = QueueConfig(
-        worker=WorkerConfig(placement="external"),
-        queue_backend="redis",
-        execution_backend=cloudrun_cfg,
+        worker=WorkerConfig(placement="external"), queue_backend="redis", execution_backend=cloudrun_cfg
     )
     queue_backend = InMemoryQueueBackend()
     service = QueueService(config, queue_backend=queue_backend)
@@ -2839,11 +2836,6 @@ async def test_recover_stale_tasks_records_failed_repair_when_redispatch_raises(
 
 
 async def test_task_execute_record_filters_extra_kwargs_against_signature() -> None:
-    from contextlib import asynccontextmanager
-
-    from litestar_queues import task
-    from litestar_queues.task import clear_task_registry
-
     clear_task_registry()
     received: dict[str, Any] = {}
 
@@ -2858,8 +2850,11 @@ async def test_task_execute_record_filters_extra_kwargs_against_signature() -> N
         kwargs.pop("_task_context", None)
         return {"item_id": item_id, **kwargs}
 
-    @asynccontextmanager
-    async def provide_deps(_task: Any, _record: "QueuedTaskRecord", _ctx: Any) -> Any:
+    @contextlib.asynccontextmanager
+    async def provide_deps(
+        task: "Task[Any, Any]", record: "QueuedTaskRecord", context: "TaskExecutionContext"
+    ) -> "AsyncIterator[dict[str, Any]]":
+        del task, record, context
         yield {"db_session": "sess-1", "settings": "cfg-1", "extra_unused": 99}
 
     config = QueueConfig(
@@ -2876,10 +2871,4 @@ async def test_task_execute_record_filters_extra_kwargs_against_signature() -> N
     assert res1.result == "7:sess-1"
     assert received == {"item_id": 7, "db_session": "sess-1"}
     assert res2.status == "completed"
-    assert res2.result == {
-        "item_id": 9,
-        "db_session": "sess-1",
-        "settings": "cfg-1",
-        "extra_unused": 99,
-    }
-
+    assert res2.result == {"item_id": 9, "db_session": "sess-1", "settings": "cfg-1", "extra_unused": 99}

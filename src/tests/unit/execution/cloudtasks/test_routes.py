@@ -913,4 +913,3 @@ async def test_a_redelivery_for_a_stale_running_record_with_backoff_schedules_ne
     assert stored.retry_count == 1
     assert len(live.tasks.create_calls) == deliveries_before + 1
     assert stored.execution_ref == live.tasks.create_calls[-1].name
-

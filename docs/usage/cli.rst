@@ -189,7 +189,7 @@ daily external schedule.
    $ litestar queues run-maintenance --json
    {"outcome":"completed","acquired":true,"duration_ms":41.2,"phases":[...]}
 
-It takes ``--phase [external|stale|terminal|events]`` (repeatable) and
+It takes ``--phase [expire|external|stale|schedules|terminal|events]`` (repeatable) and
 ``--json``. Every threshold, limit, and retention window comes from
 :attr:`QueueConfig.maintenance`, so no flag can introduce a destructive cutoff.
 

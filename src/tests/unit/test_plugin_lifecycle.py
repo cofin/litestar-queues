@@ -455,7 +455,7 @@ async def test_standalone_worker_lifespan_runs_app_hooks_and_binds_default_servi
 
     assert events == ["app_startup", "default_bound:True", "app_shutdown:initialized"]
     assert get_default_service() is None
-    assert WorkerRunResult.CLEAN == 0
+    assert int(WorkerRunResult.CLEAN) == 0
 
 
 async def test_standalone_worker_lifespan_opt_out_skips_app_hooks_but_binds_default_service() -> "None":
@@ -480,5 +480,3 @@ async def test_standalone_worker_lifespan_opt_out_skips_app_hooks_but_binds_defa
         assert get_default_service() is worker_service
 
     assert get_default_service() is None
-
-

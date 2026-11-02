@@ -556,8 +556,7 @@ def build_maintenance_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":
     if config.verify_oidc and not any(isinstance(guard, CloudTasksOIDCGuard) for guard in config.guards):
         guards.append(
             CloudTasksOIDCGuard(
-                audience=cast("str", config.oidc_audience),
-                service_account_email=config.oidc_service_account_email,
+                audience=cast("str", config.oidc_audience), service_account_email=config.oidc_service_account_email
             )
         )
     guards.extend(config.guards)
@@ -582,4 +581,3 @@ def build_maintenance_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":
         return Response(content=summary.to_payload(), status_code=status_code)
 
     return run_queue_maintenance
-

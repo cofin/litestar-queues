@@ -125,7 +125,7 @@ class _SlowUnsubscribeChannelsBackend:
 
     async def stream_events(self) -> "AsyncIterator[tuple[str, bytes]]":
         await asyncio.Future()
-        if False:
+        if not self.subscribed.is_set():
             yield ("", b"")
 
 

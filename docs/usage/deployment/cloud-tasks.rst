@@ -60,7 +60,7 @@ Create the queue:
 The queue's own retry policy is a second, independent retry layer above the
 queue's ``retries``. See :ref:`cloud-tasks-two-retry-layers`.
 
-Deploy the consumer with no public access and no minimum instances:
+Deploy the consumer with no public access, request-based CPU billing, and no minimum instances:
 
 .. code-block:: bash
 
@@ -68,12 +68,13 @@ Deploy the consumer with no public access and no minimum instances:
      --image REGION-docker.pkg.dev/my-project/my-repo/my-app:TAG \
      --region my-region \
      --no-allow-unauthenticated \
+     --cpu-throttling \
+     --concurrency 8 \
      --min-instances 0 \
      --timeout 900 \
      --add-cloudsql-instances my-project:my-region:my-db
 
-``--timeout`` must exceed the longest task plus room to answer. It is the outer
-bound; see :ref:`cloud-tasks-deadlines`.
+``--cpu-throttling`` keeps the service on request-based billing while the delivery HTTP request is open. Set ``--concurrency`` so simultaneous deliveries do not exceed per-instance memory or database pool limits. ``--timeout`` must exceed ``dispatch_deadline``; see :ref:`cloud-tasks-deadlines`.
 
 Create the delivery identity and let it invoke the consumer:
 
@@ -147,18 +148,17 @@ The delivery route
 A queue configured for Cloud Tasks registers one route on your application at
 ``/_litestar-queues/cloud-tasks`` by default, or the equivalent path derived
 from ``QueueConfig.namespace`` (for example ``/_myapp/cloud-tasks``). Set
-``route_path`` to move it. You do not
-write it, mount it, or wire it up.
+``route_path`` to move it, or ``mount_route=False`` on producer-only API
+services that enqueue deliveries for a separate consumer service.
 
-Cloud Tasks delivery resource names use ``lq-`` with the default namespace and
-the configured namespace otherwise (for example ``myapp-``). Set
-``delivery_name_prefix`` when infrastructure needs an explicit prefix.
-
-It is never open by default. Either assert Cloud Run's own IAM with
-``trust_platform_auth=True`` — which is a statement that the service is
-deployed ``--no-allow-unauthenticated``, so every request has already been
-authenticated by the platform — or pass your own ``guards``, or both. Delivery
-headers are never treated as authentication: anyone can send them.
+It is never open by default. Assert Cloud Run IAM with
+``trust_platform_auth=True``, verify Google-signed OIDC tokens in-process with
+``verify_oidc=True`` (which attaches :class:`~litestar_queues.execution.cloudtasks.CloudTasksOIDCGuard`
+against ``oidc_audience`` or ``service_url`` and ``service_account_email``), or
+pass custom ``guards``. ``opt`` attaches route metadata (defaulting to
+``{"exclude_from_auth": True, "exclude_from_csrf": True}``) so global session
+or CSRF middleware skips machine-to-machine deliveries. Delivery headers are
+never treated as authentication.
 
 What the route answers, and why
 -------------------------------
@@ -230,8 +230,14 @@ that cannot work rather than letting them fail later:
 * **A delivery cannot be scheduled more than 30 days ahead.** A recurrence whose
   next occurrence lands past that ceiling is refused where it is written, rather
   than accepted and never run.
-* **Cloud Run's request timeout must exceed the dispatch deadline**, or the
-  platform will cut the request before Google stops waiting for it.
+* **Cloud Run's request timeout must exceed the dispatch deadline**
+  (``task.timeout + response_margin <= dispatch_deadline < Cloud Run --timeout``),
+  or the platform will cut the request before Google stops waiting for it.
+* **Stale redelivery recovery** — when ``WorkerConfig.stale_after`` is set, a
+  Cloud Tasks redelivery arriving after an instance crash recovers the stale
+  ``running`` record in-place before claiming the next attempt; if the record is
+  still within its heartbeat window, the route returns ``503`` so Cloud Tasks
+  retries after ``stale_after`` elapses.
 
 .. _cloud-tasks-when-not-to:
 
@@ -239,10 +245,26 @@ When not to use this
 ====================
 
 Work that genuinely runs longer than the 30-minute delivery ceiling does not
-belong here. Split it, or run it on Cloud Run Jobs with the
-:doc:`cloud-run` dispatcher topology, which has no such bound. A task that
-occasionally takes 40 minutes will not fail cleanly — it will be redelivered
-mid-flight, repeatedly.
+belong here. Combine Cloud Tasks for short work with :doc:`cloud-run` for
+multi-hour jobs in one ``QueueConfig`` via ``execution_backends``:
+
+.. code-block:: python
+
+   queue_config = QueueConfig(
+       queue_backend=SQLSpecBackendConfig(sqlspec_config=sqlspec_config),
+       execution_backend=CloudTasksExecutionConfig(...),
+       execution_backends=(
+           CloudRunExecutionConfig(
+               project_id="my-project",
+               region="my-region",
+               job_name="my-heavy-job",
+           ),
+       ),
+       worker=WorkerConfig(placement="external", stale_after=300.0),
+   )
+
+Tasks default to Cloud Tasks and opt into Cloud Run Jobs with
+``@task(..., execution_backend="cloudrun")``.
 
 Delivery guarantees
 ===================

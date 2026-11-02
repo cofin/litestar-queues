@@ -1455,9 +1455,7 @@ class QueueService:
         examined, changed, failed, unchanged = await self._dispatch_schedule_occurrence(record)
         return (1, 0, examined, changed, failed, unchanged)
 
-    async def _repair_active_schedule_occurrence(
-        self, active: "QueuedTaskRecord"
-    ) -> "tuple[int, int, int, int]":
+    async def _repair_active_schedule_occurrence(self, active: "QueuedTaskRecord") -> "tuple[int, int, int, int]":
         if self._beyond_scheduling_horizon(active.scheduled_at, execution_backend=active.execution_backend):
             try:
                 exec_backend = self.get_execution_backend(active.execution_backend)
@@ -1472,9 +1470,7 @@ class QueueService:
             return (1, 0, 0, 1) if exec_backend.schedules_on_enqueue else (0, 0, 0, 0)
         return await self._dispatch_schedule_occurrence(active)
 
-    async def _dispatch_schedule_occurrence(
-        self, record: "QueuedTaskRecord"
-    ) -> "tuple[int, int, int, int]":
+    async def _dispatch_schedule_occurrence(self, record: "QueuedTaskRecord") -> "tuple[int, int, int, int]":
         try:
             exec_backend = self.get_execution_backend(record.execution_backend)
         except ValueError:

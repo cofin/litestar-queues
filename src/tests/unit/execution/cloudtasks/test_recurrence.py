@@ -521,10 +521,11 @@ async def test_reassert_schedules_creates_missing_occurrence_and_repairs_undispa
     assert assertion.repair.changed == 2
     assert assertion.repair.failed == 0
 
-    recreated = await live.service.get_queue_backend().get_task_by_key("scheduled:cloudtasks.recurrence.reassert_missing")
+    recreated = await live.service.get_queue_backend().get_task_by_key(
+        "scheduled:cloudtasks.recurrence.reassert_missing"
+    )
     assert recreated is not None
     assert recreated.execution_ref is not None
     reloaded_b = await live.service.get_task(active_undispatched.id)
     assert reloaded_b is not None
     assert reloaded_b.execution_ref is not None
-

@@ -774,4 +774,3 @@ async def test_consume_one_recovers_and_fails_stale_running_record_without_retri
 
     assert exit_code == TaskExitCode.SUCCESS
     assert result.status == "failed"
-

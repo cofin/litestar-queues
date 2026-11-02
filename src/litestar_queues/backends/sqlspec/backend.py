@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
+from importlib import import_module
 from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID, uuid4
@@ -3156,8 +3157,6 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     Returns:
         The adapter's events queue store bound to ``sqlspec_config``.
     """
-    from sqlspec.utils.module_loader import import_string
-
     config_class = next(
         (
             config_type
@@ -3172,8 +3171,9 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     adapter_name = config_class.__module__.split(".")[2]
     store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
     try:
-        store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
-    except ImportError as exc:
+        store_module = import_module(f"sqlspec.adapters.{adapter_name}.events.store")
+        store_class = getattr(store_module, store_class_name)
+    except (ImportError, AttributeError) as exc:
         msg = f"SQLSpec config {config_class.__name__!r} has no supported native events queue store."
         raise QueueConfigurationError(msg) from exc
     return store_class(sqlspec_config)

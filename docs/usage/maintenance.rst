@@ -66,13 +66,18 @@ until you supply their thresholds.
        maintenance=QueueMaintenanceConfig(
            time_budget=300.0,          # seconds; bounds one whole invocation
            coordination_timeout=360.0, # seconds; must exceed time_budget
+           expire_limit=100,           # max overdue records expired per run
            external_limit=100,         # max external records examined per run
            stale_after=900.0,          # recover heartbeats older than 15 minutes
            stale_limit=100,            # max stale records recovered per run
+           schedules_limit=100,        # max recurring schedules re-asserted per run
            terminal_retention=None,    # None disables terminal cleanup
            terminal_limit=1000,        # max terminal records deleted per run
-           event_retention_rules=(),       # None disables event-history cleanup
+           event_retention_rules=(),   # empty disables event-history cleanup
            event_limit=1000,           # max event rows deleted per run
+           mount_route=False,          # True mounts POST /_litestar-queues/maintenance
+           route_path=None,            # custom path override when mount_route=True
+           guards=(),                  # required when mount_route=True
        ),
    )
 
@@ -80,7 +85,14 @@ Durations and retention windows are seconds; every limit and duration must be
 positive. ``coordination_timeout`` must be greater than ``time_budget`` because
 ownership is not renewed during a run. Leaving
 ``stale_after``, ``terminal_retention``, or ``event_retention_rules`` as ``None``
-disables that phase.
+disables that phase. Set ``mount_route=True`` with non-empty ``guards`` to
+expose an authenticated HTTP ``POST`` endpoint (default
+``/_litestar-queues/maintenance``) for Cloud Scheduler; it returns ``200`` for
+``completed`` or ``already_running``, ``207`` for ``partial``, and ``503`` for
+``failed``. When ``WorkerConfig(placement="external")`` is paired with an
+external execution backend and ``maintenance=None``, startup emits a
+:exc:`UserWarning` because repair, expiration, and stale recovery require
+scheduled maintenance.
 
 Bounded batches and the time budget
 ===================================
@@ -149,7 +161,7 @@ Command and exit codes
    terminal  completed          18          21.4  -
    events    skipped             0           0.0  -
 
-``--phase [external|stale|terminal|events]`` (repeatable) narrows the run;
+``--phase [expire|external|stale|schedules|terminal|events]`` (repeatable) narrows the run;
 filtering only narrows configuration and never enables a disabled retention
 threshold. ``--json`` emits one compact object matching
 :class:`~litestar_queues.QueueMaintenanceSummary`. The output includes the

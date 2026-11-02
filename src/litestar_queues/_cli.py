@@ -472,11 +472,7 @@ async def _run_worker(
     try:
         async with plugin.open_worker_service(app) as service:
             result = await run_worker(
-                service,
-                config,
-                graceful_stop=stop.graceful,
-                force_stop=stop.force,
-                ready=announce_ready,
+                service, config, graceful_stop=stop.graceful, force_stop=stop.force, ready=announce_ready
             )
     except Exception as exc:
         # Name the startup stage and exception type but never the exception
