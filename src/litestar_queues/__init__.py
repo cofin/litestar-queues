@@ -119,9 +119,11 @@ if TYPE_CHECKING:
         TaskUniqueBy,
         TaskUniqueUntil,
         discover_tasks,
+        get_default_service,
         get_scheduled_tasks,
         get_task_registry,
         load_task_modules,
+        set_default_service,
     )
     from litestar_queues.worker import Worker
 
@@ -213,6 +215,7 @@ __all__ = (
     "discover_tasks",
     "execution_backend",
     "get_current_task_context",
+    "get_default_service",
     "get_execution_backend",
     "get_execution_backend_class",
     "get_queue_backend",
@@ -230,6 +233,7 @@ __all__ = (
     "queue_backend",
     "require_current_task_context",
     "run_task",
+    "set_default_service",
     "task",
 )
 
@@ -320,6 +324,7 @@ _EXPORTS = {
     "discover_tasks": "litestar_queues.task",
     "execution_backend": "litestar_queues.execution",
     "get_current_task_context": "litestar_queues.events",
+    "get_default_service": "litestar_queues.task",
     "get_execution_backend": "litestar_queues.execution",
     "get_execution_backend_class": "litestar_queues.execution",
     "get_queue_backend": "litestar_queues.backends",
@@ -337,6 +342,7 @@ _EXPORTS = {
     "queue_backend": "litestar_queues.backends",
     "require_current_task_context": "litestar_queues.events",
     "run_task": "litestar_queues.consumer",
+    "set_default_service": "litestar_queues.task",
     "task": "litestar_queues.task",
 }
 

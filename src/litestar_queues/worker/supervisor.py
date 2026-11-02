@@ -257,6 +257,7 @@ async def _run_child(
     child_pid: "int",
     parent: "BaseProcess",
     *,
+    app: "object | None" = None,
     _runner: "_WorkerRunner" = _run_worker,
     _parent_wait: "Callable[[Sequence[object]], list[object]] | None" = None,
     _thread_factory: "Callable[..., threading.Thread]" = threading.Thread,
@@ -282,13 +283,23 @@ async def _run_child(
 
     stop_translation = asyncio.create_task(_bridge_stop_event(stop_event, graceful_stop, bridge_completed))
     try:
-        await _runner(
-            plugin.create_worker_service(),
-            plugin.config,
-            graceful_stop=graceful_stop,
-            force_stop=force_stop,
-            ready=signal_ready,
-        )
+        if hasattr(plugin, "open_worker_service"):
+            async with plugin.open_worker_service(cast("Any", app)) as service:
+                await _runner(
+                    service,
+                    plugin.config,
+                    graceful_stop=graceful_stop,
+                    force_stop=force_stop,
+                    ready=signal_ready,
+                )
+        else:
+            await _runner(
+                plugin.create_worker_service(),
+                plugin.config,
+                graceful_stop=graceful_stop,
+                force_stop=force_stop,
+                ready=signal_ready,
+            )
     finally:
         bridge_completed.set()
         with contextlib.suppress(BaseException):
@@ -346,7 +357,7 @@ def _worker_process_main(spec: "_WorkerLaunchSpec", stop_event: "_EventLike", co
         plugin = _resolve_queue_plugin(env.app)
         stage = "validate"
         _validate_child_plugin(plugin)
-        asyncio.run(_run_child(plugin, stop_event, connection, os.getpid(), parent))
+        asyncio.run(_run_child(plugin, stop_event, connection, os.getpid(), parent, app=env.app))
     except BaseException as exc:  # noqa: BLE001 - this boundary must suppress unsafe multiprocessing tracebacks.
         if isinstance(exc, _WorkerStageError):
             _safe_send(connection, ("error", exc.stage.value, exc.exception_type))

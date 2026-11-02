@@ -4,6 +4,7 @@ import logging
 import os
 import warnings
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from litestar.channels import ChannelsPlugin
@@ -12,7 +13,7 @@ from litestar.plugins import CLIPlugin, InitPlugin
 from litestar_queues.config import MigrationConfiguringBackend, QueueConfig, execution_backend_name, queue_backend_name
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.service import QueueService
-from litestar_queues.task import load_task_modules, set_default_service
+from litestar_queues.task import get_default_service, load_task_modules, set_default_service
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
@@ -35,6 +36,9 @@ _APP_PATH_ENV_VAR = "LITESTAR_APP"
 _CLOUD_TASKS_BACKEND = "cloudtasks"
 _EXTERNAL_EXECUTION_BACKENDS = frozenset({"cloudrun", "cloudtasks", "kafka", "pubsub", "rabbitmq", "sqs"})
 _PROCESS_LOCAL_CHANNELS_BACKENDS = frozenset({"MemoryChannelsBackend"})
+_standalone_worker_service: 'ContextVar["QueueService | None"]' = ContextVar(
+    "_litestar_queues_standalone_worker_service", default=None
+)
 
 _MISSING_SERVER_CONTEXT_ERROR = (
     "WorkerConfig(placement='server') requires the Litestar CLI server lifecycle. Start the "
@@ -124,6 +128,48 @@ class QueuePlugin(InitPlugin, CLIPlugin):
                 channels_backend=self._auto_channels_backend, manage_channels_lifecycle=True
             ),
         )
+
+    @asynccontextmanager
+    async def standalone_app_lifespan(
+        self, app: "Litestar | None" = None, *, service: "QueueService | None" = None
+    ) -> "AsyncIterator[QueueService]":
+        """Enter the application lifespan around a standalone worker, consumer, or maintenance service.
+
+        Args:
+            app: Optional Litestar application instance.
+            service: Optional pre-created ``QueueService``; defaults to :meth:`create_worker_service`.
+
+        Yields:
+            The active ``QueueService`` with :func:`~litestar_queues.task.get_default_service` bound.
+        """
+        target = service if service is not None else self.create_worker_service()
+        previous_default = get_default_service()
+        set_default_service(target)
+        try:
+            if app is not None and self._config.worker.run_app_lifespan and callable(getattr(app, "lifespan", None)):
+                token = _standalone_worker_service.set(target)
+                try:
+                    async with app.lifespan():
+                        yield target
+                finally:
+                    _standalone_worker_service.reset(token)
+            else:
+                yield target
+        finally:
+            set_default_service(previous_default)
+
+    @asynccontextmanager
+    async def open_worker_service(self, app: "Litestar | None" = None) -> "AsyncIterator[QueueService]":
+        """Create a standalone worker service and enter the application lifespan when configured.
+
+        Args:
+            app: Optional Litestar application instance.
+
+        Yields:
+            The worker-owned ``QueueService``.
+        """
+        async with self.standalone_app_lifespan(app, service=self.create_worker_service()) as service:
+            yield service
 
     def _configure_backend_migrations(self) -> "None":
         """Let the configured backend register whatever migrations it owns."""
@@ -367,20 +413,19 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             finally:
                 server_worker.close()
 
-    @asynccontextmanager
-    async def _lifespan(self, app: "Litestar") -> "AsyncIterator[None]":
-        placement = self._config.worker.placement
-        if placement == "server":
-            # Fail before the service opens so a raw ASGI launch never accepts
-            # traffic against a queue whose worker was never started.
-            from litestar_queues.worker.invocation import server_context_active
+    def _bind_standalone_lifespan_state(self, app: "Litestar", service: "QueueService") -> "QueueService | None":
+        previous_default = get_default_service()
+        app.state[self._config.service_state_key] = service
+        app.state[self._config.event_publisher_state_key] = (
+            service.get_event_publisher() if hasattr(service, "get_event_publisher") else self._event_publisher
+        )
+        effective_channels = self._effective_channels_backend()
+        if self._config.events is not None and effective_channels is not None:
+            app.state[self._config.event_channels_state_key] = effective_channels
+        set_default_service(service)
+        return previous_default
 
-            if not server_context_active(self._config.names):
-                raise QueueConfigurationError(_MISSING_SERVER_CONTEXT_ERROR)
-        self._validate_channels_shutdown_order(app)
-        if self._config.task_modules:
-            load_task_modules(self._config.task_modules)
-
+    async def _open_lifespan_service(self, app: "Litestar") -> "QueueService":
         observability_runtime = None
         observability_config = self._config.observability
         if observability_config is not None:
@@ -399,12 +444,44 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             observability_runtime=observability_runtime,
         )
         await self._service.open()
-        set_default_service(self._service)
-        app.state[self._config.service_state_key] = self._service
-        app.state[self._config.event_publisher_state_key] = self._service.get_event_publisher()
-        effective_channels = self._effective_channels_backend()
-        if self._config.events is not None and effective_channels is not None:
-            app.state[self._config.event_channels_state_key] = effective_channels
+        self._bind_standalone_lifespan_state(app, self._service)
+        return self._service
+
+    async def _close_lifespan_resources(self) -> "None":
+        if self._worker is not None:
+            await self._worker.stop()
+        if self._worker_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._worker_task
+            self._worker_task = None
+        if self._service is not None:
+            set_default_service(None)
+            await self._service.close()
+            self._service = None
+
+    @asynccontextmanager
+    async def _lifespan(self, app: "Litestar") -> "AsyncIterator[None]":
+        standalone_service = _standalone_worker_service.get()
+        if standalone_service is not None:
+            previous_default = self._bind_standalone_lifespan_state(app, standalone_service)
+            try:
+                yield
+            finally:
+                set_default_service(previous_default)
+            return
+        placement = self._config.worker.placement
+        if placement == "server":
+            # Fail before the service opens so a raw ASGI launch never accepts
+            # traffic against a queue whose worker was never started.
+            from litestar_queues.worker.invocation import server_context_active
+
+            if not server_context_active(self._config.names):
+                raise QueueConfigurationError(_MISSING_SERVER_CONTEXT_ERROR)
+        self._validate_channels_shutdown_order(app)
+        if self._config.task_modules:
+            load_task_modules(self._config.task_modules)
+
+        service = await self._open_lifespan_service(app)
 
         # Schedules belong to whichever process owns a worker, so an enqueue-only
         # ASGI process never writes schedule records: server and external
@@ -414,12 +491,12 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         # starts no worker. Instances racing each other are settled by the
         # schedule key: the first record written is the one they all keep.
         owns_schedules = placement == "asgi" or any(
-            backend.schedules_on_enqueue for backend in self._service.get_execution_backends().values()
+            backend.schedules_on_enqueue for backend in service.get_execution_backends().values()
         )
         if owns_schedules and self._config.initialize_schedules:
-            await self._service.initialize_schedules()
+            await service.initialize_schedules()
         if placement == "asgi":
-            self._worker = Worker(self._service, self._config.worker)
+            self._worker = Worker(service, self._config.worker)
             self._worker_task = asyncio.create_task(self._worker.start())
             self._worker_task.add_done_callback(self._log_worker_task_result)
             await asyncio.sleep(0)
@@ -428,16 +505,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         try:
             yield
         finally:
-            if self._worker is not None:
-                await self._worker.stop()
-            if self._worker_task is not None:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await self._worker_task
-                self._worker_task = None
-            if self._service is not None:
-                set_default_service(None)
-                await self._service.close()
-                self._service = None
+            await self._close_lifespan_resources()
 
     def _log_worker_task_result(self, task: "asyncio.Task[None]") -> "None":
         if task.cancelled():

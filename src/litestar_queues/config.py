@@ -294,6 +294,9 @@ class WorkerConfig:
     queues: "tuple[str, ...]" = ()
     """Queue names claimed by this worker; empty claims every queue."""
 
+    run_app_lifespan: "bool" = True
+    """Whether standalone worker, consumer, and maintenance processes enter the Litestar application lifespan."""
+
     def __post_init__(self) -> "None":  # noqa: C901
         """Validate worker placement, concurrency, intervals, and adaptive polling."""
         if self.placement not in _PLACEMENTS:
