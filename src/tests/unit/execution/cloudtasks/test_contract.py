@@ -70,18 +70,28 @@ def test_the_base_backend_does_not_schedule_on_enqueue() -> "None":
 
 
 def test_external_dispatch_and_self_scheduling_are_separate_capabilities() -> "None":
-    """Cloud Run Jobs is external but still needs a worker to notice a pending record.
+    """Broker backends are external while Cloud Run Jobs supports both self-scheduling and worker-polled modes.
 
     Collapsing the two flags would make every future broker backend self-scheduling
     and silently retire the worker loop they rely on.
     """
-    from litestar_queues.execution import ImmediateExecutionBackend, LocalExecutionBackend
-    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend
+    from litestar_queues.execution import ImmediateExecutionBackend, LocalExecutionBackend, PubSubExecutionBackend
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
 
-    cloudrun = CloudRunExecutionBackend()
+    cloudrun_default = CloudRunExecutionBackend()
+    cloudrun_polled = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(
+            project_id="example-project", job_name="worker", schedules_on_enqueue=False
+        )
+    )
+    pubsub = PubSubExecutionBackend()
 
-    assert cloudrun.is_external is True
-    assert cloudrun.schedules_on_enqueue is False
+    assert cloudrun_default.is_external is True
+    assert cloudrun_default.schedules_on_enqueue is True
+    assert cloudrun_polled.is_external is True
+    assert cloudrun_polled.schedules_on_enqueue is False
+    assert pubsub.is_external is True
+    assert pubsub.schedules_on_enqueue is False
     assert LocalExecutionBackend().schedules_on_enqueue is False
     assert ImmediateExecutionBackend().schedules_on_enqueue is False
 

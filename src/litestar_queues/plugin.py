@@ -178,9 +178,7 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             app_config.route_handlers.append(
                 _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
-        if execution_backend_name(self._config.execution_backend) == _CLOUD_TASKS_BACKEND:
-            # Imported here so an ordinary application never loads the delivery
-            # route, its request type, or anything the Cloud Tasks extra brings.
+        if _CLOUD_TASKS_BACKEND in self._config.resolved_execution_backends():
             from litestar_queues.execution.cloudtasks.routes import build_cloud_tasks_route
 
             app_config.route_handlers.append(build_cloud_tasks_route(self._config))
@@ -391,7 +389,9 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         # process writes the first occurrence and hands it over -- and still
         # starts no worker. Instances racing each other are settled by the
         # schedule key: the first record written is the one they all keep.
-        owns_schedules = placement == "asgi" or self._service.get_execution_backend().schedules_on_enqueue
+        owns_schedules = placement == "asgi" or any(
+            backend.schedules_on_enqueue for backend in self._service.get_execution_backends().values()
+        )
         if owns_schedules and self._config.initialize_schedules:
             await self._service.initialize_schedules()
         if placement == "asgi":

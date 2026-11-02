@@ -256,8 +256,12 @@ def _execution_config_from_queue_config(config: "QueueConfig | None") -> "CloudT
     Raises:
         QueueConfigurationError: If no typed Cloud Tasks config is available.
     """
-    if config is not None and isinstance(config.execution_backend, CloudTasksExecutionConfig):
-        return config.execution_backend.resolve(config.names)
+    if config is not None:
+        if isinstance(config.execution_backend, CloudTasksExecutionConfig):
+            return config.execution_backend.resolve(config.names)
+        resolved = config.resolved_execution_backends().get(CLOUD_TASKS_BACKEND_NAME)
+        if isinstance(resolved, CloudTasksExecutionConfig):
+            return resolved.resolve(config.names)
 
     msg = (
         "Cloud Tasks execution requires QueueConfig.execution_backend with a "

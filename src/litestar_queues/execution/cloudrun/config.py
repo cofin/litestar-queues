@@ -40,6 +40,9 @@ class CloudRunExecutionConfig:
     fallback_execution_backend: "str | None" = None
     """Backend used after dispatch failure; ``None`` propagates the failure."""
 
+    schedules_on_enqueue: "bool" = True
+    """Whether QueueService.enqueue() dispatches due records without a polling worker."""
+
     def resolve_job_name(self, profile: "str | None" = None) -> "str":
         """Return the Cloud Run Job name for a profile.
 
@@ -76,8 +79,12 @@ def _execution_config_from_queue_config(config: "QueueConfig | None") -> "CloudR
     Raises:
         QueueConfigurationError: If no Cloud Run execution config is available.
     """
-    if config is not None and isinstance(config.execution_backend, CloudRunExecutionConfig):
-        return config.execution_backend
+    if config is not None:
+        if isinstance(config.execution_backend, CloudRunExecutionConfig):
+            return config.execution_backend
+        resolved = config.resolved_execution_backends().get("cloudrun")
+        if isinstance(resolved, CloudRunExecutionConfig):
+            return resolved
 
     msg = "Cloud Run execution requires QueueConfig.execution_backend with a CloudRunExecutionConfig value."
     raise QueueConfigurationError(msg)

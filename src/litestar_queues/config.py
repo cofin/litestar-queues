@@ -1,5 +1,5 @@
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from logging import getLogger
@@ -363,6 +363,9 @@ class QueueConfig:
     execution_backend: "ExecutionBackendConfig" = "local"
     """Default placement backend used to execute claimed tasks."""
 
+    execution_backends: "Sequence[ExecutionBackendConfig] | Mapping[str, ExecutionBackendConfig]" = ()
+    """Additional execution backend configurations available for task routing."""
+
     task_dependency_resolver: "TaskDependencyResolver | None" = None
     """Per-attempt dependency resolver; ``None`` injects no additional task keyword arguments."""
 
@@ -475,6 +478,35 @@ class QueueConfig:
             )
             raise QueueConfigurationError(msg)
 
+    def resolved_execution_backends(self) -> "dict[str, ExecutionBackendConfig]":
+        """Return all configured execution backends keyed by registered backend name.
+
+        Raises:
+            QueueConfigurationError: If a mapping key does not match its backend name
+                or conflicting configurations are provided for the same backend.
+        """
+        resolved: "dict[str, ExecutionBackendConfig]" = {
+            execution_backend_name(self.execution_backend): self.execution_backend
+        }
+        if isinstance(self.execution_backends, Mapping):
+            for key, cfg in self.execution_backends.items():
+                name = execution_backend_name(cfg)
+                if key != name:
+                    msg = f"QueueConfig.execution_backends key {key!r} does not match backend name {name!r}."
+                    raise QueueConfigurationError(msg)
+                if name in resolved and resolved[name] != cfg:
+                    msg = f"QueueConfig.execution_backends defines conflicting configurations for backend {name!r}."
+                    raise QueueConfigurationError(msg)
+                resolved[name] = cfg
+        else:
+            for cfg in self.execution_backends:
+                name = execution_backend_name(cfg)
+                if name in resolved and resolved[name] != cfg:
+                    msg = f"QueueConfig.execution_backends defines conflicting configurations for backend {name!r}."
+                    raise QueueConfigurationError(msg)
+                resolved[name] = cfg
+        return resolved
+
     def _validate_placement(self) -> "None":
         """Reject storage, execution, and placement combinations that cannot work.
 
@@ -484,6 +516,7 @@ class QueueConfig:
         Raises:
             QueueConfigurationError: If the combination has no coherent owner.
         """
+        resolved_backends = self.resolved_execution_backends()
         backend = queue_backend_name(self.queue_backend)
         execution = execution_backend_name(self.execution_backend)
         placement = self.worker.placement
@@ -495,18 +528,12 @@ class QueueConfig:
                 f"Use execution_backend='local', or placement='external'."
             )
             raise QueueConfigurationError(msg)
-        if execution == "cloudtasks":
-            if isinstance(self.execution_backend, str):
+        if "cloudtasks" in resolved_backends:
+            if isinstance(resolved_backends["cloudtasks"], str):
                 msg = (
                     "execution_backend='cloudtasks' has no defaults for the project, queue, "
                     "delivery target, or audience. Configure it as "
                     "execution_backend=CloudTasksExecutionConfig(...)."
-                )
-                raise QueueConfigurationError(msg)
-            if placement != "external":
-                msg = (
-                    "execution_backend='cloudtasks' schedules work itself and requires "
-                    "WorkerConfig(placement='external')."
                 )
                 raise QueueConfigurationError(msg)
             if backend in {"memory", "ephemeral"}:
@@ -515,6 +542,23 @@ class QueueConfig:
                     "which cannot reach process-local storage. Use a shared persistent queue backend."
                 )
                 raise QueueConfigurationError(msg)
+        if execution == "cloudtasks" and placement != "external":
+            msg = (
+                "execution_backend='cloudtasks' schedules work itself and requires "
+                "WorkerConfig(placement='external')."
+            )
+            raise QueueConfigurationError(msg)
+        if (
+            execution == "cloudrun"
+            and not isinstance(self.execution_backend, str)
+            and getattr(self.execution_backend, "schedules_on_enqueue", False)
+            and placement != "external"
+        ):
+            msg = (
+                "execution_backend='cloudrun' with schedules_on_enqueue=True schedules work itself "
+                "and requires WorkerConfig(placement='external')."
+            )
+            raise QueueConfigurationError(msg)
         # Ephemeral storage is deliberately unconstrained by placement. Placement
         # does not decide whether the private database exists: whatever entered
         # EphemeralServerContext created it, and the backend refuses to open when
@@ -631,11 +675,15 @@ class QueueConfig:
 
         return get_queue_backend(self.queue_backend, config=self)
 
-    def get_execution_backend(self) -> "BaseExecutionBackend":
+    def get_execution_backend(self, name: "str | None" = None) -> "BaseExecutionBackend":
         """Return a configured execution backend instance."""
         from litestar_queues.execution import get_execution_backend
 
-        return get_execution_backend(self.execution_backend, config=self)
+        if name is None:
+            return get_execution_backend(self.execution_backend, config=self)
+        resolved = self.resolved_execution_backends()
+        selector: "ExecutionBackendConfig" = resolved.get(name, name)
+        return get_execution_backend(selector, config=self)
 
     def get_event_publisher(
         self, *, channels_backend: "ChannelsLike | None" = None, manage_channels_lifecycle: "bool" = False

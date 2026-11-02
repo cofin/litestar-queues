@@ -2607,3 +2607,121 @@ async def test_schedule_restart_preserves_persisted_retry_policy(
             assert reused.max_retries == budget
             assert reused.retry_count == int(consumed)
         assert (await backend.get_statistics()).total == 1
+
+
+async def test_cloudrun_schedules_on_enqueue_dispatches_due_and_repairs_delayed_records() -> None:
+    from litestar_queues import task
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("cloudrun.self_scheduled")
+    async def run_heavy() -> str:
+        return "done"
+
+    class _FakeOperation:
+        def __init__(self, ref: str) -> None:
+            self.metadata = {"name": ref}
+
+    class _FakeJobsClient:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def run_job(self, *, request: dict[str, Any]) -> _FakeOperation:
+            self.requests.append(request)
+            return _FakeOperation(
+                f"projects/test-project/locations/us-central1/jobs/heavy/executions/exec-{len(self.requests)}"
+            )
+
+    jobs_client = _FakeJobsClient()
+    cloudrun_config = CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="heavy")
+    cloudrun_backend = CloudRunExecutionBackend(execution_config=cloudrun_config, jobs_client=cast("Any", jobs_client))
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend=cloudrun_config
+    )
+
+    async with QueueService(config, execution_backend=cloudrun_backend) as service:
+        immediate_res = await service.enqueue(run_heavy)
+        assert immediate_res.record is not None
+        assert immediate_res.record.execution_ref == (
+            "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-1"
+        )
+        assert len(jobs_client.requests) == 1
+
+        delayed_res = await service.enqueue(run_heavy, run_after=timedelta(minutes=5))
+        assert delayed_res.record is not None
+        assert delayed_res.record.execution_ref is None
+        assert len(jobs_client.requests) == 1
+
+        repair_before_due = await cloudrun_backend.repair(service, limit=10)
+        assert repair_before_due.changed == 0
+        assert len(jobs_client.requests) == 1
+
+        backend = cast("InMemoryQueueBackend", service.get_queue_backend())
+        stored = await backend.get_task(delayed_res.id)
+        assert stored is not None
+        stored.scheduled_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        repair_when_due = await cloudrun_backend.repair(service, limit=10)
+        assert repair_when_due.changed == 1
+        repaired_record = await backend.get_task(delayed_res.id)
+        assert repaired_record is not None
+        assert repaired_record.execution_ref == (
+            "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-2"
+        )
+
+
+async def test_multi_backend_service_dispatches_cloudtasks_and_cloudrun_together() -> None:
+    from litestar_queues import task
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("multi.default_cloudtasks")
+    async def fast_task() -> str:
+        return "fast"
+
+    @task("multi.heavy_cloudrun", execution_backend="cloudrun")
+    async def heavy_task() -> str:
+        return "heavy"
+
+    cloudtasks_cfg = CloudTasksExecutionConfig(
+        project_id="test-project",
+        location="us-central1",
+        queue_id="default",
+        service_url="https://app.example.com",
+        service_account_email="tasks@test-project.iam.gserviceaccount.com",
+        trust_platform_auth=True,
+    )
+    cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="heavy")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="redis",
+        execution_backend=cloudtasks_cfg,
+        execution_backends=(cloudrun_cfg,),
+    )
+    service = QueueService(config, queue_backend=InMemoryQueueBackend())
+    cloudrun_backend = service.get_execution_backend("cloudrun")
+    assert isinstance(cloudrun_backend, CloudRunExecutionBackend)
+
+    class _FakeOperation:
+        metadata = {"name": "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-multi"}
+
+    class _FakeJobsClient:
+        async def run_job(self, *, request: dict[str, Any]) -> _FakeOperation:
+            del request
+            return _FakeOperation()
+
+    cloudrun_backend.jobs_client = cast("Any", _FakeJobsClient())
+
+    async with service:
+        res = await service.enqueue(heavy_task)
+        assert res.record is not None
+        assert res.record.execution_backend == "cloudrun"
+        assert res.record.execution_ref == (
+            "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-multi"
+        )
