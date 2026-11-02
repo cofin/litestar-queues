@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -9,31 +9,6 @@ resolution-markers = [
     "python_full_version == '3.11.*'",
     "python_full_version < '3.11'",
 ]
-
-[options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
-
-[options.exclude-newer-package]
-litestar-queues = false
-litestar-htmx = false
-litestar-saq = false
-sqlglot = false
-litestar-asyncapi = false
-sqlglotc = false
-litestar-mcp = false
-litestar-oracledb = false
-litestar = false
-pytest-databases = false
-sqlspec = false
-litestar-vite = false
-litestar-security = false
-advanced-alchemy = false
-litestar-asyncpg = false
-litestar-email = false
-litestar-granian = false
-polyfactory = false
-litestar-autowire = false
 
 [[package]]
 name = "adbc-driver-manager"
@@ -2783,7 +2758,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "spanner", "valkey"] },
+    { name = "pytest-databases" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -2854,7 +2829,7 @@ test-adapters = [
     { name = "prometheus-client" },
     { name = "psutil" },
     { name = "pyarrow" },
-    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "spanner", "valkey"] },
+    { name = "pytest-databases" },
     { name = "redis" },
     { name = "sqlspec", extra = ["adbc", "aiomysql", "aiosqlite", "arrow-odbc", "asyncmy", "asyncpg", "cockroachdb", "duckdb", "litestar", "mssql-python", "mysql-connector", "oracledb", "psqlpy", "psycopg", "pymssql", "pymysql", "spanner"] },
     { name = "valkey" },
@@ -2894,7 +2869,7 @@ tests = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extra = ["cockroachdb", "oracle", "postgres", "redis", "spanner", "valkey"] },
+    { name = "pytest-databases" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -2999,7 +2974,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb", "spanner"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", git = "https://github.com/litestar-org/pytest-databases.git?branch=test%2Fclientless-all" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -3060,7 +3035,7 @@ test-adapters = [
     { name = "prometheus-client" },
     { name = "psutil" },
     { name = "pyarrow" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb", "spanner"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", git = "https://github.com/litestar-org/pytest-databases.git?branch=test%2Fclientless-all" },
     { name = "redis", specifier = ">=8.1.0" },
     { name = "sqlspec", extras = ["adbc", "aiosqlite", "oracledb", "aiomysql", "psycopg", "asyncpg", "duckdb", "psqlpy", "asyncmy", "arrow-odbc", "cockroachdb", "pymysql", "spanner", "litestar", "mysql-connector", "pymssql", "mssql-python"], specifier = ">=0.63.0" },
     { name = "valkey", specifier = ">=6.0.0" },
@@ -3098,7 +3073,7 @@ tests = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "pytest-databases", extras = ["postgres", "mysql", "mssql", "oracle", "redis", "valkey", "cockroachdb", "spanner"], specifier = ">=0.19.0" },
+    { name = "pytest-databases", git = "https://github.com/litestar-org/pytest-databases.git?branch=test%2Fclientless-all" },
     { name = "pytest-mock" },
     { name = "pytest-sugar" },
     { name = "pytest-timeout" },
@@ -5001,35 +4976,12 @@ wheels = [
 [[package]]
 name = "pytest-databases"
 version = "0.19.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/litestar-org/pytest-databases.git?branch=test%2Fclientless-all#b065852da3cdaf19bd88ff19a737a164af863966" }
 dependencies = [
     { name = "docker" },
     { name = "filelock" },
     { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/4e/e899556b3876eec2db9bd630ad3054ced94a9541c26319bec5c4cd00579d/pytest_databases-0.19.0.tar.gz", hash = "sha256:ba7b8e51b551455daf3bd144384f6d4fba23d747b001f071795b02e6be2a3cbf", size = 350034, upload-time = "2026-05-23T18:33:49.262Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/f4/d6e2edae47a0421a8531a9805fb787b993380222f00dc25cee1634f55f3c/pytest_databases-0.19.0-py3-none-any.whl", hash = "sha256:d14651e23a716ed6f2317bf9ac317c9e7891db701253abf78e9cef1049e8f26b", size = 41525, upload-time = "2026-05-23T18:33:47.983Z" },
-]
-
-[package.optional-dependencies]
-cockroachdb = [
-    { name = "psycopg" },
-]
-oracle = [
-    { name = "oracledb" },
-]
-postgres = [
-    { name = "psycopg" },
-]
-redis = [
-    { name = "redis" },
-]
-spanner = [
-    { name = "google-cloud-spanner" },
-]
-valkey = [
-    { name = "valkey" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 
 [[package]]

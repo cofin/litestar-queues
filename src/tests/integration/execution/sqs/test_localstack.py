@@ -8,7 +8,7 @@ from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.execution.sqs import SqsExecutionBackend, SqsExecutionConfig
 
 if TYPE_CHECKING:
-    from tests.plugins.localstack import LocalStackService
+    from pytest_databases.docker.localstack import LocalStackService
 
 pytestmark = pytest.mark.anyio
 

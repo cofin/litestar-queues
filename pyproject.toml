@@ -188,7 +188,7 @@ test-adapters = [
   "psutil",
   "pyarrow",
   "aio-pika>=10.0.1; python_version >= '3.11'",
-  "pytest-databases[postgres,mysql,mssql,oracle,redis,valkey,cockroachdb,spanner]>=0.19.0",
+  "pytest-databases>=0.19.0",
   "redis>=8.1.0",
   "sqlspec[adbc,aiosqlite,oracledb,aiomysql,psycopg,asyncpg,duckdb,psqlpy,asyncmy,arrow-odbc,cockroachdb,pymysql,spanner,litestar,mysql-connector,pymssql,mssql-python]>=0.63.0",
   "valkey>=6.0.0",
@@ -274,6 +274,9 @@ pytest-databases = false
 sqlglot = false
 sqlglotc = false
 sqlspec = false
+
+[tool.uv.sources]
+pytest-databases = { git = "https://github.com/litestar-org/pytest-databases.git", branch = "test/clientless-all" }
 
 [tool.ruff]
 exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build"]

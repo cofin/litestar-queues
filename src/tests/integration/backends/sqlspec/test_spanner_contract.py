@@ -1,7 +1,6 @@
 """Optional live contract coverage for the SQLSpec Spanner backend."""
 
 import os
-from contextlib import suppress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -10,7 +9,9 @@ import pytest
 pytest.importorskip("sqlspec")
 pytest.importorskip("google.cloud.spanner_v1")
 
+from google.api_core.client_options import ClientOptions
 from google.api_core.exceptions import GoogleAPICallError
+from google.auth.credentials import AnonymousCredentials
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import spanner
 from sqlspec.adapters.spanner import SpannerSyncConfig, spanner_json
@@ -51,7 +52,6 @@ async def test_sqlspec_spanner_backend_live_contract_round_trip() -> "None":
 
 
 async def test_sqlspec_spanner_backend_emulator_contract_round_trip(spanner_service: "SpannerService") -> "None":
-    _ensure_spanner_emulator_database(spanner_service)
     await _run_spanner_contract(
         _spanner_emulator_connection_config(spanner_service),
         table_name=table_name_for_test("litestar_queue_spanner", "emulator", __name__),
@@ -128,39 +128,10 @@ def _spanner_emulator_connection_config(spanner_service: "SpannerService") -> "d
         "project": spanner_service.project,
         "instance_id": spanner_service.instance_name,
         "database_id": spanner_service.database_name,
-        "credentials": spanner_service.credentials,
-        "client_options": spanner_service.client_options,
+        "credentials": AnonymousCredentials(),  # type: ignore[no-untyped-call]
+        "client_options": ClientOptions(api_endpoint=spanner_service.endpoint),
         **_builtin_metrics_kwargs(),
     }
-
-
-def _ensure_spanner_emulator_database(spanner_service: "SpannerService") -> "None":
-    from google.api_core.exceptions import AlreadyExists
-
-    client = cast(
-        "Any",
-        spanner.Client(
-            project=spanner_service.project,
-            credentials=spanner_service.credentials,
-            client_options=spanner_service.client_options,
-            **_builtin_metrics_kwargs(),
-        ),
-    )
-    try:
-        instance = client.instance(
-            spanner_service.instance_name,
-            configuration_name="emulator-config",
-            display_name=spanner_service.instance_name,
-            node_count=1,
-        )
-        with suppress(AlreadyExists):
-            instance.create().result()
-
-        database = instance.database(spanner_service.database_name)
-        with suppress(AlreadyExists):
-            database.create().result()
-    finally:
-        client.close()
 
 
 async def test_sqlspec_spanner_emulator_dispatch_repair_current_schema(spanner_service: "SpannerService") -> "None":
@@ -170,7 +141,6 @@ async def test_sqlspec_spanner_emulator_dispatch_repair_current_schema(spanner_s
         assert_scheduled_execution_ref_rejects_mismatches,
     )
 
-    _ensure_spanner_emulator_database(spanner_service)
     backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(
             sqlspec_config=SpannerSyncConfig(

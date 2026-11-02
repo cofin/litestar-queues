@@ -9,25 +9,6 @@ if TYPE_CHECKING:
 
     from litestar_queues import QueueConfig, QueuePlugin
 
-# pytest-databases auto-skips each plugin when Docker is unavailable; declared
-# at the project root because pytest requires ``pytest_plugins`` to live in the
-# top-level conftest.
-pytest_plugins = [
-    "tests.plugins.localstack",
-    "tests.plugins.pubsub",
-    "tests.plugins.rabbitmq",
-    "tests.plugins.redpanda",
-    "pytest_databases.docker.cockroachdb",
-    "pytest_databases.docker.postgres",
-    "pytest_databases.docker.mysql",
-    "pytest_databases.docker.mssql",
-    "pytest_databases.docker.oracle",
-    "pytest_databases.docker.mssql",
-    "pytest_databases.docker.spanner",
-    "pytest_databases.docker.redis",
-    "pytest_databases.docker.valkey",
-]
-
 pytestmark = pytest.mark.anyio
 
 

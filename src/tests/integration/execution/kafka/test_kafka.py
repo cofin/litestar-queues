@@ -9,7 +9,7 @@ from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.execution.kafka import KafkaExecutionBackend, KafkaExecutionConfig
 
 if TYPE_CHECKING:
-    from tests.plugins.redpanda import RedpandaService
+    from pytest_databases.docker.redpanda import RedpandaService
 
 pytestmark = pytest.mark.anyio
 

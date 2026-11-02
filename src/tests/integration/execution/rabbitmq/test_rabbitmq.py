@@ -4,18 +4,19 @@ from uuid import uuid4
 
 import pytest
 
+pytest.importorskip("aio_pika")
+
 from litestar_queues import QueueConfig, QueueService, WorkerConfig, task
 from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.execution.rabbitmq import RabbitMQExecutionBackend, RabbitMQExecutionConfig
 
 if TYPE_CHECKING:
-    from tests.plugins.rabbitmq import RabbitMQService
+    from pytest_databases.docker.rabbitmq import RabbitMQService
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_dispatch_consume_and_complete(rabbitmq_service: "RabbitMQService") -> "None":
-    pytest.importorskip("aio_pika")
     completed = asyncio.Event()
 
     @task(f"tasks.rabbitmq-{uuid4()}")
