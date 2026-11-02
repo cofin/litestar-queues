@@ -590,7 +590,7 @@ async def test_a_cancelled_record_is_acknowledged(delivery: "Callable[..., Any]"
 
 
 async def test_a_delivery_that_loses_the_claim_is_acknowledged(delivery: "Callable[..., Any]") -> "None":
-    """Someone else owns this attempt; running it again would double the work."""
+    """A concurrent delivery while the original consumer has a live heartbeat asks for redelivery."""
     live = await delivery()
     record = await live.service.enqueue(succeeds)
     claimed, _expired = await live.service.claim_task(record.id)
@@ -598,7 +598,7 @@ async def test_a_delivery_that_loses_the_claim_is_acknowledged(delivery: "Callab
 
     response = await live.deliver(record.id)
 
-    assert response.status_code == HTTP_NO_CONTENT
+    assert response.status_code == HTTP_UNAVAILABLE
     assert executions == []
 
 
@@ -884,3 +884,33 @@ async def test_a_record_left_running_by_a_lost_consumer_can_be_delivered_again(
     stored = await live.record(record.id)
     assert stored is not None
     assert stored.status == "completed"
+
+
+async def test_a_redelivery_for_a_stale_running_record_with_backoff_schedules_next_attempt(
+    delivery: "Callable[..., Any]",
+) -> "None":
+    """When a stale running record has a retry backoff, redelivery recovers and schedules the delayed delivery."""
+    backed_off_name = "cloudtasks.route_recoverable_backoff"
+
+    @task(backed_off_name, retries=2, retry_backoff=60.0, requeue_on_stale=True)
+    async def recoverable_backoff() -> "None":
+        executions.append(backed_off_name)
+
+    live = await delivery()
+    record = await live.service.enqueue(recoverable_backoff)
+    deliveries_before = len(live.tasks.create_calls)
+    claimed, _expired = await live.service.claim_task(record.id)
+    assert claimed is not None
+    await live.service.get_queue_backend().null_heartbeats([record.id], expected_retry_count=claimed.retry_count)
+
+    response = await live.deliver(record.id)
+
+    assert response.status_code == HTTP_NO_CONTENT
+    assert executions == []
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert stored.status == "scheduled"
+    assert stored.retry_count == 1
+    assert len(live.tasks.create_calls) == deliveries_before + 1
+    assert stored.execution_ref == live.tasks.create_calls[-1].name
+

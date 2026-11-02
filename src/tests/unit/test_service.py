@@ -2725,3 +2725,115 @@ async def test_multi_backend_service_dispatches_cloudtasks_and_cloudrun_together
         assert res.record.execution_ref == (
             "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-multi"
         )
+
+
+async def test_recover_stale_tasks_redispatches_self_scheduling_backends() -> None:
+    from litestar_queues import task
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("stale.cloudrun_redispatch", execution_backend="cloudrun", retries=2)
+    async def stale_cloudrun() -> str:
+        return "ok"
+
+    cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="heavy")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="redis",
+        execution_backend=cloudrun_cfg,
+    )
+    queue_backend = InMemoryQueueBackend()
+    service = QueueService(config, queue_backend=queue_backend)
+    cloudrun_backend = service.get_execution_backend("cloudrun")
+    assert isinstance(cloudrun_backend, CloudRunExecutionBackend)
+
+    call_count = 0
+
+    class _FakeOperation:
+        def __init__(self, index: int) -> None:
+            self.metadata = {"name": f"projects/test-project/locations/us-central1/jobs/heavy/executions/exec-{index}"}
+
+    class _FakeJobsClient:
+        async def run_job(self, *, request: dict[str, Any]) -> _FakeOperation:
+            nonlocal call_count
+            del request
+            call_count += 1
+            return _FakeOperation(call_count)
+
+    cloudrun_backend.jobs_client = cast("Any", _FakeJobsClient())
+
+    async with service:
+        res = await service.enqueue(stale_cloudrun)
+        claimed, _ = await service.claim_task(res.id)
+        assert claimed is not None
+        await queue_backend.null_heartbeats([res.id], expected_retry_count=0)
+
+        recovery = await service.recover_stale_tasks(stale_after=timedelta(seconds=30))
+        assert recovery.requeued == 1
+        assert recovery.requeued_task_ids == [res.id]
+        assert recovery.repair is not None
+        assert recovery.repair.examined == 1
+        assert recovery.repair.changed == 1
+        assert recovery.repair.failed == 0
+
+        stored = await queue_backend.get_task(res.id)
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.retry_count == 1
+        assert stored.execution_ref == "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-2"
+
+
+async def test_recover_stale_tasks_records_failed_repair_when_redispatch_raises() -> None:
+    from litestar_queues import task
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+
+    @task("stale.cloudrun_redispatch_fail", execution_backend="cloudrun", retries=2)
+    async def stale_cloudrun_fail() -> str:
+        return "ok"
+
+    cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", region="us-central1", job_name="heavy")
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="redis",
+        execution_backend=cloudrun_cfg,
+    )
+    queue_backend = InMemoryQueueBackend()
+    service = QueueService(config, queue_backend=queue_backend)
+    cloudrun_backend = service.get_execution_backend("cloudrun")
+    assert isinstance(cloudrun_backend, CloudRunExecutionBackend)
+
+    fail_dispatch = False
+
+    class _FakeOperation:
+        metadata = {"name": "projects/test-project/locations/us-central1/jobs/heavy/executions/exec-1"}
+
+    class _FakeJobsClient:
+        async def run_job(self, *, request: dict[str, Any]) -> _FakeOperation:
+            del request
+            if fail_dispatch:
+                msg = "Cloud Run API unavailable"
+                raise RuntimeError(msg)
+            return _FakeOperation()
+
+    cloudrun_backend.jobs_client = cast("Any", _FakeJobsClient())
+
+    async with service:
+        res = await service.enqueue(stale_cloudrun_fail)
+        claimed, _ = await service.claim_task(res.id)
+        assert claimed is not None
+        await queue_backend.null_heartbeats([res.id], expected_retry_count=0)
+
+        fail_dispatch = True
+        recovery = await service.recover_stale_tasks(stale_after=timedelta(seconds=30))
+        assert recovery.requeued == 1
+        assert recovery.requeued_task_ids == [res.id]
+        assert recovery.repair is not None
+        assert recovery.repair.examined == 1
+        assert recovery.repair.changed == 0
+        assert recovery.repair.failed == 1
+

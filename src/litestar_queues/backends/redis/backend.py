@@ -1549,6 +1549,7 @@ class RedisQueueBackend(BaseQueueBackend):
             if requeue_on_stale and attempts_consumed(latest) < latest.max_retries:
                 if await self._commit_stale_requeue(latest):
                     result.requeued += 1
+                    result.requeued_task_ids.append(latest.id)
                 else:
                     result.skipped += 1
             elif await self._commit_stale_failure(latest):

@@ -524,3 +524,23 @@ def test_phase_result_payload_shape() -> "None":
         "error": None,
         "repair": None,
     }
+
+
+async def test_stale_phase_propagates_repair_result_and_fails_when_repair_fails() -> "None":
+    backend = _StubBackend()
+    stub = _StubService(backend=backend, is_external=False)
+    stub.recover_result = StaleTaskRecoveryResult(
+        requeued=2,
+        failed=0,
+        repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0),
+    )
+    summary = await _run(stub, QueueMaintenanceConfig(stale_after=60.0), phases=["stale"])
+    assert summary.outcome == "failed"
+    assert len(summary.phases) == 1
+    stale_phase = summary.phases[0]
+    assert stale_phase.phase == "stale"
+    assert stale_phase.status == "failed"
+    assert stale_phase.changed == 2
+    assert stale_phase.error == "maintenance_repair_failed"
+    assert stale_phase.repair == DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
+

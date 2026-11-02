@@ -639,7 +639,7 @@ class QueueService:
             raise QueueConfigurationError(msg)
         return effective_timeout
 
-    async def _schedule_persisted(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+    async def schedule_persisted(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
         """Hand an already-persisted record to a self-scheduling execution backend.
 
         A no-op for every polled backend, so persistence paths can call it
@@ -666,6 +666,9 @@ class QueueService:
         except Exception as exc:
             msg = f"Dispatched task {task_id} could not be reloaded."
             raise QueueDispatchError(msg, task_id=task_id, committed=True) from exc
+
+    async def _schedule_persisted(self, record: "QueuedTaskRecord") -> "QueuedTaskRecord":
+        return await self.schedule_persisted(record)
 
     def _execution_backend_for_name(self, name: "str") -> "BaseExecutionBackend":
         return self.get_execution_backend(name)
@@ -1161,7 +1164,12 @@ class QueueService:
         return reconciled
 
     async def recover_stale_tasks(
-        self, *, stale_after: "timedelta", worker_id: "str | None" = None, limit: "int | None" = None
+        self,
+        *,
+        stale_after: "timedelta",
+        worker_id: "str | None" = None,
+        limit: "int | None" = None,
+        redispatch: "bool" = True,
     ) -> "StaleTaskRecoveryResult":
         """Recover stale running tasks and publish a worker summary event.
 
@@ -1170,11 +1178,14 @@ class QueueService:
             worker_id: Identity attached to published recovery events.
             limit: When provided, recover at most this many records in one
                 bounded batch. ``None`` preserves the unbounded worker behavior.
+            redispatch: Whether to immediately schedule requeued records on
+                self-scheduling execution backends.
 
         Returns:
             Summary of recovered, failed, skipped, and handler-needed tasks.
         """
-        result = await self.get_queue_backend().requeue_stale_running(stale_after=stale_after, limit=limit)
+        backend = self.get_queue_backend()
+        result = await backend.requeue_stale_running(stale_after=stale_after, limit=limit)
         if result.requeued or result.failed or result.skipped or result.handler_needed:
             await self._publish_stale_failed_events(result, worker_id=worker_id)
             await self.get_event_publisher().publish(
@@ -1186,7 +1197,41 @@ class QueueService:
                     payload=result.to_payload(),
                 )
             )
+        if redispatch and result.requeued_task_ids:
+            result.repair = await self._redispatch_requeued_tasks(result.requeued_task_ids)
         return result
+
+    async def _redispatch_requeued_tasks(self, task_ids: "list[UUID]") -> "DispatchRepairResult | None":
+        backend = self.get_queue_backend()
+        examined = changed = failed = unchanged = 0
+        for task_id in task_ids:
+            record = await backend.get_task(task_id)
+            if record is None:
+                continue
+            try:
+                exec_backend = self.get_execution_backend(record.execution_backend)
+            except ValueError:
+                continue
+            if not exec_backend.schedules_on_enqueue:
+                continue
+            examined += 1
+            if record.status not in {"pending", "scheduled"} or self._beyond_scheduling_horizon(
+                record.scheduled_at, execution_backend=record.execution_backend
+            ):
+                unchanged += 1
+                continue
+            try:
+                ref = await exec_backend.schedule(self, record)
+            except Exception:
+                failed += 1
+            else:
+                if ref is not None:
+                    changed += 1
+                else:
+                    unchanged += 1
+        if examined == 0:
+            return None
+        return DispatchRepairResult(examined=examined, changed=changed, failed=failed, unchanged=unchanged)
 
     async def expire_overdue_tasks(
         self, *, limit: "int | None" = None, worker_id: "str | None" = None

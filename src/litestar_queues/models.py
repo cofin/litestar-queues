@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from litestar_queues.execution.base import DispatchRepairResult
 
 __all__ = (
     "TERMINAL_STATUSES",
@@ -79,8 +82,10 @@ class StaleTaskRecoveryResult:
     failed: "int" = 0
     skipped: "int" = 0
     handler_needed: "int" = 0
+    requeued_task_ids: "list[UUID]" = field(default_factory=list)
     failed_task_ids: "list[UUID]" = field(default_factory=list)
     handler_needed_task_ids: "list[UUID]" = field(default_factory=list)
+    repair: "DispatchRepairResult | None" = None
 
     def to_payload(self) -> "dict[str, int]":
         """Return a JSON-compatible event payload."""

@@ -1260,6 +1260,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
                 )
                 if update_result.rowcount == 1:
                     result.requeued += 1
+                    result.requeued_task_ids.append(UUID(str(model.id)))
                 else:
                     result.skipped += 1
             else:

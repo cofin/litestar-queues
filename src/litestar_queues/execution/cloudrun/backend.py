@@ -109,9 +109,16 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         """
         if not self.schedules_on_enqueue:
             return None
-        current = await service.get_queue_backend().get_task(record.id)
+        queue_backend = service.get_queue_backend()
+        current = await queue_backend.get_task(record.id)
         if current is None or current.status not in {"pending", "scheduled"}:
             return None
+        if current.execution_ref is not None and not current.execution_ref.startswith(
+            EXTERNAL_DISPATCH_RESERVATION_PREFIX
+        ):
+            current = await queue_backend.clear_execution_ref(current.id, current.retry_count, current.execution_ref)
+            if current is None:
+                return None
         if current.scheduled_at is not None and current.scheduled_at > datetime.now(timezone.utc):
             return None
         return await self.dispatch(service, current)

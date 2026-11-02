@@ -18,6 +18,7 @@ from uuid import uuid4
 from litestar_queues.events import QueueEventLog, QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.execution.base import DispatchRepairResult, ExternalReconciliationResult
+from litestar_queues.models import StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -348,20 +349,31 @@ class QueueMaintenanceService:
                 error=REPAIR_ERROR_CODE if repair.failed else None,
                 repair=repair,
             )
+        if isinstance(result, StaleTaskRecoveryResult):
+            stale_repair = result.repair
+            repair_failed = stale_repair.failed > 0 if stale_repair is not None else False
+            stale_status: "MaintenancePhaseStatus" = "failed" if repair_failed else "completed"
+            return QueueMaintenancePhaseResult(
+                phase=phase,
+                status=stale_status,
+                changed=result.requeued + result.failed,
+                duration_ms=self._elapsed_ms(phase_start),
+                error=REPAIR_ERROR_CODE if repair_failed else None,
+                repair=stale_repair,
+            )
         return QueueMaintenancePhaseResult(
             phase=phase, status="completed", changed=result, duration_ms=self._elapsed_ms(phase_start)
         )
 
     async def _execute_phase(
         self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime"
-    ) -> "int | ExternalReconciliationResult":
+    ) -> "int | ExternalReconciliationResult | StaleTaskRecoveryResult":
         if phase == "external":
             return await self._service.reconcile_external_result(limit=self._config.external_limit)
         if phase == "stale":
-            result = await self._service.recover_stale_tasks(
+            return await self._service.recover_stale_tasks(
                 stale_after=timedelta(seconds=cast("float", self._config.stale_after)), limit=self._config.stale_limit
             )
-            return result.requeued + result.failed
         if phase == "terminal":
             return await self._service.get_queue_backend().cleanup_terminal(
                 cutoffs["terminal"], limit=self._config.terminal_limit

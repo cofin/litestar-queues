@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from importlib import import_module
 from typing import TYPE_CHECKING, cast
@@ -89,8 +90,17 @@ async def consume_one(
     if expired is not None:
         return TaskExitCode.CLAIM_LOST
     if claimed is None:
-        await queue.publish_claim_lost(record, phase="claim")
-        return TaskExitCode.CLAIM_LOST
+        claimed, recovered_exit = await _recover_and_claim_stale_record(
+            queue,
+            record,
+            expected_retry_count=expected_retry_count,
+            expected_execution_ref=expected_execution_ref,
+        )
+        if recovered_exit is not None:
+            return recovered_exit
+        if claimed is None:
+            await queue.publish_claim_lost(record, phase="claim")
+            return TaskExitCode.CLAIM_LOST
 
     task_registered = True
     try:
@@ -102,6 +112,49 @@ async def consume_one(
         return await _retire_unresolvable_record(queue, claimed)
 
     return await _execute_claimed_record(queue, claimed)
+
+
+async def _recover_and_claim_stale_record(
+    queue: "QueueService",
+    record: "QueuedTaskRecord",
+    *,
+    expected_retry_count: "int | None",
+    expected_execution_ref: "str | None",
+) -> "tuple[QueuedTaskRecord | None, TaskExitCode | None]":
+    """Recover a stale running record inline when its previous consumer vanished.
+
+    Returns:
+        A tuple of ``(claimed_record, exit_code)`` where at most one is non-None.
+    """
+    current = await queue.get_task(record.id)
+    if current is None or current.status != "running":
+        return None, None
+    if expected_retry_count is not None and current.retry_count != expected_retry_count:
+        return None, None
+    if expected_execution_ref is not None and current.execution_ref != expected_execution_ref:
+        return None, None
+    stale_seconds = (
+        queue.config.maintenance.stale_after
+        if queue.config.maintenance is not None and queue.config.maintenance.stale_after is not None
+        else queue.config.worker.stale_after
+        if queue.config.worker.stale_after is not None
+        else 300.0
+    )
+    stale_after = timedelta(seconds=stale_seconds)
+    now = datetime.now(timezone.utc)
+    if current.heartbeat_at is not None and current.heartbeat_at > now - stale_after:
+        return None, None
+    await queue.recover_stale_tasks(stale_after=stale_after, redispatch=False)
+    refreshed = await queue.get_task(record.id)
+    if refreshed is None or refreshed.is_terminal:
+        return None, TaskExitCode.SUCCESS
+    if refreshed.scheduled_at is not None and refreshed.scheduled_at > datetime.now(timezone.utc):
+        await queue.schedule_persisted(refreshed)
+        return None, TaskExitCode.SUCCESS
+    claimed, expired = await queue.claim_task(refreshed.id)
+    if expired is not None:
+        return None, TaskExitCode.CLAIM_LOST
+    return claimed, None
 
 
 async def _retire_unresolvable_record(queue: "QueueService", claimed: "QueuedTaskRecord") -> "TaskExitCode":

@@ -1547,6 +1547,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                 )
                             ):
                                 result.requeued += 1
+                                result.requeued_task_ids.append(record.id)
                             else:
                                 result.skipped += 1
                         else:

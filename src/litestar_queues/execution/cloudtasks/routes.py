@@ -145,15 +145,20 @@ async def _run_delivered_record(service: "QueueService", task_id: "UUID") -> "Re
         _record_delivery(runtime, _OUTCOME_TRANSIENT_ERROR)
         return Response(content=None, status_code=_REDELIVER)
 
+    status_code = _ACKNOWLEDGED
     try:
         outcome = await _delivery_outcome(service, task_id, exit_code)
+        if exit_code is TaskExitCode.CLAIM_LOST:
+            current = await service.get_task(task_id)
+            if current is not None and current.status == "running":
+                status_code = _REDELIVER
     except Exception:  # noqa: BLE001 - naming an outcome must never revoke one.
         # The run already earned this response. A label that cannot be worked
         # out is a worse signal than "acknowledged"; a 500 here would be a wrong
         # answer about work that is finished.
         outcome = _OUTCOME_ACKNOWLEDGED
     _record_delivery(runtime, outcome)
-    return Response(content=None, status_code=_ACKNOWLEDGED)
+    return Response(content=None, status_code=status_code)
 
 
 async def _delivery_outcome(service: "QueueService", task_id: "UUID", exit_code: "TaskExitCode") -> "str":
