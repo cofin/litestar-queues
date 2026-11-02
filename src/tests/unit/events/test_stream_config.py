@@ -20,8 +20,26 @@ def test_event_stream_config_defaults() -> "None":
     assert config.scopes == {"task", "queue", "worker", "global", "custom"}
     assert config.heartbeat_interval == 25.0
     assert config.replay_limit == 0
+    assert config.max_stream_duration is None
+    assert config.retry_ms is None
     assert config.include_in_schema is False
     assert config.opt is None
+
+
+@pytest.mark.parametrize("invalid_duration", [0.0, -1.0, float("inf"), float("nan")])
+def test_event_stream_config_rejects_non_positive_max_stream_duration(invalid_duration: float) -> "None":
+    from litestar_queues.events import EventStreamConfig
+
+    with pytest.raises(QueueConfigurationError, match="max_stream_duration"):
+        EventStreamConfig(max_stream_duration=invalid_duration)
+
+
+@pytest.mark.parametrize("invalid_retry", [0, -100, False])
+def test_event_stream_config_rejects_non_positive_retry_ms(invalid_retry: int) -> "None":
+    from litestar_queues.events import EventStreamConfig
+
+    with pytest.raises(QueueConfigurationError, match="retry_ms"):
+        EventStreamConfig(retry_ms=invalid_retry)
 
 
 def test_event_stream_config_type_hints_resolve() -> "None":

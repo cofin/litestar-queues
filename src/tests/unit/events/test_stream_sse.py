@@ -152,10 +152,111 @@ async def test_sse_keepalive_comment_and_dedup() -> None:
     response = await _sse_handler(router, "/sse/tasks/{task_id:str}").fn(_Connection(), task_id="task-1")
     frames = await _response_frames(response)
 
-    data_frames = [frame for frame in frames if frame.startswith(b"event:")]
+    data_frames = [frame for frame in frames if frame.startswith(b"event:") or b"\nevent:" in frame]
     comment_frames = [frame for frame in frames if frame.startswith(b":")]
     assert [json.loads(_frame_data(frame))["id"] for frame in data_frames] == ["evt-1", "evt-3"]
     assert comment_frames
+
+
+async def test_sse_emits_id_and_retry_hint_and_rolls_over_at_max_stream_duration() -> None:
+    event = QueueEvent(type="task.progress", scope="task", id="evt-42", task_id="task-1", message="step")
+
+    class _HangingChannelsPlugin:
+        def __init__(self) -> None:
+            self.closed = False
+
+        @asynccontextmanager
+        async def start_subscription(
+            self, channels: "Sequence[str]", history: int | None = None
+        ) -> "AsyncIterator[Any]":
+            class _Sub:
+                async def iter_events(self) -> "AsyncIterator[bytes]":
+                    yield event.to_json()
+                    await asyncio.Future()
+
+            try:
+                yield _Sub()
+            finally:
+                await asyncio.sleep(0.01)
+                self.closed = True
+
+    channels = _HangingChannelsPlugin()
+    router = _build_stream_router(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=channels, delivery=EventDeliveryConfig()),
+        ),
+        EventStreamConfig(
+            scopes={"task"},
+            heartbeat_interval=0,
+            max_stream_duration=0.03,
+            retry_ms=2500,
+        ),
+    )
+
+    response = await _sse_handler(router, "/sse/tasks/{task_id:str}").fn(_Connection(), task_id="task-1")
+    frames = await _response_frames(response)
+
+    assert channels.closed is True
+    joined = b"".join(frames).decode("utf-8")
+    assert "retry: 2500" in joined
+    assert "id: evt-42" in joined
+    assert "event: task.progress" in joined
+
+
+async def test_sse_shields_subscription_cleanup_under_anyio_cancel_scope() -> None:
+    import anyio
+
+    entered = asyncio.Event()
+    cleaned_up = False
+
+    class _SlowExitChannelsPlugin:
+        @asynccontextmanager
+        async def start_subscription(
+            self, channels: "Sequence[str]", history: int | None = None
+        ) -> "AsyncIterator[Any]":
+            nonlocal cleaned_up
+
+            class _Sub:
+                async def iter_events(self) -> "AsyncIterator[bytes]":
+                    entered.set()
+                    await asyncio.Future()
+                    if False:
+                        yield b""
+
+            try:
+                yield _Sub()
+            finally:
+                await anyio.sleep(0.01)
+                cleaned_up = True
+
+    router = _build_stream_router(
+        QueueConfig(
+            worker=WorkerConfig(placement="external"),
+            queue_backend="memory",
+            events=QueueEventsConfig(channels=_SlowExitChannelsPlugin(), delivery=EventDeliveryConfig()),
+        ),
+        EventStreamConfig(scopes={"task"}, heartbeat_interval=0),
+    )
+    response = await _sse_handler(router, "/sse/tasks/{task_id:str}").fn(_Connection(), task_id="task-1")
+
+    async with anyio.create_task_group() as tg:
+
+        async def _consume() -> None:
+            with anyio.CancelScope() as scope:
+
+                async def _cancel_when_entered() -> None:
+                    await entered.wait()
+                    scope.cancel()
+
+                tg.start_soon(_cancel_when_entered)
+                async for _chunk in response.iterator:
+                    pass
+
+        tg.start_soon(_consume)
+
+    assert cleaned_up is True
 
 
 class _FakeSubscriber:

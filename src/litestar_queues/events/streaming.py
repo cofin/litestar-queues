@@ -18,6 +18,7 @@ from collections import OrderedDict
 from collections.abc import Container, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import anyio
 from litestar import Request, Router, WebSocket, get, websocket
 from litestar.exceptions import PermissionDeniedException, WebSocketException
 from litestar.params import FromPath
@@ -70,8 +71,13 @@ async def _event_stream(
 ) -> "AsyncIterator[AsyncIterator[bytes]]":
     if hasattr(backend, "start_subscription"):
         subscription_backend = cast("ChannelsSubscriptionBackend", backend)
-        async with subscription_backend.start_subscription(list(channels), history=history) as subscriber:
+        subscription = subscription_backend.start_subscription(list(channels), history=history)
+        subscriber = await subscription.__aenter__()
+        try:
             yield subscriber.iter_events()
+        finally:
+            with anyio.move_on_after(5.0, shield=True):
+                await subscription.__aexit__(None, None, None)
         return
 
     if not hasattr(backend, "subscribe") or not hasattr(backend, "stream_events"):
@@ -83,7 +89,8 @@ async def _event_stream(
     try:
         yield _backend_events(stream_backend.stream_events(), set(channels))
     finally:
-        await stream_backend.unsubscribe(list(channels))
+        with anyio.move_on_after(5.0, shield=True):
+            await stream_backend.unsubscribe(list(channels))
 
 
 async def _backend_events(events: "AsyncIterator[tuple[str, bytes]]", channels: "set[str]") -> "AsyncIterator[bytes]":
@@ -163,6 +170,7 @@ async def _stream_queue_events_ws(
     history: int = 0,
     channels_backend: "ChannelsLike | None" = None,
     heartbeat_interval: float = 25.0,
+    max_stream_duration: "float | None" = None,
     stream_metrics: StreamMetrics | None = None,
     scope: QueueEventScope = "task",
 ) -> None:
@@ -181,23 +189,40 @@ async def _stream_queue_events_ws(
     started_at = time.perf_counter()
     send_lock = asyncio.Lock()
     stop = asyncio.Event()
+    rolled_over = False
     try:
         async with _event_stream(backend, channels, history=history) as events:
             event_task = asyncio.create_task(_pump_events(socket, events, send_lock, stream_metrics, scope))
             heartbeat_task = asyncio.create_task(
                 _pump_heartbeat(socket, send_lock, heartbeat_interval, stop, stream_metrics=stream_metrics, scope=scope)
             )
-            await _wait_for_stream_tasks(event_task, heartbeat_task, stop)
+            rolled_over = await _wait_for_stream_tasks(
+                event_task, heartbeat_task, stop, max_stream_duration=max_stream_duration
+            )
+        if rolled_over and hasattr(socket, "close"):
+            with contextlib.suppress(OSError, RuntimeError):
+                await socket.close(code=1000)
     finally:
         _record_metric(stream_metrics, "on_disconnect", scope, time.perf_counter() - started_at)
 
 
 async def _wait_for_stream_tasks(
-    event_task: "asyncio.Task[None]", heartbeat_task: "asyncio.Task[None]", stop: "asyncio.Event"
-) -> None:
+    event_task: "asyncio.Task[None]",
+    heartbeat_task: "asyncio.Task[None]",
+    stop: "asyncio.Event",
+    *,
+    max_stream_duration: "float | None" = None,
+) -> "bool":
     tasks = {event_task, heartbeat_task}
+    rolled_over = False
     try:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=max_stream_duration,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            rolled_over = True
         for task in done:
             task.result()
         for task in pending:
@@ -205,12 +230,14 @@ async def _wait_for_stream_tasks(
             with contextlib.suppress(asyncio.CancelledError):
                 await task
     finally:
-        stop.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+        with anyio.move_on_after(5.0, shield=True):
+            stop.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+    return rolled_over
 
 
 async def _pump_events(
@@ -364,6 +391,7 @@ def _build_stream_router(
             history=history,
             channels_backend=backend,
             heartbeat_interval=stream_config.heartbeat_interval,
+            max_stream_duration=stream_config.max_stream_duration,
             stream_metrics=stream_metrics,
             scope=scope,
         )
@@ -380,6 +408,8 @@ def _build_stream_router(
             history=history,
             channels_backend=backend,
             heartbeat_interval=stream_config.heartbeat_interval,
+            max_stream_duration=stream_config.max_stream_duration,
+            retry_ms=stream_config.retry_ms,
             stream_metrics=stream_metrics,
             scope=scope,
         )
@@ -414,6 +444,8 @@ def _stream_queue_events_sse(
     history: int = 0,
     channels_backend: "ChannelsLike | None" = None,
     heartbeat_interval: float = 25.0,
+    max_stream_duration: "float | None" = None,
+    retry_ms: "int | None" = None,
     stream_metrics: StreamMetrics | None = None,
     scope: QueueEventScope = "task",
 ) -> "ServerSentEvent":
@@ -425,6 +457,8 @@ def _stream_queue_events_sse(
             history=history,
             channels_backend=channels_backend,
             heartbeat_interval=heartbeat_interval,
+            max_stream_duration=max_stream_duration,
+            retry_ms=retry_ms,
             stream_metrics=stream_metrics,
             scope=scope,
         )
@@ -438,6 +472,8 @@ async def _sse_events(
     history: int,
     channels_backend: "ChannelsLike | None",
     heartbeat_interval: float,
+    max_stream_duration: "float | None" = None,
+    retry_ms: "int | None" = None,
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
 ) -> "AsyncIterator[SSEData]":
@@ -451,31 +487,64 @@ async def _sse_events(
     stream_context = _event_stream(backend, channels, history=history)
     events = await stream_context.__aenter__()
     try:
+        if retry_ms is not None:
+            yield {"retry": retry_ms, "data": None}
         async for frame in _sse_event_frames(
-            events, heartbeat_interval=heartbeat_interval, stream_metrics=stream_metrics, scope=scope
+            events,
+            heartbeat_interval=heartbeat_interval,
+            max_stream_duration=max_stream_duration,
+            retry_ms=retry_ms,
+            stream_metrics=stream_metrics,
+            scope=scope,
         ):
             yield frame
     finally:
-        await stream_context.__aexit__(None, None, None)
-        _record_metric(stream_metrics, "on_disconnect", scope, time.perf_counter() - started_at)
+        with anyio.move_on_after(5.0, shield=True):
+            await stream_context.__aexit__(None, None, None)
+            _record_metric(stream_metrics, "on_disconnect", scope, time.perf_counter() - started_at)
+
+
+def _next_sse_wait_timeout(heartbeat_interval: float, deadline: "float | None") -> "tuple[float | None, bool]":
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return (0.0, True)
+        if heartbeat_interval > 0:
+            return (min(heartbeat_interval, remaining), False)
+        return (remaining, False)
+    if heartbeat_interval > 0:
+        return (heartbeat_interval, False)
+    return (None, False)
 
 
 async def _sse_event_frames(
-    events: "Any", *, heartbeat_interval: float, stream_metrics: StreamMetrics | None, scope: QueueEventScope
+    events: "Any",
+    *,
+    heartbeat_interval: float,
+    max_stream_duration: "float | None" = None,
+    retry_ms: "int | None" = None,
+    stream_metrics: StreamMetrics | None,
+    scope: QueueEventScope,
 ) -> "AsyncIterator[SSEData]":
     seen_dedup_keys: "OrderedDict[str, None]" = OrderedDict()
     iterator = events.__aiter__()
     next_event = asyncio.create_task(anext(iterator))
+    deadline = (time.monotonic() + max_stream_duration) if max_stream_duration is not None else None
     try:
         while True:
-            if heartbeat_interval <= 0:
+            wait_timeout, expired = _next_sse_wait_timeout(heartbeat_interval, deadline)
+            if expired:
+                return
+            if wait_timeout is None:
                 try:
                     raw_event = await next_event
                 except StopAsyncIteration:
                     return
             else:
-                done, _pending = await asyncio.wait({next_event}, timeout=heartbeat_interval)
+                done, _pending = await asyncio.wait({next_event}, timeout=wait_timeout)
                 if not done:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return
                     _record_metric(stream_metrics, "on_heartbeat", scope)
                     yield {"comment": "ping", "data": None}
                     continue
@@ -484,14 +553,15 @@ async def _sse_event_frames(
                 except StopAsyncIteration:
                     return
             next_event = asyncio.create_task(anext(iterator))
-            frame = _sse_frame(raw_event, seen_dedup_keys, stream_metrics, scope)
+            frame = _sse_frame(raw_event, seen_dedup_keys, stream_metrics, scope, retry_ms=retry_ms)
             if frame is not None:
                 yield frame
     finally:
-        if not next_event.done():
-            next_event.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await next_event
+        with anyio.move_on_after(5.0, shield=True):
+            if not next_event.done():
+                next_event.cancel()
+                with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                    await next_event
 
 
 def _sse_frame(
@@ -499,7 +569,9 @@ def _sse_frame(
     seen_dedup_keys: "OrderedDict[str, None]",
     stream_metrics: StreamMetrics | None,
     scope: QueueEventScope,
-) -> "dict[str, str] | None":
+    *,
+    retry_ms: "int | None" = None,
+) -> "dict[str, Any] | None":
     event = _decode_event(raw_event)
     if event is None:
         return None
@@ -512,7 +584,14 @@ def _sse_frame(
     if len(seen_dedup_keys) > _STREAM_DEDUP_MAX_KEYS:
         seen_dedup_keys.popitem(last=False)
     _record_metric(stream_metrics, "on_event", scope)
-    return {"event": event.type, "data": event.to_json().decode("utf-8")}
+    frame: "dict[str, Any]" = {
+        "id": event.id,
+        "event": event.type,
+        "data": event.to_json().decode("utf-8"),
+    }
+    if retry_ms is not None:
+        frame["retry"] = retry_ms
+    return frame
 
 
 def _append_task_handler(handlers: list[Any], scopes: Container[str], relay: Any, namespace: "QueueNamespace") -> None:
