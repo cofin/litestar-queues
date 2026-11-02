@@ -253,6 +253,22 @@ def test_application_guards_alone_are_sufficient() -> "None":
     assert config.guards == (_guard,)
 
 
+def test_verify_oidc_alone_is_sufficient() -> "None":
+    config = _config(trust_platform_auth=False, verify_oidc=True, guards=())
+
+    assert config.verify_oidc is True
+    assert config.mount_route is True
+
+
+def test_producer_only_mount_route_false_skips_route_protection() -> "None":
+    config = _config(mount_route=False, trust_platform_auth=False, verify_oidc=False, guards=())
+
+    assert config.mount_route is False
+    assert config.trust_platform_auth is False
+    assert config.verify_oidc is False
+    assert config.guards == ()
+
+
 # --------------------------------------------------------------------------- schedule horizon
 
 

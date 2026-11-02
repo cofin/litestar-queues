@@ -544,8 +544,7 @@ class QueueConfig:
                 raise QueueConfigurationError(msg)
         if execution == "cloudtasks" and placement != "external":
             msg = (
-                "execution_backend='cloudtasks' schedules work itself and requires "
-                "WorkerConfig(placement='external')."
+                "execution_backend='cloudtasks' schedules work itself and requires WorkerConfig(placement='external')."
             )
             raise QueueConfigurationError(msg)
         if (

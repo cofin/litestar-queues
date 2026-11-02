@@ -45,6 +45,7 @@ _APPROVED_NESTED_IMPORTS = {
     },
     "events/__init__.py": {"litestar_queues.events.channels_sink"},
     "execution/__init__.py": {"litestar_queues.execution"},
+    "execution/cloudtasks/oidc.py": {"google.auth.transport.requests", "google.oauth2.id_token"},
     "plugin.py": {
         "litestar_queues._cli",
         "litestar_queues.backends.ephemeral.server",

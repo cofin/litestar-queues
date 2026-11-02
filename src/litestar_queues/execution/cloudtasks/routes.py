@@ -29,9 +29,11 @@ from litestar_queues.execution.cloudtasks.config import (
     CLOUD_TASKS_PROTOCOL_VERSION,
     _execution_config_from_queue_config,
 )
+from litestar_queues.execution.cloudtasks.oidc import CloudTasksOIDCGuard
 
 if TYPE_CHECKING:
     from litestar.handlers import HTTPRouteHandler
+    from litestar.types import Guard
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
@@ -80,10 +82,19 @@ def build_cloud_tasks_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":
         The route handler Cloud Tasks posts each record to.
     """
     config = _execution_config_from_queue_config(queue_config)
+    guards: "list[Guard]" = []
+    if config.verify_oidc and not any(isinstance(guard, CloudTasksOIDCGuard) for guard in config.guards):
+        guards.append(
+            CloudTasksOIDCGuard(
+                audience=config.audience, service_account_email=config.service_account_email, queue_id=config.queue_id
+            )
+        )
+    guards.extend(config.guards)
 
     @post(
         path=config.route_path,
-        guards=list(config.guards),
+        guards=guards,
+        opt={"exclude_from_csrf": True, "exclude_from_auth": True},
         status_code=_ACKNOWLEDGED,
         include_in_schema=False,
         signature_types=[CloudTasksDelivery],

@@ -170,12 +170,17 @@ def test_cloud_tasks_execution_surface_is_publicly_exported() -> "None":
     from litestar_queues import (
         CloudTasksExecutionBackend,
         CloudTasksExecutionConfig,
+        CloudTasksOIDCGuard,
         get_execution_backend_class,
         list_execution_backends,
     )
+    from litestar_queues.execution.cloudtasks import CloudTasksOIDCGuard as SubmoduleCloudTasksOIDCGuard
 
-    assert {"CloudTasksExecutionBackend", "CloudTasksExecutionConfig"}.issubset(set(litestar_queues.__all__))
+    assert {"CloudTasksExecutionBackend", "CloudTasksExecutionConfig", "CloudTasksOIDCGuard"}.issubset(
+        set(litestar_queues.__all__)
+    )
     assert CloudTasksExecutionConfig.backend_name == "cloudtasks"
+    assert CloudTasksOIDCGuard is SubmoduleCloudTasksOIDCGuard
     assert get_execution_backend_class("cloudtasks") is CloudTasksExecutionBackend
     assert "cloudtasks" in list_execution_backends()
 

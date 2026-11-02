@@ -178,7 +178,8 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             app_config.route_handlers.append(
                 _build_stream_router(self._config, stream_config, channels_backend=self._effective_channels_backend())
             )
-        if _CLOUD_TASKS_BACKEND in self._config.resolved_execution_backends():
+        cloud_tasks_cfg = self._config.resolved_execution_backends().get(_CLOUD_TASKS_BACKEND)
+        if cloud_tasks_cfg is not None and getattr(cloud_tasks_cfg, "mount_route", True):
             from litestar_queues.execution.cloudtasks.routes import build_cloud_tasks_route
 
             app_config.route_handlers.append(build_cloud_tasks_route(self._config))

@@ -128,7 +128,7 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         if limit < 0:
             msg = "Dispatch repair limit must be non-negative."
             raise QueueConfigurationError(msg)
-        if limit == 0:
+        if limit == 0 or not self.schedules_on_enqueue:
             return DispatchRepairResult(examined=0, changed=0)
         queue_backend = service.get_queue_backend()
         page = await queue_backend.list_dispatch_repair_candidates("cloudrun", limit=limit)
