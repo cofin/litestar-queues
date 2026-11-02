@@ -270,7 +270,7 @@ def run_task_command(
     "--phase",
     "phases",
     multiple=True,
-    type=click.Choice(["external", "stale", "terminal", "events"]),
+    type=click.Choice(["expire", "external", "stale", "schedules", "terminal", "events"]),
     help="Maintenance phase to run. Repeatable; defaults to every configured phase. Only narrows configuration.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")

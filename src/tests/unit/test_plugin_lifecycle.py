@@ -377,3 +377,19 @@ async def test_plugin_uses_registered_queue_backend_instance() -> "None":
         assert isinstance(plugin.get_service(app_config.state).get_queue_backend(), CustomQueueBackend)
     finally:
         _queue_backend_registry.pop("custom-plugin", None)
+
+
+def test_plugin_warns_when_external_backend_has_no_maintenance_configured() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="memory",
+            execution_backend=CloudRunExecutionConfig(project_id="demo-project", job_name="worker-job"),
+            worker=WorkerConfig(placement="external"),
+            maintenance=None,
+        )
+    )
+    with pytest.warns(UserWarning, match="QueueMaintenanceConfig"):
+        plugin.on_app_init(AppConfig())
+

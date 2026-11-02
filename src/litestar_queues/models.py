@@ -13,6 +13,7 @@ __all__ = (
     "QueueBackendCapabilities",
     "QueueStatistics",
     "QueuedTaskRecord",
+    "ScheduleAssertionResult",
     "StaleTaskRecoveryResult",
     "TaskRequest",
     "TaskReservation",
@@ -72,6 +73,20 @@ class QueueStatistics:
         return (
             self.pending + self.scheduled + self.running + self.completed + self.failed + self.cancelled + self.expired
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleAssertionResult:
+    """Summary of recurring schedule assertion and delivery repair."""
+
+    created: "int" = 0
+    repaired: "int" = 0
+    repair: "DispatchRepairResult | None" = None
+
+    @property
+    def changed(self) -> "int":
+        """Total schedule occurrences created or repaired."""
+        return self.created + self.repaired
 
 
 @dataclass(slots=True)

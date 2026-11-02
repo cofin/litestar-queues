@@ -464,7 +464,7 @@ async def test_repair_failure_real_maintenance_exits_1(
     if as_json:
         payload = json.loads(output)
         assert payload["outcome"] == "failed"
-        external = payload["phases"][0]
+        external = next(phase for phase in payload["phases"] if phase["phase"] == "external")
         assert external["changed"] == changed
         assert external["repair"] == {
             "examined": 2,

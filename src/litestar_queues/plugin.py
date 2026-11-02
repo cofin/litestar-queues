@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import warnings
 from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ __all__ = ("QueuePlugin",)
 _UNKNOWN = object()
 _APP_PATH_ENV_VAR = "LITESTAR_APP"
 _CLOUD_TASKS_BACKEND = "cloudtasks"
+_EXTERNAL_EXECUTION_BACKENDS = frozenset({"cloudrun", "cloudtasks", "kafka", "pubsub", "rabbitmq", "sqs"})
 _PROCESS_LOCAL_CHANNELS_BACKENDS = frozenset({"MemoryChannelsBackend"})
 
 _MISSING_SERVER_CONTEXT_ERROR = (
@@ -183,6 +185,27 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             from litestar_queues.execution.cloudtasks.routes import build_cloud_tasks_route
 
             app_config.route_handlers.append(build_cloud_tasks_route(self._config))
+        if self._config.maintenance is not None and self._config.maintenance.mount_route:
+            from litestar_queues.maintenance import build_maintenance_route
+
+            app_config.route_handlers.append(build_maintenance_route(self._config))
+        if (
+            self._config.worker.placement == "external"
+            and self._config.maintenance is None
+            and any(
+                name in _EXTERNAL_EXECUTION_BACKENDS
+                or getattr(cfg, "schedules_on_enqueue", False)
+                or getattr(cfg, "is_external", False)
+                for name, cfg in self._config.resolved_execution_backends().items()
+            )
+        ):
+            warnings.warn(
+                "QueueConfig(worker=WorkerConfig(placement='external')) with an external or self-scheduling "
+                "execution backend has maintenance=None. Configure QueueMaintenanceConfig to repair missing "
+                "deliveries, recover stale tasks, expire overdue records, and reassert recurring schedules.",
+                UserWarning,
+                stacklevel=2,
+            )
         app_config.state.update(state)
         # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
         # hooks): Litestar runs on_shutdown hooks AFTER exiting every lifespan manager,

@@ -3,26 +3,35 @@
 The maintenance service runs a small, predictable amount of repair and
 retention work under token-fenced distributed coordination and a wall-clock time
 budget, then returns. It never starts a worker, executes due work, or loops to
-drain a backlog. Phases always run in the fixed order external-execution
-reconciliation, stale-running recovery, terminal-task retention, and
-durable-event retention.
+drain a backlog. Phases always run in the fixed order overdue-record expiration,
+external-execution reconciliation, stale-running recovery, recurring-schedule
+assertion, terminal-task retention, and durable-event retention.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from time import perf_counter
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+from urllib.parse import urlsplit
 from uuid import uuid4
+
+from litestar import Request, Response, post
 
 from litestar_queues.events import QueueEventLog, QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.execution.base import DispatchRepairResult, ExternalReconciliationResult
-from litestar_queues.models import StaleTaskRecoveryResult
+from litestar_queues.execution.cloudtasks.oidc import CloudTasksOIDCGuard
+from litestar_queues.models import ScheduleAssertionResult, StaleTaskRecoveryResult
+from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
+    from litestar.handlers import HTTPRouteHandler
+    from litestar.types import Guard
+
+    from litestar_queues.config import QueueConfig
     from litestar_queues.service import QueueService
 
 __all__ = (
@@ -32,9 +41,10 @@ __all__ = (
     "QueueMaintenancePhaseResult",
     "QueueMaintenanceService",
     "QueueMaintenanceSummary",
+    "build_maintenance_route",
 )
 
-MaintenancePhase = Literal["external", "stale", "terminal", "events"]
+MaintenancePhase = Literal["expire", "external", "stale", "schedules", "terminal", "events"]
 """One bounded maintenance phase, in fixed execution order."""
 
 MaintenancePhaseStatus = Literal["completed", "skipped", "failed", "partial"]
@@ -43,7 +53,7 @@ MaintenancePhaseStatus = Literal["completed", "skipped", "failed", "partial"]
 MaintenanceOutcome = Literal["completed", "failed", "partial", "already_running"]
 """Outcome of a whole maintenance run."""
 
-PHASE_ORDER: "tuple[MaintenancePhase, ...]" = ("external", "stale", "terminal", "events")
+PHASE_ORDER: "tuple[MaintenancePhase, ...]" = ("expire", "external", "stale", "schedules", "terminal", "events")
 """Stable phase order. Never reordered; drift gates depend on this."""
 
 MAINTENANCE_NAME = "queue-maintenance"
@@ -58,6 +68,8 @@ exception message, arguments, results, DSNs, and credentials are never included.
 
 REPAIR_ERROR_CODE = "maintenance_repair_failed"
 """Bounded error code for a phase containing failed delivery repairs."""
+
+_DEFAULT_MAINTENANCE_ROUTE_PATH = cast("str", object())
 
 
 @dataclass(slots=True)
@@ -77,6 +89,9 @@ class QueueMaintenanceConfig:
     coordination_timeout: "float" = 360.0
     """Distributed ownership duration in seconds; must exceed ``time_budget``."""
 
+    expire_limit: "int" = 1000
+    """Maximum overdue pending or scheduled tasks expired in one run."""
+
     external_limit: "int" = 100
     """Maximum external executions reconciled in one run."""
 
@@ -85,6 +100,9 @@ class QueueMaintenanceConfig:
 
     stale_limit: "int" = 100
     """Maximum stale running tasks recovered in one run."""
+
+    schedules_limit: "int" = 100
+    """Maximum recurring schedules asserted in one run."""
 
     terminal_retention: "float | None" = None
     """Terminal-task retention age in seconds; ``None`` disables deletion."""
@@ -103,20 +121,49 @@ class QueueMaintenanceConfig:
     event_limit: "int" = 1000
     """Maximum expired task-event records deleted in one run."""
 
+    mount_route: "bool" = False
+    """Whether ``QueuePlugin`` mounts an HTTP endpoint that runs maintenance once."""
+
+    route_path: "str" = _DEFAULT_MAINTENANCE_ROUTE_PATH
+    """Path the HTTP maintenance endpoint is mounted on."""
+
+    _route_path_derived: "bool" = field(init=False, repr=False)
+
+    guards: "tuple[Guard, ...]" = ()
+    """Application guards applied to the HTTP maintenance endpoint."""
+
+    trust_platform_auth: "bool" = False
+    """Whether platform IAM alone is accepted as protection for the HTTP maintenance endpoint."""
+
+    verify_oidc: "bool" = False
+    """Whether the HTTP maintenance endpoint verifies Google OIDC Bearer tokens in-process."""
+
+    oidc_service_account_email: "str | None" = None
+    """Expected Google OIDC service account email when ``verify_oidc=True``."""
+
+    oidc_audience: "str | None" = None
+    """Expected Google OIDC audience when ``verify_oidc=True``."""
+
     def __post_init__(self) -> "None":
-        """Validate durations, retention thresholds, and limits.
+        """Validate durations, retention thresholds, limits, and route protection.
 
         Raises:
-            QueueConfigurationError: If a duration, retention threshold, or limit
-                is not positive, or ``coordination_timeout`` does not exceed ``time_budget``.
+            QueueConfigurationError: If a duration, retention threshold, limit,
+                or route option is invalid, or ``coordination_timeout`` does not
+                exceed ``time_budget``.
         """
+        self._route_path_derived = self.route_path is _DEFAULT_MAINTENANCE_ROUTE_PATH
+        if self._route_path_derived:
+            self.route_path = "/_litestar-queues/maintenance"
         for name, value in (("time_budget", self.time_budget), ("coordination_timeout", self.coordination_timeout)):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
                 msg = f"QueueMaintenanceConfig.{name} must be a finite number greater than 0."
                 raise QueueConfigurationError(msg)
         for name, limit in (
+            ("expire_limit", self.expire_limit),
             ("external_limit", self.external_limit),
             ("stale_limit", self.stale_limit),
+            ("schedules_limit", self.schedules_limit),
             ("terminal_limit", self.terminal_limit),
             ("event_limit", self.event_limit),
         ):
@@ -147,6 +194,48 @@ class QueueMaintenanceConfig:
                 "so ownership outlives the run."
             )
             raise QueueConfigurationError(msg)
+        self._validate_route_options()
+
+    def _validate_route_options(self) -> "None":
+        route = urlsplit(self.route_path if isinstance(self.route_path, str) else "")
+        if not route.path.startswith("/") or route.path == "/" or route.query or route.fragment:
+            msg = (
+                "QueueMaintenanceConfig.route_path must be an absolute path below the root, "
+                "such as '/_litestar-queues/maintenance'."
+            )
+            raise QueueConfigurationError(msg)
+        if not isinstance(self.guards, (tuple, list)):
+            msg = "QueueMaintenanceConfig.guards must be a tuple or list of Guard callables."  # type: ignore[unreachable]
+            raise QueueConfigurationError(msg)
+        object.__setattr__(self, "guards", tuple(self.guards))
+        if self.oidc_service_account_email is not None and (
+            not isinstance(self.oidc_service_account_email, str) or not self.oidc_service_account_email.strip()
+        ):
+            msg = "QueueMaintenanceConfig.oidc_service_account_email must be a non-empty string when set."
+            raise QueueConfigurationError(msg)
+        if self.oidc_audience is not None and (
+            not isinstance(self.oidc_audience, str) or not self.oidc_audience.strip()
+        ):
+            msg = "QueueMaintenanceConfig.oidc_audience must be a non-empty string when set."
+            raise QueueConfigurationError(msg)
+        if self.verify_oidc and self.oidc_audience is None:
+            msg = "QueueMaintenanceConfig.oidc_audience is required when verify_oidc=True."
+            raise QueueConfigurationError(msg)
+        if self.mount_route and not self.trust_platform_auth and not self.verify_oidc and not self.guards:
+            msg = (
+                "QueueMaintenanceConfig(mount_route=True) requires route protection. "
+                "Set verify_oidc=True with oidc_audience, trust_platform_auth=True when platform IAM "
+                "already requires an authenticated caller, or pass guards."
+            )
+            raise QueueConfigurationError(msg)
+
+    def resolve(self, namespace: "QueueNamespace | None" = None) -> "QueueMaintenanceConfig":
+        """Resolve namespace-owned defaults without mutating this reusable config."""
+        if not self._route_path_derived:
+            return self
+        names = namespace or QueueNamespace()
+        route_path = f"/_{names.resource()}/maintenance"
+        return replace(self, route_path=route_path)
 
 
 @dataclass(slots=True)
@@ -308,10 +397,18 @@ class QueueMaintenanceService:
         return tuple(phase for phase in PHASE_ORDER if phase in requested)
 
     def _phase_enabled(self, phase: "MaintenancePhase") -> "bool":
+        if phase == "expire":
+            return True
         if phase == "external":
+            if hasattr(self._service, "get_execution_backends"):
+                return any(backend.is_external for backend in self._service.get_execution_backends().values())
             return self._service.get_execution_backend().is_external
         if phase == "stale":
             return self._config.stale_after is not None
+        if phase == "schedules":
+            if hasattr(self._service, "has_registered_schedules"):
+                return self._service.has_registered_schedules()
+            return False
         if phase == "terminal":
             return self._config.terminal_retention is not None
         return bool(self._config.event_retention_rules) and self._service.get_event_log() is not None
@@ -361,19 +458,39 @@ class QueueMaintenanceService:
                 error=REPAIR_ERROR_CODE if repair_failed else None,
                 repair=stale_repair,
             )
+        if isinstance(result, ScheduleAssertionResult):
+            sched_repair = result.repair
+            sched_failed = sched_repair.failed > 0 if sched_repair is not None else False
+            sched_partial = sched_repair.limit_reached if sched_repair is not None else False
+            sched_status: "MaintenancePhaseStatus" = (
+                "failed" if sched_failed else "partial" if sched_partial else "completed"
+            )
+            return QueueMaintenancePhaseResult(
+                phase=phase,
+                status=sched_status,
+                changed=result.changed,
+                duration_ms=self._elapsed_ms(phase_start),
+                error=REPAIR_ERROR_CODE if sched_failed else None,
+                repair=sched_repair,
+            )
         return QueueMaintenancePhaseResult(
             phase=phase, status="completed", changed=result, duration_ms=self._elapsed_ms(phase_start)
         )
 
     async def _execute_phase(
         self, phase: "MaintenancePhase", cutoffs: "dict[str, datetime]", started_at: "datetime"
-    ) -> "int | ExternalReconciliationResult | StaleTaskRecoveryResult":
+    ) -> "int | ExternalReconciliationResult | StaleTaskRecoveryResult | ScheduleAssertionResult":
+        if phase == "expire":
+            expired = await self._service.expire_overdue_tasks(limit=self._config.expire_limit)
+            return len(expired)
         if phase == "external":
             return await self._service.reconcile_external_result(limit=self._config.external_limit)
         if phase == "stale":
             return await self._service.recover_stale_tasks(
                 stale_after=timedelta(seconds=cast("float", self._config.stale_after)), limit=self._config.stale_limit
             )
+        if phase == "schedules":
+            return await self._service.reassert_schedules(limit=self._config.schedules_limit)
         if phase == "terminal":
             return await self._service.get_queue_backend().cleanup_terminal(
                 cutoffs["terminal"], limit=self._config.terminal_limit
@@ -420,3 +537,49 @@ class QueueMaintenanceService:
         if any(result.status == "partial" for result in results):
             return "partial"
         return "completed"
+
+
+def build_maintenance_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":
+    """Build the HTTP endpoint that runs one bounded maintenance pass.
+
+    Returns:
+        The POST route handler for queue maintenance.
+
+    Raises:
+        QueueConfigurationError: If ``queue_config.maintenance`` is not configured.
+    """
+    if queue_config.maintenance is None:
+        msg = "build_maintenance_route requires QueueConfig.maintenance to be configured."
+        raise QueueConfigurationError(msg)
+    config = queue_config.maintenance.resolve(queue_config.names)
+    guards: "list[Guard]" = []
+    if config.verify_oidc and not any(isinstance(guard, CloudTasksOIDCGuard) for guard in config.guards):
+        guards.append(
+            CloudTasksOIDCGuard(
+                audience=cast("str", config.oidc_audience),
+                service_account_email=config.oidc_service_account_email,
+            )
+        )
+    guards.extend(config.guards)
+
+    @post(
+        path=config.route_path,
+        guards=guards,
+        opt={"exclude_from_csrf": True, "exclude_from_auth": True},
+        include_in_schema=False,
+        summary="Queue maintenance",
+    )
+    async def run_queue_maintenance(request: "Request[Any, Any, Any]") -> "Response[dict[str, object]]":
+        """Execute one bounded maintenance pass and return its structured summary.
+
+        Returns:
+            A JSON response with status 200 on completion/partial/already_running
+            or 503 when a phase or repair failed.
+        """
+        service = queue_config.get_service(request.app.state)
+        summary = await QueueMaintenanceService(service, config).run()
+        status_code = 503 if summary.outcome == "failed" else 200
+        return Response(content=summary.to_payload(), status_code=status_code)
+
+    return run_queue_maintenance
+

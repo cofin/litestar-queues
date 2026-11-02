@@ -35,6 +35,7 @@ from litestar_queues.exceptions import (
     QueueDispatchRepairError,
 )
 from litestar_queues.execution.base import DispatchRepairResult, ExecutionCancelResult, ExternalReconciliationResult
+from litestar_queues.models import ScheduleAssertionResult
 from litestar_queues.task import (
     ScheduleConfig,
     Task,
@@ -1243,6 +1244,8 @@ class QueueService:
         """
         expired = await self.get_queue_backend().expire_overdue(limit=limit)
         for record in expired:
+            if _external_attempt_ref(record) is not None:
+                await self._cancel_external_attempt(record)
             await self._publish_expired_event(record, worker_id=worker_id)
         return expired
 
@@ -1319,6 +1322,10 @@ class QueueService:
             existing = await queue_backend.get_task_by_key(schedule_key)
             active = existing if existing is not None and not existing.is_terminal else None
             if active is not None and active.metadata.get("schedule") == schedule_metadata:
+                if active.execution_ref is None and not self._beyond_scheduling_horizon(
+                    active.scheduled_at, execution_backend=active.execution_backend
+                ):
+                    active = await self._schedule_persisted(active)
                 records.append(active)
                 continue
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
@@ -1348,6 +1355,139 @@ class QueueService:
                 )
             )
         return records
+
+    def has_registered_schedules(self) -> "bool":
+        """Return whether recurring schedules are enabled and registered."""
+        return self._config.initialize_schedules and bool(get_scheduled_tasks())
+
+    async def reassert_schedules(self, *, limit: "int | None" = None) -> "ScheduleAssertionResult":
+        """Create missing recurring schedule occurrences and repair undispatched active ones.
+
+        Returns:
+            Counts of created and repaired schedule occurrences plus dispatch repair details.
+
+        Raises:
+            QueueConfigurationError: If ``limit`` is negative.
+        """
+        if limit is not None and limit < 0:
+            msg = "Schedule assertion limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if not self._config.initialize_schedules:
+            return ScheduleAssertionResult()
+        scheduled_tasks = list(get_scheduled_tasks().items())
+        if not scheduled_tasks:
+            return ScheduleAssertionResult()
+        if limit == 0:
+            return ScheduleAssertionResult(repair=DispatchRepairResult(limit_reached=True))
+
+        selected = scheduled_tasks if limit is None else scheduled_tasks[:limit]
+        limit_reached = limit is not None and len(scheduled_tasks) > limit
+        created = repaired = repair_examined = repair_changed = repair_failed = repair_unchanged = 0
+
+        for task_name, schedule in selected:
+            c, r, ex, ch, fl, un = await self._reassert_single_schedule(task_name, schedule)
+            created += c
+            repaired += r
+            repair_examined += ex
+            repair_changed += ch
+            repair_failed += fl
+            repair_unchanged += un
+
+        repair = (
+            DispatchRepairResult(
+                examined=repair_examined,
+                changed=repair_changed,
+                failed=repair_failed,
+                unchanged=repair_unchanged,
+                limit_reached=limit_reached,
+            )
+            if (repair_examined > 0 or limit_reached)
+            else None
+        )
+        return ScheduleAssertionResult(created=created, repaired=repaired, repair=repair)
+
+    async def _reassert_single_schedule(
+        self, task_name: "str", schedule: "ScheduleConfig"
+    ) -> "tuple[int, int, int, int, int, int]":
+        queue_backend = self.get_queue_backend()
+        task_obj = self.resolve_task(task_name)
+        schedule_metadata = schedule.as_metadata()
+        schedule_key = f"scheduled:{task_name}"
+        existing = await queue_backend.get_task_by_key(schedule_key)
+        active = existing if existing is not None and not existing.is_terminal else None
+        if active is not None and active.metadata.get("schedule") == schedule_metadata:
+            examined, changed, failed, unchanged = await self._repair_active_schedule_occurrence(active)
+            return (0, changed, examined, changed, failed, unchanged)
+
+        if (
+            existing is not None
+            and existing.is_terminal
+            and existing.completed_at is not None
+            and existing.metadata.get("schedule") == schedule_metadata
+        ):
+            scheduled_at = schedule.get_next_run(existing.completed_at)
+        else:
+            scheduled_at = schedule.get_next_run(use_initial_delay=existing is None)
+
+        if self._beyond_scheduling_horizon(scheduled_at, execution_backend=task_obj.execution_backend):
+            if existing is not None:
+                await self._publish_schedule_rejected(existing)
+                return (0, 0, 0, 0, 0, 0)
+            self._reject_beyond_scheduling_horizon(
+                task_name, scheduled_at, execution_backend=task_obj.execution_backend
+            )
+
+        metadata = self._metadata_with_schedule_default(task_obj, schedule_metadata, scheduled_at)
+        if active is not None:
+            await self.cancel_task(active.id)
+        record_execution = task_obj.execution_backend or execution_backend_name(self._config.execution_backend)
+        record = await queue_backend.enqueue(
+            task_name,
+            key=schedule_key,
+            max_retries=task_obj.retries,
+            priority=task_obj.priority,
+            scheduled_at=scheduled_at,
+            expires_at=_resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at),
+            execution_backend=record_execution,
+            execution_profile=task_obj.execution_profile,
+            metadata=metadata,
+        )
+        examined, changed, failed, unchanged = await self._dispatch_schedule_occurrence(record)
+        return (1, 0, examined, changed, failed, unchanged)
+
+    async def _repair_active_schedule_occurrence(
+        self, active: "QueuedTaskRecord"
+    ) -> "tuple[int, int, int, int]":
+        if self._beyond_scheduling_horizon(active.scheduled_at, execution_backend=active.execution_backend):
+            try:
+                exec_backend = self.get_execution_backend(active.execution_backend)
+            except ValueError:
+                return (0, 0, 0, 0)
+            return (1, 0, 0, 1) if exec_backend.schedules_on_enqueue else (0, 0, 0, 0)
+        if active.execution_ref is not None:
+            try:
+                exec_backend = self.get_execution_backend(active.execution_backend)
+            except ValueError:
+                return (0, 0, 0, 0)
+            return (1, 0, 0, 1) if exec_backend.schedules_on_enqueue else (0, 0, 0, 0)
+        return await self._dispatch_schedule_occurrence(active)
+
+    async def _dispatch_schedule_occurrence(
+        self, record: "QueuedTaskRecord"
+    ) -> "tuple[int, int, int, int]":
+        try:
+            exec_backend = self.get_execution_backend(record.execution_backend)
+        except ValueError:
+            return (0, 0, 0, 0)
+        if not exec_backend.schedules_on_enqueue:
+            return (0, 0, 0, 0)
+        try:
+            ref = await exec_backend.schedule(self, record)
+        except Exception:
+            return (1, 0, 1, 0)
+        if ref is not None:
+            return (1, 1, 0, 0)
+        return (1, 0, 0, 1)
 
     async def _persist_scheduled_record(self, task_name: "str", **enqueue_kwargs: "Any") -> "QueuedTaskRecord":
         """Persist one occurrence of a recurring schedule and hand it to the transport.

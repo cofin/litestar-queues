@@ -463,3 +463,68 @@ async def test_schedule_retry_finishes_same_occurrence_before_current_budget_suc
     assert following.metadata["retry_backoff"] == first.metadata["retry_backoff"]
     assert len(live.deliveries_for(following)) == 1
     assert (await live.service.initialize_schedules())[0].id == following.id
+
+
+async def test_initialize_schedules_repairs_active_occurrence_missing_execution_ref(
+    harness: "Callable[..., Any]",
+) -> "None":
+    @task("cloudtasks.recurrence.repair_init", interval=60)
+    async def probe() -> "None":
+        return None
+
+    live = await harness()
+    schedule = get_scheduled_tasks()["cloudtasks.recurrence.repair_init"]
+    undispatched = await live.service.get_queue_backend().enqueue(
+        "cloudtasks.recurrence.repair_init",
+        key="scheduled:cloudtasks.recurrence.repair_init",
+        execution_backend="cloudtasks",
+        scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        metadata=probe.metadata({"schedule": schedule.as_metadata(), "timeout": DEFAULT_TASK_TIMEOUT}),
+    )
+    assert undispatched.execution_ref is None
+
+    repaired = await live.service.initialize_schedules()
+    assert len(repaired) == 1
+    assert repaired[0].id == undispatched.id
+    assert repaired[0].execution_ref is not None
+    assert len(live.deliveries_for(undispatched)) == 1
+
+
+async def test_reassert_schedules_creates_missing_occurrence_and_repairs_undispatched(
+    harness: "Callable[..., Any]",
+) -> "None":
+    @task("cloudtasks.recurrence.reassert_missing", interval=60)
+    async def missing_probe() -> "None":
+        return None
+
+    @task("cloudtasks.recurrence.reassert_undispatched", interval=120)
+    async def undispatched_probe() -> "None":
+        return None
+
+    live = await harness()
+    schedule_b = get_scheduled_tasks()["cloudtasks.recurrence.reassert_undispatched"]
+    active_undispatched = await live.service.get_queue_backend().enqueue(
+        "cloudtasks.recurrence.reassert_undispatched",
+        key="scheduled:cloudtasks.recurrence.reassert_undispatched",
+        execution_backend="cloudtasks",
+        scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=120),
+        metadata=undispatched_probe.metadata({"schedule": schedule_b.as_metadata(), "timeout": DEFAULT_TASK_TIMEOUT}),
+    )
+    assert active_undispatched.execution_ref is None
+
+    assertion = await live.service.reassert_schedules(limit=10)
+    assert assertion.created == 1
+    assert assertion.repaired == 1
+    assert assertion.changed == 2
+    assert assertion.repair is not None
+    assert assertion.repair.examined == 2
+    assert assertion.repair.changed == 2
+    assert assertion.repair.failed == 0
+
+    recreated = await live.service.get_queue_backend().get_task_by_key("scheduled:cloudtasks.recurrence.reassert_missing")
+    assert recreated is not None
+    assert recreated.execution_ref is not None
+    reloaded_b = await live.service.get_task(active_undispatched.id)
+    assert reloaded_b is not None
+    assert reloaded_b.execution_ref is not None
+

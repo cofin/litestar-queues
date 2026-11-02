@@ -51,6 +51,7 @@ _APPROVED_NESTED_IMPORTS = {
         "litestar_queues.backends.ephemeral.server",
         "litestar_queues.events.streaming",
         "litestar_queues.execution.cloudtasks.routes",
+        "litestar_queues.maintenance",
         "litestar_queues.observability",
         "litestar_queues.worker",
         "litestar_queues.worker.invocation",

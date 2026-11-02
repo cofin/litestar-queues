@@ -23,11 +23,17 @@ Phases
 
 Every invocation runs the configured phases once, in this fixed order:
 
+#. **expire** — transition overdue pending or scheduled records whose ``expires_at``
+   deadline has passed to ``expired`` (up to ``expire_limit``) and cancel any
+   associated external execution attempt.
 #. **external** — repair missing deliveries, then reconcile dispatched records against their
    execution backend. Enabled only for external execution backends (skipped for
    immediate/local execution).
 #. **stale** — recover running tasks whose heartbeats are stale. Enabled when
    ``stale_after`` is set.
+#. **schedules** — recreate missing recurring schedule occurrences and repair
+   active schedule occurrences missing an ``execution_ref`` (up to
+   ``schedules_limit``). Enabled when recurring schedules are registered.
 #. **terminal** — delete terminal (completed/failed/cancelled/expired) records
    older than ``terminal_retention``. Enabled when ``terminal_retention`` is
    set.
