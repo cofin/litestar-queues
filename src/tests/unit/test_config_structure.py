@@ -11,13 +11,7 @@ PACKAGE_ROOT = Path("src/litestar_queues")
 
 _APPROVED_NESTED_IMPORTS = {
     "_cli.py": {"litestar.cli._utils", "litestar_queues.worker.runtime"},
-    "worker/supervisor.py": {
-        "litestar.cli._utils",
-        "litestar_queues.backends.ephemeral.schema",
-        "litestar_queues.config",
-        "litestar_queues.plugin",
-        "multiprocessing.connection",
-    },
+    "worker/supervisor.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
     "backends/advanced_alchemy/event_log.py": {"litestar.pagination", "litestar_queues.events"},
     "backends/advanced_alchemy/service.py": {"litestar_queues.events", "litestar_queues.exceptions"},
     "backends/redis/backend.py": {"redis"},

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, Protocol, cast
 
+from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, read_environment, read_runtime
+from litestar_queues.config import queue_backend_name
 from litestar_queues.exceptions import QueueConfigurationError, QueueError
 from litestar_queues.namespace import DEFAULT_NAMESPACE, QueueNamespace
 from litestar_queues.worker.runtime import WorkerRunResult, _WorkerStageError
@@ -193,9 +195,6 @@ def _validate_child_plugin(plugin: "QueuePlugin") -> "None":
         QueueConfigurationError: If placement is not server-owned, or the
             configured storage is not reachable from this process.
     """
-    from litestar_queues.backends.ephemeral.schema import SCHEMA_VERSION, read_environment, read_runtime
-    from litestar_queues.config import queue_backend_name
-
     config = plugin.config
     if config.worker.placement != "server":
         msg = "The server queue worker requires an application configured with WorkerConfig(placement='server')."
