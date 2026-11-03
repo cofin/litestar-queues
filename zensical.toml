@@ -1,0 +1,213 @@
+[project]
+site_name = "Litestar Queues"
+site_description = "Task queues, workers, schedules, and backend integrations for Litestar"
+site_url = "https://cofin.github.io/litestar-queues/"
+repo_url = "https://github.com/cofin/litestar-queues"
+repo_name = "cofin/litestar-queues"
+docs_dir = "docs"
+site_dir = "site"
+use_directory_urls = true
+exclude_docs = """
+examples/**
+"""
+extra_css = ["stylesheets/extra.css"]
+nav = [
+  { "Home" = [
+    { "Overview" = "index.md" },
+  ] },
+  { "Getting Started" = [
+    { "Overview" = "getting-started/index.md" },
+    { "Installation & Extras" = "getting-started/installation.md" },
+    { "Quickstart" = "getting-started/quickstart.md" },
+    { "Core Mental Model" = "getting-started/concepts.md" },
+  ] },
+  { "Core Concepts" = [
+    { "Overview" = "learn/index.md" },
+    { "Tasks & Enqueuing" = "learn/tasks.md" },
+    { "Task Options, Retries & Uniqueness" = "learn/task-options.md" },
+    { "Task Results & Waiting" = "learn/results.md" },
+    { "Failures, Timeouts & Cancellation" = "learn/failures-and-cancellation.md" },
+    { "Recurring Schedules & Cron" = "learn/schedules.md" },
+    { "Workers & Placements" = "learn/workers.md" },
+    { "Dependency Injection" = "learn/dependency-injection.md" },
+    { "Post-Response Background Tasks" = "learn/background-responses.md" },
+    { "Plugin Configuration" = "learn/configuration.md" },
+    { "Runtime Namespace" = "learn/runtime-namespace.md" },
+    { "Testing Tasks" = "learn/testing.md" },
+  ] },
+  { "Storage Backends" = [
+    { "Backend Comparison & Wakeup Matrix" = "backends/index.md" },
+    { "SQLSpec (SQLite, Postgres, MySQL, Oracle, DuckDB, Spanner)" = "backends/sqlspec.md" },
+    { "Advanced Alchemy (SQLAlchemy 2.0)" = "backends/advanced-alchemy.md" },
+    { "Redis & Valkey" = "backends/redis-valkey.md" },
+    { "Migration Guide" = "backends/migration.md" },
+  ] },
+  { "Execution & Operations" = [
+    { "Execution Transports & Multi-Backend Routing" = "execution/index.md" },
+    { "Google Cloud Tasks (Serverless Push)" = "execution/cloud-tasks.md" },
+    { "Google Cloud Run Jobs (Serverless Batch)" = "execution/cloud-run.md" },
+    { "Broker Transports" = [
+      { "Overview" = "execution/broker-transports.md" },
+      { "Google Cloud Pub/Sub" = "execution/pubsub.md" },
+      { "AWS SQS" = "execution/sqs.md" },
+      { "RabbitMQ" = "execution/rabbitmq.md" },
+      { "Apache Kafka" = "execution/kafka.md" },
+    ] },
+    { "Queue Maintenance & Reconciliation" = "execution/maintenance.md" },
+    { "CLI Operations" = "execution/cli.md" },
+  ] },
+  { "Events & Observability" = [
+    { "Task Events & Execution Context" = "events/index.md" },
+    { "Realtime SSE & WebSocket Streams" = "events/streams.md" },
+    { "Event History & Replay" = "events/history.md" },
+    { "Custom Event Log Backends" = "events/history-extending.md" },
+    { "Standalone Event Delivery" = "events/standalone.md" },
+    { "Testing Events" = "events/testing.md" },
+    { "OpenTelemetry & Prometheus" = "events/observability.md" },
+  ] },
+  { "Architecture" = [
+    { "Interactive Visual Architecture" = "architecture/index.md" },
+    { "Runnable Example Applications" = "architecture/examples.md" },
+  ] },
+  { "Reference" = [
+    { "API Overview" = "reference/index.md" },
+    { "Plugin, Config & Service" = "reference/plugin-and-config.md" },
+    { "Tasks, Schedules & Models" = "reference/tasks-and-models.md" },
+    { "Storage Backends" = "reference/backends.md" },
+    { "Execution Transports & Workers" = "reference/execution-and-workers.md" },
+    { "Events, Streams & History" = "reference/events.md" },
+    { "Observability & Exceptions" = "reference/observability.md" },
+    { "CLI Reference (litestar queues)" = "reference/cli.md" },
+    { "Contributing & Docs Pipeline" = "reference/contributing.md" },
+    { "Changelog" = "changelog.md" },
+  ] },
+]
+
+[project.theme]
+variant = "modern"
+language = "en"
+logo = "assets/logo.svg"
+favicon = "assets/favicon.svg"
+features = [
+  "content.code.annotate",
+  "content.code.copy",
+  "content.tabs.link",
+  "navigation.footer",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "search.share",
+  "search.suggest",
+  "toc.follow",
+]
+
+[project.theme.font]
+text = "Inter"
+code = "JetBrains Mono"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "custom"
+accent = "indigo"
+toggle = { icon = "lucide/sun", name = "Switch to dark mode" }
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "custom"
+accent = "indigo"
+toggle = { icon = "lucide/moon", name = "Switch to light mode" }
+
+[project.extra]
+generator = false
+social = [
+  { icon = "fontawesome/brands/github", link = "https://github.com/cofin/litestar-queues", name = "GitHub" },
+  { icon = "fontawesome/brands/discord", link = "https://discord.gg/litestar-919193495116337154", name = "Discord" },
+  { icon = "fontawesome/brands/python", link = "https://pypi.org/project/litestar-queues/", name = "PyPI" },
+]
+
+[project.plugins.redirects.redirect_maps]
+
+[project.plugins.mkdocstrings]
+default_handler = "python"
+custom_templates = "tools/docs/templates"
+enable_inventory = true
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+inventories = [
+  "https://docs.python.org/3/objects.inv",
+  "https://docs.litestar.dev/latest/objects.inv",
+  "https://msgspec.dev/objects.inv",
+  "https://litestar-org.github.io/sqlspec/objects.inv",
+]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+docstring_section_style = "table"
+heading_level = 3
+inherited_members = false
+line_length = 88
+members_order = "source"
+merge_init_into_class = false
+modernize_annotations = true
+annotations_path = "brief"
+preload_modules = ["litestar_queues"]
+separate_signature = true
+show_bases = true
+show_category_heading = false
+show_if_no_docstring = true
+show_labels = false
+show_object_full_path = false
+show_overloads = false
+show_root_full_path = false
+show_root_heading = true
+show_root_toc_entry = true
+show_signature_annotations = false
+show_source = false
+show_symbol_type_heading = true
+show_symbol_type_toc = false
+signature_crossrefs = true
+summary = { attributes = true, functions = false, classes = false, modules = false }
+unwrap_annotated = true
+filters = ["!^_"]
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+tables = {}
+toc = { permalink = true, toc_depth = "2-3" }
+
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.keys]
+
+[project.markdown_extensions.pymdownx.emoji]
+emoji_index = "zensical.extensions.emoji.twemoji"
+emoji_generator = "zensical.extensions.emoji.to_svg"
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+
+[project.markdown_extensions.pymdownx.snippets]
+base_path = ["."]
+check_paths = true
+dedent_subsections = true
+
+[project.markdown_extensions.pymdownx.superfences]
+custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+slugify = { object = "pymdownx.slugs.slugify", kwds = { case = "lower" } }
