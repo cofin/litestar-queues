@@ -16,25 +16,25 @@ from litestar_queues.backends.advanced_alchemy import (
 class AppQueueTask(UUIDAuditBase, QueueTaskModelMixin):
     """Custom queue task table integrated into the application's declarative base."""
 
-    __tablename__ = "app_queue_task"
+    __tablename__ = "example_queue_task"
 
 
 class AppQueueEventHistory(UUIDAuditBase, QueueEventHistoryModelMixin):
     """Custom durable event-history table."""
 
-    __tablename__ = "app_queue_task_event_history"
+    __tablename__ = "example_queue_task_event_history"
 
 
 class AppQueueMaintenance(UUIDAuditBase, QueueMaintenanceModelMixin):
     """Custom distributed maintenance lease table."""
 
-    __tablename__ = "app_queue_maintenance"
+    __tablename__ = "example_queue_maintenance"
 
 
 class AppQueueTaskReservation(UUIDAuditBase, QueueTaskReservationModelMixin):
     """Custom permanent forever-uniqueness reservation table."""
 
-    __tablename__ = "app_queue_task_reservation"
+    __tablename__ = "example_queue_task_reservation"
 
 
 async def main() -> None:
