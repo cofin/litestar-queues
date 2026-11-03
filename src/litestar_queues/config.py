@@ -273,6 +273,12 @@ class WorkerConfig:
     expiry_check_interval: "float | None" = 60.0
     """Interval between pending-job expiration passes; ``None`` disables sweeps."""
 
+    terminal_retention: "float | None" = None
+    """Age threshold in seconds for in-worker terminal-record cleanup; ``None`` inherits backend ``terminal_ttl`` when set."""
+
+    terminal_check_interval: "float" = 300.0
+    """Interval between in-worker terminal-record cleanup passes in seconds."""
+
     graceful_shutdown_timeout: "float" = 30
     """Maximum graceful drain time in seconds."""
 
@@ -311,6 +317,7 @@ class WorkerConfig:
             "cancellation_poll_interval": self.cancellation_poll_interval,
             "reconcile_interval": self.reconcile_interval,
             "stale_check_interval": self.stale_check_interval,
+            "terminal_check_interval": self.terminal_check_interval,
             "graceful_shutdown_timeout": self.graceful_shutdown_timeout,
             "final_cancel_timeout": self.final_cancel_timeout,
             "max_interruptions": self.max_interruptions,
@@ -337,6 +344,9 @@ class WorkerConfig:
             raise QueueConfigurationError(msg)
         if self.stale_after is not None and self.stale_after <= 0:
             msg = "WorkerConfig.stale_after must be greater than 0 when set."
+            raise QueueConfigurationError(msg)
+        if self.terminal_retention is not None and self.terminal_retention <= 0:
+            msg = "WorkerConfig.terminal_retention must be greater than 0 when set."
             raise QueueConfigurationError(msg)
         if self.expiry_check_interval is not None and self.expiry_check_interval < 0:
             msg = "WorkerConfig.expiry_check_interval must be greater than or equal to 0 when set."

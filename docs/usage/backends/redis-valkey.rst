@@ -53,6 +53,33 @@ Task arguments, keyword arguments, metadata, results, and errors must be JSON
 serializable. Give each application and environment a distinct ``key_prefix``;
 do not use ``FLUSHALL`` for test cleanup on shared infrastructure.
 
+Terminal task TTL
+=================
+
+Set :attr:`~litestar_queues.backends.redis.RedisBackendConfig.terminal_ttl` (or
+:attr:`~litestar_queues.backends.valkey.ValkeyBackendConfig.terminal_ttl`) in
+seconds to apply a native ``PEXPIRE`` whenever a task enters a terminal state
+(``completed``, ``failed``, ``cancelled``, or ``expired``):
+
+.. code-block:: python
+
+   queue_config = QueueConfig(
+       queue_backend=RedisBackendConfig(
+           url="redis://localhost:6379/0",
+           key_prefix="myapp:queues",
+           terminal_ttl=86400.0,
+       ),
+   )
+
+Do not call raw ``EXPIRE`` on ``{prefix}:task:{id}`` keys yourself: doing so
+expires the task hash while leaving its task ID inside ``:tasks``,
+``:status:*``, ``:keys``, ``:maintenance:terminal``, and ``:queues``. When
+``terminal_ttl`` is configured on the backend, every terminal Lua transition
+records the task's expiration deadline in ``{prefix}:terminal_meta`` alongside
+``PEXPIRE`` and opportunistically prunes up to 16 expired terminal entries per
+transition (and before ``get_statistics()``) so secondary indexes and queue
+statistics remain accurate without an external cron job.
+
 .. _redis-maintenance-index-upgrade:
 
 Maintenance index upgrade

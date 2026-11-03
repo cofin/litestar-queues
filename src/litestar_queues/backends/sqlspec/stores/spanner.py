@@ -1,5 +1,6 @@
 """spanner SQLSpec queue store."""
 
+import math
 from typing import Any, ClassVar, Literal
 
 from sqlspec.utils.serializers import from_json
@@ -115,7 +116,11 @@ class SpannerQueueStore(SQLSpecQueueStore):
             f"{self._quoted_col('metadata_json')} {self._metadata_json_type('metadata_json')} NOT NULL",
         ))
         column_sql = ",\n  ".join(columns)
-        return f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) PRIMARY KEY ({self._quoted_col('id')})"
+        ddl = f"CREATE TABLE {self._quoted_table_name()} (\n  {column_sql}\n) PRIMARY KEY ({self._quoted_col('id')})"
+        if self._terminal_ttl is not None:
+            ttl_days = max(1, math.ceil(self._terminal_ttl / 86400))
+            ddl += f",\nROW DELETION POLICY (OLDER_THAN({self._quoted_col('completed_at')}, INTERVAL {ttl_days} DAY))"
+        return ddl
 
     def _create_index_statements(self, *, include_expiration: "bool" = True) -> "list[str]":
         return [

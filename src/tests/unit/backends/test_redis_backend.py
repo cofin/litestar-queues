@@ -9,6 +9,8 @@ import pytest
 
 from litestar_queues import HeartbeatTouch, TaskRequest
 from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
+from litestar_queues.backends.valkey import ValkeyBackendConfig
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.models import QueuedTaskRecord
 
 if TYPE_CHECKING:
@@ -219,13 +221,90 @@ async def test_redis_backend_touch_heartbeats_rechecks_status_inside_pipeline_wr
     assert stored.metadata == {"existing": "kept"}
 
 
+@pytest.mark.parametrize("config_cls", [RedisBackendConfig, ValkeyBackendConfig])
+@pytest.mark.parametrize("invalid_ttl", [0.0, -10.0])
+async def test_redis_and_valkey_config_reject_non_positive_terminal_ttl(
+    config_cls: "type[RedisBackendConfig]", invalid_ttl: "float"
+) -> "None":
+    with pytest.raises(QueueConfigurationError, match="terminal_ttl must be greater than 0"):
+        config_cls(terminal_ttl=invalid_ttl)
+
+
+async def test_redis_statistics_prunes_expired_terminal_entries_when_terminal_ttl_enabled() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), terminal_ttl=600.0))
+    client.sets[backend._status_key("completed")] = {"completed-1"}
+
+    statistics = await backend.get_statistics()
+
+    assert statistics.completed == 1
+    assert len(client.eval_calls) == 1
+    script, numkeys, *args = client.eval_calls[0]
+    assert "ZRANGEBYSCORE" in script
+    assert numkeys == 0
+    assert args[0] == "litestar_queues"
+
+
+async def test_redis_cleanup_terminal_sweeps_orphaned_ids_after_hash_expiry() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), terminal_ttl=60.0))
+    client.strings[backend._maintenance_index_version_key] = "3"
+    orphan_id = str(uuid4())
+    client.zsets[backend._maintenance_terminal_key] = {orphan_id: 1000.0}
+    client.sets[backend._status_key("completed")] = {orphan_id}
+    client.sets[f"{backend._key_prefix}:tasks"] = {orphan_id}
+    client.hashes[backend._terminal_meta_key] = {
+        orphan_id: json.dumps({
+            "status": "completed",
+            "queue_index_key": backend._queue_index_key("default"),
+            "key": "dedup-1",
+        })
+    }
+    client.sets[backend._queue_index_key("default")] = {orphan_id}
+    client.hashes[backend._keys_key] = {"dedup-1": orphan_id}
+
+    cutoff = datetime.now(timezone.utc) + timedelta(seconds=10)
+    deleted = await backend.cleanup_terminal(cutoff, limit=10)
+
+    assert deleted == 1
+    assert orphan_id not in client.sets.get(backend._status_key("completed"), set())
+    assert orphan_id not in client.sets.get(f"{backend._key_prefix}:tasks", set())
+    assert orphan_id not in client.sets.get(backend._queue_index_key("default"), set())
+    assert orphan_id not in client.zsets.get(backend._maintenance_terminal_key, {})
+    assert orphan_id not in client.hashes.get(backend._terminal_meta_key, {})
+    assert "dedup-1" not in client.hashes.get(backend._keys_key, {})
+
+
+async def test_redis_rebuild_maintenance_indexes_populates_terminal_meta() -> "None":
+    client = _CountingRedisClient()
+    backend = RedisQueueBackend(backend_config=RedisBackendConfig(client=cast("Any", client), terminal_ttl=300.0))
+    now = datetime.now(timezone.utc)
+    record = QueuedTaskRecord(task_name="tasks.redis.terminal", status="completed", completed_at=now, key="order-42")
+    task_id = str(record.id)
+    client.hashes[backend._task_key(record.id)] = backend._record_to_mapping(record)
+    client.sets[backend._status_key("completed")] = {task_id}
+
+    indexed = await backend.rebuild_maintenance_indexes()
+
+    assert indexed == 1
+    raw_meta = client.hashes.get(backend._terminal_meta_key, {}).get(task_id)
+    assert raw_meta is not None
+    assert json.loads(raw_meta) == {
+        "key": "order-42",
+        "queue_index_key": backend._queue_index_key("default"),
+        "status": "completed",
+    }
+
+
 class _CountingRedisClient:
     def __init__(self) -> "None":
         self.hashes: "dict[str, dict[str, str]]" = {}
         self.sets: "dict[str, builtins.set[str]]" = {}
         self.strings: "dict[str, str]" = {}
+        self.zsets: "dict[str, dict[str, float]]" = {}
         self.after_hgetall_execute: "Callable[[], None] | None" = None
         self.before_touch_eval: "Callable[[], None] | None" = None
+        self.eval_calls: "list[tuple[Any, ...]]" = []
         self.hgetall_calls = 0
         self.pipeline_calls = 0
         self.pipeline_execute_calls = 0
@@ -273,6 +352,63 @@ class _CountingRedisClient:
     async def smembers(self, key: "str") -> "builtins.set[str]":
         self.smembers_calls += 1
         return self.sets.get(key, builtins.set())
+
+    async def zrangebyscore(
+        self,
+        name: "str",
+        minimum: "float | str",
+        maximum: "float | str",
+        *,
+        start: "int | None" = None,
+        num: "int | None" = None,
+    ) -> "list[str]":
+        del minimum
+        zset = self.zsets.get(name, {})
+        max_str = str(maximum)
+        exclusive = max_str.startswith("(")
+        max_val = float("inf") if max_str in {"+inf", "inf"} else float(max_str[1:] if exclusive else max_str)
+        members = [
+            member
+            for member, score in sorted(zset.items(), key=lambda item: (item[1], item[0]))
+            if (score < max_val if exclusive else score <= max_val)
+        ]
+        if start is not None and num is not None:
+            return members[start : start + num]
+        return members
+
+    async def eval(self, script: "str", numkeys: "int", *keys_and_args: "str") -> "list[Any]":
+        self.eval_calls.append((script, numkeys, *keys_and_args))
+        keys = keys_and_args[:numkeys]
+        args = keys_and_args[numkeys:]
+        if "SCARD" in script and len(keys) == 2:
+            version = self.strings.get(keys[0])
+            if version:
+                return [version]
+            if not self.sets.get(keys[1]):
+                return [args[0]]
+            return [""]
+        if "return {delete_terminal_entry(ARGV[1], ARGV[2])}" in script:
+            return [self._delete_terminal_entry(args[0], args[1])]
+        return [0]
+
+    def _delete_terminal_entry(self, prefix: "str", task_id: "str") -> "int":
+        task_key = f"{prefix}:task:{task_id}"
+        meta_key = f"{prefix}:terminal_meta"
+        task_hash = self.hashes.pop(task_key, {})
+        meta_raw = self.hashes.get(meta_key, {}).pop(task_id, None)
+        meta = json.loads(meta_raw) if meta_raw else {}
+        status = task_hash.get("status") or meta.get("status")
+        queue_index_key = task_hash.get("queue_index_key") or meta.get("queue_index_key")
+        dedup_key = task_hash.get("key") or meta.get("key")
+        self.sets.get(f"{prefix}:tasks", set()).discard(task_id)
+        if status:
+            self.sets.get(f"{prefix}:status:{status}", set()).discard(task_id)
+        if queue_index_key:
+            self.sets.get(queue_index_key, set()).discard(task_id)
+        if dedup_key and self.hashes.get(f"{prefix}:keys", {}).get(dedup_key) == task_id:
+            self.hashes[f"{prefix}:keys"].pop(dedup_key, None)
+        self.zsets.get(f"{prefix}:maintenance:terminal", {}).pop(task_id, None)
+        return 1
 
     def pipeline(self, *, transaction: "bool" = False) -> "_CountingPipeline":
         del transaction
@@ -337,6 +473,10 @@ class _CountingPipeline:
         self.operations.append(("scard", (key,), {}))
         return self
 
+    def smembers(self, key: "str") -> "_CountingPipeline":
+        self.operations.append(("smembers", (key,), {}))
+        return self
+
     async def execute(self) -> "list[Any]":
         self.client.pipeline_execute_calls += 1
         results: "list[Any]" = []
@@ -371,6 +511,9 @@ class _CountingPipeline:
         if operation == "scard":
             self.client.scard_calls += 1
             return len(self.client.sets.get(cast("str", args[0]), set()))
+        if operation == "smembers":
+            self.client.smembers_calls += 1
+            return self.client.sets.get(cast("str", args[0]), set())
         return None
 
     def _execute_eval(self, args: "tuple[Any, ...]") -> "int":

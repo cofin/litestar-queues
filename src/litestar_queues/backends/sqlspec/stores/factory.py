@@ -63,6 +63,7 @@ def create_queue_store(
     column_map: "Mapping[str, str] | None" = None,
     native_json_columns: "frozenset[str] | None" = None,
     manage_schema: "bool" = True,
+    terminal_ttl: "float | None" = None,
 ) -> "SQLSpecQueueStore":
     """Create a queue store for a SQLSpec adapter configuration.
 
@@ -76,6 +77,7 @@ def create_queue_store(
         column_map=column_map,
         native_json_columns=native_json_columns or None,
         manage_schema=manage_schema,
+        terminal_ttl=terminal_ttl,
     )
 
 

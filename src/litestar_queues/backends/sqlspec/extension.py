@@ -12,6 +12,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_table_name,
 )
 from litestar_queues.events import validate_event_history_extra_columns
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -87,6 +88,7 @@ def configure_queue_migration_extension(
     task_reservation_table_name: "str | None" = None,
     column_map: "Mapping[str, str] | None" = None,
     manage_schema: "bool" = True,
+    terminal_ttl: "float | None" = None,
 ) -> "None":
     """Register the packaged queue migrations with SQLSpec's extension runner.
 
@@ -108,6 +110,7 @@ def configure_queue_migration_extension(
         maintenance_table_name=maintenance_table_name,
         task_reservation_table_name=task_reservation_table_name,
         column_map=column_map,
+        terminal_ttl=terminal_ttl,
     )
     sqlspec_config.add_extension_migrations(QUEUE_EXTENSION_NAME, queue_migration_directory(), queue_settings)
 
@@ -122,6 +125,7 @@ def _configure_extension_settings(
     maintenance_table_name: "str | None" = None,
     task_reservation_table_name: "str | None" = None,
     column_map: "Mapping[str, str] | None" = None,
+    terminal_ttl: "float | None" = None,
 ) -> "dict[str, Any]":
     extension_config = dict(sqlspec_config.extension_config or {})
     queue_settings = dict(extension_config.get(QUEUE_EXTENSION_NAME, {}) or {})
@@ -144,6 +148,13 @@ def _configure_extension_settings(
     )
     if column_map is not None:
         queue_settings["column_map"] = resolve_column_map(column_map)
+    if terminal_ttl is not None:
+        if terminal_ttl <= 0:
+            msg = "SQLSpec queue extension terminal_ttl must be greater than 0."
+            raise QueueConfigurationError(msg)
+        queue_settings["terminal_ttl"] = float(terminal_ttl)
+    else:
+        queue_settings.pop("terminal_ttl", None)
     extension_config[QUEUE_EXTENSION_NAME] = queue_settings
     sqlspec_config.extension_config = extension_config
     return queue_settings

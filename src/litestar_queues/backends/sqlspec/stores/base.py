@@ -22,6 +22,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_native_json_columns,
     validate_table_name,
 )
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -93,6 +94,7 @@ class SQLSpecQueueStore:
         "_supports_for_update",
         "_supports_skip_locked",
         "_table_name",
+        "_terminal_ttl",
     )
 
     data_dictionary_dialect: "ClassVar[str | None]" = None
@@ -124,6 +126,7 @@ class SQLSpecQueueStore:
         column_map: "Mapping[str, str] | None" = None,
         native_json_columns: "frozenset[str] | None" = None,
         manage_schema: "bool" = True,
+        terminal_ttl: "float | None" = None,
     ) -> "None":
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
@@ -134,6 +137,15 @@ class SQLSpecQueueStore:
         configured = validate_native_json_columns(native_json_columns or frozenset())
         self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
+        raw_ttl = terminal_ttl if terminal_ttl is not None else settings.get("terminal_ttl")
+        if raw_ttl is not None:
+            resolved_ttl = float(raw_ttl)
+            if resolved_ttl <= 0:
+                msg = "SQLSpecQueueStore terminal_ttl must be greater than 0."
+                raise QueueConfigurationError(msg)
+            self._terminal_ttl: "float | None" = resolved_ttl
+        else:
+            self._terminal_ttl = None
         self._cached_sql: "dict[str, str]" = {}
         self._supports_for_update = False
         self._supports_skip_locked = False
@@ -142,6 +154,11 @@ class SQLSpecQueueStore:
     def table_name(self) -> "str":
         """Configured queue table name."""
         return self._table_name
+
+    @property
+    def terminal_ttl(self) -> "float | None":
+        """Configured retention window in seconds for terminal rows, if any."""
+        return self._terminal_ttl
 
     @property
     def dialect_name(self) -> "str | None":
@@ -1590,23 +1607,16 @@ def _configured_table_name(config: "SQLSpecStoreConfig", table_name: "str | None
     return validate_table_name(str(queue_settings.get("queue_table_name", DEFAULT_TABLE_NAME)))
 
 
-def _extract_bound_config(config_or_store: "object", target_cls: "type[Any]") -> "object | None":
+def _extract_bound_config(config_or_store: "object", target_cls: "type[object]") -> "object | None":
     """Extract bound inner configuration from a store instance while avoiding mock recursion."""
-    if hasattr(config_or_store, "_mock_return_value"):
-        if "_config" in getattr(config_or_store, "__dict__", {}):
-            return getattr(config_or_store, "_config", None)
-        return None
     has_slot = any("_config" in getattr(cls, "__slots__", ()) for cls in target_cls.__mro__)
     has_attr = "_config" in getattr(config_or_store, "__dict__", {}) or has_slot
     if not has_attr:
         return None
-    try:
-        return getattr(config_or_store, "_config", None)
-    except AttributeError:
-        return None
+    return getattr(config_or_store, "_config", None)
 
 
-def _resolve_adapter_name_from_mro(target_cls: "type[Any]") -> "str | None":
+def _resolve_adapter_name_from_mro(target_cls: "type[object]") -> "str | None":
     for cls in target_cls.__mro__:
         explicit = cls.__dict__.get("adapter_name")
         if isinstance(explicit, str):
@@ -1621,19 +1631,13 @@ def _resolve_adapter_name_from_mro(target_cls: "type[Any]") -> "str | None":
     return None
 
 
-def _resolve_adapter_name_from_instance(config: "object", target_cls: "type[Any]") -> "str":
-    if hasattr(config, "_mock_return_value"):
-        if "_config" in getattr(config, "__dict__", {}):
-            return _adapter_name(getattr(config, "_config", None))
-        if "adapter_name" in getattr(config, "__dict__", {}):
-            val = getattr(config, "adapter_name", None)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-        return ""
-    val = getattr(config, "adapter_name", None)
+def _resolve_adapter_name_from_instance(config: "object", target_cls: "type[object]") -> "str":
+    instance_dict = getattr(config, "__dict__", {})
+    is_mock = hasattr(config, "_mock_return_value")
+    val = instance_dict.get("adapter_name") if is_mock else getattr(config, "adapter_name", None)
     if isinstance(val, str) and val.strip():
         return val.strip()
-    inner_config = _extract_bound_config(config, target_cls)
+    inner_config = instance_dict.get("_config") if is_mock else _extract_bound_config(config, target_cls)
     if inner_config is not None and inner_config is not config:
         return _adapter_name(inner_config)
     return ""

@@ -132,6 +132,30 @@ through the native DDL operation API. Run it from the deployment process that
 owns schema changes. It does not record a migration revision, so track
 completion through the application's own deployment workflow.
 
+Row-level terminal TTL
+----------------------
+
+Set :attr:`~litestar_queues.backends.sqlspec.SQLSpecBackendConfig.terminal_ttl`
+in seconds to configure automatic terminal task retention. On SQL engines with
+native filtered row-level TTL, the packaged ``0001_create_queue_tasks``
+migration and ``create_schema()`` emit engine-level expiration DDL:
+
+- **CockroachDB** — table storage parameter ``ttl = 'on'`` with a
+  ``ttl_expiration_expression`` that expires rows after ``completed_at +
+  INTERVAL '<N> seconds'`` only when ``status IN ('completed', 'failed',
+  'cancelled', 'expired')`` (leaving pending, scheduled, and running rows with
+  ``NULL`` expiration).
+- **Google Cloud Spanner** — ``ROW DELETION POLICY (OLDER_THAN(completed_at,
+  INTERVAL <N> DAY))``, which ignores active rows where ``completed_at IS NULL``
+  and deletes terminal rows older than ``max(1, ceil(terminal_ttl / 86400))``
+  days.
+
+For all other SQL dialects (PostgreSQL, SQLite, MySQL, MariaDB, DuckDB, Oracle,
+and SQL Server), active workers automatically inherit
+``SQLSpecBackendConfig.terminal_ttl`` as their periodic in-worker
+:attr:`~litestar_queues.config.WorkerConfig.terminal_retention` threshold when
+``WorkerConfig.terminal_retention`` is ``None``.
+
 Wakeups
 -------
 

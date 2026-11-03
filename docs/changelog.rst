@@ -6,19 +6,37 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
-0.13.1 - 2026-11-03
+0.14.0 - 2026-11-03
 ===================
 
 **Added:**
 
+* Native terminal task TTL (:attr:`~litestar_queues.backends.redis.RedisBackendConfig.terminal_ttl` and
+  :attr:`~litestar_queues.backends.valkey.ValkeyBackendConfig.terminal_ttl`) for Redis and Valkey backends,
+  applying ``PEXPIRE`` atomically when tasks enter a terminal state (``completed``, ``failed``, ``cancelled``,
+  or ``expired``) while opportunistically pruning secondary index memberships (``:tasks``, ``:status:*``,
+  ``:keys``, ``:maintenance:terminal``, and ``:queues``) as hashes expire (`#187 <https://github.com/cofin/litestar-queues/pull/187>`_).
+  See :doc:`usage/backends/redis-valkey`.
+* Native SQL row-level terminal TTL (:attr:`~litestar_queues.backends.sqlspec.SQLSpecBackendConfig.terminal_ttl`)
+  in the packaged ``0001_create_queue_tasks`` migration and ``create_schema()`` DDL for databases that support
+  filtered row expiration: CockroachDB ``ttl_expiration_expression`` over ``completed_at`` and terminal
+  ``status`` values, and Google Cloud Spanner ``ROW DELETION POLICY (OLDER_THAN(completed_at, INTERVAL <N> DAY))``
+  (`#187 <https://github.com/cofin/litestar-queues/pull/187>`_). See :doc:`usage/backends/sqlspec`.
+* In-worker periodic terminal record cleanup via :attr:`~litestar_queues.config.WorkerConfig.terminal_retention`
+  (inheriting the queue backend's ``terminal_ttl`` when left as ``None``) and
+  :attr:`~litestar_queues.config.WorkerConfig.terminal_check_interval`, running a lock-coordinated
+  ``backend.cleanup_terminal()`` sweep inside the worker loop (`#187 <https://github.com/cofin/litestar-queues/pull/187>`_).
+  See :doc:`usage/workers` and :doc:`usage/maintenance`.
 * Third-party SQLSpec database adapter configuration support outside the ``sqlspec.adapters``
   package, resolving adapter names and queue stores through an explicit
   ``adapter_name: ClassVar[str]`` or ``queue_store_class: ClassVar[type[SQLSpecQueueStore]]``
-  attribute before falling back to module MRO inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_).
+  attribute before falling back to module MRO inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_,
+  `#187 <https://github.com/cofin/litestar-queues/pull/187>`_).
 * Custom events queue store resolution for durable worker wakeups via an explicit
   ``events_store_class: ClassVar[type[BaseEventQueueStore]]`` attribute on SQLSpec configurations
   before falling back to upstream ``sqlspec.utils.adapters.resolve_extension_store_class``
-  or adapter package inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_).
+  or adapter package inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_,
+  `#187 <https://github.com/cofin/litestar-queues/pull/187>`_).
 
 0.13.0 - 2026-11-03
 ===================

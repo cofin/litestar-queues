@@ -64,6 +64,7 @@ from litestar_queues.models import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping, Sequence
+    from types import ModuleType
 
     from litestar_queues.backends.sqlspec._typing import (
         SQLSpecConfig,
@@ -168,6 +169,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_sync_session_lock",
         "_task_reservation_store",
         "_task_reservation_table_name",
+        "_terminal_ttl",
         "_wakeup_backend",
         "_wakeup_channel",
         "_wakeup_poll_interval",
@@ -187,6 +189,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._column_map = resolve_column_map(backend_config.column_map)
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
+        self._terminal_ttl = backend_config.terminal_ttl
         self._sqlspec = backend_config.sqlspec
         self._sqlspec_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.sqlspec_config
         self._heartbeat_pool_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.heartbeat_pool_config
@@ -2385,6 +2388,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 column_map=self._column_map,
                 native_json_columns=self._native_json_columns,
                 manage_schema=self._manage_schema,
+                terminal_ttl=self._terminal_ttl,
             )
         return self._store
 
@@ -3155,7 +3159,9 @@ def resolve_events_migration_backend(
     return transport if transport in _EVENTS_TABLE_BACKENDS else None
 
 
-def _match_store_class(store_module: "Any", candidate_names: "list[str]", *, is_async: "bool") -> "type[Any] | None":
+def _match_store_class(
+    store_module: "ModuleType", candidate_names: "list[str]", *, is_async: "bool"
+) -> "type[Any] | None":
     for config_name in candidate_names:
         if config_name.endswith("Config"):
             direct_name = f"{config_name[:-6]}EventQueueStore"
@@ -3170,16 +3176,17 @@ def _match_store_class(store_module: "Any", candidate_names: "list[str]", *, is_
             if isinstance(store_class, type):
                 return store_class
 
+    candidates: "list[type[Any]]" = []
     for attr in dir(store_module):
         if attr.endswith("EventQueueStore") and attr != "BaseEventQueueStore":
             store_class = getattr(store_module, attr, None)
             if isinstance(store_class, type):
-                return store_class
+                candidates.append(store_class)
 
-    return None
+    return candidates[0] if len(candidates) == 1 else None
 
 
-def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
+def _events_queue_store(sqlspec_config: "SQLSpecStoreConfig") -> "Any":
     """Return the adapter's SQLSpec events queue store for this configuration.
 
     Resolves the adapter's :class:`~sqlspec.extensions.events.BaseEventQueueStore`
@@ -3241,7 +3248,7 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     raise QueueConfigurationError(msg)
 
 
-def _events_queue_create_statements(sqlspec_config: "SQLSpecConfig") -> "list[str]":
+def _events_queue_create_statements(sqlspec_config: "SQLSpecStoreConfig") -> "list[str]":
     """Return the DDL provisioning the durable events queue table for this adapter.
 
     Emitting these alongside the queue table makes the durable ``notify_queue`` /

@@ -24,7 +24,9 @@ from litestar_queues import (
     task,
 )
 from litestar_queues.backends import BaseQueueBackend, InMemoryQueueBackend
+from litestar_queues.backends.redis import RedisBackendConfig
 from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
+from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.execution import BaseExecutionBackend
 from litestar_queues.models import HeartbeatTouchResult, QueuedTaskRecord
 from tests.helpers._timing import wait_until
@@ -2917,3 +2919,51 @@ async def test_cleanup_cancelled_midway_is_logged_not_raised(caplog: "pytest.Log
     record = matching_records[0]
     payload = getattr(record, "queue_task_event_payload", {})
     assert payload.get("primary_error") == "CancelledError"
+
+
+@pytest.mark.parametrize("invalid_retention", [0.0, -5.0])
+async def test_worker_config_rejects_non_positive_terminal_retention(invalid_retention: "float") -> "None":
+    with pytest.raises(QueueConfigurationError, match="terminal_retention must be greater than 0"):
+        WorkerConfig(terminal_retention=invalid_retention)
+
+
+@pytest.mark.parametrize("invalid_interval", [0.0, -1.0])
+async def test_worker_config_rejects_non_positive_terminal_check_interval(invalid_interval: "float") -> "None":
+    with pytest.raises(QueueConfigurationError, match="terminal_check_interval must be greater than 0"):
+        WorkerConfig(terminal_check_interval=invalid_interval)
+
+
+async def test_worker_maybe_cleanup_terminal_sweeps_expired_terminal_records() -> "None":
+    backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external", terminal_retention=60.0, terminal_check_interval=10.0),
+            queue_backend="memory",
+        ),
+        queue_backend=backend,
+    ) as service:
+        worker = Worker(service)
+        old_record = await backend.enqueue("tasks.terminal.old")
+        await backend.claim_task(old_record.id)
+        completed_old = await backend.complete_task(old_record.id)
+        assert completed_old is not None
+        completed_old.completed_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+        fresh_record = await backend.enqueue("tasks.terminal.fresh")
+        await backend.claim_task(fresh_record.id)
+        await backend.complete_task(fresh_record.id)
+
+        await worker._maybe_cleanup_terminal()
+
+        assert await backend.get_task(old_record.id) is None
+        assert await backend.get_task(fresh_record.id) is not None
+
+
+async def test_worker_inherits_backend_terminal_ttl_when_terminal_retention_unset() -> "None":
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"), queue_backend=RedisBackendConfig(terminal_ttl=900.0)
+    )
+    service = QueueService(config, queue_backend=InMemoryQueueBackend())
+    worker = Worker(service)
+
+    assert worker._terminal_retention == timedelta(seconds=900.0)

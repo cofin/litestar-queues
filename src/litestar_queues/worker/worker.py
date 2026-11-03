@@ -4,7 +4,7 @@ import logging
 import os
 import random
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from litestar_queues.config import WorkerConfig, execution_backend_name, queue_backend_name
@@ -82,6 +82,7 @@ class Worker:
         "_last_expiry_check_at",
         "_last_reconcile_at",
         "_last_stale_check_at",
+        "_last_terminal_check_at",
         "_listener_reconnect_pending",
         "_logger",
         "_max_concurrency",
@@ -102,6 +103,8 @@ class Worker:
         "_startup_completion",
         "_startup_error",
         "_stop_event",
+        "_terminal_check_interval",
+        "_terminal_retention",
         "_wakeup_started_at",
         "_worker_id",
     )
@@ -133,6 +136,16 @@ class Worker:
             timedelta(seconds=worker_config.stale_after) if worker_config.stale_after is not None else None
         )
         self._stale_check_interval = worker_config.stale_check_interval
+        backend_ttl = getattr(service.config.queue_backend, "terminal_ttl", None)
+        effective_retention = (
+            worker_config.terminal_retention
+            if worker_config.terminal_retention is not None
+            else float(backend_ttl)
+            if isinstance(backend_ttl, (int, float))
+            else None
+        )
+        self._terminal_retention = timedelta(seconds=effective_retention) if effective_retention is not None else None
+        self._terminal_check_interval = worker_config.terminal_check_interval
         self._graceful_shutdown_timeout = worker_config.graceful_shutdown_timeout
         self._final_cancel_timeout = worker_config.final_cancel_timeout
         self._worker_id = worker_config.id if worker_config.id is not None else f"worker-{os.getpid()}"
@@ -157,6 +170,7 @@ class Worker:
         self._last_expiry_check_at = -float("inf")
         self._last_cancellation_check_at = -float("inf")
         self._last_stale_check_at = -float("inf")
+        self._last_terminal_check_at = -float("inf")
         self._listener_reconnect_pending = False
         self._wakeup_started_at: "float | None" = None
 
@@ -276,6 +290,7 @@ class Worker:
                     await self._maybe_expire_overdue()
                     await self._maybe_requeue_stale()
                     await self._maybe_reconcile_external()
+                    await self._maybe_cleanup_terminal()
                     processed = await self.run_once()
                 except asyncio.CancelledError:
                     raise
@@ -595,6 +610,25 @@ class Worker:
         ):
             return
         await self.reconcile_external(limit=self._batch_size)
+
+    async def _maybe_cleanup_terminal(self) -> "None":
+        if self._terminal_retention is None:
+            return
+        now = asyncio.get_running_loop().time()
+        if now - self._last_terminal_check_at < self._terminal_check_interval:
+            return
+        self._last_terminal_check_at = now
+        backend = self._service.get_queue_backend()
+        if not await backend.acquire_worker_lock(
+            "terminal_cleanup", ttl=timedelta(seconds=max(self._terminal_check_interval, 1.0))
+        ):
+            return
+        cutoff = datetime.now(timezone.utc) - self._terminal_retention
+        deleted = await backend.cleanup_terminal(cutoff, limit=self._batch_size * 10)
+        if deleted:
+            self._record_counter(
+                "litestar_queues.terminal_cleanup", {"queue.terminal.outcome": "deleted"}, value=deleted
+            )
 
     async def _drain_running(self) -> "bool":
         if not self._running_tasks:

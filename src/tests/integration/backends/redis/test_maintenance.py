@@ -358,3 +358,74 @@ async def test_redis_backend_coordination_is_not_process_local(redis_service: "R
     finally:
         await first.close()
         await second.close()
+
+
+async def test_redis_terminal_ttl_expires_task_hash_and_cleans_secondary_indexes(
+    redis_service: "RedisService",
+) -> "None":
+    """Native terminal_ttl applies PEXPIRE on terminal transitions and prunes orphaned secondary indexes."""
+    from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
+
+    prefix = f"litestar_queues:test:ttl:{uuid.uuid4().hex}"
+    url = f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}"
+    backend = RedisQueueBackend(
+        backend_config=RedisBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False, terminal_ttl=60.0)
+    )
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.ttl.done", queue="orders", key="order-1")
+        claimed = await backend.claim_task(record.id)
+        assert claimed is not None
+        completed = await backend.complete_task(record.id, result={"ok": True})
+        assert completed is not None
+
+        client = cast("Any", await backend._get_client())
+        task_key = backend._task_key(record.id)
+        pttl = int(await client.pttl(task_key))
+        assert 0 < pttl <= 60000
+        assert await client.hget(backend._terminal_meta_key, str(record.id)) is not None
+
+        await client.delete(task_key)
+        stats = await backend.get_statistics()
+        assert stats.completed == 0
+        assert str(record.id) not in {str(v) for v in await client.smembers(f"{prefix}:tasks")}
+        assert str(record.id) not in {str(v) for v in await client.smembers(backend._status_key("completed"))}
+        assert str(record.id) not in {str(v) for v in await client.smembers(backend._queue_index_key("orders"))}
+        assert await client.hget(backend._keys_key, "order-1") is None
+        assert await client.hget(backend._terminal_meta_key, str(record.id)) is None
+        assert str(record.id) not in {str(v) for v in await client.zrange(backend._maintenance_terminal_key, 0, -1)}
+    finally:
+        await backend.close()
+
+
+async def test_redis_terminal_ttl_retry_clears_pexpire_and_terminal_meta(redis_service: "RedisService") -> "None":
+    """Retrying a failed task persists the task hash and removes its terminal_meta entry."""
+    from litestar_queues.backends.redis import RedisBackendConfig, RedisQueueBackend
+
+    prefix = f"litestar_queues:test:ttl_retry:{uuid.uuid4().hex}"
+    url = f"redis://{redis_service.host}:{redis_service.port}/{redis_service.db}"
+    backend = RedisQueueBackend(
+        backend_config=RedisBackendConfig(url=url, key_prefix=prefix, worker_wakeups=False, terminal_ttl=60.0)
+    )
+    await backend.open()
+    try:
+        record = await backend.enqueue("tasks.ttl.fail", max_retries=0)
+        assert await backend.claim_task(record.id) is not None
+        failed = await backend.fail_task(record.id, error="boom")
+        assert failed is not None and failed.status == "failed"
+
+        client = cast("Any", await backend._get_client())
+        task_key = backend._task_key(record.id)
+        assert int(await client.pttl(task_key)) > 0
+        assert await client.hget(backend._terminal_meta_key, str(record.id)) is not None
+
+        transitioned = await backend._commit_transition(
+            record.id, expected_status="failed", new_status="pending", zset_action="ready", score="0"
+        )
+        assert transitioned is True
+        retried = await backend.get_task(record.id)
+        assert retried is not None and retried.status == "pending"
+        assert int(await client.pttl(task_key)) == -1
+        assert await client.hget(backend._terminal_meta_key, str(record.id)) is None
+    finally:
+        await backend.close()

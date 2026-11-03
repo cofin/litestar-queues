@@ -5,6 +5,7 @@ module resolves to, so a change to a shared dialect base cannot silently alter
 what a given adapter does.
 """
 
+import importlib
 import sys
 import types
 from typing import Any, ClassVar, cast
@@ -13,10 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
 
-from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store, _match_store_class
 from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
 from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
 from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type, create_queue_store
+from litestar_queues.config import QueueConfig
 from litestar_queues.exceptions import QueueConfigurationError
 
 # adapter -> dialect, quote style, datetime binding, JSON column type
@@ -459,3 +462,77 @@ def test_external_config_wakeup_transport_mapping(adapter_name: "str", expected_
 
     ExternalConfig.adapter_name = adapter_name
     assert _adapter_wakeup_transport(_adapter_name(ExternalConfig)) == expected_wakeup
+
+
+def test_match_store_class_rejects_ambiguous_unprefixed_event_stores() -> "None":
+    """A module exporting multiple non-matching EventQueueStore classes returns None."""
+    module = types.ModuleType("fake_events_store")
+
+    class AlphaEventQueueStore:
+        pass
+
+    class BetaEventQueueStore:
+        pass
+
+    module.AlphaEventQueueStore = AlphaEventQueueStore  # type: ignore[attr-defined]
+    module.BetaEventQueueStore = BetaEventQueueStore  # type: ignore[attr-defined]
+
+    assert _match_store_class(module, ["CustomConfig"], is_async=True) is None
+
+
+@pytest.mark.parametrize("invalid_ttl", [0.0, -5.0])
+def test_sqlspec_backend_config_rejects_non_positive_terminal_ttl(invalid_ttl: "float") -> "None":
+    """SQLSpecBackendConfig.terminal_ttl must be strictly positive when provided."""
+    with pytest.raises(QueueConfigurationError, match="terminal_ttl must be greater than 0"):
+        SQLSpecBackendConfig(terminal_ttl=invalid_ttl)
+
+
+def test_cockroach_queue_store_emits_filtered_row_level_ttl_ddl() -> "None":
+    """CockroachQueueStore embeds a filtered row-level ttl_expiration_expression when terminal_ttl is set."""
+    config = _fake_config("cockroach_asyncpg", is_async=True, dialect="postgres")
+    store_without_ttl = create_queue_store(config)
+    assert "ttl_expiration_expression" not in store_without_ttl.create_statements()[0]
+
+    store_with_ttl = create_queue_store(config, terminal_ttl=3600.0)
+    create_table_sql = store_with_ttl.create_statements()[0]
+    assert "WITH (ttl = 'on', ttl_expiration_expression = '" in create_table_sql
+    assert "IN (''completed'', ''failed'', ''cancelled'', ''expired'')" in create_table_sql
+    assert "INTERVAL ''3600 seconds''" in create_table_sql
+    assert "ELSE NULL END')" in create_table_sql
+
+
+def test_spanner_queue_store_emits_row_deletion_policy_ddl() -> "None":
+    """SpannerQueueStore appends a native ROW DELETION POLICY on completed_at when terminal_ttl is set."""
+    config = _fake_config("spanner", is_async=False, dialect="postgres")
+    store_without_ttl = create_queue_store(config)
+    assert "ROW DELETION POLICY" not in store_without_ttl.create_statements()[0]
+
+    store_with_ttl = create_queue_store(config, terminal_ttl=90000.0)
+    create_table_sql = store_with_ttl.create_statements()[0]
+    assert "ROW DELETION POLICY (OLDER_THAN(`completed_at`, INTERVAL 2 DAY))" in create_table_sql
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("adapter", "expected_clause"),
+    [
+        ("cockroach_asyncpg", "ttl_expiration_expression"),
+        ("spanner", "ROW DELETION POLICY (OLDER_THAN(`completed_at`, INTERVAL 1 DAY))"),
+    ],
+)
+async def test_initial_migration_applies_configured_terminal_ttl(adapter: "str", expected_clause: "str") -> "None":
+    """The 0001_create_queue_tasks migration threads terminal_ttl into native DDL."""
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    sqlspec_config = _fake_config(adapter, is_async=(adapter != "spanner"), dialect="postgres")
+    sqlspec_config.migration_config = {}
+    sqlspec_config.set_migration_config = lambda cfg: setattr(sqlspec_config, "migration_config", cfg)
+    sqlspec_config.add_extension_migrations = lambda *_args: None
+    sqlspec_config.remove_extension_migrations = lambda *_args: None
+
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, terminal_ttl=3600.0)
+    queue_config = QueueConfig(queue_backend=backend_config)
+    backend_config.configure_migrations(queue_config)
+
+    context = types.SimpleNamespace(config=sqlspec_config)
+    statements = await migration.up(cast("Any", context))
+    assert any(expected_clause in stmt for stmt in statements)
