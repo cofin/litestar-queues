@@ -57,7 +57,7 @@ Heartbeat timestamps are automatic: while a task is `running`, `WorkerHeartbeatM
 
 Workers can automatically purge old terminal records (`completed`, `failed`, `cancelled`, `expired`) without requiring an external maintenance cron job:
 
-- **`WorkerConfig.terminal_retention: float | None = None`**: Age threshold in seconds after `completed_at` before a terminal record is eligible for deletion. When left as `None`, the worker automatically inherits `backend_config.terminal_ttl` from `SQLSpecBackendConfig`, `AdvancedAlchemyBackendConfig`, or `EphemeralBackendConfig` when set.
+- **`WorkerConfig.terminal_retention: float | None = None`**: Age threshold in seconds after `completed_at` before a terminal record is eligible for deletion. When left as `None`, the worker automatically inherits `backend_config.terminal_ttl` from `SQLSpecBackendConfig`, `RedisBackendConfig`, or `ValkeyBackendConfig` when set.
 - **`WorkerConfig.terminal_check_interval: float = 300.0`**: Interval in seconds between in-worker terminal record cleanup sweeps.
 
 Permanent `unique_until="forever"` reservations (`TaskReservation`) are never deleted by terminal cleanup sweeps.

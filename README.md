@@ -32,7 +32,7 @@
 uv add litestar-queues
 ```
 
-Add optional extras for your storage or execution backend (`sqlspec`, `sqlalchemy`, `redis`, `valkey`, `cloud-tasks`, `cloud-run`, `pubsub`, `sqs`, `rabbitmq`, `kafka`, `otel`, `prometheus`).
+Add optional extras for your storage or execution backend (`sqlspec`, `advanced-alchemy`, `redis`, `valkey`, `cloud-tasks`, `cloudrun`, `pubsub`, `sqs`, `rabbitmq`, `kafka`, `otel`, `prometheus`).
 
 ## Quickstart
 

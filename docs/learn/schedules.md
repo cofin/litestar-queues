@@ -27,7 +27,7 @@ Cron expressions use the standard five-field syntax (`minute hour day-of-month m
 - **Field Ranges**: Minutes `0-59`, Hours `0-23`, Day of month `1-31`, Month `1-12`, Day of week `0-6` (or `7` for Sunday, where `0` and `7` are Sunday and `1` is Monday).
 - **Operators**: Wildcards (`*`), single values (`5`), ranges (`1-5`), steps (`*/15`, `1-10/2`), and comma-separated lists (`0,15,30,45`).
 - **Day Matching**: Following Vixie cron semantics, when both `day-of-month` and `day-of-week` are restricted (neither is `*`), an occurrence matches if *either* field matches the date; otherwise both must match.
-- **Unsupported Extensions**: Six-field seconds, `@hourly`/`@daily` nicknames, `L`, `W`, and `#` modifiers are rejected at registration time with `ValueError`.
+- **Aliases & Unsupported Extensions**: Standard nicknames (`@annually`, `@yearly`, `@monthly`, `@weekly`, `@daily`, `@midnight`, `@hourly`) are supported. Six-field seconds and `L`, `W`, or `#` modifiers are rejected at registration time with `ValueError`.
 
 ## Startup Synchronization & Self-Rescheduling
 
@@ -45,4 +45,4 @@ Each scheduled occurrence snapshots `@task(..., retries=...)` into `QueuedTaskRe
 
 ## Scale-to-Zero & External Schedule Reassertion
 
-In serverless deployments (`WorkerConfig(placement="external")` with Cloud Tasks or Cloud Run Jobs) where no long-lived worker process is running, trigger schedule assertion periodically through [`QueueMaintenanceService`](../execution/maintenance.md) (`litestar queues maintenance --only schedules` or the signed HTTP maintenance endpoint). `QueueService.reassert_schedules()` creates any missing `scheduled:<task-name>` occurrences and repairs external transport dispatch references.
+In serverless deployments (`WorkerConfig(placement="external")` with Cloud Tasks or Cloud Run Jobs) where no long-lived worker process is running, trigger schedule assertion periodically through [`QueueMaintenanceService`](../execution/maintenance.md) (`litestar queues run-maintenance --phase schedules` or the signed HTTP maintenance endpoint). `QueueService.reassert_schedules()` creates any missing `scheduled:<task-name>` occurrences and repairs external transport dispatch references.

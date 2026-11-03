@@ -69,7 +69,7 @@ Start the dispatcher (`litestar queues run`) and one or more Pub/Sub consumer pr
 
 ```bash
 litestar --app my_app.main:app queues run
-litestar --app my_app.main:app queues run-consumer --backend pubsub --concurrency 16
+litestar --app my_app.main:app queues run-consumer --backend pubsub --max-concurrency 16
 ```
 
 While a task is executing, the consumer automatically sends `modify_ack_deadline` requests every `ack_extension_interval` seconds so long-running tasks are not redelivered by Pub/Sub prematurely, while the storage backend remains the sole authority for fenced task state transitions.

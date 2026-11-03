@@ -10,7 +10,7 @@
 --8<-- "docs/examples/events/publish_from_task.py"
 ```
 
-## Five Distinct Execution Signals
+## Execution Signals
 
 | Signal | Emitter API | Wire Event Type | Purpose |
 | :--- | :--- | :--- | :--- |

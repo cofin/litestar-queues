@@ -72,7 +72,7 @@ Start the dispatcher (`litestar queues run`) and one or more SQS consumer proces
 
 ```bash
 litestar --app my_app.main:app queues run
-litestar --app my_app.main:app queues run-consumer --backend sqs --concurrency 16
+litestar --app my_app.main:app queues run-consumer --backend sqs --max-concurrency 16
 ```
 
 While a task executes, the consumer extends the SQS message visibility timeout every `visibility_extension_interval` seconds and calls `DeleteMessage` once the attempt reaches a durable storage status transition. Authoritative task ownership and retry fencing are enforced in the storage backend (`expected_retry_count`).

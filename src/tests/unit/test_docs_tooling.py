@@ -67,7 +67,7 @@ def test_scan_public_docstrings_detects_violations(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     findings = scan_package(pkg)
-    rules = {finding.rule for finding in findings}
+    rules = {finding.kind for finding in findings}
     assert "missing-module-docstring" in rules
     assert "rst-directive-in-docstring" in rules
     assert "hybrid-duplicate-attributes" in rules
@@ -117,9 +117,17 @@ def test_compact_site_html_preserves_pre_and_textarea(tmp_path: Path) -> None:
     assert "\n    <body>" not in compacted
 
 
-def test_write_legacy_redirects_covers_all_44_moved_routes(tmp_path: Path) -> None:
-    """Verify LEGACY_REDIRECTS contains all 44 moved legacy routes and emits hash-preserving stubs."""
-    assert len(LEGACY_REDIRECTS) == 44
+def test_write_legacy_redirects_covers_all_moved_routes(tmp_path: Path) -> None:
+    """Verify LEGACY_REDIRECTS contains all moved legacy routes and emits hash-preserving stubs."""
+    assert len(LEGACY_REDIRECTS) >= 44
+    assert {
+        "usage/backends",
+        "usage/deployment/execution-transports",
+        "usage/events-standalone",
+        "contributing/testing",
+        "reference/core",
+        "reference/execution",
+    } <= LEGACY_REDIRECTS.keys()
     site = tmp_path / "site"
     (site / "getting-started" / "quickstart").mkdir(parents=True)
     (site / "getting-started" / "quickstart" / "index.html").write_text("<html></html>", encoding="utf-8")

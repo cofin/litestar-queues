@@ -19,7 +19,6 @@ __all__ = (
     "LEGACY_REDIRECTS",
     "SITE_URL",
     "InventoryEntry",
-    "build_llms_files",
     "build_objects_inv",
     "compact_site_html",
     "main",
@@ -64,11 +63,13 @@ LEGACY_REDIRECTS: dict[str, str] = {
     "usage/event-history": "events/history/",
     "usage/event-history-extending": "events/history-extending/",
     "usage/event-standalone": "events/standalone/",
+    "usage/events-standalone": "events/standalone/",
     "usage/event-testing": "events/testing/",
     "usage/observability": "events/observability/",
     "usage/cli": "execution/cli/",
     "usage/maintenance": "execution/maintenance/",
     "usage/migration": "backends/migration/",
+    "usage/backends": "backends/",
     "usage/backends/index": "backends/",
     "usage/backends/sqlspec": "backends/sqlspec/",
     "usage/backends/advanced-alchemy": "backends/advanced-alchemy/",
@@ -77,13 +78,17 @@ LEGACY_REDIRECTS: dict[str, str] = {
     "usage/deployment/cloud-tasks": "execution/cloud-tasks/",
     "usage/deployment/cloud-run": "execution/cloud-run/",
     "usage/deployment/broker-transports": "execution/broker-transports/",
+    "usage/deployment/execution-transports": "execution/broker-transports/",
     "usage/deployment/pubsub": "execution/pubsub/",
     "usage/deployment/sqs": "execution/sqs/",
     "usage/deployment/rabbitmq": "execution/rabbitmq/",
     "usage/deployment/kafka": "execution/kafka/",
     "examples/index": "architecture/examples/",
     "contributing/index": "reference/contributing/",
+    "contributing/testing": "reference/contributing/",
     "contributing/documentation": "reference/contributing/",
+    "reference/core": "reference/plugin-and-config/",
+    "reference/execution": "reference/execution-and-workers/",
     "reference/exceptions": "reference/observability/",
 }
 
@@ -197,11 +202,6 @@ def write_llms_files(site_dir: Path = DEFAULT_SITE_DIR, docs_dir: Path = DEFAULT
     llms_txt_path.write_text("\n".join(llms_index_lines).strip() + "\n", encoding="utf-8")
     llms_full_path.write_text("\n".join(full_sections).strip() + "\n", encoding="utf-8")
     return llms_txt_path, llms_full_path
-
-
-def build_llms_files(site_dir: Path = DEFAULT_SITE_DIR, docs_dir: Path = DEFAULT_DOCS_DIR) -> tuple[Path, Path]:
-    """Alias for `write_llms_files`."""
-    return write_llms_files(site_dir=site_dir, docs_dir=docs_dir)
 
 
 def write_legacy_redirects(site_dir: Path = DEFAULT_SITE_DIR) -> int:

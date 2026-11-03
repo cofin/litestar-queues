@@ -85,7 +85,7 @@ The `/_litestar-queues/cloud-tasks` endpoint translates `consume_one()` outcomes
 | `400 Bad Request` / `422 Unprocessable Entity` | Malformed JSON body, unknown field, or unsupported protocol `version` | Permanent delivery failure |
 | `401 Unauthorized` / `403 Forbidden` | Missing or invalid OIDC Bearer token rejected by `CloudTasksOIDCGuard` | Rejects unauthorized caller |
 
-## Two Retry Layers & Inline Stale Recovery
+## Retry Layers & Inline Stale Recovery
 
 1. **Application Task Retries (`@task(retries=..., retry_backoff=...)`)**: When a task raises a Python exception, `QueueService` catches it, increments `retry_count` in storage, schedules a new Cloud Task at `scheduled_at = now + backoff`, and returns `204 No Content` so the completed HTTP delivery is acknowledged cleanly.
 2. **Transport Redelivery & Inline Stale Recovery (`WorkerConfig.stale_after`)**: If a Cloud Run container crashes or hits an OOM kill while a task is `running`, Cloud Tasks receives a `5xx` or connection reset and redelivers the same `{version, task_id}` payload. When `WorkerConfig.stale_after` is configured on the consumer service, the delivery route automatically checks whether the existing `running` claim's `heartbeat_at` has exceeded `stale_after` and recovers the stale claim inline before executing the redelivered attempt.

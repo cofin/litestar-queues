@@ -20,25 +20,23 @@ A `TaskResult` wraps the most recently fetched [`QueuedTaskRecord`](../reference
 | `handle.error` | `str \| None` | Formatted error string from the latest failed attempt |
 | `handle.record` | `QueuedTaskRecord \| None` | Full underlying queue record |
 | `await handle.refresh()` | `Self` | Reloads `QueuedTaskRecord` from the storage backend in place |
-| `await handle.wait(...)` | `T` | Waits for a terminal status and returns `T` (or raises on failure/cancellation/expiration/timeout) |
+| `await handle.wait(...)` | `Self` | Waits for a terminal status (`completed`, `failed`, `cancelled`, `expired`), refreshes `handle.record` in place, and returns `self` (or raises `TimeoutError` if `timeout` elapses) |
 
 ## Waiting for Completion
 
-`await handle.wait(timeout=10.0, poll_interval=0.05)` blocks until the task reaches a terminal state (`completed`, `failed`, `cancelled`, or `expired`):
+`await handle.wait(timeout=10.0, poll_interval=0.1)` blocks until the task reaches a terminal state (`completed`, `failed`, `cancelled`, or `expired`) and returns the refreshed `TaskResult` handle:
 
 1. **Push-Accelerated Waiting**: When the storage backend advertises `capabilities.supports_completion_events == True` (such as `InMemoryQueueBackend`, `RedisQueueBackend`, `ValkeyQueueBackend`, or `SQLSpecQueueBackend` on PostgreSQL with `notify` / `notify_queue`), `wait()` subscribes to completion notifications and wakes immediately when the task finishes.
 2. **Polling Fallback**: On backends without completion push notifications, `wait()` polls `backend.get_task(task_id)` every `poll_interval` seconds until the record becomes terminal or `timeout` elapses.
 
-### Exceptions Raised by Wait
+### Outcomes & Exceptions from Wait
 
-| Terminal Outcome | Exception Raised by `await handle.wait()` |
+| Condition | Behavior of `await handle.wait()` |
 | :--- | :--- |
-| `status == "completed"` | None — returns the deserialized result `T` |
-| `status == "failed"` | `TaskFailedError` (with `record.error` message) |
-| `status == "cancelled"` | `TaskCancelledError` |
-| `status == "expired"` | `TaskExpiredError` |
-| Record deleted before completion | `TaskNotFoundError` |
-| `timeout` elapsed while non-terminal | `TimeoutError` |
+| `status == "completed"` | Returns refreshed `handle` (`handle.result` holds deserialized `T`) |
+| `status in {"failed", "cancelled", "expired"}` | Returns refreshed `handle` (`handle.status` and `handle.error` reflect the terminal state) |
+| `handle.record is None` before waiting | Raises `RuntimeError("Task record is not available")` |
+| `timeout` elapsed while non-terminal | Raises `TimeoutError` |
 
 ## Fetching Records by Task ID
 

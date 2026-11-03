@@ -16,9 +16,9 @@ Every `@task` declaration sets default scheduling, timeout, thread-offloading, a
 - **Relative Delay (`run_after: float | timedelta | None`)**: Defers initial eligibility by adding the duration to the enqueue timestamp and storing the record with `status="scheduled"`.
 - **Absolute Schedule (`scheduled_at: datetime | None`)**: Passed at `enqueue(..., scheduled_at=...)` to schedule a task for a specific UTC timestamp. Naive `datetime` objects are interpreted as UTC.
 
-## Three Distinct Lifecycle Clocks
+## Lifecycle Clocks
 
-`litestar-queues` separates queue waiting deadlines, execution attempt limits, and post-terminal storage retention into three independent clocks:
+`litestar-queues` separates queue waiting deadlines, execution attempt limits, and post-terminal storage retention into independent clocks:
 
 | Clock | Configuration | Active State | Expiration Outcome |
 | :--- | :--- | :--- | :--- |

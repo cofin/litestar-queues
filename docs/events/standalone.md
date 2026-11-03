@@ -15,9 +15,9 @@ When running domain functions that call `publish_task_progress`, `publish_task_l
 1. **`bind_task_context(context)`**: Context manager that binds a [`TaskExecutionContext`](../reference/events.md#litestar_queues.events.TaskExecutionContext) to the current asyncio `ContextVar` scope so `get_current_task_context()`, `require_current_task_context()`, and the `publish_task_*` helpers resolve to `context`.
 2. **`bind_beat_sink(sink)`**: Context manager that binds a [`TaskBeatSink`](../reference/events.md#litestar_queues.events.TaskBeatSink) (`record_beat(task_id: str, detail: str | None) -> None`) to receive synchronous `context.beat(detail)` or `beat(detail)` calls.
 
-## Three-Tier Actor Attribution Precedence
+## Actor Attribution Precedence
 
-Every `QueueEvent` can carry a [`QueueEventActor(type="user" | "system" | "service", id="...")`](../reference/events.md#litestar_queues.events.QueueEventActor) identifying who initiated or emitted the event. Actor attribution resolves in strict three-tier precedence order:
+Every `QueueEvent` can carry a [`QueueEventActor(type="user" | "system" | "service", id="...")`](../reference/events.md#litestar_queues.events.QueueEventActor) identifying who initiated or emitted the event. Actor attribution resolves in strict precedence order:
 
 | Precedence | Source | Scope | Example |
 | :--- | :--- | :--- | :--- |

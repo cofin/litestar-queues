@@ -8,7 +8,7 @@
 --8<-- "docs/examples/learn/testing_tasks.py"
 ```
 
-## Three Testing Layers
+## Testing Layers
 
 ### Direct Callable Invocation
 
@@ -52,7 +52,7 @@ await handle.refresh()
 assert handle.status == "completed"
 ```
 
-`consume_one(service, task_id)` claims the specific record by `UUID`, executes a single attempt with heartbeat management, and returns a [`TaskExitCode`](../reference/execution-and-workers.md#litestar_queues.consumer.TaskExitCode) (`SUCCESS`, `FAILURE`, `NOT_CLAIMABLE`, or `INVALID_INPUT`).
+`consume_one(service, task_id)` claims the specific record by `UUID`, executes a single attempt with heartbeat management, and returns a [`TaskExitCode`](../reference/execution-and-workers.md#litestar_queues.consumer.TaskExitCode) (`SUCCESS`, `FAILURE`, `MISSING_RECORD`, `UNKNOWN_TASK`, `CLAIM_LOST`, or `CANCELLED`).
 
 ## Isolating the Task Registry in Pytest Suites
 

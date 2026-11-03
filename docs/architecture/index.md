@@ -39,19 +39,19 @@ Explore how tasks transition from `pending` or `scheduled` through fenced `runni
 | **Execution Timeout** (`timeout`) | `@task` or `enqueue()` | Per execution attempt while `status == "running"` | Cancels attempt and either schedules a retry or transitions to `status="failed"`. |
 | **Terminal Retention** (`terminal_ttl` / `terminal_retention`) | `*BackendConfig` or `QueueMaintenanceConfig` | After task reaches `completed`, `failed`, `cancelled`, or `expired` | Deletes aged terminal task records while preserving `unique_until="forever"` reservations. |
 
-## Serverless Scale-to-Zero & Six-Phase Maintenance
+## Serverless Scale-to-Zero & Maintenance
 
-In serverless topologies, `QueueConfig` can register a default push lane (`CloudTasksExecutionConfig` for interactive tasks up to 30 minutes) alongside named batch lanes (`execution_backends=(CloudRunExecutionConfig(...),)` for multi-hour Cloud Run Jobs), backed by the 6-phase `QueueMaintenanceService`.
+In serverless topologies, `QueueConfig` can register a default push lane (`CloudTasksExecutionConfig` for interactive tasks up to 30 minutes) alongside named batch lanes (`execution_backends=(CloudRunExecutionConfig(...),)` for multi-hour Cloud Run Jobs), backed by `QueueMaintenanceService`.
 
 --8<-- "tools/docs/includes/diagram-serverless-scale-to-zero.html"
 
 ## Realtime Event Pipeline & Cursor Replay
 
-Running tasks emit structured progress, log, and custom events through `TaskExecutionContext`. When `EventHistoryConfig(enabled=True)` is active, `QueueEventPublisher` commits durable `QueueEventLogRecord` rows before broadcasting live frames to `ChannelsQueueEventSink`, guaranteeing gap-free cursor replay across reconnects and planned `max_stream_duration` rollovers.
+Running tasks emit structured progress, log, and custom events through `TaskExecutionContext`. When `EventHistoryConfig` is configured on `QueueEventsConfig.history`, `QueueEventPublisher` commits durable `QueueEventLogRecord` rows before broadcasting live frames to `ChannelsQueueEventSink`, guaranteeing gap-free cursor replay across reconnects and planned `max_stream_duration` rollovers.
 
 --8<-- "tools/docs/includes/diagram-events-and-streams.html"
 
-## Four-Layer Transport Matrix
+## Transport Layer Matrix
 
 `litestar-queues` separates storage, worker wakeup hints, execution dispatch, and browser event streaming into orthogonal layers that can be mixed and matched independently:
 

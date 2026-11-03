@@ -70,7 +70,7 @@ Start the dispatcher (`litestar queues run`) and one or more Kafka consumer grou
 
 ```bash
 litestar --app my_app.main:app queues run
-litestar --app my_app.main:app queues run-consumer --backend kafka --concurrency 16
+litestar --app my_app.main:app queues run-consumer --backend kafka --max-concurrency 16
 ```
 
 Each consumer commits the partition consumer offset manually after the task attempt reaches a durable transition in the storage backend. Partition consumer offset tracking is strictly a transport cursor; authoritative task state and retry fencing reside in the storage backend.

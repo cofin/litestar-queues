@@ -47,5 +47,5 @@ config = QueueConfig(
 
 While `QueueNamespace` customizes in-process Litestar DI keys, `app.state` slots, and logger/tracer names, subprocess bootstrap environment variables remain fixed across all namespaces:
 
-- **`QUEUES_CONFIG_FACTORY`**: Dotted `module:callable` path used by standalone CLI commands (`litestar queues ...`) and Cloud Run Jobs (`litestar-queues-consume`) when starting without a Litestar `--app` target.
-- **`QUEUES_TASK_ID`**: Default environment variable read by `litestar-queues-consume` and injected by `CloudRunExecutionBackend` for one-shot task execution.
+- **`QUEUES_CONFIG_FACTORY`**: Dotted `module:callable` path used by standalone CLI commands (`litestar queues ...`) and Cloud Run Jobs (`python -m litestar_queues.consumer`) when starting without a Litestar `--app` target.
+- **`QUEUES_TASK_ID`**: Default environment variable read by `litestar queues run-task` (`python -m litestar_queues.consumer`) and injected by `CloudRunExecutionBackend` for one-shot task execution.

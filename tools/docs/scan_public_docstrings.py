@@ -28,11 +28,6 @@ class DocstringFinding(msgspec.Struct, frozen=True, gc=False):
     kind: str
     message: str
 
-    @property
-    def rule(self) -> str:
-        """Return the violation rule identifier."""
-        return self.kind
-
 
 def scan_package(root: Path = PACKAGE_ROOT) -> list[DocstringFinding]:
     """Scan all public modules under root for docstring and field hygiene violations.

@@ -54,14 +54,14 @@
 
         <rect x="604" y="20" width="298" height="106" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
         <text x="753" y="46" text-anchor="middle" fill="var(--lq-text)" font-size="13" font-weight="700">Durable History (QueueEventLog)</text>
-        <text x="753" y="66" text-anchor="middle" fill="var(--lq-amber)" font-size="11" font-family="monospace">EventHistoryConfig(enabled=True)</text>
-        <text x="753" y="88" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Batched append_many() + stage_summaries</text>
-        <text x="753" y="108" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Query via list_events() &amp; get_task_events()</text>
+        <text x="753" y="66" text-anchor="middle" fill="var(--lq-amber)" font-size="11" font-family="monospace">EventHistoryConfig(batch_size=20)</text>
+        <text x="753" y="88" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Batched record_events_batch() commits</text>
+        <text x="753" y="108" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Query via query_events() &amp; summarize_stages()</text>
 
         <rect x="604" y="138" width="298" height="106" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
         <text x="753" y="164" text-anchor="middle" fill="var(--lq-text)" font-size="13" font-weight="700">Live Browser Fan-Out</text>
         <text x="753" y="184" text-anchor="middle" fill="var(--lq-emerald)" font-size="11" font-family="monospace">ChannelsQueueEventSink -&gt; /queues/events</text>
-        <text x="753" y="206" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">SSE (`text/event-stream`) &amp; WebSocket routes</text>
+        <text x="753" y="206" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">WS `/queues/events` &amp; SSE `/queues/events/sse`</text>
         <text x="753" y="226" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Queue / Task / Global topic channels</text>
       </svg>
     </div>
@@ -72,7 +72,7 @@
         <desc id="lq-ev-rp-desc">SSE and WebSocket subscribers replay missed history from Last-Event-ID or after_sequence, deduplicate live frames, and reconnect seamlessly on max_stream_duration.</desc>
 
         <rect x="18" y="30" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
-        <text x="156" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">1. Subscribe &amp; Replay</text>
+        <text x="156" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Subscribe &amp; Replay</text>
         <text x="156" y="84" text-anchor="middle" fill="var(--lq-blue)" font-size="11.5" font-family="monospace">Last-Event-ID / after_sequence</text>
         <text x="156" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Subscribes to live Channels topic first</text>
         <text x="156" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Replays QueueEventLog(after_sequence=N)</text>
@@ -82,8 +82,8 @@
         <line class="lq-diagram-flow" x1="294" y1="122" x2="324" y2="122" stroke="var(--lq-blue)" stroke-width="2.5" />
 
         <rect x="324" y="30" width="272" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
-        <text x="460" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">2. Planned Stream Rollover</text>
-        <text x="460" y="84" text-anchor="middle" fill="var(--lq-emerald)" font-size="11.5" font-family="monospace">max_stream_duration=timedelta(...)</text>
+        <text x="460" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Planned Stream Rollover</text>
+        <text x="460" y="84" text-anchor="middle" fill="var(--lq-emerald)" font-size="11.5" font-family="monospace">max_stream_duration=1500.0</text>
         <text x="460" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Closes cleanly before Cloud Run timeout</text>
         <text x="460" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Emits `retry: &lt;retry_ms&gt;` SSE hint</text>
         <text x="460" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">WebSocket close code 1001 (`stream_rollover`)</text>
@@ -92,7 +92,7 @@
         <line class="lq-diagram-flow" x1="596" y1="122" x2="626" y2="122" stroke="var(--lq-emerald)" stroke-width="2.5" />
 
         <rect x="626" y="30" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-violet)" stroke-width="2" />
-        <text x="764" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">3. Shielded Teardown</text>
+        <text x="764" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Shielded Teardown</text>
         <text x="764" y="84" text-anchor="middle" fill="var(--lq-violet)" font-size="11.5" font-family="monospace">CancelScope(shield=True)</text>
         <text x="764" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Shields subscriber cleanup on disconnect</text>
         <text x="764" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Prevents leaked Channels subscriptions</text>

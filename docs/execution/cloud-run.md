@@ -20,7 +20,7 @@
 
 ## Job Container Command & Environment Contract
 
-Configure your Cloud Run Job container entrypoint to invoke the one-shot task consumer CLI (`litestar queues run-task` or the standalone `litestar-queues-consume` binary):
+Configure your Cloud Run Job container entrypoint to invoke the one-shot task consumer CLI (`litestar queues run-task` or `python -m litestar_queues.consumer`):
 
 ```dockerfile
 ENTRYPOINT ["litestar", "--app", "my_app.main:app", "queues", "run-task"]
@@ -31,7 +31,7 @@ Or without loading a Litestar HTTP application object, point `QUEUES_CONFIG_FACT
 ```dockerfile
 ENV QUEUES_CONFIG_FACTORY="my_app.queues:build_queue_config"
 ENV LITESTAR_QUEUES_TASK_MODULES="my_app.tasks"
-ENTRYPOINT ["litestar-queues-consume"]
+ENTRYPOINT ["python", "-m", "litestar_queues.consumer"]
 ```
 
 When `CloudRunExecutionBackend` triggers `run_job()`, it passes the ID-only override environment variable `QUEUES_TASK_ID=<uuid>` (plus any static `CloudRunExecutionConfig.extra_env` variables) to the container overrides. Task arguments and metadata are never passed in container environment overrides; `run-task` reads `QUEUES_TASK_ID` and claims the authoritative record from your storage backend.
@@ -59,12 +59,16 @@ When connecting both the web service and Cloud Run Jobs to Cloud SQL or Memoryst
 ## Dispatch Failure Handling & Deterministic Exit Codes
 
 - **Fallback Backend (`fallback_execution_backend`)**: If `CloudRunExecutionConfig.fallback_execution_backend` is set (for example `"local"`), dispatch failures fall back to the named execution backend; when `None` (default), dispatch errors leave the record eligible for bounded `reconcile_external_tasks()` repair.
-- **Deterministic Container Exit Codes (`TaskExitCode`)**: `litestar queues run-task` and `litestar-queues-consume` exit with distinct non-zero codes so Cloud Run Job execution logs reflect the exact outcome:
+- **Deterministic Container Exit Codes (`TaskExitCode`)**: `litestar queues run-task` and `python -m litestar_queues.consumer` exit with distinct codes so Cloud Run Job execution logs reflect the exact outcome:
 
 | Exit Code | `TaskExitCode` Constant | Meaning |
 | :--- | :--- | :--- |
-| `0` | `TaskExitCode.SUCCESS` | Task claimed, executed, and persisted as `completed` |
-| `4` | `TaskExitCode.INVALID_INPUT` | Missing or invalid `QUEUES_TASK_ID` / `--task-id` UUID |
-| `6` | `TaskExitCode.NOT_CLAIMABLE` | Record was not found, already terminal, or claimed by another worker |
-| `7` | `TaskExitCode.FAILURE` | Task raised an exception (`failed`, `cancelled`, or rescheduled for retry) |
-| `8` | `TaskExitCode.EXECUTION_ERROR` | Unhandled infrastructure or storage backend failure during claim/execution |
+| `0` | `TaskExitCode.SUCCESS` | Task claimed, executed, and persisted as `completed` (or rescheduled for retry) |
+| `1` | `TaskExitCode.FAILURE` | Task raised an exception that exhausted retries and settled as `failed` |
+| `2` | `TaskExitCode.MISSING_TASK_ID` | Neither `--task-id` nor `QUEUES_TASK_ID` / `LITESTAR_QUEUES_TASK_ID` was provided |
+| `3` | `TaskExitCode.INVALID_TASK_ID` | Task ID value is not a valid UUID |
+| `4` | `TaskExitCode.MISSING_RECORD` | Record was not found, already terminal, or claimed by another worker |
+| `5` | `TaskExitCode.UNKNOWN_TASK` | Record references a `task_name` that is not registered in the current process |
+| `6` | `TaskExitCode.CLAIM_LOST` | Worker heartbeat fence detected claim loss during execution |
+| `7` | `TaskExitCode.CANCELLED` | Task execution was cancelled (`TaskCancelledError` or `asyncio.CancelledError`) |
+| `8` | `TaskExitCode.MISSING_CONFIG_FACTORY` | Standalone consumer invoked without `QUEUES_CONFIG_FACTORY` configured |

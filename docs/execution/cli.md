@@ -10,12 +10,10 @@ For full auto-generated option tables of every command and flag, see the [CLI Re
 | :--- | :--- | :--- |
 | `litestar queues run` | Local Worker / Broker Dispatcher | Starts a long-lived `Worker` claiming due tasks from storage (or dispatching ID-only records to configured message brokers) |
 | `litestar queues run-consumer` | Broker Consumer Fleet | Runs a long-lived pull consumer for `--backend pubsub`, `sqs`, `rabbitmq`, or `kafka` |
-| `litestar queues run-task` | Serverless One-Shot Job | Claims and executes a single task record by `--task-id` or `QUEUES_TASK_ID` (also available as standalone `litestar-queues-consume`) |
+| `litestar queues run-task` | Serverless One-Shot Job | Claims and executes a single task record by `--task-id` or `QUEUES_TASK_ID` (also runnable via `python -m litestar_queues.consumer`) |
 | `litestar queues run-maintenance` | Scheduled Maintenance Runner | Executes one finite, token-fenced 6-phase `QueueMaintenanceService` pass |
-| `litestar queues status` | Operator Diagnostics | Displays queue record counts by status (`pending`, `scheduled`, `running`, `completed`, `failed`, `cancelled`, `expired`) and registered tasks |
-| `litestar queues list` | Operator Diagnostics | Lists registered `@task` definitions, target queues, retry budgets, and recurring schedules |
-| `litestar queues clear` | Administrative Reset | Clears queued tasks (optionally filtered by `--queue`) |
-| `litestar queues reset-identity` | Administrative Reset | Removes a permanent `unique_until="forever"` `TaskReservation` by its exact effective key |
+| `litestar queues status` | Operator Diagnostics | Displays queue record counts by status (`pending`, `scheduled`, `running`, `completed`, `failed`, `cancelled`, `expired`), registered tasks, and schedules |
+| `litestar queues scheduler-health` | Operator Diagnostics | Verifies recurring schedule health and checks the configured `QueueConfig.scheduler_canary_task` |
 
 ## Running Standalone Workers (`litestar queues run`)
 
@@ -23,12 +21,13 @@ Use `litestar queues run` when `WorkerConfig(placement="external")` separates wo
 
 ```bash
 litestar --app my_app.main:app queues run \
-  --queues critical,default \
-  --concurrency 24 \
-  --poll-interval 0.2
+  --queue critical \
+  --queue default \
+  --max-concurrency 24 \
+  --drain-timeout 30
 ```
 
-By default (`WorkerConfig.run_app_lifespan=True`), `litestar queues run`, `run-consumer`, and `run-maintenance` enter `QueuePlugin.standalone_app_lifespan` so database pools and dependencies configured on your `Litestar` app lifespan are initialized before the command runs. Pass `--no-app-lifespan` to skip the Litestar application lifespan.
+By default (`WorkerConfig.run_app_lifespan=True`), `litestar queues run`, `run-consumer`, and `run-maintenance` enter `QueuePlugin.standalone_app_lifespan` so database pools and dependencies configured on your `Litestar` app lifespan are initialized before the command runs. Set `WorkerConfig(run_app_lifespan=False)` when tasks manage all external resources through `task_dependency_provider`.
 
 ## Signal Handling & Graceful Shutdown Escalation
 
@@ -45,5 +44,5 @@ In minimal worker or Cloud Run Job containers that do not import the full HTTP w
 ```bash
 export QUEUES_CONFIG_FACTORY="my_app.queues:build_queue_config"
 export LITESTAR_QUEUES_TASK_MODULES="my_app.tasks,my_app.billing.jobs"
-litestar-queues-consume --task-id 2c8d8f72-6a4b-4c5c-9c82-5e3f21a09b41
+python -m litestar_queues.consumer --task-id 2c8d8f72-6a4b-4c5c-9c82-5e3f21a09b41
 ```

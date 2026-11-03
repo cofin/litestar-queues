@@ -70,7 +70,7 @@ Start the dispatcher (`litestar queues run`) and one or more RabbitMQ consumer p
 
 ```bash
 litestar --app my_app.main:app queues run
-litestar --app my_app.main:app queues run-consumer --backend rabbitmq --concurrency 16
+litestar --app my_app.main:app queues run-consumer --backend rabbitmq --max-concurrency 16
 ```
 
 Consumers set AMQP `basic_qos(prefetch_count=concurrency)` to bound in-flight deliveries per process, verify the attempt generation against the storage backend, and send `basic_ack` once the attempt completes or `basic_nack(requeue=True)` if the attempt crashed before reaching a durable status transition.

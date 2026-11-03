@@ -10,9 +10,9 @@ Maintenance never starts a polling worker loop, never executes due application t
 --8<-- "docs/examples/execution/maintenance_config.py"
 ```
 
-## Fixed Six-Phase Execution Order
+## Maintenance Phase Execution Order
 
-Every maintenance run evaluates up to six bounded phases in the fixed `PHASE_ORDER`:
+Every maintenance run evaluates bounded phases in the fixed `PHASE_ORDER`:
 
 | Order | Phase Name | Limit Field | Enablement Threshold | What the Phase Does |
 | :--- | :--- | :--- | :--- | :--- |
