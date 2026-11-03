@@ -204,8 +204,6 @@ async def test_backend_contract_lists_active_external_records_awaiting_delivery(
     assert {record.id for record in listed} == {pending.id, scheduled.id}
     assert undelivered.id not in {record.id for record in listed}
     assert all(record.execution_ref is not None for record in listed)
-    # Which one a partial budget returns is the neighbouring test's business;
-    # here it only matters that the budget is honoured exactly.
     assert len(bounded) == 1
     assert bounded[0].id in {pending.id, scheduled.id}
     assert spent == []
@@ -422,9 +420,6 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
 
-    # A negative window puts the cutoff slightly in the future so every
-    # just-claimed task counts as stale regardless of the adapter's timestamp
-    # precision or whether the backend stores records by reference.
     result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
     stored_requeued = await queue_backend.get_task(requeued.id)
     stored_failed = await queue_backend.get_task(failed.id)
@@ -436,8 +431,6 @@ async def test_backend_contract_recovers_stale_running_records(queue_backend: "B
     assert stored_requeued is not None
     assert stored_requeued.status == "pending"
     assert stored_requeued.retry_count == 2
-    # The default policy is "preserve": recovery must carry the enqueued
-    # priority through unchanged rather than demoting the record.
     assert stored_requeued.priority == 10
     assert stored_requeued.error == "first failure"
     assert stored_failed is not None
@@ -500,7 +493,6 @@ async def test_backend_contract_cleanup_terminal_honors_bounded_limit(queue_back
     third = await queue_backend.cleanup_terminal(before, limit=2)
     fourth = await queue_backend.cleanup_terminal(before, limit=2)
 
-    # Exact-limit batches, then continuation of the remainder, then a no-op.
     assert first == 2
     assert second == 2
     assert third == 1
@@ -527,7 +519,6 @@ async def test_backend_contract_requeue_stale_honors_bounded_limit(queue_backend
     assert first.requeued == 2
     assert second.requeued == 2
     assert third.requeued == 0
-    # Zero overlap: every record was requeued exactly once.
     for record in records:
         stored = await queue_backend.get_task(record.id)
         assert stored is not None
@@ -541,11 +532,8 @@ async def test_backend_contract_maintenance_fences_holders(queue_backend: "BaseQ
     ttl = timedelta(seconds=60)
 
     assert await queue_backend.acquire_maintenance("queue-maintenance", "token-a", ttl=ttl) is True
-    # A second holder is denied while the ownership is live.
     assert await queue_backend.acquire_maintenance("queue-maintenance", "token-b", ttl=ttl) is False
-    # A stale holder cannot release ownership it does not hold.
     assert await queue_backend.release_maintenance("queue-maintenance", "token-b") is False
-    # The owner releases and the ownership becomes reacquirable.
     assert await queue_backend.release_maintenance("queue-maintenance", "token-a") is True
     assert await queue_backend.acquire_maintenance("queue-maintenance", "token-b", ttl=ttl) is True
     assert await queue_backend.release_maintenance("queue-maintenance", "token-b") is True

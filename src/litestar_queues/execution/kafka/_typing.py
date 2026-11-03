@@ -1,7 +1,11 @@
+"""Private structural types for Kafka producer and consumer clients."""
+
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+
+__all__ = ("KafkaConsumer", "KafkaProducer")
 
 
 class KafkaProducer(Protocol):

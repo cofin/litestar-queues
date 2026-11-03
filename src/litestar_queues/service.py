@@ -1,3 +1,5 @@
+"""High-level queue service orchestrating storage, execution transports, events, and observability."""
+
 import asyncio
 import contextlib
 import logging
@@ -231,8 +233,8 @@ class QueueService:
     def get_event_log(self) -> "QueueEventLog | None":
         """Return the backend-owned durable event history, if configured.
 
-        History is wired during :meth:`open` only when ``events.history`` is
-        present; otherwise this returns ``None`` and history maintenance is a
+        History is wired during `open()` only when `events.history` is
+        present; otherwise this returns `None` and history maintenance is a
         no-op.
         """
         return self._event_log
@@ -486,10 +488,6 @@ class QueueService:
         except BaseException as exc:
             runtime.record_exception(span, exc)
             if reserved_id is not None and effective_key is not None:
-                # Enqueue may have committed before a later notification failed.
-                # Release only when the reserved record is confirmed absent; an
-                # inconclusive read retains the reservation fail-closed. The owner
-                # predicate prevents recovery from deleting a successor reservation.
                 await _release_failed_forever_reservation(self.get_queue_backend(), effective_key, reserved_id)
             raise
         else:
@@ -505,8 +503,6 @@ class QueueService:
             expired = await self.expire_overdue_tasks()
             record = next((candidate for candidate in expired if candidate.id == record.id), record)
 
-        # After expiry, never before: a record that is already dead should not be
-        # handed to a transport that would deliver it days from now.
         record = await self._schedule_persisted(record)
 
         result = TaskResult(record.id, task_obj.name, service=self, record=record)
@@ -732,9 +728,6 @@ class QueueService:
         await task_context.lifecycle("task.cancelled", message=message, payload=payload)
         self._log_task_event("Queue task cancelled", record, level=logging.INFO, payload=payload)
         if include_running:
-            # Not gated on a persisted owner: an unclaimed record has no owner
-            # to name, and every subscribed worker reconciles the shared
-            # control channel against durable status regardless.
             await backend.notify_worker_control(record.worker_id)
         return True
 
@@ -937,9 +930,6 @@ class QueueService:
         task_context: "TaskExecutionContext",
         timeout: "object",
     ) -> "object":
-        # Provider acquisition and cleanup ride inside the same timeout as the
-        # body: a provider that blocks on a pool checkout must not be able to
-        # hold a claim open past the attempt's deadline.
         return await asyncio.wait_for(
             self._run_task_body(record, task_obj, task_context),
             timeout=timeout if isinstance(timeout, int | float) else None,
@@ -1047,8 +1037,6 @@ class QueueService:
         if updated.status == "failed":
             await self._reschedule_if_needed(updated)
         elif updated.status in {"pending", "scheduled"}:
-            # A retry on a queue with no worker needs its own delivery, and the
-            # claim this handler owns is the only thing that knows one is due.
             updated = await self._schedule_persisted(updated)
         telemetry.finish(updated.status)
         return updated
@@ -1321,9 +1309,6 @@ class QueueService:
                 records.append(active)
                 continue
             scheduled_at = schedule.get_next_run(use_initial_delay=True)
-            # Both resolved before the cancellation below: refusing a schedule
-            # the transport cannot deliver must not first retire the occurrence
-            # that is currently in flight.
             self._reject_beyond_scheduling_horizon(
                 task_name, scheduled_at, execution_backend=task_obj.execution_backend
             )
@@ -1580,9 +1565,6 @@ class QueueService:
         task_obj = self.resolve_task(record.task_name)
         scheduled_at = schedule.get_next_run(record.completed_at)
         if self._beyond_scheduling_horizon(scheduled_at, execution_backend=record.execution_backend):
-            # The occurrence that just ran stays terminal and this chain ends
-            # here. Writing the next one would persist work nothing delivers,
-            # and every later occurrence would be further out still.
             await self._publish_schedule_rejected(record)
             return
         expires_at = _resolve_expires_at(task_obj, expires_in=None, expires_at=None, scheduled_at=scheduled_at)
@@ -1930,7 +1912,7 @@ def _bind_execution_context(
     """Bind the ambient context a task body runs under.
 
     Returns:
-        Scope state for :func:`_reset_execution_context`.
+        Scope state for `_reset_execution_context()`.
     """
     stack = ExitStack()
     stack.enter_context(bind_task_context(task_context))
@@ -1972,10 +1954,6 @@ def _base_observability_attributes(
         "queue.task.name": task_name,
         "queue.execution.backend": execution_backend,
     }
-    # Spans omit unset attributes rather than carrying an empty value. Metrics
-    # cannot: Prometheus binds label names at collector construction, so the key
-    # must always be present. An empty label value is the right encoding there --
-    # Prometheus treats it as equivalent to the label being absent.
     if execution_profile:
         attributes["queue.execution.profile"] = execution_profile
     if attempt is not None:
@@ -2009,8 +1987,6 @@ class _ExecutionObservability:
         """Close out the span and emit the duration and count for ``status``."""
         self.runtime.set_attribute(self.span, "queue.task.status", status)
         if status == "failed":
-            # Trace backends key error rates off span status, not recorded exceptions,
-            # and a task can fail without an exception reaching this frame.
             self.runtime.set_status_error(self.span, "task failed")
         attributes = {**self.metric_attributes, "queue.task.status": status}
         self.runtime.record_duration(

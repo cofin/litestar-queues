@@ -11,6 +11,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from datetime import datetime
 
     from litestar_queues.events.history import QueueEventLogRecord
 
@@ -38,9 +39,9 @@ EVENT_LEVEL_RANKS: "dict[str, int]" = {"debug": 10, "info": 20, "warning": 30, "
 def event_level_rank(level: "str | None") -> "int":
     """Return the severity rank of an event level.
 
-    ``None`` ranks 0, an unrecognized non-empty level ranks 1, and known levels
-    use :data:`EVENT_LEVEL_RANKS`. Unknown levels are never dropped; they simply
-    rank below ``debug``.
+    `None` ranks 0, an unrecognized non-empty level ranks 1, and known levels
+    use `EVENT_LEVEL_RANKS`. Unknown levels are never dropped; they simply
+    rank below `debug`.
 
     Returns:
         The severity rank.
@@ -69,20 +70,39 @@ def event_level_for_rank(rank: "int") -> "str | None":
 class QueueEventQuery:
     """Immutable filter, order, and pagination request for durable event history.
 
-    Every filter is equality and every set filter is ANDed. ``None`` means the
+    Every filter is equality and every set filter is ANDed. `None` means the
     dimension is unconstrained.
     """
 
     task_id: "str | None" = None
+    """Optional task identifier equality filter."""
+
     task_name: "str | None" = None
+    """Optional registered task name equality filter."""
+
     event_type: "str | None" = None
+    """Optional event type equality filter."""
+
     scope: "str | None" = None
+    """Optional event scope equality filter."""
+
     scope_key: "str | None" = None
+    """Optional adopter scope key equality filter."""
+
     entity: "str | None" = None
+    """Optional canonical entity key equality filter."""
+
     level: "str | None" = None
+    """Optional event severity level equality filter."""
+
     order: "QueueEventOrder" = "asc"
+    """Sort direction by the stable event history order key (`"asc"` or `"desc"`)."""
+
     limit: "int | None" = None
+    """Optional maximum number of records returned per page."""
+
     offset: "int" = 0
+    """Zero-based record offset applied before `limit`."""
 
     def __post_init__(self) -> "None":
         """Validate and canonicalize the query.
@@ -210,65 +230,67 @@ def paginate_event_records(
 def summarize_event_records(records: "Iterable[QueueEventLogRecord]") -> "list[QueueEventStageSummary]":
     """Aggregate already-filtered records into per-stage summaries.
 
-    Groups by ``stage``, sums ``duration_ms``, tracks first/last ``occurred_at``,
-    and derives ``latest_sequence``/``latest_message`` from the record with the
-    greatest stable order key and ``worst_level`` from the greatest
-    :func:`event_level_rank` (ties resolved by the latest record).
+    Groups by `stage`, sums `duration_ms`, tracks first/last `occurred_at`,
+    and derives `latest_sequence`/`latest_message` from the record with the
+    greatest stable order key and `worst_level` from the greatest
+    `event_level_rank()` (ties resolved by the latest record).
 
     Returns:
-        Summaries ordered by stage, ``None`` stage first.
+        Summaries ordered by stage, `None` stage first.
     """
     ordered = sort_event_records(records)
 
-    stages: "dict[str | None, dict[str, object]]" = {}
+    stages: "dict[str | None, _StageAccumulator]" = {}
     for record in ordered:
         stage = record.stage
-        if stage not in stages:
-            stages[stage] = {
-                "event_count": 0,
-                "total_duration_ms": 0.0,
-                "first_event_at": None,
-                "last_event_at": None,
-                "latest_sequence": None,
-                "latest_message": None,
-                "best_rank": 0,
-                "worst_level": None,
-            }
+        entry = stages.get(stage)
+        if entry is None:
+            entry = _StageAccumulator()
+            stages[stage] = entry
 
-        entry = stages[stage]
-        entry["event_count"] += 1  # type: ignore[operator]
+        entry.event_count += 1
 
         if record.duration_ms is not None:
-            entry["total_duration_ms"] += record.duration_ms  # type: ignore[operator]
+            entry.total_duration_ms += record.duration_ms
 
-        if entry["first_event_at"] is None or record.occurred_at < entry["first_event_at"]:  # type: ignore[operator]
-            entry["first_event_at"] = record.occurred_at
+        if entry.first_event_at is None or record.occurred_at < entry.first_event_at:
+            entry.first_event_at = record.occurred_at
 
-        if entry["last_event_at"] is None or record.occurred_at >= entry["last_event_at"]:  # type: ignore[operator]
-            entry["last_event_at"] = record.occurred_at
+        if entry.last_event_at is None or record.occurred_at >= entry.last_event_at:
+            entry.last_event_at = record.occurred_at
 
-        # ordered list means later records always have a greater or equal sort key
-        entry["latest_sequence"] = record.sequence
-        entry["latest_message"] = record.message
+        entry.latest_sequence = record.sequence
+        entry.latest_message = record.message
 
         rank = event_level_rank(record.level)
-        if rank >= entry["best_rank"]:  # type: ignore[operator]
-            entry["best_rank"] = rank
-            entry["worst_level"] = record.level
+        if rank >= entry.best_rank:
+            entry.best_rank = rank
+            entry.worst_level = record.level
 
-    result = []
-    for stage, data in stages.items():
-        summary = QueueEventStageSummary(
+    result = [
+        QueueEventStageSummary(
             stage=stage,
-            event_count=data["event_count"],  # type: ignore[arg-type]
-            total_duration_ms=data["total_duration_ms"],  # type: ignore[arg-type]
-            first_event_at=data["first_event_at"],  # type: ignore[arg-type]
-            last_event_at=data["last_event_at"],  # type: ignore[arg-type]
-            latest_sequence=data["latest_sequence"],  # type: ignore[arg-type]
-            latest_message=data["latest_message"],  # type: ignore[arg-type]
-            worst_level=data["worst_level"],  # type: ignore[arg-type]
+            event_count=data.event_count,
+            total_duration_ms=data.total_duration_ms,
+            first_event_at=data.first_event_at,
+            last_event_at=data.last_event_at,
+            latest_sequence=data.latest_sequence,
+            latest_message=data.latest_message,
+            worst_level=data.worst_level,
         )
-        result.append(summary)
-
+        for stage, data in stages.items()
+    ]
     result.sort(key=lambda s: (s.stage is not None, s.stage or ""))
     return result
+
+
+@dataclass(slots=True)
+class _StageAccumulator:
+    event_count: "int" = 0
+    total_duration_ms: "float" = 0.0
+    first_event_at: "datetime | None" = None
+    last_event_at: "datetime | None" = None
+    latest_sequence: "int | None" = None
+    latest_message: "str | None" = None
+    best_rank: "int" = 0
+    worst_level: "str | None" = None

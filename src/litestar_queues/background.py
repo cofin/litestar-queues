@@ -1,3 +1,5 @@
+"""Litestar response background task integration for queue enqueueing."""
+
 from typing import TYPE_CHECKING, Any
 
 from litestar.background_tasks import BackgroundTask

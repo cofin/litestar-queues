@@ -27,8 +27,6 @@ EXAMPLE_APPS: dict[str, str] = {
     "sse_valkey": "examples.htmx_realtime_sse_valkey.app:app",
     "websocket_valkey": "examples.htmx_realtime_websocket_valkey.app:app",
 }
-# Every example resolves to the one shared Vite project, so the install is a
-# property of the run rather than of the example under test.
 SHARED_ASSETS_INSTALLED = False
 
 
@@ -88,7 +86,6 @@ class ExampleServer:
         if self.mode == "production":
             self._run_cli(["assets", "build"], env=env)
         else:
-            # A previous sidecar's hotfile must not satisfy this server's readiness probe.
             (REPO_ROOT / "examples" / "shared" / "public" / "hot").unlink(missing_ok=True)
 
         command = ["uv", "run", "litestar", "run", "--host", "127.0.0.1", "--port", str(self.port)]

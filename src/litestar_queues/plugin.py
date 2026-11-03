@@ -1,3 +1,5 @@
+"""Litestar plugin wiring queue services, workers, routes, CLI commands, and lifespans."""
+
 import asyncio
 import contextlib
 import logging
@@ -81,8 +83,8 @@ def _process_local_channels_backend(channels: "object | None") -> "str | None":
 class QueuePlugin(InitPlugin, CLIPlugin):
     """Litestar plugin for queue service dependency registration and lifecycle.
 
-    Inheriting the concrete :class:`~litestar.plugins.CLIPlugin` is what makes
-    Litestar register :meth:`server_lifespan`; satisfying ``CLIPluginProtocol``
+    Inheriting the concrete `litestar.plugins.CLIPlugin` is what makes
+    Litestar register `server_lifespan()`; satisfying `CLIPluginProtocol`
     structurally is not enough.
     """
 
@@ -137,10 +139,10 @@ class QueuePlugin(InitPlugin, CLIPlugin):
 
         Args:
             app: Optional Litestar application instance.
-            service: Optional pre-created ``QueueService``; defaults to :meth:`create_worker_service`.
+            service: Optional pre-created `QueueService`; defaults to `create_worker_service()`.
 
         Yields:
-            The active ``QueueService`` with :func:`~litestar_queues.task.get_default_service` bound.
+            The active `QueueService` with `get_default_service()` bound.
         """
         target = service if service is not None else self.create_worker_service()
         previous_default = get_default_service()
@@ -191,10 +193,6 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             and (event_config.delivery is not None or event_config.stream is not None)
             and event_config.channels is None
         ):
-            # Zero-wiring live delivery or streaming without explicit channels resolves
-            # the app's registered ChannelsPlugin. The config
-            # object is never mutated so a QueueConfig shared across apps cannot leak
-            # one app's ChannelsPlugin into another's publisher.
             self._auto_channels_backend = _find_registered_channels_plugin(app_config.plugins)
         self._event_publisher = self._config.get_event_publisher(channels_backend=self._auto_channels_backend)
         app_config.dependencies.update(self._config.dependencies)
@@ -253,11 +251,6 @@ class QueuePlugin(InitPlugin, CLIPlugin):
                 stacklevel=2,
             )
         app_config.state.update(state)
-        # Register lifecycle as a lifespan context manager (not on_startup/on_shutdown
-        # hooks): Litestar runs on_shutdown hooks AFTER exiting every lifespan manager,
-        # so a hook-based worker drain would flush events into an already-closed
-        # ChannelsPlugin backend. As a lifespan manager appended after channels, exit is
-        # LIFO, so the worker drains before channels tears down.
         app_config.lifespan.append(self._lifespan)
         return app_config
 
@@ -294,13 +287,9 @@ class QueuePlugin(InitPlugin, CLIPlugin):
         try:
             registered: "object | None" = app.plugins.get(ChannelsPlugin)
         except KeyError:
-            # PluginRegistry.get keys by exact type; fall back for ChannelsPlugin subclasses.
             registered = _find_registered_channels_plugin(app.plugins)
         if registered is None or registered is not target:
             return
-        # ChannelsPlugin._on_startup creates _pub_queue; it is None before startup and
-        # after shutdown. A missing attribute (renamed litestar internals) degrades to
-        # "unknown" and skips validation rather than crashing.
         if getattr(registered, "_pub_queue", _UNKNOWN) is not None:
             return
 
@@ -471,8 +460,6 @@ class QueuePlugin(InitPlugin, CLIPlugin):
             return
         placement = self._config.worker.placement
         if placement == "server":
-            # Fail before the service opens so a raw ASGI launch never accepts
-            # traffic against a queue whose worker was never started.
             from litestar_queues.worker.invocation import server_context_active
 
             if not server_context_active(self._config.names):
@@ -483,13 +470,6 @@ class QueuePlugin(InitPlugin, CLIPlugin):
 
         service = await self._open_lifespan_service(app)
 
-        # Schedules belong to whichever process owns a worker, so an enqueue-only
-        # ASGI process never writes schedule records: server and external
-        # placements initialize them from that owner instead. A transport that
-        # schedules its own deliveries has no such owner anywhere, so this
-        # process writes the first occurrence and hands it over -- and still
-        # starts no worker. Instances racing each other are settled by the
-        # schedule key: the first record written is the one they all keep.
         owns_schedules = placement == "asgi" or any(
             backend.schedules_on_enqueue for backend in service.get_execution_backends().values()
         )

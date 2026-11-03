@@ -45,9 +45,6 @@ _BOOTSTRAP_STAGES = frozenset(("bootstrap", "load_app", "resolve_plugin", "valid
 _SAFE_STAGES = _RUNNER_STAGES | _BOOTSTRAP_STAGES
 _WINDOWS_CLEANUP_ERROR = "Windows process-tree cleanup failed."
 _POSIX_SIGKILL = cast("int", getattr(signal, "SIGKILL", 9))
-# STATUS_CONTROL_C_EXIT: Windows terminates a console process with this status
-# when Ctrl+C or Ctrl+Break is delivered and nothing handles it. Both the
-# unsigned status and the signed value multiprocessing may surface count.
 _WINDOWS_CONTROL_C_EXIT = 0xC000013A
 _CONSOLE_CONTROL_EXITS = frozenset({_WINDOWS_CONTROL_C_EXIT, _WINDOWS_CONTROL_C_EXIT - (1 << 32)})
 
@@ -312,14 +309,14 @@ async def _run_child(
 def _os_name() -> "str":
     """Return the OS family through a seam tests can replace.
 
-    Tests must never assign to ``os.name`` itself: it is process-global, and
-    with it set to ``"posix"`` on Windows ``pathlib.Path`` builds a
-    ``PosixPath`` and raises. That breaks pytest's own failure reporting, which
+    Tests must never assign to `os.name` itself: it is process-global, and
+    with it set to `"posix"` on Windows `pathlib.Path` builds a
+    `PosixPath` and raises. That breaks pytest's own failure reporting, which
     turns an ordinary assertion into an INTERNALERROR before monkeypatch can
     restore it.
 
     Returns:
-        The value of :data:`os.name`.
+        The value of `os.name`.
     """
     return os.name
 
@@ -328,7 +325,7 @@ def _sys_platform() -> "str":
     """Return the platform identifier through a seam tests can replace.
 
     Returns:
-        The value of :data:`sys.platform`.
+        The value of `sys.platform`.
     """
     return sys.platform
 
@@ -524,6 +521,7 @@ class ServerWorkerSupervisor:
 
     @classmethod
     def from_plugin(cls, plugin: "QueuePlugin") -> "ServerWorkerSupervisor":
+        """Create a server worker supervisor from a `QueuePlugin` instance."""
         return cls(plugin.config)
 
     def _raise_start_failure(self, stage: "str", exception_type: "str") -> "NoReturn":
@@ -576,11 +574,6 @@ class ServerWorkerSupervisor:
             self._shutdown_requested.set()
             exit_code = process.exitcode if isinstance(process.exitcode, int) else -1
             if exit_code in _CONSOLE_CONTROL_EXITS:
-                # Ctrl+C and Ctrl+Break reach every process in the console group,
-                # and the child installs no handler for them. That is an ordinary
-                # console shutdown, not a crash: the server is already on its way
-                # down and escalating would kill it before it unwinds its
-                # lifespan, leaking the private database it removes on exit.
                 self._logger.debug("Server queue worker stopped with the console; leaving shutdown to the server.")
                 return
             self._logger.error("Server queue worker exited unexpectedly with exit code %s.", exit_code)
@@ -591,6 +584,7 @@ class ServerWorkerSupervisor:
                 self._close_handles()
 
     def start(self) -> "None":
+        """Spawn the server-owned worker child process and wait for startup readiness."""
         with self._lock:
             if self._start_attempted:
                 msg = "Server queue worker supervisor has already started."
@@ -676,6 +670,7 @@ class ServerWorkerSupervisor:
         return first_error
 
     def close(self) -> "None":
+        """Signal the server-owned worker child process to drain and release all handles."""
         with self._lock:
             process = self._process
             stop_event = self._stop_event

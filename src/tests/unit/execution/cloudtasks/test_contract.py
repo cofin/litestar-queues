@@ -61,9 +61,6 @@ def self_scheduling_execution() -> "Iterator[str]":
     _execution_backend_registry.pop(_SELF_SCHEDULING, None)
 
 
-# --------------------------------------------------------------------------- capability seam
-
-
 def test_the_base_backend_does_not_schedule_on_enqueue() -> "None":
     """Opt-in by default: an existing backend keeps its resident-worker contract."""
     assert BaseExecutionBackend().schedules_on_enqueue is False
@@ -123,9 +120,6 @@ async def test_the_default_schedule_implementation_delegates_to_dispatch() -> "N
     assert dispatched == ["example"]
 
 
-# --------------------------------------------------------------------------- service boundary
-
-
 async def test_schedule_persisted_is_a_no_op_for_a_polled_backend() -> "None":
     """Every persistence path may call the seam; only self-scheduling backends react."""
     from litestar_queues.models import QueuedTaskRecord
@@ -164,9 +158,6 @@ async def test_schedule_persisted_reloads_the_record_after_scheduling(
 
     assert scheduled == [record.id]
     assert returned.id == record.id
-
-
-# --------------------------------------------------------------------------- worker refusal
 
 
 async def test_run_once_refuses_a_self_dispatching_backend(
@@ -214,9 +205,6 @@ def test_the_standalone_worker_command_accepts_a_polled_backend() -> "None":
     )
 
     _reject_self_dispatching_execution(plugin)
-
-
-# --------------------------------------------------------------------------- single-backend rule
 
 
 async def test_a_cloud_tasks_queue_rejects_a_different_execution_override(

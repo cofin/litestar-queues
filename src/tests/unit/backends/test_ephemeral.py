@@ -185,26 +185,21 @@ def test_schema_version_bump_forces_rebuild(tmp_path: "Path") -> "None":
 
     path = tmp_path / "queue.sqlite3"
 
-    # Fake an old database
     conn = connect(path, create=True)
     conn.execute("CREATE TABLE queue_runtime (singleton INTEGER, schema_version INTEGER, invocation_nonce TEXT)")
     conn.execute("INSERT INTO queue_runtime VALUES (1, 1, 'old-nonce')")
-    conn.execute("CREATE TABLE queue_task (id TEXT)")  # fake table
+    conn.execute("CREATE TABLE queue_task (id TEXT)")
     conn.close()
 
-    # Initialize should drop and rebuild!
     initialize_database(path, nonce="new-nonce")
 
-    # verify rebuilding
     runtime = read_runtime(path)
     assert runtime is not None
     v, n = runtime
     assert v == SCHEMA_VERSION
     assert n == "new-nonce"
 
-    # check table was recreated
     conn = connect(path, create=False)
-    # queue_task should have the real columns now
     cur = conn.execute("PRAGMA table_info(queue_task)")
     cols = [r["name"] for r in cur.fetchall()]
     assert "task_name" in cols

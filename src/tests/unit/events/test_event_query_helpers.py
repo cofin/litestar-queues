@@ -70,7 +70,6 @@ def test_pagination_reports_total_and_empty_pages() -> "None":
     assert [r.event_id for r in middle.items] == ["2", "3"]
     assert [r.event_id for r in last.items] == ["4"]
     assert past_end.items == []
-    # total is the match count, independent of the window - including past the end.
     assert (first.total, middle.total, last.total, past_end.total) == (5, 5, 5, 5)
 
 

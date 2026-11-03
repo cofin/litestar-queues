@@ -8,6 +8,8 @@ from typing import Any
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
 from tools.queue_bench.statistics import percentile
 
+__all__ = ("run",)
+
 
 async def noop(ctx: dict[str, Any], payload: str) -> int:
     """Shared async no-op task body.
@@ -171,6 +173,3 @@ async def _cleanup(request: AdapterRequest) -> None:
     ):
         for table_name in table_names:
             await cursor.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
-
-
-__all__ = ("run",)

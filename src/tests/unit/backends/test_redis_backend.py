@@ -59,7 +59,6 @@ async def test_redis_wait_for_wakeups_reuses_pubsub_subscription() -> "None":
 
     assert client.pubsub_calls == 1
     assert client.pubsubs[0].subscribe_calls == 1
-    # Ten empty waits must not create ten receive reads on the subscription.
     assert client.pubsubs[0].get_message_calls == 1
     assert client.pubsubs[0].unsubscribe_calls == 1
     assert client.pubsubs[0].close_calls == 1
@@ -73,13 +72,11 @@ async def test_redis_wait_for_wakeups_wakes_after_prior_timeout() -> "None":
     pubsub = client.pubsubs[0]
     pubsub.deliver()
 
-    # The retained receive resumes on the same subscription without re-subscribing.
     assert await backend.wait_for_wakeups(timeout=1.0) is True
     assert pubsub.subscribe_calls == 1
     assert pubsub.get_message_calls == 1
     assert backend._pending_read.has_pending is False
 
-    # The consumed message does not linger for the next waiter.
     assert await backend.wait_for_wakeups(timeout=0.001) is False
     assert pubsub.get_message_calls == 2
     await backend.close()
@@ -107,7 +104,6 @@ async def test_redis_worker_control_wait_retains_one_read_across_timeouts() -> "
     control_pubsub.deliver()
     assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=1.0) is True
 
-    # The control subscription is its own, never shared with the wakeup read.
     assert control_pubsub.channels == ["litestar_queues:worker_control"]
     assert control_pubsub.subscribe_calls == 1
     assert control_pubsub.get_message_calls == 1
@@ -596,7 +592,6 @@ class _CountingPubSub:
     async def get_message(self, *, ignore_subscribe_messages: "bool", timeout: "float | None") -> "object | None":
         del ignore_subscribe_messages
         self.get_message_calls += 1
-        # Model the real client: ``timeout=None`` blocks until a message lands.
         if timeout is None:
             return await self._message.get()
         try:

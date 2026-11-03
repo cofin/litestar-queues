@@ -1,0 +1,141 @@
+<div class="lq-diagram lq-diagram--lifecycle">
+  <style>
+    .lq-diagram--lifecycle .lq-lc-panel {
+      display: none;
+    }
+    #lq-lc-states:checked ~ .lq-diagram-tabs label[for="lq-lc-states"],
+    #lq-lc-clocks:checked ~ .lq-diagram-tabs label[for="lq-lc-clocks"],
+    #lq-lc-uniqueness:checked ~ .lq-diagram-tabs label[for="lq-lc-uniqueness"] {
+      border-color: var(--lq-blue);
+      background: rgba(37, 99, 235, 0.12);
+      color: var(--lq-blue);
+    }
+    #lq-lc-states:checked ~ .lq-lc-panels .lq-lc-panel--states,
+    #lq-lc-clocks:checked ~ .lq-lc-panels .lq-lc-panel--clocks,
+    #lq-lc-uniqueness:checked ~ .lq-lc-panels .lq-lc-panel--uniqueness {
+      display: block;
+    }
+  </style>
+
+  <input type="radio" name="lq-lifecycle-tab" id="lq-lc-states" checked />
+  <input type="radio" name="lq-lifecycle-tab" id="lq-lc-clocks" />
+  <input type="radio" name="lq-lifecycle-tab" id="lq-lc-uniqueness" />
+
+  <div class="lq-diagram-tabs" role="tablist" aria-label="Task Lifecycle &amp; Clocks Switcher">
+    <label for="lq-lc-states">State Machine &amp; Retries</label>
+    <label for="lq-lc-clocks">Independent Task Clocks</label>
+    <label for="lq-lc-uniqueness">Uniqueness &amp; TaskReservation</label>
+  </div>
+
+  <div class="lq-lc-panels">
+    <div class="lq-lc-panel lq-lc-panel--states">
+      <svg viewBox="0 0 920 270" role="img" aria-labelledby="lq-lc-st-title lq-lc-st-desc">
+        <title id="lq-lc-st-title">Task State Machine &amp; Retry Budget Accounting</title>
+        <desc id="lq-lc-st-desc">Tasks transition from pending or scheduled to running, and settle into completed, failed, cancelled, or expired while separating retry_count from infrastructure interruptions.</desc>
+
+        <rect x="20" y="34" width="185" height="82" rx="10" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="112" y="64" text-anchor="middle" fill="var(--lq-text)" font-size="13" font-weight="700">pending</text>
+        <text x="112" y="84" text-anchor="middle" fill="var(--lq-blue)" font-size="11" font-family="monospace">scheduled_at == None</text>
+        <text x="112" y="102" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Ready for immediate claim</text>
+
+        <rect x="20" y="148" width="185" height="82" rx="10" fill="var(--lq-card)" stroke="var(--lq-violet)" stroke-width="2" />
+        <text x="112" y="178" text-anchor="middle" fill="var(--lq-text)" font-size="13" font-weight="700">scheduled</text>
+        <text x="112" y="198" text-anchor="middle" fill="var(--lq-violet)" font-size="11" font-family="monospace">scheduled_at &gt; now</text>
+        <text x="112" y="216" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Delayed or backoff retry</text>
+
+        <line class="lq-diagram-flow" x1="205" y1="75" x2="310" y2="115" stroke="var(--lq-blue)" stroke-width="2.5" />
+        <line class="lq-diagram-flow" x1="205" y1="189" x2="310" y2="145" stroke="var(--lq-violet)" stroke-width="2.5" />
+
+        <rect x="310" y="62" width="260" height="140" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2.2" />
+        <text x="440" y="92" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">running (Fenced Lease)</text>
+        <text x="440" y="114" text-anchor="middle" fill="var(--lq-amber)" font-size="11.5" font-family="monospace">attempts = retry_count - interruptions</text>
+        <text x="440" y="136" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Active heartbeat_at lease refresh</text>
+        <text x="440" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Exception &amp; attempts &lt; max_retries -&gt; scheduled</text>
+        <text x="440" y="176" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Stale lease reclaim -&gt; retry_count++, interruptions++</text>
+
+        <line class="lq-diagram-flow" x1="570" y1="95" x2="670" y2="55" stroke="var(--lq-emerald)" stroke-width="2.5" />
+        <line class="lq-diagram-flow" x1="570" y1="125" x2="670" y2="115" stroke="var(--lq-rose)" stroke-width="2.5" />
+        <line class="lq-diagram-flow" x1="570" y1="150" x2="670" y2="175" stroke="var(--lq-muted)" stroke-width="2" />
+        <line class="lq-diagram-flow" x1="570" y1="175" x2="670" y2="230" stroke="var(--lq-amber)" stroke-width="2" />
+
+        <rect x="670" y="20" width="230" height="52" rx="9" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="785" y="43" text-anchor="middle" fill="var(--lq-emerald)" font-size="12.5" font-weight="700" font-family="monospace">completed</text>
+        <text x="785" y="61" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Result stored • completed_at set</text>
+
+        <rect x="670" y="84" width="230" height="52" rx="9" fill="var(--lq-card)" stroke="var(--lq-rose)" stroke-width="2" />
+        <text x="785" y="107" text-anchor="middle" fill="var(--lq-rose)" font-size="12.5" font-weight="700" font-family="monospace">failed</text>
+        <text x="785" y="125" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Retries exhausted • error recorded</text>
+
+        <rect x="670" y="148" width="230" height="52" rx="9" fill="var(--lq-card)" stroke="var(--lq-muted)" stroke-width="2" />
+        <text x="785" y="171" text-anchor="middle" fill="var(--lq-text)" font-size="12.5" font-weight="700" font-family="monospace">cancelled</text>
+        <text x="785" y="189" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">cancel_task() • cooperative abort</text>
+
+        <rect x="670" y="212" width="230" height="52" rx="9" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="785" y="235" text-anchor="middle" fill="var(--lq-amber)" font-size="12.5" font-weight="700" font-family="monospace">expired</text>
+        <text x="785" y="253" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">expires_at passed before claim</text>
+      </svg>
+    </div>
+
+    <div class="lq-lc-panel lq-lc-panel--clocks">
+      <svg viewBox="0 0 920 240" role="img" aria-labelledby="lq-lc-clk-title lq-lc-clk-desc">
+        <title id="lq-lc-clk-title">Independent Task Clocks</title>
+        <desc id="lq-lc-clk-desc">Comparison of expires_in/expires_at (queued deadline), timeout (per-attempt execution ceiling), and terminal_ttl/terminal_retention (post-settlement storage cleanup).</desc>
+
+        <rect x="18" y="28" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="156" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Queue Expiration Clock</text>
+        <text x="156" y="84" text-anchor="middle" fill="var(--lq-amber)" font-size="12" font-family="monospace">expires_in / expires_at</text>
+        <text x="156" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Ticks while pending or scheduled</text>
+        <text x="156" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Stops the moment a worker claims task</text>
+        <text x="156" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Never interrupts a running task</text>
+        <text x="156" y="182" text-anchor="middle" fill="var(--lq-amber)" font-size="11" font-family="monospace">Outcome: status = "expired"</text>
+
+        <rect x="322" y="28" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-rose)" stroke-width="2" />
+        <text x="460" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Execution Timeout Clock</text>
+        <text x="460" y="84" text-anchor="middle" fill="var(--lq-rose)" font-size="12" font-family="monospace">timeout=30.0 | timedelta(...)</text>
+        <text x="460" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Ticks per execution attempt (`started_at`)</text>
+        <text x="460" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Enforced via asyncio deadline scope</text>
+        <text x="460" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Consumes retry budget if max_retries &gt; 0</text>
+        <text x="460" y="182" text-anchor="middle" fill="var(--lq-rose)" font-size="11" font-family="monospace">Outcome: retry or status = "failed"</text>
+
+        <rect x="626" y="28" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="764" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Terminal Retention Clock</text>
+        <text x="764" y="84" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">terminal_ttl / terminal_retention</text>
+        <text x="764" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Ticks after completed/failed/cancelled/expired</text>
+        <text x="764" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Native Redis/Valkey PEXPIRE (`terminal_ttl`)</text>
+        <text x="764" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Maintenance Phase (`cleanup_terminal`)</text>
+        <text x="764" y="182" text-anchor="middle" fill="var(--lq-emerald)" font-size="11" font-family="monospace">Preserves unique_until="forever"</text>
+      </svg>
+    </div>
+
+    <div class="lq-lc-panel lq-lc-panel--uniqueness">
+      <svg viewBox="0 0 920 240" role="img" aria-labelledby="lq-lc-unq-title lq-lc-unq-desc">
+        <title id="lq-lc-unq-title">Uniqueness Windows &amp; Permanent TaskReservation</title>
+        <desc id="lq-lc-unq-desc">Comparison of unique_until='terminal', duplicate policies ('return_existing' vs 'raise'), and unique_until='forever' backed by TaskReservation.</desc>
+
+        <rect x="18" y="28" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="156" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">In-Flight Deduplication</text>
+        <text x="156" y="84" text-anchor="middle" fill="var(--lq-blue)" font-size="12" font-family="monospace">unique_until="terminal"</text>
+        <text x="156" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Active while pending, scheduled, or running</text>
+        <text x="156" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Duplicate enqueue returns existing task_id</text>
+        <text x="156" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Releases lock as soon as task settles</text>
+        <text x="156" y="182" text-anchor="middle" fill="var(--lq-blue)" font-size="11" font-family="monospace">Ideal for coalescing webhook bursts</text>
+
+        <rect x="322" y="28" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-violet)" stroke-width="2" />
+        <text x="460" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Duplicate Conflict Policies</text>
+        <text x="460" y="84" text-anchor="middle" fill="var(--lq-violet)" font-size="12" font-family="monospace">on_duplicate="return_existing" | "raise"</text>
+        <text x="460" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">"return_existing" returns active TaskResult</text>
+        <text x="460" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">"raise" raises DuplicateTaskError</text>
+        <text x="460" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Effective key hashed from args or unique_key</text>
+        <text x="460" y="182" text-anchor="middle" fill="var(--lq-violet)" font-size="11" font-family="monospace">Inspect via get_task_identity()</text>
+
+        <rect x="626" y="28" width="276" height="184" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="764" y="60" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Permanent Reservation</text>
+        <text x="764" y="84" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">unique_until="forever"</text>
+        <text x="764" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Backed by compact TaskReservation record</text>
+        <text x="764" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Survives terminal_ttl / cleanup_terminal</text>
+        <text x="764" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Failed/cancelled/expired releases lock to retry</text>
+        <text x="764" y="182" text-anchor="middle" fill="var(--lq-emerald)" font-size="11" font-family="monospace">Reset via reset_task_identity()</text>
+      </svg>
+    </div>
+  </div>
+</div>

@@ -1,9 +1,9 @@
 """Public typing helpers for optional observability support.
 
-The supported import location for :mod:`litestar_queues._typing`. Each package
+The supported import location for `litestar_queues._typing`. Each package
 publishes its own facade over its own private module -- this one does not
 re-export a nested package's types, so event backend protocols live in
-:mod:`litestar_queues.events.typing` and adapter protocols beside their
+`litestar_queues.events.typing` and adapter protocols beside their
 adapter.
 """
 

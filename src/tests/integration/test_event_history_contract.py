@@ -463,15 +463,12 @@ async def test_scoped_summaries(event_log: QueueEventLog) -> None:
 
     assert [s.stage for s in summaries] == [None, "load", "write"]
 
-    # None stage (e5)
     assert summaries[0].event_count == 1
     assert summaries[0].total_duration_ms == 0.0
 
-    # load stage (e1, e2, tie-a, tie-b)
     assert summaries[1].event_count == 4
-    assert summaries[1].total_duration_ms == 15.0  # e1 (10) + e2 (5)
+    assert summaries[1].total_duration_ms == 15.0
 
-    # write stage (e3)
     assert summaries[2].event_count == 1
     assert summaries[2].total_duration_ms == 0.0
 
@@ -480,19 +477,16 @@ async def test_latest_sequence_ties_and_worst_level(event_log: QueueEventLog) ->
     await seed_events(event_log)
     summaries = await event_log.summarize_stages(QueueEventQuery(scope_key="acme"))
 
-    # load stage
     load = summaries[1]
     assert load.stage == "load"
     assert load.latest_sequence == 6
-    assert load.latest_message == "tie-b"  # Tie broken by tie-b-id > tie-a-id
+    assert load.latest_message == "tie-b"
     assert load.worst_level == "error"
 
-    # write stage
     write = summaries[2]
     assert write.stage == "write"
     assert write.worst_level == "info"
 
-    # None stage
     none_st = summaries[0]
     assert none_st.stage is None
     assert none_st.worst_level is None
@@ -518,11 +512,9 @@ async def test_filtered_bounded_retention_converges(event_log: QueueEventLog) ->
     d2 = await event_log.cleanup_events(before=before, match=match, limit=2)
     assert d2 == 2
 
-    # Run it until convergence
     while await event_log.cleanup_events(before=before, match=match, limit=2) > 0:
         pass
 
-    # all 'acme' events should be deleted
     page = await event_log.query_events(QueueEventQuery(scope_key="acme"))
     assert page.items == []
 

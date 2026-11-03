@@ -11,6 +11,8 @@ from tools.queue_bench.measurements import SampleMeasurementCollector
 if TYPE_CHECKING:
     from litestar_queues.maintenance import MaintenancePhase
 
+__all__ = ("run",)
+
 
 async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
     """Run one isolated maintenance-profile sample.
@@ -312,6 +314,3 @@ async def _create_postgres_schema(request: AdapterRequest, service: Any) -> None
 
 def _terminal_count(statistics: Any) -> int:
     return int(statistics.completed + statistics.failed + statistics.cancelled + statistics.expired)
-
-
-__all__ = ("run",)

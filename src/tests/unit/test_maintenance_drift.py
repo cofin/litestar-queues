@@ -16,7 +16,7 @@ DOCS = ROOT / "docs"
 
 _MAINTENANCE_SOURCE = (SRC / "maintenance.py").read_text()
 _CLI_SOURCE = (SRC / "_cli.py").read_text()
-_MAINTENANCE_DOCS = (DOCS / "usage" / "maintenance.rst").read_text()
+_MAINTENANCE_DOCS = (DOCS / "execution" / "maintenance.md").read_text()
 
 
 def test_retention_defaults_are_non_destructive() -> None:
@@ -33,7 +33,6 @@ def test_no_hidden_recurring_maintenance_task() -> None:
     assert "ScheduleConfig" not in _MAINTENANCE_SOURCE
     assert "initialize_schedules" not in _MAINTENANCE_SOURCE
     assert "enqueue" not in _MAINTENANCE_SOURCE
-    # The CLI command is finite: it never starts a worker or a scheduler loop.
     assert "Worker(" not in _CLI_SOURCE.split("def run_maintenance_command")[1].split("def register")[0]
 
 
@@ -45,8 +44,8 @@ def test_maintenance_does_not_auto_provision_infrastructure() -> None:
 
 def test_docs_recommend_infrequent_not_minute_level_cadence() -> None:
     """Docs recommend a six-hour/daily cadence and never a minute-level one."""
-    assert "0 */6 * * *" in _MAINTENANCE_DOCS  # six-hour recommendation
-    assert "* * * * *" not in _MAINTENANCE_DOCS  # no minute-level cron
+    assert "0 */6 * * *" in _MAINTENANCE_DOCS
+    assert "* * * * *" not in _MAINTENANCE_DOCS
     assert "every minute" not in _MAINTENANCE_DOCS.lower()
 
 
@@ -59,6 +58,5 @@ def test_docs_cover_coordination_storage_and_memory_rejection() -> None:
     assert "exit" in lower
     for phase in PHASE_ORDER:
         assert phase in lower
-    # Cloud Run is documented as one launch surface, not the core design.
     assert "cloud run" in lower
     assert "not part of the core design" in lower

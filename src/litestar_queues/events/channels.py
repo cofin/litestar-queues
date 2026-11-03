@@ -16,6 +16,8 @@ _REPEATED_UNDERSCORES = re.compile(r"_+")
 class QueueChannels:
     """Canonical channel name factories for queue event scopes."""
 
+    __slots__ = ()
+
     prefix: "ClassVar[str]" = "litestar_queues"
 
     @classmethod

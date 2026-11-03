@@ -1,0 +1,79 @@
+# Plugin & Service Configuration
+
+[`QueueConfig`](../reference/plugin-and-config.md#litestar_queues.config.QueueConfig) is the root configuration dataclass passed to [`QueuePlugin`](../reference/plugin-and-config.md#litestar_queues.plugin.QueuePlugin) or [`QueueService`](../reference/plugin-and-config.md#litestar_queues.service.QueueService).
+
+## Configuration Hierarchy
+
+`QueueConfig` composes five specialized sub-configurations:
+
+| Section | Field on `QueueConfig` | Configuration Type | Responsibility |
+| :--- | :--- | :--- | :--- |
+| **Storage Backend** | `queue_backend` | `str \| QueueBackendConfigProtocol` | Authoritative task state, claims, heartbeats, uniqueness reservations, and event history storage |
+| **Execution Transport** | `execution_backend` / `execution_backends` | `str \| ExecutionBackendConfigProtocol` | How tasks are triggered (`"local"`, `"immediate"`, Cloud Tasks, Cloud Run Jobs, Pub/Sub, SQS, RabbitMQ, Kafka) |
+| **Worker Runtime** | `worker` | [`WorkerConfig`](workers.md) | Placement (`"server"`, `"asgi"`, `"external"`), concurrency, adaptive polling, heartbeats, stale recovery, and terminal cleanup |
+| **Maintenance** | `maintenance` | [`QueueMaintenanceConfig`](../execution/maintenance.md) | Distributed lease coordination, operation selection, and signed HTTP maintenance endpoint mounting |
+| **Events & Streams** | `events` | [`QueueEventsConfig`](../events/index.md) | Live SSE/WebSocket stream routes, durable event history retention, and ring buffer tuning |
+| **Observability** | `observability` | [`ObservabilityConfig`](../events/observability.md) | OpenTelemetry tracing, Prometheus metrics, and SQLCommenter attribution (`enable_otel`, `enable_prometheus`, `enable_sqlcommenter`) |
+
+## Complete Production Configuration Example
+
+```python
+from litestar import Litestar
+from litestar_queues import (
+    QueueConfig,
+    QueueMaintenanceConfig,
+    QueuePlugin,
+    WorkerConfig,
+)
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecWorkerWakeupConfig
+from litestar_queues.events import EventHistoryConfig, EventStreamConfig, QueueEventsConfig
+from litestar_queues.observability import ObservabilityConfig
+from sqlspec.adapters.asyncpg import AsyncpgConfig
+
+db_config = AsyncpgConfig(connection_config={"dsn": "postgresql://app:secret@db.internal:5432/app"})
+
+queue_config = QueueConfig(
+    queue_backend=SQLSpecBackendConfig(
+        sqlspec_config=db_config,
+        manage_schema=False,
+        worker_wakeups=SQLSpecWorkerWakeupConfig(transport="notify_queue"),
+        terminal_ttl=86_400.0,
+    ),
+    execution_backend="local",
+    task_modules=["my_app.tasks"],
+    initialize_schedules=True,
+    worker=WorkerConfig(
+        placement="external",
+        queues=("critical", "default", "bulk"),
+        max_concurrency=32,
+        queue_concurrency={"critical": 20, "bulk": 4},
+        stale_after=90.0,
+        requeue_on_shutdown=True,
+    ),
+    maintenance=QueueMaintenanceConfig(
+        time_budget=300.0,
+        coordination_timeout=360.0,
+        terminal_retention=86_400.0,
+    ),
+    events=QueueEventsConfig(
+        history=EventHistoryConfig(batch_size=20, flush_interval=1.0),
+        stream=EventStreamConfig(path="/queues/events"),
+    ),
+    observability=ObservabilityConfig(
+        enable_otel=None,
+        enable_prometheus=None,
+        enable_sqlcommenter=None,
+    ),
+)
+
+app = Litestar(plugins=[QueuePlugin(config=queue_config)])
+```
+
+## Multi-Backend Execution Routing
+
+An application can combine local workers with one or more external execution transports by passing `execution_backends` on `QueueConfig`:
+
+- `execution_backend` defines the default transport used when a `@task` or `enqueue()` call does not specify `execution_backend=...`.
+- `execution_backends` registers additional named or typed execution backend configurations (such as `CloudTasksExecutionConfig` and `CloudRunExecutionConfig`) so individual tasks can route to serverless transports via `@task(..., execution_backend="cloudrun", execution_profile="heavy-gpu")`.
+
+See [Execution Transports Overview](../execution/index.md) for multi-transport routing examples.

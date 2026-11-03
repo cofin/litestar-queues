@@ -79,7 +79,10 @@ class BulkHeartbeatStatement:
     """Raw SQL and parameters for a store-specific bulk heartbeat update."""
 
     sql: str
+    """Parametrized SQL statement for updating running task heartbeats."""
+
     parameters: dict[str, Any] | list[Any]
+    """Bound parameter mapping or sequence for ``sql``."""
 
 
 class SQLSpecQueueStore:
@@ -104,13 +107,6 @@ class SQLSpecQueueStore:
     skip_explicit_begin: "ClassVar[bool]" = False
     skip_cleanup_rollback: "ClassVar[bool]" = False
     supports_bulk_touch_heartbeats: "ClassVar[bool]" = False
-    # Per-store opt-in: canonical JSON columns whose driver round-trips
-    # native Python values rather than JSON-encoded strings. Subclasses
-    # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
-    # psqlpy PyJSON, MySQL JSON, Oracle JSON, etc.) override this. Stores
-    # whose driver returns JSON columns as plain strings (DuckDB, SQLite)
-    # keep the default empty frozenset. Unioned with adopter-supplied
-    # ``native_json_columns`` at ``__init__``.
     auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
     bind_datetime_as_text: "ClassVar[bool]" = False
     bind_datetime_as_naive_utc: "ClassVar[bool]" = False
@@ -196,7 +192,7 @@ class SQLSpecQueueStore:
         Gated on the SQLSpec config's ``supports_native_arrow_import`` ClassVar
         (asyncpg COPY, MySQL/Oracle executemany-Arrow, or DuckDB zero-copy)
         *and* ``pyarrow`` being importable,
-        since :meth:`load_from_records` normalizes rows through an Arrow table.
+        since ``load_from_records`` normalizes rows through an Arrow table.
         Adapters without the capability fall back to the universal
         ``execute_many`` bulk tier, so this only ever upgrades throughput.
         """
@@ -229,14 +225,12 @@ class SQLSpecQueueStore:
         """Return a parametrized multi-row INSERT for ``driver.execute_many``.
 
         The template carries one named placeholder per physical column so a
-        sequence of :meth:`bulk_values` rows can be batched in a single
+        sequence of ``bulk_values`` rows can be batched in a single
         ``execute_many`` call. Identifiers are quoted per the store dialect.
         """
         columns = [self._col(canonical) for canonical in _TASK_COLUMNS]
         quoted_columns = ", ".join(self._quote_identifier(column) for column in columns)
         placeholders = ", ".join(f":{column}" for column in columns)
-        # Identifiers come from the fixed _TASK_COLUMNS tuple and are dialect-quoted;
-        # every value is a bound :name placeholder, so there is no injection surface.
         return f"INSERT INTO {self._quoted_table_name()} ({quoted_columns}) VALUES ({placeholders})"  # noqa: S608
 
     def bulk_values(self, rows: "Sequence[dict[str, Any]]") -> "list[dict[str, Any]]":
@@ -246,7 +240,7 @@ class SQLSpecQueueStore:
         ``load_from_records`` Arrow path; both consume physical-column keys.
         JSON serialization is already applied upstream by the backend.
 
-        Columns are emitted in :data:`_TASK_COLUMNS` (CREATE TABLE) order.
+        Columns are emitted in ``_TASK_COLUMNS`` (CREATE TABLE) order.
         This ordering is mandatory: the native Arrow ingest path inserts
         positionally on some adapters (DuckDB runs
         ``INSERT INTO t SELECT * FROM arrow``), so an Arrow column order that
@@ -589,7 +583,7 @@ class SQLSpecQueueStore:
     ) -> "Update":
         """Return an UPDATE statement that claims a batch of due tasks.
 
-        Mirrors :meth:`claim_task` for a set of ids: only rows still due and in
+        Mirrors ``claim_task`` for a set of ids: only rows still due and in
         a due status transition to ``running``, so a competitor that already
         claimed a locked candidate leaves that row untouched.
         """
@@ -936,8 +930,6 @@ class SQLSpecQueueStore:
         target_metadata = f"{target}.{metadata_col}"
         source_metadata = f"{source}.metadata_json"
         values_sql = ", ".join(value_rows)
-        # The VALUES entries are all bound placeholders; identifiers come from
-        # validated table/column names and are quoted by the store.
         statement = f"""
 WITH {source}(task_id, expected_retry_count, metadata_json) AS (
     VALUES {values_sql}
@@ -1049,6 +1041,7 @@ RETURNING {target}.{id_col} AS id
     def clear_execution_ref(
         self, *, task_id: "str", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "Update":
+        """Return a fenced UPDATE statement that clears ``execution_ref``."""
         return (
             sql
             .update(self.table_name)
@@ -1062,6 +1055,7 @@ RETURNING {target}.{id_col} AS id
     def replace_execution_ref(
         self, *, task_id: "str", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "Update":
+        """Return a fenced UPDATE statement that replaces ``execution_ref``."""
         return (
             sql
             .update(self.table_name)

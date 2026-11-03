@@ -3,10 +3,9 @@
 Imported only when a stream config is present and enabled, so base package
 imports stay free of routing and Channels-driver imports.
 
-The router and both relays are private: ``QueuePlugin`` is their only caller,
-and applications configure streaming through
-:class:`~litestar_queues.events.stream_config.EventStreamConfig` instead.
-``StreamMetrics`` stays public because it describes the observability surface
+The router and both relays are private: `QueuePlugin` is their only caller,
+and applications configure streaming through `EventStreamConfig` instead.
+`StreamMetrics` stays public because it describes the observability surface
 an application can record against.
 """
 

@@ -23,9 +23,16 @@ class CloudTasksOIDCGuard:
     """Litestar route guard that verifies Google-signed OIDC Bearer tokens."""
 
     audience: "str | None" = None
+    """Expected OIDC `aud` claim (typically the consumer service origin)."""
+
     service_account_email: "str | None" = None
+    """Expected verified `email` claim matching the Cloud Tasks OIDC service account."""
+
     queue_id: "str | None" = None
+    """Optional expected `X-CloudTasks-QueueName` request header value."""
+
     token_verifier: "Callable[[str, str | None], Mapping[str, Any]] | None" = None
+    """Optional custom token verification callable used in place of `google-auth`."""
 
     async def __call__(self, connection: "ASGIConnection[Any, Any, Any, Any]", _: "BaseRouteHandler") -> "None":
         """Verify the Cloud Tasks OIDC Bearer token on incoming deliveries.

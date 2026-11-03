@@ -193,8 +193,6 @@ async def test_cloudrun_dispatch_env_has_no_legacy_task_fields() -> "None":
 
     env = env_map(jobs_client.requests[0])
 
-    # The whole per-field env-map is gone: the record travels as its id alone
-    # (no extra_env on this config), so no legacy per-field vars remain.
     assert set(env) == {"QUEUES_TASK_ID"}
     legacy_names = {
         f"LITESTAR_QUEUES_{suffix}" for suffix in ("TASK_DISPATCH", "TASK_NAME", "TASK_ARGS", "TASK_KWARGS")
@@ -231,9 +229,6 @@ async def test_cloudrun_dispatch_env_excludes_large_and_sensitive_task_args() ->
     request = jobs_client.requests[0]
     env = env_map(request)
 
-    # Only the record id travels; the live record (fetched by id) stays the
-    # source of truth for args, so neither the task name nor its arguments --
-    # however large or sensitive -- ever reach the Cloud Run Jobs API request.
     assert set(env) == {"QUEUES_TASK_ID"}
     assert task_id_from_request(request) == str(record.id)
     serialized_request = repr(request)
@@ -715,8 +710,6 @@ async def test_cloudrun_dispatched_task_delivers_beat_detail_through_consumer() 
         assert record is not None
         await backend.dispatch(service, record)
 
-        # The Cloud Run Job container re-fetches the persisted record by id and
-        # runs it through the generic external-executor consumer.
         runner = asyncio.create_task(consume_one(service, record.id))
         await asyncio.wait_for(ready.wait(), timeout=1)
         await asyncio.wait_for(queue_backend.beat_delivered.wait(), timeout=1)

@@ -61,8 +61,6 @@ async def test_task_dependency_provider_closes_on_shutdown_interruption(queue_ba
             requeue_on_shutdown=True,
             max_concurrency=1,
             graceful_shutdown_timeout=0.05,
-            # Shared CI database services can take longer than one second to
-            # hand a connection back to the shutdown-interruption write.
             final_cancel_timeout=5.0,
             poll_interval=0.05,
         ),

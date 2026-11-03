@@ -246,9 +246,6 @@ async def delivery(
     await stack.aclose()
 
 
-# --------------------------------------------------------------------------- registration
-
-
 async def test_a_cloud_tasks_queue_exposes_a_delivery_route(delivery: "Callable[..., Any]") -> "None":
     live = await delivery()
 
@@ -316,9 +313,6 @@ def test_build_cloud_tasks_route_excludes_csrf_and_auth_middleware(
     assert handler.opt.get("exclude_from_auth") is True
 
 
-# --------------------------------------------------------------------------- request contract
-
-
 async def test_the_producer_and_the_route_agree_on_the_protocol_version(delivery: "Callable[..., Any]") -> "None":
     """One constant, read by the side that writes the body and the side that reads it."""
     from litestar.serialization import decode_json
@@ -331,7 +325,6 @@ async def test_the_producer_and_the_route_agree_on_the_protocol_version(delivery
     body = decode_json(live.tasks.create_calls[0].body)
 
     assert body["version"] == CLOUD_TASKS_PROTOCOL_VERSION
-    # The bytes the producer built, replayed verbatim into the route.
     response = await live.http.post(live.path, content=live.tasks.create_calls[0].body)
     assert response.status_code == HTTP_NO_CONTENT
     assert body["task_id"] == str(record.id)
@@ -373,9 +366,6 @@ async def test_an_unknown_protocol_version_is_refused(delivery: "Callable[..., A
 
     assert response.status_code == HTTP_BAD_REQUEST
     assert executions == []
-
-
-# --------------------------------------------------------------------------- authentication
 
 
 async def test_a_route_guard_rejects_a_delivery_before_any_queue_work(delivery: "Callable[..., Any]") -> "None":
@@ -507,9 +497,6 @@ async def test_verify_oidc_attaches_default_oidc_guard_automatically(
     assert executions == [SUCCEEDS]
 
 
-# --------------------------------------------------------------------------- acknowledged outcomes
-
-
 async def test_a_completed_task_is_acknowledged(delivery: "Callable[..., Any]") -> "None":
     live = await delivery()
     record = await live.service.enqueue(succeeds)
@@ -635,9 +622,6 @@ async def test_a_second_delivery_after_completion_is_acknowledged(delivery: "Cal
     assert executions == [SUCCEEDS]
 
 
-# --------------------------------------------------------------------------- redelivery is asked for
-
-
 async def test_a_queue_that_cannot_be_read_asks_for_redelivery(
     delivery: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
@@ -697,9 +681,6 @@ async def test_a_retryable_response_carries_no_diagnostic_text(
     assert response.content in {b"", b"null"}
 
 
-# --------------------------------------------------------------------------- lifecycle
-
-
 async def test_a_consumer_application_starts_no_worker(delivery: "Callable[..., Any]") -> "None":
     """The whole point of this topology is that nothing polls.
 
@@ -707,11 +688,9 @@ async def test_a_consumer_application_starts_no_worker(delivery: "Callable[..., 
     the always-on cost the managed transport exists to remove -- and it would
     race Cloud Tasks for every record.
     """
-    from litestar_queues.config import _WORKER_STATE_KEY
-
     live = await delivery()
 
-    assert _WORKER_STATE_KEY not in live.http.app.state
+    assert QueueConfig().worker_state_key not in live.http.app.state
     assert live.plugin._worker is None
     assert live.plugin._worker_task is None
 
@@ -733,8 +712,6 @@ async def test_recurring_schedules_are_created_without_a_worker(delivery: "Calla
 
     assert scheduled is not None
     assert scheduled.task_name == every_minute
-    # Written and delivered: a schedule record nobody handed to Google is a
-    # record that never runs.
     assert scheduled.execution_ref is not None
     assert [call.name for call in live.tasks.create_calls] == [scheduled.execution_ref]
 
@@ -771,7 +748,6 @@ async def test_two_consumer_instances_share_one_authoritative_occurrence(deliver
 
     scheduled = await second.service.get_queue_backend().get_task_by_key(f"scheduled:{every_minute}")
     assert scheduled is not None
-    # The second instance found the first instance's record and left it alone.
     assert len(first.tasks.create_calls) == 1
     assert second.tasks.create_calls == []
     assert (await first.service.get_task(scheduled.id)) is not None
@@ -807,9 +783,6 @@ async def test_the_delivery_client_is_released_when_the_application_stops(
         assert tasks.close_calls == 0
 
     assert tasks.close_calls == 1
-
-
-# --------------------------------------------------------------------------- duplicate delivery
 
 
 async def test_a_delivery_arriving_after_the_work_finished_changes_nothing(delivery: "Callable[..., Any]") -> "None":

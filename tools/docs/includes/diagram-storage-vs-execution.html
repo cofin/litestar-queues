@@ -1,0 +1,106 @@
+<div class="lq-diagram lq-diagram--storage-execution">
+  <style>
+    .lq-diagram--storage-execution .lq-se-panel {
+      display: none;
+    }
+    #lq-se-decoupled:checked ~ .lq-diagram-tabs label[for="lq-se-decoupled"],
+    #lq-se-fencing:checked ~ .lq-diagram-tabs label[for="lq-se-fencing"] {
+      border-color: var(--lq-blue);
+      background: rgba(37, 99, 235, 0.12);
+      color: var(--lq-blue);
+    }
+    #lq-se-decoupled:checked ~ .lq-se-panels .lq-se-panel--decoupled,
+    #lq-se-fencing:checked ~ .lq-se-panels .lq-se-panel--fencing {
+      display: block;
+    }
+  </style>
+
+  <input type="radio" name="lq-storage-exec-tab" id="lq-se-decoupled" checked />
+  <input type="radio" name="lq-storage-exec-tab" id="lq-se-fencing" />
+
+  <div class="lq-diagram-tabs" role="tablist" aria-label="Storage vs Execution Architecture">
+    <label for="lq-se-decoupled">Decoupled Storage &amp; ID-Only Dispatch</label>
+    <label for="lq-se-fencing">Fenced Claim, Heartbeat &amp; Settlement</label>
+  </div>
+
+  <div class="lq-se-panels">
+    <div class="lq-se-panel lq-se-panel--decoupled">
+      <svg viewBox="0 0 920 265" role="img" aria-labelledby="lq-se-title lq-se-desc">
+        <title id="lq-se-title">Decoupled Task Storage vs Execution Transport</title>
+        <desc id="lq-se-desc">QueueService.enqueue writes the authoritative QueuedTaskRecord to BaseQueueBackend while BaseExecutionBackend carries only an ID-only version 1 task_id envelope.</desc>
+
+        <rect x="16" y="38" width="215" height="188" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="123" y="68" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Litestar Route / Caller</text>
+        <text x="123" y="92" text-anchor="middle" fill="var(--lq-blue)" font-size="12" font-family="monospace">QueueService.enqueue()</text>
+        <text x="123" y="118" text-anchor="middle" fill="var(--lq-muted)" font-size="11">@task.enqueue(...) / enqueue_many()</text>
+        <text x="123" y="140" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Validates TaskDefinition &amp; options</text>
+        <text x="123" y="162" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Computes unique_key &amp; delay</text>
+        <text x="123" y="186" text-anchor="middle" fill="var(--lq-emerald)" font-size="11" font-family="monospace">QueuedBackgroundTask</text>
+
+        <line class="lq-diagram-flow" x1="231" y1="92" x2="318" y2="92" stroke="var(--lq-amber)" stroke-width="2.5" />
+        <text x="274" y="80" text-anchor="middle" fill="var(--lq-amber)" font-size="10" font-weight="600">1. Persist Record</text>
+
+        <line class="lq-diagram-flow" x1="231" y1="176" x2="318" y2="176" stroke="var(--lq-blue)" stroke-width="2.5" />
+        <text x="274" y="164" text-anchor="middle" fill="var(--lq-blue)" font-size="10" font-weight="600">2. Dispatch ID</text>
+
+        <rect x="318" y="20" width="275" height="106" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="455" y="46" text-anchor="middle" fill="var(--lq-text)" font-size="13" font-weight="700">Authoritative Task Storage</text>
+        <text x="455" y="66" text-anchor="middle" fill="var(--lq-amber)" font-size="11.5" font-family="monospace">BaseQueueBackend (QueuedTaskRecord)</text>
+        <text x="455" y="88" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Arguments • Status • Leases • Retries • Results</text>
+        <text x="455" y="108" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">SQLSpec (11 DBs) • Advanced Alchemy • Redis • Valkey</text>
+
+        <rect x="318" y="138" width="275" height="106" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="455" y="164" text-anchor="middle" fill="var(--lq-text)" font-size="13" font-weight="700">ID-Only Execution Transport</text>
+        <text x="455" y="184" text-anchor="middle" fill="var(--lq-blue)" font-size="11.5" font-family="monospace">{"version": 1, "task_id": "&lt;uuid&gt;"}</text>
+        <text x="455" y="206" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Never carries task arguments or retry state on wire</text>
+        <text x="455" y="226" text-anchor="middle" fill="var(--lq-muted)" font-size="10.5">Local • Cloud Tasks • Cloud Run • Pub/Sub • SQS • Kafka</text>
+
+        <line class="lq-diagram-flow" x1="593" y1="73" x2="676" y2="112" stroke="var(--lq-amber)" stroke-width="2.5" />
+        <line class="lq-diagram-flow" x1="593" y1="191" x2="676" y2="152" stroke="var(--lq-blue)" stroke-width="2.5" />
+
+        <rect x="676" y="38" width="228" height="188" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="790" y="68" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Worker / Push Target</text>
+        <text x="790" y="92" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">claim_task(task_id)</text>
+        <text x="790" y="118" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Claims authoritative record</text>
+        <text x="790" y="140" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Runs WorkerHeartbeatManager</text>
+        <text x="790" y="162" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Resolves DI &amp; TaskExecutionContext</text>
+        <text x="790" y="186" text-anchor="middle" fill="var(--lq-emerald)" font-size="11" font-family="monospace">complete_task / fail_task</text>
+      </svg>
+    </div>
+
+    <div class="lq-se-panel lq-se-panel--fencing">
+      <svg viewBox="0 0 920 265" role="img" aria-labelledby="lq-se-fence-title lq-se-fence-desc">
+        <title id="lq-se-fence-title">Epoch-Fenced Task Claim, Heartbeat &amp; Settlement</title>
+        <desc id="lq-se-fence-desc">Every heartbeat and terminal transition validates status='running', expected_retry_count, and expected_execution_ref to prevent zombie workers from overwriting reclaimed tasks.</desc>
+
+        <rect x="16" y="42" width="265" height="180" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="148" y="72" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">1. Atomic Claim</text>
+        <text x="148" y="96" text-anchor="middle" fill="var(--lq-blue)" font-size="11.5" font-family="monospace">dequeue_tasks / claim_task</text>
+        <text x="148" y="122" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Transitions pending/scheduled -&gt; running</text>
+        <text x="148" y="144" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Captures retry_count &amp; execution_ref</text>
+        <text x="148" y="166" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Stamps started_at &amp; heartbeat_at</text>
+        <text x="148" y="190" text-anchor="middle" fill="var(--lq-blue)" font-size="11" font-family="monospace">FOR UPDATE SKIP LOCKED / Lua</text>
+
+        <line class="lq-diagram-flow" x1="281" y1="132" x2="330" y2="132" stroke="var(--lq-amber)" stroke-width="2.5" />
+
+        <rect x="330" y="42" width="265" height="180" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="462" y="72" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">2. Fenced Heartbeat Loop</text>
+        <text x="462" y="96" text-anchor="middle" fill="var(--lq-amber)" font-size="11.5" font-family="monospace">heartbeat_tasks(..., expected_*)</text>
+        <text x="462" y="122" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Requires status == "running"</text>
+        <text x="462" y="144" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Requires retry_count == expected</text>
+        <text x="462" y="166" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Requires execution_ref == expected</text>
+        <text x="462" y="190" text-anchor="middle" fill="var(--lq-rose)" font-size="11" font-family="monospace">Lease lost -&gt; cancel execution</text>
+
+        <line class="lq-diagram-flow" x1="595" y1="132" x2="644" y2="132" stroke="var(--lq-emerald)" stroke-width="2.5" />
+
+        <rect x="644" y="42" width="260" height="180" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="774" y="72" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">3. Fenced Settlement</text>
+        <text x="774" y="96" text-anchor="middle" fill="var(--lq-emerald)" font-size="11.5" font-family="monospace">complete_task / fail_task</text>
+        <text x="774" y="122" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Conditional CAS on epoch + lease</text>
+        <text x="774" y="144" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Persists result or schedules retry</text>
+        <text x="774" y="166" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Updates TaskReservation uniqueness</text>
+        <text x="774" y="190" text-anchor="middle" fill="var(--lq-emerald)" font-size="11" font-family="monospace">Emits QueueEvent via publisher</text>
+      </svg>
+    </div>
+  </div>
+</div>

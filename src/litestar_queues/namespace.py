@@ -16,6 +16,7 @@ class QueueNamespace:
     """Validated root for package-owned runtime identifiers."""
 
     root: str = DEFAULT_NAMESPACE
+    """Root namespace identifier prefix for package-owned runtime resources."""
 
     def __post_init__(self) -> None:
         """Reject roots that cannot render consistently across target formats."""

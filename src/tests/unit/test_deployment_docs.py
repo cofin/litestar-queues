@@ -10,7 +10,9 @@ than trusted to survive editing.
 
 from pathlib import Path
 
-DEPLOYMENT = Path("docs/usage/deployment")
+import pytest
+
+DEPLOYMENT = Path("docs/execution")
 
 
 def _cloud_tasks() -> "str":
@@ -19,25 +21,23 @@ def _cloud_tasks() -> "str":
     Returns:
         The guide's text.
     """
-    return (DEPLOYMENT / "cloud-tasks.rst").read_text(encoding="utf-8")
+    return (DEPLOYMENT / "cloud-tasks.md").read_text(encoding="utf-8")
 
 
-def test_every_topology_is_named_where_a_reader_chooses_between_them() -> "None":
+@pytest.mark.parametrize(
+    "marker", ["In-process worker", "External dispatcher", "Cloud Tasks", "Eventarc", "cloud-tasks.md"]
+)
+def test_every_topology_is_named_where_a_reader_chooses_between_them(marker: str) -> "None":
     """Four ways to run this, and picking wrong is expensive to undo."""
-    chooser = (DEPLOYMENT / "cloud-run.rst").read_text(encoding="utf-8")
-
-    for marker in ("In-process worker", "External dispatcher", "Cloud Tasks", "Eventarc"):
-        assert marker in chooser
-    assert "cloud-tasks" in chooser
+    chooser = (DEPLOYMENT / "cloud-run.md").read_text(encoding="utf-8")
+    assert marker in chooser
 
 
 def test_eventarc_is_named_as_future_work_and_nothing_more() -> "None":
     """It is not part of this backend, and a reader must not plan around it."""
-    chooser = (DEPLOYMENT / "cloud-run.rst").read_text(encoding="utf-8")
+    chooser = (DEPLOYMENT / "cloud-run.md").read_text(encoding="utf-8")
 
-    # The disclaimer has to be inside the same table row, where someone
-    # comparing topologies reads it, not in a footnote further down.
-    row = chooser[chooser.index("Eventarc") :].split("* - ")[0]
+    row = chooser[chooser.index("Eventarc") :].splitlines()[0]
     assert "Not implemented" in row
 
 
@@ -67,12 +67,11 @@ def test_the_cost_model_is_dated_and_does_not_pretend_to_be_free() -> "None":
     assert "database" in guide
 
 
-def test_the_guide_distinguishes_cloud_tasks_from_what_it_is_confused_with() -> "None":
+@pytest.mark.parametrize("neighbour", ["Cloud Scheduler", "Pub/Sub", "Eventarc", "Cloud Run Jobs"])
+def test_the_guide_distinguishes_cloud_tasks_from_what_it_is_confused_with(neighbour: str) -> "None":
     """All four are 'the Google thing that runs work later' and none are substitutes."""
     guide = _cloud_tasks()
-
-    for neighbour in ("Cloud Scheduler", "Pub/Sub", "Eventarc", "Cloud Run Jobs"):
-        assert neighbour in guide
+    assert neighbour in guide
 
 
 def test_the_guide_never_tells_the_package_to_provision_anything() -> "None":
@@ -101,7 +100,8 @@ def test_recovery_and_repair_are_documented_where_they_are_needed() -> "None":
 
 def test_no_credential_is_embedded_in_any_deployment_command() -> "None":
     """Copy-ready must not mean copy-a-secret."""
-    for guide in DEPLOYMENT.glob("*.rst"):
-        text = guide.read_text(encoding="utf-8")
-        assert "-----BEGIN" not in text
-        assert "GOOGLE_APPLICATION_CREDENTIALS=/" not in text
+    guides = sorted(DEPLOYMENT.glob("*.md"))
+    assert guides
+    combined = "\n".join(guide.read_text(encoding="utf-8") for guide in guides)
+    assert "-----BEGIN" not in combined
+    assert "GOOGLE_APPLICATION_CREDENTIALS=/" not in combined

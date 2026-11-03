@@ -104,7 +104,6 @@ class _ExternalProducer:
         selected = primary if primary is not None else _select_lifecycle_error(errors)
         for error in errors:
             if error is not selected:
-                # Reporting must never replace the primary or interrupt cleanup.
                 with suppress(BaseException):
                     logger.warning(
                         "External queue event producer cleanup also failed.",

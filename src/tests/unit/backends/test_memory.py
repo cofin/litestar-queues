@@ -565,7 +565,6 @@ async def test_memory_backend_notification_after_timeout_is_consumed_once() -> "
     assert await backend.wait_for_wakeups(timeout=0.01) is True
     assert event.waits == 1
     assert backend._pending_read.has_pending is False
-    # The consumed wakeup must not linger for a second waiter.
     assert await backend.wait_for_wakeups(timeout=0.01) is False
     assert event.waits == 2
     await backend.close()
@@ -757,7 +756,6 @@ async def test_memory_worker_control_uses_its_own_primitive() -> "None":
 
     await backend.notify_worker_control("worker-a")
 
-    # The control hint must not masquerade as new-work availability.
     assert await backend.wait_for_wakeups(timeout=0) is False
     assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is True
     assert await backend.wait_for_worker_control(worker_id="worker-a", timeout=0) is False

@@ -14,6 +14,8 @@ from tools.queue_bench.profiles import (
     validate_profile_parameters,
 )
 
+__all__ = ("AdapterRequest", "AdapterResult", "gather_bounded")
+
 
 @dataclass(frozen=True, slots=True)
 class AdapterRequest:
@@ -257,6 +259,3 @@ async def gather_bounded(awaitables: Iterable[Awaitable[Any]], *, limit: int) ->
             return await awaitable
 
     return list(await asyncio.gather(*(run_one(awaitable) for awaitable in awaitables)))
-
-
-__all__ = ("AdapterRequest", "AdapterResult", "gather_bounded")

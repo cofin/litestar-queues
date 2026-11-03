@@ -97,8 +97,6 @@ EVENT_HISTORY_COLUMNS = (
 )
 """Physical columns the package owns on the SQLSpec event-history table."""
 
-_EVENT_HISTORY_COLUMN_NAMES = frozenset(EVENT_HISTORY_COLUMNS)
-
 
 def validate_table_name(table_name: "str") -> "str":
     """Validate a SQL identifier used for the queue table name.
@@ -179,7 +177,7 @@ def event_history_table_name_for(table_name: "str") -> "str":
     """Return the default event-history table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_EVENT_HISTORY_TABLE_SUFFIX` to the table part.
+    ``DEFAULT_EVENT_HISTORY_TABLE_SUFFIX`` to the table part.
     """
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
@@ -189,9 +187,6 @@ def event_history_table_name_for(table_name: "str") -> "str":
     return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_HISTORY_TABLE_SUFFIX}")
 
 
-# Smallest common identifier limit across supported dialects (PostgreSQL is 63,
-# MySQL is 64). Derived coordination tables are deterministically shortened so
-# the same name is produced by the packaged migration and the runtime backend.
 _MAX_IDENTIFIER_LENGTH = 63
 
 
@@ -208,7 +203,7 @@ def maintenance_table_name_for(table_name: "str") -> "str":
     """Return the default maintenance table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_MAINTENANCE_TABLE_SUFFIX` to the table part. When the
+    ``DEFAULT_MAINTENANCE_TABLE_SUFFIX`` to the table part. When the
     derived name would exceed the portable identifier limit it is
     deterministically shortened (truncated table part plus a stable hash) so the
     packaged migration and the runtime backend agree on one name.
@@ -229,7 +224,7 @@ def task_reservation_table_name_for(table_name: "str") -> "str":
     """Return the default forever-uniqueness reservation table for a queue table.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_TASK_RESERVATION_TABLE_SUFFIX` to the table part. Long derived
+    ``DEFAULT_TASK_RESERVATION_TABLE_SUFFIX`` to the table part. Long derived
     names use the same portable deterministic shortening as maintenance tables.
     """
     validated = validate_table_name(table_name)

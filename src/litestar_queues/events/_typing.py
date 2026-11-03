@@ -8,6 +8,17 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
     from contextlib import AbstractAsyncContextManager
 
+__all__ = (
+    "ChannelsLike",
+    "ChannelsPublishBackend",
+    "ChannelsPublishManyBackend",
+    "ChannelsStreamBackend",
+    "ChannelsSubscriber",
+    "ChannelsSubscriptionBackend",
+    "ChannelsWaitPublishedBackend",
+    "OffsetPagination",
+)
+
 
 class ChannelsSubscriber(Protocol):
     """Subscription object returned by ChannelsPlugin-style backends."""
@@ -68,7 +79,7 @@ elif "advanced_alchemy.service.pagination" in sys.modules:
     OffsetPagination = sys.modules["advanced_alchemy.service.pagination"].OffsetPagination
 else:
 
-    @dataclass
+    @dataclass(slots=True)
     class OffsetPagination(Generic[T]):  # type: ignore[no-redef]
         """Offset-paginated result matching the sqlspec and Advanced Alchemy shape."""
 

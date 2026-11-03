@@ -620,7 +620,6 @@ async def test_two_consumers_racing_one_record_run_the_task_once() -> "None":
         result = await service.enqueue(consumer_race.using(execution_backend="cloudrun"))
         winner = asyncio.create_task(consume_one(service, result.id))
         await asyncio.wait_for(started.wait(), timeout=2)
-        # The second delivery arrives while the first is mid-flight.
         loser_code = await consume_one(service, result.id)
         release.set()
         winner_code = await asyncio.wait_for(winner, timeout=2)
@@ -632,8 +631,6 @@ async def test_two_consumers_racing_one_record_run_the_task_once() -> "None":
     assert stored is not None
     assert stored.status == "completed"
     assert stored.retry_count == 0
-    # The winner's cleanup ran even though a second consumer was interleaved
-    # with it, so stale recovery has nothing to reconsider.
     assert stored.heartbeat_at is None
 
 
@@ -690,7 +687,6 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
             record = await queue_backend.get_task(result.id)
             assert record is not None
 
-            # The enqueuing service's provider is opened. We care about the consumer's.
             order.clear()
 
             exit_code = await run_task(

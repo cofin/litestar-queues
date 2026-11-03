@@ -8,6 +8,8 @@ from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
 
+__all__ = ("run", "sync_noop")
+
 
 def sync_noop(payload: str) -> int:
     """Return the payload length for sync worker systems.
@@ -209,6 +211,3 @@ async def _cleanup_redis(request: AdapterRequest) -> None:
         await client.delete(*keys)
     with contextlib.suppress(AttributeError):
         await client.aclose()
-
-
-__all__ = ("run", "sync_noop")

@@ -10,6 +10,14 @@ from prometheus_client import CollectorRegistry
 
 from tools.queue_bench.statistics import percentile
 
+__all__ = (
+    "MeasurementValue",
+    "SampleMeasurementCollector",
+    "summarize_durations",
+    "summarize_pickup_latency",
+    "summarize_task_phases",
+)
+
 MeasurementValue = int | float | str | bool | None
 
 
@@ -22,8 +30,6 @@ class PickupRecord(Protocol):
     completed_at: datetime | None
 
 
-# Package-owned transport and heartbeat instruments. Exported histogram buckets
-# and ``_created`` series are intentionally excluded to keep every sample bounded.
 _PROMETHEUS_INSTRUMENT_SERIES = {
     "litestar_queues.enqueue.batch.size": (
         "litestar_queues_enqueue_batch_size_records_count",
@@ -197,32 +203,6 @@ def summarize_durations(prefix: str, values: list[float]) -> dict[str, Measureme
     return {f"{prefix}.available": True, **_latency_summary(prefix, values)}
 
 
-def summarize_saq_pickup(jobs: list[object]) -> dict[str, MeasurementValue]:
-    """Summarize SAQ's persisted millisecond queued-to-started timestamps."""
-    values: list[float] = []
-    for job in jobs:
-        queued = getattr(job, "queued", None)
-        started = getattr(job, "started", None)
-        if queued is None or started is None:
-            continue
-        duration = (float(started) - float(queued)) / 1000.0
-        if duration < 0:
-            msg = "SAQ persisted started timestamp precedes queued timestamp"
-            raise ValueError(msg)
-        values.append(duration)
-    if not values:
-        return _unavailable_pickup_measurements(len(jobs), "no_saq_persisted_queued_started")
-    measurements: dict[str, MeasurementValue] = {
-        "queue.pickup.available": True,
-        "queue.pickup.observed_count": len(values),
-        "queue.pickup.missing_count": len(jobs) - len(values),
-        "queue.pickup.unavailable_reason": None,
-        "queue.pickup.timestamp_source": "saq_persisted_queued_started_ms",
-    }
-    measurements.update(_latency_summary("queue.pickup.ready_to_started", values))
-    return measurements
-
-
 def _latency_summary(prefix: str, values: list[float]) -> dict[str, MeasurementValue]:
     return {
         f"{prefix}.min_seconds": min(values),
@@ -259,13 +239,3 @@ def _collect_allowed_series(registry: CollectorRegistry) -> dict[str, float]:
             if canonical is not None:
                 totals[canonical] = totals.get(canonical, 0.0) + float(sample.value)
     return totals
-
-
-__all__ = (
-    "MeasurementValue",
-    "SampleMeasurementCollector",
-    "summarize_durations",
-    "summarize_pickup_latency",
-    "summarize_saq_pickup",
-    "summarize_task_phases",
-)

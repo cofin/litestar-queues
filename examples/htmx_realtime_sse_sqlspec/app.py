@@ -49,7 +49,6 @@ QUEUE_DB_PATH = EXAMPLE_ROOT / "queue-sqlspec.db"
 sqlspec_config = AiosqliteConfig(connection_config={"database": str(QUEUE_DB_PATH)})
 
 
-# -- docs-task-start --
 @task("examples.htmx_realtime_sse_sqlspec.crawl", queue="demo", retries=0, timeout=90)
 async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     ctx = _task_context
@@ -60,8 +59,6 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
         message = f"{step}/{DEMO_STEPS} - {line}"
         await ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={"line": message})
         if step == DISCOVERED_PAGE_STEP:
-            # One meaningful domain event at a real transition, with a payload
-            # distinct from the generic per-step progress text above.
             await ctx.event(
                 "crawl.page_discovered",
                 message=f"Discovered {DISCOVERED_PAGE_URL}",
@@ -72,10 +69,6 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     return {"task_id": ctx.task_id, "status": "complete"}
 
 
-# -- docs-task-end --
-
-
-# -- docs-routes-start --
 @get("/")
 async def index() -> Template:
     return Template("index.html", context={"backend_name": BACKEND_NAME, "vite_entry": VITE_ENTRY})
@@ -103,10 +96,6 @@ async def restart_demo(queue_service: NamedDependency[QueueService]) -> Template
     )
 
 
-# -- docs-routes-end --
-
-
-# -- docs-app-config-start --
 channels = ChannelsPlugin(
     backend=MemoryChannelsBackend(history=200),
     arbitrary_channels_allowed=True,
@@ -141,4 +130,3 @@ app = Litestar(
     on_startup=[bootstrap_queue_schema],
     plugins=[HTMXPlugin(), channels, QueuePlugin(queue_config), VitePlugin(config=vite_config)],
 )
-# -- docs-app-config-end --

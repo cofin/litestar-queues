@@ -196,9 +196,6 @@ class _PsycopgNotificationListener:
         if task is None:
             return False
         if task.exception() is not None:
-            # The pump failed (dropped connection). Reset so the next start()
-            # reconnects and re-LISTENs; the backend reconciles the durable
-            # table before the next wait, so no marker is lost.
             await self.close()
             return False
         return True

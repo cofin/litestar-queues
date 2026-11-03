@@ -210,11 +210,6 @@ async def _run(
     return await maintenance.run(phases)
 
 
-# --------------------------------------------------------------------------- #
-# Configuration validation
-# --------------------------------------------------------------------------- #
-
-
 def test_config_defaults_disable_retention_phases() -> "None":
     config = QueueMaintenanceConfig()
     assert config.stale_after is None
@@ -264,11 +259,6 @@ def test_config_allows_positive_retention() -> "None":
     assert config.stale_after == 60.0
 
 
-# --------------------------------------------------------------------------- #
-# Ownership + capability
-# --------------------------------------------------------------------------- #
-
-
 async def test_run_rejects_backend_without_maintenance_capability() -> "None":
     backend = _StubBackend(supports_maintenance=False)
     service = _StubService(backend=backend)
@@ -308,11 +298,6 @@ async def test_coordination_uses_shared_name_and_is_released() -> "None":
     assert [name for name, _ in backend.acquire_calls] == [MAINTENANCE_NAME]
     assert [name for name, _ in backend.release_calls] == [MAINTENANCE_NAME]
     assert backend.acquire_calls[0][1] == backend.release_calls[0][1]
-
-
-# --------------------------------------------------------------------------- #
-# Phase order, enablement, one-call-per-phase
-# --------------------------------------------------------------------------- #
 
 
 def test_phase_order_includes_expire_and_schedules() -> "None":
@@ -392,11 +377,6 @@ async def test_external_phase_disabled_for_local_execution() -> "None":
     assert stub.reconcile_calls == []
 
 
-# --------------------------------------------------------------------------- #
-# Cutoffs computed once from injected UTC clock
-# --------------------------------------------------------------------------- #
-
-
 async def test_retention_cutoffs_are_computed_from_start_boundary() -> "None":
     backend = _StubBackend()
     event_log = _StubEventLog()
@@ -407,11 +387,6 @@ async def test_retention_cutoffs_are_computed_from_start_boundary() -> "None":
     )
     assert backend.cleanup_calls[0][0] == FIXED_NOW - timedelta(seconds=120)
     assert event_log.calls[0][0] == FIXED_NOW - timedelta(seconds=600)
-
-
-# --------------------------------------------------------------------------- #
-# Phase failure continuation + sanitized error
-# --------------------------------------------------------------------------- #
 
 
 async def test_phase_failure_continues_and_marks_outcome_failed() -> "None":
@@ -486,18 +461,13 @@ async def test_repair_mixed_preserves_reconciliation_changes() -> "None":
     assert external.changed == 3
 
 
-# --------------------------------------------------------------------------- #
-# Budget exhaustion with injected monotonic clock
-# --------------------------------------------------------------------------- #
-
-
 async def test_budget_exhaustion_marks_later_phases_partial_without_running_them() -> "None":
     clock = _Clock()
     backend = _StubBackend()
     event_log = _StubEventLog()
     stub = _StubService(backend=backend, is_external=True, event_log=event_log)
     stub.clock = clock
-    stub.reconcile_advance = 500.0  # first phase blows the 300s budget
+    stub.reconcile_advance = 500.0
     backend.clock = clock
 
     summary = await _run(
@@ -531,11 +501,6 @@ async def test_budget_partial_does_not_override_failed_outcome() -> "None":
     assert summary.outcome == "failed"
 
 
-# --------------------------------------------------------------------------- #
-# Phase filtering only narrows
-# --------------------------------------------------------------------------- #
-
-
 async def test_phase_filter_narrows_selected_phases() -> "None":
     backend = _StubBackend()
     backend.cleanup_deleted = 9
@@ -560,11 +525,6 @@ async def test_unknown_phase_name_is_rejected() -> "None":
     stub = _StubService(backend=backend)
     with pytest.raises(QueueConfigurationError):
         await _run(stub, QueueMaintenanceConfig(), phases=cast("list[MaintenancePhase]", ["bogus"]))
-
-
-# --------------------------------------------------------------------------- #
-# JSON-native summaries
-# --------------------------------------------------------------------------- #
 
 
 async def test_summary_payload_is_json_native() -> "None":

@@ -50,7 +50,7 @@ async def test_dimension_indexes_are_registered_and_cleaned(valkey_backend: "Val
 
     from typing import Any, cast
 
-    client = cast("Any", await valkey_backend._get_client())  # Assert index cards
+    client = cast("Any", await valkey_backend._get_client())
     from litestar_queues.backends.redis.event_log import hashed_index_value
 
     scope_index = f"{valkey_backend._key_prefix}:events:scope_key:{hashed_index_value('acme')}"
@@ -59,11 +59,8 @@ async def test_dimension_indexes_are_registered_and_cleaned(valkey_backend: "Val
     assert await client.zcard(scope_index) == 1
     assert await client.zcard(entity_index) == 1
 
-    # Cleanup past its occurred_at
     cutoff = BASE + timedelta(hours=1)
-    # Bounded cleanup deletes oldest events first and reaches a stable no-op.
     await log.cleanup_events(before=cutoff)
 
-    # Assert both index keys are gone
     assert await client.zcard(scope_index) == 0
     assert await client.zcard(entity_index) == 0

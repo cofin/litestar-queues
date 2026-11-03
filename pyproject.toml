@@ -160,16 +160,8 @@ dev = [
   { include-group = "examples" },
 ]
 docs = [
-  "auto-pytabs[sphinx]>=0.5.0",
-  "litestar-vite",
-  "shibuya",
-  "sphinx-autobuild>=2021.3.14",
-  "sphinx-copybutton>=0.5.2",
-  "sphinx-design>=0.5.0",
-  "sphinx-paramlinks>=0.6.0",
-  "sphinx-togglebutton>=0.3.2",
-  "sphinx>=7.1.2",
-  "sphinxcontrib-mermaid>=0.9.2",
+  "mkdocstrings-python>=2.0.1",
+  "zensical>=0.0.71",
 ]
 e2e = ["playwright>=1.50.0", "pytest-playwright>=0.7.0"]
 examples = ["aiosqlite>=0.20.0", "jinja2>=3.1.0", "litestar-vite>=0.26.1"]
@@ -220,7 +212,8 @@ filterwarnings = [
   "ignore::FutureWarning:google.api_core._python_version_support",
   "ignore:This declarative base already contains a class with the same class name:sqlalchemy.exc.SAWarning",
   "ignore:Table .* already exists:Warning:aiomysql.*",
-  "ignore:Exception ignored in.*OneShotCallback:pytest.PytestUnraisableExceptionWarning",
+  "ignore:Exception ignored .*OneShotCallback:pytest.PytestUnraisableExceptionWarning",
+  "ignore::pytest.PytestUnhandledThreadExceptionWarning",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
 ]
@@ -228,6 +221,7 @@ markers = [
   "e2e: end-to-end tests that start real example processes and Chromium",
   "topology: cross-process queue and Channels topology tests",
 ]
+pythonpath = ["."]
 testpaths = ["src/tests"]
 
 [tool.coverage.report]
@@ -283,7 +277,7 @@ sqlspec = false
 pytest-databases = { git = "https://github.com/litestar-org/pytest-databases.git", branch = "test/clientless-all" }
 
 [tool.ruff]
-exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build"]
+exclude = [".venv", "node_modules", "tmp", ".tmp", ".bugs", "docs/_build", "site"]
 include = [
   "pyproject.toml",
   "src/litestar_queues/**/*.py",
@@ -300,6 +294,7 @@ target-version = "py311"
 [tool.ruff.format]
 docstring-code-format = true
 docstring-code-line-length = 60
+exclude = ["*.md"]
 preview = true
 skip-magic-trailing-comma = true
 
@@ -377,7 +372,6 @@ ban-relative-imports = "all"
   "C901",
   "D103",
   "D104",
-  "ERA001",
   "FA102",
   "PLR2004",
   "PLR6301",

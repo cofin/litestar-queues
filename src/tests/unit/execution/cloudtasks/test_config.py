@@ -43,9 +43,6 @@ def _config(**overrides: "Any") -> "CloudTasksExecutionConfig":
     return CloudTasksExecutionConfig(**{**_VALID, **overrides})
 
 
-# --------------------------------------------------------------------------- selector
-
-
 def test_backend_name_is_the_registered_selector() -> "None":
     """The class attribute is what placement validation compares, so it is fixed."""
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
@@ -91,9 +88,6 @@ def test_explicit_delivery_name_prefix_wins_over_queue_namespace() -> "None":
     assert CloudTasksExecutionBackend(queue_config).execution_config.delivery_name_prefix == "custom-"
 
 
-# --------------------------------------------------------------------------- target url
-
-
 def test_target_url_joins_the_service_origin_and_the_route_path() -> "None":
     config = _config(service_url="https://consumer.example.run.app", route_path="/_queues/deliver")
 
@@ -125,9 +119,6 @@ def test_explicit_audience_is_preserved() -> "None":
     assert config.audience == "https://custom-audience.example.com"
 
 
-# --------------------------------------------------------------------------- identifiers
-
-
 @pytest.mark.parametrize("field", ["project_id", "location", "queue_id", "service_account_email"])
 @pytest.mark.parametrize("value", ["", "   ", "\t\n"])
 def test_blank_identifiers_are_rejected(field: "str", value: "str") -> "None":
@@ -139,9 +130,6 @@ def test_blank_identifiers_are_rejected(field: "str", value: "str") -> "None":
 def test_invalid_delivery_name_prefix_is_rejected(delivery_name_prefix: "str") -> "None":
     with pytest.raises(QueueConfigurationError, match="delivery_name_prefix"):
         _config(delivery_name_prefix=delivery_name_prefix)
-
-
-# --------------------------------------------------------------------------- service url
 
 
 @pytest.mark.parametrize(
@@ -172,9 +160,6 @@ def test_bare_https_origins_are_accepted(service_url: "str") -> "None":
     assert _config(service_url=service_url).service_url == service_url
 
 
-# --------------------------------------------------------------------------- route path
-
-
 @pytest.mark.parametrize(
     "route_path", ["", "/", "_litestar-queues/cloud-tasks", "/deliver?token=1", "/deliver#fragment"]
 )
@@ -186,9 +171,6 @@ def test_route_path_must_be_a_non_root_absolute_path(route_path: "str") -> "None
 
 def test_nested_route_paths_are_accepted() -> "None":
     assert _config(route_path="/internal/queues/deliver").route_path == "/internal/queues/deliver"
-
-
-# --------------------------------------------------------------------------- deadline
 
 
 @pytest.mark.parametrize("dispatch_deadline", [15, 900, 1800])
@@ -212,9 +194,6 @@ def test_dispatch_deadline_must_be_an_integer(dispatch_deadline: "Any") -> "None
         _config(dispatch_deadline=dispatch_deadline, default_task_timeout=1.0, response_margin=1.0)
 
 
-# --------------------------------------------------------------------------- budgets
-
-
 @pytest.mark.parametrize("field", ["response_margin", "default_task_timeout", "api_timeout"])
 @pytest.mark.parametrize("value", [0, -1.0, float("nan"), float("inf")])
 def test_durations_must_be_finite_and_positive(field: "str", value: "float") -> "None":
@@ -232,9 +211,6 @@ def test_task_budget_exactly_equal_to_the_deadline_is_accepted() -> "None":
     config = _config(dispatch_deadline=600, default_task_timeout=570.0, response_margin=30.0)
 
     assert config.default_task_timeout + config.response_margin == config.dispatch_deadline
-
-
-# --------------------------------------------------------------------------- authentication
 
 
 def test_an_unauthenticated_delivery_route_is_refused() -> "None":
@@ -267,9 +243,6 @@ def test_producer_only_mount_route_false_skips_route_protection() -> "None":
     assert config.trust_platform_auth is False
     assert config.verify_oidc is False
     assert config.guards == ()
-
-
-# --------------------------------------------------------------------------- schedule horizon
 
 
 def test_the_schedule_horizon_matches_googles_fixed_limit() -> "None":

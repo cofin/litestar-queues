@@ -183,8 +183,6 @@ async def _assert_duplicate_preserves_first_record(backend: Any) -> None:
             await log.publish_event(_event(event.id, task_id="different-task", detail={"value": "second"}))
         assert await client.hgetall(backend._event_log_event_key(event.id)) == original
     finally:
-        # A conflicting retained batch makes close fail as well; consume that
-        # expected failure here so the backend fixture can close idempotently.
         with suppress(QueueConfigurationError):
             await backend.close()
 
@@ -202,7 +200,6 @@ async def _assert_partial_history_replay(
     client = await backend._get_client()
     event = _event("partial-history", detail={"nested": {"stable": True}})
     broken_key = backend._event_log_task_key(event.task_id)
-    # Wrong key type makes a real Redis command fail after hash initialization.
     await client.set(broken_key, "controlled wrong index type")
     if not pipeline:
         monkeypatch.setattr(history_module, "_create_pipeline", lambda _client: None)
@@ -303,7 +300,6 @@ async def _assert_history_failed_close_reopens(backend: Any, monkeypatch: pytest
         raise ConnectionError(message)
 
     monkeypatch.setattr(RedisQueueEventLog, "_write_history_batch", fail_write)
-    # Existing bound callback belongs to the old instance; replace its retained writer.
     monkeypatch.setattr(old._buffer, "_write_batch", lambda records: fail_write(old, records))
     with pytest.raises(ConnectionError, match="controlled history close failure"):
         await backend.close()

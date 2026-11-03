@@ -1,3 +1,5 @@
+"""Configuration for RabbitMQ 4.3+ quorum-queue execution dispatch."""
+
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
@@ -15,6 +17,8 @@ class RabbitMQExecutionConfig:
     """RabbitMQ execution-dispatch configuration."""
 
     backend_name: "ClassVar[str]" = "rabbitmq"
+    """Registered execution backend identifier (`"rabbitmq"`)."""
+
     amqp_url: "str" = field(repr=False)
     """AMQP or AMQPS connection URL; excluded from representations and telemetry."""
     queue_name: "str | None" = None

@@ -3,6 +3,14 @@
 import random
 import statistics
 
+__all__ = (
+    "bootstrap_paired_ratio_interval",
+    "bootstrap_ratio_interval",
+    "is_material_difference",
+    "median_absolute_deviation",
+    "percentile",
+)
+
 MAX_PERCENTAGE = 100
 MIN_BOOTSTRAP_ITERATIONS = 2
 
@@ -102,12 +110,3 @@ def is_material_difference(
     if not excludes_one or relative_gap < minimum_relative_gap:
         return False
     return not is_latency or absolute_gap >= minimum_local_latency_gap
-
-
-__all__ = (
-    "bootstrap_paired_ratio_interval",
-    "bootstrap_ratio_interval",
-    "is_material_difference",
-    "median_absolute_deviation",
-    "percentile",
-)

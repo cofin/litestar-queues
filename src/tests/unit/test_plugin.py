@@ -1,21 +1,16 @@
-from typing import TYPE_CHECKING
-
 import pytest
 from litestar import Litestar
+from litestar.config.app import AppConfig
+from litestar.plugins import CLIPluginProtocol, InitPlugin
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import WorkerConfig
-
-if TYPE_CHECKING:
-    from litestar_queues import QueueConfig, QueuePlugin
+from litestar_queues import QueueConfig, QueuePlugin, QueueService, WorkerConfig
 
 pytestmark = pytest.mark.anyio
 
 
 def test_plugin_instantiation_with_defaults() -> "None":
     """Test that the plugin can be instantiated with default configuration."""
-    from litestar_queues import QueuePlugin
-
     plugin = QueuePlugin()
     assert plugin.config.queue_backend == "ephemeral"
     assert plugin.config.execution_backend == "local"
@@ -24,8 +19,6 @@ def test_plugin_instantiation_with_defaults() -> "None":
 
 def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None":
     """Test that the plugin can be instantiated with custom configuration."""
-    from litestar_queues import QueuePlugin
-
     plugin = QueuePlugin(config=queue_config)
     assert plugin.config.queue_backend == "memory"
     assert plugin.config.worker.placement == "external"
@@ -33,8 +26,6 @@ def test_plugin_instantiation_with_config(queue_config: "QueueConfig") -> "None"
 
 def test_config_defaults() -> "None":
     """Test that the configuration has sensible defaults."""
-    from litestar_queues import QueueConfig
-
     config = QueueConfig()
     assert config.queue_backend == "ephemeral"
     assert config.execution_backend == "local"
@@ -46,16 +37,12 @@ def test_config_defaults() -> "None":
 
 def test_worker_placement_selects_the_process_that_owns_the_worker() -> "None":
     """``WorkerConfig.placement`` replaces the old in-app boolean."""
-    from litestar_queues import QueueConfig
-
     config = QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external"))
     assert config.worker.placement == "external"
 
 
 def test_scheduler_canary_task_is_overridable() -> "None":
     """Operators can override the canary task name used by scheduler-health."""
-    from litestar_queues import QueueConfig
-
     config = QueueConfig(
         worker=WorkerConfig(placement="external"), queue_backend="memory", scheduler_canary_task="ops.healthcheck"
     )
@@ -70,9 +57,6 @@ def test_plugin_with_litestar_app(app: "Litestar", queue_plugin: "QueuePlugin") 
 
 def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> "None":
     """``QueuePlugin`` satisfies ``CLIPluginProtocol`` and is registered on ``app.plugins.cli``."""
-    from litestar import Litestar
-    from litestar.plugins import CLIPluginProtocol, InitPlugin
-
     app = Litestar(plugins=[queue_plugin])
     assert isinstance(queue_plugin, InitPlugin)
     assert isinstance(queue_plugin, CLIPluginProtocol)
@@ -81,10 +65,6 @@ def test_queue_plugin_is_detected_as_cli_plugin(queue_plugin: "QueuePlugin") -> 
 
 def test_plugin_registers_dependencies_and_state() -> "None":
     """Test that the plugin registers dependencies, state, and signature namespace."""
-    from litestar.config.app import AppConfig
-
-    from litestar_queues import QueueConfig, QueuePlugin
-
     config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     plugin = QueuePlugin(config=config)
     app_config = AppConfig()
@@ -100,10 +80,6 @@ def test_plugin_registers_dependencies_and_state() -> "None":
 
 def test_queue_config_get_service_requires_opened_app_state_service() -> "None":
     """QueueConfig state lookup should not create an unopened app service."""
-    from litestar.config.app import AppConfig
-
-    from litestar_queues import QueueConfig, QueueService
-
     config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     app_config = AppConfig()
     service = QueueService(config)
@@ -122,10 +98,6 @@ def test_queue_config_get_service_requires_opened_app_state_service() -> "None":
 
 
 def test_custom_namespace_registers_disjoint_dependencies_and_state() -> "None":
-    from litestar.config.app import AppConfig
-
-    from litestar_queues import QueueConfig, QueuePlugin
-
     alpha = QueueConfig(namespace="alpha", worker=WorkerConfig(placement="external"), queue_backend="memory")
     beta = QueueConfig(namespace="beta", worker=WorkerConfig(placement="external"), queue_backend="memory")
     app_config = AppConfig()
@@ -141,8 +113,6 @@ def test_custom_namespace_registers_disjoint_dependencies_and_state() -> "None":
 
 async def test_plugin_worker_receives_configured_poll_backoff_settings() -> "None":
     """Backoff settings are passed explicitly into the plugin-started worker, not read from config in the loop."""
-    from litestar_queues import QueueConfig, QueuePlugin
-
     plugin = QueuePlugin(
         QueueConfig(
             queue_backend="memory",
@@ -168,8 +138,6 @@ async def test_plugin_worker_receives_configured_poll_backoff_settings() -> "Non
 
 async def test_plugin_worker_defaults_to_enabled_poll_backoff() -> "None":
     """Default config produces a worker with adaptive polling backoff enabled."""
-    from litestar_queues import QueueConfig, QueuePlugin
-
     plugin = QueuePlugin(
         QueueConfig(
             queue_backend="memory", execution_backend="local", worker=WorkerConfig(placement="asgi", poll_interval=0.01)
@@ -187,8 +155,6 @@ async def test_plugin_worker_defaults_to_enabled_poll_backoff() -> "None":
 
 async def test_plugin_worker_explicit_backoff_max_none_opts_out_to_fixed_polling() -> "None":
     """worker_poll_backoff_max=None threads through the plugin as the explicit fixed-polling opt-out."""
-    from litestar_queues import QueueConfig, QueuePlugin
-
     plugin = QueuePlugin(
         QueueConfig(
             queue_backend="memory",

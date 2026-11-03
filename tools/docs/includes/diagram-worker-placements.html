@@ -1,0 +1,159 @@
+<div class="lq-diagram lq-diagram--placements">
+  <style>
+    .lq-diagram--placements .lq-wp-panel {
+      display: none;
+    }
+    #lq-wp-server:checked ~ .lq-diagram-tabs label[for="lq-wp-server"],
+    #lq-wp-asgi:checked ~ .lq-diagram-tabs label[for="lq-wp-asgi"],
+    #lq-wp-external:checked ~ .lq-diagram-tabs label[for="lq-wp-external"],
+    #lq-wp-serverless:checked ~ .lq-diagram-tabs label[for="lq-wp-serverless"] {
+      border-color: var(--lq-blue);
+      background: rgba(37, 99, 235, 0.12);
+      color: var(--lq-blue);
+    }
+    #lq-wp-server:checked ~ .lq-wp-panels .lq-wp-panel--server,
+    #lq-wp-asgi:checked ~ .lq-wp-panels .lq-wp-panel--asgi,
+    #lq-wp-external:checked ~ .lq-wp-panels .lq-wp-panel--external,
+    #lq-wp-serverless:checked ~ .lq-wp-panels .lq-wp-panel--serverless {
+      display: block;
+    }
+  </style>
+
+  <input type="radio" name="lq-worker-placement" id="lq-wp-server" checked />
+  <input type="radio" name="lq-worker-placement" id="lq-wp-asgi" />
+  <input type="radio" name="lq-worker-placement" id="lq-wp-external" />
+  <input type="radio" name="lq-worker-placement" id="lq-wp-serverless" />
+
+  <div class="lq-diagram-tabs" role="tablist" aria-label="Worker Placement Topology Switcher">
+    <label for="lq-wp-server">Server Placement</label>
+    <label for="lq-wp-asgi">ASGI Placement</label>
+    <label for="lq-wp-external">External Placement</label>
+    <label for="lq-wp-serverless">Serverless Scale-to-Zero</label>
+  </div>
+
+  <div class="lq-wp-panels">
+    <div class="lq-wp-panel lq-wp-panel--server">
+      <svg viewBox="0 0 900 230" role="img" aria-labelledby="lq-wp-srv-title lq-wp-srv-desc">
+        <title id="lq-wp-srv-title">Server Placement Topology (placement="server")</title>
+        <desc id="lq-wp-srv-desc">Litestar CLI launches ServerWorkerSupervisor alongside web workers, sharing EphemeralQueueBackend or persistent backends across OS processes.</desc>
+        <rect x="18" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="143" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Litestar CLI Parent</text>
+        <text x="143" y="86" text-anchor="middle" fill="var(--lq-blue)" font-size="12" font-family="monospace">ServerWorkerSupervisor</text>
+        <text x="143" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Spawns alongside `litestar run`</text>
+        <text x="143" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Propagates Ephemeral SQLite path</text>
+        <text x="143" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Isolates web workers from queue loop</text>
+
+        <line class="lq-diagram-flow" x1="268" y1="115" x2="328" y2="115" stroke="var(--lq-blue)" stroke-width="2.5" />
+
+        <rect x="328" y="30" width="245" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="450" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Shared Queue Storage</text>
+        <text x="450" y="86" text-anchor="middle" fill="var(--lq-amber)" font-size="12" font-family="monospace">Ephemeral / SQL / Redis</text>
+        <text x="450" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Default: EphemeralQueueBackend</text>
+        <text x="450" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Cross-process WAL SQLite + events</text>
+        <text x="450" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Requires shared backend if web &gt; 1</text>
+
+        <line class="lq-diagram-flow" x1="573" y1="115" x2="633" y2="115" stroke="var(--lq-emerald)" stroke-width="2.5" />
+
+        <rect x="633" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="758" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Supervised Worker Child</text>
+        <text x="758" y="86" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">litestar queues run</text>
+        <text x="758" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Single scheduler leader</text>
+        <text x="758" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Auto-restarts on unexpected exit</text>
+        <text x="758" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Clean SIGTERM drain on shutdown</text>
+      </svg>
+    </div>
+
+    <div class="lq-wp-panel lq-wp-panel--asgi">
+      <svg viewBox="0 0 900 230" role="img" aria-labelledby="lq-wp-asgi-title lq-wp-asgi-desc">
+        <title id="lq-wp-asgi-title">ASGI Placement Topology (placement="asgi")</title>
+        <desc id="lq-wp-asgi-desc">Each ASGI lifespan starts an in-process Worker sharing the asyncio event loop and InMemoryQueueBackend or persistent storage.</desc>
+        <rect x="18" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-violet)" stroke-width="2" />
+        <text x="143" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">ASGI Lifespan Startup</text>
+        <text x="143" y="86" text-anchor="middle" fill="var(--lq-violet)" font-size="12" font-family="monospace">QueuePlugin.on_cli_init</text>
+        <text x="143" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Starts inside ASGI lifespan</text>
+        <text x="143" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Works with TestClient / Uvicorn</text>
+        <text x="143" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Zero extra OS processes</text>
+
+        <line class="lq-diagram-flow" x1="268" y1="115" x2="328" y2="115" stroke="var(--lq-violet)" stroke-width="2.5" />
+
+        <rect x="328" y="30" width="245" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="450" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Shared Event Loop</text>
+        <text x="450" y="86" text-anchor="middle" fill="var(--lq-blue)" font-size="12" font-family="monospace">InMemoryQueueBackend</text>
+        <text x="450" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Instant in-memory asyncio.Event wakeup</text>
+        <text x="450" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Direct ChannelsPlugin memory fan-out</text>
+        <text x="450" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Single-process development &amp; tests</text>
+
+        <line class="lq-diagram-flow" x1="573" y1="115" x2="633" y2="115" stroke="var(--lq-emerald)" stroke-width="2.5" />
+
+        <rect x="633" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="758" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">In-Process Worker Task</text>
+        <text x="758" y="86" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">Worker.start()</text>
+        <text x="758" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Executes coroutines &amp; sync threads</text>
+        <text x="758" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Shares app.state &amp; DI container</text>
+        <text x="758" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Graceful cancel on lifespan exit</text>
+      </svg>
+    </div>
+
+    <div class="lq-wp-panel lq-wp-panel--external">
+      <svg viewBox="0 0 900 230" role="img" aria-labelledby="lq-wp-ext-title lq-wp-ext-desc">
+        <title id="lq-wp-ext-title">External Placement Topology (placement="external")</title>
+        <desc id="lq-wp-ext-desc">Web pods only enqueue tasks and serve SSE/WS streams while dedicated worker pods run litestar queues run or run-consumer with run_app_lifespan=True.</desc>
+        <rect x="18" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="143" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Web Tier (Stateless Pods)</text>
+        <text x="143" y="86" text-anchor="middle" fill="var(--lq-blue)" font-size="12" font-family="monospace">placement="external"</text>
+        <text x="143" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Zero background workers in web pods</text>
+        <text x="143" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Enqueues records &amp; serves HTTP/SSE</text>
+        <text x="143" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Horizontal web autoscaling</text>
+
+        <line class="lq-diagram-flow" x1="268" y1="115" x2="328" y2="115" stroke="var(--lq-amber)" stroke-width="2.5" />
+
+        <rect x="328" y="30" width="245" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="450" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Durable Storage &amp; Broker</text>
+        <text x="450" y="86" text-anchor="middle" fill="var(--lq-amber)" font-size="12" font-family="monospace">SQLSpec / Alchemy / Redis</text>
+        <text x="450" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Native wakeups (LISTEN/NOTIFY, Pub/Sub)</text>
+        <text x="450" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Or broker transport (Pub/Sub, SQS, Kafka)</text>
+        <text x="450" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Cross-process QueueEventLog replay</text>
+
+        <line class="lq-diagram-flow" x1="573" y1="115" x2="633" y2="115" stroke="var(--lq-emerald)" stroke-width="2.5" />
+
+        <rect x="633" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="758" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Dedicated Worker Fleet</text>
+        <text x="758" y="86" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">litestar queues run</text>
+        <text x="758" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Enters ASGI lifespan (`run_app_lifespan`)</text>
+        <text x="758" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Or `litestar queues run-consumer`</text>
+        <text x="758" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Independent CPU/memory scaling</text>
+      </svg>
+    </div>
+
+    <div class="lq-wp-panel lq-wp-panel--serverless">
+      <svg viewBox="0 0 900 230" role="img" aria-labelledby="lq-wp-sls-title lq-wp-sls-desc">
+        <title id="lq-wp-sls-title">Serverless Scale-to-Zero Placement</title>
+        <desc id="lq-wp-sls-desc">Zero idle workers; enqueue dispatches directly to Cloud Tasks or Cloud Run Jobs while Cloud Scheduler triggers /_litestar-queues/maintenance.</desc>
+        <rect x="18" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-blue)" stroke-width="2" />
+        <text x="143" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Scale-to-Zero Web Service</text>
+        <text x="143" y="86" text-anchor="middle" fill="var(--lq-blue)" font-size="12" font-family="monospace">schedules_on_enqueue=True</text>
+        <text x="143" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Dispatches future ETA at enqueue time</text>
+        <text x="143" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Mounts `/_litestar-queues/cloud-tasks`</text>
+        <text x="143" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Mounts `/_litestar-queues/maintenance`</text>
+
+        <line class="lq-diagram-flow" x1="268" y1="115" x2="328" y2="115" stroke="var(--lq-amber)" stroke-width="2.5" />
+
+        <rect x="328" y="30" width="245" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-amber)" stroke-width="2" />
+        <text x="450" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Managed Cloud Dispatch</text>
+        <text x="450" y="86" text-anchor="middle" fill="var(--lq-amber)" font-size="12" font-family="monospace">Cloud Tasks + Cloud Run</text>
+        <text x="450" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Fast Push Lane (&lt;= 30m HTTP OIDC)</text>
+        <text x="450" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Heavy Batch Lane (Cloud Run Jobs)</text>
+        <text x="450" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Task-level `execution_backend="..."`</text>
+
+        <line class="lq-diagram-flow" x1="573" y1="115" x2="633" y2="115" stroke="var(--lq-emerald)" stroke-width="2.5" />
+
+        <rect x="633" y="30" width="250" height="170" rx="12" fill="var(--lq-card)" stroke="var(--lq-emerald)" stroke-width="2" />
+        <text x="758" y="62" text-anchor="middle" fill="var(--lq-text)" font-size="14" font-weight="700">Periodic Maintenance</text>
+        <text x="758" y="86" text-anchor="middle" fill="var(--lq-emerald)" font-size="12" font-family="monospace">QueueMaintenanceService</text>
+        <text x="758" y="112" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Cloud Scheduler OIDC POST or Job</text>
+        <text x="758" y="134" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Reconciles external refs &amp; stale leases</text>
+        <text x="758" y="156" text-anchor="middle" fill="var(--lq-muted)" font-size="11">Fires cron schedules &amp; prunes TTL</text>
+      </svg>
+    </div>
+  </div>
+</div>

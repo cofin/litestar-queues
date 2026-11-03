@@ -1,3 +1,5 @@
+"""Immediate inline execution backend for synchronous testing and development."""
+
 from typing import TYPE_CHECKING
 
 from litestar_queues.execution.base import BaseExecutionBackend

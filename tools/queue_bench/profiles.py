@@ -5,6 +5,23 @@ import math
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
+__all__ = (
+    "BACKEND_VARIANTS",
+    "COMPETITOR_SCENARIOS",
+    "CORE_SCENARIOS",
+    "FEATURE_SCENARIOS",
+    "MAINTENANCE_SCENARIOS",
+    "MANAGED_GOOGLE_SCENARIOS",
+    "PROFILE_NAMES",
+    "SCENARIOS",
+    "BackendVariant",
+    "ProfileName",
+    "parse_backend_variant",
+    "parse_parameter_overrides",
+    "parse_profile_name",
+    "validate_profile_parameters",
+)
+
 ProfileName = Literal[
     "core",
     "rich",
@@ -55,7 +72,6 @@ COMPETITOR_SCENARIOS: tuple[str, ...] = (
     "backlog-throughput",
 )
 
-# Scenario-owning child tasks extend these allowlists when they add parameters.
 _PROFILE_PARAMETER_KEYS: dict[ProfileName, frozenset[str]] = {
     "core": frozenset({"batch_size", "delay_seconds", "idle_duration_seconds", "producer_concurrency"}),
     "rich": frozenset({
@@ -199,21 +215,3 @@ def _validate_maintenance_parameters(parameters: Mapping[str, Any]) -> None:
         if value is not None and (type(value) is not int or value < 1):
             msg = f"{name} must be an integer of at least 1"
             raise ValueError(msg)
-
-
-__all__ = (
-    "BACKEND_VARIANTS",
-    "COMPETITOR_SCENARIOS",
-    "CORE_SCENARIOS",
-    "FEATURE_SCENARIOS",
-    "MAINTENANCE_SCENARIOS",
-    "MANAGED_GOOGLE_SCENARIOS",
-    "PROFILE_NAMES",
-    "SCENARIOS",
-    "BackendVariant",
-    "ProfileName",
-    "parse_backend_variant",
-    "parse_parameter_overrides",
-    "parse_profile_name",
-    "validate_profile_parameters",
-)

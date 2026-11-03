@@ -367,7 +367,6 @@ async def test_worker_stop_interrupts_blocked_native_read_promptly() -> "None":
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         backend = cast("InMemoryQueueBackend", service.get_queue_backend())
-        # Large intervals ensure a prompt stop cannot be attributed to a poll/reconcile tick.
         worker = Worker(service, WorkerConfig(poll_interval=60, poll_backoff_max=None, reconcile_interval=3600))
         worker_task = asyncio.create_task(worker.start())
         await wait_until(
@@ -382,8 +381,6 @@ async def test_worker_stop_interrupts_blocked_native_read_promptly() -> "None":
         elapsed = asyncio.get_running_loop().time() - started
 
     assert elapsed < 1.0
-    # Backend close (on service exit) cancels and awaits the retained read.
-    # ``bool(...)`` keeps mypy from narrowing the property across the earlier assertion.
     assert bool(backend._pending_read.has_pending) is False
 
 
@@ -403,8 +400,6 @@ async def test_worker_survives_native_read_failure_and_reconciles(caplog: "pytes
             worker_task = asyncio.create_task(worker.start())
             await asyncio.sleep(0)
 
-            # The first native read raises a driver-style error; the run loop must
-            # survive it and keep discovering work via durable polling.
             result = await service.enqueue(after_read_failure, 41)
             await result.wait(timeout=2, poll_interval=0.01)
 
@@ -440,7 +435,6 @@ async def test_worker_processes_task_when_notification_is_dropped() -> "None":
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(worker_task, timeout=1)
 
-    # The wakeup was attempted but never signalled the waiter; durable polling still ran.
     assert backend.notify_calls >= 1
     assert backend._notification_event.is_set() is False
     assert result.status == "completed"
@@ -468,7 +462,7 @@ async def test_worker_skips_periodic_requeue_when_stale_after_is_none() -> "None
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local"),
         queue_backend=backend,
     ) as service:
-        worker = Worker(service)  # stale_after defaults to None
+        worker = Worker(service)
 
         for _ in range(3):
             await worker._maybe_requeue_stale()
@@ -1078,8 +1072,6 @@ async def test_control_hint_interrupts_saturated_wait_and_cancels_running() -> "
     ) as service:
         result = await service.enqueue(control_hint_cancel)
         backend = cast("InMemoryQueueBackend", service.get_queue_backend())
-        # Both durable slow paths are pinned far out: only a push hint can make
-        # this cancel prompt.
         worker = Worker(
             service,
             WorkerConfig(
@@ -1167,7 +1159,6 @@ async def test_dropped_control_hint_still_cancelled_by_durable_poll() -> "None":
             await asyncio.wait_for(worker_task, timeout=1)
         await result.refresh()
 
-    # The hint was emitted and swallowed; the durable status poll still cancelled.
     assert backend.control_notify_calls >= 1
     assert result.status == "cancelled"
 
@@ -1212,8 +1203,6 @@ async def test_heartbeat_claim_loss_cancels_running_coroutine() -> "None":
         stored = await backend.get_task(result.id)
 
     assert running.cancelled() is True
-    # The record is no longer this worker's to finish: no terminal write, and no
-    # requeue (the shutdown gate in ``_execute_claimed`` never opens).
     assert backend.terminal_calls == []
     assert backend.interrupt_calls == []
     assert stored is not None
@@ -1261,8 +1250,6 @@ async def test_claim_loss_cancel_opt_out_preserves_run_to_completion() -> "None"
         release.set()
         await asyncio.wait_for(running, timeout=1)
 
-    # Historical behavior: the body runs to completion and its terminal write is
-    # fence-rejected, emitting a second claim-lost for the same attempt.
     assert finished.is_set() is True
     assert running.cancelled() is False
     assert backend.terminal_calls == [("complete_task", result.id)]
@@ -1527,7 +1514,6 @@ async def test_worker_start_resets_backoff_state_on_each_call() -> "None":
                 reconcile_interval=3600.0,
             ),
         )
-        # Simulate a worker instance that had backed off before a prior stop.
         worker._current_poll_interval = 0.8
 
         worker_task = asyncio.create_task(worker.start())
@@ -1545,7 +1531,6 @@ async def test_worker_stop_interrupts_backoff_wait_without_extra_sleep() -> "Non
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         backend = cast("InMemoryQueueBackend", service.get_queue_backend())
-        # Large bounds ensure a prompt stop cannot be attributed to a short poll tick.
         worker = Worker(
             service,
             WorkerConfig(poll_interval=60, poll_backoff_max=120, poll_backoff_multiplier=2.0, reconcile_interval=3600),
@@ -1645,8 +1630,6 @@ async def test_worker_jitters_the_sampled_wait_without_mutating_stored_backoff_s
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(worker_task, timeout=1)
 
-    # Deterministic state grows 1 -> 2 -> 4; a +1.0 jitter sample with jitter=0.5 adds
-    # current * 0.5 to each sampled wait only, never to the stored state.
     assert backend.timeouts[:3] == [1.5, 3.0, 6.0]
 
 
@@ -1672,7 +1655,6 @@ async def test_worker_wait_is_clamped_to_next_due_scheduled_work() -> "None":
                 reconcile_interval=3600.0,
             ),
         )
-        # Simulate a worker that already backed off well past the known due-in bound.
         worker._current_poll_interval = 10.0
 
         await worker._wait_for_work()
@@ -1741,7 +1723,6 @@ async def test_worker_discovers_scheduled_task_without_waiting_full_backoff() ->
                 poll_interval=0.05, poll_backoff_max=30.0, poll_backoff_multiplier=2.0, reconcile_interval=3600.0
             ),
         )
-        # Simulate a worker that already backed off to a long wait.
         worker._current_poll_interval = 20.0
         worker_task = asyncio.create_task(worker.start())
 
@@ -2592,7 +2573,6 @@ async def test_claim_loss_cancel_closes_the_dependency_scope() -> "None":
         exec_task = worker._track_execution(claimed)
         await started.wait()
 
-        # Force claim loss
         from litestar_queues.models import HeartbeatTouchResult
 
         async def patched_touch(*args: Any, **kwargs: Any) -> HeartbeatTouchResult:

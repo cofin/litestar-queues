@@ -1,5 +1,8 @@
 """Integration-tier pytest fixtures and pytest-databases plugin registration."""
 
+from contextlib import suppress
+from datetime import timedelta
+from importlib import import_module
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -28,13 +31,23 @@ _DATABASE_PLUGINS: "tuple[str, ...]" = (
     "pytest_databases.docker.spanner",
     "pytest_databases.docker.valkey",
 )
+_SPANNER_SESSION_MANAGER_MODULES: "tuple[str, ...]" = (
+    "google.cloud.spanner_v1.database_sessions_manager",
+    "google.cloud.spanner_v1._async.database_sessions_manager",
+)
 
 
 def pytest_configure(config: "pytest.Config") -> "None":
-    """Dynamically register pytest-databases container plugins for integration tests."""
+    """Dynamically register pytest-databases container plugins and tune SDK shutdown polling."""
     for plugin in _DATABASE_PLUGINS:
         if not config.pluginmanager.has_plugin(plugin):
             config.pluginmanager.import_plugin(plugin)
+    for module_name in _SPANNER_SESSION_MANAGER_MODULES:
+        with suppress(ImportError):
+            module = import_module(module_name)
+            manager_cls = getattr(module, "DatabaseSessionsManager", None)
+            if manager_cls is not None:
+                manager_cls._MAINTENANCE_THREAD_POLLING_INTERVAL = timedelta(seconds=0.05)
 
 
 @pytest.fixture
@@ -58,9 +71,6 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
         if service is None:
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 
-    # Service-backed adapters share the same Docker database across the
-    # session. Give each parametrized test its own queue table so adapters and
-    # test cases cannot collide via the shared default name.
     table_name = (
         table_name_for_test("queue_task", case.name, request.node.nodeid) if case.service_attr is not None else None
     )

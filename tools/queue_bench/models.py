@@ -7,6 +7,8 @@ from typing import Any
 from tools.queue_bench import SCHEMA_VERSION
 from tools.queue_bench.statistics import median_absolute_deviation, percentile
 
+__all__ = ("BenchmarkResult", "RawSample", "ScenarioAggregate")
+
 
 @dataclass(frozen=True, slots=True)
 class RawSample:
@@ -119,6 +121,3 @@ class BenchmarkResult:
             schema_version=str(value["schema_version"]),
             generated_at=str(value["generated_at"]),
         )
-
-
-__all__ = ("BenchmarkResult", "RawSample", "ScenarioAggregate")

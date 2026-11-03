@@ -197,6 +197,11 @@ class SQLAlchemyBackend(BaseQueueBackend):
         metadata: "dict[str, Any] | None" = None,
         id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
+        """Persist a queued task via the Advanced Alchemy task service.
+
+        Returns:
+            The created or deduplicated queued task record.
+        """
         try:
             async with self._operation() as service:
                 record = await service.enqueue(
@@ -241,16 +246,19 @@ class SQLAlchemyBackend(BaseQueueBackend):
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        """Return a queued task record by ID."""
         async with self._service() as service:
             return await service.get_task(task_id)
 
     async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
+        """Return a queued task record by deduplication key."""
         async with self._service() as service:
             return await service.get_task_by_key(key)
 
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
+        """Return due pending or scheduled tasks ordered for execution."""
         async with self._service() as service:
             return await service.list_pending(limit=limit, queue=queue, execution_backend=execution_backend)
 
@@ -270,6 +278,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Claim a due pending or scheduled task for execution."""
         async with self._operation() as service:
             return await service.claim_task(
                 task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
@@ -278,6 +287,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def claim_task_with_expired(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "tuple[QueuedTaskRecord | None, QueuedTaskRecord | None]":
+        """Claim one task and return any claim-time expiry owned by this call."""
         async with self._operation() as service:
             return await service.claim_task_with_expired(
                 task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
@@ -286,6 +296,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Claim the next due pending or scheduled task across ``queues``."""
         async with self._operation() as service:
             for queue in queues or (None,):
                 claimed = await service.claim_next(queue=queue, execution_backend=execution_backend)
@@ -358,6 +369,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Transition a running task attempt to ``completed``."""
         async with self._operation() as service:
             return await service.complete_task(task_id, result=result, expected_retry_count=expected_retry_count)
 
@@ -371,6 +383,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         retry_at: "datetime | None" = None,
         queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Record a task failure and either schedule a retry or mark it ``failed``."""
         async with self._operation() as service:
             return await service.fail_task(
                 task_id,
@@ -384,12 +397,14 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
+        """Record the active worker owner on a fenced running task attempt."""
         async with self._operation() as service:
             return await service.assign_worker(task_id, worker_id=worker_id, expected_retry_count=expected_retry_count)
 
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
     ) -> "QueuedTaskRecord | None":
+        """Return a running task interrupted during worker shutdown to ``pending``."""
         async with self._operation() as service:
             return await service.interrupt_task(
                 task_id, expected_retry_count=expected_retry_count, worker_id=worker_id, queued_at=queued_at
@@ -398,6 +413,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def cancel_task(
         self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
+        """Cancel a pending, scheduled, or optionally running task."""
         async with self._operation() as service:
             return await service.cancel_task(
                 task_id, include_running=include_running, expected_retry_count=expected_retry_count
@@ -412,24 +428,28 @@ class SQLAlchemyBackend(BaseQueueBackend):
         metadata: "Mapping[str, Any] | None" = None,
         include_running: "bool" = False,
     ) -> "int":
+        """Cancel all tasks matching the provided filter predicates."""
         async with self._operation() as service:
             return await service.cancel_tasks(
                 task_name=task_name, queue=queue, kwargs=kwargs, metadata=metadata, include_running=include_running
             )
 
     async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Refresh ``heartbeat_at`` for active fenced running task attempts."""
         if not touches:
             return HeartbeatTouchResult()
         async with self._heartbeat_operation() as service:
             return await service.touch_heartbeats(touches)
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
+        """Clear ``heartbeat_at`` for the given task IDs."""
         async with self._heartbeat_operation() as service:
             await service.null_heartbeats(task_ids, expected_retry_count=expected_retry_count)
 
     async def requeue_stale_running(
         self, *, stale_after: "timedelta", limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
+        """Recover running tasks whose heartbeats are older than ``stale_after``."""
         async with self._operation() as service:
             return await service.requeue_stale_running(
                 stale_after=stale_after, limit=limit, priority_policy=self._stale_requeue_priority_policy()
@@ -438,6 +458,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Record an external execution reference on a queued task."""
         async with self._operation() as service:
             return await service.set_execution_ref(
                 task_id, execution_backend, execution_ref, execution_profile=execution_profile
@@ -487,6 +508,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Reserve a due pending or scheduled task for external execution dispatch."""
         async with self._operation() as service:
             return await service.reserve_external_dispatch(
                 task_id,
@@ -499,6 +521,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Clear a fenced ``execution_ref`` on a pending or scheduled task."""
         async with self._operation() as service:
             record = await service.clear_execution_ref(task_id, expected_retry_count, expected_execution_ref)
         if record is not None:
@@ -508,6 +531,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def replace_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Replace a fenced ``execution_ref`` on a pending or scheduled task."""
         async with self._operation() as service:
             return await service.replace_execution_ref(
                 task_id, expected_retry_count, expected_execution_ref, execution_ref
@@ -521,6 +545,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Release a provisional external-dispatch reservation back to the queue."""
         async with self._operation() as service:
             record = await service.release_external_dispatch(
                 task_id, reservation_ref, execution_backend, execution_profile=execution_profile
@@ -538,6 +563,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Commit the concrete provider ``execution_ref`` for a dispatch reservation."""
         async with self._operation() as service:
             return await service.finalize_external_dispatch(
                 task_id, reservation_ref, execution_backend, execution_ref, execution_profile=execution_profile
@@ -546,6 +572,7 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Update a task's execution backend and clear its ``execution_ref``."""
         async with self._operation() as service:
             record = await service.set_execution_backend(
                 task_id, execution_backend, execution_profile=execution_profile
@@ -589,24 +616,29 @@ class SQLAlchemyBackend(BaseQueueBackend):
         return bool(notified)
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Return non-terminal tasks carrying an external ``execution_ref``."""
         async with self._service() as service:
             return await service.list_running_external(limit=limit)
 
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
+        """Return aggregate task counts grouped by status."""
         async with self._service() as service:
             return await service.get_statistics(queue=queue)
 
     async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``."""
         async with self._operation() as service:
             return await service.expire_overdue(limit=limit)
 
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
     ) -> "list[QueuedTaskRecord]":
+        """Return recent completed records for ``task_name`` ordered newest first."""
         async with self._service() as service:
             return await service.list_completed_by_task(task_name, since=since, limit=limit)
 
     async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        """Delete terminal task records completed before ``before``."""
         async with self._operation() as service:
             return await service.cleanup_terminal(before, limit=limit)
 
@@ -925,10 +957,6 @@ class SQLAlchemyBackend(BaseQueueBackend):
             created_at=created_at.astimezone(UTC),
         )
 
-    def _event_history_enabled(self) -> "bool":
-        events_config = self.config.events if self.config is not None else None
-        return events_config is not None and events_config.history is not None
-
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[AsyncSession]":
         self._ensure_configured()
@@ -980,9 +1008,9 @@ class SQLAlchemyBackend(BaseQueueBackend):
     async def _heartbeat_operation(self) -> 'AsyncIterator["QueueTaskService"]':
         """Yield a ``QueueTaskService`` bound to the dedicated heartbeat session maker.
 
-        Falls back to :meth:`_operation` when ``heartbeat_session_maker`` is not
+        Falls back to ``_operation`` when ``heartbeat_session_maker`` is not
         configured. The dedicated engine is supplied and owned by the adopter;
-        :meth:`close` does not dispose it.
+        ``close`` does not dispose it.
 
         Yields:
             Queue task service bound to the heartbeat or default operation.

@@ -243,12 +243,12 @@ async def test_batch_delivery_failure_warn_once_dampener(caplog: "pytest.LogCapt
     caplog.clear()
     sink.fail = False
     with caplog.at_level(logging.DEBUG, logger="litestar_queues.events.publisher"):
-        await publisher._deliver_live_many(batch)  # success resets the dampener
+        await publisher._deliver_live_many(batch)
     assert publisher._live_failure_signature is None
 
     sink.fail = True
     with caplog.at_level(logging.DEBUG, logger="litestar_queues.events.publisher"):
-        await publisher._deliver_live_many(batch)  # first failure after reset warns again
+        await publisher._deliver_live_many(batch)
     reopened = [record for record in caplog.records if record.message == "Queue event batch publish failed"]
     assert reopened[-1].levelno == logging.WARNING
     assert reopened[-1].exc_info is not None

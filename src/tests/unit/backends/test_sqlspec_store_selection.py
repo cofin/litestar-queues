@@ -23,7 +23,6 @@ from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type,
 from litestar_queues.config import QueueConfig
 from litestar_queues.exceptions import QueueConfigurationError
 
-# adapter -> dialect, quote style, datetime binding, JSON column type
 _ADAPTER_BEHAVIOR = {
     "aiomysql": ("mysql", "backtick", False, "JSON"),
     "aiosqlite": ("sqlite", "double", True, "TEXT"),
@@ -44,7 +43,6 @@ _ADAPTER_BEHAVIOR = {
     "sqlite": ("sqlite", "double", True, "TEXT"),
 }
 
-# Adapters whose dialect enables Postgres storage parameters and returning-claim.
 _POSTGRES_NATIVE = {"asyncpg", "psqlpy", "psycopg"}
 _RETURNING_CLAIM = {"asyncpg", "psqlpy", "psycopg"}
 

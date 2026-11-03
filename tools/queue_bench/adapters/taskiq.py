@@ -6,6 +6,8 @@ import time
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
 
+__all__ = ("run",)
+
 
 async def run(request: AdapterRequest) -> AdapterResult:
     """Run one isolated Taskiq sample.
@@ -85,6 +87,3 @@ async def _cleanup(request: AdapterRequest) -> None:
     if keys:
         await client.delete(*keys)
     await client.aclose()
-
-
-__all__ = ("run",)

@@ -8,6 +8,7 @@ from litestar_queues.events import (
     InMemoryQueueEventSink,
     QueueChannels,
     QueueEvent,
+    QueueEventProducer,
     QueueEventPublisher,
     QueueEventsConfig,
 )
@@ -19,8 +20,6 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_task_handle_log_fans_out_to_task_channel() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = InMemoryQueueEventSink()
     producer = QueueEventProducer(QueueEventPublisher(sink))
 
@@ -34,8 +33,6 @@ async def test_task_handle_log_fans_out_to_task_channel() -> None:
 
 
 async def test_channel_handle_publish_fans_out_to_custom_channel() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = InMemoryQueueEventSink()
     producer = QueueEventProducer(QueueEventPublisher(sink))
 
@@ -49,8 +46,6 @@ async def test_channel_handle_publish_fans_out_to_custom_channel() -> None:
 
 
 async def test_queue_and_worker_handles_target_their_channels() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = InMemoryQueueEventSink()
     producer = QueueEventProducer(QueueEventPublisher(sink))
 
@@ -66,8 +61,6 @@ async def test_queue_and_worker_handles_target_their_channels() -> None:
 
 
 async def test_task_handle_progress_percent_derived() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = InMemoryQueueEventSink()
     producer = QueueEventProducer(QueueEventPublisher(sink))
 
@@ -81,8 +74,6 @@ async def test_task_handle_progress_percent_derived() -> None:
 
 
 async def test_task_handle_publish_targets_task_channel() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = InMemoryQueueEventSink()
     producer = QueueEventProducer(QueueEventPublisher(sink))
 
@@ -96,8 +87,6 @@ async def test_task_handle_publish_targets_task_channel() -> None:
 
 
 async def test_producer_handle_immediate_flushes_prior() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = InMemoryQueueEventSink()
     producer = QueueEventProducer(QueueEventPublisher(sink, buffer_config=EventBufferConfig(batch_size=10)))
 
@@ -111,8 +100,6 @@ async def test_producer_handle_immediate_flushes_prior() -> None:
 
 
 def test_scope_handles_expose_only_publish() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     producer = QueueEventProducer(QueueEventPublisher(InMemoryQueueEventSink()))
     channel_handle = producer.channel("imports:acme")
     task_handle = producer.task("t1")
@@ -127,8 +114,6 @@ def test_scope_handles_expose_only_publish() -> None:
 
 
 async def test_producer_does_not_open_or_close_sink() -> None:
-    from litestar_queues.events import QueueEventProducer
-
     sink = _LifecycleCountingSink()
     producer = QueueEventProducer(QueueEventPublisher(sink))
 

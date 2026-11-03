@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
     from litestar_queues.events.history import EventHistoryConfig, QueueEventLogRecord
 
+__all__ = ("_HistoryBuffer", "_in_event_release_callback")
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,8 +202,6 @@ class _HistoryBuffer:
             error = exc
         if reentrant and inherited is not None:
             inherited.boundary = max(inherited.boundary, boundary)
-        # A live callback may be holding the drain needed by an earlier history
-        # release. Confirm persistence here and let release finish after it returns.
         elif not background and not _in_live_event_callback():
             error = await self._wait_for_releases(targets, error)
         if error is not None:

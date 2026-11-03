@@ -539,8 +539,6 @@ async def test_duplicate_insert_race_retries_in_a_fresh_transaction(
             return getattr(self.driver, name)
 
         async def select(self, statement: "Any", *args: "Any", **kwargs: "Any") -> "Any":
-            # A row committed after the existence snapshot causes an actual
-            # native duplicate-key error below; only the first lookup is stale.
             if self.first:
                 self.first = False
                 return []

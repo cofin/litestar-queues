@@ -95,8 +95,8 @@ def test_level_ranks_are_total_and_never_drop_unknown_levels() -> "None":
 
     assert event_level_rank(None) == 0
     assert event_level_rank("") == 0
-    assert event_level_rank("trace") == 1  # unknown, still ranked
-    assert event_level_rank("DEBUG") == 10  # case-insensitive
+    assert event_level_rank("trace") == 1
+    assert event_level_rank("DEBUG") == 10
     assert event_level_rank("critical") > event_level_rank("error") > event_level_rank("warning")
 
 

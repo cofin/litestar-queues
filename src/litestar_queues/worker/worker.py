@@ -1,3 +1,5 @@
+"""Core queue worker loop for claiming, executing, heartbeating, and draining tasks."""
+
 import asyncio
 import contextlib
 import logging
@@ -35,10 +37,10 @@ def _next_backoff_interval(current: "float", *, base: "float", maximum: "float",
     """Compute the next deterministic adaptive-polling interval after an empty cycle.
 
     The stored exponential state itself is never jittered; only the sampled
-    wait derived from it is (see :func:`_apply_jitter`).
+    wait derived from it is (see `_apply_jitter()`).
 
     Returns:
-        ``current * multiplier`` clamped to ``[base, maximum]``.
+        `current * multiplier` clamped to `[base, maximum]`.
     """
     return _clamp(current * multiplier, low=base, high=maximum)
 
@@ -241,19 +243,19 @@ class Worker:
     async def _current_wait_timeout(self) -> "float":
         """Return the wait timeout for the next poll, with jitter applied when enabled.
 
-        Jitter perturbs only the returned wait; :attr:`_current_poll_interval`
+        Jitter perturbs only the returned wait; `_current_poll_interval`
         (the stored exponential state) is never mutated by it. No random
         sampling occurs while backoff is disabled or jitter is zero.
 
         While backoff is enabled, the wait is additionally clamped to the
-        backend's ``time_until_next_due()`` when known: no backend notifies
+        backend's `time_until_next_due()` when known: no backend notifies
         a worker the instant a scheduled or retried record's due time
         arrives, so an uncapped backoff wait could otherwise sleep past
         already-known future work. This clamp never applies to the fixed
         (backoff-disabled) path, matching its exact prior behavior.
 
         Returns:
-            The timeout, in seconds, to pass to ``wait_for_wakeups``.
+            The timeout, in seconds, to pass to `wait_for_wakeups`.
         """
         if self._poll_backoff_max is None:
             return self._current_poll_interval
@@ -435,9 +437,6 @@ class Worker:
     def _on_execution_done(self, task: "asyncio.Task[None]") -> "None":
         self._running_tasks.pop(task, None)
         self._cancel_requested.discard(task)
-        # Retrieve the outcome here rather than through a drain-time gather, so
-        # a task that finishes outside a drain never trips asyncio's
-        # "exception was never retrieved" reporting.
         if not task.cancelled():
             error = task.exception()
             if error is not None:
@@ -487,7 +486,7 @@ class Worker:
         """Reconcile externally dispatched records by delegating to the service.
 
         The reconciliation contract (state transitions, unknown-backend
-        skipping, and metrics) lives on :meth:`QueueService.reconcile_external`;
+        skipping, and metrics) lives on `QueueService.reconcile_external()`;
         the worker keeps only the periodic cadence and fleet lock.
 
         Returns:
@@ -542,9 +541,6 @@ class Worker:
                 await self._close_heartbeat_manager_if_idle()
 
     async def _dispatch_external(self, records: "list[QueuedTaskRecord]") -> "int":
-        # The execution backend owns litestar_queues.execution.dispatch: it is
-        # the only layer that can distinguish a fallback from an outright failure,
-        # and a second emitter here would double-count every dispatch.
         execution_backend = self._service.get_execution_backend()
         dispatched = 0
         for record in records:
@@ -568,8 +564,6 @@ class Worker:
         ):
             return
         result = await self._service.recover_stale_tasks(stale_after=self._stale_after, worker_id=self._worker_id)
-        # One bounded outcome label, each incremented by its own count. Recording the
-        # counts as label *values* would mint a new time series per distinct tally.
         outcomes = (
             ("requeued", result.requeued),
             ("failed", result.failed),
@@ -597,9 +591,6 @@ class Worker:
             self._record_counter("litestar_queues.expiry", {"queue.expiry.outcome": "expired"}, value=len(expired))
 
     async def _maybe_reconcile_external(self) -> "None":
-        # Check the local cadence before the fleet lock, matching the stale and
-        # expiry passes. Taking the lock first made every worker loop iteration
-        # write a coordination record only to discard it at the interval check.
         if self._reconcile_interval > 0:
             now = asyncio.get_running_loop().time()
             if now - self._last_reconcile_at < self._reconcile_interval:
@@ -633,9 +624,6 @@ class Worker:
     async def _drain_running(self) -> "bool":
         if not self._running_tasks:
             return False
-        # `asyncio.wait`, not `wait_for(gather(...))`: a timed-out `wait_for`
-        # cancels the gather, and that cancellation propagates into every
-        # execution task as an unaccounted extra delivery.
         _, pending = await asyncio.wait(tuple(self._running_tasks), timeout=self._graceful_shutdown_timeout)
         if pending:
             await self._cancel_running()
@@ -646,10 +634,6 @@ class Worker:
         tasks = tuple(self._running_tasks)
         if not tasks:
             return
-        # `stop()` and the loop's own shutdown drain both land here. Cancelling
-        # a task twice delivers a second CancelledError into the task's own
-        # shutdown-requeue handler and aborts the backend write mid-flight, so
-        # each execution task is cancelled exactly once per worker.
         for task in tasks:
             if task not in self._cancel_requested:
                 self._cancel_requested.add(task)
@@ -671,8 +655,6 @@ class Worker:
             "Queue tasks survived cancellation; abandoning them to stale recovery",
             extra={"worker_id": self._worker_id, "task_ids": [str(record.id) for record in survivors]},
         )
-        # `null_heartbeats` carries one fence value per call, so group the
-        # survivors by the generation this worker still believes it owns.
         by_generation: "dict[int, list[UUID]]" = {}
         for record in survivors:
             by_generation.setdefault(record.retry_count, []).append(record.id)
@@ -732,8 +714,6 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         if control_task in done and await self._consume_control_task(control_task):
-            # A saturated worker never reaches run_once's cadence check quickly
-            # enough for the hint to matter, so the gate is reset before the pass.
             self._last_cancellation_check_at = -float("inf")
             await self._maybe_cancel_running()
         outcome: "bool | None" = None
@@ -760,10 +740,6 @@ class Worker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # A native read failure must not kill the run loop; durable polling
-            # (run_once) still discovers work, and the next wait re-establishes
-            # the listener from a clean state. The backoff resets so a stale
-            # listener does not compound into a longer discovery delay.
             self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
             self._service.observability_runtime.record_counter(
                 "litestar_queues.listener.error",
@@ -790,8 +766,6 @@ class Worker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # Control hints are lossy by contract: a failed read costs latency,
-            # never correctness, because run_once still polls durable status.
             self._record_counter("litestar_queues.worker.loop.error", {"worker.error.type": type(exc).__name__})
             self._service.observability_runtime.record_counter(
                 "litestar_queues.listener.error",
@@ -815,8 +789,6 @@ class Worker:
             self._record_heartbeat_failure(exc, "Queue worker heartbeat manager close failed")
 
     def _record_heartbeat_failure(self, exc: "Exception", message: "str") -> "None":
-        # Delegated so both emitters of litestar_queues.heartbeat.failure agree
-        # on one label set; divergent label names break the Prometheus collector.
         self._heartbeat_manager.record_failure(exc, message)
 
     def _record_claimed(self, records: "list[QueuedTaskRecord]") -> "None":

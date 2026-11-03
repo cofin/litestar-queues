@@ -123,13 +123,13 @@ async def test_enqueue_many_uses_native_bulk_ingest_and_preserves_key_semantics(
     ])
 
     assert records[0].id == active.id
-    assert records[0].kwargs == {"v": 1}  # active key: existing row returned as-is
-    assert records[1].id != terminal.id  # terminal key: replaced with a fresh row
+    assert records[0].kwargs == {"v": 1}
+    assert records[1].id != terminal.id
     assert records[1].kwargs == {"v": 2}
     assert records[2].kwargs == {"v": 3}
 
     stats = await psycopg_backend.get_statistics()
-    assert stats.total == 4  # active + original terminal + its replacement + the fresh row
+    assert stats.total == 4
 
 
 async def test_claim_task_and_claim_next_skip_locked_commit_under_the_configured_connection_mode(
@@ -143,7 +143,7 @@ async def test_claim_task_and_claim_next_skip_locked_commit_under_the_configured
 
     second = await psycopg_backend.enqueue("tasks.claim.next")
     store = psycopg_backend._get_store()
-    assert store.supports_skip_locked is True  # resolved from the connected PostgreSQL server
+    assert store.supports_skip_locked is True
 
     claimed_next = await psycopg_backend.claim_next()
     assert claimed_next is not None
@@ -160,9 +160,8 @@ async def test_claim_next_optimistic_direct_invocation_commits_under_the_configu
     sync-driver adapter that lacks SKIP LOCKED -- is still certified against a real psycopg connection.
     """
     record = await psycopg_backend.enqueue("tasks.optimistic")
-    store = psycopg_backend._get_store()
 
-    claimed = await psycopg_backend._claim_next_optimistic(store, queue=None, execution_backend=None)
+    claimed = await psycopg_backend._claim_next_optimistic(queue=None, execution_backend=None)
 
     assert claimed is not None
     assert claimed.id == record.id

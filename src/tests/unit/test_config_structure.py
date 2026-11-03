@@ -1,13 +1,24 @@
 import ast
 import contextlib
+import io
+import re
+import tokenize
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import pytest
+
+from litestar_queues import QueueConfig
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
 PACKAGE_ROOT = Path("src/litestar_queues")
+_DIRECTIVE_COMMENT_RE = re.compile(
+    r"^#\s*(?:noqa(?:\b|:)|ruff:\s*noqa\b|type:\s*ignore\b|pyright:\s*ignore\b|pragma:\s*no\s*cover\b)", re.IGNORECASE
+)
 
 _APPROVED_NESTED_IMPORTS = {
     "_cli.py": {"litestar.cli._utils", "litestar_queues.worker.runtime"},
@@ -28,8 +39,6 @@ _APPROVED_NESTED_IMPORTS = {
     "backends/sqlspec/reservation.py": {"litestar_queues.backends.sqlspec.stores.spanner"},
     "backends/sqlspec/stores/spanner.py": {"google.api_core.exceptions", "sqlspec.adapters.spanner"},
     "backends/valkey/backend.py": {"valkey"},
-    # The signature namespace carries only the injectable dependencies, so the
-    # config surface no longer reaches for optional adapters at startup.
     "config.py": {
         "litestar.di",
         "litestar_queues.backends",
@@ -205,6 +214,8 @@ def test_modules_declare_imports_and_exports_before_constants() -> None:
                 dunder_all_line = node.lineno
             elif first_constant is None:
                 first_constant = (node.lineno, names[0] if names else "<unnamed>")
+        if dunder_all_line is None:
+            out_of_order.append(f"{path}: missing __all__")
         if first_constant is None:
             continue
         line, name = first_constant
@@ -216,12 +227,45 @@ def test_modules_declare_imports_and_exports_before_constants() -> None:
     assert out_of_order == []
 
 
+def test_python_files_contain_no_inline_comments() -> None:
+    """Only shebangs, PEP 723 script blocks, and linter/typechecker directives may use #."""
+    violations: list[str] = []
+    roots = (Path("src"), Path("tools"), Path("docs/examples"), Path("examples"))
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            in_pep723 = False
+            for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+                if tok.type != tokenize.COMMENT:
+                    if tok.type not in (
+                        tokenize.NL,
+                        tokenize.NEWLINE,
+                        tokenize.ENCODING,
+                        tokenize.INDENT,
+                        tokenize.DEDENT,
+                    ):
+                        in_pep723 = False
+                    continue
+                lineno, _ = tok.start
+                stripped = tok.string.strip()
+                if lineno == 1 and stripped.startswith("#!"):
+                    continue
+                if stripped == "# /// script":
+                    in_pep723 = True
+                    continue
+                if in_pep723:
+                    if stripped == "# ///":
+                        in_pep723 = False
+                    continue
+                if _DIRECTIVE_COMMENT_RE.match(stripped):
+                    continue
+                violations.append(f"{path}:{lineno}:{stripped}")
+
+    assert violations == []
+
+
 def test_queue_config_rejects_resolver_and_provider_together() -> "None":
     """Two dependency mappings for one call have no defined precedence."""
-    import pytest
-
-    from litestar_queues import QueueConfig
-    from litestar_queues.exceptions import QueueConfigurationError
 
     async def resolver(task: "object", record: "object", context: "object") -> "dict[str, object]":
         return {}
@@ -233,6 +277,5 @@ def test_queue_config_rejects_resolver_and_provider_together() -> "None":
     with pytest.raises(QueueConfigurationError, match="task_dependency_provider"):
         QueueConfig(task_dependency_resolver=resolver, task_dependency_provider=provider)
 
-    # each alone is accepted
     assert QueueConfig(task_dependency_resolver=resolver).task_dependency_provider is None
     assert QueueConfig(task_dependency_provider=provider).task_dependency_resolver is None

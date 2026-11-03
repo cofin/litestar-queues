@@ -148,8 +148,6 @@ def run_command(
     effective_drain_timeout = drain_timeout if drain_timeout is not None else config.worker.graceful_shutdown_timeout
     effective_queues = queues or config.worker.queues
 
-    # Task modules and schedules belong to the shared runner, which owns them
-    # identically for this command and for the server-started worker child.
     exit_code = asyncio.run(
         _run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues, app=env.app)
     )
@@ -475,14 +473,10 @@ async def _run_worker(
                 service, config, graceful_stop=stop.graceful, force_stop=stop.force, ready=announce_ready
             )
     except Exception as exc:
-        # Name the startup stage and exception type but never the exception
-        # text: connection strings and credentials routinely appear in backend
-        # errors. The full traceback still reaches the configured log handlers.
         click.echo(f"error: queue worker failed during {_failure_detail(exc)}", err=True)
         logging.getLogger(config.names.logger("cli")).exception("Standalone queue worker failed")
         return int(WorkerRunResult.CRASHED)
     finally:
-        # A shutdown that actually finished must never trip the deadline.
         watchdog.disarm()
     return int(result)
 

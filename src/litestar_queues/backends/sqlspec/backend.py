@@ -33,11 +33,7 @@ from litestar_queues.backends.sqlspec.config import (
     DEFAULT_WAKEUP_CHANNEL,
     SQLSpecBackendConfig,
 )
-from litestar_queues.backends.sqlspec.event_log import (
-    SQLSpecQueueEventLog,
-    create_event_log_store,
-    resolve_event_history_table_name,
-)
+from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLog, create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.maintenance import SQLSpecMaintenanceStore, create_maintenance_store
 from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
@@ -95,14 +91,8 @@ _DURABLE_WAKEUP_BACKENDS = frozenset({"aq", "notify_queue", "poll_queue", "txeve
 _EVENT_EXTENSION_NAME = "events"
 _WAKEUP_TRANSPORT_POLLING = "polling"
 _CANONICAL_EVENT_BACKENDS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
-# Adapter families that can push worker wakeups. Every real Postgres driver
-# (asyncpg, psycopg, psqlpy) ships SQLSpec's durable LISTEN/NOTIFY hybrid, so all
-# three advertise ``notify_queue``. DuckDB is embedded with no LISTEN/NOTIFY, so
-# it uses the durable table queue polled in-process. Everything else polls.
 _WAKEUP_DURABLE_ADAPTERS = frozenset({"asyncpg", "psycopg", "psqlpy"})
 _WAKEUP_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
-# Durable event transports that ride the SQLSpec events queue table and must have
-# it provisioned before a worker can publish or consume wakeups.
 _EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
 
 
@@ -462,6 +452,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         metadata: "dict[str, Any] | None" = None,
         id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
+        """Persist a queued task in the SQLSpec-managed queue table.
+
+        Returns:
+            The created or deduplicated queued task record.
+        """
         now = _utc_now()
         record = QueuedTaskRecord(
             task_name=task_name,
@@ -548,10 +543,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
 
         Resolves existing deduplication keys in one round trip, then inserts the
         remaining rows through the native Arrow ingest path
-        (:meth:`load_from_records`) when the adapter supports it, otherwise via a
+        (``load_from_records``) when the adapter supports it, otherwise via a
         batched ``execute_many``. Returns records in input order, with existing
         non-terminal keyed tasks returned as-is (no duplicate insert) to match
-        the semantics of :meth:`enqueue`.
+        the semantics of ``enqueue``.
 
         Returns:
             Queue task records in the same order as ``requests``.
@@ -585,11 +580,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return results
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        """Return a queued task record by ID."""
         async with self._session() as driver:
             row = await self._select_task(driver, task_id)
         return self._record_from_row(row) if row is not None else None
 
     async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
+        """Return a queued task record by deduplication key."""
         async with self._session() as driver:
             row = await self._select_task_by_key(driver, key)
         return self._record_from_row(row) if row is not None else None
@@ -641,8 +638,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             try:
                 existing = await self._select_one_row(driver, store.select_owner(key))
                 if existing is not None:
-                    # Commit the read-only transaction rather than rolling back so
-                    # single-connection engines (Spanner) do not double-finalize.
                     await driver.commit()
                     return _reservation_from_row(existing)
                 await driver.execute(store.insert_reservation(values))
@@ -687,12 +682,14 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
+        """Return due pending or scheduled tasks ordered for execution."""
         rows = await self._select_pending_rows(limit=limit, queue=queue, execution_backend=execution_backend)
         return [self._record_from_row(row) for row in rows]
 
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Claim a due pending or scheduled task for execution."""
         claimed, _ = await self.claim_task_with_expired(
             task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
         )
@@ -973,18 +970,19 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def claim_next(
         self, *, queues: "tuple[str, ...]" = (), execution_backend: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Claim the next due pending or scheduled task across ``queues``."""
         store = self._get_store()
         for queue in queues or (None,):
             if store.supports_skip_locked:
                 claimed = await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
             else:
-                claimed = await self._claim_next_optimistic(store, queue=queue, execution_backend=execution_backend)
+                claimed = await self._claim_next_optimistic(queue=queue, execution_backend=execution_backend)
             if claimed is not None:
                 return claimed
         return None
 
     async def _claim_next_optimistic(
-        self, store: "SQLSpecQueueStore", *, queue: "str | None", execution_backend: "str | None"
+        self, *, queue: "str | None", execution_backend: "str | None"
     ) -> "QueuedTaskRecord | None":
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
@@ -1053,6 +1051,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Transition a running task attempt to ``completed``."""
         now = _utc_now()
         store = self._get_store()
         if not type(store).supports_dml_returning:
@@ -1126,6 +1125,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         retry_at: "datetime | None" = None,
         queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Record a task failure and either schedule a retry or mark it ``failed``."""
         store = self._get_store()
         if not type(store).supports_dml_returning:
             return await self._fail_task_without_returning(
@@ -1248,6 +1248,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
+        """Record the active worker owner on a fenced running task attempt."""
         store = self._get_store()
         async with self._session() as driver:
             await driver.begin()
@@ -1276,6 +1277,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
     ) -> "QueuedTaskRecord | None":
+        """Return a running task interrupted during worker shutdown to ``pending``."""
         store = self._get_store()
         async with self._session() as driver:
             await driver.begin()
@@ -1321,6 +1323,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def cancel_task(
         self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
+        """Cancel a pending, scheduled, or optionally running task."""
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1366,6 +1369,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         metadata: "Mapping[str, Any] | None" = None,
         include_running: "bool" = False,
     ) -> "int":
+        """Cancel all tasks matching the provided filter predicates."""
         store = self._get_store()
         async with self._session() as driver:
             rows = await self._select_rows(
@@ -1381,6 +1385,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return cancelled
 
     async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Refresh ``heartbeat_at`` for active fenced running task attempts."""
         result = HeartbeatTouchResult()
         if not touches:
             return result
@@ -1477,6 +1482,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
+        """Clear ``heartbeat_at`` for the given task IDs."""
         if not task_ids:
             return
         async with self._heartbeat_session() as driver:
@@ -1505,6 +1511,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def requeue_stale_running(
         self, *, stale_after: "timedelta", limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
+        """Recover running tasks whose heartbeats are older than ``stale_after``."""
         cutoff = _utc_now() - stale_after
         store = self._get_store()
         result = StaleTaskRecoveryResult()
@@ -1519,7 +1526,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                     if not rows:
                         await driver.commit()
                         return result
-                    failed_handler_needed: "list[UUID]" = []
                     for row in rows:
                         record = self._record_from_row(row)
                         requeue_on_stale = record.metadata.get("requeue_on_stale", True) is not False
@@ -1575,12 +1581,10 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                 result.failed += 1
                                 result.failed_task_ids.append(record.id)
                                 if not requeue_on_stale:
-                                    failed_handler_needed.append(record.id)
+                                    result.handler_needed += 1
+                                    result.handler_needed_task_ids.append(record.id)
                             else:
                                 result.skipped += 1
-                    for task_id in failed_handler_needed:
-                        result.handler_needed += 1
-                        result.handler_needed_task_ids.append(task_id)
                     await driver.commit()
                 except Exception:
                     with suppress(Exception):
@@ -1598,6 +1602,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Record an external execution reference on a queued task."""
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1620,6 +1625,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def list_dispatch_repair_candidates(
         self, execution_backend: "str", *, limit: "int"
     ) -> "DispatchRepairCandidates":
+        """Select and mark a bounded set of active deliveries for fair repair."""
         if limit < 0:
             msg = "Dispatch repair limit must be non-negative."
             raise QueueConfigurationError(msg)
@@ -1726,6 +1732,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Reserve a due pending or scheduled task for external execution dispatch."""
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1751,6 +1758,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Clear a fenced ``execution_ref`` on a pending or scheduled task."""
         async with self._session() as driver:
             await driver.begin()
             current_row = await self._select_task(driver, task_id)
@@ -1783,6 +1791,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def replace_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Replace a fenced ``execution_ref`` on a pending or scheduled task."""
         async with self._session() as driver:
             await driver.begin()
             current_row = await self._select_task(driver, task_id)
@@ -1817,6 +1826,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Release a provisional external-dispatch reservation back to the queue."""
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1850,6 +1860,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Commit the concrete provider ``execution_ref`` for a dispatch reservation."""
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1875,6 +1886,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Update a task's execution backend and clear its ``execution_ref``."""
         async with self._session() as driver:
             await driver.begin()
             try:
@@ -1895,11 +1907,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return record
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Return non-terminal tasks carrying an external ``execution_ref``."""
         async with self._session() as driver:
             rows = await self._select_rows(driver, self._get_store().list_running_external(limit=limit))
         return [self._record_from_row(row) for row in rows]
 
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
+        """Return aggregate task counts grouped by status."""
         statistics = QueueStatistics()
         async with self._session() as driver:
             rows = await self._select_rows(driver, self._get_store().statistics(queue=queue))
@@ -1933,6 +1947,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
     ) -> "list[QueuedTaskRecord]":
+        """Return recent completed records for ``task_name`` ordered newest first."""
         store = self._get_store()
         statement = store.list_completed_by_task(
             task_name=task_name, since=self._serialize_datetime(since), limit=limit
@@ -1943,22 +1958,18 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         return [self._record_from_row(row) for row in rows]
 
     async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        """Delete terminal task records completed before ``before``."""
         store = self._get_store()
         before_str = self._serialize_datetime(before)
         async with self._session() as driver:
             await driver.begin()
             try:
                 if limit is None:
-                    # Some drivers cannot reliably report DELETE rowcounts. Count
-                    # first inside the same transaction so the cleanup count is
-                    # always exact.
                     count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
                     deleted = int(count_row["terminal_count"]) if count_row is not None else 0
                     if deleted > 0:
                         await driver.execute(store.cleanup_terminal(before=before_str))
                 else:
-                    # DELETE ... LIMIT is not portable; select the oldest bounded
-                    # id set and delete exactly those rows in the same transaction.
                     id_rows = await self._select_rows(driver, store.select_terminal_ids(before=before_str, limit=limit))
                     task_ids = [str(row["id"]) for row in id_rows]
                     deleted = len(task_ids)
@@ -2225,8 +2236,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._event_channel = cast("Any", self._get_or_create_sqlspec()).event_channel(sqlspec_config)
             self._owns_event_channel = True
         else:
-            # An injected channel already owns its backend; still resolve the
-            # configured poll interval so wait_for_wakeups honors it.
             self._resolve_wakeup_poll_interval()
         self._wakeup_backend = _canonical_wakeup_transport(
             cast("str | None", getattr(self._event_channel, "_backend_name", None))
@@ -2440,11 +2449,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self.config is not None and self.config.events is not None and self.config.events.history is not None
         )
 
-    def _resolve_event_history_table_name(self) -> "str":
-        if self._event_history_table_name is None:
-            self._event_history_table_name = resolve_event_history_table_name(self._resolve_queue_table_name())
-        return self._event_history_table_name
-
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[SQLSpecDriver]":
         if not self._opened or self._sqlspec is None:
@@ -2454,8 +2458,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         store = self._get_store()
         adapter = _adapter_name(sqlspec_config)
         adbc_sqlite = adapter == "adbc" and store.data_dictionary_dialect == "sqlite"
-        # A blocked transaction must not occupy the sole sync worker while
-        # another transaction's commit is queued behind it.
         serialize = not sqlspec_config.is_async
         async with (
             self._sync_session_lock if serialize else nullcontext(),
@@ -3189,7 +3191,7 @@ def _match_store_class(
 def _events_queue_store(sqlspec_config: "SQLSpecStoreConfig") -> "Any":
     """Return the adapter's SQLSpec events queue store for this configuration.
 
-    Resolves the adapter's :class:`~sqlspec.extensions.events.BaseEventQueueStore`
+    Resolves the adapter's ``sqlspec.extensions.events.BaseEventQueueStore``
     the same way SQLSpec's events extension migration does, so the resolved table
     name and DDL match what that migration records.
 

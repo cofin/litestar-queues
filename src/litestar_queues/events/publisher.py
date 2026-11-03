@@ -264,10 +264,6 @@ class QueueEventPublisher:
         runtime.record_duration("litestar_queues.event.flush.duration", seconds, attributes=attributes)
 
     def _log_batch_delivery_failure(self, exc: "BaseException", count: "int") -> "None":
-        # Warn-once dampener: the first failure logs at WARNING with a traceback; consecutive
-        # identical failures drop to DEBUG without a traceback so a misordered shutdown sink
-        # (e.g. a torn-down Channels backend during graceful drain) degrades quietly instead of
-        # spamming a WARNING per batch. Reset happens on the next successful delivery.
         signature = (type(exc).__name__, str(exc))
         if signature == self._live_failure_signature:
             self._logger.debug("Queue event batch publish failed", extra={"queue_event_count": count})

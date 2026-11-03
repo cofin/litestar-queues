@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+__all__ = ("PubSubPublisherClient", "PubSubSubscriberClient")
+
 
 class PubSubPublisherClient(Protocol):
     """Publisher operations used by the execution backend."""

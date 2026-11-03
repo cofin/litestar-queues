@@ -1372,7 +1372,6 @@ async def test_cleanup_failure_text_passes_through_error_sanitizer(caplog: "pyte
     record = matching_records[0]
     payload = getattr(record, "queue_task_event_payload", {})
     assert payload.get("error") == "[redacted]"
-    # ensure "s3cret" does not appear anywhere in logs
     assert all("s3cret" not in rec.message for rec in caplog.records)
 
 
@@ -1455,7 +1454,7 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
         record = await service.get_queue_backend().claim_task(res.id)
         assert record is not None
         task_coro = asyncio.create_task(service.execute_record(record))
-        await asyncio.sleep(0)  # let it start
+        await asyncio.sleep(0)
         task_coro.cancel()
 
         cancelled_caught = False
@@ -1466,7 +1465,6 @@ async def test_provider_cannot_suppress_cancellation() -> "None":
         assert cancelled_caught is True
 
         await res.refresh()
-        # Should not be terminal because execution stopped cooperatively and didn't write failed
         assert res.status not in {"completed", "failed"}
 
 
@@ -2110,7 +2108,7 @@ async def test_provider_scope_closes_when_the_attempt_times_out() -> "None":
     await result.refresh()
     assert events == ["acquire", "body", "CancelledError", "cleanup"]
     assert result.status == "failed"
-    assert result.error is not None  # TimeoutError string representation can be empty in older Python versions
+    assert result.error is not None
 
 
 async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
@@ -2154,7 +2152,7 @@ async def test_provider_acquisition_is_inside_the_attempt_timeout() -> "None":
     await result.refresh()
     assert events == ["acquire"]
     assert result.status == "failed"
-    assert result.error is not None  # TimeoutError string representation can be empty in older Python versions
+    assert result.error is not None
 
 
 async def test_provider_scope_closes_on_cooperative_cancellation() -> "None":
@@ -2256,7 +2254,6 @@ async def test_provider_scope_closes_on_durable_cancellation() -> "None":
             cancelled_caught = True
         assert cancelled_caught is True
 
-        # no terminal write happened from this attempt, so it stays scheduled/pending since we didn't write terminal status
         await res.refresh()
         assert res.status not in {"completed", "failed", "cancelled"}
         assert events == ["acquire", "body", "CancelledError", "cleanup"]
@@ -2278,7 +2275,6 @@ class _RecordingExecutionBackend(BaseExecutionBackend):
         return self._external
 
     async def cancel_execution(self, service: "QueueService", record: "QueuedTaskRecord") -> "ExecutionCancelResult":
-        # Assert ordering: the record must still be running in the durable store
         stored = await service.get_queue_backend().get_task(record.id)
         assert stored is not None and stored.status in ("pending", "running")
         assert record.execution_ref is not None

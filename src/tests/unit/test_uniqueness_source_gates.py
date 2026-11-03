@@ -51,8 +51,6 @@ def test_identity_module_uses_versioned_sha256_json() -> "None":
 
 def test_service_fast_paths_never_bind_or_serialize_arguments() -> "None":
     source = _source(service)
-    # Signature binding / default application belong to the identity module only.
     assert ".bind(" not in source
     assert "apply_defaults" not in source
-    # ``arguments_identity`` is invoked exactly once: the unique_by="arguments" branch.
     assert source.count("arguments_identity(") == 1

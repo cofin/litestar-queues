@@ -32,6 +32,15 @@ from tools.queue_bench.profiles import (
 )
 from tools.queue_bench.statistics import bootstrap_paired_ratio_interval, is_material_difference
 
+__all__ = (
+    "DEFAULT_SYSTEMS",
+    "RunConfig",
+    "build_child_command",
+    "compatible_pairs",
+    "run_benchmarks",
+    "validate_run_config",
+)
+
 DEFAULT_SYSTEMS = ("litestar-queues", "litestar-saq", "arq", "taskiq")
 MIN_MATERIAL_SAMPLES = 5
 MIN_MANAGED_OBSERVATIONS = 2
@@ -710,13 +719,3 @@ def _architecture_annotations(config: RunConfig) -> list[dict[str, Any]]:
         }
         for system in config.systems
     ]
-
-
-__all__ = (
-    "DEFAULT_SYSTEMS",
-    "RunConfig",
-    "build_child_command",
-    "compatible_pairs",
-    "run_benchmarks",
-    "validate_run_config",
-)

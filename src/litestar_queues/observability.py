@@ -1,3 +1,5 @@
+"""OpenTelemetry, Prometheus, and SQLCommenter observability runtime for litestar-queues."""
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from weakref import WeakKeyDictionary

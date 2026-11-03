@@ -21,9 +21,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 
-# --------------------------------------------------------------------------- defaults
-
-
 def test_zero_argument_config_is_ephemeral_local_server() -> "None":
     """The zero-setup contract stays background execution, now server-owned."""
     config = QueueConfig()
@@ -55,8 +52,6 @@ def test_worker_placement_is_publicly_exported() -> "None":
     assert litestar_queues.WorkerPlacement is WorkerPlacement
     assert "WorkerPlacement" in litestar_queues.__all__
 
-
-# --------------------------------------------------------------------------- matrix
 
 _VALID = [
     ("ephemeral", "local", "server"),
@@ -130,9 +125,6 @@ def test_validation_uses_backend_names_not_backend_instances() -> "None":
     assert not {name for name in set(sys.modules) - before if name.startswith(("redis", "sqlspec"))}
 
 
-# --------------------------------------------------------------------------- self-dispatching execution
-
-
 def _cloud_tasks_config() -> "CloudTasksExecutionConfig":
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionConfig
 
@@ -182,9 +174,6 @@ def test_cloud_tasks_placement_validation_imports_no_google_package() -> "None":
     with pytest.raises(QueueConfigurationError):
         QueueConfig(queue_backend="redis", execution_backend="cloudtasks", worker=WorkerConfig(placement="server"))
     assert not {name for name in set(sys.modules) - before if name.startswith("google.cloud.tasks")}
-
-
-# --------------------------------------------------------------------------- invocation marker
 
 
 def _write_marker(directory: "Path", *, nonce: "str", owner_pid: "int", version: "int" = 1) -> "Path":
@@ -397,9 +386,6 @@ def test_marker_path_with_spaces_and_unicode_is_not_delimiter_parsed(tmp_path: "
     os.environ[MARKER_ENV_VAR] = str(marker)
 
     assert server_context_active() is True
-
-
-# --------------------------------------------------------------------------- server lifespan
 
 
 class _FakeSupervisor:
@@ -619,9 +605,6 @@ def test_persistent_backend_creates_no_database(fake_supervisor: "type[_FakeSupe
     assert fake_supervisor.databases == []
 
 
-# --------------------------------------------------------------------------- CLI integration
-
-
 def test_plugin_is_a_concrete_cli_plugin() -> "None":
     """Litestar only registers server lifespans for concrete ``CLIPlugin`` instances."""
     plugin = QueuePlugin(QueueConfig(queue_backend="redis", worker=WorkerConfig(placement="external")))
@@ -666,9 +649,6 @@ def test_package_never_parses_server_command_flags() -> "None":
     }
 
     assert offenders == set()
-
-
-# --------------------------------------------------------------------------- ASGI ownership
 
 
 @pytest.mark.usefixtures("clean_proof_environment")

@@ -82,6 +82,8 @@ class SQLSpecBackendConfig:
     """Configuration values for the SQLSpec queue backend."""
 
     backend_name: "ClassVar[str]" = "sqlspec"
+    """Registered queue storage backend identifier (``"sqlspec"``)."""
+
     sqlspec: "SQLSpec | None" = None
     """Injected SQLSpec manager; ``None`` creates a manager owned by the queue backend."""
 
@@ -149,8 +151,8 @@ class SQLSpecBackendConfig:
     def configure_migrations(self, config: "QueueConfig") -> "None":
         """Register the queue and durable-events migrations with the SQLSpec config.
 
-        Implements :class:`~litestar_queues.config.MigrationConfiguringBackend`, so
-        ``QueuePlugin`` reaches this without importing the SQLSpec backend.
+        Implements ``MigrationConfiguringBackend``, so ``QueuePlugin`` reaches
+        this without importing the SQLSpec backend.
         """
         from litestar_queues.backends.sqlspec.backend import resolve_events_migration_backend
         from litestar_queues.backends.sqlspec.extension import (
@@ -167,11 +169,6 @@ class SQLSpecBackendConfig:
         if sqlspec_config is None:
             return
 
-        # Register the durable events queue migration first: a capability-native
-        # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
-        # its events table provisioned on migrate-up so zero-config native wakeups
-        # work on a fresh database. The call is unconditional so that adopter-owned
-        # schema also deregisters when no events table is wanted.
         configure_events_migration_extension(
             cast("SQLSpecConfig", sqlspec_config),
             backend=resolve_events_migration_backend(self, cast("SQLSpecConfig", sqlspec_config)),

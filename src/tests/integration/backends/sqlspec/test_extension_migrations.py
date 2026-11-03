@@ -494,7 +494,6 @@ async def test_sqlspec_packaged_migration_long_postgres_name_is_idempotent(
     }
     try:
         async with manager.provide_session(config) as driver:
-            # A deployment may already have one PostgreSQL-truncated index.
             await driver.execute_script((await migration.up(context))[0])
             await driver.execute_script(f'CREATE INDEX "{legacy_name}" ON "{table_name}" (id)')
         for _ in range(2):

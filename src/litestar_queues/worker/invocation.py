@@ -221,7 +221,4 @@ def server_context_active(namespace: "QueueNamespace | None" = None) -> "bool":
         return False
     if document["nonce"] != nonce:
         return False
-    # The owning process publishes the marker from its entered context; a
-    # descendant inherits it. Only the former can be forged by setting the
-    # environment by hand, so only the former is cross-checked in memory.
     return owner_pid != os.getpid() or nonce in _ACTIVE_SERVER_CONTEXTS

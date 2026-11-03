@@ -154,9 +154,6 @@ async def topology(evidence: "Evidence") -> "AsyncIterator[Topology]":
     from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend
 
     provided = _import_factory(os.environ[CONFIG_FACTORY_ENV])()
-    # The consumer seam also accepts a service or a context manager; the proof
-    # needs the configuration itself, so it can open its own producer against
-    # the same storage rather than inheriting the consumer's lifecycle.
     assert isinstance(provided, QueueConfig), f"{CONFIG_FACTORY_ENV} must return a QueueConfig for the live proof"
     async with QueueService(provided) as service:
         backend = service.get_execution_backend()
@@ -171,9 +168,6 @@ async def topology(evidence: "Evidence") -> "AsyncIterator[Topology]":
                 evidence=evidence,
                 timeout=live_timeout(os.environ),
             )
-
-
-# --------------------------------------------------------------------------- the topology
 
 
 async def test_an_enqueued_record_wakes_a_cold_instance_and_comes_back_terminal(topology: "Topology") -> "None":
@@ -240,7 +234,6 @@ async def test_a_redelivered_record_is_only_run_by_one_consumer(topology: "Topol
     settled = await topology.settle(record.id, within=DELAYED_BY + topology.timeout)
 
     assert settled.status == "completed"
-    # One claim owner: a second run would have raised the attempt count.
     assert settled.retry_count == 0
 
 

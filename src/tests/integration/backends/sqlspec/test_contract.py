@@ -123,11 +123,6 @@ def _fake_adapter_config(
     return config
 
 
-# ---------------------------------------------------------------------------
-# Registry-parametrized contract tests
-# ---------------------------------------------------------------------------
-
-
 async def test_backend_contract_enqueue_claim_complete_cycle(
     queue_backend: "BaseQueueBackend", queue_backend_case: "BackendCase"
 ) -> "None":
@@ -171,8 +166,6 @@ async def test_backend_contract_concurrent_claim_next_never_double_claims(
     claimed = [record for record in burst if record is not None]
     claimed_ids = [record.id for record in claimed]
 
-    # The CAS-loop fallback can leave stragglers under contention; drain them so
-    # completeness is asserted without weakening the no-double-claim invariant.
     while (straggler := await queue_backend.claim_next()) is not None:
         claimed.append(straggler)
         claimed_ids.append(straggler.id)
@@ -200,9 +193,6 @@ async def test_backend_contract_requeue_stale_running_recovers_every_task(
         claimed = await queue_backend.claim_task(record.id)
         assert claimed is not None
 
-    # A negative window puts the cutoff slightly in the future so every
-    # just-claimed task counts as stale regardless of the adapter's timestamp
-    # precision (Oracle/DuckDB truncate sub-second, so stale_after=0 would race).
     result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=-2))
 
     assert result.requeued == stale_count
@@ -211,11 +201,6 @@ async def test_backend_contract_requeue_stale_running_recovers_every_task(
         assert stored is not None
         assert stored.status == "pending"
         assert stored.retry_count == 1
-
-
-# ---------------------------------------------------------------------------
-# SQLSpec-pinned contract tests (aiosqlite via the ``sqlspec_backend`` fixture)
-# ---------------------------------------------------------------------------
 
 
 async def test_sqlspec_backend_supports_sync_sqlspec_config_via_sync_tools_bridge(tmp_path: "Path") -> "None":
@@ -656,8 +641,6 @@ def test_sqlspec_fail_returning_sql_uses_case_retry_branch() -> "None":
 
     sql = store.fail_returning_sql(fence_retry_count=False)
 
-    # Shutdown interruptions bump the fence generation without spending a retry
-    # attempt, so the single-statement budget subtracts them from retry_count.
     can_retry = (
         ':retry = TRUE AND ("retry_count" - COALESCE(("metadata" ->> \'interruptions\')::INT, 0)) < "max_retries"'
     )

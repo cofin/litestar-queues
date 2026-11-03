@@ -102,8 +102,6 @@ async def harness(
             queue_backend=shared_storage,
             execution_backend=execution_config,
             worker=WorkerConfig(placement="external"),
-            # Unbuffered: these tests assert on what one call published, and
-            # the default producer buffer only flushes at close.
             events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
         )
         backend = CloudTasksExecutionBackend(config=queue_config, execution_config=execution_config, client=client)
@@ -116,9 +114,6 @@ async def harness(
 
     for service in opened:
         await service.close()
-
-
-# --------------------------------------------------------------------------- request shape
 
 
 async def test_the_task_is_created_under_the_configured_queue_path(harness: "Callable[..., Any]") -> "None":
@@ -248,9 +243,6 @@ async def test_the_create_call_uses_the_configured_api_timeout(harness: "Callabl
     assert live.client.create_calls[0].timeout == 4.5
 
 
-# --------------------------------------------------------------------------- delivery identity
-
-
 async def test_the_delivery_name_is_persisted_before_the_task_is_created(harness: "Callable[..., Any]") -> "None":
     """A create call that never answers still leaves a name repair can look up.
 
@@ -333,9 +325,6 @@ async def test_a_later_attempt_takes_a_new_delivery_name(harness: "Callable[...,
     assert second != first
     assert second is not None
     assert f"lq-{record.id.hex}-r1-" in second
-
-
-# --------------------------------------------------------------------------- outcomes
 
 
 async def test_schedule_returns_the_created_delivery_name(harness: "Callable[..., Any]") -> "None":
@@ -550,9 +539,6 @@ async def test_a_record_naming_another_backend_is_refused(harness: "Callable[...
     assert error.value.task_id == record.id and error.value.committed
 
     assert live.client.create_calls == []
-
-
-# --------------------------------------------------------------------------- client lifecycle
 
 
 async def test_close_releases_a_client_the_backend_created(monkeypatch: "pytest.MonkeyPatch") -> "None":

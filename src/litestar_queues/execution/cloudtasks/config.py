@@ -1,3 +1,5 @@
+"""Configuration for Google Cloud Tasks managed HTTP execution dispatch."""
+
 import math
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
@@ -57,6 +59,7 @@ class CloudTasksExecutionConfig:
     """
 
     backend_name: "ClassVar[str]" = "cloudtasks"
+    """Registered execution backend identifier (`"cloudtasks"`)."""
 
     project_id: "str"
     """Google Cloud project owning the Cloud Tasks queue."""
@@ -74,7 +77,7 @@ class CloudTasksExecutionConfig:
     """Service account Cloud Tasks mints the OIDC delivery token for."""
 
     audience: "str | None" = None
-    """OIDC audience; ``None`` resolves to the :attr:`service_url` origin."""
+    """OIDC audience; `None` resolves to the `service_url` origin."""
 
     route_path: "str" = _DEFAULT_ROUTE_PATH
     """Path the consumer route is mounted on."""
@@ -123,9 +126,6 @@ class CloudTasksExecutionConfig:
         self._validate_budgets()
         self._validate_route_protection()
         if self.audience is None:
-            # Cloud Run validates the token against the service origin, not the
-            # delivery path, so defaulting to target_url would mint a token
-            # rejected on every delivery.
             self.audience = self.service_url.rstrip("/")
 
     def _validate_identifiers(self) -> "None":

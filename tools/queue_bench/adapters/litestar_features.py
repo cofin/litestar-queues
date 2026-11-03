@@ -8,6 +8,8 @@ from typing import Any
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
 from tools.queue_bench.measurements import SampleMeasurementCollector, summarize_pickup_latency
 
+__all__ = ("run",)
+
 
 async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
     """Run one heartbeat, event, or uniqueness feature sample.
@@ -352,6 +354,3 @@ async def _wait_for_results(results: list[Any], request: AdapterRequest) -> None
         (result.wait(timeout=request.timeout_seconds, poll_interval=0.01) for result in results),
         limit=request.concurrency,
     )
-
-
-__all__ = ("run",)

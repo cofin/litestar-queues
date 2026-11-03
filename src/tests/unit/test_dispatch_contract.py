@@ -42,7 +42,7 @@ def _published_text() -> "Iterator[tuple[Path, str]]":
     Yields:
         Each path and its text.
     """
-    for root, suffix in ((SOURCE, "*.py"), (DOCS, "*.rst")):
+    for root, suffix in ((SOURCE, "*.py"), (DOCS, "*.md")):
         for path in sorted(root.rglob(suffix)):
             if "_build" in path.parts:
                 continue
@@ -101,8 +101,6 @@ def test_the_delivered_id_is_the_only_thing_the_consumer_is_given() -> "None":
     from litestar_queues.consumer import consume_one
     from litestar_queues.execution.cloudtasks import routes
 
-    # Read off the module rather than the import, because the binding in that
-    # module is what the route actually calls.
     routed = vars(routes)["consume_one"]
     assert routed is consume_one
     signature = consume_one.__code__.co_varnames[: consume_one.__code__.co_argcount]
@@ -136,7 +134,7 @@ def test_every_transport_backend_reports_itself_as_external() -> "None":
 
 def test_the_public_guide_states_the_id_only_contract() -> "None":
     """An adopter who thinks arguments travel will size the wrong things."""
-    guide = (DOCS / "usage/deployment/cloud-tasks.rst").read_text(encoding="utf-8")
+    guide = (DOCS / "execution" / "cloud-tasks.md").read_text(encoding="utf-8")
 
     assert "the record's id" in guide
     assert "never cross the network" in guide

@@ -91,8 +91,6 @@ class SQLSpecMaintenanceStore(SQLSpecQueueStore):
         return "oracle" in (self._data_dictionary_dialect_name() or "").lower()
 
     def _rendered_create(self, *, if_not_exists: "bool") -> "str":
-        # Render the CREATE TABLE with the same sqlglot builder path the queue
-        # store uses, so column types and identifier quoting are dialect-correct.
         statement = sql.create_table(self.table_name)
         if if_not_exists:
             statement = statement.if_not_exists()
@@ -110,13 +108,9 @@ class SQLSpecMaintenanceStore(SQLSpecQueueStore):
         return rendered
 
     def _create_table_sql(self) -> "str":
-        # Oracle and SQL Server both use identifier_quote_style="none", so Oracle
-        # must be checked first. The sqlglot builder renders valid DDL for every
-        # dialect EXCEPT SQL Server, whose DATETIME2 column type it cannot parse,
-        # so SQL Server is the only hand-rolled path (mirroring the queue store).
         if self._is_oracle():
             return _oracle_ddl_block(self._rendered_create(if_not_exists=False), ignored_code=-955)
-        if type(self).identifier_quote_style == "none":  # SQL Server
+        if type(self).identifier_quote_style == "none":
             columns = (
                 f"{self._quoted_col('name')} {self._indexed_text_type()} PRIMARY KEY, "
                 f"{self._quoted_col('token')} {self._indexed_text_type()} NOT NULL, "
@@ -131,7 +125,7 @@ class SQLSpecMaintenanceStore(SQLSpecQueueStore):
     def _drop_table_sql(self) -> "str":
         if self._is_oracle():
             return _oracle_ddl_block(f"DROP TABLE {self._quoted_table_name()}", ignored_code=-942)
-        if type(self).identifier_quote_style == "none":  # SQL Server
+        if type(self).identifier_quote_style == "none":
             return f"IF OBJECT_ID(N'{self.table_name}', N'U') IS NOT NULL DROP TABLE {self._quoted_table_name()};"
         return self._to_sql(sql.drop_table(self.table_name).if_exists())
 

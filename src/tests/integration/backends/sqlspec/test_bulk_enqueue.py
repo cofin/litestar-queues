@@ -132,7 +132,7 @@ async def test_enqueue_many_deduplicates_active_keys(
     assert records[1].task_name == "tasks.fresh"
 
     stats = await sqlspec_backend.get_statistics()
-    assert stats.total == 2  # the duplicate key did not create a new row
+    assert stats.total == 2
 
 
 async def test_enqueue_many_replaces_terminal_keys(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
@@ -169,8 +169,6 @@ def test_bulk_values_orders_columns_to_match_create_table() -> "None":
     from litestar_queues.backends.sqlspec.stores.base import _TASK_COLUMNS
 
     store = AiosqliteQueueStore(AiosqliteConfig(connection_config={"database": ":memory:"}))
-    # Feed keys in alphabetical order — exactly what the backend's record
-    # serializer emits — and require they come back in DDL order.
     alphabetical = {column: index for index, column in enumerate(sorted(_TASK_COLUMNS))}
 
     (mapped,) = store.bulk_values([alphabetical])
