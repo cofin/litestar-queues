@@ -29,16 +29,16 @@ from litestar_queues import (
     QueuePlugin,
     WorkerConfig,
 )
-from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig, SQLSpecWorkerWakeupConfig
 from sqlspec.adapters.asyncpg import AsyncpgConfig
 
 db_config = AsyncpgConfig(connection_config={"dsn": "postgresql://app:secret@db.internal:5432/app"})
 
 queue_config = QueueConfig(
     queue_backend=SQLSpecBackendConfig(
-        config=db_config,
-        auto_create_tables=False,
-        wakeup_transport="notify_queue",
+        sqlspec_config=db_config,
+        manage_schema=False,
+        worker_wakeups=SQLSpecWorkerWakeupConfig(transport="notify_queue"),
         terminal_ttl=86_400.0,
     ),
     execution_backend="local",
@@ -53,13 +53,13 @@ queue_config = QueueConfig(
         requeue_on_shutdown=True,
     ),
     maintenance=QueueMaintenanceConfig(
-        lease_ttl=60.0,
+        time_budget=300.0,
+        coordination_timeout=360.0,
         terminal_retention=86_400.0,
     ),
     events=QueueEventsConfig(
-        enabled=True,
-        history=EventHistoryConfig(retention_seconds=604_800.0),
-        streams=EventStreamConfig(mount_routes=True, route_prefix="/queues/events"),
+        history=EventHistoryConfig(batch_size=20, flush_interval=1.0),
+        stream=EventStreamConfig(path="/queues/events"),
     ),
     observability=ObservabilityConfig(mode="auto"),
 )
