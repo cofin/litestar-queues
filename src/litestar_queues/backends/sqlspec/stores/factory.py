@@ -80,6 +80,12 @@ def create_queue_store(
 
 
 def _adapter_store_type(config: "SQLSpecStoreConfig") -> "type[SQLSpecQueueStore]":
+    explicit_store = getattr(config, "queue_store_class", None)
+    if not isinstance(explicit_store, type):
+        explicit_store = getattr(type(config), "queue_store_class", None)
+    if isinstance(explicit_store, type) and issubclass(explicit_store, SQLSpecQueueStore):
+        return explicit_store
+
     name = _adapter_name(config)
     if name == "adbc":
         return _adbc_store_type(config)

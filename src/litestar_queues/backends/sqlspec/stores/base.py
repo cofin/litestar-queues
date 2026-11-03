@@ -1,5 +1,6 @@
 """Shared SQLSpec queue store primitives."""
 
+import importlib
 from dataclasses import dataclass
 from functools import cache
 from hashlib import sha256
@@ -32,6 +33,15 @@ if TYPE_CHECKING:
 
 __all__ = ("BulkHeartbeatStatement", "SQLSpecQueueStore")
 
+try:
+    _sqlspec_resolve_adapter_name = getattr(
+        importlib.import_module("sqlspec.utils.adapters"), "resolve_adapter_name", None
+    )
+except ImportError:
+    _sqlspec_resolve_adapter_name = None
+
+_ADAPTERS_MODULE_PREFIX = "sqlspec.adapters."
+_MIN_ADAPTER_MODULE_PARTS = 3
 _TASK_COLUMNS = (
     "id",
     "task_name",
@@ -1580,11 +1590,76 @@ def _configured_table_name(config: "SQLSpecStoreConfig", table_name: "str | None
     return validate_table_name(str(queue_settings.get("queue_table_name", DEFAULT_TABLE_NAME)))
 
 
+def _extract_bound_config(config_or_store: "object", target_cls: "type[Any]") -> "object | None":
+    """Extract bound inner configuration from a store instance while avoiding mock recursion."""
+    if hasattr(config_or_store, "_mock_return_value"):
+        if "_config" in getattr(config_or_store, "__dict__", {}):
+            return getattr(config_or_store, "_config", None)
+        return None
+    has_slot = any("_config" in getattr(cls, "__slots__", ()) for cls in target_cls.__mro__)
+    has_attr = "_config" in getattr(config_or_store, "__dict__", {}) or has_slot
+    if not has_attr:
+        return None
+    try:
+        return getattr(config_or_store, "_config", None)
+    except AttributeError:
+        return None
+
+
+def _resolve_adapter_name_from_mro(target_cls: "type[Any]") -> "str | None":
+    for cls in target_cls.__mro__:
+        explicit = cls.__dict__.get("adapter_name")
+        if isinstance(explicit, str):
+            stripped = explicit.strip()
+            if stripped:
+                return stripped
+        module_name = cls.__module__
+        if module_name.startswith(_ADAPTERS_MODULE_PREFIX):
+            parts = module_name.split(".")
+            if len(parts) >= _MIN_ADAPTER_MODULE_PARTS and parts[2]:
+                return parts[2]
+    return None
+
+
+def _resolve_adapter_name_from_instance(config: "object", target_cls: "type[Any]") -> "str":
+    if hasattr(config, "_mock_return_value"):
+        if "_config" in getattr(config, "__dict__", {}):
+            return _adapter_name(getattr(config, "_config", None))
+        if "adapter_name" in getattr(config, "__dict__", {}):
+            val = getattr(config, "adapter_name", None)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+    val = getattr(config, "adapter_name", None)
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    inner_config = _extract_bound_config(config, target_cls)
+    if inner_config is not None and inner_config is not config:
+        return _adapter_name(inner_config)
+    return ""
+
+
 def _adapter_name(config: "object") -> "str":
-    for config_type in type(config).__mro__:
-        module_name = config_type.__module__
-        if module_name.startswith("sqlspec.adapters."):
-            return module_name.split(".")[2]
+    """Resolve the adapter name for a SQLSpec configuration or store.
+
+    Checks:
+        1. Upstream ``resolve_adapter_name`` when available in ``sqlspec.utils.adapters``.
+        2. Explicit ``adapter_name`` attribute declared on any class in ``__mro__``.
+        3. Module path starting with ``sqlspec.adapters.<name>``.
+        4. Explicit ``adapter_name`` attribute or inner ``_config`` attribute on instances.
+    """
+    if config is None:
+        return ""
+    if _sqlspec_resolve_adapter_name is not None:
+        resolved = _sqlspec_resolve_adapter_name(config)
+        if isinstance(resolved, str) and resolved:
+            return resolved
+    target_cls = config if isinstance(config, type) else type(config)
+    resolved_mro = _resolve_adapter_name_from_mro(target_cls)
+    if resolved_mro is not None:
+        return resolved_mro
+    if not isinstance(config, type):
+        return _resolve_adapter_name_from_instance(config, target_cls)
     return ""
 
 

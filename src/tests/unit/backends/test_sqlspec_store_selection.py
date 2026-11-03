@@ -7,11 +7,16 @@ what a given adapter does.
 
 import sys
 import types
-from typing import Any
+from typing import Any, ClassVar, cast
+from unittest.mock import MagicMock
 
 import pytest
+from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
 
-from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type
+from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store
+from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
+from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type, create_queue_store
 from litestar_queues.exceptions import QueueConfigurationError
 
 # adapter -> dialect, quote style, datetime binding, JSON column type
@@ -331,8 +336,6 @@ def test_config_subclass_native_event_store_uses_canonical_ancestry(
 ) -> "None":
     from importlib import import_module
 
-    from litestar_queues.backends.sqlspec.backend import _events_queue_store
-
     config_type = getattr(import_module(f"sqlspec.adapters.{adapter}"), config_name)
     application_type = type("ApplicationConfig", (config_type,), {"__module__": "application"})
     config = application_type(extension_config={"events": {"queue_table": "application_events"}})
@@ -345,7 +348,114 @@ def test_config_subclass_native_event_store_uses_canonical_ancestry(
 
 
 def test_unsupported_config_native_event_store_has_configuration_error() -> "None":
-    from litestar_queues.backends.sqlspec.backend import _events_queue_store
-
     with pytest.raises(QueueConfigurationError, match="no supported native events queue store"):
         _events_queue_store(_fake_config("nonexistent_driver"))
+
+
+def test_adapter_name_resolution_explicit_classvar() -> "None":
+    """Explicit adapter_name ClassVar on a class or instance takes precedence."""
+
+    class ExternalConfig:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+
+    assert _adapter_name(ExternalConfig) == "asyncpg"
+    assert _adapter_name(ExternalConfig()) == "asyncpg"
+
+
+def test_external_config_uses_dialect_queue_store_and_wakeup_transport() -> "None":
+    """An external configuration subclass outside sqlspec.adapters resolves its dialect store."""
+
+    class ExternalPostgresConfig:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+        is_async: "ClassVar[bool]" = True
+        statement_config: "Any" = None
+        extension_config: "dict[str, Any]" = {}
+
+    config = ExternalPostgresConfig()
+    assert _adapter_store_type(config) is AsyncpgQueueStore
+    assert _adapter_wakeup_transport(_adapter_name(config)) == "notify_queue"
+
+
+def test_external_config_uses_native_events_queue_store() -> "None":
+    """An external configuration subclass outside sqlspec.adapters resolves the driver's native event store."""
+
+    class ExternalPostgresConfig:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+        is_async: "ClassVar[bool]" = True
+        extension_config: "dict[str, Any]" = {"events": {"queue_table": "external_events"}}
+
+    config = ExternalPostgresConfig()
+    store = _events_queue_store(cast("Any", config))
+    assert isinstance(store, AsyncpgEventQueueStore)
+    assert store.table_name == "external_events"
+
+
+def test_external_config_prefers_explicit_events_store_class() -> "None":
+    """Explicit events_store_class on an external config takes precedence over module lookup."""
+
+    class CustomEventStore(AsyncpgEventQueueStore):
+        pass
+
+    class ExternalConfigWithCustomEventStore:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+        is_async: "ClassVar[bool]" = True
+        events_store_class: "ClassVar[type[AsyncpgEventQueueStore]]" = CustomEventStore
+        extension_config: "dict[str, Any]" = {}
+
+    config = ExternalConfigWithCustomEventStore()
+    store = _events_queue_store(cast("Any", config))
+    assert isinstance(store, CustomEventStore)
+
+
+def test_external_config_prefers_explicit_queue_store_class() -> "None":
+    """Explicit queue_store_class on an external config takes precedence over adapter_name lookup."""
+
+    class CustomQueueStore(SQLSpecQueueStore):
+        pass
+
+    class ExternalConfigWithCustomQueueStore:
+        queue_store_class: "ClassVar[type[SQLSpecQueueStore]]" = CustomQueueStore
+        is_async: "ClassVar[bool]" = True
+        statement_config: "Any" = None
+        extension_config: "dict[str, Any]" = {}
+
+    config = ExternalConfigWithCustomQueueStore()
+    assert _adapter_store_type(config) is CustomQueueStore
+    store = create_queue_store(config, table_name="custom_tasks")
+    assert isinstance(store, CustomQueueStore)
+
+
+def test_resolve_adapter_name_handles_mock_objects_safely() -> "None":
+    """Mock instances without explicit adapter settings return empty string without recursing."""
+    mock_config = MagicMock()
+    assert _adapter_name(mock_config) == ""
+
+    mock_store = MagicMock()
+    inner = types.SimpleNamespace(adapter_name="asyncpg")
+    mock_store._config = inner
+    assert _adapter_name(mock_store) == "asyncpg"
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "expected_wakeup"),
+    [
+        ("asyncpg", "notify_queue"),
+        ("psycopg", "notify_queue"),
+        ("psqlpy", "notify_queue"),
+        ("cockroach_asyncpg", "polling"),
+        ("cockroach_psycopg", "polling"),
+        ("duckdb", "poll_queue"),
+        ("sqlite", "polling"),
+        ("aiosqlite", "polling"),
+        ("spanner", "polling"),
+        ("mysqlconnector", "polling"),
+    ],
+)
+def test_external_config_wakeup_transport_mapping(adapter_name: "str", expected_wakeup: "str") -> "None":
+    """External configurations map to their corresponding wakeup transport via adapter_name."""
+
+    class ExternalConfig:
+        adapter_name: "ClassVar[str]" = ""
+
+    ExternalConfig.adapter_name = adapter_name
+    assert _adapter_wakeup_transport(_adapter_name(ExternalConfig)) == expected_wakeup

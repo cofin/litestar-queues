@@ -6,6 +6,20 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+0.13.1 - 2026-11-03
+===================
+
+**Added:**
+
+* Third-party SQLSpec database adapter configuration support outside the ``sqlspec.adapters``
+  package, resolving adapter names and queue stores through an explicit
+  ``adapter_name: ClassVar[str]`` or ``queue_store_class: ClassVar[type[SQLSpecQueueStore]]``
+  attribute before falling back to module MRO inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_).
+* Custom events queue store resolution for durable worker wakeups via an explicit
+  ``events_store_class: ClassVar[type[BaseEventQueueStore]]`` attribute on SQLSpec configurations
+  before falling back to upstream ``sqlspec.utils.adapters.resolve_extension_store_class``
+  or adapter package inspection (`#186 <https://github.com/cofin/litestar-queues/issues/186>`_).
+
 0.13.0 - 2026-11-03
 ===================
 
