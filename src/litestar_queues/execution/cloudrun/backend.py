@@ -4,6 +4,7 @@ import time
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -11,9 +12,10 @@ from uuid import uuid4
 from litestar_queues._environment import TASK_ID_ENV
 from litestar_queues.backends.base import EXTERNAL_DISPATCH_RESERVATION_PREFIX
 from litestar_queues.events import QueueEvent
-from litestar_queues.exceptions import MissingDependencyError
+from litestar_queues.exceptions import MissingDependencyError, QueueConfigurationError
 from litestar_queues.execution.base import (
     BaseExecutionBackend,
+    DispatchRepairResult,
     ExecutionCancelResult,
     _queue_metric_attributes,
     _queue_observability_attributes,
@@ -75,11 +77,112 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
         return True
 
     @property
+    def schedules_on_enqueue(self) -> "bool":
+        """Whether the backend schedules a persisted record without a Worker."""
+        if cast("object", self) is None:
+            return True
+        if self._execution_config is not None:
+            return self._execution_config.schedules_on_enqueue
+        if self.config is not None:
+            try:
+                return _execution_config_from_queue_config(self.config).schedules_on_enqueue
+            except QueueConfigurationError:
+                return False
+        return True
+
+    @property
     def execution_config(self) -> "CloudRunExecutionConfig":
         """Resolved Cloud Run execution config."""
         if self._execution_config is None:
             self._execution_config = _execution_config_from_queue_config(self.config)
         return self._execution_config
+
+    async def schedule(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
+        """Dispatch a due persisted record to Cloud Run Jobs on enqueue.
+
+        Delayed records (``scheduled_at > now``) remain persisted with
+        ``execution_ref=None`` until :meth:`repair` dispatches them once due.
+
+        Returns:
+            The Cloud Run execution reference when dispatched immediately, or
+            ``None`` when deferred or ineligible.
+        """
+        if not self.schedules_on_enqueue:
+            return None
+        queue_backend = service.get_queue_backend()
+        current = await queue_backend.get_task(record.id)
+        if current is None or current.status not in {"pending", "scheduled"}:
+            return None
+        if current.execution_ref is not None and not current.execution_ref.startswith(
+            EXTERNAL_DISPATCH_RESERVATION_PREFIX
+        ):
+            current = await queue_backend.clear_execution_ref(current.id, current.retry_count, current.execution_ref)
+            if current is None:
+                return None
+        if current.scheduled_at is not None and current.scheduled_at > datetime.now(timezone.utc):
+            return None
+        return await self.dispatch(service, current)
+
+    async def repair(self, service: "QueueService", *, limit: "int") -> "DispatchRepairResult":
+        """Dispatch due Cloud Run candidates that have no active execution reference.
+
+        Returns:
+            Counts of examined, dispatched, failed, and unchanged candidates.
+
+        Raises:
+            QueueConfigurationError: If ``limit`` is negative.
+        """
+        if limit < 0:
+            msg = "Dispatch repair limit must be non-negative."
+            raise QueueConfigurationError(msg)
+        if limit == 0 or not self.schedules_on_enqueue:
+            return DispatchRepairResult(examined=0, changed=0)
+        queue_backend = service.get_queue_backend()
+        page = await queue_backend.list_dispatch_repair_candidates("cloudrun", limit=limit)
+        changed = failed = 0
+        unchanged = page.examined - len(page.records)
+        now = datetime.now(timezone.utc)
+        for candidate in page.records:
+            current = await queue_backend.get_task(candidate.id)
+            if current is None or current.status not in {"pending", "scheduled"}:
+                unchanged += 1
+                continue
+            if (
+                current.execution_ref is not None
+                and current.execution_ref.startswith(EXTERNAL_DISPATCH_RESERVATION_PREFIX)
+                and _dispatch_reservation_is_stale(current.execution_ref)
+            ):
+                current = await queue_backend.release_external_dispatch(
+                    current.id,
+                    current.execution_ref,
+                    current.execution_backend,
+                    execution_profile=current.execution_profile,
+                )
+                if current is None:
+                    unchanged += 1
+                    continue
+            if current.execution_ref is not None:
+                unchanged += 1
+                continue
+            if current.scheduled_at is not None and current.scheduled_at > now:
+                unchanged += 1
+                continue
+            try:
+                execution_ref = await self.dispatch(service, current)
+            except Exception:
+                failed += 1
+            else:
+                if execution_ref is not None:
+                    changed += 1
+                else:
+                    unchanged += 1
+        return DispatchRepairResult(
+            examined=page.examined,
+            changed=changed,
+            failed=failed,
+            unchanged=unchanged,
+            limit_reached=page.limit_reached,
+        )
 
     async def execute(
         self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: "str | None" = None

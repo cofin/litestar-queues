@@ -464,7 +464,7 @@ async def test_repair_failure_real_maintenance_exits_1(
     if as_json:
         payload = json.loads(output)
         assert payload["outcome"] == "failed"
-        external = payload["phases"][0]
+        external = next(phase for phase in payload["phases"] if phase["phase"] == "external")
         assert external["changed"] == changed
         assert external["repair"] == {
             "examined": 2,
@@ -662,3 +662,38 @@ def test_scheduler_health_returns_0_when_canary_completed_recently(monkeypatch: 
 
     assert result.exit_code == 0, result.stderr
     assert "healthy" in result.stdout.lower()
+
+
+async def test_cli_maintain_run_enters_app_lifespan_when_configured(
+    monkeypatch: "pytest.MonkeyPatch", capsys: "pytest.CaptureFixture[str]"
+) -> "None":
+    from litestar import Litestar
+
+    from litestar_queues import QueueConfig, QueueMaintenanceConfig, QueuePlugin, _cli
+    from litestar_queues.task import get_default_service
+
+    events: "list[str]" = []
+
+    async def on_startup() -> "None":
+        events.append(f"startup:{get_default_service() is not None}")
+
+    async def on_shutdown() -> "None":
+        events.append("shutdown")
+
+    service = _FakeMaintenanceServiceHost(_FakeMaintenanceBackend())
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="redis",
+            worker=WorkerConfig(placement="external", run_app_lifespan=True),
+            maintenance=QueueMaintenanceConfig(terminal_retention=60),
+        )
+    )
+    app = Litestar(plugins=[plugin], on_startup=[on_startup], on_shutdown=[on_shutdown])
+    monkeypatch.setattr(_cli, "_open_service", lambda _plugin: service)
+    _install_fake_maintenance(monkeypatch, _summary("completed"))
+
+    code = await _cli._maintain_run(plugin, (), True, app=app)
+    assert code == 0
+    assert events == ["startup:True", "shutdown"]
+    assert get_default_service() is None
+    assert json.loads(capsys.readouterr().out)["outcome"] == "completed"

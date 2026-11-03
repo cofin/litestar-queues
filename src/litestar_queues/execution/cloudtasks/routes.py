@@ -15,12 +15,13 @@ a deployment fault, and letting Cloud Tasks retry it is what makes it visible.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID  # noqa: TC003 - msgspec resolves the struct's annotations at runtime.
 
 import msgspec
 from litestar import Request, Response, post
 from litestar.exceptions import ValidationException
+from litestar.params import Body
 
 from litestar_queues.consumer import TaskExitCode, consume_one
 from litestar_queues.exceptions import QueueDispatchError
@@ -29,9 +30,11 @@ from litestar_queues.execution.cloudtasks.config import (
     CLOUD_TASKS_PROTOCOL_VERSION,
     _execution_config_from_queue_config,
 )
+from litestar_queues.execution.cloudtasks.oidc import CloudTasksOIDCGuard
 
 if TYPE_CHECKING:
     from litestar.handlers import HTTPRouteHandler
+    from litestar.types import Guard
 
     from litestar_queues.config import QueueConfig
     from litestar_queues.observability import QueueObservabilityRuntimeProtocol
@@ -80,16 +83,27 @@ def build_cloud_tasks_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":
         The route handler Cloud Tasks posts each record to.
     """
     config = _execution_config_from_queue_config(queue_config)
+    guards: "list[Guard]" = []
+    if config.verify_oidc and not any(isinstance(guard, CloudTasksOIDCGuard) for guard in config.guards):
+        guards.append(
+            CloudTasksOIDCGuard(
+                audience=config.audience, service_account_email=config.service_account_email, queue_id=config.queue_id
+            )
+        )
+    guards.extend(config.guards)
 
     @post(
         path=config.route_path,
-        guards=list(config.guards),
+        guards=guards,
+        opt={"exclude_from_csrf": True, "exclude_from_auth": True},
         status_code=_ACKNOWLEDGED,
         include_in_schema=False,
-        signature_types=[CloudTasksDelivery],
+        signature_types=[CloudTasksDelivery, Body],
         summary="Cloud Tasks delivery",
     )
-    async def consume_cloud_task(data: "CloudTasksDelivery", request: "Request[Any, Any, Any]") -> "Response[None]":
+    async def consume_cloud_task(
+        data: "Annotated[CloudTasksDelivery, Body()]", request: "Request[Any, Any, Any]"
+    ) -> "Response[None]":
         """Run the delivered record and answer with whether to deliver it again.
 
         Returns:
@@ -134,15 +148,20 @@ async def _run_delivered_record(service: "QueueService", task_id: "UUID") -> "Re
         _record_delivery(runtime, _OUTCOME_TRANSIENT_ERROR)
         return Response(content=None, status_code=_REDELIVER)
 
+    status_code = _ACKNOWLEDGED
     try:
         outcome = await _delivery_outcome(service, task_id, exit_code)
+        if exit_code is TaskExitCode.CLAIM_LOST:
+            current = await service.get_task(task_id)
+            if current is not None and current.status == "running":
+                status_code = _REDELIVER
     except Exception:  # noqa: BLE001 - naming an outcome must never revoke one.
         # The run already earned this response. A label that cannot be worked
         # out is a worse signal than "acknowledged"; a 500 here would be a wrong
         # answer about work that is finished.
         outcome = _OUTCOME_ACKNOWLEDGED
     _record_delivery(runtime, outcome)
-    return Response(content=None, status_code=_ACKNOWLEDGED)
+    return Response(content=None, status_code=status_code)
 
 
 async def _delivery_outcome(service: "QueueService", task_id: "UUID", exit_code: "TaskExitCode") -> "str":

@@ -308,7 +308,10 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
 
 
 def _create_rebalance_listener(on_revoked: "Callable[[set[Any]], Awaitable[None]]") -> "Any":
-    aiokafka = _aiokafka()
+    try:
+        base_class: type[object] = _aiokafka().ConsumerRebalanceListener
+    except MissingDependencyError:
+        base_class = object
 
     async def revoked(_self: "object", partitions: "set[Any]") -> "None":
         await on_revoked(partitions)
@@ -317,9 +320,7 @@ def _create_rebalance_listener(on_revoked: "Callable[[set[Any]], Awaitable[None]
         del partitions
 
     listener_type = type(
-        "KafkaRebalanceListener",
-        (aiokafka.ConsumerRebalanceListener,),
-        {"on_partitions_revoked": revoked, "on_partitions_assigned": assigned},
+        "KafkaRebalanceListener", (base_class,), {"on_partitions_revoked": revoked, "on_partitions_assigned": assigned}
     )
     return listener_type()
 

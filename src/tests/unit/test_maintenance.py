@@ -15,8 +15,8 @@ from litestar_queues import (
 from litestar_queues.events import QueueEventRetentionRule
 from litestar_queues.exceptions import QueueConfigurationError
 from litestar_queues.execution.base import DispatchRepairResult, ExternalReconciliationResult
-from litestar_queues.maintenance import MAINTENANCE_NAME, PHASE_ORDER
-from litestar_queues.models import QueueBackendCapabilities, StaleTaskRecoveryResult
+from litestar_queues.maintenance import MAINTENANCE_NAME, PHASE_ORDER, build_maintenance_route
+from litestar_queues.models import QueueBackendCapabilities, ScheduleAssertionResult, StaleTaskRecoveryResult
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -110,21 +110,35 @@ class _StubService:
     """Queue-service double exposing exactly the maintenance dependencies."""
 
     def __init__(
-        self, *, backend: "_StubBackend", is_external: "bool" = False, event_log: "_StubEventLog | None" = None
+        self,
+        *,
+        backend: "_StubBackend",
+        is_external: "bool" = False,
+        has_schedules: "bool" = False,
+        event_log: "_StubEventLog | None" = None,
     ) -> "None":
         self._backend = backend
         self._execution_backend = _StubExecutionBackend(is_external=is_external)
+        self._has_schedules = has_schedules
         self._event_log = event_log
+        self.expire_calls: "list[int | None]" = []
         self.reconcile_calls: "list[int | None]" = []
         self.recover_calls: "list[tuple[timedelta, int | None]]" = []
+        self.schedules_calls: "list[int | None]" = []
+        self.expired_count = 0
+        self.expire_error: "Exception | None" = None
         self.reconcile_result = 0
         self.repair_result = DispatchRepairResult()
         self.reconcile_error: "Exception | None" = None
         self.recover_result = StaleTaskRecoveryResult()
         self.recover_error: "Exception | None" = None
+        self.schedules_result = ScheduleAssertionResult()
+        self.schedules_error: "Exception | None" = None
         self.clock: "_Clock | None" = None
+        self.expire_advance = 0.0
         self.reconcile_advance = 0.0
         self.recover_advance = 0.0
+        self.schedules_advance = 0.0
 
     def get_queue_backend(self) -> "_StubBackend":
         return self._backend
@@ -132,8 +146,22 @@ class _StubService:
     def get_execution_backend(self) -> "_StubExecutionBackend":
         return self._execution_backend
 
+    def get_execution_backends(self) -> "dict[str, _StubExecutionBackend]":
+        return {"default": self._execution_backend}
+
     def get_event_log(self) -> "_StubEventLog | None":
         return self._event_log
+
+    def has_registered_schedules(self) -> "bool":
+        return self._has_schedules
+
+    async def expire_overdue_tasks(self, *, limit: "int | None" = None) -> "list[object]":
+        self.expire_calls.append(limit)
+        if self.clock is not None:
+            self.clock.value += self.expire_advance
+        if self.expire_error is not None:
+            raise self.expire_error
+        return [object() for _ in range(self.expired_count)]
 
     async def reconcile_external(self, limit: "int | None" = None) -> "int":
         self.reconcile_calls.append(limit)
@@ -152,6 +180,14 @@ class _StubService:
         if self.recover_error is not None:
             raise self.recover_error
         return self.recover_result
+
+    async def reassert_schedules(self, *, limit: "int | None" = None) -> "ScheduleAssertionResult":
+        self.schedules_calls.append(limit)
+        if self.clock is not None:
+            self.clock.value += self.schedules_advance
+        if self.schedules_error is not None:
+            raise self.schedules_error
+        return self.schedules_result
 
     async def reconcile_external_result(self, *, limit: "int") -> "ExternalReconciliationResult":
         reconciled = await self.reconcile_external(limit=limit)
@@ -249,9 +285,18 @@ async def test_coordination_denial_is_a_no_op_with_skipped_phases() -> "None":
 
     assert summary.outcome == "already_running"
     assert summary.acquired is False
-    assert [phase.status for phase in summary.phases] == ["skipped", "skipped", "skipped", "skipped"]
+    assert [phase.status for phase in summary.phases] == [
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
+    assert stub.expire_calls == []
     assert stub.reconcile_calls == []
     assert stub.recover_calls == []
+    assert stub.schedules_calls == []
     assert backend.cleanup_calls == []
     assert backend.release_calls == []
 
@@ -270,13 +315,19 @@ async def test_coordination_uses_shared_name_and_is_released() -> "None":
 # --------------------------------------------------------------------------- #
 
 
+def test_phase_order_includes_expire_and_schedules() -> "None":
+    assert PHASE_ORDER == ("expire", "external", "stale", "schedules", "terminal", "events")
+
+
 async def test_all_enabled_phases_run_once_in_fixed_order() -> "None":
     backend = _StubBackend()
     backend.cleanup_deleted = 3
     event_log = _StubEventLog(deleted=7)
-    stub = _StubService(backend=backend, is_external=True, event_log=event_log)
+    stub = _StubService(backend=backend, is_external=True, has_schedules=True, event_log=event_log)
+    stub.expired_count = 4
     stub.reconcile_result = 2
     stub.recover_result = StaleTaskRecoveryResult(requeued=1, failed=1)
+    stub.schedules_result = ScheduleAssertionResult(created=1, repaired=1)
     summary = await _run(
         stub,
         QueueMaintenanceConfig(
@@ -285,24 +336,42 @@ async def test_all_enabled_phases_run_once_in_fixed_order() -> "None":
     )
 
     assert [phase.phase for phase in summary.phases] == list(PHASE_ORDER)
-    assert [phase.status for phase in summary.phases] == ["completed", "completed", "completed", "completed"]
-    assert [phase.changed for phase in summary.phases] == [2, 2, 3, 7]
+    assert [phase.status for phase in summary.phases] == [
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+    ]
+    assert [phase.changed for phase in summary.phases] == [4, 2, 2, 2, 3, 7]
     assert summary.outcome == "completed"
+    assert stub.expire_calls == [1000]
     assert stub.reconcile_calls == [100]
     assert stub.recover_calls == [(timedelta(seconds=60), 100)]
+    assert stub.schedules_calls == [100]
     assert backend.cleanup_calls == [(FIXED_NOW - timedelta(seconds=3600), 1000)]
     assert event_log.calls == [(FIXED_NOW - timedelta(seconds=7200), 1000)]
 
 
 async def test_disabled_phases_are_skipped_without_backend_calls() -> "None":
     backend = _StubBackend()
-    stub = _StubService(backend=backend, is_external=False)
+    stub = _StubService(backend=backend, is_external=False, has_schedules=False)
     summary = await _run(stub, QueueMaintenanceConfig())
 
-    assert [phase.status for phase in summary.phases] == ["skipped", "skipped", "skipped", "skipped"]
+    assert [phase.status for phase in summary.phases] == [
+        "completed",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
     assert summary.outcome == "completed"
+    assert stub.expire_calls == [1000]
     assert stub.reconcile_calls == []
     assert stub.recover_calls == []
+    assert stub.schedules_calls == []
     assert backend.cleanup_calls == []
 
 
@@ -396,7 +465,7 @@ async def test_repair_mixed_and_budget_outcomes_survive_maintenance(
     stub = _StubService(backend=backend, is_external=True)
     stub.repair_result = repair
     summary = await _run(stub, QueueMaintenanceConfig(external_limit=3, terminal_retention=60))
-    external = summary.phases[0]
+    external = next(phase for phase in summary.phases if phase.phase == "external")
     assert external.status == status
     assert external.changed == repair.changed
     assert external.repair == repair
@@ -412,8 +481,9 @@ async def test_repair_mixed_preserves_reconciliation_changes() -> "None":
     stub.repair_result = DispatchRepairResult(examined=2, changed=1, failed=1)
     stub.reconcile_result = 2
     summary = await _run(stub, QueueMaintenanceConfig(external_limit=10))
+    external = next(phase for phase in summary.phases if phase.phase == "external")
     assert summary.outcome == "failed"
-    assert summary.phases[0].changed == 3
+    assert external.changed == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -524,3 +594,114 @@ def test_phase_result_payload_shape() -> "None":
         "error": None,
         "repair": None,
     }
+
+
+async def test_stale_phase_propagates_repair_result_and_fails_when_repair_fails() -> "None":
+    backend = _StubBackend()
+    stub = _StubService(backend=backend, is_external=False)
+    stub.recover_result = StaleTaskRecoveryResult(
+        requeued=2, failed=0, repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
+    )
+    summary = await _run(stub, QueueMaintenanceConfig(stale_after=60.0), phases=["stale"])
+    assert summary.outcome == "failed"
+    assert len(summary.phases) == 1
+    stale_phase = summary.phases[0]
+    assert stale_phase.phase == "stale"
+    assert stale_phase.status == "failed"
+    assert stale_phase.changed == 2
+    assert stale_phase.error == "maintenance_repair_failed"
+    assert stale_phase.repair == DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
+
+
+async def test_schedules_phase_propagates_repair_result_and_fails_when_repair_fails() -> "None":
+    backend = _StubBackend()
+    stub = _StubService(backend=backend, is_external=False, has_schedules=True)
+    stub.schedules_result = ScheduleAssertionResult(
+        created=1, repaired=1, repair=DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
+    )
+    summary = await _run(stub, QueueMaintenanceConfig(schedules_limit=50), phases=["schedules"])
+    assert summary.outcome == "failed"
+    assert len(summary.phases) == 1
+    schedules_phase = summary.phases[0]
+    assert schedules_phase.phase == "schedules"
+    assert schedules_phase.status == "failed"
+    assert schedules_phase.changed == 2
+    assert schedules_phase.error == "maintenance_repair_failed"
+    assert schedules_phase.repair == DispatchRepairResult(examined=2, changed=1, failed=1, unchanged=0)
+    assert stub.schedules_calls == [50]
+
+
+def test_maintenance_route_config_validation() -> "None":
+    with pytest.raises(QueueConfigurationError, match="requires route protection"):
+        QueueMaintenanceConfig(mount_route=True)
+
+    with pytest.raises(QueueConfigurationError, match="oidc_audience is required"):
+        QueueMaintenanceConfig(mount_route=True, verify_oidc=True)
+
+    with pytest.raises(QueueConfigurationError, match="route_path"):
+        QueueMaintenanceConfig(route_path="/")
+
+    valid_platform = QueueMaintenanceConfig(mount_route=True, trust_platform_auth=True)
+    assert valid_platform.mount_route is True
+    assert valid_platform.route_path == "/_litestar-queues/maintenance"
+
+    valid_oidc = QueueMaintenanceConfig(
+        mount_route=True,
+        verify_oidc=True,
+        oidc_audience="https://worker.example.run.app",
+        oidc_service_account_email="scheduler@example.iam.gserviceaccount.com",
+    )
+    assert valid_oidc.verify_oidc is True
+    assert valid_oidc.oidc_audience == "https://worker.example.run.app"
+
+
+async def test_maintenance_http_route_executes_six_phase_pass_and_returns_summary() -> "None":
+    from litestar import Litestar
+    from litestar.testing import AsyncTestClient
+
+    from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig, task
+    from litestar_queues.task import clear_task_registry
+
+    clear_task_registry()
+    try:
+
+        @task("tests.maintenance.recurring", interval=60)
+        async def recurring_job() -> "None":
+            return None
+
+        @task("tests.maintenance.expiring")
+        async def expiring_job() -> "None":
+            return None
+
+        config = QueueConfig(
+            queue_backend="memory",
+            execution_backend="local",
+            worker=WorkerConfig(placement="external"),
+            maintenance=QueueMaintenanceConfig(mount_route=True, trust_platform_auth=True, stale_after=60.0),
+        )
+        plugin = QueuePlugin(config)
+        route = build_maintenance_route(config)
+        assert route.opt.get("exclude_from_csrf") is True
+        assert route.opt.get("exclude_from_auth") is True
+
+        app = Litestar(plugins=[plugin])
+        async with AsyncTestClient(app=app) as client:
+            service = app.state[config.service_state_key]
+            await service.get_queue_backend().enqueue(
+                "tests.maintenance.expiring", expires_at=datetime.now(timezone.utc) - timedelta(seconds=10)
+            )
+            response = await client.post("/_litestar-queues/maintenance")
+            assert response.status_code == 200
+            body = response.json()
+            assert body["outcome"] == "completed"
+            assert body["acquired"] is True
+            phases_by_name = {item["phase"]: item for item in body["phases"]}
+            assert list(phases_by_name) == list(PHASE_ORDER)
+            assert phases_by_name["expire"]["status"] == "completed"
+            assert phases_by_name["expire"]["changed"] == 1
+            assert phases_by_name["schedules"]["status"] == "completed"
+            assert phases_by_name["schedules"]["changed"] == 1
+            scheduled = await service.get_queue_backend().get_task_by_key("scheduled:tests.maintenance.recurring")
+            assert scheduled is not None
+    finally:
+        clear_task_registry()

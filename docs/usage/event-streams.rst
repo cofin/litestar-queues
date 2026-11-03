@@ -40,6 +40,8 @@ The plugin can add task, queue, worker, global, and custom stream routes under
                transports={"sse", "websocket"},
                scopes={"task", "queue"},
                channel_authorizer=authorize_channel,
+               max_stream_duration=3000.0,
+               retry_ms=3000,
            ),
        ),
    )
@@ -49,6 +51,13 @@ Channels backend when more than one process serves streams. The authorizer
 above reads Litestar's session, so it assumes session middleware is installed;
 any callable with that signature works, including one that queries your own
 permission store.
+
+Set ``max_stream_duration`` (seconds) below your proxy or Cloud Run request
+timeout so SSE and WebSocket streams close cleanly before an abrupt ``504``
+disconnect, and ``retry_ms`` to advertise the SSE ``retry:`` reconnection
+delay. Each SSE frame includes the event's ``id`` so reconnecting browsers
+send ``Last-Event-ID``. Disconnect cleanup is shielded from task-group
+cancellation so subscriber slots release cleanly when a client drops.
 
 Use SSE for server-to-browser updates with automatic browser reconnection. Use
 WebSockets when the connection also needs bidirectional application messages.

@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from litestar_queues.execution.base import DispatchRepairResult
 
 __all__ = (
     "TERMINAL_STATUSES",
@@ -10,6 +13,7 @@ __all__ = (
     "QueueBackendCapabilities",
     "QueueStatistics",
     "QueuedTaskRecord",
+    "ScheduleAssertionResult",
     "StaleTaskRecoveryResult",
     "TaskRequest",
     "TaskReservation",
@@ -71,6 +75,20 @@ class QueueStatistics:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ScheduleAssertionResult:
+    """Summary of recurring schedule assertion and delivery repair."""
+
+    created: "int" = 0
+    repaired: "int" = 0
+    repair: "DispatchRepairResult | None" = None
+
+    @property
+    def changed(self) -> "int":
+        """Total schedule occurrences created or repaired."""
+        return self.created + self.repaired
+
+
 @dataclass(slots=True)
 class StaleTaskRecoveryResult:
     """Summary of stale running task recovery."""
@@ -79,8 +97,10 @@ class StaleTaskRecoveryResult:
     failed: "int" = 0
     skipped: "int" = 0
     handler_needed: "int" = 0
+    requeued_task_ids: "list[UUID]" = field(default_factory=list)
     failed_task_ids: "list[UUID]" = field(default_factory=list)
     handler_needed_task_ids: "list[UUID]" = field(default_factory=list)
+    repair: "DispatchRepairResult | None" = None
 
     def to_payload(self) -> "dict[str, int]":
         """Return a JSON-compatible event payload."""

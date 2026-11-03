@@ -74,7 +74,7 @@ def _migrate(config: "QueueConfig") -> "None":
 def create_app() -> "Litestar":
     config = _queue_config()
     _migrate(config)
-    return Litestar(plugins=[QueuePlugin(config)])
+    return Litestar(plugins=[QueuePlugin(config)], logging_config=None)
 
 
 app = create_app()

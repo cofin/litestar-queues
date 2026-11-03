@@ -568,12 +568,25 @@ class _ForbiddenService:
         raise AssertionError(msg)
 
 
-@pytest.mark.parametrize("backend_name", ["local", "immediate", "cloudrun"])
+@pytest.mark.parametrize("backend_name", ["local", "immediate"])
 async def test_a_polled_backend_repairs_nothing(backend_name: "str") -> "None":
     """Nothing can go missing from a store the worker reads directly."""
     from litestar_queues.execution import get_execution_backend_class
 
     backend = get_execution_backend_class(backend_name)()
+
+    assert await backend.repair(cast("Any", _ForbiddenService()), limit=10) == DispatchRepairResult()
+
+
+async def test_a_polled_cloudrun_backend_repairs_nothing() -> "None":
+    """Cloud Run Jobs opted into worker polling (schedules_on_enqueue=False) repairs nothing."""
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+
+    backend = CloudRunExecutionBackend(
+        execution_config=CloudRunExecutionConfig(
+            project_id="example-project", job_name="worker-job", schedules_on_enqueue=False
+        )
+    )
 
     assert await backend.repair(cast("Any", _ForbiddenService()), limit=10) == DispatchRepairResult()
 
@@ -790,4 +803,5 @@ async def test_repair_failure_cancellation_propagates_and_releases_maintenance(h
     recovered = await maintenance.run()
     assert recovered.acquired is True
     assert recovered.outcome == "completed"
-    assert recovered.phases[0].changed == 1
+    external_phase = next(phase for phase in recovered.phases if phase.phase == "external")
+    assert external_phase.changed == 1

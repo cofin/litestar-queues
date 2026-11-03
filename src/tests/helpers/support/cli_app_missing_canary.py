@@ -15,7 +15,7 @@ def create_app() -> "Litestar":
             scheduler_canary_task="not.a.registered.task",
         )
     )
-    return Litestar(plugins=[plugin])
+    return Litestar(plugins=[plugin], logging_config=None)
 
 
 app = create_app()

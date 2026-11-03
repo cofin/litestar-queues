@@ -7,7 +7,7 @@ import threading
 from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Protocol
 
-from litestar_queues.task import load_task_modules
+from litestar_queues.task import get_default_service, load_task_modules, set_default_service
 from litestar_queues.worker import Worker
 
 if TYPE_CHECKING:
@@ -349,12 +349,14 @@ async def run_worker(
 ) -> "WorkerRunResult":
     """Run one worker and own its startup, stop, and service lifecycle."""
     service_opened = False
+    previous_default_service = get_default_service()
     result: "WorkerRunResult | None" = None
     primary_error: "BaseException | None" = None
     try:
         _load_worker_tasks(config, _task_loader)
         await _open_worker_service(service)
         service_opened = True
+        set_default_service(service)
         if config.initialize_schedules:
             await _initialize_worker_schedules(service)
         worker = _build_worker(service, config, _worker_factory)
@@ -364,6 +366,7 @@ async def run_worker(
 
     cleanup_error: "BaseException | None" = None
     if service_opened:
+        set_default_service(previous_default_service)
         try:
             await service.close()
         except BaseException as exc:  # noqa: BLE001 - cleanup precedence is resolved below.

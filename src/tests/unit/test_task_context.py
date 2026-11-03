@@ -145,6 +145,19 @@ def test_beat_outside_context_is_noop() -> "None":
     beat("row 30000")
 
 
+async def test_publish_task_helpers_outside_context_are_noop_by_default_and_raise_when_strict() -> "None":
+    await publish_task_progress(current=1, total=2)
+    await publish_task_log("outside")
+    await publish_task_event("task.custom")
+
+    with pytest.raises(RuntimeError, match="No queue task execution context is currently bound"):
+        await publish_task_progress(current=1, total=2, strict=True)
+    with pytest.raises(RuntimeError, match="No queue task execution context is currently bound"):
+        await publish_task_log("outside", strict=True)
+    with pytest.raises(RuntimeError, match="No queue task execution context is currently bound"):
+        await publish_task_event("task.custom", strict=True)
+
+
 def test_ctx_beat_forwards_to_bound_sink() -> "None":
     sink = _RecordingBeatSink()
     context = _build_context()

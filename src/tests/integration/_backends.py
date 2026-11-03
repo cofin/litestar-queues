@@ -329,6 +329,7 @@ async def _build_mysql_mysqlconnector(ctx: "FixtureCtx") -> "BaseQueueBackend":
                 "user": svc.user,
                 "password": svc.password,
                 "database": svc.db,
+                "pool_size": 32,
             }
         ),
         queue_table_name=ctx.table_name,

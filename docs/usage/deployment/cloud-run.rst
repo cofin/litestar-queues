@@ -26,7 +26,7 @@ both your deployment and your task timeouts.
      - Low volume, few services, and you accept work stalling whenever the
        service scales down.
    * - **External dispatcher** with Cloud Run Jobs
-     - A dedicated dispatcher, always on
+     - Nothing when ``schedules_on_enqueue=True`` (default); a dedicated dispatcher when ``False``
      - Hours
      - Tasks are long, heavy, or need their own image and resources.
    * - **Cloud Tasks** direct to a private Cloud Run service
@@ -41,34 +41,39 @@ both your deployment and your task timeouts.
        it is not mistaken for a supported option.
 
 The first two are covered below. The third has its own guide, because it is a
-different execution backend rather than a different way to deploy this one.
+different execution backend rather than a different way to deploy this one. You
+can also combine Cloud Tasks and Cloud Run Jobs in one ``QueueConfig`` by
+passing ``execution_backends=(CloudRunExecutionConfig(...),)``.
 
 The core model
 ==============
 
-A Cloud Run deployment has three separate responsibilities:
+By default (``CloudRunExecutionConfig(schedules_on_enqueue=True)``), ``enqueue()``
+triggers ``run_job`` directly for due records, while delayed or retryable
+records are repaired and reconciled by :doc:`../maintenance` without an
+always-on dispatcher loop. Set ``schedules_on_enqueue=False`` when you prefer a
+dedicated polling dispatcher service:
 
 .. mermaid::
 
    flowchart LR
        web["Web service<br/>(your API)"]
        store[("Queue store<br/>(shared DB)")]
-       dispatcher["Dispatcher<br/>worker loop"]
+       dispatcher["Maintenance or<br/>dispatcher"]
        job["Cloud Run Job<br/>executes task"]
 
-       web -- "enqueue() writes a pending row" --> store
-       store -- "a running worker reads pending rows" --> dispatcher
+       web -- "enqueue() writes record & runs due job" --> store
+       web -- "run_job (schedules_on_enqueue=True)" --> job
+       store -- "repairs delayed / missing jobs" --> dispatcher
        dispatcher -- "run_job" --> job
-       dispatcher -. "dispatch()" .-> store
 
 Each part has one job:
 
-* ``enqueue()`` writes a pending queue record.
-* A running worker loop calls ``dispatch()``.
+* ``enqueue()`` writes a pending queue record and, when ``schedules_on_enqueue=True``
+  and the record is due now, starts the Cloud Run Job execution immediately.
+* :doc:`../maintenance` (or a running worker loop when ``schedules_on_enqueue=False``)
+  dispatches due delayed records and reconciles running executions.
 * The Cloud Run Job container executes the task.
-
-The **dispatcher** is the worker loop that starts Cloud Run Jobs. Without a
-running dispatcher, records routed to ``cloudrun`` remain pending.
 
 Because the web service and dispatcher are separate processes, live browser
 events need a shared Channels backend configured in both. Queue wakeups do not

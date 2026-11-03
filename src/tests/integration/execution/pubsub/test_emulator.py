@@ -1,5 +1,6 @@
 import asyncio
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import grpc  # type: ignore[import-untyped]
 import pytest
@@ -9,29 +10,28 @@ from litestar_queues.backends import InMemoryQueueBackend
 from litestar_queues.execution.pubsub import PubSubExecutionBackend, PubSubExecutionConfig
 
 if TYPE_CHECKING:
-    from tests.plugins.pubsub import PubSubEmulatorService
+    from pytest_databases.docker.pubsub import PubSubService
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_official_emulator_dispatches_and_streaming_consumer_executes(
-    pubsub_emulator_service: "PubSubEmulatorService",
-) -> "None":
+async def test_official_emulator_dispatches_and_streaming_consumer_executes(pubsub_service: "PubSubService") -> "None":
     publisher_module = pytest.importorskip("google.pubsub_v1.services.publisher")
     subscriber_module = pytest.importorskip("google.pubsub_v1.services.subscriber")
     publisher_transport_module = pytest.importorskip("google.pubsub_v1.services.publisher.transports.grpc_asyncio")
     subscriber_transport_module = pytest.importorskip("google.pubsub_v1.services.subscriber.transports.grpc_asyncio")
-    channel = grpc.aio.insecure_channel(pubsub_emulator_service.endpoint)
+    channel = grpc.aio.insecure_channel(pubsub_service.emulator_host)
     publisher = publisher_module.PublisherAsyncClient(
         transport=publisher_transport_module.PublisherGrpcAsyncIOTransport(channel=channel)
     )
     subscriber = subscriber_module.SubscriberAsyncClient(
         transport=subscriber_transport_module.SubscriberGrpcAsyncIOTransport(channel=channel)
     )
-    topic_id = f"{pubsub_emulator_service.resource_prefix}dispatch"
-    subscription_id = f"{pubsub_emulator_service.resource_prefix}workers"
-    topic_path = publisher.topic_path(pubsub_emulator_service.project_id, topic_id)
-    subscription_path = subscriber.subscription_path(pubsub_emulator_service.project_id, subscription_id)
+    prefix = f"litestar-queues-{uuid4().hex[:8]}-"
+    topic_id = f"{prefix}dispatch"
+    subscription_id = f"{prefix}workers"
+    topic_path = publisher.topic_path(pubsub_service.project, topic_id)
+    subscription_path = subscriber.subscription_path(pubsub_service.project, subscription_id)
     await publisher.create_topic(request={"name": topic_path})
     await subscriber.create_subscription(request={"name": subscription_path, "topic": topic_path})
 
@@ -40,10 +40,10 @@ async def test_official_emulator_dispatches_and_streaming_consumer_executes(
         return "done"
 
     execution_config = PubSubExecutionConfig(
-        project_id=pubsub_emulator_service.project_id,
+        project_id=pubsub_service.project,
         topic_id=topic_id,
         subscription_id=subscription_id,
-        api_endpoint=pubsub_emulator_service.endpoint,
+        api_endpoint=pubsub_service.emulator_host,
         api_insecure=True,
     )
     config = QueueConfig(

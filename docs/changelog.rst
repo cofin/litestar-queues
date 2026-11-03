@@ -6,6 +6,86 @@ Notable changes to Litestar Queues are recorded here. Entries focus on
 user-visible behavior, public API changes, and important operational fixes. The
 project is pre-1.0, so minor releases may make intentional API breaks.
 
+0.13.0 - 2026-11-03
+===================
+
+**Added:**
+
+* Multi-backend execution routing via :attr:`~litestar_queues.config.QueueConfig.execution_backends`
+  and :attr:`~litestar_queues.service.QueueService.execution_backends`, allowing tasks to declare
+  ``@task(execution_backend="cloud_run")`` or ``queue_service.enqueue(..., execution_backend="cloud_run")``
+  alongside a default execution backend (`#175 <https://github.com/cofin/litestar-queues/issues/175>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/deployment/cloud-run` and
+  :doc:`usage/deployment/cloud-tasks`.
+* On-enqueue Cloud Run Jobs execution via :class:`~litestar_queues.execution.cloudrun.CloudRunExecutionBackend`
+  (:attr:`~litestar_queues.execution.cloudrun.CloudRunExecutionConfig.on_enqueue`) and single-task execution
+  via ``litestar queues run-task --task-id <uuid>`` or ``CLOUD_RUN_TASK_ID``
+  (`#176 <https://github.com/cofin/litestar-queues/issues/176>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/deployment/cloud-run`.
+* :class:`~litestar_queues.execution.cloudtasks.CloudTasksOIDCGuard`,
+  :attr:`~litestar_queues.execution.cloudtasks.CloudTasksExecutionConfig.mount_route`, and
+  :attr:`~litestar_queues.execution.cloudtasks.CloudTasksExecutionConfig.route_opt` for custom route mounting,
+  middleware exclusion, and Google OIDC token verification on Cloud Tasks push callbacks
+  (`#177 <https://github.com/cofin/litestar-queues/issues/177>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/deployment/cloud-tasks`.
+* :class:`~litestar_queues.config.MaintenanceRouteConfig`
+  (:attr:`~litestar_queues.config.QueueConfig.maintenance_route`) to mount a guarded HTTP maintenance endpoint
+  (``POST /_queues/maintenance``) for Cloud Scheduler and scale-to-zero deployments, plus ``"expire"`` and
+  ``"schedules"`` maintenance phases (`#172 <https://github.com/cofin/litestar-queues/issues/172>`_,
+  `#173 <https://github.com/cofin/litestar-queues/issues/173>`_,
+  `#174 <https://github.com/cofin/litestar-queues/issues/174>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/maintenance`.
+* :attr:`~litestar_queues.events.EventStreamConfig.max_stream_duration` for planned SSE and WebSocket stream
+  rollover ahead of serverless request timeouts, emitting a ``stream.reconnect`` frame (``reason="max_duration"``)
+  with the last delivered sequence cursor (`#179 <https://github.com/cofin/litestar-queues/issues/179>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/events`.
+* Public :mod:`litestar_queues.cli` facade exporting :data:`~litestar_queues.cli.queues_group` and
+  :func:`~litestar_queues.cli.build_queues_cli` (`#185 <https://github.com/cofin/litestar-queues/pull/185>`_).
+* :attr:`~litestar_queues.config.WorkerConfig.run_app_lifespan` to enter ``async with app.lifespan():`` inside
+  standalone :class:`~litestar_queues.worker.Worker` and ``litestar queues`` CLI invocations (``run-worker``,
+  ``consume-one``, ``run-task``, ``run-consumer``, and ``maintain``) when no ASGI server manages the application
+  lifespan (`#184 <https://github.com/cofin/litestar-queues/issues/184>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/workers`.
+* Scale-to-zero connection pool sizing guidance for Cloud Run and serverless database deployments
+  (`#178 <https://github.com/cofin/litestar-queues/issues/178>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/deployment/cloud-run`.
+
+**Changed:**
+
+* **Breaking:** Calling :func:`~litestar_queues.events.publish_task_event`,
+  :func:`~litestar_queues.events.publish_task_progress`, :func:`~litestar_queues.events.publish_task_log`, or
+  :func:`~litestar_queues.events.publish_task_stage` when no
+  :class:`~litestar_queues.events.TaskExecutionContext` is bound is now a silent no-op (``None``) by default
+  instead of raising :exc:`~litestar_queues.exceptions.QueueConfigurationError`. Pass ``strict=True`` to require
+  an active task context (`#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/events`.
+* Task dependency resolution filters resolved dependencies against the task function's signature before invocation
+  unless the callable accepts ``**kwargs``, allowing global :attr:`~litestar_queues.config.QueueConfig.task_dependency_provider`
+  scopes to yield shared resources without requiring every task signature to declare them
+  (`#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/dependency-resolver`.
+* When :attr:`~litestar_queues.config.QueueConfig.schedules` is non-empty and the primary execution backend is
+  non-polling (``schedules_on_enqueue=False``) without :attr:`~litestar_queues.config.WorkerConfig.enable_scheduler`
+  or :attr:`~litestar_queues.config.QueueConfig.maintenance_route`, startup logs a warning explaining how to
+  advance recurring schedules (`#174 <https://github.com/cofin/litestar-queues/issues/174>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_).
+
+**Fixed:**
+
+* Cloud Tasks push callback redelivery (``X-CloudTasks-TaskRetryCount > 0``) recovers expired running claims
+  (``lease_deadline <= now``) before attempting ``claim_task()``, and returns HTTP ``409 Conflict`` when a previous
+  attempt's lease is still active so Cloud Tasks retries according to queue backoff
+  (`#170 <https://github.com/cofin/litestar-queues/issues/170>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_). See :doc:`usage/deployment/cloud-tasks`.
+* When a task executed by an on-enqueue push backend (:class:`~litestar_queues.execution.cloudtasks.CloudTasksExecutionBackend`
+  or :class:`~litestar_queues.execution.cloudrun.CloudRunExecutionBackend` with ``on_enqueue=True``) fails and
+  transitions to ``pending`` or ``scheduled`` for retry, the execution backend immediately re-dispatches the
+  follow-up delivery with ``scheduled_at=retry_at`` and persists the new delivery reference
+  (`#171 <https://github.com/cofin/litestar-queues/issues/171>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_).
+* SSE and WebSocket event stream unsubscribe cleanup (``finally:`` block in ``stream_task_events``) shields
+  asynchronous backend teardown with ``anyio.CancelScope(shield=True)`` so client disconnects on Python 3.12+ /
+  Granian do not abort pub/sub channel cleanup (`#180 <https://github.com/cofin/litestar-queues/issues/180>`_,
+  `#185 <https://github.com/cofin/litestar-queues/pull/185>`_).
+
 0.12.0 - 2026-09-14
 ===================
 

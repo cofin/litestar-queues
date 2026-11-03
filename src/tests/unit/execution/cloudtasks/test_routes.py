@@ -27,7 +27,7 @@ from litestar import Litestar
 from litestar.exceptions import NotAuthorizedException
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig, task
+from litestar_queues import QueueConfig, QueueMaintenanceConfig, QueuePlugin, WorkerConfig, task
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator
@@ -232,6 +232,7 @@ async def delivery(
                 queue_backend=queue_backend or shared_store,
                 execution_backend=execution,
                 worker=WorkerConfig(placement="external"),
+                maintenance=QueueMaintenanceConfig(),
                 initialize_schedules=initialize_schedules,
             )
         )
@@ -288,6 +289,31 @@ async def test_exactly_one_delivery_route_is_registered(delivery: "Callable[...,
 
     assert len(mounted) == 1
     assert set(mounted[0].methods) >= {"POST"}
+
+
+async def test_mount_route_false_registers_no_delivery_route(delivery: "Callable[..., Any]") -> "None":
+    """Producer-only services enqueue Cloud Tasks without exposing the consumer endpoint."""
+    live = await delivery(mount_route=False, trust_platform_auth=False, guards=())
+
+    response = await live.deliver(uuid4())
+
+    assert response.status_code == HTTP_NOT_FOUND
+
+
+def test_build_cloud_tasks_route_excludes_csrf_and_auth_middleware(
+    cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]",
+) -> "None":
+    """Machine-to-machine Cloud Tasks webhooks must bypass browser CSRF and session auth."""
+    from litestar_queues.execution.cloudtasks.routes import build_cloud_tasks_route
+
+    handler = build_cloud_tasks_route(
+        QueueConfig(
+            queue_backend="redis", execution_backend=cloud_tasks_config(), worker=WorkerConfig(placement="external")
+        )
+    )
+
+    assert handler.opt.get("exclude_from_csrf") is True
+    assert handler.opt.get("exclude_from_auth") is True
 
 
 # --------------------------------------------------------------------------- request contract
@@ -395,6 +421,92 @@ async def test_delivery_headers_are_never_treated_as_authentication(delivery: "C
     assert executions == []
 
 
+async def test_verify_oidc_rejects_missing_or_invalid_bearer_tokens(
+    delivery: "Callable[..., Any]", cloud_tasks_config: "Callable[..., CloudTasksExecutionConfig]"
+) -> "None":
+    """Built-in OIDC verification protects the route without custom guards."""
+    from litestar_queues.execution.cloudtasks import CloudTasksOIDCGuard
+
+    expected_audience = "https://queue-consumer-abcdef-uc.a.run.app"
+    expected_email = "queues@example-project.iam.gserviceaccount.com"
+
+    def fake_verifier(token: "str", audience: "str | None") -> "dict[str, Any]":
+        assert audience == expected_audience
+        if token == "valid-token":
+            return {"email": expected_email, "email_verified": True, "aud": audience}
+        if token == "unverified-email":
+            return {"email": expected_email, "email_verified": False, "aud": audience}
+        if token == "wrong-email":
+            return {
+                "email": "intruder@example-project.iam.gserviceaccount.com",
+                "email_verified": True,
+                "aud": audience,
+            }
+        msg = "invalid token"
+        raise ValueError(msg)
+
+    guard = CloudTasksOIDCGuard(
+        audience=expected_audience,
+        service_account_email=expected_email,
+        queue_id="queue-consumer",
+        token_verifier=fake_verifier,
+    )
+    live = await delivery(
+        execution_backend=cloud_tasks_config(trust_platform_auth=False, verify_oidc=True, guards=(guard,))
+    )
+    record = await live.service.enqueue(succeeds)
+
+    missing_auth = await live.deliver(record.id)
+    basic_auth = await live.deliver(record.id, headers={"Authorization": "Basic abcdef"})
+    empty_bearer = await live.deliver(record.id, headers={"Authorization": "Bearer   "})
+    invalid_token = await live.deliver(record.id, headers={"Authorization": "Bearer bad-token"})
+    unverified_email = await live.deliver(record.id, headers={"Authorization": "Bearer unverified-email"})
+    wrong_email = await live.deliver(record.id, headers={"Authorization": "Bearer wrong-email"})
+    wrong_queue = await live.deliver(
+        record.id, headers={"Authorization": "Bearer valid-token", "X-CloudTasks-QueueName": "other-queue"}
+    )
+
+    assert missing_auth.status_code == HTTP_UNAUTHORIZED
+    assert basic_auth.status_code == HTTP_UNAUTHORIZED
+    assert empty_bearer.status_code == HTTP_UNAUTHORIZED
+    assert invalid_token.status_code == HTTP_UNAUTHORIZED
+    assert unverified_email.status_code == HTTP_UNAUTHORIZED
+    assert wrong_email.status_code == HTTP_UNAUTHORIZED
+    assert wrong_queue.status_code == HTTP_UNAUTHORIZED
+    assert executions == []
+
+    valid = await live.deliver(
+        record.id, headers={"Authorization": "Bearer valid-token", "X-CloudTasks-QueueName": "queue-consumer"}
+    )
+    assert valid.status_code == HTTP_NO_CONTENT
+    assert executions == [SUCCEEDS]
+
+
+async def test_verify_oidc_attaches_default_oidc_guard_automatically(
+    delivery: "Callable[..., Any]", monkeypatch: "pytest.MonkeyPatch"
+) -> "None":
+    """Enabling verify_oidc=True prepends CloudTasksOIDCGuard using config.audience."""
+    from litestar_queues.execution.cloudtasks import oidc as cloudtasks_oidc
+
+    captured: "list[tuple[str, str | None]]" = []
+
+    def fake_verify(token: "str", audience: "str | None") -> "dict[str, Any]":
+        captured.append((token, audience))
+        return {"email": "queues@example-project.iam.gserviceaccount.com", "email_verified": True, "aud": audience}
+
+    monkeypatch.setattr(cloudtasks_oidc, "_verify_google_id_token", fake_verify)
+    live = await delivery(trust_platform_auth=False, verify_oidc=True, guards=())
+    record = await live.service.enqueue(succeeds)
+
+    unauthenticated = await live.deliver(record.id)
+    authenticated = await live.deliver(record.id, headers={"Authorization": "Bearer signed-jwt"})
+
+    assert unauthenticated.status_code == HTTP_UNAUTHORIZED
+    assert authenticated.status_code == HTTP_NO_CONTENT
+    assert captured == [("signed-jwt", "https://queue-consumer-abcdef-uc.a.run.app")]
+    assert executions == [SUCCEEDS]
+
+
 # --------------------------------------------------------------------------- acknowledged outcomes
 
 
@@ -479,7 +591,7 @@ async def test_a_cancelled_record_is_acknowledged(delivery: "Callable[..., Any]"
 
 
 async def test_a_delivery_that_loses_the_claim_is_acknowledged(delivery: "Callable[..., Any]") -> "None":
-    """Someone else owns this attempt; running it again would double the work."""
+    """A concurrent delivery while the original consumer has a live heartbeat asks for redelivery."""
     live = await delivery()
     record = await live.service.enqueue(succeeds)
     claimed, _expired = await live.service.claim_task(record.id)
@@ -487,7 +599,7 @@ async def test_a_delivery_that_loses_the_claim_is_acknowledged(delivery: "Callab
 
     response = await live.deliver(record.id)
 
-    assert response.status_code == HTTP_NO_CONTENT
+    assert response.status_code == HTTP_UNAVAILABLE
     assert executions == []
 
 
@@ -683,6 +795,7 @@ async def test_the_delivery_client_is_released_when_the_application_stops(
             queue_backend=shared_store,
             execution_backend=cloud_tasks_config(),
             worker=WorkerConfig(placement="external"),
+            maintenance=QueueMaintenanceConfig(),
         )
     )
 
@@ -773,3 +886,32 @@ async def test_a_record_left_running_by_a_lost_consumer_can_be_delivered_again(
     stored = await live.record(record.id)
     assert stored is not None
     assert stored.status == "completed"
+
+
+async def test_a_redelivery_for_a_stale_running_record_with_backoff_schedules_next_attempt(
+    delivery: "Callable[..., Any]",
+) -> "None":
+    """When a stale running record has a retry backoff, redelivery recovers and schedules the delayed delivery."""
+    backed_off_name = "cloudtasks.route_recoverable_backoff"
+
+    @task(backed_off_name, retries=2, retry_backoff=60.0, requeue_on_stale=True)
+    async def recoverable_backoff() -> "None":
+        executions.append(backed_off_name)
+
+    live = await delivery()
+    record = await live.service.enqueue(recoverable_backoff)
+    deliveries_before = len(live.tasks.create_calls)
+    claimed, _expired = await live.service.claim_task(record.id)
+    assert claimed is not None
+    await live.service.get_queue_backend().null_heartbeats([record.id], expected_retry_count=claimed.retry_count)
+
+    response = await live.deliver(record.id)
+
+    assert response.status_code == HTTP_NO_CONTENT
+    assert executions == []
+    stored = await live.record(record.id)
+    assert stored is not None
+    assert stored.status == "scheduled"
+    assert stored.retry_count == 1
+    assert len(live.tasks.create_calls) == deliveries_before + 1
+    assert stored.execution_ref == live.tasks.create_calls[-1].name

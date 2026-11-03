@@ -122,7 +122,7 @@ async def test_cloudrun_dispatch_builds_generic_run_job_request_and_stores_execu
         record = result.record
         assert record is not None
 
-        execution_ref = await service.get_execution_backend().dispatch(service, record)
+        execution_ref = record.execution_ref or await service.get_execution_backend().dispatch(service, record)
         stored = await queue_backend.get_task(record.id)
     finally:
         await service.close()
@@ -626,7 +626,9 @@ async def test_worker_dispatches_external_records_without_claiming_them() -> "No
 
     queue_backend = InMemoryQueueBackend()
     backend = CloudRunExecutionBackend(
-        execution_config=CloudRunExecutionConfig(project_id="test-project", job_name="worker"),
+        execution_config=CloudRunExecutionConfig(
+            project_id="test-project", job_name="worker", schedules_on_enqueue=False
+        ),
         jobs_client=cast("CloudRunJobsClient", FakeJobsClient()),
     )
     async with QueueService(

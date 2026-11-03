@@ -1,5 +1,6 @@
 """Configuration for plugin-owned queue event streaming endpoints."""
 
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -62,6 +63,12 @@ class EventStreamConfig:
     replay_limit: "int" = 0
     """Maximum retained Channels messages replayed on subscription; zero disables replay."""
 
+    max_stream_duration: "float | None" = None
+    """Maximum connection duration in seconds before cleanly closing the stream; ``None`` disables rollover."""
+
+    retry_ms: "int | None" = None
+    """SSE client reconnection delay hint in milliseconds; ``None`` omits the ``retry:`` field."""
+
     include_in_schema: "bool" = False
     """Whether generated stream routes appear in OpenAPI schema output."""
 
@@ -87,6 +94,16 @@ class EventStreamConfig:
             raise QueueConfigurationError(msg)
         if self.replay_limit < 0:
             msg = "EventStreamConfig.replay_limit must be greater than or equal to 0."
+            raise QueueConfigurationError(msg)
+        if self.max_stream_duration is not None and (
+            isinstance(self.max_stream_duration, bool)
+            or not math.isfinite(self.max_stream_duration)
+            or self.max_stream_duration <= 0
+        ):
+            msg = "EventStreamConfig.max_stream_duration must be a finite number greater than 0."
+            raise QueueConfigurationError(msg)
+        if self.retry_ms is not None and (isinstance(self.retry_ms, bool) or self.retry_ms <= 0):
+            msg = "EventStreamConfig.retry_ms must be greater than 0."
             raise QueueConfigurationError(msg)
 
     def resolve(self, namespace: "QueueNamespace | None" = None) -> "EventStreamConfig":

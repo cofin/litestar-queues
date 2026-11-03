@@ -11,18 +11,12 @@ PACKAGE_ROOT = Path("src/litestar_queues")
 
 _APPROVED_NESTED_IMPORTS = {
     "_cli.py": {"litestar.cli._utils", "litestar_queues.worker.runtime"},
-    "worker/supervisor.py": {
-        "litestar.cli._utils",
-        "litestar_queues.backends.ephemeral.schema",
-        "litestar_queues.config",
-        "litestar_queues.plugin",
-        "multiprocessing.connection",
-    },
+    "worker/supervisor.py": {"litestar.cli._utils", "litestar_queues.plugin", "multiprocessing.connection"},
     "backends/advanced_alchemy/event_log.py": {"litestar.pagination", "litestar_queues.events"},
     "backends/advanced_alchemy/service.py": {"litestar_queues.events", "litestar_queues.exceptions"},
     "backends/redis/backend.py": {"redis"},
     "backends/redis/event_log.py": {"litestar_queues.events.history", "litestar_queues.events.query"},
-    "backends/sqlspec/backend.py": {"duckdb", "sqlspec.adapters.aiosqlite", "sqlspec.utils.module_loader"},
+    "backends/sqlspec/backend.py": {"duckdb", "sqlspec.adapters.aiosqlite"},
     "backends/sqlspec/config.py": {
         "litestar_queues.backends.sqlspec.backend",
         "litestar_queues.backends.sqlspec.extension",
@@ -45,11 +39,13 @@ _APPROVED_NESTED_IMPORTS = {
     },
     "events/__init__.py": {"litestar_queues.events.channels_sink"},
     "execution/__init__.py": {"litestar_queues.execution"},
+    "execution/cloudtasks/oidc.py": {"google.auth.transport.requests", "google.oauth2.id_token"},
     "plugin.py": {
         "litestar_queues._cli",
         "litestar_queues.backends.ephemeral.server",
         "litestar_queues.events.streaming",
         "litestar_queues.execution.cloudtasks.routes",
+        "litestar_queues.maintenance",
         "litestar_queues.observability",
         "litestar_queues.worker",
         "litestar_queues.worker.invocation",

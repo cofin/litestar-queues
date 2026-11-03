@@ -216,7 +216,9 @@ async def test_run_task_loads_factory_before_neutral_task_id() -> "None":
     config = QueueConfig(
         worker=WorkerConfig(placement="external"),
         queue_backend="memory",
-        execution_backend=CloudRunExecutionConfig(project_id="test-project", job_name="worker", env_prefix="PREFIX"),
+        execution_backend=CloudRunExecutionConfig(
+            project_id="test-project", job_name="worker", env_prefix="PREFIX", schedules_on_enqueue=False
+        ),
     )
     factory_module = ModuleType("consumer_test_config_factory")
     sys.modules[factory_module.__name__] = factory_module
@@ -701,3 +703,74 @@ async def test_consumer_runtime_manages_dependency_provider() -> "None":
             assert order == ["provider.open", "provider.call", "task.run", "provider.close"]
     finally:
         sys.modules.pop(factory_module.__name__, None)
+
+
+async def test_consume_one_recovers_and_executes_stale_running_record() -> "None":
+    from datetime import datetime, timedelta, timezone
+
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    executions: "list[int]" = []
+
+    @task("tasks.consumer_stale_inline_recover", retries=1)
+    async def stale_inline_recover(value: "int") -> "int":
+        executions.append(value)
+        return value * 2
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external", stale_after=30.0),
+            queue_backend="memory",
+            execution_backend="cloudrun",
+        ),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(stale_inline_recover.using(execution_backend="cloudrun"), 21)
+        claimed, _ = await service.claim_task(result.id)
+        assert claimed is not None
+        stored = await queue_backend.get_task(result.id)
+        assert stored is not None
+        stored.heartbeat_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+
+        exit_code = await consume_one(service, result.id)
+        await result.refresh()
+
+    assert exit_code == TaskExitCode.SUCCESS
+    assert executions == [21]
+    assert result.status == "completed"
+    assert result.result == 42
+
+
+async def test_consume_one_recovers_and_fails_stale_running_record_without_retries() -> "None":
+    from datetime import datetime, timedelta, timezone
+
+    from litestar_queues import QueueConfig, QueueService, task
+    from litestar_queues.consumer import TaskExitCode, consume_one
+
+    @task("tasks.consumer_stale_inline_fail", retries=0)
+    async def stale_inline_fail() -> "str":
+        return "unreachable"
+
+    queue_backend = InMemoryQueueBackend()
+    async with QueueService(
+        QueueConfig(
+            worker=WorkerConfig(placement="external", stale_after=30.0),
+            queue_backend="memory",
+            execution_backend="cloudrun",
+        ),
+        queue_backend=queue_backend,
+    ) as service:
+        result = await service.enqueue(stale_inline_fail.using(execution_backend="cloudrun"))
+        claimed, _ = await service.claim_task(result.id)
+        assert claimed is not None
+        stored = await queue_backend.get_task(result.id)
+        assert stored is not None
+        stored.heartbeat_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+
+        exit_code = await consume_one(service, result.id)
+        await result.refresh()
+
+    assert exit_code == TaskExitCode.SUCCESS
+    assert result.status == "failed"

@@ -13,6 +13,29 @@ if TYPE_CHECKING:
 
     from litestar_queues.backends import BaseQueueBackend
 
+_DATABASE_PLUGINS: "tuple[str, ...]" = (
+    "pytest_databases.docker",
+    "pytest_databases.docker.cockroachdb",
+    "pytest_databases.docker.localstack",
+    "pytest_databases.docker.mssql",
+    "pytest_databases.docker.mysql",
+    "pytest_databases.docker.oracle",
+    "pytest_databases.docker.postgres",
+    "pytest_databases.docker.pubsub",
+    "pytest_databases.docker.rabbitmq",
+    "pytest_databases.docker.redis",
+    "pytest_databases.docker.redpanda",
+    "pytest_databases.docker.spanner",
+    "pytest_databases.docker.valkey",
+)
+
+
+def pytest_configure(config: "pytest.Config") -> "None":
+    """Dynamically register pytest-databases container plugins for integration tests."""
+    for plugin in _DATABASE_PLUGINS:
+        if not config.pluginmanager.has_plugin(plugin):
+            config.pluginmanager.import_plugin(plugin)
+
 
 @pytest.fixture
 async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "AsyncIterator[BaseQueueBackend]":

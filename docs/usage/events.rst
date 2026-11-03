@@ -133,8 +133,11 @@ Each helper is a pass-through to the context method of the same name, so
 ``publish_task_progress(...)`` and ``ctx.progress(...)`` do the same work.
 Prefer the context method in a task body, where the context is already in hand.
 Reach for a helper in a function further down the call stack, so it can report
-progress without threading ``ctx`` through every signature in between. A helper
-raises :exc:`RuntimeError` when no context is bound.
+progress without threading ``ctx`` through every signature in between. When no
+task context is bound (for example in unit tests or synchronous callers),
+``publish_task_progress``, ``publish_task_log``, and ``publish_task_event``
+return ``None`` as a safe no-op by default; pass ``strict=True`` to raise
+:exc:`RuntimeError` when unbound.
 
 Context injection is keyed on the parameter **name** ``_task_context``, not on
 its type annotation: a parameter annotated ``TaskExecutionContext`` under any

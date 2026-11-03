@@ -79,6 +79,45 @@ def test_cloudrun_execution_config_selects_cloudrun_backend() -> "None":
 
     assert isinstance(backend, CloudRunExecutionBackend)
     assert backend.execution_config is execution_config
+    assert execution_config.schedules_on_enqueue is True
+    assert backend.schedules_on_enqueue is True
+
+
+def test_queue_config_accepts_multiple_typed_execution_backends() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionBackend, CloudRunExecutionConfig
+    from litestar_queues.execution.cloudtasks import CloudTasksExecutionBackend, CloudTasksExecutionConfig
+
+    cloudtasks_cfg = CloudTasksExecutionConfig(
+        project_id="test-project",
+        location="us-central1",
+        queue_id="default",
+        service_url="https://app.example.com",
+        service_account_email="tasks@test-project.iam.gserviceaccount.com",
+        trust_platform_auth=True,
+    )
+    cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", job_name="heavy-worker")
+
+    config = QueueConfig(
+        worker=WorkerConfig(placement="external"),
+        queue_backend="redis",
+        execution_backend=cloudtasks_cfg,
+        execution_backends=(cloudrun_cfg,),
+    )
+
+    resolved = config.resolved_execution_backends()
+    assert set(resolved) == {"cloudtasks", "cloudrun"}
+    assert isinstance(config.get_execution_backend("cloudtasks"), CloudTasksExecutionBackend)
+    assert isinstance(config.get_execution_backend("cloudrun"), CloudRunExecutionBackend)
+
+
+def test_queue_config_rejects_mismatched_execution_backends_mapping_key() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+
+    cloudrun_cfg = CloudRunExecutionConfig(project_id="test-project", job_name="heavy-worker")
+    with pytest.raises(QueueConfigurationError, match="execution_backends"):
+        QueueConfig(
+            worker=WorkerConfig(placement="external"), queue_backend="redis", execution_backends={"wrong": cloudrun_cfg}
+        )
 
 
 def test_queue_config_poll_backoff_is_enabled_by_default() -> "None":

@@ -377,3 +377,106 @@ async def test_plugin_uses_registered_queue_backend_instance() -> "None":
         assert isinstance(plugin.get_service(app_config.state).get_queue_backend(), CustomQueueBackend)
     finally:
         _queue_backend_registry.pop("custom-plugin", None)
+
+
+def test_plugin_warns_when_external_backend_has_no_maintenance_configured() -> "None":
+    from litestar_queues.execution.cloudrun import CloudRunExecutionConfig
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="memory",
+            execution_backend=CloudRunExecutionConfig(project_id="demo-project", job_name="worker-job"),
+            worker=WorkerConfig(placement="external"),
+            maintenance=None,
+        )
+    )
+    with pytest.warns(UserWarning, match="QueueMaintenanceConfig"):
+        plugin.on_app_init(AppConfig())
+
+
+async def test_standalone_worker_lifespan_runs_app_hooks_and_binds_default_service() -> "None":
+    from litestar_queues.backends import InMemoryQueueBackend
+    from litestar_queues.task import get_default_service
+    from litestar_queues.worker.runtime import WorkerRunResult
+
+    events: "list[str]" = []
+
+    class _SharedMemoryBackend(InMemoryQueueBackend):
+        __slots__ = ()
+
+    @task("tests.standalone_child")
+    async def standalone_child() -> "str":
+        return "child"
+
+    @task("tests.standalone_parent")
+    async def standalone_parent() -> "str":
+        events.append(f"default_bound:{get_default_service() is not None}")
+        child = await standalone_child.enqueue()
+        return str(child.id)
+
+    async def on_startup(app: "Litestar") -> "None":
+        app.state["custom_resource"] = "initialized"
+        events.append("app_startup")
+
+    async def on_shutdown(app: "Litestar") -> "None":
+        events.append(f"app_shutdown:{app.state.get('custom_resource')}")
+
+    try:
+        queue_backend("custom-shared")(_SharedMemoryBackend)
+        plugin = QueuePlugin(
+            QueueConfig(
+                queue_backend="custom-shared",
+                execution_backend="local",
+                worker=WorkerConfig(placement="server", poll_interval=0.01),
+            )
+        )
+        app = Litestar(plugins=[plugin], on_startup=[on_startup], on_shutdown=[on_shutdown])
+
+        assert plugin.config.worker.run_app_lifespan is True
+
+        async with plugin.open_worker_service(app) as worker_service:
+            backend = worker_service.get_queue_backend()
+            assert events == ["app_startup"]
+            assert app.state["custom_resource"] == "initialized"
+            assert app.state[plugin.config.service_state_key] is worker_service
+            assert get_default_service() is worker_service
+            await worker_service.open()
+            try:
+                parent_result = await worker_service.enqueue(standalone_parent)
+                record = await backend.claim_task(parent_result.id)
+                assert record is not None
+                await worker_service.execute_record(record)
+                stats = await backend.get_statistics()
+                assert stats.pending == 1
+            finally:
+                await worker_service.close()
+    finally:
+        _queue_backend_registry.pop("custom-shared", None)
+
+    assert events == ["app_startup", "default_bound:True", "app_shutdown:initialized"]
+    assert get_default_service() is None
+    assert int(WorkerRunResult.CLEAN) == 0
+
+
+async def test_standalone_worker_lifespan_opt_out_skips_app_hooks_but_binds_default_service() -> "None":
+    from litestar_queues.task import get_default_service
+
+    events: "list[str]" = []
+
+    async def on_startup() -> "None":
+        events.append("app_startup")
+
+    plugin = QueuePlugin(
+        QueueConfig(
+            queue_backend="memory",
+            execution_backend="local",
+            worker=WorkerConfig(placement="external", run_app_lifespan=False),
+        )
+    )
+    app = Litestar(plugins=[plugin], on_startup=[on_startup])
+
+    async with plugin.open_worker_service(app) as worker_service:
+        assert events == []
+        assert get_default_service() is worker_service
+
+    assert get_default_service() is None

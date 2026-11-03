@@ -109,3 +109,93 @@ def test_no_taskgroup_in_shipped_streaming_code() -> None:
     streaming_source = Path("src/litestar_queues/events/streaming.py").read_text()
 
     assert "TaskGroup" not in streaming_source
+
+
+class _SlowUnsubscribeChannelsBackend:
+    def __init__(self) -> None:
+        self.subscribed = asyncio.Event()
+        self.unsubscribed = False
+
+    async def subscribe(self, channels: "Sequence[str]") -> None:
+        self.subscribed.set()
+
+    async def unsubscribe(self, channels: "Sequence[str]") -> None:
+        await asyncio.sleep(0.01)
+        self.unsubscribed = True
+
+    async def stream_events(self) -> "AsyncIterator[tuple[str, bytes]]":
+        await asyncio.Future()
+        if not self.subscribed.is_set():
+            yield ("", b"")
+
+
+async def test_ws_relay_shields_unsubscribe_under_anyio_cancel_scope() -> None:
+    import anyio
+
+    backend = _SlowUnsubscribeChannelsBackend()
+    socket = _RecordingSocket()
+    disconnected_durations: list[float] = []
+
+    class _Metrics:
+        def on_connect(self, scope: str) -> None:
+            pass
+
+        def on_event(self, scope: str) -> None:
+            pass
+
+        def on_heartbeat(self, scope: str) -> None:
+            pass
+
+        def on_dedup_drop(self, scope: str) -> None:
+            pass
+
+        def on_denial(self, scope: str, reason: str) -> None:
+            pass
+
+        def on_disconnect(self, scope: str, duration_seconds: float) -> None:
+            disconnected_durations.append(duration_seconds)
+
+    async with anyio.create_task_group() as tg:
+
+        async def _run_ws() -> None:
+            with anyio.CancelScope() as scope:
+
+                async def _cancel_soon() -> None:
+                    await backend.subscribed.wait()
+                    scope.cancel()
+
+                tg.start_soon(_cancel_soon)
+                await _stream_queue_events_ws(
+                    socket,
+                    ["litestar_queues:task:task_1:events"],
+                    channels_backend=backend,
+                    heartbeat_interval=0,
+                    stream_metrics=_Metrics(),
+                )
+
+        tg.start_soon(_run_ws)
+
+    assert backend.unsubscribed is True
+    assert len(disconnected_durations) == 1
+
+
+async def test_ws_relay_closes_cleanly_on_max_stream_duration_rollover() -> None:
+    backend = _SlowUnsubscribeChannelsBackend()
+    socket = _RecordingSocket()
+    closed_codes: list[int] = []
+
+    async def _close(code: int = 1000) -> None:
+        closed_codes.append(code)
+
+    socket.close = _close  # type: ignore[attr-defined]
+
+    await _stream_queue_events_ws(
+        socket,
+        ["litestar_queues:task:task_1:events"],
+        channels_backend=backend,
+        heartbeat_interval=0,
+        max_stream_duration=0.02,
+    )
+
+    assert backend.unsubscribed is True
+    assert closed_codes == [1000]

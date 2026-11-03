@@ -110,6 +110,15 @@ This command refuses process-local storage. Memory lives inside the process
 that created it, and the ephemeral database belongs to the ``litestar run``
 invocation that created it, so neither is visible to a separate worker.
 
+By default, ``WorkerConfig(run_app_lifespan=True)`` wraps standalone workers
+(``server`` child process and ``litestar queues run``), broker consumers
+(``run-consumer``), and maintenance runs (``run-maintenance``) in
+``async with app.lifespan():`` so application ``lifespan`` context managers and
+``on_startup`` / ``on_shutdown`` hooks run and ``get_default_service()`` is
+bound throughout execution. Set ``run_app_lifespan=False`` to open only the
+queue service. Programmatic callers that embed or wrap the CLI can import the
+command group and subcommands from :mod:`litestar_queues.cli`.
+
 Add more workers
 ----------------
 

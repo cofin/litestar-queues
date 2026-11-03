@@ -7,6 +7,7 @@ because the decorator-style command bodies need it at definition time.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -27,6 +28,9 @@ from litestar_queues.plugin import QueuePlugin
 from litestar_queues.task import get_task_registry, load_task_modules
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from litestar import Litestar
     from litestar.cli._utils import LitestarEnv
 
     from litestar_queues.maintenance import MaintenancePhase, QueueMaintenanceSummary
@@ -146,7 +150,9 @@ def run_command(
 
     # Task modules and schedules belong to the shared runner, which owns them
     # identically for this command and for the server-started worker child.
-    exit_code = asyncio.run(_run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues))
+    exit_code = asyncio.run(
+        _run_worker(plugin, effective_concurrency, effective_drain_timeout, effective_queues, app=env.app)
+    )
     ctx.exit(exit_code)
 
 
@@ -177,41 +183,58 @@ def run_consumer_command(
         raise click.ClickException(msg)
     concurrency = max_concurrency or plugin.config.worker.max_concurrency
     timeout = drain_timeout if drain_timeout is not None else plugin.config.worker.graceful_shutdown_timeout
-    ctx.exit(asyncio.run(_run_consumer(plugin, consumer, concurrency, timeout)))
+    ctx.exit(asyncio.run(_run_consumer(plugin, consumer, concurrency, timeout, app=env.app)))
+
+
+@contextlib.asynccontextmanager
+async def _enter_standalone_lifespan(
+    plugin: "QueuePlugin", app: "Litestar | None", service: "QueueService"
+) -> "AsyncIterator[QueueService]":
+    if hasattr(plugin, "standalone_app_lifespan"):
+        async with plugin.standalone_app_lifespan(app, service=service) as bound:
+            yield bound
+    else:
+        yield service
 
 
 async def _run_consumer(
-    plugin: "QueuePlugin", backend: "BaseConsumerExecutionBackend", max_concurrency: "int", drain_timeout: "float"
+    plugin: "QueuePlugin",
+    backend: "BaseConsumerExecutionBackend",
+    max_concurrency: "int",
+    drain_timeout: "float",
+    *,
+    app: "Litestar | None" = None,
 ) -> "int":
     from litestar_queues.worker.runtime import ShutdownWatchdog
 
     service = _open_service(plugin)
     await service.open()
-    task = asyncio.create_task(
-        backend.run_consumer(service, max_concurrency=max_concurrency, drain_timeout=drain_timeout)
-    )
-    loop = asyncio.get_running_loop()
     watchdog = ShutdownWatchdog(plugin.config.worker.hard_exit_timeout)
     stop_count = 0
-
-    def stop(signum: "int" = int(signal.SIGTERM)) -> "None":
-        nonlocal stop_count
-        stop_count += 1
-        if stop_count > FORCE_STOP_SIGNAL_COUNT:
-            watchdog.exit_now(signum)
-            return
-        if stop_count >= FORCE_STOP_SIGNAL_COUNT:
-            watchdog.arm(signum)
-        task.cancel()
-
     try:
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, partial(stop, int(sig)))
-    except NotImplementedError:
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, lambda handled, _frame: stop(int(handled)))
-    try:
-        await task
+        async with _enter_standalone_lifespan(plugin, app, service):
+            task = asyncio.create_task(
+                backend.run_consumer(service, max_concurrency=max_concurrency, drain_timeout=drain_timeout)
+            )
+            loop = asyncio.get_running_loop()
+
+            def stop(signum: "int" = int(signal.SIGTERM)) -> "None":
+                nonlocal stop_count
+                stop_count += 1
+                if stop_count > FORCE_STOP_SIGNAL_COUNT:
+                    watchdog.exit_now(signum)
+                    return
+                if stop_count >= FORCE_STOP_SIGNAL_COUNT:
+                    watchdog.arm(signum)
+                task.cancel()
+
+            try:
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    loop.add_signal_handler(sig, partial(stop, int(sig)))
+            except NotImplementedError:
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    signal.signal(sig, lambda handled, _frame: stop(int(handled)))
+            await task
     except asyncio.CancelledError:
         return 2 if stop_count > 1 else 0
     finally:
@@ -270,7 +293,7 @@ def run_task_command(
     "--phase",
     "phases",
     multiple=True,
-    type=click.Choice(["external", "stale", "terminal", "events"]),
+    type=click.Choice(["expire", "external", "stale", "schedules", "terminal", "events"]),
     help="Maintenance phase to run. Repeatable; defaults to every configured phase. Only narrows configuration.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
@@ -278,7 +301,7 @@ def run_maintenance_command(ctx: "click.Context", phases: "tuple[str, ...]", as_
     env = _ensure_env(ctx)
     plugin = _resolve_plugin(env)
     _reject_ephemeral_storage(plugin, "run-maintenance")
-    exit_code = asyncio.run(_maintain_run(plugin, phases, as_json))
+    exit_code = asyncio.run(_maintain_run(plugin, phases, as_json, app=env.app))
     ctx.exit(exit_code)
 
 
@@ -288,7 +311,9 @@ def register(cli: "click.Group") -> "None":
         cli.add_command(queues_group)
 
 
-async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_json: "bool") -> "int":
+async def _maintain_run(
+    plugin: "QueuePlugin", phases: "tuple[str, ...]", as_json: "bool", *, app: "Litestar | None" = None
+) -> "int":
     config = plugin.config
     maintenance_config = config.maintenance
     if maintenance_config is None:
@@ -328,7 +353,8 @@ async def _maintain_run(plugin: "QueuePlugin", phases: "tuple[str, ...]", as_jso
                 err=True,
             )
             return 1
-        summary = await QueueMaintenanceService(service, maintenance_config).run(selected)
+        async with _enter_standalone_lifespan(plugin, app, service):
+            summary = await QueueMaintenanceService(service, maintenance_config).run(selected)
     except Exception as exc:
         _emit_maintenance_lifecycle_error("run", exc)
         run_failed = True
@@ -404,7 +430,12 @@ def _failure_detail(exc: "BaseException") -> "str":
 
 
 async def _run_worker(
-    plugin: "QueuePlugin", max_concurrency: "int", drain_timeout: "float", queues: "tuple[str, ...]" = ()
+    plugin: "QueuePlugin",
+    max_concurrency: "int",
+    drain_timeout: "float",
+    queues: "tuple[str, ...]" = (),
+    *,
+    app: "Litestar | None" = None,
 ) -> "int":
     """Run one standalone worker until it is signalled to stop.
 
@@ -439,13 +470,10 @@ async def _run_worker(
         click.echo("litestar queues worker started", err=True)
 
     try:
-        result = await run_worker(
-            plugin.create_worker_service(),
-            config,
-            graceful_stop=stop.graceful,
-            force_stop=stop.force,
-            ready=announce_ready,
-        )
+        async with plugin.open_worker_service(app) as service:
+            result = await run_worker(
+                service, config, graceful_stop=stop.graceful, force_stop=stop.force, ready=announce_ready
+            )
     except Exception as exc:
         # Name the startup stage and exception type but never the exception
         # text: connection strings and credentials routinely appear in backend

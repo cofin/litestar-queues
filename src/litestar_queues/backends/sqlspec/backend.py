@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
+from importlib import import_module
 from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import UUID, uuid4
@@ -479,8 +480,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("enqueue", queue=queue, task_name=task_name):
             async with self._session() as driver:
                 await driver.execute(store.insert_returning_sql(), self._insert_params(record))
-                if isinstance(driver, _ManagedAsyncDriver):
-                    await driver.commit()
+                await _commit_single_statement(driver)
         self._increment_queue_metric("enqueue")
         await self.notify_new_task(record)
         return record
@@ -851,8 +851,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("claim", execution_backend=execution_backend):
             async with self._session() as driver:
                 rows = await self._select_rows(driver, sql_text, parameters)
-                if isinstance(driver, _ManagedAsyncDriver):
-                    await driver.commit()
+                await _commit_single_statement(driver)
         records = [self._record_from_row(row) for row in rows]
         if records:
             self._increment_queue_metric("claim", float(len(records)))
@@ -949,8 +948,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("claim", execution_backend=execution_backend):
             async with self._session() as driver:
                 rows = await self._select_rows(driver, sql_text, parameters)
-                if isinstance(driver, _ManagedAsyncDriver):
-                    await driver.commit()
+                await _commit_single_statement(driver)
         claimed: "list[QueuedTaskRecord]" = []
         expired: "list[QueuedTaskRecord]" = []
         for row in rows:
@@ -1062,8 +1060,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("complete", task_id=str(task_id)):
             async with self._session() as driver:
                 row = await self._select_one_row(driver, sql_text, parameters)
-                if isinstance(driver, _ManagedAsyncDriver):
-                    await driver.commit()
+                await _commit_single_statement(driver)
         completed = self._record_from_row(row) if row is not None else None
         if completed is not None:
             self._increment_queue_metric("complete")
@@ -1145,8 +1142,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         with self._observe_queue_operation("fail", task_id=str(task_id), retry=retry):
             async with self._session() as driver:
                 row = await self._select_one_row(driver, sql_text, parameters)
-                if isinstance(driver, _ManagedAsyncDriver):
-                    await driver.commit()
+                await _commit_single_statement(driver)
         updated = self._record_from_row(row) if row is not None else None
         if updated is None:
             self._increment_queue_metric("claim_lost")
@@ -1547,6 +1543,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                                 )
                             ):
                                 result.requeued += 1
+                                result.requeued_task_ids.append(record.id)
                             else:
                                 result.skipped += 1
                         else:
@@ -2966,6 +2963,12 @@ async def _bridge_session(
                 sync_executor.shutdown(wait=True)
 
 
+async def _commit_single_statement(driver: "SQLSpecDriver") -> "None":
+    """Commit single-statement DML on sync bridges and DB-API async drivers with implicit transactions."""
+    if isinstance(driver, _ManagedAsyncDriver) or getattr(driver, "_connection_in_transaction", lambda: False)():
+        await driver.commit()
+
+
 async def _exit_sync_session(
     session_cm: "Any", exc_type: "Any", exc_val: "Any", exc_tb: "Any", *, executor: "ThreadPoolExecutor | None" = None
 ) -> "bool":
@@ -3155,8 +3158,6 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     Returns:
         The adapter's events queue store bound to ``sqlspec_config``.
     """
-    from sqlspec.utils.module_loader import import_string
-
     config_class = next(
         (
             config_type
@@ -3171,8 +3172,9 @@ def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
     adapter_name = config_class.__module__.split(".")[2]
     store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
     try:
-        store_class = import_string(f"sqlspec.adapters.{adapter_name}.events.store.{store_class_name}")
-    except ImportError as exc:
+        store_module = import_module(f"sqlspec.adapters.{adapter_name}.events.store")
+        store_class = getattr(store_module, store_class_name)
+    except (ImportError, AttributeError) as exc:
         msg = f"SQLSpec config {config_class.__name__!r} has no supported native events queue store."
         raise QueueConfigurationError(msg) from exc
     return store_class(sqlspec_config)

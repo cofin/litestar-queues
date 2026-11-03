@@ -649,7 +649,7 @@ class Task(Generic[P, T]):
         """
         kwargs = dict(record.kwargs)
         if extra_kwargs:
-            kwargs.update(extra_kwargs)
+            kwargs.update(self._filter_extra_kwargs(extra_kwargs))
         if task_context is not None and self._accepts_task_context():
             kwargs["_task_context"] = task_context
         return await self._invoke(record.args, kwargs, sync_executor=sync_executor)
@@ -740,6 +740,17 @@ class Task(Generic[P, T]):
         )
         async with QueueService(fallback) as service:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
+
+    def _filter_extra_kwargs(self, extra_kwargs: "Mapping[str, object]") -> "dict[str, object]":
+        parameters = self.signature.parameters
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+            return dict(extra_kwargs)
+        accepted = {
+            name
+            for name, param in parameters.items()
+            if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        return {key: value for key, value in extra_kwargs.items() if key in accepted}
 
     def _accepts_task_context(self) -> "bool":
         parameters = self.signature.parameters

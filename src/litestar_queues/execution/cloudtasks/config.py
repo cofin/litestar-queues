@@ -96,6 +96,12 @@ class CloudTasksExecutionConfig:
     api_timeout: "float" = 10.0
     """Timeout for a single Cloud Tasks API call."""
 
+    mount_route: "bool" = True
+    """Whether ``QueuePlugin`` mounts the Cloud Tasks HTTP delivery route on the app."""
+
+    verify_oidc: "bool" = False
+    """Whether the delivery route verifies Google OIDC Bearer tokens in-process."""
+
     trust_platform_auth: "bool" = False
     """Whether Cloud Run IAM alone is accepted as protection for the route."""
 
@@ -215,13 +221,16 @@ class CloudTasksExecutionConfig:
         """Reject a delivery route with no protection at all.
 
         Raises:
-            QueueConfigurationError: If neither platform auth nor guards apply.
+            QueueConfigurationError: If neither platform auth, OIDC verification,
+                nor guards apply when the route is mounted.
         """
-        if not self.trust_platform_auth and not self.guards:
+        if not self.mount_route:
+            return
+        if not self.trust_platform_auth and not self.verify_oidc and not self.guards:
             msg = (
                 "Cloud Tasks delivers over public HTTP, so the consumer route needs protection. "
-                "Set trust_platform_auth=True when Cloud Run IAM already requires an "
-                "authenticated caller, or pass guards."
+                "Set verify_oidc=True, trust_platform_auth=True when Cloud Run IAM already requires an "
+                "authenticated caller, pass guards, or set mount_route=False on producer-only services."
             )
             raise QueueConfigurationError(msg)
 
@@ -256,8 +265,12 @@ def _execution_config_from_queue_config(config: "QueueConfig | None") -> "CloudT
     Raises:
         QueueConfigurationError: If no typed Cloud Tasks config is available.
     """
-    if config is not None and isinstance(config.execution_backend, CloudTasksExecutionConfig):
-        return config.execution_backend.resolve(config.names)
+    if config is not None:
+        if isinstance(config.execution_backend, CloudTasksExecutionConfig):
+            return config.execution_backend.resolve(config.names)
+        resolved = config.resolved_execution_backends().get(CLOUD_TASKS_BACKEND_NAME)
+        if isinstance(resolved, CloudTasksExecutionConfig):
+            return resolved.resolve(config.names)
 
     msg = (
         "Cloud Tasks execution requires QueueConfig.execution_backend with a "

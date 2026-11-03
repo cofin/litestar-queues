@@ -121,7 +121,7 @@ def test_only_a_self_scheduling_transport_claims_to_schedule_on_enqueue() -> "No
         for name in list_execution_backends()
         if get_execution_backend_class(name).schedules_on_enqueue.fget(None)  # type: ignore[attr-defined]
     }
-    assert self_scheduling == {"cloudtasks"}
+    assert self_scheduling == {"cloudrun", "cloudtasks"}
 
 
 def test_every_transport_backend_reports_itself_as_external() -> "None":

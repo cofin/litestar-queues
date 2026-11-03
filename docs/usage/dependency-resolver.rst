@@ -15,7 +15,7 @@ Configuring both hooks at the same time raises a :exc:`QueueConfigurationError`.
 Stateless Resolver
 ==================
 
-Litestar Queues awaits the resolver once for each task attempt. This happens after the ``task.started`` event and before the task function runs. It adds the returned mapping to the task's keyword arguments. The package-owned ``_task_context`` value always overrides resolver output.
+Litestar Queues awaits the resolver once for each task attempt. This happens after the ``task.started`` event and before the task function runs. It adds the returned mapping to the task's keyword arguments, automatically filtering out keys that are not declared in the task function's signature when the task does not accept ``**kwargs``. The package-owned ``_task_context`` value always overrides resolver output.
 
 Type Alias
 ----------

@@ -506,6 +506,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
                     record.error = stale_requeue_error(record.error)
                     record.retry_count += 1
                     result.requeued += 1
+                    result.requeued_task_ids.append(record.id)
                     continue
                 record.status = "failed"
                 record.completed_at = _utc_now()
