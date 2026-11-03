@@ -250,10 +250,12 @@ jobs:
         run: uv python install 3.14
 
       - name: Install dependencies
-        run: make install
+        run: uv sync --group docs
 
-      - name: Build docs
-        run: uv run make docs
-
-      - name: Check docs links
-        run: uv run make docs-linkcheck
+      - name: Build and verify docs
+        run: |
+          uv run python tools/docs/scan_public_docstrings.py
+          uv run python tools/docs/generate_cli_docs.py --check
+          uv run zensical build --clean
+          uv run python tools/docs/postbuild.py
+          uv run python tools/docs/verify_docs_artifacts.py --strict-warnings

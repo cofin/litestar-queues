@@ -149,27 +149,38 @@ release: setup-env                                 ## Bump version and create re
 # =============================================================================
 
 .PHONY: docs
-docs:                                               ## Build HTML documentation with warnings as errors
+docs:                                               ## Build HTML documentation and verify all artifacts
 	@echo "${INFO} Building docs... 📚"
-	@uv run sphinx-build -W --keep-going -b html docs docs/_build/html
+	@uv run python tools/docs/scan_public_docstrings.py
+	@uv run python tools/docs/generate_cli_docs.py --check
+	@uv run zensical build --clean
+	@uv run python tools/docs/postbuild.py
+	@uv run python tools/docs/verify_docs_artifacts.py --strict-warnings
 	@echo "${OK} Docs build complete 📚"
 
+.PHONY: docs-serve
+docs-serve:                                         ## Serve documentation locally with live reload
+	@echo "${INFO} Serving docs... 📚"
+	@uv run zensical serve
+
 .PHONY: docs-linkcheck
-docs-linkcheck:                                     ## Validate documentation links
+docs-linkcheck:                                     ## Validate documentation links and artifacts
 	@echo "${INFO} Checking docs links... 📚"
-	@uv run sphinx-build -W --keep-going -b linkcheck docs docs/_build/linkcheck
+	@uv run python tools/docs/verify_docs_artifacts.py --strict-warnings
 	@echo "${OK} Docs linkcheck complete 📚"
 
 .PHONY: docs-audit
-docs-audit:                                         ## Audit documentation structure and terminology
+docs-audit:                                         ## Audit documentation docstrings, CLI reference, and structure
 	@echo "${INFO} Auditing docs... 📚"
-	@uv run python tools/docs_audit.py
+	@uv run python tools/docs/scan_public_docstrings.py
+	@uv run python tools/docs/generate_cli_docs.py --check
+	@uv run pytest src/tests/unit/test_docs_structure.py -q
 	@echo "${OK} Docs audit complete 📚"
 
 .PHONY: docs-clean
 docs-clean:                                         ## Clean documentation artifacts
 	@echo "${INFO} Cleaning docs artifacts... 📚"
-	@rm -rf docs/_build docs-build >/dev/null 2>&1
+	@rm -rf site >/dev/null 2>&1
 	@echo "${OK} Docs artifacts cleaned 📚"
 
 # =============================================================================

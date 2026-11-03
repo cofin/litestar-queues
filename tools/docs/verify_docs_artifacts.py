@@ -12,9 +12,16 @@ from urllib.parse import unquote
 import msgspec
 
 from litestar_queues.cli import queues_group
-from tools.docs.generate_cli_docs import main as cli_docs_main
-from tools.docs.postbuild import DEFAULT_DOCS_DIR, DEFAULT_SITE_DIR, LEGACY_REDIRECTS, run_postbuild
-from tools.docs.scan_public_docstrings import scan_package
+
+try:
+    from tools.docs.generate_cli_docs import main as cli_docs_main
+    from tools.docs.postbuild import DEFAULT_DOCS_DIR, DEFAULT_SITE_DIR, LEGACY_REDIRECTS, run_postbuild
+    from tools.docs.scan_public_docstrings import scan_package
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tools.docs.generate_cli_docs import main as cli_docs_main
+    from tools.docs.postbuild import DEFAULT_DOCS_DIR, DEFAULT_SITE_DIR, LEGACY_REDIRECTS, run_postbuild
+    from tools.docs.scan_public_docstrings import scan_package
 
 __all__ = (
     "BANNED_PHRASES",
@@ -342,12 +349,13 @@ def _check_single_href(
             )
         return None
 
+    clean_path = path_part.removeprefix("/litestar-queues/") if path_part.startswith("/litestar-queues/") else path_part
     resolved = (
-        posixpath.normpath(path_part.lstrip("/"))
+        posixpath.normpath(clean_path.lstrip("/"))
         if path_part.startswith("/")
-        else posixpath.normpath(posixpath.join(cur_dir, path_part))
+        else posixpath.normpath(posixpath.join(cur_dir, clean_path))
     )
-    if path_part.endswith("/") and not resolved.endswith("/"):
+    if clean_path.endswith("/") and not resolved.endswith("/"):
         resolved += "/"
 
     target_rel = _resolve_site_target(site_dir, resolved, ids_by_rel_path)

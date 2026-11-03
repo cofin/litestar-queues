@@ -175,8 +175,8 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
 
 def test_realtime_examples_and_guides_lock_task_context_lifecycle_semantics() -> None:
     examples_readme = (EXAMPLES_ROOT / "README.md").read_text()
-    events_guide = (ROOT / "docs" / "usage" / "events.rst").read_text()
-    tasks_guide = (ROOT / "docs" / "usage" / "tasks.rst").read_text()
+    events_guide = (ROOT / "docs" / "events" / "index.md").read_text()
+    tasks_guide = (ROOT / "docs" / "learn" / "tasks.md").read_text()
 
     for name in EXAMPLE_VARIANTS:
         app_source = (EXAMPLES_ROOT / name / "app.py").read_text()
@@ -343,7 +343,7 @@ def test_htmx_realtime_examples_discover_routes_and_active_vite_integration() ->
 
 
 def test_htmx_realtime_docs_import_from_runnable_example() -> None:
-    docs_source = (ROOT / "docs" / "usage" / "event-streams.rst").read_text()
+    docs_source = (ROOT / "docs" / "events" / "streams.md").read_text()
     assert "examples/htmx_realtime_websocket/app.py" in docs_source
     assert "examples/shared/resources/main-ws.ts" in docs_source
     assert "examples/shared/templates/partials/stream_mount_ws.html" in docs_source

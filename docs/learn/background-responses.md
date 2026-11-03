@@ -1,6 +1,6 @@
 # Post-Response Background Tasks
 
-When an HTTP route handler triggers background work, you can either enqueue the task inside the handler before returning the response or attach a [`QueuedBackgroundTask`](../reference/tasks-and-models.md#litestar_queues.background.QueuedBackgroundTask) to the Litestar `Response`.
+When an HTTP route handler triggers background work, you can either enqueue the task inside the handler before returning the response or attach a [`QueuedBackgroundTask`](../reference/plugin-and-config.md#litestar_queues.background.QueuedBackgroundTask) to the Litestar `Response`.
 
 ## Runnable Example
 

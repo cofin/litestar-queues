@@ -16,7 +16,7 @@ A **queue backend** (`BaseQueueBackend`) is the authoritative storage layer for 
 | **SQLSpec — CockroachDB (`cockroach_asyncpg`, `cockroach_psycopg`)** | Distributed SQL database | Adaptive polling | `polling` | Native `ttl_expiration_expression` + worker sweep | Yes | Yes |
 | **SQLSpec — Google Cloud Spanner (`spanner`)** | Distributed SQL database | Adaptive polling | `polling` | Native `ROW DELETION POLICY` + worker sweep | Yes | Yes |
 | **SQLSpec — SQLite (`aiosqlite`, `sqlite`, `adbc`), MySQL/MariaDB (`asyncmy`, `aiomysql`, `pymysql`, `mysqlconnector`), SQL Server (`pymssql`, `mssql_python`, `arrow_odbc`)** | Relational database | Adaptive polling | `polling` | In-worker `terminal_ttl` sweep | Yes | Yes |
-| **Advanced Alchemy (`SQLAlchemyBackendConfig`)** | SQLAlchemy async ORM | `~8 ms` (PostgreSQL `LISTEN/NOTIFY`) | `LISTEN/NOTIFY` on `postgresql+asyncpg` and `postgresql+psycopg` when `worker_wakeups=True` | In-worker `terminal_retention` sweep | Yes | Yes |
+| **Advanced Alchemy (`SQLAlchemyBackendConfig`)** | SQLAlchemy async ORM | `~8 ms` (PostgreSQL `LISTEN/NOTIFY`) | `postgres-listen-notify` (`LISTEN/NOTIFY` on `postgresql+asyncpg` and `postgresql+psycopg` when `worker_wakeups=True`) | In-worker `terminal_retention` sweep | Yes | Yes |
 | **Redis (`RedisBackendConfig`)** | Redis server / cluster | `4.3 ms` | Redis Pub/Sub (`worker_wakeups=True`) | Native `PEXPIRE` + `{prefix}:terminal_meta` pruning | Yes (Redis Streams + Hashes) | Yes |
 | **Valkey (`ValkeyBackendConfig`)** | Valkey server / cluster | `4.6 ms` | Valkey Pub/Sub (`worker_wakeups=True`) | Native `PEXPIRE` + `{prefix}:terminal_meta` pruning | Yes (Valkey Streams + Hashes) | Yes |
 

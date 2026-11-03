@@ -1,93 +1,118 @@
-# Litestar Queues
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/cofin/litestar-queues/main/docs/assets/banner-inline-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/cofin/litestar-queues/main/docs/assets/banner-inline-light.svg">
+    <img alt="Litestar Queues" src="https://raw.githubusercontent.com/cofin/litestar-queues/main/docs/assets/banner-inline-light.svg" width="520">
+  </picture>
+  <p><strong>Task queues, workers, schedules, realtime event streams, and storage/execution backends for Litestar.</strong></p>
+  <p>
+    <a href="https://pypi.org/project/litestar-queues/"><img src="https://img.shields.io/pypi/v/litestar-queues?color=1d4ed8" alt="PyPI"></a>
+    <a href="https://pypi.org/project/litestar-queues/"><img src="https://img.shields.io/pypi/pyversions/litestar-queues?color=1d4ed8" alt="Python"></a>
+    <a href="https://github.com/cofin/litestar-queues/actions/workflows/ci.yml"><img src="https://github.com/cofin/litestar-queues/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://cofin.github.io/litestar-queues/"><img src="https://img.shields.io/badge/docs-cofin.github.io-1d4ed8" alt="Documentation"></a>
+    <a href="https://github.com/cofin/litestar-queues/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/litestar-queues?color=1d4ed8" alt="License"></a>
+  </p>
+  <p>
+    <a href="https://cofin.github.io/litestar-queues/getting-started/quickstart/">Quickstart</a> ·
+    <a href="https://cofin.github.io/litestar-queues/architecture/">Architecture</a> ·
+    <a href="https://cofin.github.io/litestar-queues/backends/">Storage Backends</a> ·
+    <a href="https://cofin.github.io/litestar-queues/execution/">Execution &amp; Operations</a> ·
+    <a href="https://cofin.github.io/litestar-queues/events/">Events &amp; Streams</a> ·
+    <a href="https://cofin.github.io/litestar-queues/reference/">API Reference</a>
+  </p>
+</div>
 
-[![PyPI](https://img.shields.io/pypi/v/litestar-queues)](https://pypi.org/project/litestar-queues/)
-[![Python](https://img.shields.io/pypi/pyversions/litestar-queues)](https://pypi.org/project/litestar-queues/)
-[![License](https://img.shields.io/pypi/l/litestar-queues)](https://github.com/cofin/litestar-queues/blob/main/LICENSE)
-[![CI](https://github.com/cofin/litestar-queues/actions/workflows/ci.yml/badge.svg)](https://github.com/cofin/litestar-queues/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-cofin.github.io-blue)](https://cofin.github.io/litestar-queues/)
+---
 
-Litestar Queues lets a Litestar application persist work, run it in a worker,
-and inspect the result. Use it for work that should outlive the request that
-started it: sending email, importing files, refreshing reports, or calling a
-slow service.
+`litestar-queues` decouples **authoritative task storage** (`BaseQueueBackend`) from **execution delivery** (`BaseExecutionBackend`). Persist tasks, retries, uniqueness reservations, and event history in SQLSpec (PostgreSQL, MySQL, MariaDB, SQLite, DuckDB, CockroachDB, Spanner, Oracle, SQL Server), Advanced Alchemy, Redis, or Valkey while dispatching execution across local workers, Google Cloud Tasks, Google Cloud Run Jobs, Pub/Sub, SQS, RabbitMQ, or Kafka using an ID-only wire payload (`{"version": 1, "task_id": "<uuid>"}`).
+
+## Install
+
+```bash
+uv add litestar-queues
+```
+
+Add optional extras for your storage or execution backend (`sqlspec`, `sqlalchemy`, `redis`, `valkey`, `cloud-tasks`, `cloud-run`, `pubsub`, `sqs`, `rabbitmq`, `kafka`, `otel`, `prometheus`).
 
 ## Quickstart
 
-Install the package:
-
-```bash
-pip install litestar-queues
-```
-
-Create `app.py`:
-
 ```python
-from litestar import Litestar, post
+from uuid import UUID
+
+from litestar import Litestar, get, post
 from litestar.di import NamedDependency
+from litestar.exceptions import NotFoundException
+from litestar.params import FromPath, FromQuery
 
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 
 
-@task("accounts.sync", queue="accounts", timeout=30)
-async def sync_account(account_id: str) -> dict[str, str]:
-    return {"account_id": account_id, "status": "synced"}
+@task(queue="reports")
+async def render_report(report_id: str, requested_by: str) -> dict[str, str]:
+    """Render an analytics report in the background."""
+    return {"report_id": report_id, "requested_by": requested_by, "status": "ready"}
 
 
-@post("/accounts/{account_id:str}/sync")
-async def create_sync_job(
-    account_id: str, queue_service: NamedDependency[QueueService]
+@post("/reports/{report_id:str}")
+async def start_report(
+    report_id: FromPath[str],
+    queue_service: NamedDependency[QueueService],
+    requested_by: FromQuery[str] = "team@example.com",
 ) -> dict[str, str]:
-    result = await queue_service.enqueue(sync_account, account_id)
-    return {"task_id": str(result.id), "status": result.status or "pending"}
+    """Enqueue a background report job and return its tracking ID."""
+    handle = await queue_service.enqueue(render_report, report_id, requested_by=requested_by)
+    return {"task_id": str(handle.id), "status": handle.status or "pending"}
 
 
-app = Litestar(
-    route_handlers=[create_sync_job],
-    plugins=[QueuePlugin(config=QueueConfig())],
-)
+@get("/tasks/{task_id:uuid}")
+async def get_report_status(task_id: FromPath[UUID], queue_service: NamedDependency[QueueService]) -> dict[str, object]:
+    """Inspect the status and return value of a queued task."""
+    record = await queue_service.get_task(task_id)
+    if record is None:
+        raise NotFoundException(detail=f"Task {task_id} not found")
+    return {
+        "task_id": str(record.id),
+        "status": record.status,
+        "is_terminal": record.is_terminal,
+        "result": record.result,
+    }
+
+
+app = Litestar(route_handlers=[start_report, get_report_status], plugins=[QueuePlugin(config=QueueConfig())])
 ```
 
-Run the application:
+Start the server and its supervised worker process:
 
 ```bash
-LITESTAR_APP=app:app litestar run --reload
+LITESTAR_APP=app:app uv run litestar run --reload
 ```
 
-Enqueue a task:
+Enqueue a report job and inspect its status:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/accounts/acct-123/sync
+curl -X POST http://127.0.0.1:8000/reports/q3-revenue
+curl http://127.0.0.1:8000/tasks/<task_id>
 ```
 
-The response contains a task ID and an initial status:
+## Capabilities
 
-```json
-{"task_id": "...", "status": "pending"}
-```
+| Area | Highlights |
+| :--- | :--- |
+| **Storage Backends** | Zero-config `EphemeralQueueBackend` (WAL SQLite), `InMemoryQueueBackend`, `SQLSpecQueueBackend` (9+ relational databases & third-party adapters), `SQLAlchemyBackend` (Advanced Alchemy), `RedisQueueBackend`, and `ValkeyQueueBackend`. |
+| **Execution & Workers** | `WorkerConfig(placement="server" \| "asgi" \| "external")`, multi-backend routing (`QueueConfig.execution_backends`), Google Cloud Tasks push callbacks (`CloudTasksOIDCGuard`), Cloud Run Jobs, Pub/Sub, SQS, RabbitMQ, and Kafka. |
+| **Tasks & Schedules** | Priority queues, retries with exponential/jittered backoff, argument-identity uniqueness & forever reservations, cooperative & remote cancellation, cron/interval `ScheduleConfig`, and attempt-scoped `TaskDependencyProvider`. |
+| **Events & Observability** | Live SSE & WebSocket event streams (`EventStreamConfig`), durable event history (`EventHistoryConfig`, `QueueEventQuery`, `EventHistoryExtraColumn`), and low-cardinality OpenTelemetry, Prometheus, and SQLCommenter telemetry (`ObservabilityConfig`). |
 
-By default, `QueueConfig()` starts a dedicated worker process alongside the
-server and uses an ephemeral SQLite database. The database is removed on
-normal shutdown and does not persist across restarts.
+## Documentation
 
-## Production boundary
+- [Getting Started & Installation](https://cofin.github.io/litestar-queues/getting-started/)
+- [Core Concepts & Guides](https://cofin.github.io/litestar-queues/learn/)
+- [Storage Backends (SQLSpec, Advanced Alchemy, Redis, Valkey)](https://cofin.github.io/litestar-queues/backends/)
+- [Execution Backends, Bounded Maintenance & CLI](https://cofin.github.io/litestar-queues/execution/)
+- [Task Events, Realtime Streams, History & Observability](https://cofin.github.io/litestar-queues/events/)
+- [Architecture & Runnable Examples](https://cofin.github.io/litestar-queues/architecture/)
+- [API & CLI Reference](https://cofin.github.io/litestar-queues/reference/)
 
-The default setup uses a temporary SQLite database and a local worker to get
-started quickly.
+## Contributing & License
 
-In production, decouple task storage from execution:
-
-- **Storage**: Use Redis, Valkey, SQLSpec, or Advanced Alchemy so tasks
-  persist across deploys and restarts.
-- **Workers**: Run standalone worker processes or Cloud Run jobs so background
-  work scales independently from web requests.
-
-## Next steps
-
-- [Start here](https://cofin.github.io/litestar-queues/getting_started/index.html)
-- [Understand the model](https://cofin.github.io/litestar-queues/usage/concepts.html)
-- [Follow a how-to guide](https://cofin.github.io/litestar-queues/usage/index.html)
-- [Choose backends](https://cofin.github.io/litestar-queues/usage/backends.html)
-- [Run an example](https://cofin.github.io/litestar-queues/examples/index.html)
-- [Browse the API reference](https://cofin.github.io/litestar-queues/reference/index.html)
-
-Litestar Queues supports Python 3.11 through 3.15 and is licensed under MIT.
+Run `make install`, `make test-unit`, `make lint`, and `make docs` before submitting changes; see the [Contributing & Testing guide](https://cofin.github.io/litestar-queues/reference/contributing/) for details. `litestar-queues` supports Python 3.11 through 3.15 and is distributed under the [MIT License](https://github.com/cofin/litestar-queues/blob/main/LICENSE).

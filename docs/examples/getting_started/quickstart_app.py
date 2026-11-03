@@ -5,6 +5,7 @@ from uuid import UUID
 from litestar import Litestar, get, post
 from litestar.di import NamedDependency
 from litestar.exceptions import NotFoundException
+from litestar.params import FromPath, FromQuery
 
 from litestar_queues import QueueConfig, QueuePlugin, QueueService, task
 
@@ -17,7 +18,9 @@ async def render_report(report_id: str, requested_by: str) -> dict[str, str]:
 
 @post("/reports/{report_id:str}")
 async def start_report(
-    report_id: str, queue_service: NamedDependency[QueueService], requested_by: str = "team@example.com"
+    report_id: FromPath[str],
+    queue_service: NamedDependency[QueueService],
+    requested_by: FromQuery[str] = "team@example.com",
 ) -> dict[str, str]:
     """Enqueue a background report job and return its tracking ID."""
     handle = await queue_service.enqueue(render_report, report_id, requested_by=requested_by)
@@ -25,7 +28,7 @@ async def start_report(
 
 
 @get("/tasks/{task_id:uuid}")
-async def get_report_status(task_id: UUID, queue_service: NamedDependency[QueueService]) -> dict[str, object]:
+async def get_report_status(task_id: FromPath[UUID], queue_service: NamedDependency[QueueService]) -> dict[str, object]:
     """Inspect the status and return value of a queued task."""
     record = await queue_service.get_task(task_id)
     if record is None:

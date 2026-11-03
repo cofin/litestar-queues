@@ -11,7 +11,7 @@ This page provides an interactive visual breakdown of the six core architectural
 | Invariant | Authoritative Component | Enforcement Mechanism |
 | :--- | :--- | :--- |
 | **Single Source of Truth** | `BaseQueueBackend` | All task arguments, status transitions, retry counters, and results live exclusively in storage. |
-| **ID-Only Wire Payload** | `BaseExecutionBackend` (`TaskDispatchEnvelope`) | Wire payload is strictly `{"version": 1, "task_id": "<uuid>"}` with zero task arguments or secrets. |
+| **ID-Only Wire Payload** | `BaseExecutionBackend` | Wire payload is strictly `{"version": 1, "task_id": "<uuid>"}` with zero task arguments or secrets. |
 | **Epoch & Lease Fencing** | `heartbeat_tasks()`, `complete_task()`, `fail_task()` | Every mutation checks `status == "running"`, `retry_count == expected_retry_count`, and `execution_ref == expected_execution_ref`. |
 
 ## Worker Placement Topologies

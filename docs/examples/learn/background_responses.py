@@ -1,10 +1,11 @@
 """Enqueuing tasks after an HTTP response completes using QueuedBackgroundTask."""
 
 from litestar import Litestar, Response, post
+from litestar.params import FromPath
 from litestar.status_codes import HTTP_201_CREATED
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, WorkerConfig, task
+from litestar_queues import QueueConfig, QueuedBackgroundTask, QueuePlugin, WorkerConfig, get_task_registry, task
 
 
 @task("audit.record_login", queue="audit")
@@ -14,7 +15,7 @@ async def record_login(username: str) -> str:
 
 
 @post("/login/{username:str}")
-async def login_user(username: str) -> Response[dict[str, str]]:
+async def login_user(username: FromPath[str]) -> Response[dict[str, str]]:
     """Return the HTTP response immediately and enqueue the audit task afterward."""
     return Response(
         content={"username": username, "status": "authenticated"},
@@ -24,6 +25,7 @@ async def login_user(username: str) -> Response[dict[str, str]]:
 
 async def main() -> None:
     """Verify QueuedBackgroundTask enqueues and executes after the HTTP response."""
+    get_task_registry()[record_login.name] = record_login
     app = Litestar(
         route_handlers=[login_user],
         plugins=[
