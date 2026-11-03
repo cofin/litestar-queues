@@ -55,8 +55,6 @@ async def assert_claim_many_reports_owned_expirations(queue_backend: "BaseQueueB
 
 
 async def assert_expiry_fences_retry_requeue(queue_backend: "BaseQueueBackend") -> "None":
-    # Leave enough headroom for remote databases to enqueue and claim under a
-    # loaded integration matrix before deliberately waiting out the deadline.
     expires_at = datetime.now(UTC) + timedelta(seconds=10)
     record = await queue_backend.enqueue("tasks.retry_expiry", max_retries=1, expires_at=expires_at)
     claimed = await queue_backend.claim_task(record.id)

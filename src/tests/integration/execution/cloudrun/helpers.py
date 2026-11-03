@@ -94,8 +94,6 @@ class FakeExecutionsClient:
         self.cancelled_names.append(name)
         if self.cancel_error is not None:
             raise self.cancel_error
-        # We need to return a FakeOperation, which requires a FakeCloudRunExecution.
-        # If self.execution is an Exception, we can just return a dummy execution.
         execution = self.execution if isinstance(self.execution, FakeCloudRunExecution) else FakeCloudRunExecution()
         return FakeOperation(execution)
 

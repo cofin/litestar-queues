@@ -342,7 +342,6 @@ async def test_sqlspec_backend_reuses_one_event_stream_across_timeouts(
 
         await backend.enqueue("tasks.reuse", queue="critical", execution_backend="local")
 
-        # A notification arriving after timeouts wakes the retained read without a new iterator.
         assert await backend.wait_for_wakeups(timeout=1) is True
         assert event_channel.iter_events_calls == 1
         assert event_channel.acked == ["event-1"]
@@ -372,7 +371,6 @@ async def test_sqlspec_backend_close_while_reading_leaves_no_stream(
     await backend.close()
     assert bool(backend._pending_read.has_pending) is False
     assert backend._event_stream is None
-    # Double close is idempotent.
     await backend.close()
 
 
@@ -397,7 +395,6 @@ async def test_sqlspec_backend_read_error_resets_stream_and_recovers(
         assert backend._event_stream is None
         assert bool(backend._pending_read.has_pending) is False
 
-        # A bounded re-establishment builds a fresh stream that reconciles normally.
         await backend.enqueue("tasks.recover", execution_backend="local")
         assert await backend.wait_for_wakeups(timeout=1) is True
         assert event_channel.iter_events_calls == 2
@@ -598,7 +595,6 @@ async def test_sqlspec_backend_migration_path_provisions_events_table(postgres_s
 
     pytest.importorskip("asyncpg")
 
-    # Start from a clean slate: another test or run may share this database.
     cleanup_backend = SQLSpecQueueBackend(
         backend_config=SQLSpecBackendConfig(sqlspec_config=_postgres_config("asyncpg", postgres_service))
     )
@@ -614,11 +610,9 @@ async def test_sqlspec_backend_migration_path_provisions_events_table(postgres_s
 
     backend = SQLSpecQueueBackend(backend_config=backend_config)
     await backend.open()
-    # No create_schema: the migration path already provisioned both tables.
     try:
         assert backend.capabilities.wakeup_backend == "notify_queue"
 
-        # Prime the retained native read so LISTEN is established before enqueue.
         assert await backend.wait_for_wakeups(timeout=0.05) is False
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
         start = time.monotonic()
@@ -757,7 +751,6 @@ async def test_sqlspec_backend_oracle_event_transports_wake_waiters(
             assert backend.capabilities.wakeup_backend == event_backend
             assert backend.capabilities.wakeups_durable is True
 
-            # Establish the retained AQ read before publishing the wakeup.
             assert await backend.wait_for_wakeups(timeout=1.5) is False
             waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=10))
             await backend.enqueue(f"tasks.oracle_{event_backend}_wake")
@@ -909,7 +902,6 @@ async def test_sqlspec_backend_postgres_notify_queue_wakes(
         assert backend.capabilities.wakeup_backend == "notify_queue"
         assert backend.capabilities.wakeups_durable is True
 
-        # NOTIFY wake: subscribe first, then enqueue, and measure latency.
         assert await backend.wait_for_wakeups(timeout=0.05) is False
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
         start = time.monotonic()
@@ -917,7 +909,6 @@ async def test_sqlspec_backend_postgres_notify_queue_wakes(
         assert await waiter is True
         assert time.monotonic() - start < 1.0
 
-        # Burst: every enqueue must remain observable via the durable fallback.
         burst = 5
         for index in range(burst):
             await backend.enqueue("tasks.pg_burst", kwargs={"index": index})
@@ -1021,7 +1012,6 @@ async def test_sqlspec_backend_postgres_native_wakeup_default_on(
         start = time.monotonic()
         await backend.enqueue(f"tasks.{adapter_name}_wake")
         assert await waiter is True
-        # A real NOTIFY wake resolves well under the 1s default poll interval.
         assert time.monotonic() - start < 0.9
     finally:
         await _drop_postgres_tables(backend, table_name)
@@ -1086,8 +1076,6 @@ async def test_sqlspec_postgres_config_subclass_durable_wakeup(
     config_type = getattr(import_module(f"sqlspec.adapters.{adapter}"), config_name)
     application_type = type("ApplicationConfig", (config_type,), {"__module__": "application"})
     database_key = "database" if adapter == "asyncpg" else "dbname"
-    # Use the supported autocommit mode; default sync transaction durability is
-    # exercised by the separate returning-DML regression.
     transaction_settings = {"autocommit": True} if config_name == "PsycopgSyncConfig" else {}
     config = application_type(
         connection_config={
@@ -1111,7 +1099,6 @@ async def test_sqlspec_postgres_config_subclass_durable_wakeup(
     await backend.open()
     try:
         await backend.create_schema()
-        # SQLSpec 0.63.0 falls back to its durable table transport for subclasses.
         assert backend.capabilities.wakeup_backend == "poll_queue"
         waiter = asyncio.create_task(backend.wait_for_wakeups(timeout=5))
         task = await backend.enqueue("tasks.subclass", kwargs={"payload": {"source": config_name}})

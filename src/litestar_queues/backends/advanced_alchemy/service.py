@@ -107,8 +107,6 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         if not records:
             return list(records)
         comparison_type = self._comparison_timestamp_type()
-        # Match actual timestamp and numeric storage precision only for replay
-        # comparisons. 100 records cap the projection at 500 bound scalars.
         normalized: list[QueueEventLogRecord] = []
         for start in range(0, len(records), 100):
             batch = records[start : start + 100]
@@ -124,8 +122,6 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
                     if value is not None:
                         type_name = getattr(self.model_type, name).type.compile(dialect=dialect)
                         parameter = f"history_{index}_{name}"
-                        # SQLAlchemy's MySQL compiler skips CAST(Float). The
-                        # native CAST preserves the same returned FLOAT codec.
                         projections.append(text(f"CAST(:{parameter} AS {type_name})").bindparams(**{parameter: value}))
                         projected_fields.append((index, name))
                 if dialect.name == "oracle":
@@ -144,8 +140,6 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         mapped_type = self.model_type.occurred_at.type
         column_type = mapped_type.dialect_impl(dialect)
         if dialect.name == "postgresql":
-            # Async driver adaptations can discard TIMESTAMP.precision;
-            # compile the actual mapped type, including with_variant choices.
             declaration = mapped_type.compile(dialect=dialect)
             if "(" in declaration and f"({_MICROSECOND_PRECISION})" not in declaration:
                 return mapped_type
@@ -213,7 +207,6 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         model_type = self.model_type
         criteria = self._criteria(query) if query else []
 
-        # Aggregate query
         agg_stmt = (
             select(
                 model_type.stage,
@@ -230,13 +223,11 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         if not agg_results:
             return []
 
-        # Get latest message, sequence, worst level for each stage using partition/window or separate query per stage
         summaries = []
         for row in agg_results:
             stage_criteria = list(criteria)
             stage_criteria.append(model_type.stage == row.stage)
 
-            # Fetch newest row to get sequence and message
             newest_stmt = (
                 select(model_type)
                 .where(*stage_criteria)
@@ -245,15 +236,9 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
             )
             newest_row = (await self.repository.session.execute(newest_stmt)).scalars().first()
 
-            # Find worst level - rank levels, but for now we just do a simple approach.
-            # Wait, the spec says "Highest-ranked level present in the stage"
-            # In test_memory_event_query it checks if worst_level is 'error' when 'info' 'error' exist.
-            # I will use the Python ranking logic from QueueEventStageSummary if needed,
-            # or just query distinct levels.
             levels_stmt = select(model_type.level).where(*stage_criteria, model_type.level.is_not(None)).distinct()
             levels = (await self.repository.session.execute(levels_stmt)).scalars().all()
 
-            # RANK_MAP logic:
             level_ranks = {"debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50}
             worst_level = None
             if levels:
@@ -1231,8 +1216,6 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         use_heartbeat_cutoff = stale_after.total_seconds() > 0
         if use_heartbeat_cutoff:
             select_criteria.append(stale_heartbeat)
-        # Order oldest-heartbeat-first (coalescing NULL heartbeats to created_at
-        # so never-heartbeated rows sort first) then by id for a stable bound.
         statement = (
             select(model_type)
             .where(*select_criteria)
@@ -1362,7 +1345,6 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         task_ids = list(selected.scalars().all())
         if not task_ids:
             return DispatchRepairCandidates()
-        # A bare datetime CASE result binds as Oracle DATE and loses fractions.
         checked_now = literal(now, type_=model_type.dispatch_checked_at.type)
         checked_at = case(
             (or_(model_type.dispatch_checked_at.is_(None), model_type.dispatch_checked_at < checked_now), checked_now),
@@ -1374,8 +1356,6 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             .values(_update_values(model_type, {"dispatch_checked_at": checked_at}, now=now))
             .execution_options(synchronize_session=False)
         )
-        # A current read also discards transitions committed after the initial
-        # selection on databases whose ordinary reads retain an older snapshot.
         models = (
             (
                 await self.repository.session.execute(
@@ -1646,8 +1626,6 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         if limit is None:
             result = await self.repository.session.execute(delete(model_type).where(*terminal_criteria))
             return int(result.rowcount or 0)
-        # DELETE ... LIMIT is not portable, so select the oldest bounded id set
-        # (oldest completed_at, then id) and delete exactly those rows.
         id_statement = (
             select(model_type.id)
             .where(*terminal_criteria)

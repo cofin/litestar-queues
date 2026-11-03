@@ -54,11 +54,6 @@ def test_create_notification_listener_rejects_unsupported_driver_without_leaking
     assert "secret" not in str(exc_info.value)
 
 
-# ---------------------------------------------------------------------------
-# asyncpg listener (moved behind the shared protocol, semantics unchanged)
-# ---------------------------------------------------------------------------
-
-
 class _FakeAsyncpgConnection:
     """Minimal asyncpg connection double for listener lifecycle tests."""
 
@@ -99,11 +94,9 @@ async def test_asyncpg_listener_retains_one_read_across_timeouts() -> "None":
     assert await listener.wait(timeout=0.01) is False
     assert await listener.wait(timeout=0.01) is False
     assert _has_pending(listener) is True
-    # One connection, one LISTEN registration, one retained event read.
     assert len(connections) == 1
     assert len(connections[0].added) == 1
 
-    # A notification delivered between waits wakes the retained read exactly once.
     listener._handle_notification(connections[0], 0, "lq", "tasks")
     assert await listener.wait(timeout=0.01) is True
     assert _has_pending(listener) is False
@@ -114,11 +107,6 @@ async def test_asyncpg_listener_retains_one_read_across_timeouts() -> "None":
     assert _has_pending(listener) is False
     assert connections[0].closed is True
     assert len(connections[0].removed) == 1
-
-
-# ---------------------------------------------------------------------------
-# psycopg listener
-# ---------------------------------------------------------------------------
 
 
 class _FakePumpError(Exception):
@@ -139,8 +127,6 @@ class _FakePsycopgConnection:
         self._signal = __import__("asyncio").Event()
 
     async def execute(self, statement: "Any") -> "None":
-        # ``statement`` is a psycopg ``Composed``; record the rendered SQL so
-        # tests can assert safe identifier quoting.
         self.executed.append(statement.as_string(None))
 
     async def notifies(
@@ -194,7 +180,6 @@ async def test_psycopg_listener_opens_autocommit_and_composes_safe_identifier(
 
     assert len(connections) == 1
     assert connections[0].autocommit is True
-    # Identifier is quoted, never interpolated -- a dash cannot break out.
     assert connections[0].executed == ['LISTEN "lq-notify"']
 
 
@@ -212,7 +197,6 @@ async def test_psycopg_listener_retains_one_pump_across_timeouts(monkeypatch: "p
     assert await listener.wait(timeout=0.01) is False
     assert await listener.wait(timeout=0.01) is False
     assert _has_pending(listener) is True
-    # One connection, one LISTEN, one retained notification pump.
     assert len(connections) == 1
     assert connections[0].executed == ['LISTEN "lq"']
 
@@ -244,13 +228,10 @@ async def test_psycopg_listener_reconnects_and_relistens_after_pump_failure(
 
     listener = _PsycopgNotificationListener(conninfo="postgresql://ignored/db", channel="lq")
 
-    # First wait: the pump raises; the dead connection is torn down and False
-    # is returned so the worker reconciles + retries.
     assert await listener.wait(timeout=0.5) is False
     assert connections[0].closed is True
     assert _has_pending(listener) is False
 
-    # Second wait: bounded reconnect rebuilds the connection and re-LISTENs.
     assert await listener.wait(timeout=0.5) is True
     assert len(connections) == 2
     assert connections[1].executed[0] == 'LISTEN "lq"'
@@ -277,7 +258,6 @@ async def test_psycopg_listener_missing_dependency_raises_only_when_path_used(
 
     monkeypatch.setattr(_notifications, "import_module", blocked_import)
 
-    # Construction is lazy: no psycopg import happens until the pump path runs.
     listener = _notifications.create_notification_listener(
         connection_string="postgresql+psycopg://user:secret@localhost/db", channel="lq"
     )
@@ -287,7 +267,6 @@ async def test_psycopg_listener_missing_dependency_raises_only_when_path_used(
 
     message = str(exc_info.value)
     assert "psycopg" in message
-    # Connection secrets must never appear in the error surface.
     assert "secret" not in message
     assert "postgresql://" not in message
 
@@ -313,8 +292,6 @@ async def test_psycopg_listener_double_close_and_partial_setup_leave_no_state(
     assert listener._connection is None
     assert connections[0].closed is True
 
-    # Partial setup: LISTEN fails -> the just-opened connection is closed and no
-    # listener state (connection or retained pump) survives.
     failing: "list[_FakePsycopgConnection]" = []
 
     class _FailingListenConnection(_FakePsycopgConnection):
@@ -362,7 +339,6 @@ async def test_psycopg_listener_cancel_during_wait_retains_read_then_close_clean
     with pytest.raises(asyncio.CancelledError):
         await waiter
 
-    # Cancelling the outer wait retains the in-flight pump for reuse.
     assert _has_pending(listener) is True
     assert len(connections) == 1
     assert connections[0].closed is False
@@ -373,5 +349,4 @@ async def test_psycopg_listener_cancel_during_wait_retains_read_then_close_clean
 
 
 def _has_pending(listener: "Any") -> "bool":
-    # Read through a function so mypy does not narrow the property to a literal.
     return bool(listener._pending_read.has_pending)

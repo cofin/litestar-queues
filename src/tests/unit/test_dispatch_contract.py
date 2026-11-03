@@ -101,8 +101,6 @@ def test_the_delivered_id_is_the_only_thing_the_consumer_is_given() -> "None":
     from litestar_queues.consumer import consume_one
     from litestar_queues.execution.cloudtasks import routes
 
-    # Read off the module rather than the import, because the binding in that
-    # module is what the route actually calls.
     routed = vars(routes)["consume_one"]
     assert routed is consume_one
     signature = consume_one.__code__.co_varnames[: consume_one.__code__.co_argcount]

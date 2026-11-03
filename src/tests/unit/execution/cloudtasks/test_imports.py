@@ -57,9 +57,6 @@ def _run_without_cloud_tasks(code: "str") -> "None":
     _run(_BLOCK_CLOUD_TASKS + code)
 
 
-# --------------------------------------------------------------------------- packaging
-
-
 def test_cloud_tasks_is_an_optional_extra() -> "None":
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
@@ -68,9 +65,6 @@ def test_cloud_tasks_is_an_optional_extra() -> "None":
     assert "cloud-tasks" in optional_dependencies
     assert any(entry.startswith("google-cloud-tasks") for entry in optional_dependencies["cloud-tasks"])
     assert not any(entry.startswith("google-cloud-tasks") for entry in pyproject["project"].get("dependencies", []))
-
-
-# --------------------------------------------------------------------------- registry
 
 
 def test_cloudtasks_is_a_builtin_execution_backend() -> "None":
@@ -96,9 +90,6 @@ def test_package_root_exports_the_typed_cloud_tasks_surface() -> "None":
     assert {"CloudTasksExecutionBackend", "CloudTasksExecutionConfig"}.issubset(set(litestar_queues.__all__))
     assert litestar_queues.CloudTasksExecutionConfig is CloudTasksExecutionConfig
     assert litestar_queues.CloudTasksExecutionBackend is CloudTasksExecutionBackend
-
-
-# --------------------------------------------------------------------------- import boundary
 
 
 def test_importing_the_package_does_not_import_google_cloud_tasks() -> "None":
@@ -136,9 +127,6 @@ def test_the_cloud_tasks_surface_does_not_pull_in_click() -> "None":
         "import litestar_queues.execution.cloudtasks\n"
         "assert 'click' not in sys.modules, sorted(m for m in sys.modules if 'click' in m)\n"
     )
-
-
-# --------------------------------------------------------------------------- extra absent
 
 
 def test_the_backend_is_importable_and_configurable_without_the_extra() -> "None":

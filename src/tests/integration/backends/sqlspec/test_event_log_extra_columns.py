@@ -111,7 +111,6 @@ async def test_extra_column_is_created_written_and_filterable(event_history_conf
 
     assert scoped, "expected at least one event for tenant t-1"
     assert {record.detail["tenant_id"] for record in scoped} == {"t-1"}
-    # ``detail`` remains the complete payload; the column is an indexing/filtering copy.
     assert all(record.detail["note"] == "kept" for record in scoped)
 
 

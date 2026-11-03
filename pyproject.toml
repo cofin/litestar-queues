@@ -220,6 +220,7 @@ markers = [
   "e2e: end-to-end tests that start real example processes and Chromium",
   "topology: cross-process queue and Channels topology tests",
 ]
+pythonpath = ["."]
 testpaths = ["src/tests"]
 
 [tool.coverage.report]
@@ -370,7 +371,6 @@ ban-relative-imports = "all"
   "C901",
   "D103",
   "D104",
-  "ERA001",
   "FA102",
   "PLR2004",
   "PLR6301",

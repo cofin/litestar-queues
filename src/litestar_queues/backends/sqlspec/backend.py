@@ -33,11 +33,7 @@ from litestar_queues.backends.sqlspec.config import (
     DEFAULT_WAKEUP_CHANNEL,
     SQLSpecBackendConfig,
 )
-from litestar_queues.backends.sqlspec.event_log import (
-    SQLSpecQueueEventLog,
-    create_event_log_store,
-    resolve_event_history_table_name,
-)
+from litestar_queues.backends.sqlspec.event_log import SQLSpecQueueEventLog, create_event_log_store
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.maintenance import SQLSpecMaintenanceStore, create_maintenance_store
 from litestar_queues.backends.sqlspec.reservation import create_task_reservation_store
@@ -95,14 +91,8 @@ _DURABLE_WAKEUP_BACKENDS = frozenset({"aq", "notify_queue", "poll_queue", "txeve
 _EVENT_EXTENSION_NAME = "events"
 _WAKEUP_TRANSPORT_POLLING = "polling"
 _CANONICAL_EVENT_BACKENDS = frozenset({"aq", "notify", "notify_queue", "poll_queue", "txeventq"})
-# Adapter families that can push worker wakeups. Every real Postgres driver
-# (asyncpg, psycopg, psqlpy) ships SQLSpec's durable LISTEN/NOTIFY hybrid, so all
-# three advertise ``notify_queue``. DuckDB is embedded with no LISTEN/NOTIFY, so
-# it uses the durable table queue polled in-process. Everything else polls.
 _WAKEUP_DURABLE_ADAPTERS = frozenset({"asyncpg", "psycopg", "psqlpy"})
 _WAKEUP_TABLE_QUEUE_ADAPTERS = frozenset({"duckdb"})
-# Durable event transports that ride the SQLSpec events queue table and must have
-# it provisioned before a worker can publish or consume wakeups.
 _EVENTS_TABLE_BACKENDS = frozenset({"notify_queue", "poll_queue"})
 
 
@@ -648,8 +638,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             try:
                 existing = await self._select_one_row(driver, store.select_owner(key))
                 if existing is not None:
-                    # Commit the read-only transaction rather than rolling back so
-                    # single-connection engines (Spanner) do not double-finalize.
                     await driver.commit()
                     return _reservation_from_row(existing)
                 await driver.execute(store.insert_reservation(values))
@@ -988,13 +976,13 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             if store.supports_skip_locked:
                 claimed = await self._claim_next_skip_locked(store, queue=queue, execution_backend=execution_backend)
             else:
-                claimed = await self._claim_next_optimistic(store, queue=queue, execution_backend=execution_backend)
+                claimed = await self._claim_next_optimistic(queue=queue, execution_backend=execution_backend)
             if claimed is not None:
                 return claimed
         return None
 
     async def _claim_next_optimistic(
-        self, store: "SQLSpecQueueStore", *, queue: "str | None", execution_backend: "str | None"
+        self, *, queue: "str | None", execution_backend: "str | None"
     ) -> "QueuedTaskRecord | None":
         rows = await self._select_pending_rows(limit=10, queue=queue, execution_backend=execution_backend)
         for row in rows:
@@ -1977,16 +1965,11 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             await driver.begin()
             try:
                 if limit is None:
-                    # Some drivers cannot reliably report DELETE rowcounts. Count
-                    # first inside the same transaction so the cleanup count is
-                    # always exact.
                     count_row = await self._select_one_row(driver, store.count_terminal(before=before_str))
                     deleted = int(count_row["terminal_count"]) if count_row is not None else 0
                     if deleted > 0:
                         await driver.execute(store.cleanup_terminal(before=before_str))
                 else:
-                    # DELETE ... LIMIT is not portable; select the oldest bounded
-                    # id set and delete exactly those rows in the same transaction.
                     id_rows = await self._select_rows(driver, store.select_terminal_ids(before=before_str, limit=limit))
                     task_ids = [str(row["id"]) for row in id_rows]
                     deleted = len(task_ids)
@@ -2253,8 +2236,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self._event_channel = cast("Any", self._get_or_create_sqlspec()).event_channel(sqlspec_config)
             self._owns_event_channel = True
         else:
-            # An injected channel already owns its backend; still resolve the
-            # configured poll interval so wait_for_wakeups honors it.
             self._resolve_wakeup_poll_interval()
         self._wakeup_backend = _canonical_wakeup_transport(
             cast("str | None", getattr(self._event_channel, "_backend_name", None))
@@ -2468,11 +2449,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
             self.config is not None and self.config.events is not None and self.config.events.history is not None
         )
 
-    def _resolve_event_history_table_name(self) -> "str":
-        if self._event_history_table_name is None:
-            self._event_history_table_name = resolve_event_history_table_name(self._resolve_queue_table_name())
-        return self._event_history_table_name
-
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[SQLSpecDriver]":
         if not self._opened or self._sqlspec is None:
@@ -2482,8 +2458,6 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         store = self._get_store()
         adapter = _adapter_name(sqlspec_config)
         adbc_sqlite = adapter == "adbc" and store.data_dictionary_dialect == "sqlite"
-        # A blocked transaction must not occupy the sole sync worker while
-        # another transaction's commit is queued behind it.
         serialize = not sqlspec_config.is_async
         async with (
             self._sync_session_lock if serialize else nullcontext(),

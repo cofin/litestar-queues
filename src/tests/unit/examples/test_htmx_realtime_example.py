@@ -8,8 +8,6 @@ ROOT = Path(__file__).resolve().parents[4]
 EXAMPLES_ROOT = ROOT / "examples"
 SHARED_ROOT = EXAMPLES_ROOT / "shared"
 
-# All ten examples use the same simple frontend and declarative htmx stream
-# connection; only the queue backend and transport vary.
 BACKEND_VARIANTS = {
     "memory": {"suffix": "", "backend_markers": ('BACKEND_NAME = "memory"',)},
     "sqlspec": {
@@ -40,8 +38,6 @@ BACKEND_VARIANTS = {
     },
 }
 
-# Transport-specific markers: the connection is a declarative htmx extension
-# element and the JS adapter cancels the default swap.
 TRANSPORT_MARKERS = {
     "websocket": {
         "expected_markers": (
@@ -151,11 +147,6 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         assert "MISSION_CONTROL" not in app_source
         assert "publish_mission_control" not in app_source
 
-        # Heartbeat timestamps are automatic and interval-driven; the canonical
-        # task never calls ctx.beat() or duplicates progress through a generic
-        # "task.event". A single demonstrative domain event is allowed only at
-        # one real transition, and the task does not publish its own "finished"
-        # log/event -- completion is automatic (task.completed).
         assert "ctx.beat(" not in app_source
         assert 'ctx.event("task.event"' not in app_source
         assert "crawl.page_discovered" in app_source
@@ -164,9 +155,6 @@ def test_htmx_realtime_examples_keep_simple_queue_and_vite_config() -> None:
         for marker in config["backend_markers"]:
             assert marker in app_source
 
-    # The single-process demos must be explicit about being single-process: a
-    # process-local queue and a process-local Channels backend only work when
-    # the worker shares the process, which the server-owned default does not.
     for name in ("htmx_realtime_websocket", "htmx_realtime_sse"):
         single_process_app = (EXAMPLES_ROOT / name / "app.py").read_text()
         assert 'queue_backend="memory"' in single_process_app, name
@@ -266,8 +254,6 @@ def _assert_canonical_frontend(example_root: Path, transport: str) -> str:
     mount = "stream_mount_ws.html" if transport == "websocket" else "stream_mount_sse.html"
     partial_source = (SHARED_ROOT / "templates" / "partials" / mount).read_text()
     app_source = (example_root / "app.py").read_text()
-    # package.json is deliberately excluded: one shared manifest carries both
-    # htmx transport extensions, so it cannot satisfy a per-transport check.
     return f"{frontend_source}\n{template_source}\n{partial_source}\n{app_source}"
 
 
@@ -292,8 +278,6 @@ def test_htmx_realtime_examples_use_litestar_asset_commands_and_current_packages
         assert "npm install" not in readme_source
         assert "bun install" not in readme_source
 
-    # One manifest, one install. It carries both htmx transport extensions
-    # because the single bundle has an entry point for each.
     package = json.loads((SHARED_ROOT / "package.json").read_text())
     assert package["name"] == "litestar-queues-htmx-realtime-examples"
     assert package["dependencies"]["htmx.org"] == "^2.0.10"

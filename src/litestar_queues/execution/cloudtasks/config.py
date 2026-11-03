@@ -126,9 +126,6 @@ class CloudTasksExecutionConfig:
         self._validate_budgets()
         self._validate_route_protection()
         if self.audience is None:
-            # Cloud Run validates the token against the service origin, not the
-            # delivery path, so defaulting to target_url would mint a token
-            # rejected on every delivery.
             self.audience = self.service_url.rstrip("/")
 
     def _validate_identifiers(self) -> "None":

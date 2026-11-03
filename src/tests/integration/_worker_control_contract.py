@@ -126,7 +126,6 @@ async def assert_durable_poll_cancels_without_control_hint(
             await asyncio.sleep(timeout)
         return False
 
-    # Slot classes reject instance-level method assignment, so patch the class.
     backend_type.wait_for_worker_control = never_delivers  # type: ignore[method-assign]
     try:
         await _run_saturated_cancel(

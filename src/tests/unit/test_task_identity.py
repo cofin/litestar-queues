@@ -108,5 +108,4 @@ def test_payload_size_guard_reports_actual_and_max() -> "None":
         arguments_identity("t", _sig(collect), ("x" * 1024,), {}, max_payload_bytes=size - 1)
     assert excinfo.value.actual_bytes == size
     assert excinfo.value.max_bytes == size - 1
-    # Exactly at the limit is allowed.
     assert arguments_identity("t", _sig(collect), ("x" * 1024,), {}, max_payload_bytes=size).payload_bytes == size

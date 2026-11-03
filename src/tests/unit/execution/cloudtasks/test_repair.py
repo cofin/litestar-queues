@@ -120,7 +120,6 @@ async def harness(
                 queue_backend=shared_storage,
                 execution_backend=execution_config,
                 worker=WorkerConfig(placement="external"),
-                # Unbuffered: the failure assertions read what one pass published.
                 events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
             ),
             execution_backend=backend,
@@ -141,9 +140,6 @@ def _register(name: "str") -> "None":
     @task(name)
     async def probe() -> "None":
         return None
-
-
-# --------------------------------------------------------------------------- repair
 
 
 @pytest.mark.parametrize("future", [False, True])
@@ -383,8 +379,6 @@ async def test_a_record_that_went_terminal_before_repair_is_never_re_delivered(
     _register("cloudtasks.repair.cancelled")
     live = await harness()
     record = await live.enqueue("cloudtasks.repair.cancelled")
-    # Detached while the record is still active: an in-process backend hands out
-    # the live object, which would make the re-read impossible to observe.
     snapshot = replace(record)
     queue_backend = live.service.get_queue_backend()
     await queue_backend.cancel_task(record.id)
@@ -493,9 +487,6 @@ async def test_a_lookup_failure_is_reported_and_creates_nothing(harness: "Callab
     assert len(live.repair_failures()) == 1
 
 
-# --------------------------------------------------------------------------- budget
-
-
 async def test_an_unbounded_sweep_never_repairs(harness: "Callable[..., Any]") -> "None":
     """Repair is a maintenance budget; the worker's unbounded sweep has no ceiling to respect."""
     _register("cloudtasks.repair.unbounded")
@@ -555,9 +546,6 @@ async def test_a_partial_repair_leaves_the_rest_of_the_budget_for_reconciliation
 
     assert changed == 1
     assert budgets == [4]
-
-
-# --------------------------------------------------------------------------- polled backends
 
 
 class _ForbiddenService:

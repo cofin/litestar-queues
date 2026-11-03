@@ -26,11 +26,6 @@ def _clean_registry() -> "None":
     clear_task_registry()
 
 
-# --------------------------------------------------------------------------- #
-# Decorator + using() validation and propagation
-# --------------------------------------------------------------------------- #
-
-
 def test_decorator_propagates_unique_fields() -> "None":
     @task("reports.refresh", unique_by="task")
     async def refresh() -> "None": ...
@@ -77,11 +72,6 @@ def test_using_propagates_and_revalidates() -> "None":
 
     with pytest.raises(ValueError, match="ambiguous"):
         render.using(key="fixed")
-
-
-# --------------------------------------------------------------------------- #
-# Enqueue precedence + fast-path spies
-# --------------------------------------------------------------------------- #
 
 
 def _service(backend: "InMemoryQueueBackend") -> "QueueService":
@@ -166,7 +156,7 @@ async def test_task_identity_never_binds_arguments() -> "None":
             second = await _enqueue(service, keyed, "b")
         assert spy.call_count == 0
     assert first.key == task_identity("keyed.task")
-    assert first.id == second.id  # active dedup on the task-name identity
+    assert first.id == second.id
     assert first.metadata["unique_by"] == "task"
     assert first.metadata["unique_version"] == IDENTITY_VERSION
 
@@ -285,14 +275,12 @@ async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
         first = await _enqueue(service, once, "obj-1")
         key = arguments_identity("once.forever", once.signature, ("obj-1",), {}).key
 
-        # A reservation exists carrying only key/id/name/time.
         reservation = await service.get_task_identity(key)
         assert reservation is not None
         assert reservation.key == key
         assert reservation.task_id == first.id
         assert reservation.task_name == "once.forever"
 
-        # Drive the record terminal, then run cleanup: the reservation must survive.
         claimed = await backend.claim_task(first.id)
         assert claimed is not None
         await backend.complete_task(first.id, expected_retry_count=claimed.retry_count)
@@ -301,11 +289,9 @@ async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
         assert await backend.get_task(first.id) is None
         assert await service.get_task_identity(key) is not None
 
-        # Re-enqueue is still blocked and returns the original owner id.
         blocked = await service.enqueue(once, "obj-1")
         assert blocked.id == first.id
 
-        # Reset is the only way to allow a new enqueue.
         assert await service.reset_task_identity(key) is True
         assert await service.get_task_identity(key) is None
         reopened = await _enqueue(service, once, "obj-1")
@@ -347,7 +333,5 @@ async def test_schedules_keep_scheduled_key_regardless_of_uniqueness() -> "None"
 
     assert len(first) == 1
     assert first[0].key == "scheduled:sched.job"
-    # Re-initialization reuses the schedule record; the key is never rehashed.
     assert second[0].id == first[0].id
-    # The forever policy never created a reservation for the schedule identity.
     assert await backend.has_identity("scheduled:sched.job") is None

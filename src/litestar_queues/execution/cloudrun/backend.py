@@ -1,7 +1,6 @@
 """Google Cloud Run Jobs execution backend implementation."""
 
 import asyncio
-import logging
 import time
 from collections.abc import Mapping
 from contextlib import suppress
@@ -41,7 +40,6 @@ _CLOUDRUN_EXTRA = "cloudrun"
 _DISPATCH_RESERVATION_LEASE_SECONDS = 15 * 60
 _DISPATCH_OWNERSHIP_LOST_ERROR = "Cloud Run dispatch reservation ownership was lost before finalization"
 _HTTP_NOT_FOUND = 404
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

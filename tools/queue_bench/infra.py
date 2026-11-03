@@ -2,6 +2,8 @@
 
 from tools.dev_infra import ServiceConfig, _service_configs
 
+__all__ = ("parse_dsn_overrides", "select_local_services")
+
 SUPPORTED_BACKENDS = frozenset({"postgres", "redis", "valkey"})
 
 
@@ -35,6 +37,3 @@ def select_local_services(backends: list[str], dsn_overrides: dict[str, str]) ->
         msg = f"unsupported backends: {', '.join(sorted(unknown))}"
         raise ValueError(msg)
     return [service for service in _service_configs() if service.key in requested and service.key not in dsn_overrides]
-
-
-__all__ = ("parse_dsn_overrides", "select_local_services")

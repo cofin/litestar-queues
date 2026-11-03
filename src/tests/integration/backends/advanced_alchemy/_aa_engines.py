@@ -28,13 +28,6 @@ class AAEngineCase:
     capabilities: "frozenset[str]"
 
 
-# ---------------------------------------------------------------------------
-# Config factories. Each returns an unopened SQLAlchemyAsyncConfig; the
-# fixture creates the test model's table and runs the backend open()/close()
-# lifecycle.
-# ---------------------------------------------------------------------------
-
-
 def _config_aiosqlite(ctx: "FixtureCtx") -> "SQLAlchemyAsyncConfig":
     from advanced_alchemy.extensions.litestar import SQLAlchemyAsyncConfig
 

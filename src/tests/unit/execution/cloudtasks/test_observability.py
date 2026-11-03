@@ -43,9 +43,6 @@ DISPATCH_LABEL = "queue.execution.status"
 DELIVERY_LABEL = "queue.delivery.outcome"
 REPAIR_LABEL = "queue.repair.outcome"
 
-# Written out here rather than imported from the package on purpose: a test that
-# reads the same constant the emitter reads proves only that one name was used
-# twice. These literals are the contract a dashboard is built against.
 DISPATCH_STATUSES = frozenset({"scheduled", "already_exists", "skipped", "error"})
 DELIVERY_OUTCOMES = frozenset({"acknowledged", "duplicate", "retry_scheduled", "transient_error"})
 REPAIR_OUTCOMES = frozenset({"present", "recreated", "error"})
@@ -70,7 +67,6 @@ SUCCEEDS = "cloudtasks.observed_succeeds"
 FAILS_TERMINALLY = "cloudtasks.observed_fails_terminally"
 FAILS_THEN_RETRIES = "cloudtasks.observed_fails_then_retries"
 
-# Everything Google routinely puts in an error message and nothing may echo.
 SECRETS = ("https://queue-consumer-abcdef-uc.a.run.app", "queues@example-project.iam.gserviceaccount.com")
 POISONED_API_ERROR = (
     "403 The principal queues@example-project.iam.gserviceaccount.com is not permitted "
@@ -307,7 +303,6 @@ async def harness(
                 queue_backend=shared_storage,
                 execution_backend=execution_config,
                 worker=WorkerConfig(placement="external"),
-                # Unbuffered: these assertions read what one call published.
                 events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
             ),
             execution_backend=backend,
@@ -374,9 +369,6 @@ async def delivery(
     yield build
 
     await stack.aclose()
-
-
-# --------------------------------------------------------------------------- dispatch
 
 
 async def test_a_created_delivery_is_counted_as_scheduled(harness: "Callable[..., Any]") -> "None":
@@ -450,9 +442,6 @@ async def test_creating_a_delivery_opens_a_producer_span(harness: "Callable[...,
     assert dispatch_spans[0].ended
 
 
-# --------------------------------------------------------------------------- repair
-
-
 async def test_a_delivery_the_transport_still_holds_is_counted_as_present(harness: "Callable[..., Any]") -> "None":
     live = await harness()
     await live.enqueue(SUCCEEDS)
@@ -498,9 +487,6 @@ async def test_repair_never_reports_into_the_reconcile_family(harness: "Callable
     await live.backend.repair(live.service, limit=10)
 
     assert live.runtime.samples("litestar_queues.execution.reconcile") == []
-
-
-# --------------------------------------------------------------------------- delivery
 
 
 async def test_a_delivery_that_ran_the_task_is_counted_as_acknowledged(delivery: "Callable[..., Any]") -> "None":
@@ -580,9 +566,6 @@ async def test_a_label_lookup_that_fails_never_revokes_an_earned_acknowledgement
     reads = {"count": 0}
 
     async def fail_after_the_run(self: "QueueService", task_id: "Any") -> "Any":
-        # Read one locates the record for the run; read two only names the
-        # outcome, and is the one this test takes away. Patched on the class
-        # because the service is slotted -- there is one service here anyway.
         reads["count"] += 1
         if reads["count"] > 1:
             msg = "queue storage went away after the run"
@@ -597,11 +580,12 @@ async def test_a_label_lookup_that_fails_never_revokes_an_earned_acknowledgement
     assert live.runtime.outcomes(DELIVERY_METRIC, DELIVERY_LABEL) == ["acknowledged"]
 
 
-# --------------------------------------------------------------------------- boundedness
-
-
+@pytest.mark.parametrize(
+    ("metric", "label", "allowed"),
+    [(DISPATCH_METRIC, DISPATCH_LABEL, DISPATCH_STATUSES), (REPAIR_METRIC, REPAIR_LABEL, REPAIR_OUTCOMES)],
+)
 async def test_every_recorded_outcome_comes_from_its_fixed_vocabulary(
-    harness: "Callable[..., Any]", delivery: "Callable[..., Any]"
+    harness: "Callable[..., Any]", delivery: "Callable[..., Any]", metric: str, label: str, allowed: "frozenset[str]"
 ) -> "None":
     """One unbounded label is all it takes to turn a broken queue into a bill."""
     live = await harness()
@@ -613,27 +597,24 @@ async def test_every_recorded_outcome_comes_from_its_fixed_vocabulary(
     record = await served.service.enqueue(succeeds)
     await served.post(record.id)
 
-    for metric, label, allowed in (
-        (DISPATCH_METRIC, DISPATCH_LABEL, DISPATCH_STATUSES),
-        (REPAIR_METRIC, REPAIR_LABEL, REPAIR_OUTCOMES),
-    ):
-        assert live.runtime.outcomes(metric, label)
-        assert set(live.runtime.outcomes(metric, label)) <= allowed
+    assert live.runtime.outcomes(metric, label)
+    assert set(live.runtime.outcomes(metric, label)) <= allowed
     assert set(served.runtime.outcomes(DELIVERY_METRIC, DELIVERY_LABEL)) <= DELIVERY_OUTCOMES
 
 
-async def test_dispatch_and_repair_carry_exactly_the_shared_label_set(harness: "Callable[..., Any]") -> "None":
+@pytest.mark.parametrize(("metric", "label"), [(DISPATCH_METRIC, DISPATCH_LABEL), (REPAIR_METRIC, REPAIR_LABEL)])
+async def test_dispatch_and_repair_carry_exactly_the_shared_label_set(
+    harness: "Callable[..., Any]", metric: str, label: str
+) -> "None":
     """A metric name is registered once per registry, label names and all."""
     live = await harness()
     await live.enqueue(SUCCEEDS)
     live.client.existing.clear()
     await live.backend.repair(live.service, limit=10)
 
-    for metric, label in ((DISPATCH_METRIC, DISPATCH_LABEL), (REPAIR_METRIC, REPAIR_LABEL)):
-        samples = live.runtime.samples(metric)
-        assert samples
-        for sample in samples:
-            assert set(sample) == SHARED_LABELS | {label}
+    samples = live.runtime.samples(metric)
+    assert samples
+    assert all(set(sample) == SHARED_LABELS | {label} for sample in samples)
 
 
 async def test_the_delivery_metric_carries_only_what_the_transport_knows(delivery: "Callable[..., Any]") -> "None":
@@ -661,9 +642,6 @@ async def test_no_task_id_or_delivery_name_ever_reaches_a_metric(harness: "Calla
             assert record.id.hex not in value
             assert str(record.id) not in value
             assert value != current.execution_ref
-
-
-# --------------------------------------------------------------------------- sanitization
 
 
 async def test_a_google_error_never_reaches_a_metric_span_or_event(harness: "Callable[..., Any]") -> "None":

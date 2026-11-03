@@ -69,9 +69,6 @@ async def _record_metadata(service: "QueueService", task_id: "Any") -> "dict[str
     return dict(record.metadata)
 
 
-# --------------------------------------------------------------------------- timeout
-
-
 async def test_the_configured_default_timeout_is_written_onto_the_record(cloud_tasks_service: "QueueService") -> "None":
     """The consumer must not have to re-derive the budget the producer accepted."""
 
@@ -160,9 +157,6 @@ async def test_a_smaller_deadline_shrinks_what_the_queue_accepts(
             await service.enqueue(probe, timeout=100.0)
 
 
-# --------------------------------------------------------------------------- schedule horizon
-
-
 @pytest.mark.usefixtures("frozen_now")
 async def test_scheduling_exactly_thirty_days_ahead_is_accepted(cloud_tasks_service: "QueueService") -> "None":
     @task("cloudtasks.limits.horizon_edge")
@@ -202,9 +196,6 @@ async def test_a_naive_scheduled_at_is_normalized_before_the_horizon_check(
         await cloud_tasks_service.enqueue(probe, scheduled_at=naive)
 
 
-# --------------------------------------------------------------------------- fail before persistence
-
-
 async def test_a_rejected_enqueue_writes_no_record_and_no_reservation(cloud_tasks_service: "QueueService") -> "None":
     """Rejection has to precede reservation, or a bad call burns the identity."""
 
@@ -217,9 +208,6 @@ async def test_a_rejected_enqueue_writes_no_record_and_no_reservation(cloud_task
 
     assert await cloud_tasks_service.get_task_identity("limits-no-write") is None
     assert await cloud_tasks_service.get_queue_backend().list_pending(limit=10) == []
-
-
-# --------------------------------------------------------------------------- single-backend rule
 
 
 async def test_the_horizon_and_budget_do_not_apply_to_a_polled_queue() -> "None":

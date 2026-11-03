@@ -146,8 +146,6 @@ class LiveEventBuffer:
         token = self._drain_token()
 
         async def bound_release() -> "None":
-            # A long-lived history worker may carry an unrelated active token.
-            # Install the captured context even when it is empty or expired.
             reset = _active_drain.set(token if token is not None and token.active else None)
             try:
                 await release()
@@ -176,8 +174,6 @@ class LiveEventBuffer:
                 self._deferred_size += operation.size
                 self._condition.notify_all()
             return
-        # Acquire before extracting: a waiting terminal must account for the
-        # active batch, and blocked producers cannot accumulate extracted batches.
         async with self._drain_lock:
             token = _DrainToken(self)
             reset = _active_drain.set(token)
@@ -205,8 +201,6 @@ class LiveEventBuffer:
     async def _deliver(self, operation: "_Delivery") -> "Exception | None":
         error: Exception | None = None
         if operation.release is not None:
-            # Reserve its control slot until invocation, including cancellation
-            # during the preceding batch's live delivery attempt.
             self._deferred_size += 1
         if operation.items:
             try:

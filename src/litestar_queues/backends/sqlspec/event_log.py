@@ -797,15 +797,11 @@ class SQLSpecQueueEventLog:
                 incoming[record.event_id] = (canonical, params)
         missing = dict(incoming)
         event_ids = tuple(incoming)
-        # SQLite's traditional 999-bind limit and Oracle's 1000-item IN limit
-        # both exceed this fixed lookup bound, even for a large configured batch.
         for start in range(0, len(event_ids), 500):
             rows = await driver.select(self._store.select_existing_event_ids(event_ids[start : start + 500]))
             existing = [self._record_from_row(cast("dict[str, Any]", row)) for row in rows]
             compared = await self._comparison_records(driver, [incoming[record.event_id][0] for record in existing])
             for stored, candidate in zip(existing, compared, strict=True):
-                # Reapply the bind codec (e.g. millisecond text on Arrow ODBC)
-                # to both sides while keeping stored created_at untouched.
                 stored = self._record_from_row(self._params_from_record(stored))
                 _require_identical_event(stored, candidate)
                 missing.pop(stored.event_id, None)
@@ -813,8 +809,6 @@ class SQLSpecQueueEventLog:
             statement = self._store.insert_events_template()
             values = [item[1] for item in missing.values()]
             if _adapter_name(self._store._config) == "arrow_odbc":  # noqa: SLF001
-                # Arrow ODBC has no row-oriented executemany. Keep these bound
-                # inserts inside the caller's single explicit transaction.
                 for params in values:
                     await driver.execute(statement, params)
             else:
@@ -828,8 +822,6 @@ class SQLSpecQueueEventLog:
         dialect = self._store._event_dialect_name()  # noqa: SLF001
         float_type = self._store._float_type()  # noqa: SLF001
         normalized: list[QueueEventLogRecord] = []
-        # Match both timestamp and numeric storage precision. Restrict casts to
-        # compared records, with at most 500 binds per projection.
         for start in range(0, len(records), 100):
             batch = records[start : start + 100]
             parameters: dict[str, Any] = {}
@@ -990,15 +982,6 @@ class SQLSpecQueueEventLog:
             entity=cast("str | None", row.get("entity")),
         )
 
-    def _summary_from_row(self, row: "dict[str, Any]") -> "QueueEventStageSummary":
-        return QueueEventStageSummary(
-            stage=cast("str | None", row["stage"]),
-            event_count=int(row["event_count"]),
-            total_duration_ms=float(row["total_duration_ms"] or 0),
-            first_event_at=_deserialize_optional_datetime(row["first_event_at"]),
-            last_event_at=_deserialize_optional_datetime(row["last_event_at"]),
-        )
-
 
 def create_event_log_store(
     config: "SQLSpecStoreConfig",
@@ -1071,10 +1054,6 @@ def _deserialize_optional_datetime(value: "Any") -> "datetime | None":
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
-
-
-def _optional_str(value: "Any") -> "str | None":
-    return value if isinstance(value, str) else None
 
 
 def _optional_float(value: "Any") -> "float | None":

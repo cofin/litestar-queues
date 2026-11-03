@@ -8,6 +8,8 @@ module never imports a client package.
 import builtins
 from typing import Any, Protocol
 
+__all__ = ("ClientLike", "PipelineLike", "PubSubLike")
+
 
 class PipelineLike(Protocol):
     """Pipeline subset used by the Redis and Valkey queue backends."""

@@ -13,9 +13,10 @@
 | Topology | `CloudRunExecutionConfig` / `WorkerConfig` | Always-On Instances | Delayed Task Support | Best For |
 | :--- | :--- | :--- | :--- | :--- |
 | **Direct Enqueue Dispatch (Default)** | `schedules_on_enqueue=True`, `WorkerConfig(placement="external")` | `0` (web tier scales to zero) | Immediate tasks dispatched on `enqueue()`; delayed tasks dispatched by periodic maintenance (`--phase external`) | Scale-to-zero web apps running batch or heavy tasks on demand |
-| **Hybrid Cloud Tasks + Cloud Run Jobs** | `execution_backends=(cloud_tasks, cloud_run)`, `WorkerConfig(placement="external")` | `0` (full scale to zero) | Cloud Tasks handles `< 30m` & delayed tasks; Cloud Run Jobs handles `> 30m` batch tasks | Serverless applications needing both sub-second delayed push and multi-hour batch jobs |
-| **Dedicated Polling Dispatcher** | `schedules_on_enqueue=False`, `litestar queues run` worker service (`--min-instances 1 --no-cpu-throttling`) | `1` lightweight dispatcher | Polls storage continuously and launches Cloud Run Jobs as delayed tasks become due | High-volume delayed Cloud Run Job workloads without external maintenance crons |
-| **In-Service ASGI Worker** | `execution_backend="local"`, `WorkerConfig(placement="asgi")` (`--min-instances 1 --no-cpu-throttling`) | `1+` always-on service instances | Full local polling and push wakeups | Traditional always-on Cloud Run services without Cloud Run Jobs |
+| **Hybrid [Cloud Tasks](cloud-tasks.md) + Cloud Run Jobs** | `execution_backends=(cloud_tasks, cloud_run)`, `WorkerConfig(placement="external")` | `0` (full scale to zero) | Cloud Tasks handles `< 30m` & delayed tasks; Cloud Run Jobs handles `> 30m` batch tasks | Serverless applications needing both sub-second delayed push and multi-hour batch jobs |
+| **External dispatcher (`schedules_on_enqueue=False`)** | `schedules_on_enqueue=False`, `litestar queues run` worker service (`--min-instances 1 --no-cpu-throttling`) | `1` lightweight dispatcher | Polls storage continuously and launches Cloud Run Jobs as delayed tasks become due | High-volume delayed Cloud Run Job workloads without external maintenance crons |
+| **In-process worker (`placement="asgi"`)** | `execution_backend="local"`, `WorkerConfig(placement="asgi")` (`--min-instances 1 --no-cpu-throttling`) | `1+` always-on service instances | Full local polling and push wakeups | Traditional always-on Cloud Run services without Cloud Run Jobs |
+| **Eventarc** | Not implemented | N/A | Not implemented (use [Cloud Tasks](cloud-tasks.md) or [Pub/Sub](pubsub.md) instead) | Not implemented as a `litestar-queues` execution backend |
 
 ## Job Container Command & Environment Contract
 

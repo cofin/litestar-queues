@@ -261,7 +261,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
                 await consumer.commit({partition: message.offset + 1})
             except asyncio.CancelledError:
                 raise
-            except Exception:  # Rebalance failures leave the offset uncommitted.
+            except Exception:
                 self._logger.warning("Kafka offset commit failed", exc_info=True)
                 return
 

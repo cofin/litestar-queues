@@ -7,6 +7,8 @@ from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
 
+__all__ = ("run",)
+
 
 async def noop(ctx: dict[str, Any], payload: str) -> int:
     """Shared async no-op task body.
@@ -96,6 +98,3 @@ async def _cleanup_failed(request: AdapterRequest) -> None:
     if keys:
         await client.delete(*keys)
     await client.aclose()
-
-
-__all__ = ("run",)

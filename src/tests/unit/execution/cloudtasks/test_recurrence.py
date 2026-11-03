@@ -98,7 +98,6 @@ async def harness(
                 queue_backend=shared_storage,
                 execution_backend=execution_config,
                 worker=WorkerConfig(placement="external"),
-                # Unbuffered: the rejection assertions read what one call published.
                 events=QueueEventsConfig(delivery=EventDeliveryConfig(sinks=(events,), buffer=None)),
             ),
             execution_backend=CloudTasksExecutionBackend(execution_config=execution_config, client=client),
@@ -111,9 +110,6 @@ async def harness(
 
     for service in opened:
         await service.close()
-
-
-# --------------------------------------------------------------------------- startup
 
 
 async def test_startup_delivers_the_first_occurrence(harness: "Callable[..., Any]") -> "None":
@@ -229,17 +225,12 @@ async def test_a_recurring_task_that_cannot_fit_the_budget_is_refused_at_startup
     assert (await live.service.get_queue_backend().get_statistics()).total == 0
 
 
-# --------------------------------------------------------------------------- recurrence
-
-
 async def test_completing_an_occurrence_delivers_the_next_one(harness: "Callable[..., Any]") -> "None":
     @task("cloudtasks.recurrence.next", interval=60)
     async def probe() -> "None":
         return None
 
     live = await harness()
-    # Enqueued due-now rather than through startup: the next occurrence is what
-    # this covers, and a schedule's first run is always in the future.
     first = await live.service.get_queue_backend().enqueue(
         "cloudtasks.recurrence.next",
         key="scheduled:cloudtasks.recurrence.next",
@@ -327,9 +318,6 @@ async def test_a_rejected_recurrence_leaks_nothing_about_the_target(harness: "Ca
     serialized = repr(rejected[0])
     for secret in ("queues@example-project.iam.gserviceaccount.com", "queue-consumer-abcdef-uc.a.run.app"):
         assert secret not in serialized
-
-
-# --------------------------------------------------------------------------- retry
 
 
 async def test_a_retrying_record_gets_a_delivery_for_the_new_attempt(harness: "Callable[..., Any]") -> "None":
@@ -435,7 +423,6 @@ async def test_schedule_retry_finishes_same_occurrence_before_current_budget_suc
         execution_backend="cloudtasks",
         metadata=original.metadata({"schedule": schedule.as_metadata(), "timeout": DEFAULT_TASK_TIMEOUT}),
     )
-    # Registration changes affect the next occurrence, never this one's attempt policy.
     assert first.key is not None
     task(original.name, retries=4, retry_backoff=99, **schedule_args)(body)
     for retry_count in range(budget + 1):

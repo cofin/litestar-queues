@@ -247,9 +247,6 @@ import sys
 import litestar
 from litestar_queues import QueueConfig
 
-# Litestar imports some optional integrations of its own, so the baseline is
-# taken after the framework loads. What matters here is that building the
-# namespace adds no queue adapter or driver on top of that.
 baseline = set(sys.modules)
 
 namespace = QueueConfig().signature_namespace

@@ -69,7 +69,6 @@ def interruption_count(record: "QueuedTaskRecord") -> "int":
         The recorded interruption count, or ``0`` when it is absent or unusable.
     """
     value = record.metadata.get("interruptions")
-    # Drivers decode JSON numbers differently: Oracle hands back ``Decimal``.
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         return 0
     count = int(value)

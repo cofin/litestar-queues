@@ -45,13 +45,13 @@ Any push wakeup notification or non-empty claim immediately resets the poll inte
 
 ## Heartbeats, Lease Fencing & Stale Recovery
 
-While a task is `running`, `WorkerHeartbeatManager` periodically extends its lease in bulk:
+Heartbeat timestamps are automatic: while a task is `running`, `WorkerHeartbeatManager` periodically extends its lease in bulk:
 
 1. **Bulk Heartbeat Writes**: Every `heartbeat_interval` seconds (default `30.0`, with `heartbeat_jitter_fraction=0.1`), the worker sends a batch of [`HeartbeatTouch`](../reference/tasks-and-models.md#litestar_queues.models.HeartbeatTouch) updates fenced on `expected_retry_count`.
 2. **Claim-Loss Protection**: If a task's status changed externally or another worker reclaimed the record after a network partition, the storage backend reports the task in `HeartbeatTouchResult.missed_task_ids`. After `heartbeat_miss_threshold` (default `2`) consecutive misses (or an immediate fence mismatch), the worker emits `task.claim_lost` and, when `cancel_on_claim_loss=True` (default), cancels the local coroutine to close the duplicate-execution window.
 3. **Stale Recovery Sweep**: When `stale_after` is configured (for example `stale_after=60.0`), the worker sweeps for `running` records whose `heartbeat_at` is older than `stale_after` every `stale_check_interval` seconds (`60.0`).
    - Tasks with remaining retry budget (`retry_count < max_retries`) and `requeue_on_stale=True` increment `retry_count`, apply `QueueConfig.stale_requeue_priority` (`"preserve"`, an `int` ceiling clamp, or a callable), and return to `pending`/`scheduled`.
-   - Tasks that have exhausted retries transition to `failed`, emit `task.stale_failed`, and invoke `@task(..., on_stale_failure=...)` if registered.
+   - Tasks that have exhausted retries transition to `failed` as a stale failure, emit `task.stale_failed`, and invoke `@task(..., on_stale_failure=...)` if registered.
 
 ## In-Worker Periodic Terminal Cleanup
 

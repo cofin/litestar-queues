@@ -14,11 +14,11 @@
 
 | Signal | Emitter API | Wire Event Type | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Heartbeat** | Automatic `WorkerHeartbeatManager` + optional `ctx.beat(detail)` | Storage `heartbeat_at` + metadata | Extends the running task's lease fence in storage; `ctx.beat(detail)` records last-value-wins diagnostic text on the next heartbeat write and does not update progress or terminal task state |
+| **Heartbeat** | Automatic `WorkerHeartbeatManager` + optional `ctx.beat(detail)` | Storage `heartbeat_at` + metadata | The worker updates timestamps automatically to extend the running task's lease fence in storage; `ctx.beat(detail)` records last-value-wins diagnostic text on the next heartbeat write, does not update progress or terminal task state, and should not also be copied into a generic custom event |
 | **Progress** | `await ctx.progress(...)` / `await publish_task_progress(...)` | `"task.progress"` | Emits structured progress (`current`, `total`, `percent`, `message`, `payload`) to live subscribers and durable history |
 | **Log** | `await ctx.log(...)` / `await publish_task_log(...)` | `"task.log"` | Emits task-scoped structured log entries (`level`, `message`, `payload`) |
-| **Custom Event** | `await ctx.event(name, ...)` / `await publish_task_event(name, ...)` | Caller-defined (e.g. `"crawl.page_discovered"`) | Emits domain-specific milestone events during task execution |
-| **Lifecycle Event** | Worker / `QueueService` runtime | `"task.started"`, `"task.completed"`, `"task.failed"`, `"task.retried"`, `"task.cancelled"`, `"task.expired"`, `"task.interrupted"`, `"task.claim_lost"`, `"task.stale_failed"` | Authoritative state-transition events emitted automatically by `QueueService` after storage commits |
+| **Custom event** | `await ctx.event(name, ...)` / `await publish_task_event(name, ...)` | Caller-defined (e.g. `"crawl.page_discovered"`) | Emits domain-specific milestone events during task execution |
+| **Lifecycle event** | Worker / `QueueService` runtime | `"task.started"`, `"task.completed"`, `"task.failed"`, `"task.retried"`, `"task.cancelled"`, `"task.expired"`, `"task.interrupted"`, `"task.claim_lost"`, `"task.stale_failed"` | Authoritative state-transition events emitted automatically by `QueueService` after storage commits (including `will_retry` metadata on failure transitions and claim loss / stale failure transitions) |
 
 ## Publishing from Inside a Task
 

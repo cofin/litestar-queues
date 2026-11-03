@@ -50,12 +50,6 @@ logger = getLogger(__name__)
 STALE_REQUEUE_PRIORITY: "StaleRequeuePriority" = "preserve"
 """Default stale-requeue policy: recovered work keeps the priority it was enqueued with."""
 
-_SERVICE_STATE_KEY = "queue_service"
-_WORKER_STATE_KEY = "queue_worker"
-_EVENT_PUBLISHER_STATE_KEY = "queue_event_publisher"
-_EVENT_CHANNELS_STATE_KEY = "queue_event_channels"
-_OBSERVABILITY_RUNTIME_STATE_KEY = "queue_observability_runtime"
-
 
 def _cgroup_cpu_limit(
     *,
@@ -573,11 +567,6 @@ class QueueConfig:
                 "and requires WorkerConfig(placement='external')."
             )
             raise QueueConfigurationError(msg)
-        # Ephemeral storage is deliberately unconstrained by placement. Placement
-        # does not decide whether the private database exists: whatever entered
-        # EphemeralServerContext created it, and the backend refuses to open when
-        # that environment is absent. Restating that check as a placement rule
-        # only blocked embedders that create the database themselves.
         if backend == "memory" and placement == "server":
             msg = (
                 "queue_backend='memory' is process-local, so a separate server-owned worker "
@@ -585,11 +574,6 @@ class QueueConfig:
                 "for zero-setup background work, or a persistent backend."
             )
             raise QueueConfigurationError(msg)
-        # memory + external is deliberately allowed: it describes an application
-        # that enqueues into a process-local queue and starts nothing itself,
-        # which is what inline callers and direct Worker tests do. Pointing the
-        # standalone 'litestar queues run' command at it is the incoherent case,
-        # and that command rejects process-local storage itself.
 
     @property
     def signature_namespace(self) -> "dict[str, Any]":

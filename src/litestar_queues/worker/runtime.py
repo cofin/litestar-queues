@@ -120,8 +120,6 @@ class _WorkerLike(Protocol):
 
 
 class _WorkerFactory(Protocol):
-    # Positional-only: these are internal injection seams, always called
-    # positionally, so a substitute need not match parameter names.
     def __call__(self, service: "QueueService", config: "WorkerConfig", /) -> "_WorkerLike": ...
 
 

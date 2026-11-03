@@ -279,12 +279,6 @@ async def test_standalone_workers_scale_out_any_placement(placement: "str") -> "
     _reject_inline_execution(plugin)
 
 
-# This spawns a real interpreter (cold imports: litestar, click, litestar_queues,
-# and their transitive deps) and waits for it to reach the CLI's startup log
-# line before signaling it. That subprocess-startup latency -- not the drain
-# itself -- is what varies under load on shared/constrained CI runners, so the
-# module-level timeout(15) is not generous enough here; override it per-test
-# rather than loosening the budget for the other, in-process tests above.
 @pytest.mark.timeout(45)
 def test_run_subcommand_drains_on_sigterm(tmp_path: "Path") -> "None":
     env = os.environ.copy()

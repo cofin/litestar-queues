@@ -61,5 +61,5 @@ async def test_context_defaults_and_per_call_overrides() -> "None":
     assert first.entity is not None
     assert second.actor is not None
     assert (first.scope, first.scope_key, first.entity.id) == ("task", "acme", "42")
-    assert second.scope_key == "acme"  # inherited
-    assert second.actor.id == "u-9"  # per-call override
+    assert second.scope_key == "acme"
+    assert second.actor.id == "u-9"

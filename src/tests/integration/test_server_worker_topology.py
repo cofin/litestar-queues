@@ -75,8 +75,6 @@ class ServerProcess:
 
     def log_tail(self, limit: int = 2048) -> "str":
         tail = self.output_path.read_text(encoding="utf-8", errors="replace")[-limit:]
-        # 0xC000013A is STATUS_CONTROL_C_EXIT: the console handler tore the
-        # process down instead of letting it unwind, so no teardown ran.
         return f"exit code {self.returncode} (forced={self.forced_shutdown})\n{tail}"
 
     @property
@@ -184,9 +182,6 @@ class ServerProcess:
             if process.poll() is None:
                 process.send_signal(WINDOWS_CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
                 try:
-                    # Windows runners unwind a server lifespan far slower than the
-                    # POSIX ones, and a premature kill skips the storage teardown
-                    # this suite exists to prove.
                     process.wait(timeout=45 if os.name == "nt" else 15)
                 except subprocess.TimeoutExpired:
                     self.forced_shutdown = True
@@ -209,10 +204,6 @@ class ServerProcess:
 @pytest.mark.parametrize(("server", "workers"), [("uvicorn", 1), ("granian", 3)])
 def test_server_placement_owns_exactly_one_fresh_queue_child(tmp_path: "Path", server: str, workers: int) -> "None":
     if server == "granian" and os.name == "nt" and workers > 1:
-        # Granian serves requests here (the health check passes) but only ever
-        # registers one web process, so the multi-worker placement proof runs on
-        # the POSIX runners. Gated rather than weakened so the assertion keeps
-        # its meaning where multiple workers do start.
         pytest.skip("Granian does not start multiple web workers on Windows runners")
 
     with ServerProcess(tmp_path, server=server, workers=workers) as running:
@@ -250,9 +241,6 @@ def test_server_placement_owns_exactly_one_fresh_queue_child(tmp_path: "Path", s
         assert database_path.is_file()
         database_directory = database_path.parent
 
-    # The server removes its private database on the way out. A survivor means
-    # either the lifespan never unwound (forced kill) or a handle outlived the
-    # retry budget, so report which one rather than just that a file exists.
     assert not running.forced_shutdown, f"server did not shut down on signal\n{running.log_tail()}"
     assert not database_path.exists(), f"ephemeral database survived shutdown\n{running.log_tail()}"
     assert not database_directory.exists(), f"ephemeral directory survived shutdown\n{running.log_tail()}"

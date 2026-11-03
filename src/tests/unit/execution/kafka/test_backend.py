@@ -238,10 +238,14 @@ async def test_actual_consume_one_unknown_and_stale_attempts_are_committable() -
         assert untouched is not None and untouched.execution_ref == live_attempt
 
 
-async def test_definitive_publish_clears_reservation_and_ambiguous_publish_keeps_it() -> "None":
-    class InvalidTopicError(Exception):
-        pass
+class InvalidTopicError(Exception):
+    pass
 
+
+@pytest.mark.parametrize(("error", "definitive"), [(InvalidTopicError(), True), (ConnectionError(), False)])
+async def test_definitive_publish_clears_reservation_and_ambiguous_publish_keeps_it(
+    error: Exception, definitive: bool
+) -> "None":
     @task("tasks.kafka-publish-errors")
     async def queued() -> "None":
         return None
@@ -251,22 +255,21 @@ async def test_definitive_publish_clears_reservation_and_ambiguous_publish_keeps
         execution_backend=KafkaExecutionConfig(bootstrap_servers="localhost:9092"),
         worker=WorkerConfig(placement="external"),
     )
-    for error, definitive in ((InvalidTopicError(), True), (ConnectionError(), False)):
-        queue_backend = InMemoryQueueBackend()
-        backend = KafkaExecutionBackend(config, producer=FakeProducer(error))
-        async with QueueService(config, queue_backend=queue_backend, execution_backend=backend) as service:
-            result = await service.enqueue(queued.using(execution_backend="kafka"))
-            record = await queue_backend.get_task(result.id)
-            assert record is not None
-            expected = InvalidTopicError if definitive else QueueDispatchError
-            with pytest.raises(expected) as caught:
-                await backend.dispatch(service, record)
-            stored = await queue_backend.get_task(result.id)
-            assert stored is not None
-            assert (stored.execution_ref is None) is definitive
-            if not definitive:
-                assert isinstance(caught.value, QueueDispatchError)
-                assert caught.value.committed is True
+    queue_backend = InMemoryQueueBackend()
+    backend = KafkaExecutionBackend(config, producer=FakeProducer(error))
+    async with QueueService(config, queue_backend=queue_backend, execution_backend=backend) as service:
+        result = await service.enqueue(queued.using(execution_backend="kafka"))
+        record = await queue_backend.get_task(result.id)
+        assert record is not None
+        expected = InvalidTopicError if definitive else QueueDispatchError
+        with pytest.raises(expected) as caught:
+            await backend.dispatch(service, record)
+        stored = await queue_backend.get_task(result.id)
+        assert stored is not None
+        assert (stored.execution_ref is None) is definitive
+        if not definitive:
+            assert isinstance(caught.value, QueueDispatchError)
+            assert caught.value.committed is True
 
 
 async def test_repair_rotates_stale_attempt_and_republishes() -> "None":

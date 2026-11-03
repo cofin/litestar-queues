@@ -270,7 +270,6 @@ def test_run_maintenance_help_exposes_only_phase_and_json(monkeypatch: "pytest.M
     assert result.exit_code == 0, result.stderr
     assert "--phase" in result.stdout
     assert "--json" in result.stdout
-    # No destructive threshold/limit flags are exposed.
     for forbidden in ("--limit", "--retention", "--stale-after", "--terminal", "--budget"):
         assert forbidden not in result.stdout
 
@@ -280,11 +279,6 @@ def test_run_maintenance_reports_missing_maintenance_config(monkeypatch: "pytest
 
     assert result.exit_code == 1
     assert "not configured" in result.stderr.lower()
-
-
-# --------------------------------------------------------------------------- #
-# ``_maintain_run`` behavior with fakes (no real backend required).
-# --------------------------------------------------------------------------- #
 
 
 class _FakeMaintenanceBackend:
@@ -434,7 +428,6 @@ async def test_repair_failure_real_maintenance_exits_1(
         service_account_email="queues@example-project.iam.gserviceaccount.com",
         trust_platform_auth=True,
     )
-    # Inject a shared-store stand-in; provider and maintenance orchestration stay real.
     storage = InMemoryQueueBackend()
     client = FakeCloudTasksClient()
     execution = CloudTasksExecutionBackend(execution_config=execution_config, client=client)
@@ -589,7 +582,6 @@ async def test_maintain_rejects_backend_without_maintenance_capability(monkeypat
     code = await _cli._maintain_run(cast("Any", plugin), (), False)
 
     assert code == 1
-    # The service is opened for the capability check, then cleanly shut down.
     assert service.open_calls == 1
     assert service.close_calls == 1
 

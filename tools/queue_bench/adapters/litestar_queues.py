@@ -14,6 +14,8 @@ from tools.queue_bench.measurements import (
     summarize_task_phases,
 )
 
+__all__ = ("run",)
+
 
 async def run(request: AdapterRequest) -> AdapterResult:
     """Run one isolated Litestar Queues sample.
@@ -356,8 +358,6 @@ async def _wait_for_native_wakeup_arm(service: Any, *, timeout: float) -> None:
             msg = "steady-idle-pickup worker did not arm its native wakeup read"
             raise TimeoutError(msg)
         await asyncio.sleep(0)
-    # SQLSpec currently exposes no subscription-readiness awaitable. Give the
-    # retained driver read one untimed settling window before measured work.
     await asyncio.sleep(0.25)
 
 
@@ -475,6 +475,3 @@ async def _namespace_keys(client: Any, namespace: str) -> list[Any]:
     if await client.exists(namespace):
         keys.add(namespace)
     return list(keys)
-
-
-__all__ = ("run",)

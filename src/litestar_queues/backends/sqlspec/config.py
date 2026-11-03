@@ -169,11 +169,6 @@ class SQLSpecBackendConfig:
         if sqlspec_config is None:
             return
 
-        # Register the durable events queue migration first: a capability-native
-        # adapter (asyncpg/psycopg/psqlpy notify_queue, DuckDB poll_queue) needs
-        # its events table provisioned on migrate-up so zero-config native wakeups
-        # work on a fresh database. The call is unconditional so that adopter-owned
-        # schema also deregisters when no events table is wanted.
         configure_events_migration_extension(
             cast("SQLSpecConfig", sqlspec_config),
             backend=resolve_events_migration_backend(self, cast("SQLSpecConfig", sqlspec_config)),

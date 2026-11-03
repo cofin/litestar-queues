@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from litestar_queues.events import EventBufferConfig, QueueEvent, QueueEventPublisher, QueueEventScope
+from litestar_queues.events.buffer import LiveEventBuffer
 from litestar_queues.exceptions import QueueEventBufferFull
 
 if TYPE_CHECKING:
@@ -40,8 +41,6 @@ def _ignore_drop(_scope: "str") -> "None":
 
 
 async def test_add_below_size_does_not_flush() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(EventBufferConfig(batch_size=3), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
@@ -56,8 +55,6 @@ async def test_add_below_size_does_not_flush() -> "None":
 
 
 async def test_size_threshold_triggers_eager_flush() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(EventBufferConfig(batch_size=2), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
@@ -68,8 +65,6 @@ async def test_size_threshold_triggers_eager_flush() -> "None":
 
 
 async def test_task_scoped_flush_drains_only_that_task() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(EventBufferConfig(batch_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
@@ -87,8 +82,6 @@ async def test_task_scoped_flush_drains_only_that_task() -> "None":
 
 
 async def test_drop_oldest_drops_and_records_metric(caplog: "pytest.LogCaptureFixture") -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     drops: "list[str]" = []
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
@@ -109,8 +102,6 @@ async def test_drop_oldest_drops_and_records_metric(caplog: "pytest.LogCaptureFi
 
 
 async def test_drop_newest_refuses_incoming() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     drops: "list[str]" = []
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
@@ -129,8 +120,6 @@ async def test_drop_newest_refuses_incoming() -> "None":
 
 
 async def test_error_policy_raises() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
         EventBufferConfig(batch_size=10, max_pending=1, overflow="error"),
@@ -145,8 +134,6 @@ async def test_error_policy_raises() -> "None":
 
 
 async def test_block_waits_on_flush_not_caller() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
         EventBufferConfig(batch_size=10, max_pending=1, overflow="block"),
@@ -168,8 +155,6 @@ async def test_block_waits_on_flush_not_caller() -> "None":
 
 
 async def test_interval_flush() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(
         EventBufferConfig(batch_size=10, flush_interval=0.01), sink_publish=sink.publish_many, record_drop=_ignore_drop
@@ -186,8 +171,6 @@ async def test_interval_flush() -> "None":
 
 
 async def test_stop_drains_remainder_before_return() -> "None":
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     sink = _RecordingSink()
     buffer = LiveEventBuffer(EventBufferConfig(batch_size=10), sink_publish=sink.publish_many, record_drop=_ignore_drop)
 
@@ -251,8 +234,6 @@ class _PublishOnlySink:
 
 
 async def test_scoped_flush_waits_for_extracted_batch_to_finish() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     entered = asyncio.Event()
     finish = asyncio.Event()
     delivered: "list[str]" = []
@@ -282,8 +263,6 @@ async def test_scoped_flush_waits_for_extracted_batch_to_finish() -> None:
 
 @pytest.mark.parametrize("child", [False, True])
 async def test_reentrant_terminal_is_deferred_until_whole_batch_finishes(child: bool) -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     delivered: "list[str]" = []
 
     async def terminal() -> None:
@@ -308,8 +287,6 @@ async def test_reentrant_terminal_is_deferred_until_whole_batch_finishes(child: 
 
 
 async def test_stale_child_terminal_waits_for_new_active_batch() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     child_start = asyncio.Event()
     blocked = asyncio.Event()
     finish = asyncio.Event()
@@ -354,8 +331,6 @@ async def test_stale_child_terminal_waits_for_new_active_batch() -> None:
 
 
 async def test_reentrant_block_overflow_rejects_before_admission() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     delivered: "list[str]" = []
 
     async def publish(batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> None:
@@ -379,8 +354,6 @@ async def test_reentrant_block_overflow_rejects_before_admission() -> None:
 
 
 async def test_reentrant_control_queue_is_bounded() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     delivered: "list[str]" = []
 
     async def terminal() -> None:
@@ -402,8 +375,6 @@ async def test_reentrant_control_queue_is_bounded() -> None:
 
 
 async def test_cancelling_waiting_flush_does_not_wait_for_active_sink() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     blocked = asyncio.Event()
     finish = asyncio.Event()
 
@@ -429,8 +400,6 @@ async def test_cancelling_waiting_flush_does_not_wait_for_active_sink() -> None:
 
 
 async def test_reentrant_eager_add_rejects_before_exceeding_deferred_capacity() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     delivered: "list[str]" = []
 
     async def publish(batch: "Sequence[tuple[QueueEvent, Sequence[str]]]") -> None:
@@ -452,8 +421,6 @@ async def test_reentrant_eager_add_rejects_before_exceeding_deferred_capacity() 
 
 @pytest.mark.parametrize("deferred", [False, True])
 async def test_cancelled_batch_retains_unattempted_terminal_release(deferred: bool) -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     blocked = asyncio.Event()
     attempts = []
 
@@ -489,8 +456,6 @@ async def test_cancelled_batch_retains_unattempted_terminal_release(deferred: bo
 
 
 async def test_batch_failure_attempts_terminal_before_raising_original() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     error = RuntimeError("first batch failure")
     attempts = []
 
@@ -510,8 +475,6 @@ async def test_batch_failure_attempts_terminal_before_raising_original() -> None
 
 
 async def test_stop_drains_later_pending_events_after_timer_failure() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     error = RuntimeError("timer delivery failed")
     attempts = []
 
@@ -537,8 +500,6 @@ async def test_stop_drains_later_pending_events_after_timer_failure() -> None:
 
 
 async def test_stop_preserves_timer_error_over_later_final_drain_failure() -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     blocked = asyncio.Event()
     finish = asyncio.Event()
     original = RuntimeError("original timer failure")
@@ -575,8 +536,6 @@ async def test_stop_preserves_timer_error_over_later_final_drain_failure() -> No
 
 @pytest.mark.parametrize("stale", [False, True])
 async def test_bound_release_does_not_borrow_workers_unrelated_active_token(stale: bool) -> None:
-    from litestar_queues.events.buffer import LiveEventBuffer
-
     entered = asyncio.Event()
     finish = asyncio.Event()
     callbacks: "asyncio.Queue[Callable[[], Awaitable[None]]]" = asyncio.Queue()

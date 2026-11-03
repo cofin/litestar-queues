@@ -62,9 +62,6 @@ class ExplodingClient:
             raise NotFound(msg)
 
 
-# --------------------------------------------------------------------------- gating
-
-
 def test_the_proof_does_not_run_unless_it_is_asked_for() -> "None":
     """Default-off, because the default is somebody else's Google bill."""
     assert live_skip_reason({}) is not None
@@ -89,13 +86,10 @@ def test_deciding_not_to_run_never_loads_the_operator_configuration() -> "None":
     assert live_skip_reason(hostile) is not None
 
 
-def test_the_flag_is_read_exactly_and_not_as_truthiness() -> "None":
+@pytest.mark.parametrize("value", ["0", "false", "no", ""])
+def test_the_flag_is_read_exactly_and_not_as_truthiness(value: str) -> "None":
     """``LIVE=0`` and ``LIVE=false`` are an operator saying no, not saying nothing."""
-    for value in ("0", "false", "no", ""):
-        assert live_skip_reason({**CONFIGURED, LIVE_FLAG_ENV: value}) is not None
-
-
-# --------------------------------------------------------------------------- cleanup
+    assert live_skip_reason({**CONFIGURED, LIVE_FLAG_ENV: value}) is not None
 
 
 async def test_cleanup_deletes_exactly_the_deliveries_it_created() -> "None":

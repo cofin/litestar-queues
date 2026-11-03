@@ -4,6 +4,8 @@ import statistics
 
 from tools.queue_bench.models import BenchmarkResult
 
+__all__ = ("render_markdown",)
+
 
 def render_markdown(result: BenchmarkResult) -> str:
     """Render one benchmark result as portable Markdown.
@@ -137,6 +139,3 @@ def _median_measurement(measurements: list[dict[str, int | float | str | bool | 
 def _format_milliseconds(value: float | None) -> str:
     """Format an optional seconds measurement as milliseconds."""
     return "-" if value is None else f"{value * 1_000:.2f}"
-
-
-__all__ = ("render_markdown",)

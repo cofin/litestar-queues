@@ -42,8 +42,6 @@ if TYPE_CHECKING:
 
 __all__ = ("CloudTasksDelivery", "build_cloud_tasks_route")
 
-logger = logging.getLogger(__name__)
-
 _ACKNOWLEDGED = 204
 _REDELIVER = 503
 
@@ -135,18 +133,12 @@ async def _run_delivered_record(service: "QueueService", task_id: "UUID") -> "Re
     try:
         exit_code = await consume_one(service, task_id)
     except QueueDispatchError:
-        # Already reported with a sanitized payload where it was raised. The
-        # record is durable and active; this same delivery arriving again is
-        # what gives it a new Cloud Task.
         runtime_logger.warning(
             "Cloud Tasks delivery could not schedule the next attempt", extra={"queue_task_id": str(task_id)}
         )
         _record_delivery(runtime, _OUTCOME_TRANSIENT_ERROR)
         return Response(content=None, status_code=_REDELIVER)
     except Exception:
-        # Task failures never reach here -- the service records those durably.
-        # What is left is the queue itself being unreachable or broken, which
-        # says nothing about the task, so the delivery has to survive it.
         runtime_logger.exception("Cloud Tasks delivery failed", extra={"queue_task_id": str(task_id)})
         _record_delivery(runtime, _OUTCOME_TRANSIENT_ERROR)
         return Response(content=None, status_code=_REDELIVER)
@@ -159,9 +151,6 @@ async def _run_delivered_record(service: "QueueService", task_id: "UUID") -> "Re
             if current is not None and current.status == "running":
                 status_code = _REDELIVER
     except Exception:  # noqa: BLE001 - naming an outcome must never revoke one.
-        # The run already earned this response. A label that cannot be worked
-        # out is a worse signal than "acknowledged"; a 500 here would be a wrong
-        # answer about work that is finished.
         outcome = _OUTCOME_ACKNOWLEDGED
     _record_delivery(runtime, outcome)
     return Response(content=None, status_code=status_code)
@@ -181,8 +170,6 @@ async def _delivery_outcome(service: "QueueService", task_id: "UUID", exit_code:
         return _OUTCOME_DUPLICATE
     if exit_code is not TaskExitCode.FAILURE:
         return _OUTCOME_ACKNOWLEDGED
-    # The only ambiguous code: the record either settled or went back to the
-    # queue with a delivery of its own, and one read tells them apart.
     record = await service.get_task(task_id)
     return _OUTCOME_ACKNOWLEDGED if record is None or record.is_terminal else _OUTCOME_RETRY_SCHEDULED
 

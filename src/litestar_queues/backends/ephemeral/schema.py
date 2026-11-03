@@ -242,7 +242,6 @@ def initialize_database(path: "str | Path", *, nonce: "str") -> "None":
     try:
         connection.execute("BEGIN IMMEDIATE")
 
-        # Check for existing old version
         cur = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='queue_runtime'"
         ).fetchone()
@@ -250,7 +249,6 @@ def initialize_database(path: "str | Path", *, nonce: "str") -> "None":
         if cur:
             row = connection.execute("SELECT schema_version FROM queue_runtime WHERE singleton = 1").fetchone()
             if row and row["schema_version"] != SCHEMA_VERSION:
-                # Drop existing tables
                 tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 for table in tables:
                     if table["name"] != "sqlite_sequence":

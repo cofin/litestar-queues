@@ -286,9 +286,6 @@ def test_a_sharing_violation_on_the_database_is_retried_and_bounded(
     monkeypatch.undo()
     assert attempts["count"] > 1
     assert path.exists()
-    # A database that outlives its server is a leak on the host, so it has to be
-    # reported by name. Windows refuses to unlink files with open handles, which
-    # made this the silent failure mode there.
     assert DATABASE_NAME in caplog.text
     path.unlink()
     path.parent.rmdir()

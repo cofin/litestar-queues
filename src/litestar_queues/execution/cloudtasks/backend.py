@@ -52,8 +52,6 @@ _CLOUD_TASKS_EXTRA = "cloud-tasks"
 _BACKEND_NAME = CLOUD_TASKS_BACKEND_NAME
 _HTTP_CONFLICT = 409
 _HTTP_NOT_FOUND = 404
-# A record a consumer already holds is excluded: Cloud Tasks keeps that delivery
-# open until the response, so re-creating it would run the task twice.
 _REPAIRABLE_STATUSES = frozenset({"pending", "scheduled"})
 logger = logging.getLogger(__name__)
 
@@ -109,9 +107,6 @@ _REPAIR = _DeliveryOperation(
     metric="litestar_queues.execution.repair",
     outcome_label="queue.repair.outcome",
     created="recreated",
-    # Repair only creates after the transport reported the delivery gone, and it
-    # creates under a fresh random name, so a collision still means exactly one
-    # delivery now exists. That is the same operational fact as recreating it.
     already_present="recreated",
     failed="error",
 )
@@ -222,7 +217,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
                 would accept a delivery that can never run.
         """
         config = self.execution_config
-        _validate_schedulable(current, config)
+        _validate_schedulable(current)
 
         task_name = current.execution_ref
         if task_name is None or not _is_current_delivery_name(task_name, config, current):
@@ -304,7 +299,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             if current is None or not _same_attempt(current, snapshot, snapshot.execution_ref):
                 return "unchanged"
             current = replace(current)
-            _validate_schedulable(current, config)
+            _validate_schedulable(current)
             if current.execution_ref is not None and await self._delivery_exists(current.execution_ref, config):
                 _record_outcome(service, current, _REPAIR, _REPAIR_PRESENT)
                 return "unchanged"
@@ -389,7 +384,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
         stored = replace(stored)
         if not _same_attempt(stored, snapshot, task_name):
             return None
-        _validate_schedulable(stored, config)
+        _validate_schedulable(stored)
         return task_name
 
     async def _create_delivery(
@@ -423,7 +418,7 @@ class CloudTasksExecutionBackend(BaseExecutionBackend):
             if current is None or not _same_attempt(current, snapshot, task_name):
                 return None
             current = replace(current)
-            _validate_schedulable(current, config)
+            _validate_schedulable(current)
             await client.create_task(
                 request=_create_task_request(config, current, task_name), timeout=config.api_timeout
             )
@@ -568,7 +563,7 @@ def _same_attempt(current: "QueuedTaskRecord", snapshot: "QueuedTaskRecord", ref
     )
 
 
-def _validate_schedulable(record: "QueuedTaskRecord", config: "CloudTasksExecutionConfig") -> "None":
+def _validate_schedulable(record: "QueuedTaskRecord") -> "None":
     """Refuse a record Cloud Tasks would reject or silently never run.
 
     The enqueue path already checks both of these, but a recurrence computes its
@@ -644,8 +639,6 @@ def _create_task_request(
         },
     }
     if record.scheduled_at is not None:
-        # An unset schedule time means "dispatch now" on Google's clock, which is
-        # a better answer than stamping this process's possibly skewed one.
         task["schedule_time"] = record.scheduled_at
     return {"parent": config.queue_path, "task": task}
 

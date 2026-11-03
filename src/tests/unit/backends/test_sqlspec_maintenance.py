@@ -34,10 +34,9 @@ def test_long_table_name_is_bounded_and_deterministic() -> None:
     first = maintenance_table_name_for(long_table)
     second = maintenance_table_name_for(long_table)
 
-    assert first == second  # deterministic for the same input
+    assert first == second
     assert len(first) <= _MAX_IDENTIFIER_LENGTH
     assert first.endswith("_maintenance")
-    # A different long table produces a distinct bounded name.
     other = maintenance_table_name_for("queue_task_" + "y" * 60)
     assert other != first
     assert len(other) <= _MAX_IDENTIFIER_LENGTH
@@ -165,7 +164,6 @@ async def test_dispatch_repair_discarded_candidate_consumes_budget(
                 async def select(statement: Any) -> Any:
                     rows = await driver.select(statement)
                     page_sizes.append(len(rows))
-                    # A selected record can cease to be eligible before its guarded mark.
                     await driver.execute(
                         "UPDATE queue_task SET status = 'cancelled' WHERE id = :task_id", task_id=str(selected.id)
                     )
@@ -213,7 +211,6 @@ async def test_scheduled_execution_ref_unknown_rowcount_does_not_accept_existing
     try:
         record = await backend.enqueue("existing_reference", execution_backend="cloudtasks")
         await backend.set_execution_ref(record.id, "cloudtasks", "already-reserved")
-        # Some adapters cannot distinguish zero affected rows from unknown rowcount.
         monkeypatch.setattr(SQLSpecQueueBackend, "_resolve_rows_affected", lambda _self, _result: -1)
         rejected = await backend.reserve_scheduled_execution_ref(
             record.id, "cloudtasks", "already-reserved", expected_retry_count=0, expected_execution_ref=None

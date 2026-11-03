@@ -147,7 +147,6 @@ async def test_live_notification_has_committed_history_in_another_process(  # no
         expected = ["ordinary", "terminal"] if scenario == "terminal" else ["ordinary"]
         for event_id in expected:
             assert await _wait_message(live_reader, process) == event_id
-            # This reader owns a different pool and no reference to the writer's buffer.
             page = await log.query_events(QueueEventQuery(task_id="process-task"))
             assert event_id in {row.event_id for row in page.items}
         if scenario != "close":

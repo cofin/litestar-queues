@@ -23,9 +23,6 @@ async def _persisted_creation_order(
     expected = sorted(
         (record for record in persisted if record is not None), key=lambda record: (record.created_at, str(record.id))
     )
-    # MySQL's existing second-precision created_at can round into the future.
-    # Start scans after every persisted creation time so a new precise check
-    # mark sorts after the never-checked records in this rotation assertion.
     delay = (max(record.created_at for record in expected) - datetime.now(UTC)).total_seconds()
     assert delay <= 1
     if delay >= 0:

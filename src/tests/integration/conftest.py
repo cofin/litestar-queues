@@ -58,9 +58,6 @@ async def queue_backend(request: "pytest.FixtureRequest", tmp_path: "Path") -> "
         if service is None:
             pytest.skip(f"{case.name} requires {case.service_attr} (Docker unavailable)")
 
-    # Service-backed adapters share the same Docker database across the
-    # session. Give each parametrized test its own queue table so adapters and
-    # test cases cannot collide via the shared default name.
     table_name = (
         table_name_for_test("queue_task", case.name, request.node.nodeid) if case.service_attr is not None else None
     )

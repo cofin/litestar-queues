@@ -97,8 +97,6 @@ EVENT_HISTORY_COLUMNS = (
 )
 """Physical columns the package owns on the SQLSpec event-history table."""
 
-_EVENT_HISTORY_COLUMN_NAMES = frozenset(EVENT_HISTORY_COLUMNS)
-
 
 def validate_table_name(table_name: "str") -> "str":
     """Validate a SQL identifier used for the queue table name.
@@ -189,9 +187,6 @@ def event_history_table_name_for(table_name: "str") -> "str":
     return validate_table_name(f"{schema}.{table}{DEFAULT_EVENT_HISTORY_TABLE_SUFFIX}")
 
 
-# Smallest common identifier limit across supported dialects (PostgreSQL is 63,
-# MySQL is 64). Derived coordination tables are deterministically shortened so
-# the same name is produced by the packaged migration and the runtime backend.
 _MAX_IDENTIFIER_LENGTH = 63
 
 

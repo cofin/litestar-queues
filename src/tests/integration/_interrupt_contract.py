@@ -47,8 +47,6 @@ async def assert_interrupts_owned_running_record(queue_backend: "BaseQueueBacken
     record = await queue_backend.enqueue("tasks.interrupt", priority=7)
     claimed = await queue_backend.claim_task(record.id)
     assert claimed is not None
-    # The memory backend hands back the live record, so snapshot the claimed
-    # generation before any mutation instead of re-reading it later.
     generation = claimed.retry_count
     assigned = await queue_backend.assign_worker(record.id, worker_id="worker-a", expected_retry_count=generation)
     assert assigned is not None
@@ -71,7 +69,6 @@ async def assert_interrupts_owned_running_record(queue_backend: "BaseQueueBacken
     assert updated.retry_count == generation + 1
     assert updated.metadata.get("interruptions") == 1
 
-    # The generation bump locks the previous owner out of every settle fence.
     assert await queue_backend.complete_task(record.id, result="stale-owner", expected_retry_count=generation) is None
 
     stored = await queue_backend.get_task(record.id)
@@ -189,8 +186,6 @@ async def assert_interruption_does_not_consume_failure_budget(queue_backend: "Ba
 async def assert_stale_requeue_priority_policy(queue_backend: "BaseQueueBackend") -> "None":
     """``QueueConfig.stale_requeue_priority`` decides the priority recovered work re-enters with."""
     original_config = queue_backend.config
-    # Fixture backends are built without a QueueConfig; the policy is read live
-    # from whatever config the backend carries at sweep time.
     config = (
         original_config
         if original_config is not None

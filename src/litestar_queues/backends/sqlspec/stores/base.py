@@ -107,13 +107,6 @@ class SQLSpecQueueStore:
     skip_explicit_begin: "ClassVar[bool]" = False
     skip_cleanup_rollback: "ClassVar[bool]" = False
     supports_bulk_touch_heartbeats: "ClassVar[bool]" = False
-    # Per-store opt-in: canonical JSON columns whose driver round-trips
-    # native Python values rather than JSON-encoded strings. Subclasses
-    # whose drivers register a JSON codec (asyncpg JSONB, psycopg JSONB,
-    # psqlpy PyJSON, MySQL JSON, Oracle JSON, etc.) override this. Stores
-    # whose driver returns JSON columns as plain strings (DuckDB, SQLite)
-    # keep the default empty frozenset. Unioned with adopter-supplied
-    # ``native_json_columns`` at ``__init__``.
     auto_native_json_columns: "ClassVar[frozenset[str]]" = frozenset()
     bind_datetime_as_text: "ClassVar[bool]" = False
     bind_datetime_as_naive_utc: "ClassVar[bool]" = False
@@ -238,8 +231,6 @@ class SQLSpecQueueStore:
         columns = [self._col(canonical) for canonical in _TASK_COLUMNS]
         quoted_columns = ", ".join(self._quote_identifier(column) for column in columns)
         placeholders = ", ".join(f":{column}" for column in columns)
-        # Identifiers come from the fixed _TASK_COLUMNS tuple and are dialect-quoted;
-        # every value is a bound :name placeholder, so there is no injection surface.
         return f"INSERT INTO {self._quoted_table_name()} ({quoted_columns}) VALUES ({placeholders})"  # noqa: S608
 
     def bulk_values(self, rows: "Sequence[dict[str, Any]]") -> "list[dict[str, Any]]":
@@ -939,8 +930,6 @@ class SQLSpecQueueStore:
         target_metadata = f"{target}.{metadata_col}"
         source_metadata = f"{source}.metadata_json"
         values_sql = ", ".join(value_rows)
-        # The VALUES entries are all bound placeholders; identifiers come from
-        # validated table/column names and are quoted by the store.
         statement = f"""
 WITH {source}(task_id, expected_retry_count, metadata_json) AS (
     VALUES {values_sql}

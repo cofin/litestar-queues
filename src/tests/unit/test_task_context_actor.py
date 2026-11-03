@@ -79,7 +79,6 @@ async def test_convenience_methods_forward_actor(method_name: "str") -> "None":
     elif method_name == "event":
         await method("my.event", actor=QueueEventActor(type="user", id="u1"))
 
-    # When actor is omitted, inherits context actor
     if method_name == "progress":
         await method(current=2, total=2)
     elif method_name == "log":

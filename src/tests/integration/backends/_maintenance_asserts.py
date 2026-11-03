@@ -22,11 +22,8 @@ async def assert_cross_instance_coordination(first: "BaseQueueBackend", second: 
     assert second.capabilities.supports_maintenance is True
 
     assert await first.acquire_maintenance(MAINTENANCE_NAME, "token-a", ttl=ttl) is True
-    # A second, independently opened instance sees the held ownership and is denied.
     assert await second.acquire_maintenance(MAINTENANCE_NAME, "token-b", ttl=ttl) is False
-    # A non-owner cannot release the ownership (token fencing).
     assert await second.release_maintenance(MAINTENANCE_NAME, "token-b") is False
-    # The owner releases and the other instance can then acquire.
     assert await first.release_maintenance(MAINTENANCE_NAME, "token-a") is True
     assert await second.acquire_maintenance(MAINTENANCE_NAME, "token-b", ttl=ttl) is True
     assert await second.release_maintenance(MAINTENANCE_NAME, "token-b") is True

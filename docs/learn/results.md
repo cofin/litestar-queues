@@ -10,7 +10,7 @@ Every call to `await queue_service.enqueue(...)` returns a [`TaskResult[T]`](../
 
 ## Inspecting TaskResult Handles
 
-A `TaskResult` wraps the most recently fetched [`QueuedTaskRecord`](../reference/tasks-and-models.md#litestar_queues.models.QueuedTaskRecord) and exposes convenience properties:
+A `TaskResult` wraps the most recently fetched [`QueuedTaskRecord`](../reference/tasks-and-models.md#litestar_queues.models.QueuedTaskRecord) and exposes convenience properties. Because `TaskResult` caches the snapshot from `enqueue()`, it does not mutate automatically in the background when a remote worker finishes the task. Refresh it after receiving a terminal event (via `await handle.refresh()`) or call `await handle.wait(...)` to fetch the terminal record:
 
 | Property / Method | Return Type | Description |
 | :--- | :--- | :--- |

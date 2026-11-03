@@ -22,6 +22,8 @@ __all__ = ("ValkeyQueueBackend",)
 class ValkeyQueueBackend(RedisQueueBackend):
     """Valkey-backed queue backend."""
 
+    __slots__ = ()
+
     _backend_name: "ClassVar[str]" = "valkey"
 
     def __init__(

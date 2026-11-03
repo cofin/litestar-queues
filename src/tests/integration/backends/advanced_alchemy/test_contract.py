@@ -49,9 +49,6 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.anyio
 
-# Both async PostgreSQL drivers share the same dedicated LISTEN/NOTIFY listener
-# seam and the same durable reconciliation. Notification behavior is proven on
-# each against the SAME real PostgreSQL service.
 _PG_NOTIFY_DRIVERS = (
     pytest.param(("postgresql+asyncpg", "asyncpg"), id="asyncpg"),
     pytest.param(("postgresql+psycopg", "psycopg"), id="psycopg"),
@@ -243,9 +240,6 @@ def test_advanced_alchemy_claim_statement_uses_skip_locked_for_locking_dialects(
     assert "FOR UPDATE SKIP LOCKED" in oracle_lock_sql
     assert not _supports_skip_locked_claim("mysql")
     assert not _supports_skip_locked_claim("mariadb")
-    # Batch claim is gated on the PostgreSQL dialect, so both async PostgreSQL
-    # drivers (asyncpg and psycopg share ``dialect.name == "postgresql"``)
-    # advertise it while other dialects do not.
     assert _supports_batch_claim("postgresql")
     assert not _supports_batch_claim("oracle")
     assert not _supports_batch_claim("mysql")
@@ -463,11 +457,9 @@ async def test_advanced_alchemy_capabilities_are_polling_only_without_postgres_n
     assert sqlite_backend.capabilities.wakeup_backend is None
     assert sqlite_backend.capabilities.wakeups_durable is False
     assert mysql_backend.capabilities.supports_worker_wakeups is False
-    # Oracle stays polling: Advanced Alchemy exposes no AQ/TxEventQ transport.
     assert oracle_backend.capabilities.supports_worker_wakeups is False
     assert oracle_backend.capabilities.wakeup_backend not in {"aq", "txeventq"}
     assert oracle_backend.capabilities.wakeup_backend is None
-    # Both async PostgreSQL drivers advertise transient LISTEN/NOTIFY wakeups.
     for pg_backend in (postgres_backend, postgres_psycopg_backend):
         assert pg_backend.capabilities.supports_worker_wakeups is True
         assert pg_backend.capabilities.wakeup_backend == "postgres-listen-notify"
@@ -519,7 +511,6 @@ async def test_advanced_alchemy_postgres_notifications_wake_waiter(
     )
     await backend.open()
     try:
-        # Establish LISTEN and retain its native read before publishing.
         assert await backend.wait_for_wakeups(timeout=0.01) is False
         listener = cast("Any", backend._notification_listener)
         assert listener is not None
@@ -559,7 +550,6 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
     )
     await backend.open()
     try:
-        # A first empty wait establishes the LISTEN connection and retains its read.
         assert await backend.wait_for_wakeups(timeout=0.2) is False
         listener = cast("Any", backend._notification_listener)
         assert listener is not None
@@ -567,14 +557,12 @@ async def test_advanced_alchemy_postgres_notification_after_timeout_reuses_liste
         assert connection is not None
         assert listener._pending_read.has_pending is True
 
-        # A concurrent waiter reuses the retained read; the enqueue's NOTIFY wakes it.
         waiter = asyncio.create_task(listener.wait(timeout=2.0))
         await backend.enqueue("tasks.pg.reuse")
 
         assert await waiter is True
         assert listener._connection is connection
         assert bool(listener._pending_read.has_pending) is False
-        # Identity check last: ``is`` widens ``listener`` back to the attribute's type.
         assert backend._notification_listener is listener
     finally:
         with suppress(Exception):
@@ -608,11 +596,8 @@ async def test_advanced_alchemy_postgres_dropped_marker_is_reconciled_from_durab
     )
     await backend.open()
     try:
-        # Commit + NOTIFY happen here, before any listener exists: the marker is lost.
         record = await backend.enqueue("tasks.pg.dropped")
 
-        # The very first wait subscribes, then reconciles the durable table and
-        # discovers the committed due row without any live notification.
         assert await backend.wait_for_wakeups(timeout=1.0) is True
         claimed = await backend.claim_task(record.id)
         assert claimed is not None
@@ -661,12 +646,7 @@ async def test_advanced_alchemy_postgres_uncommitted_row_does_not_wake_committed
                 metadata={},
             )
             await session.flush()
-            # Reconciliation runs on a separate connection under READ
-            # COMMITTED; the still-open insert is invisible and no marker
-            # was published, so the waiter must not wake.
             assert await backend.wait_for_wakeups(timeout=0.4) is False
-            # Transaction committed on block exit.
-        # The committed due row is now visible to durable reconciliation.
         assert await backend.wait_for_wakeups(timeout=1.0) is True
     finally:
         with suppress(Exception):

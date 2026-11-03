@@ -108,9 +108,6 @@ async def harness(
         await service.close()
 
 
-# --------------------------------------------------------------------------- delivery on commit
-
-
 async def test_a_committed_record_gets_exactly_one_delivery(harness: "Callable[..., Any]") -> "None":
     live = await harness()
 
@@ -131,7 +128,6 @@ async def test_the_record_is_readable_elsewhere_before_the_delivery_exists(harne
     seen: "list[QueuedTaskRecord | None]" = []
 
     async def observe(call: "CreateCall") -> "None":
-        # Resolve the id exactly as the consumer will: read it off the transport.
         seen.append(await live.reader.get_task(UUID(decode_json(call.body)["task_id"])))
 
     live.client.on_create = observe
@@ -152,9 +148,6 @@ async def test_the_returned_handle_carries_the_persisted_delivery_reference(harn
 
     assert result.record is not None
     assert result.record.execution_ref == live.client.create_calls[0].name
-
-
-# --------------------------------------------------------------------------- creation failure
 
 
 async def test_a_failed_delivery_raises_a_committed_dispatch_error(harness: "Callable[..., Any]") -> "None":
@@ -371,9 +364,6 @@ async def test_fallback_logging_preserves_committed_dispatch_failure(
         assert excinfo.value.task_id == record.id
         assert excinfo.value.committed is True
     assert await live.reader.get_task(record.id) is not None
-
-
-# --------------------------------------------------------------------------- records never delivered
 
 
 async def test_a_record_that_expires_on_enqueue_is_never_delivered(harness: "Callable[..., Any]") -> "None":

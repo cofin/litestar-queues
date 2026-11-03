@@ -97,12 +97,6 @@ class BackendCase:
             object.__setattr__(self, "capabilities", self.capabilities | {"expiry"})
 
 
-# ---------------------------------------------------------------------------
-# Builders. Each builder is async and returns a constructed-but-unopened
-# backend. The fixture owns the open()/close() lifecycle.
-# ---------------------------------------------------------------------------
-
-
 async def _build_memory(ctx: "FixtureCtx") -> "BaseQueueBackend":
     from litestar_queues.backends import InMemoryQueueBackend
 

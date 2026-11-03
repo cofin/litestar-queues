@@ -47,7 +47,6 @@ DISCOVERED_PAGE_STEP = DEMO_STEPS // 2
 DISCOVERED_PAGE_URL = "https://example.invalid/articles/queues-101"
 
 
-# -- docs-task-start --
 @task("examples.htmx_realtime_sse_advanced_alchemy.crawl", queue="demo", retries=0, timeout=90)
 async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     ctx = _task_context
@@ -58,8 +57,6 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
         message = f"{step}/{DEMO_STEPS} - {line}"
         await ctx.progress(current=step, total=DEMO_STEPS, message=message, payload={"line": message})
         if step == DISCOVERED_PAGE_STEP:
-            # One meaningful domain event at a real transition, with a payload
-            # distinct from the generic per-step progress text above.
             await ctx.event(
                 "crawl.page_discovered",
                 message=f"Discovered {DISCOVERED_PAGE_URL}",
@@ -70,10 +67,8 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     return {"task_id": ctx.task_id, "status": "complete"}
 
 
-# -- docs-task-end --
 
 
-# -- docs-routes-start --
 @get("/")
 async def index() -> Template:
     return Template("index.html", context={"backend_name": BACKEND_NAME, "vite_entry": VITE_ENTRY})
@@ -101,10 +96,8 @@ async def restart_demo(queue_service: NamedDependency[QueueService]) -> Template
     )
 
 
-# -- docs-routes-end --
 
 
-# -- docs-app-config-start --
 channels = ChannelsPlugin(
     backend=MemoryChannelsBackend(history=200),
     arbitrary_channels_allowed=True,
@@ -140,4 +133,3 @@ app = Litestar(
         VitePlugin(config=vite_config),
     ],
 )
-# -- docs-app-config-end --

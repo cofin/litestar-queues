@@ -49,8 +49,6 @@ async def test_rules_run_in_order_with_cumulative_excludes_and_shared_budget() -
             calls.append((before.timestamp(), tuple(q.scope_key or "" for q in exclude), limit))
             return 2
 
-    # drive QueueMaintenanceService with a stub QueueService exposing this log,
-    # event_limit=5, and three rules with scope_key "a", "b", and no filter.
     from unittest.mock import MagicMock
 
     from litestar_queues.maintenance import QueueMaintenanceService
@@ -60,7 +58,6 @@ async def test_rules_run_in_order_with_cumulative_excludes_and_shared_budget() -
     mock_backend = MagicMock()
     mock_backend.capabilities.supports_maintenance = True
 
-    # We must mock acquire_maintenance and release_maintenance
     async def _acquire(*args: "Any", **kwargs: "Any") -> bool:
         return True
 
@@ -83,9 +80,6 @@ async def test_rules_run_in_order_with_cumulative_excludes_and_shared_budget() -
     maint_service = QueueMaintenanceService(mock_service, config)
 
     await maint_service.run()
-
-    # The rule limits should be 5, 3, 1 since each returns 2 deleted.
-    # Excludes: (), ("a",), ("a", "b")
 
     assert [call[1] for call in calls] == [(), ("a",), ("a", "b")]
     assert [call[2] for call in calls] == [5, 3, 1]

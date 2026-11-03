@@ -16,7 +16,6 @@ pytestmark = pytest.mark.anyio
 
 
 def _has_pending(read: "PendingNativeRead") -> "bool":
-    # Read through a function so mypy does not narrow the property to a literal.
     return read.has_pending
 
 
@@ -64,7 +63,6 @@ async def test_completed_read_is_consumed_exactly_once() -> "None":
     assert first.result() is True
     assert reads[0] == 1
 
-    # The next wait must build a fresh read rather than re-consume the old one.
     event.clear()
     assert await pending.race(factory, timeout=0.01) is None
     assert reads[0] == 2
@@ -99,7 +97,6 @@ async def test_outer_cancellation_retains_the_native_read() -> "None":
     with suppress(asyncio.CancelledError):
         await task
 
-    # Poll-boundary/shutdown cancellation of the caller must not destroy the read.
     assert _has_pending(pending) is True
     assert reads[0] == 1
 
@@ -107,6 +104,5 @@ async def test_outer_cancellation_retains_the_native_read() -> "None":
     completed = await pending.race(factory, timeout=0.5)
     assert completed is not None
     assert completed.result() is True
-    # The retained read was reused rather than rebuilt.
     assert reads[0] == 1
     await pending.aclose()

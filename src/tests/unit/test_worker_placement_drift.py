@@ -28,7 +28,6 @@ def test_the_server_branch_of_the_asgi_lifespan_starts_nothing() -> "None":
     assert "ServerWorkerSupervisor" not in source
     assert "supervisor" not in source
     assert "Process" not in source
-    # The one Worker construction is guarded by explicit ASGI placement.
     assert source.count("Worker(") == 1
     assert 'placement == "asgi"' in source
 

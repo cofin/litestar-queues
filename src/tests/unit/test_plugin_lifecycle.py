@@ -64,8 +64,6 @@ async def test_plugin_startup_loads_task_modules_for_every_placement() -> "None"
         assert isinstance(service, QueueService)
         assert "support_ping" in get_task_registry()
         assert "support_ping" in get_scheduled_tasks()
-        # An enqueue-only process must not write schedule records; the process
-        # that owns the worker does that instead.
         assert await service.get_queue_backend().get_task_by_key("scheduled:support_ping") is None
 
 
@@ -225,8 +223,6 @@ class _RecordingMemoryChannelsBackend(MemoryChannelsBackend):
         await super().on_shutdown()
 
     async def publish(self, data: "bytes", channels: "Iterable[str]") -> "None":
-        # A publish after on_shutdown raises "Backend not yet initialized"; record it so a
-        # misordered teardown is visible even if the RuntimeError is swallowed as best-effort.
         if self._queue is None:
             self._order.append("publish_after_shutdown")
         await super().publish(data, channels)
@@ -279,7 +275,6 @@ async def test_channels_before_queues_drains_worker_before_channels_close(caplog
                     break
                 await asyncio.sleep(0.01)
             assert result.status == "running"
-            # Let the running task publish for a moment before shutting down mid-run.
             await asyncio.sleep(0.1)
 
     assert "Backend not yet initialized" not in caplog.text
@@ -300,7 +295,6 @@ async def test_queues_before_channels_raises_configuration_error_at_startup() ->
     )
     app = Litestar(plugins=[plugin, channels])
 
-    # Litestar's event emitter task group wraps startup failures in ExceptionGroups.
     def _find_configuration_error(exc: "BaseException") -> "QueueConfigurationError | None":
         if isinstance(exc, QueueConfigurationError):
             return exc
@@ -338,7 +332,7 @@ async def test_event_config_auto_resolves_registered_channels_plugin() -> "None"
     app = Litestar(plugins=[channels, plugin])
 
     assert config.events is not None
-    assert config.events.channels is None  # auto-resolve must not mutate the config
+    assert config.events.channels is None
 
     async with AsyncTestClient(app=app) as client:
         assert client.app.state["queue_event_channels"] is channels

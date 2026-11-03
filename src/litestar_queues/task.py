@@ -740,8 +740,6 @@ class Task(Generic[P, T]):
         if service is not None:
             return await service.enqueue(cast("Task[Any, Any]", self), *args, **enqueue_kwargs)
 
-        # No application is wired up, so this call executes inline in the caller's
-        # process: process-local storage, inline execution, and nothing to supervise.
         fallback = QueueConfig(
             queue_backend="memory", execution_backend="immediate", worker=WorkerConfig(placement="external")
         )

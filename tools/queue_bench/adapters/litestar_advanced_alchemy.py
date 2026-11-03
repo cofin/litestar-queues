@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
     from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult
 
+__all__ = ("run",)
+
 _POSTGRES_IDENTIFIER_MAX_LENGTH = 63
 
 
@@ -125,6 +127,3 @@ async def _drop_schema(engine: "AsyncEngine", schema: str) -> None:
 
     async with engine.begin() as connection:
         await connection.execute(DropSchema(schema, cascade=True, if_exists=True))
-
-
-__all__ = ("run",)

@@ -2,7 +2,7 @@
 
 [`CloudTasksExecutionBackend`](../reference/execution-and-workers.md#litestar_queues.execution.cloudtasks.CloudTasksExecutionBackend) (configured via [`CloudTasksExecutionConfig`](../reference/execution-and-workers.md#litestar_queues.execution.cloudtasks.CloudTasksExecutionConfig)) provides scale-to-zero HTTP push execution on Google Cloud Run without running an always-on polling worker process.
 
-## ID-Only Wire Contract
+## ID-Only Wire Contract & At-Least-Once Delivery
 
 Every Cloud Tasks HTTP delivery body carries only the protocol version and the record's id:
 
@@ -15,6 +15,8 @@ Every Cloud Tasks HTTP delivery body carries only the protocol version and the r
 
 Task arguments, keyword arguments, result payloads, retry state, and metadata stay in your storage backend and never cross the network inside the Cloud Tasks message. When Cloud Tasks posts the delivery payload to your consumer service, the route handler delegates to [`consume_one(service, task_id)`](../reference/execution-and-workers.md#litestar_queues.consumer.consume_one), which claims the authoritative record from storage by ID and executes the attempt.
 
+Google Cloud Tasks provides an **at-least-once** delivery guarantee. Although `consume_one()` fences task claims on `expected_retry_count` in your storage backend, transient network drops after external side effects can trigger redelivery or retry, so task handlers with external side effects must be **idempotent**.
+
 ## Runnable Configuration Example
 
 ```python title="docs/examples/execution/cloud_tasks_config.py"
@@ -22,6 +24,8 @@ Task arguments, keyword arguments, result payloads, retry state, and metadata st
 ```
 
 ## Provisioning Cloud Tasks & Cloud Run
+
+The package never creates queues, Cloud Run services, or IAM bindings at runtime; operators provision them via Terraform or `gcloud` before enqueuing records.
 
 ### Create the Cloud Tasks Queue
 
@@ -88,15 +92,19 @@ The `/_litestar-queues/cloud-tasks` endpoint translates `consume_one()` outcomes
 
 ## Deadlines & the 30-Day Scheduling Horizon
 
-- **Timeout Budget Equation**: Keep task timeouts, response margins, Cloud Tasks dispatch deadlines (`15s`–`1800s`), and Cloud Run request timeouts ordered as:
+- **Timeout Budget Equation**: Keep task timeouts, response margins, Cloud Tasks dispatch deadlines (`15 seconds` to `1800` seconds), and Cloud Run request timeouts ordered as:
 
 $$\text{task.timeout} + \text{response\_margin} \le \text{dispatch\_deadline} < \text{Cloud Run } \texttt{--timeout}$$
 
 - **30-Day Horizon (`CLOUD_TASKS_MAX_SCHEDULE_HORIZON`)**: Google Cloud Tasks accepts `schedule_time` up to 30 days in the future. Enqueuing a task or recurring schedule whose `scheduled_at` exceeds 30 days on `"cloudtasks"` raises `QueueConfigurationError` before mutating active schedule records.
 
+## Cost Model & Scale-to-Zero Trade-Offs (2026)
+
+Each successful task execution performs two operations in Cloud Tasks (one create and one HTTP delivery), billed after the monthly free tier while letting the Cloud Run consumer service scale to zero idle instances (`--min-instances=0 --cpu-throttling`). Note that scaling the Cloud Run worker tier to zero removes idle compute charges for the worker container, not the always-on cost of the backing database (such as Cloud SQL or Memorystore) unless paired with a serverless database tier.
+
 ## Hybrid Routing with Cloud Run Jobs
 
-Because Cloud Tasks caps `dispatch_deadline` at 30 minutes (`1800s`), combine `CloudTasksExecutionConfig` and `CloudRunExecutionConfig` in `QueueConfig.execution_backends` to run fast tasks over HTTP push and multi-hour jobs on Cloud Run Jobs:
+Because Cloud Tasks caps `dispatch_deadline` at 30 minutes (`1800` seconds), combine `CloudTasksExecutionConfig` and `CloudRunExecutionConfig` in `QueueConfig.execution_backends` to run fast tasks over HTTP push and multi-hour jobs on Cloud Run Jobs:
 
 ```python
 config = QueueConfig(
@@ -109,9 +117,9 @@ config = QueueConfig(
 
 ## Delivery Repair & Remote Cancellation
 
-- **Two-Phase Enqueue Reservation & Repair**: `QueueService.enqueue()` writes an `external-dispatch:<uuid>` reservation sentinel on `QueuedTaskRecord.execution_ref` before calling the Cloud Tasks API, then finalizes `execution_ref` with the created Cloud Task resource path. If a producer process crashes between storage commit and the Cloud Tasks API call, `litestar queues run-maintenance --phase external` (or `QueueService.reconcile_external_tasks()`) repairs the missing Cloud Task automatically.
+- **Two-Phase Enqueue Reservation & Repair**: `QueueService.enqueue()` writes an `external-dispatch:<uuid>` reservation sentinel on `QueuedTaskRecord.execution_ref` before calling the Cloud Tasks API, then finalizes `execution_ref` with the created Cloud Task resource path. If a producer process crashes between storage commit and the Cloud Tasks API call, `litestar queues run-maintenance --phase external` (or `QueueService.reconcile_external_tasks()`) performs maintenance repair for the missing Cloud Task automatically.
 - **Remote Cancellation**: Calling `await queue_service.cancel_task(task_id)` deletes the scheduled Cloud Task in Google Cloud Tasks (`delete_task`) before marking the storage record `cancelled`.
-- **Local Testing Without an Emulator**: Because Cloud Tasks routes through `consume_one(service, task_id)`, unit and integration tests can test the exact execution path with `execution_backend="local"` and `await consume_one(service, handle.id)` without running a Cloud Tasks emulator.
+- **Local Testing Without an Emulator**: Google does not ship an official Cloud Tasks emulator. Because Cloud Tasks routes through `consume_one(service, task_id)`, unit and integration tests can test the exact execution path with `execution_backend="local"` and `await consume_one(service, handle.id)` without running a Cloud Tasks emulator.
 
 ## Choosing Between Google Cloud Execution Products
 
@@ -120,3 +128,5 @@ config = QueueConfig(
 | Short-to-medium tasks (`<= 30 min`) with scale-to-zero and sub-second HTTP push | **Google Cloud Tasks** (`CloudTasksExecutionConfig`) | Direct HTTP push to `--min-instances 0 --cpu-throttling` Cloud Run services with native `schedule_time` delays |
 | Heavy batch, ETL, or GPU jobs (`> 30 min`, up to 24 hours) | **Google Cloud Run Jobs** (`CloudRunExecutionConfig`) | Dedicated one-shot job containers per task with named hardware `profiles` |
 | High-fanout event streaming into always-on consumer pools | **Google Cloud Pub/Sub** (`PubSubExecutionConfig`) | High-throughput pull subscriptions consumed by `litestar queues run-consumer --backend pubsub` |
+| Periodic cron triggers for `litestar queues run-maintenance` | **Cloud Scheduler** | Invokes maintenance or reconciliation endpoints on a fixed cron schedule rather than dispatching per-task payloads |
+| Cloud storage or audit-log event routing | **Eventarc** | Routes Google Cloud infrastructure events rather than application task queue records (not an execution backend) |

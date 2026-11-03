@@ -957,10 +957,6 @@ class SQLAlchemyBackend(BaseQueueBackend):
             created_at=created_at.astimezone(UTC),
         )
 
-    def _event_history_enabled(self) -> "bool":
-        events_config = self.config.events if self.config is not None else None
-        return events_config is not None and events_config.history is not None
-
     @asynccontextmanager
     async def _session(self) -> "AsyncIterator[AsyncSession]":
         self._ensure_configured()

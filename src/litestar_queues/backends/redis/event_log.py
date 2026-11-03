@@ -130,13 +130,10 @@ class RedisQueueEventLog:
         index_key = self._select_index_key(match)
         max_score = f"({_score_datetime(before)}"
 
-        # We read the entire expired window into memory, decode mappings, and filter,
-        # then apply the limit. Trade-off: the read window is unbounded but the write is bounded.
         event_ids = await client.zrangebyscore(index_key, "-inf", max_score)
 
         mappings = await self._mappings_from_ids(client, event_ids)
 
-        # Identify valid records vs orphans
         valid_records = []
         orphans = []
         for event_id, mapping in zip(event_ids, mappings, strict=True):
@@ -147,7 +144,6 @@ class RedisQueueEventLog:
                 if record.occurred_at < before:
                     valid_records.append((record, mapping))
 
-        # Filter valid records
         filtered = []
         for record, mapping in valid_records:
             if match and not match_event_record(record, match):
@@ -156,7 +152,6 @@ class RedisQueueEventLog:
                 continue
             filtered.append((record, mapping))
 
-        # Sort ascending by stable key
         filtered.sort(key=lambda item: event_log_record_sort_key(item[0]))
 
         if limit is not None:
@@ -165,14 +160,12 @@ class RedisQueueEventLog:
         pipeline = _create_pipeline(client)
         removed = 0
 
-        # Cleanup orphans
         for decoded_event_id in orphans:
             if pipeline is not None:
                 pipeline.zrem(self._backend._event_log_global_key(), str(decoded_event_id))
             else:
                 await client.zrem(self._backend._event_log_global_key(), str(decoded_event_id))
 
-        # Cleanup valid records
         global_key = self._backend._event_log_global_key()
         for record, mapping in filtered:
             index_keys = _json_loads(mapping.get("index_keys"), [])
@@ -225,8 +218,6 @@ class RedisQueueEventLog:
             ):
                 message = f"Conflicting immutable queue event history record for event ID {candidate.event_id!r}."
                 conflict = conflict or QueueConfigurationError(message)
-            # A hash may survive an earlier partial index write. Rebuild every
-            # membership from its winning record, including on a conflicting replay.
             mapping = self._mapping_from_record(stored)
             score = _score_datetime(stored.occurred_at)
             for index_key in _json_loads(mapping["index_keys"], []):

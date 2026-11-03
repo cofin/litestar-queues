@@ -14,6 +14,8 @@ from tools.queue_bench.adapters.litestar_queues import _backend_config, _cleanup
 from tools.queue_bench.managed_tasks import managed_noop
 from tools.queue_bench.measurements import SampleMeasurementCollector, summarize_pickup_latency
 
+__all__ = ("create_cloud_run_jobs_client", "create_cloud_tasks_client", "load_google_credentials", "run")
+
 CredentialsLoader = Callable[[AdapterRequest], Any]
 ClientFactory = Callable[[Any], Any]
 Observation = Callable[[], Awaitable[tuple[Any, str | None]]]
@@ -336,6 +338,3 @@ def _require(value: str | None) -> str:
         msg = "managed Google resource configuration was not validated"
         raise ValueError(msg)
     return value
-
-
-__all__ = ("create_cloud_run_jobs_client", "create_cloud_tasks_client", "load_google_credentials", "run")

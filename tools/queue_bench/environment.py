@@ -8,6 +8,8 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+__all__ = ("capture_environment", "redact_data", "redact_url")
+
 SENSITIVE_KEYS = frozenset({"api_key", "authorization", "password", "secret", "token"})
 
 
@@ -88,6 +90,3 @@ def _package_version(package: str) -> str:
         return version(package)
     except PackageNotFoundError:
         return "not-installed"
-
-
-__all__ = ("capture_environment", "redact_data", "redact_url")

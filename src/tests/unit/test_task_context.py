@@ -218,7 +218,6 @@ async def test_bind_task_context_supports_cancellation_fanin() -> "None":
         _cancel_task_context(context.task_id)
         assert context.is_cancelled is True
 
-    # Once unbound the context leaves the registry, so cancellation is a no-op.
     unbound = _build_context()
     _cancel_task_context(unbound.task_id)
     assert unbound.is_cancelled is False

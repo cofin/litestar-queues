@@ -1,4 +1,3 @@
-# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 """Private optional dependency typing shims.
 
 Application and public helper code should import these names from
@@ -39,6 +38,8 @@ PROMETHEUS_INSTALLED = find_spec("prometheus_client") is not None
 class _FallbackSpan:
     """Fallback OpenTelemetry span shim."""
 
+    __slots__ = ()
+
     def set_attribute(self, key: "str", value: "Any") -> "None":
         return None
 
@@ -75,6 +76,8 @@ class _FallbackSpan:
 class _FallbackTracer:
     """Fallback OpenTelemetry tracer shim."""
 
+    __slots__ = ()
+
     def start_span(
         self,
         name: "str",
@@ -92,6 +95,8 @@ class _FallbackTracer:
 class _FallbackMeter:
     """Fallback OpenTelemetry meter shim."""
 
+    __slots__ = ()
+
     def create_counter(self, *_args: "Any", **_kwargs: "Any") -> "Any":
         return _OtelMetric()
 
@@ -103,6 +108,8 @@ class _FallbackMeter:
 
 
 class _OtelMetric:
+    __slots__ = ()
+
     def add(self, *_args: "Any", **_kwargs: "Any") -> "None":
         return None
 
@@ -112,6 +119,8 @@ class _OtelMetric:
 
 class _FallbackSpanKind:
     """Fallback OpenTelemetry SpanKind shim."""
+
+    __slots__ = ()
 
     INTERNAL = "internal"
     SERVER = "server"
@@ -123,6 +132,8 @@ class _FallbackSpanKind:
 class _FallbackStatusCode:
     """Fallback OpenTelemetry StatusCode shim."""
 
+    __slots__ = ()
+
     UNSET = "unset"
     OK = "ok"
     ERROR = "error"
@@ -131,12 +142,16 @@ class _FallbackStatusCode:
 class _FallbackStatus:
     """Fallback OpenTelemetry Status shim."""
 
+    __slots__ = ("description", "status_code")
+
     def __init__(self, status_code: "Any" = None, description: "str | None" = None) -> "None":
         self.status_code = status_code
         self.description = description
 
 
 class _TraceModule:
+    __slots__ = ()
+
     def get_tracer(
         self,
         instrumenting_module_name: "str",
@@ -151,6 +166,8 @@ class _TraceModule:
 
 
 class _ContextModule:
+    __slots__ = ()
+
     def attach(self, context: "Any") -> "Any":
         return None
 
@@ -159,6 +176,8 @@ class _ContextModule:
 
 
 class _MetricsModule:
+    __slots__ = ()
+
     def get_meter(
         self, name: "str", version: "str | None" = None, schema_url: "str | None" = None, meter_provider: "Any" = None
     ) -> "_FallbackMeter":
@@ -166,6 +185,8 @@ class _MetricsModule:
 
 
 class _PropagateModule:
+    __slots__ = ()
+
     def inject(self, carrier: "dict[str, str]") -> "None":
         return None
 
@@ -214,6 +235,8 @@ else:
 
 
 class _PrometheusMetric:
+    __slots__ = ()
+
     def __init__(
         self,
         name: "str",
@@ -246,13 +269,19 @@ class _PrometheusMetric:
 class _FallbackCounter(_PrometheusMetric):
     """Fallback Prometheus counter shim."""
 
+    __slots__ = ()
+
 
 class _FallbackGauge(_PrometheusMetric):
     """Fallback Prometheus gauge shim."""
 
+    __slots__ = ()
+
 
 class _FallbackHistogram(_PrometheusMetric):
     """Fallback Prometheus histogram shim."""
+
+    __slots__ = ()
 
 
 PrometheusCounter: Any

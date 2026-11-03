@@ -200,7 +200,7 @@ async def run_task(
 
     if _requires_config_factory(
         config=config, service=service, service_factory=service_factory
-    ) and not _has_config_factory(config, environ):
+    ) and not _has_config_factory(environ):
         if not has_task_id_override and not environ.get(_env_name(config, _TASK_ID_ENV_SUFFIX)):
             return TaskExitCode.MISSING_TASK_ID
         _runtime_logger(config=config, service=service).error("External consumer process missing CONFIG_FACTORY")
@@ -212,8 +212,6 @@ async def run_task(
                 _provide_service(config=config, service=service, service_factory=service_factory, env=environ)
             )
         except QueueConfigurationError:
-            # Process-local storage cannot be reached from a separate consumer
-            # process. That is a configuration fault, not a missing factory.
             _runtime_logger(config=config, service=service).exception(
                 "External consumer process cannot attach to the configured queue backend"
             )
@@ -261,11 +259,6 @@ async def _execute_claimed_record(queue: "QueueService", claimed: "QueuedTaskRec
                 return TaskExitCode.CLAIM_LOST
             updated = await execution_task
         except asyncio.CancelledError:
-            # The caller going away is not the queue deciding anything. The record
-            # is still running and still owned, so stop the body, let the ``finally``
-            # clear the heartbeat that stale recovery reads, and let the
-            # cancellation reach the caller rather than reporting an outcome it
-            # could mistake for a settled one.
             execution_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await execution_task
@@ -314,7 +307,7 @@ async def _provide_service(
         yield service
         return
 
-    factory = service_factory or _load_config_factory(config, env)
+    factory = service_factory or _load_config_factory(env)
     if factory is not None:
         provided = factory()
         if isinstance(provided, QueueConfig):
@@ -343,13 +336,11 @@ def _requires_config_factory(
     return config is None and service is None and service_factory is None
 
 
-def _has_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "bool":
-    del config
+def _has_config_factory(env: "Mapping[str, str]") -> "bool":
     return bool(env.get(CONFIG_FACTORY_ENV))
 
 
-def _load_config_factory(config: "QueueConfig | None", env: "Mapping[str, str]") -> "ServiceFactory | None":
-    del config
+def _load_config_factory(env: "Mapping[str, str]") -> "ServiceFactory | None":
     import_path = env.get(CONFIG_FACTORY_ENV)
     if not import_path:
         return None

@@ -124,8 +124,8 @@ def test_queue_event_imports_do_not_load_sqlspec() -> "None":
     code = """
 import sys
 import litestar_queues.events
-from litestar_queues.events.models import QueueEvent  # access models surface
-QueueEvent(type='task.progress', scope='task')  # construct
+from litestar_queues.events.models import QueueEvent
+QueueEvent(type='task.progress', scope='task')
 print('sqlspec loaded:', 'sqlspec' in sys.modules)
 raise SystemExit(1 if 'sqlspec' in sys.modules else 0)
 """
