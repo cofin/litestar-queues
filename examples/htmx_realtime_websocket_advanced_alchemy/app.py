@@ -67,8 +67,6 @@ async def run_crawl(*, _task_context: TaskExecutionContext) -> dict[str, str]:
     return {"task_id": ctx.task_id, "status": "complete"}
 
 
-
-
 @get("/")
 async def index() -> Template:
     return Template("index.html", context={"backend_name": BACKEND_NAME, "vite_entry": VITE_ENTRY})
@@ -94,8 +92,6 @@ async def restart_demo(queue_service: NamedDependency[QueueService]) -> Template
         params={"taskId": task_id, "reused": reused},
         after="swap",
     )
-
-
 
 
 channels = ChannelsPlugin(
