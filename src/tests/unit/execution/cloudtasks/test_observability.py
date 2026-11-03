@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import pytest
 
-from litestar_queues import QueueConfig, QueuePlugin, QueueService, WorkerConfig, task
+from litestar_queues import QueueConfig, QueueMaintenanceConfig, QueuePlugin, QueueService, WorkerConfig, task
 from litestar_queues.events import EventDeliveryConfig, InMemoryQueueEventSink, QueueEventsConfig
 from litestar_queues.observability import ObservabilityConfig
 from litestar_queues.task import clear_task_registry
@@ -360,6 +360,7 @@ async def delivery(
                 queue_backend=shared_storage,
                 execution_backend=execution,
                 worker=WorkerConfig(placement="external"),
+                maintenance=QueueMaintenanceConfig(),
                 observability=ObservabilityConfig(),
             )
         )

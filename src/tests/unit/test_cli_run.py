@@ -292,31 +292,28 @@ def test_run_subcommand_drains_on_sigterm(tmp_path: "Path") -> "None":
     env["LITESTAR_QUEUES_TEST_DB"] = str(tmp_path / "queue.db")
     env["PYTHONPATH"] = "src" + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
-    proc = subprocess.Popen(
+    with subprocess.Popen(
         [sys.executable, "-m", "litestar", "queues", "run", "--drain-timeout", "2"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-    )
-
-    try:
-        _wait_for_worker_started(proc)
-        assert proc.poll() is None, "worker exited before SIGTERM was sent"
-        proc.send_signal(signal.SIGTERM)
+    ) as proc:
         try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            pytest.fail("worker did not drain within 15s after SIGTERM")
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=5)
+            _wait_for_worker_started(proc)
+            assert proc.poll() is None, "worker exited before SIGTERM was sent"
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                pytest.fail("worker did not drain within 15s after SIGTERM")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
-    assert proc.returncode == 0, (
-        f"expected clean drain (exit 0), got {proc.returncode}; "
-        f"stderr={proc.stderr.read().decode()[-500:] if proc.stderr else ''!r}"
-    )
+        stderr_tail = proc.stderr.read().decode()[-500:] if proc.stderr else ""
+        assert proc.returncode == 0, f"expected clean drain (exit 0), got {proc.returncode}; stderr={stderr_tail!r}"
 
 
 def _wait_for_worker_started(proc: "subprocess.Popen[bytes]", *, timeout: "float" = 25.0) -> "None":

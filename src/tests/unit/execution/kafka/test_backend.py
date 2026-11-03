@@ -363,10 +363,12 @@ async def test_consumer_commits_next_offset_only_after_durable_outcome(monkeypat
     consumer_task = asyncio.create_task(
         backend.run_consumer(service, max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
     )
-    await asyncio.wait_for(consumer.committed.wait(), timeout=5.0)
-    consumer_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await consumer_task
+    try:
+        await asyncio.wait_for(consumer.committed.wait(), timeout=5.0)
+    finally:
+        consumer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer_task
 
     assert consumer.commits == [{partition: 5}]
 
@@ -393,10 +395,12 @@ async def test_cancelled_delivery_is_not_committed(monkeypatch: "pytest.MonkeyPa
     consumer_task = asyncio.create_task(
         backend.run_consumer(service, max_concurrency=1, drain_timeout=0)  # type: ignore[arg-type]
     )
-    await asyncio.sleep(0)
-    consumer_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await consumer_task
+    try:
+        await asyncio.sleep(0)
+    finally:
+        consumer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer_task
 
     assert consumer.commits == []
 
@@ -418,11 +422,13 @@ async def test_shutdown_drains_inflight_partition_before_committing(monkeypatch:
         execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
     )
     runner = asyncio.create_task(backend.run_consumer(object(), max_concurrency=1, drain_timeout=1))  # type: ignore[arg-type]
-    await entered.wait()
-    runner.cancel()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await runner
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+    finally:
+        runner.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
 
     assert consumer.commits == [{partition: 1}]
 
@@ -444,10 +450,12 @@ async def test_shutdown_timeout_cancels_unfinished_partition_without_commit(
         execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
     )
     runner = asyncio.create_task(backend.run_consumer(object(), max_concurrency=1, drain_timeout=0))  # type: ignore[arg-type]
-    await entered.wait()
-    runner.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await runner
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+    finally:
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
 
     assert consumer.commits == []
 
@@ -469,17 +477,20 @@ async def test_rebalance_waits_for_inflight_partition_prefix(monkeypatch: "pytes
         execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
     )
     runner = asyncio.create_task(backend.run_consumer(object(), max_concurrency=1, drain_timeout=1))  # type: ignore[arg-type]
-    await entered.wait()
-    assert consumer.listener is not None
-    revoked = asyncio.create_task(consumer.listener.on_partitions_revoked({partition}))
-    await asyncio.sleep(0)
-    assert not revoked.done()
-    release.set()
-    await revoked
-    assert consumer.commits == [{partition: 1}]
-    runner.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await runner
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        assert consumer.listener is not None
+        revoked = asyncio.create_task(consumer.listener.on_partitions_revoked({partition}))
+        await asyncio.sleep(0)
+        assert not revoked.done()
+        release.set()
+        await revoked
+        assert consumer.commits == [{partition: 1}]
+    finally:
+        release.set()
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
 
 
 async def test_rebalance_timeout_keeps_consumer_running_for_new_assignment(monkeypatch: "pytest.MonkeyPatch") -> "None":
@@ -502,16 +513,18 @@ async def test_rebalance_timeout_keeps_consumer_running_for_new_assignment(monke
         execution_config=KafkaExecutionConfig(bootstrap_servers="localhost:9092"), consumer=consumer
     )
     runner = asyncio.create_task(backend.run_consumer(object(), max_concurrency=1, drain_timeout=0))  # type: ignore[arg-type]
-    await entered.wait()
-    assert consumer.listener is not None
-    await consumer.listener.on_partitions_revoked({revoked_partition})
-    await asyncio.wait_for(consumer.committed.wait(), timeout=5.0)
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        assert consumer.listener is not None
+        await consumer.listener.on_partitions_revoked({revoked_partition})
+        await asyncio.wait_for(consumer.committed.wait(), timeout=5.0)
 
-    assert not runner.done()
-    assert consumer.commits == [{retained_partition: 5}]
-    runner.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await runner
+        assert not runner.done()
+        assert consumer.commits == [{retained_partition: 5}]
+    finally:
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
 
 
 async def test_unexpected_partition_failure_is_reported_without_commit(

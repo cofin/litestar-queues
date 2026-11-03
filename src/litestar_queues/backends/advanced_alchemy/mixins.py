@@ -6,7 +6,7 @@ from typing import Any, Protocol, TypeAlias, cast
 from advanced_alchemy.types import JsonB
 from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.dialects import mysql, oracle
-from sqlalchemy.orm import Mapped, declarative_mixin, declared_attr, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 from sqlalchemy.schema import conv
 
 __all__ = (
@@ -19,7 +19,6 @@ __all__ = (
 JSONValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
-@declarative_mixin
 class QueueTaskModelMixin:
     """Declarative mixin carrying queue task columns and indexes.
 
@@ -154,7 +153,6 @@ class QueueTaskModelMixin:
         return mapped_column("metadata", JsonB, default=dict, nullable=False)
 
 
-@declarative_mixin
 class QueueEventHistoryModelMixin:
     """Declarative mixin carrying generic queue event-history columns and indexes."""
 
@@ -270,7 +268,6 @@ class QueueEventHistoryModelMixin:
         return mapped_column(DateTime(timezone=True), nullable=False)
 
 
-@declarative_mixin
 class QueueMaintenanceModelMixin:
     """Declarative mixin carrying distributed maintenance coordination columns.
 
@@ -295,7 +292,6 @@ class QueueMaintenanceModelMixin:
         return mapped_column(DateTime(timezone=True), nullable=False)
 
 
-@declarative_mixin
 class QueueTaskReservationModelMixin:
     """Declarative mixin carrying forever-uniqueness reservation columns.
 

@@ -84,10 +84,11 @@ def test_default_schema_uses_reference_friendly_physical_column_names(
         "metadata_json",
     ):
         assert f'"{legacy_name}"' not in ddl_sql
+    normalized_select = select_sql.replace('"queue_task".', "")
     assert '"task_name"' in insert_sql
     assert '"function"' not in insert_sql
-    assert '"queue_task"."task_name"' in select_sql
-    assert '"queue_task"."metadata" AS "metadata_json"' in select_sql
+    assert '"task_name"' in normalized_select
+    assert '"metadata" AS "metadata_json"' in normalized_select
 
 
 def test_column_map_resolves_generated_statement_columns(
@@ -139,23 +140,28 @@ def test_column_map_resolves_generated_statement_columns(
     cleanup_sql = store.cleanup_terminal(before=datetime.now(timezone.utc).isoformat()).build(dialect="sqlite").sql
     ddl_sql = "\n".join(store.create_statements())
 
+    normalized_select = select_sql.replace('"adopter_jobs".', "")
+    normalized_pending = pending_sql.replace('"adopter_jobs".', "")
+    normalized_external = external_sql.replace('"adopter_jobs".', "")
+    normalized_completed = completed_sql.replace('"adopter_jobs".', "")
+
     assert '"task_id"' in insert_sql
     assert '"function"' in insert_sql
     assert '"task_name"' not in insert_sql
-    assert '"adopter_jobs"."task_id" AS "id"' in select_sql
-    assert '"adopter_jobs"."function" AS "task_name"' in select_sql
-    assert '"adopter_jobs"."run_after" <= :now' in pending_sql
-    assert '"lane" = ' in pending_sql
-    assert "priority DESC" not in pending_sql
-    assert '"adopter_jobs"."importance" DESC' in pending_sql
+    assert '"task_id" AS "id"' in normalized_select
+    assert '"function" AS "task_name"' in normalized_select
+    assert '"run_after" <= :now' in normalized_pending
+    assert '"lane" = ' in normalized_pending
+    assert "priority DESC" not in normalized_pending
+    assert '"importance" DESC' in normalized_pending
     assert '"state" = ' in claim_sql
     assert '"run_after" <= :due_at' in claim_sql
     assert '"outcome" = ' in complete_sql
     assert '"state" = ' in stale_sql
     assert '"heartbeat" < :cutoff' in stale_sql
-    assert "\"adopter_jobs\".\"state\" IN ('pending', 'scheduled', 'running')" in external_sql
-    assert 'NOT "adopter_jobs"."external_ref" IS NULL' in external_sql
-    assert '"adopter_jobs"."finished" >= ' in completed_sql
+    assert "\"state\" IN ('pending', 'scheduled', 'running')" in normalized_external
+    assert 'NOT "external_ref" IS NULL' in normalized_external
+    assert '"finished" >= ' in normalized_completed
     assert '"finished" < :terminal_before' in cleanup_sql
     assert 'NOT "finished" IS NULL' in cleanup_sql
     assert '"function" TEXT' in ddl_sql

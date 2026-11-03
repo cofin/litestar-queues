@@ -296,6 +296,7 @@ async def test_sqlspec_psycopg_fresh_migration_serves_query(request: "FixtureReq
         async with _bridge_session(sqlspec_manager, config) as driver:
             for statement in statements:
                 await driver.execute_script(statement)
+            await driver.commit()
 
         backend = SQLSpecQueueBackend(
             backend_config=SQLSpecBackendConfig(sqlspec_config=config, queue_table_name=table)

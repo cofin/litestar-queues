@@ -103,7 +103,7 @@ def _store(*extra: "EventHistoryExtraColumn") -> "SQLSpecQueueEventLogStore":
 
 def _store_for_dialect(dialect: "str") -> "object":
     config = AiosqliteConfig(connection_config={"database": ":memory:"})
-    config.statement_config.dialect = dialect
+    config.statement_config = config.statement_config.replace(dialect=dialect)
     return create_event_log_store(config, queue_table_name="queue_task")
 
 
@@ -258,7 +258,7 @@ def test_mysql_event_history_uses_inline_indexes_and_backtick_quoting() -> "None
 
 def test_mysql_event_history_bounds_generated_index_names() -> "None":
     config = AiosqliteConfig(connection_config={"database": ":memory:"})
-    config.statement_config.dialect = "mysql"
+    config.statement_config = config.statement_config.replace(dialect="mysql")
     store = create_event_log_store(config, queue_table_name="queue_task_mysql_aiomysql_637b5b4678")
 
     assert len(store._index_name("occurred_at")) <= 63

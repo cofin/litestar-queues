@@ -15,12 +15,13 @@ a deployment fault, and letting Cloud Tasks retry it is what makes it visible.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID  # noqa: TC003 - msgspec resolves the struct's annotations at runtime.
 
 import msgspec
 from litestar import Request, Response, post
 from litestar.exceptions import ValidationException
+from litestar.params import Body
 
 from litestar_queues.consumer import TaskExitCode, consume_one
 from litestar_queues.exceptions import QueueDispatchError
@@ -97,10 +98,12 @@ def build_cloud_tasks_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":
         opt={"exclude_from_csrf": True, "exclude_from_auth": True},
         status_code=_ACKNOWLEDGED,
         include_in_schema=False,
-        signature_types=[CloudTasksDelivery],
+        signature_types=[CloudTasksDelivery, Body],
         summary="Cloud Tasks delivery",
     )
-    async def consume_cloud_task(data: "CloudTasksDelivery", request: "Request[Any, Any, Any]") -> "Response[None]":
+    async def consume_cloud_task(
+        data: "Annotated[CloudTasksDelivery, Body()]", request: "Request[Any, Any, Any]"
+    ) -> "Response[None]":
         """Run the delivered record and answer with whether to deliver it again.
 
         Returns:

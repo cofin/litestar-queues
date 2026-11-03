@@ -1,13 +1,11 @@
-from typing import TYPE_CHECKING
+import logging
 
 import pytest
+from litestar import Litestar
+from litestar.logging.config import LoggingConfig
 
-from litestar_queues import WorkerConfig
-
-if TYPE_CHECKING:
-    from litestar import Litestar
-
-    from litestar_queues import QueueConfig, QueuePlugin
+from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig
+from litestar_queues.task import clear_task_registry
 
 pytestmark = pytest.mark.anyio
 
@@ -19,32 +17,25 @@ def anyio_backend() -> "str":
 
 
 @pytest.fixture(autouse=True)
-def clean_task_registry() -> "None":
-    """Clear queue task registries before each test."""
-    from litestar_queues.task import clear_task_registry
-
+def clean_task_registry(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    """Clear queue task registries and prevent Litestar QueueListener thread leaks across tests."""
+    monkeypatch.setattr(LoggingConfig, "configure", lambda _self: logging.getLogger)
     clear_task_registry()
 
 
 @pytest.fixture
 def queue_config() -> "QueueConfig":
     """Return a default queue configuration for testing."""
-    from litestar_queues import QueueConfig
-
     return QueueConfig(queue_backend="memory", worker=WorkerConfig(placement="external"))
 
 
 @pytest.fixture
 def queue_plugin(queue_config: "QueueConfig") -> "QueuePlugin":
     """Return a queue plugin instance for testing."""
-    from litestar_queues import QueuePlugin
-
     return QueuePlugin(config=queue_config)
 
 
 @pytest.fixture
 def app(queue_plugin: "QueuePlugin") -> "Litestar":
     """Return a Litestar application with the queue plugin."""
-    from litestar import Litestar
-
-    return Litestar(plugins=[queue_plugin])
+    return Litestar(plugins=[queue_plugin], logging_config=None)

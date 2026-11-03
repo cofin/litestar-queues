@@ -27,7 +27,7 @@ from litestar import Litestar
 from litestar.exceptions import NotAuthorizedException
 from litestar.testing import AsyncTestClient
 
-from litestar_queues import QueueConfig, QueuePlugin, WorkerConfig, task
+from litestar_queues import QueueConfig, QueueMaintenanceConfig, QueuePlugin, WorkerConfig, task
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator
@@ -232,6 +232,7 @@ async def delivery(
                 queue_backend=queue_backend or shared_store,
                 execution_backend=execution,
                 worker=WorkerConfig(placement="external"),
+                maintenance=QueueMaintenanceConfig(),
                 initialize_schedules=initialize_schedules,
             )
         )
@@ -794,6 +795,7 @@ async def test_the_delivery_client_is_released_when_the_application_stops(
             queue_backend=shared_store,
             execution_backend=cloud_tasks_config(),
             worker=WorkerConfig(placement="external"),
+            maintenance=QueueMaintenanceConfig(),
         )
     )
 
