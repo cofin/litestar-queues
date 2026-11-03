@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import IntEnum
 from importlib import import_module
 from typing import TYPE_CHECKING, cast
@@ -138,14 +138,14 @@ async def _recover_and_claim_stale_record(
         else 300.0
     )
     stale_after = timedelta(seconds=stale_seconds)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if current.heartbeat_at is not None and current.heartbeat_at > now - stale_after:
         return None, None
     await queue.recover_stale_tasks(stale_after=stale_after, redispatch=False)
     refreshed = await queue.get_task(record.id)
     if refreshed is None or refreshed.is_terminal:
         return None, TaskExitCode.SUCCESS
-    if refreshed.scheduled_at is not None and refreshed.scheduled_at > datetime.now(timezone.utc):
+    if refreshed.scheduled_at is not None and refreshed.scheduled_at > datetime.now(UTC):
         await queue.schedule_persisted(refreshed)
         return None, TaskExitCode.SUCCESS
     claimed, expired = await queue.claim_task(refreshed.id)

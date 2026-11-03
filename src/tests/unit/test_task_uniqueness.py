@@ -1,6 +1,7 @@
 """Task uniqueness policy: decorator/``using`` validation and enqueue precedence."""
 
 import asyncio
+from datetime import UTC
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 from uuid import uuid4
@@ -274,7 +275,7 @@ async def test_fenced_reset_never_deletes_a_successor_reservation() -> "None":
 
 
 async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     @task("once.forever", unique_by="arguments", unique_until="forever")
     async def once(object_key: "str") -> "None": ...
@@ -295,7 +296,7 @@ async def test_forever_blocks_reenqueue_across_terminal_and_cleanup() -> "None":
         claimed = await backend.claim_task(first.id)
         assert claimed is not None
         await backend.complete_task(first.id, expected_retry_count=claimed.retry_count)
-        removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+        removed = await backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
         assert removed == 1
         assert await backend.get_task(first.id) is None
         assert await service.get_task_identity(key) is not None

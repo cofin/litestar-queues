@@ -7,7 +7,7 @@ exercise the universal ``execute_many`` tier and prove both produce identical
 results.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -83,7 +83,7 @@ async def test_enqueue_many_matches_single_enqueue(sqlspec_backend: "SQLSpecQueu
 
 
 async def test_enqueue_many_honors_scheduled_status(sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str") -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await sqlspec_backend.enqueue_many([
         TaskRequest(task_name="tasks.now"),
@@ -101,7 +101,7 @@ async def test_enqueue_many_notifies_once_after_persistence(
     sqlspec_backend: "SQLSpecQueueBackend", bulk_tier: "str", monkeypatch: "pytest.MonkeyPatch"
 ) -> "None":
     notified_batches: "list[list[Any]]" = []
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     async def notify(self: "SQLSpecQueueBackend", records: "Any") -> "None":
         del self
@@ -191,7 +191,7 @@ async def test_enqueue_many_native_positional_roundtrip(duckdb_backend: "SQLSpec
     store = duckdb_backend._get_store()
     assert store.supports_native_bulk_ingest is True
 
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
     records = await duckdb_backend.enqueue_many([
         TaskRequest(task_name="tasks.a", args=(1, "x"), kwargs={"n": 0}, metadata={"m": [1]}, priority=7),
         TaskRequest(task_name="tasks.later", scheduled_at=later, priority=2),

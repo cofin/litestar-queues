@@ -9,7 +9,7 @@ communication.
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
@@ -74,11 +74,11 @@ _MISMATCH_ERROR = (
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _iso(value: "datetime | None") -> "str | None":
-    return None if value is None else value.astimezone(timezone.utc).isoformat()
+    return None if value is None else value.astimezone(UTC).isoformat()
 
 
 def _columns(record: "QueuedTaskRecord") -> "tuple[Any, ...]":
@@ -1389,7 +1389,7 @@ def _reservation(connection: "sqlite3.Connection", key: "str") -> "TaskReservati
     )
 
 
-_MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+_MIN_DATETIME = datetime(1, 1, 1, tzinfo=UTC)
 
 
 def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":

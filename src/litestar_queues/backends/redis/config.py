@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+from litestar_queues.exceptions import QueueConfigurationError
+
 if TYPE_CHECKING:
     from redis.asyncio.client import Redis
 
@@ -30,3 +32,12 @@ class RedisBackendConfig:
 
     client: "Redis | None" = None
     """Injected async Redis client; ``None`` creates one from ``url``."""
+
+    terminal_ttl: "float | None" = None
+    """Native TTL in seconds applied to terminal task records; ``None`` retains records until maintenance cleanup."""
+
+    def __post_init__(self) -> "None":
+        """Validate Redis backend configuration values."""
+        if self.terminal_ttl is not None and self.terminal_ttl <= 0:
+            msg = "RedisBackendConfig.terminal_ttl must be greater than 0."
+            raise QueueConfigurationError(msg)

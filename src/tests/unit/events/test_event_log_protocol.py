@@ -7,7 +7,6 @@ def test_protocol_members() -> "None":
     members = {name for name in dir(QueueEventLog) if not name.startswith("_")} | set(
         getattr(QueueEventLog, "__annotations__", {})
     )
-    # Some python 3.10 implementations of Protocol lack __protocol_attrs__
     if hasattr(QueueEventLog, "__protocol_attrs__"):
         members = set(QueueEventLog.__protocol_attrs__)
 

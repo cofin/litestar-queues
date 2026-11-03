@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+from litestar_queues.exceptions import QueueConfigurationError
+
 if TYPE_CHECKING:
     from valkey.asyncio.client import Valkey
 
@@ -30,3 +32,18 @@ class ValkeyBackendConfig:
 
     client: "Valkey | None" = None
     """Injected async Valkey client; ``None`` creates one from ``url``."""
+
+    terminal_ttl: "float | None" = None
+    """Optional retention window in seconds for terminal task hashes.
+
+    When set, Lua scripts atomically apply ``PEXPIRE`` to ``{prefix}:task:{id}``
+    upon entering a terminal status (``completed``, ``failed``, ``cancelled``,
+    ``expired``) and prune expired secondary index references. ``None`` retains
+    terminal records until ``cleanup_terminal()`` removes them.
+    """
+
+    def __post_init__(self) -> "None":
+        """Validate configuration bounds."""
+        if self.terminal_ttl is not None and self.terminal_ttl <= 0:
+            msg = "ValkeyBackendConfig.terminal_ttl must be greater than 0."
+            raise QueueConfigurationError(msg)

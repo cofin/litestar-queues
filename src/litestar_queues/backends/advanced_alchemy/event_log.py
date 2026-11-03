@@ -73,7 +73,7 @@ class AdvancedAlchemyQueueEventLog:
         for attempt in range(2):
             try:
                 await self._write_history_transaction(records)
-            except Exception as error:  # noqa: PERF203 - one fresh transaction retries a unique-key race.
+            except Exception as error:
                 if attempt or not _is_duplicate_event_error(error):
                     raise
             else:

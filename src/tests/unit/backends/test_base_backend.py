@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -66,14 +66,14 @@ async def test_worker_control_wait_defaults_to_sleep_and_report_nothing() -> "No
 
 
 _REQUIRED_CONTRACT_CALLS = {
-    "cleanup_terminal": lambda b: b.cleanup_terminal(datetime.now(timezone.utc)),
+    "cleanup_terminal": lambda b: b.cleanup_terminal(datetime.now(UTC)),
     "expire_overdue": lambda b: b.expire_overdue(),
     "get_statistics": lambda b: b.get_statistics(),
     "list_completed_by_task": lambda b: b.list_completed_by_task("tasks.sync"),
     "list_running_external": lambda b: b.list_running_external(),
     "assign_worker": lambda b: b.assign_worker(uuid4(), worker_id="worker-a", expected_retry_count=0),
     "interrupt_task": lambda b: b.interrupt_task(
-        uuid4(), expected_retry_count=0, worker_id="worker-a", queued_at=datetime.now(timezone.utc)
+        uuid4(), expected_retry_count=0, worker_id="worker-a", queued_at=datetime.now(UTC)
     ),
     "null_heartbeats": lambda b: b.null_heartbeats([uuid4()]),
     "requeue_stale_running": lambda b: b.requeue_stale_running(stale_after=timedelta(seconds=60)),

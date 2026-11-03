@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import os
 import threading
-from enum import Enum, IntEnum
+from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from litestar_queues.task import get_default_service, load_task_modules, set_default_service
@@ -92,7 +92,7 @@ class WorkerRunResult(IntEnum):
     ESCALATED = 2
 
 
-class _WorkerStage(str, Enum):
+class _WorkerStage(StrEnum):
     """Startup stages safe to report across a process boundary."""
 
     LOAD_TASKS = "load_tasks"

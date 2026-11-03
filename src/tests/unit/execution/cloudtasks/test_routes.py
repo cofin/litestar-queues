@@ -17,7 +17,7 @@ see rather than a queue outcome.
 """
 
 from contextlib import AsyncExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -609,7 +609,7 @@ async def test_a_delivery_cannot_bypass_due_or_expiry_guards(
 ) -> "None":
     """The task-ID-only wire protocol still relies on the atomic storage claim."""
     live = await delivery()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     record = await live.service.get_queue_backend().enqueue(
         SUCCEEDS,
         execution_backend="cloudtasks",

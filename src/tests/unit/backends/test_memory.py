@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -108,12 +108,12 @@ async def test_memory_backend_event_log_is_bounded_and_cleanup_is_queryable() ->
                 task_name="tasks.bounded",
                 sequence=index,
                 payload={"index": index},
-                occurred_at=datetime(2026, 1, 1, 0, 0, index, tzinfo=timezone.utc),
+                occurred_at=datetime(2026, 1, 1, 0, 0, index, tzinfo=UTC),
             )
         )
 
     records = (await event_log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
-    cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 1, 1, 0, 0, 4, tzinfo=UTC)
     first_deleted = await event_log.cleanup_events(before=cutoff, limit=1)
     after_first = (await event_log.query_events(QueueEventQuery(task_name="tasks.bounded"))).items
     second_deleted = await event_log.cleanup_events(before=cutoff, limit=1)
@@ -192,7 +192,7 @@ async def test_memory_backend_clear_clears_event_log() -> "None":
 
 async def test_memory_backend_claims_due_tasks_by_priority_and_marks_lifecycle() -> "None":
     backend = InMemoryQueueBackend()
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await backend.enqueue("tasks.low", priority=1)
     scheduled = await backend.enqueue("tasks.later", priority=100, scheduled_at=later)
@@ -252,7 +252,7 @@ async def test_memory_backend_retry_refreshes_queue_order_and_respects_delay() -
     claimed = await backend.claim_task(first.id)
     assert claimed is not None
     waiting = await backend.enqueue("tasks.waiting")
-    queued_at = datetime.now(timezone.utc)
+    queued_at = datetime.now(UTC)
     retry_at = queued_at + timedelta(minutes=1)
 
     retried = await backend.fail_task(first.id, "retry", queued_at=queued_at, retry_at=retry_at)
@@ -271,7 +271,7 @@ async def test_memory_backend_zero_delay_retry_sorts_behind_waiting_work() -> "N
     assert claimed is not None
     waiting = await backend.enqueue("tasks.waiting")
 
-    retried = await backend.fail_task(first.id, "retry", queued_at=datetime.now(timezone.utc))
+    retried = await backend.fail_task(first.id, "retry", queued_at=datetime.now(UTC))
 
     assert retried is first
     assert retried.status == "pending"
@@ -330,7 +330,7 @@ async def test_memory_backend_requeues_stale_running_task_when_policy_allows() -
     record = await backend.enqueue("tasks.stale", max_retries=1, metadata={"requeue_on_stale": True})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -356,7 +356,7 @@ async def test_memory_backend_demotes_stale_requeue_priority_and_preserves_prior
     assert retried is record
     second_claim = await backend.claim_task(record.id)
     assert second_claim is not None
-    second_claim.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    second_claim.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -374,7 +374,7 @@ async def test_memory_backend_fails_stale_running_task_when_retries_are_exhauste
     record = await backend.enqueue("tasks.stale_exhausted", max_retries=0, metadata={"requeue_on_stale": True})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -394,7 +394,7 @@ async def test_memory_backend_fails_stale_running_task_when_requeue_policy_is_di
     record = await backend.enqueue("tasks.stale_no_requeue", max_retries=3, metadata={"requeue_on_stale": False})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     stored = await backend.get_task(record.id)
@@ -456,7 +456,7 @@ async def test_memory_backend_enqueue_many_acquires_lock_once_and_sets_event_onc
     event = _CountingEvent()
     backend._lock = cast("Any", lock)
     backend._notification_event = cast("Any", event)
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await backend.enqueue_many([
         TaskRequest(task_name="tasks.bulk.first", key="bulk:first"),
@@ -476,7 +476,7 @@ async def test_memory_backend_enqueue_many_future_records_do_not_wake_workers() 
     event = _CountingEvent()
     backend._lock = cast("Any", lock)
     backend._notification_event = cast("Any", event)
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await backend.enqueue_many([TaskRequest(task_name="tasks.bulk.later", scheduled_at=later)])
 
@@ -492,7 +492,7 @@ async def test_memory_backend_complete_and_fail_are_fenced_by_claim_ownership() 
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
     claimed_retry_count = claimed.retry_count
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     stale_result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     assert stale_result.requeued == 1
@@ -526,7 +526,7 @@ async def test_memory_backend_null_heartbeats_is_fenced_by_retry_count() -> "Non
     first_claim = await backend.claim_task(record.id)
     assert first_claim is not None
     first_retry_count = first_claim.retry_count
-    first_claim.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    first_claim.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
     result = await backend.requeue_stale_running(stale_after=timedelta(seconds=1))
     assert result.requeued == 1
     second_claim = await backend.claim_task(record.id)
@@ -663,7 +663,7 @@ async def test_memory_backend_claim_many_matches_sequential_claim_next() -> "Non
 
 async def test_memory_backend_claim_many_handles_limits_filters_and_scheduled() -> "None":
     backend = InMemoryQueueBackend()
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
     high = await backend.enqueue("tasks.batch.high", priority=10)
     mid = await backend.enqueue("tasks.batch.mid", priority=5)
     low = await backend.enqueue("tasks.batch.low", priority=1)
@@ -801,7 +801,7 @@ async def test_dispatch_repair_equal_timestamps_rotate(monkeypatch: "pytest.Monk
 async def test_dispatch_repair_concurrent_marks_preserve_newest(monkeypatch: "pytest.MonkeyPatch") -> "None":
     backend = InMemoryQueueBackend()
     record = await backend.enqueue("repair.clock", execution_backend="cloudtasks")
-    newer = datetime.now(timezone.utc) + timedelta(seconds=1)
+    newer = datetime.now(UTC) + timedelta(seconds=1)
     older = newer - timedelta(seconds=1)
     times = iter((newer, older))
     monkeypatch.setattr("litestar_queues.backends.memory.backend._utc_now", lambda: next(times))

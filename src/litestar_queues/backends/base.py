@@ -1,12 +1,10 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
-
-from typing_extensions import Self
 
 from litestar_queues.config import STALE_REQUEUE_PRIORITY, queue_backend_name
 from litestar_queues.exceptions import QueueConfigurationError
@@ -86,7 +84,7 @@ def attempts_consumed(record: "QueuedTaskRecord") -> "int":
 
 def retry_schedule(record: "QueuedTaskRecord", *, now: "datetime | None" = None) -> "tuple[datetime, datetime | None]":
     """Return refreshed queue and optional due timestamps for a retry."""
-    queued_at = now or datetime.now(timezone.utc)
+    queued_at = now or datetime.now(UTC)
     value = record.metadata.get("retry_backoff")
     if not isinstance(value, dict):
         return queued_at, None

@@ -9,7 +9,7 @@ directory's conftest.
 import asyncio
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -184,7 +184,7 @@ async def test_redis_backend_deduplicates_active_keys_and_replaces_terminal_keys
 async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execution(
     redis_backend: "RedisQueueBackend",
 ) -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await redis_backend.enqueue("tasks.low", priority=1, execution_backend="local")
     await redis_backend.enqueue("tasks.later", priority=100, scheduled_at=later, execution_backend="local")
@@ -209,11 +209,11 @@ async def test_redis_backend_claims_due_tasks_once_by_priority_and_filters_execu
 
 
 async def test_redis_backend_expires_pending_tasks(redis_backend: "RedisQueueBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     claim_overdue = await redis_backend.enqueue("tasks.redis.expired.claim", expires_at=past)
     sweep_overdue = await redis_backend.enqueue("tasks.redis.expired.sweep", expires_at=past)
     batch_overdue = await redis_backend.enqueue("tasks.redis.expired.batch", expires_at=past)
-    live = await redis_backend.enqueue("tasks.redis.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    live = await redis_backend.enqueue("tasks.redis.live", expires_at=datetime.now(UTC) + timedelta(hours=1))
 
     assert [record.id for record in await redis_backend.list_pending(limit=10)] == [live.id]
     assert await redis_backend.claim_task(claim_overdue.id) is None
@@ -235,7 +235,7 @@ async def test_redis_backend_expires_pending_tasks(redis_backend: "RedisQueueBac
     assert batch_stored is not None
     assert batch_stored.status == "expired"
     assert statistics.expired == 3
-    assert await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1)) == 3
+    assert await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1)) == 3
 
 
 async def test_redis_enqueue_many_records_remain_claimable_when_batch_marker_is_dropped(
@@ -302,7 +302,7 @@ async def test_redis_backend_retries_cancels_heartbeats_and_cleans_up(redis_back
     assert completed_record.heartbeat_at is None
     statistics = await redis_backend.get_statistics()
     completed_records = await redis_backend.list_completed_by_task("tasks.completed")
-    cleanup_count = await redis_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    cleanup_count = await redis_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert statistics.failed == 1
     assert statistics.cancelled == 1
@@ -444,8 +444,8 @@ async def test_redis_backend_claim_many_filters_queue_and_execution_backend(
 
 
 async def test_redis_backend_claim_many_promotes_due_scheduled(redis_backend: "RedisQueueBackend") -> "None":
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
-    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    soon = datetime.now(UTC) + timedelta(milliseconds=200)
+    far = datetime.now(UTC) + timedelta(minutes=5)
     due_soon = await redis_backend.enqueue("tasks.soon", scheduled_at=soon)
     scheduled_far = await redis_backend.enqueue("tasks.far", scheduled_at=far)
     await asyncio.sleep(0.3)
@@ -460,7 +460,7 @@ async def test_redis_backend_claim_many_promotes_due_scheduled(redis_backend: "R
 
 
 async def test_redis_backend_scheduled_zset_holds_future_tasks(redis_backend: "RedisQueueBackend") -> "None":
-    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    far = datetime.now(UTC) + timedelta(minutes=5)
     scheduled = await redis_backend.enqueue("tasks.future", scheduled_at=far)
 
     client = cast("Any", await redis_backend._get_client())
@@ -546,7 +546,7 @@ async def test_redis_backend_enqueue_future_scheduled_indexes_without_publish(
     await pubsub.subscribe(redis_backend._wakeup_channel)
     await wait_for_channel_subscribers(redis_backend, redis_backend._wakeup_channel)
 
-    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    far = datetime.now(UTC) + timedelta(minutes=5)
     record = await redis_backend.enqueue("tasks.future", scheduled_at=far)
     messages = await _drain_messages(pubsub, window=0.3)
     await pubsub.aclose()
@@ -653,7 +653,7 @@ async def test_redis_backend_concurrent_keyed_enqueue_yields_one_record(redis_ba
 
 
 async def test_redis_backend_claim_task_honors_due_gating_and_fences(redis_backend: "RedisQueueBackend") -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
     scheduled = await redis_backend.enqueue("tasks.claim.future", scheduled_at=later)
 
     assert await redis_backend.claim_task(scheduled.id) is None

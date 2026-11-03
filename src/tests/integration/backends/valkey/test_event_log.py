@@ -1,7 +1,7 @@
 """Valkey backend-managed queue event history tests."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -33,7 +33,7 @@ async def test_valkey_event_log_reuses_redis_protocol_implementation(valkey_back
             task_name="tasks.valkey.history",
             sequence=1,
             payload={"stage": "load", "duration_ms": 7},
-            occurred_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            occurred_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
         )
     )
     await event_log.flush_events()
@@ -56,7 +56,7 @@ async def test_valkey_event_cleanup_always_removes_the_global_index(valkey_backe
         task_name="tasks.valkey.cleanup",
         sequence=1,
         payload={},
-        occurred_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
     )
     await event_log.publish_event(event)
 
@@ -70,7 +70,7 @@ async def test_valkey_event_cleanup_always_removes_the_global_index(valkey_backe
     ]
     await client.hset(event_key, mapping={"index_keys": json.dumps(secondary_indexes)})
 
-    assert await event_log.cleanup_events(before=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc), limit=1) == 1
+    assert await event_log.cleanup_events(before=datetime(2026, 1, 1, 0, 0, 2, tzinfo=UTC), limit=1) == 1
     assert await client.zrange(valkey_backend._event_log_global_key(), 0, -1) == []
 
 
@@ -87,14 +87,14 @@ async def test_valkey_event_cleanup_continues_in_exact_bounded_batches(valkey_ba
             task_name="tasks.valkey.bounded",
             sequence=second,
             payload={},
-            occurred_at=datetime(2026, 1, 1, 0, 0, second, tzinfo=timezone.utc),
+            occurred_at=datetime(2026, 1, 1, 0, 0, second, tzinfo=UTC),
         )
         for second in range(1, 6)
     ]
     for event in events:
         await event_log.publish_event(event)
 
-    cutoff = datetime(2026, 1, 1, 0, 0, 6, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 1, 1, 0, 0, 6, tzinfo=UTC)
     assert await event_log.cleanup_events(before=cutoff, limit=2) == 2
     assert [record.event_id for record in (await event_log.query_events(QueueEventQuery())).items] == [
         event.id for event in events[2:]

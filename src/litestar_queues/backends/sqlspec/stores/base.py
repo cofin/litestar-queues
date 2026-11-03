@@ -1,5 +1,6 @@
 """Shared SQLSpec queue store primitives."""
 
+import importlib
 from dataclasses import dataclass
 from functools import cache
 from hashlib import sha256
@@ -21,6 +22,7 @@ from litestar_queues.backends.sqlspec.schema import (
     validate_native_json_columns,
     validate_table_name,
 )
+from litestar_queues.exceptions import QueueConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -32,6 +34,15 @@ if TYPE_CHECKING:
 
 __all__ = ("BulkHeartbeatStatement", "SQLSpecQueueStore")
 
+try:
+    _sqlspec_resolve_adapter_name = getattr(
+        importlib.import_module("sqlspec.utils.adapters"), "resolve_adapter_name", None
+    )
+except ImportError:
+    _sqlspec_resolve_adapter_name = None
+
+_ADAPTERS_MODULE_PREFIX = "sqlspec.adapters."
+_MIN_ADAPTER_MODULE_PARTS = 3
 _TASK_COLUMNS = (
     "id",
     "task_name",
@@ -83,6 +94,7 @@ class SQLSpecQueueStore:
         "_supports_for_update",
         "_supports_skip_locked",
         "_table_name",
+        "_terminal_ttl",
     )
 
     data_dictionary_dialect: "ClassVar[str | None]" = None
@@ -114,6 +126,7 @@ class SQLSpecQueueStore:
         column_map: "Mapping[str, str] | None" = None,
         native_json_columns: "frozenset[str] | None" = None,
         manage_schema: "bool" = True,
+        terminal_ttl: "float | None" = None,
     ) -> "None":
         self._config = config
         self._table_name = _configured_table_name(config, table_name)
@@ -124,6 +137,15 @@ class SQLSpecQueueStore:
         configured = validate_native_json_columns(native_json_columns or frozenset())
         self._native_json_columns = configured | type(self).auto_native_json_columns
         self._manage_schema = manage_schema
+        raw_ttl = terminal_ttl if terminal_ttl is not None else settings.get("terminal_ttl")
+        if raw_ttl is not None:
+            resolved_ttl = float(raw_ttl)
+            if resolved_ttl <= 0:
+                msg = "SQLSpecQueueStore terminal_ttl must be greater than 0."
+                raise QueueConfigurationError(msg)
+            self._terminal_ttl: "float | None" = resolved_ttl
+        else:
+            self._terminal_ttl = None
         self._cached_sql: "dict[str, str]" = {}
         self._supports_for_update = False
         self._supports_skip_locked = False
@@ -132,6 +154,11 @@ class SQLSpecQueueStore:
     def table_name(self) -> "str":
         """Configured queue table name."""
         return self._table_name
+
+    @property
+    def terminal_ttl(self) -> "float | None":
+        """Configured retention window in seconds for terminal rows, if any."""
+        return self._terminal_ttl
 
     @property
     def dialect_name(self) -> "str | None":
@@ -1580,11 +1607,63 @@ def _configured_table_name(config: "SQLSpecStoreConfig", table_name: "str | None
     return validate_table_name(str(queue_settings.get("queue_table_name", DEFAULT_TABLE_NAME)))
 
 
+def _extract_bound_config(config_or_store: "object", target_cls: "type[object]") -> "object | None":
+    """Extract bound inner configuration from a store instance while avoiding mock recursion."""
+    has_slot = any("_config" in getattr(cls, "__slots__", ()) for cls in target_cls.__mro__)
+    has_attr = "_config" in getattr(config_or_store, "__dict__", {}) or has_slot
+    if not has_attr:
+        return None
+    return getattr(config_or_store, "_config", None)
+
+
+def _resolve_adapter_name_from_mro(target_cls: "type[object]") -> "str | None":
+    for cls in target_cls.__mro__:
+        explicit = cls.__dict__.get("adapter_name")
+        if isinstance(explicit, str):
+            stripped = explicit.strip()
+            if stripped:
+                return stripped
+        module_name = cls.__module__
+        if module_name.startswith(_ADAPTERS_MODULE_PREFIX):
+            parts = module_name.split(".")
+            if len(parts) >= _MIN_ADAPTER_MODULE_PARTS and parts[2]:
+                return parts[2]
+    return None
+
+
+def _resolve_adapter_name_from_instance(config: "object", target_cls: "type[object]") -> "str":
+    instance_dict = getattr(config, "__dict__", {})
+    is_mock = hasattr(config, "_mock_return_value")
+    val = instance_dict.get("adapter_name") if is_mock else getattr(config, "adapter_name", None)
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    inner_config = instance_dict.get("_config") if is_mock else _extract_bound_config(config, target_cls)
+    if inner_config is not None and inner_config is not config:
+        return _adapter_name(inner_config)
+    return ""
+
+
 def _adapter_name(config: "object") -> "str":
-    for config_type in type(config).__mro__:
-        module_name = config_type.__module__
-        if module_name.startswith("sqlspec.adapters."):
-            return module_name.split(".")[2]
+    """Resolve the adapter name for a SQLSpec configuration or store.
+
+    Checks:
+        1. Upstream ``resolve_adapter_name`` when available in ``sqlspec.utils.adapters``.
+        2. Explicit ``adapter_name`` attribute declared on any class in ``__mro__``.
+        3. Module path starting with ``sqlspec.adapters.<name>``.
+        4. Explicit ``adapter_name`` attribute or inner ``_config`` attribute on instances.
+    """
+    if config is None:
+        return ""
+    if _sqlspec_resolve_adapter_name is not None:
+        resolved = _sqlspec_resolve_adapter_name(config)
+        if isinstance(resolved, str) and resolved:
+            return resolved
+    target_cls = config if isinstance(config, type) else type(config)
+    resolved_mro = _resolve_adapter_name_from_mro(target_cls)
+    if resolved_mro is not None:
+        return resolved_mro
+    if not isinstance(config, type):
+        return _resolve_adapter_name_from_instance(config, target_cls)
     return ""
 
 

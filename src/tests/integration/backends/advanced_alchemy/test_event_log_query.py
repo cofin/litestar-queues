@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,7 @@ pytestmark = pytest.mark.anyio
 
 DIMENSIONS = ("stage", "scope", "scope_key", "actor", "entity")
 
-BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_event_history_mixin_declares_dimensions() -> "None":

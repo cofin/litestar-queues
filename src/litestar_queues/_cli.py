@@ -13,7 +13,7 @@ import logging
 import os
 import signal
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
@@ -562,7 +562,7 @@ async def _scheduler_health_run(plugin: "QueuePlugin", minutes: "int") -> "int":
         )
         return 3
 
-    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    since = datetime.now(UTC) - timedelta(minutes=minutes)
     service = _open_service(plugin)
     await service.open()
     try:

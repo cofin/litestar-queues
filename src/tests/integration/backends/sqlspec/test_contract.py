@@ -17,7 +17,7 @@ import sqlite3
 import sys
 from contextlib import asynccontextmanager, closing
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from subprocess import run
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -309,7 +309,7 @@ def test_sqlspec_backend_serializes_text_bound_datetimes_as_iso_by_default() -> 
     backend = SQLSpecQueueBackend()
     backend._store = cast("Any", SimpleNamespace(bind_datetime_as_text=True))
 
-    serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=timezone.utc))
+    serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=UTC))
 
     assert serialized == "2026-07-02T12:34:56.789012+00:00"
 
@@ -325,7 +325,7 @@ def test_sqlspec_backend_serializes_arrow_odbc_datetimes_for_sql_server_datetime
         )
     )
 
-    serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=timezone.utc))
+    serialized = backend._serialize_datetime(datetime(2026, 7, 2, 12, 34, 56, 789012, tzinfo=UTC))
 
     assert isinstance(backend._store, ArrowOdbcQueueStore)
     assert serialized == "2026-07-02 12:34:56.789"
@@ -475,7 +475,7 @@ async def test_sqlspec_backend_exposes_config_type_and_builder_store(
     assert any('"queue_tasks"' in statement for statement in store.create_statements())
 
     insert_statement = store.insert_task({"id": "task-1", "task_name": "tasks.sync"}).build(dialect="sqlite")
-    pending_statement = store.list_pending(now=datetime.now(timezone.utc).isoformat(), limit=10, queue="default").build(
+    pending_statement = store.list_pending(now=datetime.now(UTC).isoformat(), limit=10, queue="default").build(
         dialect="sqlite"
     )
 
@@ -1082,7 +1082,7 @@ async def test_sqlspec_oracle_queue_schema_uses_retry_safe_version_compatible_dd
             "identity_key": "identity",
             "task_id": "task-id",
             "task_name": "tasks.example",
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
         })
         .build(dialect=store.dialect_name)
         .sql
@@ -1594,7 +1594,7 @@ async def test_sqlspec_identity_reservation_propagates_untyped_failure(
 
 
 async def test_sqlspec_backend_claims_due_tasks_by_priority(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await sqlspec_backend.enqueue("tasks.low", priority=1)
     scheduled = await sqlspec_backend.enqueue("tasks.later", priority=100, scheduled_at=later)
@@ -1985,10 +1985,7 @@ async def test_sqlspec_postgres_claim_many_with_expired_enforces_queue_limits_na
         reports = await backend.enqueue("tasks.caps.reports", queue="reports", priority=1)
         bulk = await backend.enqueue("tasks.caps.bulk", queue="bulk", priority=50)
         overdue = await backend.enqueue(
-            "tasks.caps.overdue",
-            queue="email",
-            priority=200,
-            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            "tasks.caps.overdue", queue="email", priority=200, expires_at=datetime.now(UTC) - timedelta(seconds=1)
         )
 
         _forbid_generic_claim_loop(monkeypatch)
@@ -2029,7 +2026,7 @@ async def test_sqlspec_postgres_claim_many_returns_owned_expirations(
     """The combined PostgreSQL statement returns disjoint expired and claimed rows."""
     async with _postgres_asyncpg_backend(postgres_service, request, "lq_claim_expired") as backend:
         expired_record = await backend.enqueue(
-            "tasks.claim.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+            "tasks.claim.expired", expires_at=datetime.now(UTC) - timedelta(seconds=1)
         )
         high = await backend.enqueue("tasks.claim.high", priority=10)
         low = await backend.enqueue("tasks.claim.low", priority=1)
@@ -2207,7 +2204,7 @@ async def test_sqlspec_duckdb_uses_the_non_returning_paths(
 
 
 async def test_sqlspec_backend_uses_sqlspec_json_serializer(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
-    encoded_at = datetime.now(timezone.utc)
+    encoded_at = datetime.now(UTC)
 
     record = await sqlspec_backend.enqueue("tasks.metadata", metadata={"encoded_at": encoded_at})
     stored = await sqlspec_backend.get_task(record.id)
@@ -2584,7 +2581,7 @@ async def test_sqlspec_dispatch_repair_progress_survives_reopen(tmp_path: "Path"
 
 async def test_sqlspec_dispatch_repair_preserves_newer_marks(sqlspec_backend: "SQLSpecQueueBackend") -> "None":
     record = await sqlspec_backend.enqueue("checked", execution_backend="cloudtasks")
-    newer = datetime.now(timezone.utc) + timedelta(minutes=1)
+    newer = datetime.now(UTC) + timedelta(minutes=1)
     older = newer - timedelta(seconds=1)
     store = sqlspec_backend._get_store()
     async with sqlspec_backend._session() as driver:
@@ -2668,7 +2665,7 @@ async def test_sqlspec_duckdb_scheduled_execution_ref_open_contender(
                     execution_ref="contender",
                     expected_retry_count=0,
                     expected_execution_ref=None,
-                    now=datetime.now(timezone.utc),
+                    now=datetime.now(UTC),
                 )
             )
             assert (
@@ -2731,7 +2728,7 @@ async def test_sqlspec_registry_dispatch_mark_preserves_fractional_newer_time(
         pytest.skip("Oracle timestamp binding regression")
     assert isinstance(queue_backend, SQLSpecQueueBackend)
     record = await queue_backend.enqueue("fractional-check", execution_backend="cloudtasks")
-    newer = (datetime.now(timezone.utc) + timedelta(minutes=1)).replace(microsecond=654321)
+    newer = (datetime.now(UTC) + timedelta(minutes=1)).replace(microsecond=654321)
     older = newer.replace(microsecond=123456)
     store = queue_backend._get_store()
     async with queue_backend._session() as driver:

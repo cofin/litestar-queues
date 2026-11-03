@@ -1,7 +1,7 @@
 """Versioned JSON-native benchmark result models."""
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from tools.queue_bench import SCHEMA_VERSION
@@ -103,7 +103,7 @@ class BenchmarkResult:
     comparisons: list[dict[str, Any]] = field(default_factory=list)
     annotations: list[dict[str, Any]] = field(default_factory=list)
     schema_version: str = SCHEMA_VERSION
-    generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

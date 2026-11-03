@@ -1,7 +1,7 @@
 """Shared worker-ownership and shutdown-interrupt assertions for every queue backend."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from litestar_queues import (
@@ -53,7 +53,7 @@ async def assert_interrupts_owned_running_record(queue_backend: "BaseQueueBacken
     assigned = await queue_backend.assign_worker(record.id, worker_id="worker-a", expected_retry_count=generation)
     assert assigned is not None
 
-    requeue_time = datetime.now(timezone.utc)
+    requeue_time = datetime.now(UTC)
     wrong_owner = await queue_backend.interrupt_task(
         record.id, expected_retry_count=generation, worker_id="worker-b", queued_at=requeue_time
     )
@@ -149,7 +149,7 @@ async def assert_interruption_does_not_consume_retry_budget(queue_backend: "Base
     generation = claimed.retry_count
     assert await queue_backend.assign_worker(record.id, worker_id="worker-a", expected_retry_count=generation)
     interrupted = await queue_backend.interrupt_task(
-        record.id, expected_retry_count=generation, worker_id="worker-a", queued_at=datetime.now(timezone.utc)
+        record.id, expected_retry_count=generation, worker_id="worker-a", queued_at=datetime.now(UTC)
     )
     assert interrupted is not None
     assert interrupted.retry_count == generation + 1
@@ -174,7 +174,7 @@ async def assert_interruption_does_not_consume_failure_budget(queue_backend: "Ba
     generation = claimed.retry_count
     assert await queue_backend.assign_worker(record.id, worker_id="worker-a", expected_retry_count=generation)
     interrupted = await queue_backend.interrupt_task(
-        record.id, expected_retry_count=generation, worker_id="worker-a", queued_at=datetime.now(timezone.utc)
+        record.id, expected_retry_count=generation, worker_id="worker-a", queued_at=datetime.now(UTC)
     )
     assert interrupted is not None
 

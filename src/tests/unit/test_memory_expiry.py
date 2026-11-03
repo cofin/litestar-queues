@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.anyio
 
 async def test_memory_claim_fences_expired_record() -> "None":
     backend = InMemoryQueueBackend()
-    record = await backend.enqueue("tasks.expiring", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    record = await backend.enqueue("tasks.expiring", expires_at=datetime.now(UTC) - timedelta(seconds=1))
 
     claimed = await backend.claim_task(record.id)
     stored = await backend.get_task(record.id)
@@ -25,7 +25,7 @@ async def test_memory_claim_fences_expired_record() -> "None":
 
 async def test_memory_list_pending_excludes_expired() -> "None":
     backend = InMemoryQueueBackend()
-    expired = await backend.enqueue("tasks.expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    expired = await backend.enqueue("tasks.expired", expires_at=datetime.now(UTC) - timedelta(seconds=1))
     available = await backend.enqueue("tasks.available")
 
     pending = await backend.list_pending(limit=10)
@@ -36,7 +36,7 @@ async def test_memory_list_pending_excludes_expired() -> "None":
 
 async def test_memory_claim_many_fences_and_transitions_expired_records() -> "None":
     backend = InMemoryQueueBackend()
-    expired = await backend.enqueue("tasks.expired_batch", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    expired = await backend.enqueue("tasks.expired_batch", expires_at=datetime.now(UTC) - timedelta(seconds=1))
     available = await backend.enqueue("tasks.available_batch")
 
     claimed = await backend.claim_many(limit=10)
@@ -56,7 +56,7 @@ async def test_memory_claim_many_preserves_expired_dispatch_reservation(monkeypa
 
 async def test_memory_expire_overdue_transitions_once_and_respects_limit() -> "None":
     backend = InMemoryQueueBackend()
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     records = [await backend.enqueue(f"tasks.expire_{index}", expires_at=past) for index in range(3)]
 
     first = await backend.expire_overdue(limit=2)
@@ -71,12 +71,12 @@ async def test_memory_expire_overdue_transitions_once_and_respects_limit() -> "N
 
 async def test_memory_expire_overdue_ignores_future_and_running() -> "None":
     backend = InMemoryQueueBackend()
-    future = datetime.now(timezone.utc) + timedelta(minutes=1)
+    future = datetime.now(UTC) + timedelta(minutes=1)
     future_record = await backend.enqueue("tasks.future", expires_at=future)
     running = await backend.enqueue("tasks.running", expires_at=future)
     claimed = await backend.claim_task(running.id)
     assert claimed is not None
-    running.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    running.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
     expired = await backend.expire_overdue()
 
@@ -87,13 +87,11 @@ async def test_memory_expire_overdue_ignores_future_and_running() -> "None":
 
 async def test_memory_statistics_and_cleanup_include_expired() -> "None":
     backend = InMemoryQueueBackend()
-    record = await backend.enqueue(
-        "tasks.cleanup_expired", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
-    )
+    record = await backend.enqueue("tasks.cleanup_expired", expires_at=datetime.now(UTC) - timedelta(seconds=1))
     expired = await backend.expire_overdue()
 
     statistics = await backend.get_statistics()
-    removed = await backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    removed = await backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert [item.id for item in expired] == [record.id]
     assert statistics.expired == 1

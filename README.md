@@ -90,4 +90,4 @@ In production, decouple task storage from execution:
 - [Run an example](https://cofin.github.io/litestar-queues/examples/index.html)
 - [Browse the API reference](https://cofin.github.io/litestar-queues/reference/index.html)
 
-Litestar Queues supports Python 3.10 through 3.14 and is licensed under MIT.
+Litestar Queues supports Python 3.11 through 3.15 and is licensed under MIT.

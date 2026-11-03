@@ -9,12 +9,12 @@ import warnings
 import zoneinfo
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import cached_property, partial
 from importlib import import_module, reload
-from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, Self, TypeVar, cast, overload
 
-from typing_extensions import ParamSpec, Self
+from typing_extensions import ParamSpec
 
 from litestar_queues.exceptions import QueueWarning
 from litestar_queues.models import TERMINAL_STATUSES
@@ -168,7 +168,7 @@ class ScheduleConfig:
         Raises:
             ValueError: If no interval or cron expression is configured.
         """
-        base = _ensure_utc(after or datetime.now(timezone.utc))
+        base = _ensure_utc(after or datetime.now(UTC))
         initial_delay = self._initial_delay_value
         interval = self._interval_value
 
@@ -275,7 +275,7 @@ class ScheduleConfig:
                     proposed = day.replace(hour=hour, minute=minute)
                     if proposed < candidate or not _is_valid_local_time(proposed, tz):
                         continue
-                    return proposed.astimezone(timezone.utc)
+                    return proposed.astimezone(UTC)
             day = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
         msg = f"No matching run found for cron expression: {self.cron}"
@@ -1016,8 +1016,8 @@ def _validate_uniqueness(
 
 def _ensure_utc(value: "datetime") -> "datetime":
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _coerce_interval(value: "float | timedelta | None") -> "timedelta | None":
@@ -1045,7 +1045,7 @@ def _cron_day_matches(parsed: "_ParsedCron", *, day: "int", weekday: "int") -> "
 
 
 def _is_valid_local_time(value: "datetime", tz: "zoneinfo.ZoneInfo") -> "bool":
-    round_tripped = value.astimezone(timezone.utc).astimezone(tz)
+    round_tripped = value.astimezone(UTC).astimezone(tz)
     return (
         round_tripped.year == value.year
         and round_tripped.month == value.month

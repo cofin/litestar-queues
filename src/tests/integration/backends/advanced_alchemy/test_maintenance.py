@@ -1,12 +1,11 @@
 """Advanced Alchemy distributed maintenance coordination and bounded-operation contract."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone, tzinfo
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import TYPE_CHECKING, Any, Self
 from uuid import UUID
 
 import pytest
-from typing_extensions import Self
 
 pytest.importorskip("aiosqlite")
 pytest.importorskip("advanced_alchemy")
@@ -37,8 +36,8 @@ async def test_advanced_alchemy_backend_maintenance_expires(
         from litestar_queues.backends.advanced_alchemy import backend as backend_module
 
         current_times = iter((
-            datetime(2026, 7, 22, 12, 0, 0, 600_000, tzinfo=timezone.utc),
-            datetime(2026, 7, 22, 12, 0, 0, 800_000, tzinfo=timezone.utc),
+            datetime(2026, 7, 22, 12, 0, 0, 600_000, tzinfo=UTC),
+            datetime(2026, 7, 22, 12, 0, 0, 800_000, tzinfo=UTC),
         ))
         monkeypatch.setattr(backend_module, "_utc_now", lambda: next(current_times))
         request.node.add_marker(
@@ -98,7 +97,7 @@ async def test_advanced_alchemy_external_limit_uses_id_tie_breaker(
     from litestar_queues.backends.advanced_alchemy import backend as backend_module
     from litestar_queues.backends.advanced_alchemy import service as service_module
 
-    fixed_now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=UTC)
 
     class FixedDateTime(datetime):
         @classmethod
@@ -135,7 +134,7 @@ async def test_dispatch_repair_equal_timestamps_rotate_across_fresh_backends(
     from tests.helpers._timing import MutableClock
 
     backend = advanced_alchemy_backend
-    clock = MutableClock(datetime(2026, 9, 7, 12, 0, 0, 123456, tzinfo=timezone.utc))
+    clock = MutableClock(datetime(2026, 9, 7, 12, 0, 0, 123456, tzinfo=UTC))
     monkeypatch.setattr(service_module, "_utc_now", clock)
     for number in (3, 1, 2):
         record = await backend.enqueue("repair.equal", execution_backend="cloudtasks", id=UUID(int=number))
@@ -171,7 +170,7 @@ async def test_dispatch_repair_delayed_selector_preserves_newer_mark(
 
     backend = advanced_alchemy_backend
     record = await backend.enqueue("repair.delayed", execution_backend="cloudtasks")
-    clock = MutableClock(datetime.now(timezone.utc))
+    clock = MutableClock(datetime.now(UTC))
     monkeypatch.setattr(service_module, "_utc_now", clock)
     selected = asyncio.Event()
     release = asyncio.Event()

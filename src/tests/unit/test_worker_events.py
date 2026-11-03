@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -161,7 +161,7 @@ async def test_worker_emits_claim_lost_event_when_terminal_fence_rejects_stale_a
         claimed = await queue_backend.claim_task(result.id)
         assert claimed is not None
         stale_claim = replace(claimed)
-        claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
         stale_result = await queue_backend.requeue_stale_running(stale_after=timedelta(seconds=1))
 
         updated = await service.execute_record(stale_claim)
@@ -196,7 +196,7 @@ async def test_worker_emits_stale_failed_event_for_terminal_stale_recovery() -> 
         result = await service.enqueue(worker_stale_failed, requeue_on_stale=False)
         claimed = await queue_backend.claim_task(result.id)
         assert claimed is not None
-        claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
         stale_result = await service.recover_stale_tasks(stale_after=timedelta(seconds=1), worker_id="worker-1")
 
@@ -214,7 +214,7 @@ async def test_worker_emits_stale_failed_event_for_terminal_stale_recovery() -> 
 async def test_expire_overdue_tasks_emits_one_expired_event_per_record() -> "None":
     sink = InMemoryQueueEventSink()
     queue_backend = InMemoryQueueBackend()
-    expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
     @task("tasks.expired_event")
     async def expired_event() -> "None":

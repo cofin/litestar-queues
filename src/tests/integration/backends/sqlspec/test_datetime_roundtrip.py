@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,7 +25,7 @@ def test_duckdb_serializes_aware_datetimes_as_naive_utc_for_timestamp_columns() 
     value = datetime(2026, 7, 2, 7, 0, tzinfo=timezone(timedelta(hours=-5)))
 
     serialized = backend._serialize_datetime(value)
-    expected = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc).replace(tzinfo=None)
+    expected = datetime(2026, 7, 2, 12, 0, tzinfo=UTC).replace(tzinfo=None)
 
     assert serialized == expected
     assert isinstance(serialized, datetime)
@@ -51,7 +51,7 @@ async def test_duckdb_roundtrips_aware_utc_datetimes_on_non_utc_host(
     await backend.open()
     await backend.create_schema()
     try:
-        scheduled_at = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+        scheduled_at = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
         record = await backend.enqueue("tasks.duckdb-timezone", scheduled_at=scheduled_at)
 
         stored = await backend.get_task(record.id)

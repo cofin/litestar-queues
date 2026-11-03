@@ -2,7 +2,7 @@
 
 import asyncio
 import inspect
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,7 +15,7 @@ class MutableClock:
     __slots__ = ("_current",)
 
     def __init__(self, current: "datetime | None" = None) -> "None":
-        self._current = current or datetime.now(timezone.utc)
+        self._current = current or datetime.now(UTC)
 
     def __call__(self) -> "datetime":
         return self._current

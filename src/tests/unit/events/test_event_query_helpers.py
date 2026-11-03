@@ -1,6 +1,6 @@
 """Reference semantics for the cross-backend event query contract."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from litestar_queues.events import QueueEventLogRecord, QueueEventQuery
 from litestar_queues.events.query import (
@@ -10,7 +10,7 @@ from litestar_queues.events.query import (
     summarize_event_records,
 )
 
-BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _record(event_id: str, *, seq: "int | None" = None, offset: int = 0, **kwargs: object) -> QueueEventLogRecord:

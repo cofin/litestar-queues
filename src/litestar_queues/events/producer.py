@@ -99,7 +99,7 @@ class _ExternalProducer:
         for resource in reversed(resources):
             try:
                 await _call_optional_lifecycle(resource, "close", "on_shutdown")
-            except BaseException as exc:  # noqa: BLE001, PERF203 - every acquired resource gets one cleanup attempt.
+            except BaseException as exc:  # noqa: BLE001 - every acquired resource gets one cleanup attempt.
                 errors.append(exc)
         selected = primary if primary is not None else _select_lifecycle_error(errors)
         for error in errors:

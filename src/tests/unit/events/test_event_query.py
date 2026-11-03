@@ -1,5 +1,7 @@
 """Public event-history query, page, and retention models."""
 
+from datetime import UTC
+
 import pytest
 
 from litestar_queues.events import QueueEventEntityRef, QueueEventQuery
@@ -44,12 +46,12 @@ def test_empty_page_reports_a_zero_total() -> "None":
 
 
 def test_total_counts_matches_before_the_limit_is_applied() -> "None":
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from litestar_queues.events import QueueEventLogRecord
     from litestar_queues.events.query import paginate_event_records
 
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
 
     def _record(sequence: int) -> QueueEventLogRecord:
         return QueueEventLogRecord(

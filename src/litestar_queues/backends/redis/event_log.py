@@ -6,7 +6,7 @@ import hashlib
 import inspect
 import json
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from litestar_queues.events._history_buffer import _HistoryBuffer
@@ -358,14 +358,14 @@ def _optional_mapping_str(value: "Any") -> "str | None":
 
 def _serialize_datetime(value: "datetime") -> "str":
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat()
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
 
 
 def _score_datetime(value: "datetime") -> "float":
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).timestamp()
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).timestamp()
 
 
 def _json_dumps(value: "Any") -> "str":

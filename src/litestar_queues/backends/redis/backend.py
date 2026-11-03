@@ -10,7 +10,7 @@ import asyncio
 import inspect
 import json
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
@@ -82,6 +82,102 @@ local function sync_dispatch_repair(hkey, task_id, registry, previous_key)
     else
         redis.call('ZREM', index_key, task_id)
     end
+end
+
+local function delete_terminal_entry(prefix, task_id)
+    local hkey = prefix .. ':task:' .. task_id
+    local meta_key = prefix .. ':terminal_meta'
+    local status = redis.call('HGET', hkey, 'status')
+    local dedup_key = redis.call('HGET', hkey, 'key')
+    local queue_index_key = redis.call('HGET', hkey, 'queue_index_key')
+    local is_terminal = (status == 'completed' or status == 'failed' or status == 'cancelled' or status == 'expired')
+    if not is_terminal then
+        if status ~= false and status ~= nil then
+            return 0
+        end
+        local meta_raw = redis.call('HGET', meta_key, task_id)
+        if meta_raw and meta_raw ~= '' then
+            local ok, meta = pcall(cjson.decode, meta_raw)
+            if ok and type(meta) == 'table' then
+                status = meta.status
+                queue_index_key = meta.queue_index_key
+                dedup_key = meta.key
+                is_terminal = true
+            end
+        end
+        if not is_terminal then
+            local score = redis.call('ZSCORE', prefix .. ':maintenance:terminal', task_id)
+            if not score then
+                for _, term_status in ipairs({'completed', 'failed', 'cancelled', 'expired'}) do
+                    if redis.call('SISMEMBER', prefix .. ':status:' .. term_status, task_id) == 1 then
+                        status = term_status
+                        is_terminal = true
+                        break
+                    end
+                end
+                if not is_terminal then
+                    return 0
+                end
+            end
+        end
+    end
+    remove_dispatch_repair(hkey, task_id)
+    redis.call('DEL', hkey)
+    redis.call('HDEL', meta_key, task_id)
+    redis.call('SREM', prefix .. ':tasks', task_id)
+    redis.call('ZREM', prefix .. ':ready', task_id)
+    redis.call('ZREM', prefix .. ':scheduled', task_id)
+    if status and status ~= '' then
+        redis.call('SREM', prefix .. ':status:' .. status, task_id)
+    else
+        redis.call('SREM', prefix .. ':status:completed', task_id)
+        redis.call('SREM', prefix .. ':status:failed', task_id)
+        redis.call('SREM', prefix .. ':status:cancelled', task_id)
+        redis.call('SREM', prefix .. ':status:expired', task_id)
+    end
+    redis.call('ZREM', prefix .. ':maintenance:running', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:external', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
+    if queue_index_key and queue_index_key ~= '' then
+        redis.call('SREM', queue_index_key, task_id)
+    end
+    if dedup_key and dedup_key ~= '' then
+        if redis.call('HGET', prefix .. ':keys', dedup_key) == task_id then
+            redis.call('HDEL', prefix .. ':keys', dedup_key)
+        end
+    end
+    return 1
+end
+
+local function record_terminal_meta(prefix, hkey, task_id, status, completed_score, ttl_ms)
+    local meta_key = prefix .. ':terminal_meta'
+    local meta = {
+        status = status,
+        queue_index_key = redis.call('HGET', hkey, 'queue_index_key') or '',
+        key = redis.call('HGET', hkey, 'key') or '',
+    }
+    redis.call('HSET', meta_key, task_id, cjson.encode(meta))
+    redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
+    local ttl = tonumber(ttl_ms) or 0
+    if ttl > 0 then
+        redis.call('PEXPIRE', hkey, ttl)
+        local cutoff = (tonumber(completed_score) or 0) - ttl
+        local expired_ids = redis.call(
+            'ZRANGEBYSCORE', prefix .. ':maintenance:terminal', '-inf', cutoff, 'LIMIT', 0, 16
+        )
+        for _, expired_id in ipairs(expired_ids) do
+            if expired_id ~= task_id then
+                delete_terminal_entry(prefix, expired_id)
+            end
+        end
+    end
+end
+
+local function clear_terminal_meta(prefix, hkey, task_id)
+    redis.call('PERSIST', hkey)
+    redis.call('HDEL', prefix .. ':terminal_meta', task_id)
+    redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
 end
 """
 _DISPATCH_REPAIR_CANDIDATES_SCRIPT = """
@@ -187,9 +283,10 @@ local eb_filter = ARGV[5]
 local window = tonumber(ARGV[6])
 
 local reservation_prefix = ARGV[7]
-local ncaps = tonumber(ARGV[8])
+local terminal_ttl_ms = tonumber(ARGV[8]) or 0
+local ncaps = tonumber(ARGV[9])
 local caps = {}
-local idx = 9
+local idx = 10
 for _ = 1, ncaps do
     caps[ARGV[idx]] = tonumber(ARGV[idx + 1])
     idx = idx + 2
@@ -225,7 +322,7 @@ for _, id in ipairs(due) do
             redis.call('ZREM', prefix .. ':maintenance:external', id)
             remove_dispatch_repair(hkey, id)
             redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-            redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
+            record_terminal_meta(prefix, hkey, id, 'expired', now_ms, terminal_ttl_ms)
             redis.call('PUBLISH', prefix .. ':completions', id)
             expired[#expired + 1] = id
         else
@@ -281,7 +378,7 @@ while #claimed < limit do
                     redis.call('ZREM', prefix .. ':maintenance:external', id)
                     remove_dispatch_repair(hkey, id)
                     redis.call('ZREM', prefix .. ':maintenance:expiry', id)
-                    redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, id)
+                    record_terminal_meta(prefix, hkey, id, 'expired', now_ms, terminal_ttl_ms)
                     redis.call('PUBLISH', prefix .. ':completions', id)
                     expired[#expired + 1] = id
                 else
@@ -294,7 +391,7 @@ while #claimed < limit do
                         redis.call('ZREM', ready, id)
                         removed = removed + 1
                         redis.call('ZADD', prefix .. ':maintenance:running', now_ms, id)
-                        redis.call('ZREM', prefix .. ':maintenance:terminal', id)
+                        clear_terminal_meta(prefix, hkey, id)
                         redis.call('ZREM', prefix .. ':maintenance:expiry', id)
                         redis.call('ZREM', prefix .. ':maintenance:external', id)
                         remove_dispatch_repair(hkey, id)
@@ -330,6 +427,7 @@ local now_iso = ARGV[4]
 local reservation_prefix = ARGV[5]
 local expected_retry = ARGV[6]
 local expected_ref = ARGV[7]
+local terminal_ttl_ms = tonumber(ARGV[8]) or 0
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'pending' and status ~= 'scheduled' then
@@ -357,7 +455,7 @@ if (not execution_ref or execution_ref == '') and expires_score > 0 and expires_
     redis.call('ZREM', prefix .. ':maintenance:running', task_id)
     redis.call('ZREM', prefix .. ':maintenance:external', task_id)
     redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
-    redis.call('ZADD', prefix .. ':maintenance:terminal', now_ms, task_id)
+    record_terminal_meta(prefix, hkey, task_id, 'expired', now_ms, terminal_ttl_ms)
     redis.call('PUBLISH', prefix .. ':completions', task_id)
     return {2}
 end
@@ -370,7 +468,7 @@ redis.call('SADD', prefix .. ':status:running', task_id)
 redis.call('ZREM', ready, task_id)
 redis.call('ZREM', scheduled, task_id)
 redis.call('ZADD', prefix .. ':maintenance:running', now_ms, task_id)
-redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+clear_terminal_meta(prefix, hkey, task_id)
 redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
 local execution_ref = redis.call('HGET', hkey, 'execution_ref')
 if execution_ref and execution_ref ~= '' then
@@ -410,6 +508,7 @@ local completed_at = ARGV[4]
 local result_json = ARGV[5]
 local channel = ARGV[6]
 local completed_score = ARGV[7]
+local terminal_ttl_ms = tonumber(ARGV[8]) or 0
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'running' then
@@ -429,7 +528,7 @@ redis.call('SREM', prefix .. ':status:running', task_id)
 redis.call('SADD', prefix .. ':status:completed', task_id)
 redis.call('ZREM', prefix .. ':maintenance:running', task_id)
 redis.call('ZREM', prefix .. ':maintenance:external', task_id)
-redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
+record_terminal_meta(prefix, hkey, task_id, 'completed', completed_score, terminal_ttl_ms)
 redis.call('PUBLISH', channel, task_id)
 return {1}
 """
@@ -451,6 +550,7 @@ local retry_at = ARGV[9]
 local retry_score = ARGV[10]
 local queued_at = ARGV[11]
 local ready_score = ARGV[12]
+local terminal_ttl_ms = tonumber(ARGV[13]) or 0
 
 local status = redis.call('HGET', hkey, 'status')
 if status ~= 'running' then
@@ -480,7 +580,7 @@ if retry == '1' and (retry_count - interruptions) < max_retries then
     redis.call('SREM', prefix .. ':status:running', task_id)
     redis.call('SADD', prefix .. ':status:' .. retry_status, task_id)
     redis.call('ZREM', prefix .. ':maintenance:running', task_id)
-    redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+    clear_terminal_meta(prefix, hkey, task_id)
     local execution_ref = redis.call('HGET', hkey, 'execution_ref')
     if execution_ref and execution_ref ~= '' then
         local created_score = redis.call('HGET', hkey, 'created_score') or '0'
@@ -505,7 +605,7 @@ redis.call('SREM', prefix .. ':status:running', task_id)
 redis.call('SADD', prefix .. ':status:failed', task_id)
 redis.call('ZREM', prefix .. ':maintenance:running', task_id)
 redis.call('ZREM', prefix .. ':maintenance:external', task_id)
-redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
+record_terminal_meta(prefix, hkey, task_id, 'failed', completed_score, terminal_ttl_ms)
 redis.call('PUBLISH', channel, task_id)
 return {1, 'failed'}
 """
@@ -604,6 +704,7 @@ local score = ARGV[7]
 local channel = ARGV[8]
 local payload = ARGV[9]
 local expected_worker = ARGV[10]
+local terminal_ttl_ms = tonumber(ARGV[11]) or 0
 
 local status = redis.call('HGET', hkey, 'status')
 if not status then
@@ -630,8 +731,8 @@ if new_status ~= '' then
     redis.call('SADD', prefix .. ':status:' .. new_status, task_id)
     redis.call('HSET', hkey, 'status', new_status)
 end
-if #ARGV >= 11 then
-    redis.call('HSET', hkey, unpack(ARGV, 11))
+if #ARGV >= 12 then
+    redis.call('HSET', hkey, unpack(ARGV, 12))
 end
 if zset_action == 'ready' then
     redis.call('ZADD', ready, score, task_id)
@@ -657,9 +758,9 @@ end
 if final_status == 'completed' or final_status == 'failed' or final_status == 'cancelled'
         or final_status == 'expired' then
     local completed_score = redis.call('HGET', hkey, 'completed_score') or '0'
-    redis.call('ZADD', prefix .. ':maintenance:terminal', completed_score, task_id)
+    record_terminal_meta(prefix, hkey, task_id, final_status, completed_score, terminal_ttl_ms)
 else
-    redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
+    clear_terminal_meta(prefix, hkey, task_id)
 end
 if final_status == 'pending' or final_status == 'scheduled' then
     local expires_score = tonumber(redis.call('HGET', hkey, 'expires_score')) or 0
@@ -691,34 +792,30 @@ return {1}
 _DELETE_TERMINAL_SCRIPT = (
     _DISPATCH_REPAIR_INDEX_SCRIPT
     + """
-local hkey = KEYS[1]
+return {delete_terminal_entry(ARGV[1], ARGV[2])}
+"""
+)
+_PRUNE_EXPIRED_TERMINAL_SCRIPT = (
+    _DISPATCH_REPAIR_INDEX_SCRIPT
+    + """
 local prefix = ARGV[1]
-local task_id = ARGV[2]
-local status = redis.call('HGET', hkey, 'status')
-if status ~= 'completed' and status ~= 'failed' and status ~= 'cancelled' and status ~= 'expired' then
-    return {0}
-end
-local dedup_key = redis.call('HGET', hkey, 'key')
-local queue_index_key = redis.call('HGET', hkey, 'queue_index_key')
-remove_dispatch_repair(hkey, task_id)
-redis.call('DEL', hkey)
-redis.call('SREM', prefix .. ':tasks', task_id)
-redis.call('ZREM', prefix .. ':ready', task_id)
-redis.call('ZREM', prefix .. ':scheduled', task_id)
-redis.call('SREM', prefix .. ':status:' .. status, task_id)
-redis.call('ZREM', prefix .. ':maintenance:running', task_id)
-redis.call('ZREM', prefix .. ':maintenance:external', task_id)
-redis.call('ZREM', prefix .. ':maintenance:terminal', task_id)
-redis.call('ZREM', prefix .. ':maintenance:expiry', task_id)
-if queue_index_key and queue_index_key ~= '' then
-    redis.call('SREM', queue_index_key, task_id)
-end
-if dedup_key and dedup_key ~= '' then
-    if redis.call('HGET', prefix .. ':keys', dedup_key) == task_id then
-        redis.call('HDEL', prefix .. ':keys', dedup_key)
+local cutoff = tonumber(ARGV[2]) or 0
+local limit = tonumber(ARGV[3]) or 64
+local candidates = redis.call(
+    'ZRANGEBYSCORE', prefix .. ':maintenance:terminal', '-inf', '+inf', 'WITHSCORES', 'LIMIT', 0, limit
+)
+local pruned = 0
+for idx = 1, #candidates, 2 do
+    local expired_id = candidates[idx]
+    local score = tonumber(candidates[idx + 1]) or 0
+    local hkey = prefix .. ':task:' .. expired_id
+    if score <= cutoff or redis.call('EXISTS', hkey) == 0 then
+        pruned = pruned + delete_terminal_entry(prefix, expired_id)
+    else
+        break
     end
 end
-return {1}
+return {pruned}
 """
 )
 _QUEUE_STATISTICS_SCRIPT = """
@@ -910,6 +1007,8 @@ class RedisQueueBackend(BaseQueueBackend):
         "_owns_client",
         "_pending_read",
         "_pubsub",
+        "_terminal_ttl",
+        "_terminal_ttl_ms",
         "_url",
         "_wakeup_channel",
     )
@@ -941,6 +1040,8 @@ class RedisQueueBackend(BaseQueueBackend):
         self._control_channel = (
             config.names.channel("worker_control") if config is not None else "litestar_queues:worker_control"
         )
+        self._terminal_ttl = backend_config.terminal_ttl
+        self._terminal_ttl_ms = max(1, int(self._terminal_ttl * 1000)) if self._terminal_ttl is not None else 0
         self._pubsub: "PubSubLike | None" = None
         self._pending_read = PendingNativeRead()
         self._control_pubsub: "PubSubLike | None" = None
@@ -1184,6 +1285,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 EXTERNAL_DISPATCH_RESERVATION_PREFIX,
                 "" if expected_retry_count is None else str(expected_retry_count),
                 expected_execution_ref or "",
+                str(self._terminal_ttl_ms),
             ],
         )
         if not outcome:
@@ -1236,6 +1338,7 @@ class RedisQueueBackend(BaseQueueBackend):
             execution_backend or "",
             str(window),
             EXTERNAL_DISPATCH_RESERVATION_PREFIX,
+            str(self._terminal_ttl_ms),
             str(len(caps)),
             *(value for queue, cap in caps for value in (queue, str(cap))),
             *queues,
@@ -1275,6 +1378,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 _json_dumps(result),
                 self._completion_channel,
                 repr(_maintenance_score(now)),
+                str(self._terminal_ttl_ms),
             ],
         )
         if not outcome or int(outcome[0]) != 1:
@@ -1319,6 +1423,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 repr(_scheduled_score(retry_at)),
                 _serialize_datetime(queue_time),
                 repr(_ready_score(score_record)) if score_record is not None else "0",
+                str(self._terminal_ttl_ms),
             ],
         )
         if not outcome or int(outcome[0]) != 1:
@@ -1852,6 +1957,8 @@ class RedisQueueBackend(BaseQueueBackend):
 
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
         """Return queue status counts."""
+        if self._terminal_ttl_ms > 0:
+            await self._prune_expired_terminal()
         client = await self._get_client()
         statistics = QueueStatistics()
         statuses = sorted(_STATUS_VALUES)
@@ -1911,7 +2018,9 @@ class RedisQueueBackend(BaseQueueBackend):
         """Delete terminal records completed before a cutoff.
 
         Candidates are ordered oldest-completion-first (then by id) and capped at
-        ``limit`` before any deletion so one maintenance batch is bounded.
+        ``limit`` before any deletion so one maintenance batch is bounded. Orphaned
+        index entries whose task hash has already expired via Redis TTL are also
+        swept.
 
         Returns:
             Number of deleted records.
@@ -1921,24 +2030,36 @@ class RedisQueueBackend(BaseQueueBackend):
             return 0
         if limit is None:
             records = await self._list_records_by_statuses(tuple(sorted(_TERMINAL_STATUSES)))
+            zset_ids = [
+                str(_decode(member))
+                for member in await client.zrangebyscore(
+                    self._maintenance_terminal_key, "-inf", f"({_maintenance_score(before)}"
+                )
+            ]
         else:
             await self._require_maintenance_indexes()
-            task_ids = await client.zrangebyscore(
-                self._maintenance_terminal_key, "-inf", f"({_maintenance_score(before)}", start=0, num=limit
-            )
-            records = await self._records_from_ids(task_ids)
+            zset_ids = [
+                str(_decode(member))
+                for member in await client.zrangebyscore(
+                    self._maintenance_terminal_key, "-inf", f"({_maintenance_score(before)}", start=0, num=limit
+                )
+            ]
+            records = await self._records_from_ids(zset_ids)
+        live_by_id = {str(record.id): record for record in records}
         candidates = [
             record
             for record in records
             if record.status in _TERMINAL_STATUSES and record.completed_at is not None and record.completed_at < before
         ]
         candidates.sort(key=lambda record: (cast("datetime", record.completed_at), str(record.id)))
+        orphan_ids = [task_id for task_id in zset_ids if task_id not in live_by_id]
+        target_ids = [*orphan_ids, *(str(record.id) for record in candidates)]
         if limit is not None:
-            candidates = candidates[:limit]
+            target_ids = target_ids[:limit]
         count = 0
-        for record in candidates:
+        for task_id in target_ids:
             outcome = await _eval_script(
-                client, _DELETE_TERMINAL_SCRIPT, [self._task_key(record.id)], [self._key_prefix, str(record.id)]
+                client, _DELETE_TERMINAL_SCRIPT, [self._task_key(UUID(task_id))], [self._key_prefix, task_id]
             )
             if outcome and int(outcome[0]) == 1:
                 count += 1
@@ -1970,6 +2091,7 @@ class RedisQueueBackend(BaseQueueBackend):
             self._maintenance_external_key,
             self._maintenance_terminal_key,
             self._maintenance_expiry_key,
+            self._terminal_meta_key,
         )
         now = _utc_now()
         for record in records:
@@ -2003,6 +2125,15 @@ class RedisQueueBackend(BaseQueueBackend):
                 )
             if record.status in _TERMINAL_STATUSES and record.completed_at is not None:
                 pipeline.zadd(self._maintenance_terminal_key, {task_id: _maintenance_score(record.completed_at)})
+                pipeline.hset(
+                    self._terminal_meta_key,
+                    task_id,
+                    _json_dumps({
+                        "status": record.status,
+                        "queue_index_key": self._queue_index_key(record.queue),
+                        "key": record.key or "",
+                    }),
+                )
         await _execute_pipeline(pipeline)
         marked = client.set(self._maintenance_index_version_key, _MAINTENANCE_INDEX_VERSION)
         if inspect.isawaitable(marked):
@@ -2218,7 +2349,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 return await waiter
             try:
                 return await asyncio.wait_for(waiter, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return False
         finally:
             async with self._completion_lock:
@@ -2340,6 +2471,7 @@ class RedisQueueBackend(BaseQueueBackend):
             publish_channel,
             publish_payload,
             expected_worker_id,
+            str(self._terminal_ttl_ms),
         ]
         if patch:
             if "execution_backend" in patch:
@@ -2351,6 +2483,14 @@ class RedisQueueBackend(BaseQueueBackend):
             client, _TRANSITION_SCRIPT, [self._task_key(task_id), self._ready_key, self._scheduled_key], args
         )
         return bool(outcome and int(outcome[0]) == 1)
+
+    async def _prune_expired_terminal(self, *, limit: "int" = 64) -> "int":
+        client = await self._get_client()
+        cutoff = _maintenance_score(_utc_now()) - self._terminal_ttl_ms
+        outcome = await _eval_script(
+            client, _PRUNE_EXPIRED_TERMINAL_SCRIPT, [], [self._key_prefix, repr(cutoff), str(limit)]
+        )
+        return int(outcome[0]) if outcome else 0
 
     async def _expire_record(self, record: "QueuedTaskRecord", *, now: "datetime | None" = None) -> "bool":
         expired_at = now or _utc_now()
@@ -2550,6 +2690,10 @@ class RedisQueueBackend(BaseQueueBackend):
         return f"{self._key_prefix}:maintenance:terminal"
 
     @property
+    def _terminal_meta_key(self) -> "str":
+        return f"{self._key_prefix}:terminal_meta"
+
+    @property
     def _completion_channel(self) -> "str":
         return f"{self._key_prefix}:completions"
 
@@ -2707,10 +2851,10 @@ async def _pipeline_scard(client: "ClientLike", keys: "list[str]") -> "list[int]
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-_MIN_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+_MIN_DATETIME = datetime(1, 1, 1, tzinfo=UTC)
 
 
 def _stale_sort_key(record: "QueuedTaskRecord") -> "tuple[datetime, str]":
@@ -2726,18 +2870,18 @@ def _serialize_datetime(value: "datetime | None") -> "str":
     if value is None:
         return ""
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat()
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
 
 
 def _deserialize_datetime(value: "Any") -> "datetime | None":
     value = _decode(value)
     if not value:
         return None
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(str(value))
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 _PRIORITY_STRIDE = 1e13
@@ -2746,8 +2890,8 @@ _PRIORITY_STRIDE = 1e13
 def _ready_score(record: "QueuedTaskRecord") -> "float":
     queued = record.queued_at
     if queued.tzinfo is None:
-        queued = queued.replace(tzinfo=timezone.utc)
-    queued_ms = queued.astimezone(timezone.utc).timestamp() * 1000.0
+        queued = queued.replace(tzinfo=UTC)
+    queued_ms = queued.astimezone(UTC).timestamp() * 1000.0
     return (-record.priority) * _PRIORITY_STRIDE + queued_ms
 
 
@@ -2755,8 +2899,8 @@ def _scheduled_score(value: "datetime | None") -> "float":
     if value is None:
         return 0.0
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).timestamp() * 1000.0
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).timestamp() * 1000.0
 
 
 def _maintenance_score(value: "datetime | None") -> "float":

@@ -41,6 +41,7 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
         column_map: "Mapping[str, str] | None" = None,
         native_json_columns: "frozenset[str] | None" = None,
         manage_schema: "bool" = True,
+        terminal_ttl: "float | None" = None,
     ) -> "None":
         _resolve_target_dialect(config)
         super().__init__(
@@ -49,6 +50,7 @@ class ArrowOdbcQueueStore(SQLSpecQueueStore):
             column_map=column_map,
             native_json_columns=native_json_columns,
             manage_schema=manage_schema,
+            terminal_ttl=terminal_ttl,
         )
 
     def _timestamp_type(self) -> "str":

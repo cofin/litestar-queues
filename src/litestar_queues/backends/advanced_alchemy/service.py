@@ -1,7 +1,7 @@
 """Advanced Alchemy queue persistence service."""
 
 from dataclasses import fields, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
@@ -1879,7 +1879,7 @@ def _require_identical_history(stored: "QueueEventLogRecord", incoming: "QueueEv
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _serialize_json(value: "Any") -> "Any":
@@ -1899,12 +1899,12 @@ def _coerce_datetime(value: "Any") -> "datetime | None":
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    parsed = datetime.fromisoformat(str(value))
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _coerce_status(value: "Any") -> "TaskStatus":

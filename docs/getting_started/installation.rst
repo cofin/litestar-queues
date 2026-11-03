@@ -34,7 +34,7 @@ Install only the integration your application uses:
    * - ``pip install "litestar-queues[pubsub]"``
      - Google Cloud Pub/Sub execution dispatch and streaming consumers.
    * - ``pip install "litestar-queues[rabbitmq]"``
-     - RabbitMQ 4.3+ execution dispatch and consumers on Python 3.11+.
+     - RabbitMQ 4.3+ execution dispatch and consumers.
    * - ``pip install "litestar-queues[otel]"``
      - OpenTelemetry instrumentation.
    * - ``pip install "litestar-queues[prometheus]"``

@@ -5,7 +5,7 @@ Direct fallback calls exercise explicit transactions otherwise bypassed by the
 PostgreSQL RETURNING paths.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
@@ -282,7 +282,7 @@ async def test_returning_batch_claim_persists_filtered_fenced_outcomes(
     other = await psycopg_backend.enqueue("other", queue="excluded")
     external = await psycopg_backend.enqueue("external", queue="selected", execution_backend="cloudtasks")
     expired = await psycopg_backend.enqueue(
-        "expired", queue="selected", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+        "expired", queue="selected", expires_at=datetime.now(UTC) - timedelta(seconds=1)
     )
     if with_expired:
         claimed, expired_records = await psycopg_backend.claim_many_with_expired(

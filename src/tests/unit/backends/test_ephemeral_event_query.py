@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -13,7 +13,7 @@ __all__ = ["backend", "server_context"]
 
 pytestmark = pytest.mark.anyio
 
-BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _event(event_id: str, *, offset: int, **kwargs: object) -> QueueEvent:

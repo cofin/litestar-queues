@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
 #   "litestar-saq[psycopg]==0.8.0",
 #   "redis==7.4.1",

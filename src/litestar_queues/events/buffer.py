@@ -284,7 +284,7 @@ class LiveEventBuffer:
     async def _wait_until_next_flush(self) -> "bool":
         try:
             await asyncio.wait_for(self._stop_event.wait(), timeout=self._config.flush_interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return True
         return False
 

@@ -6,7 +6,7 @@ per-item loop. Adapter-specific fast paths are covered in the SQLSpec
 integration suite.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -49,7 +49,7 @@ async def test_enqueue_many_empty_returns_empty_list() -> "None":
 
 async def test_enqueue_many_honors_scheduled_status() -> "None":
     backend = InMemoryQueueBackend()
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     (record,) = await backend.enqueue_many([TaskRequest(task_name="tasks.later", scheduled_at=later)])
 
@@ -58,12 +58,12 @@ async def test_enqueue_many_honors_scheduled_status() -> "None":
 
 async def test_enqueue_many_normalizes_naive_scheduled_at_to_utc() -> "None":
     backend = InMemoryQueueBackend()
-    naive_later = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None)
+    naive_later = (datetime.now(UTC) + timedelta(minutes=5)).replace(tzinfo=None)
 
     (record,) = await backend.enqueue_many([TaskRequest(task_name="tasks.later", scheduled_at=naive_later)])
 
     assert record.status == "scheduled"
-    assert record.scheduled_at == naive_later.replace(tzinfo=timezone.utc)
+    assert record.scheduled_at == naive_later.replace(tzinfo=UTC)
 
 
 async def test_enqueue_many_deduplicates_active_keys() -> "None":
@@ -82,7 +82,7 @@ async def test_enqueue_many_deduplicates_active_keys() -> "None":
 
 async def test_base_enqueue_many_calls_batch_notification_once_for_due_records() -> "None":
     backend = _BatchNotifyingBackend()
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await backend.enqueue_many([
         TaskRequest(task_name="tasks.one"),
@@ -96,7 +96,7 @@ async def test_base_enqueue_many_calls_batch_notification_once_for_due_records()
 
 async def test_base_enqueue_many_skips_batch_notification_when_no_records_are_due() -> "None":
     backend = _BatchNotifyingBackend()
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     records = await backend.enqueue_many([TaskRequest(task_name="tasks.later", scheduled_at=later)])
 
@@ -142,7 +142,7 @@ class _BatchNotifyingBackend(BaseQueueBackend):
             execution_backend=execution_backend,
             execution_profile=execution_profile,
             metadata=dict(metadata or {}),
-            status="scheduled" if scheduled_at is not None and scheduled_at > datetime.now(timezone.utc) else "pending",
+            status="scheduled" if scheduled_at is not None and scheduled_at > datetime.now(UTC) else "pending",
         )
         if id is not None:
             record.id = id

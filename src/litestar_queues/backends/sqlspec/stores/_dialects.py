@@ -1,5 +1,6 @@
 """Shared SQLSpec queue store implementations, one per SQL dialect."""
 
+import math
 from hashlib import sha256
 from typing import ClassVar, Literal
 
@@ -248,9 +249,8 @@ class PostgresQueueStore(SQLSpecQueueStore):
     def _create_statements(self, *, include_expiration: "bool") -> "list[str]":
         if not self._manage_schema:
             return []
-        create_table = self._create_table_sql() if include_expiration else self._create_initial_table_sql()
-        if type(self).table_storage_parameters:
-            create_table = f"{create_table} WITH (fillfactor = 80)"
+        base_table = self._create_table_sql() if include_expiration else self._create_initial_table_sql()
+        create_table = f"{base_table}{self._table_storage_clause()}"
         statements = [create_table, *self._create_index_statements(include_expiration=include_expiration)]
         if type(self).table_storage_parameters:
             statements.append(
@@ -259,6 +259,11 @@ class PostgresQueueStore(SQLSpecQueueStore):
                 "autovacuum_analyze_scale_factor = 0.02)"
             )
         return statements
+
+    def _table_storage_clause(self) -> "str":
+        if type(self).table_storage_parameters:
+            return " WITH (fillfactor = 80)"
+        return ""
 
     def _index_name(self, suffix: "str") -> "str":
         name = f"ix_{self.table_name.replace('.', '_')}_{suffix}"
@@ -328,6 +333,20 @@ class CockroachQueueStore(PostgresQueueStore):
     table_storage_parameters: "ClassVar[bool]" = False
     supports_returning_claim: "ClassVar[bool]" = False
     supports_combined_expiry_claim: "ClassVar[bool]" = False
+
+    def _table_storage_clause(self) -> "str":
+        if self._terminal_ttl is None:
+            return ""
+        ttl_seconds = max(1, math.ceil(self._terminal_ttl))
+        status_col = self._quoted_col("status")
+        completed_col = self._quoted_col("completed_at")
+        expr = (
+            f"CASE WHEN {status_col} IN (''completed'', ''failed'', ''cancelled'', ''expired'') "
+            f"AND {completed_col} IS NOT NULL "
+            f"THEN {completed_col} + INTERVAL ''{ttl_seconds} seconds'' "
+            "ELSE NULL END"
+        )
+        return f" WITH (ttl = 'on', ttl_expiration_expression = '{expr}')"
 
     def _index_name(self, suffix: "str") -> "str":
         return SQLSpecQueueStore._index_name(self, suffix)

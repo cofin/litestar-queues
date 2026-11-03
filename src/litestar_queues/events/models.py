@@ -1,6 +1,6 @@
 """Typed realtime event models for queue tasks."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -96,7 +96,7 @@ class QueueEvent(msgspec.Struct, rename="camel", kw_only=True):
     actor: "QueueEventActor | None" = None
     entity: "QueueEventEntityRef | None" = None
     payload: "dict[str, Any]" = msgspec.field(default_factory=dict)
-    occurred_at: "datetime" = msgspec.field(default_factory=lambda: datetime.now(timezone.utc))
+    occurred_at: "datetime" = msgspec.field(default_factory=lambda: datetime.now(UTC))
     schema_version: "int" = 1
     event_key: "str | None" = None
 

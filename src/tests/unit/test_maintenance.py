@@ -1,7 +1,7 @@
 """Unit tests for the bounded queue maintenance contract and orchestration."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.anyio
 
-FIXED_NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+FIXED_NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 
 
 class _Clock:
@@ -688,7 +688,7 @@ async def test_maintenance_http_route_executes_six_phase_pass_and_returns_summar
         async with AsyncTestClient(app=app) as client:
             service = app.state[config.service_state_key]
             await service.get_queue_backend().enqueue(
-                "tests.maintenance.expiring", expires_at=datetime.now(timezone.utc) - timedelta(seconds=10)
+                "tests.maintenance.expiring", expires_at=datetime.now(UTC) - timedelta(seconds=10)
             )
             response = await client.post("/_litestar-queues/maintenance")
             assert response.status_code == 200

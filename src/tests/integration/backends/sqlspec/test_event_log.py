@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import importlib
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -174,7 +174,7 @@ async def test_sqlspec_event_log_records_and_queries_task_history(
             await event_log.query_events(QueueEventQuery(task_name=event_history_task.name, limit=2))
         ).items
         summaries = await event_log.summarize_stages(QueueEventQuery(task_name=event_history_task.name))
-        cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
+        cutoff = datetime.now(UTC) + timedelta(seconds=1)
         first_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
         after_first = (await event_log.query_events(QueueEventQuery(task_id=str(result.id)))).items
         second_deleted = await event_log.cleanup_events(before=cutoff, limit=2)
@@ -416,7 +416,7 @@ async def test_history_replays_actual_commit_and_releases_to_independent_reader(
     event = QueueEvent(
         type="task.log",
         scope="task",
-        occurred_at=datetime(2026, 1, 2, 3, 4, 5, 987654, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 2, 3, 4, 5, 987654, tzinfo=UTC),
         actor=QueueEventActor(type="user", id="same"),
         progress_current=0.123456789,
         payload={"nested": {"value": 1}},

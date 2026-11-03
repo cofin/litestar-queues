@@ -18,8 +18,7 @@ from litestar_queues.namespace import QueueNamespace
 
 if TYPE_CHECKING:
     from types import TracebackType
-
-    from typing_extensions import Self
+    from typing import Self
 
 __all__ = ("DATABASE_NAME", "EphemeralServerContext")
 

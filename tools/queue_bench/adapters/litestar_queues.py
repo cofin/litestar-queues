@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import time
+from datetime import UTC
 from typing import Any
 
 from tools.queue_bench.adapters.base import AdapterRequest, AdapterResult, gather_bounded
@@ -361,9 +362,9 @@ async def _wait_for_native_wakeup_arm(service: Any, *, timeout: float) -> None:
 
 
 def _utc_now() -> Any:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _backend_config(request: AdapterRequest) -> Any:

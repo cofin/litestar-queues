@@ -79,7 +79,7 @@ async def _run_saturated_cancel(
         await worker.stop()
         try:
             await asyncio.wait_for(asyncio.shield(worker_task), timeout=timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             worker_task.cancel()
             with suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await worker_task

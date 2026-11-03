@@ -10,11 +10,6 @@ from litestar_queues.execution.rabbitmq import RabbitMQExecutionBackend, RabbitM
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture(autouse=True)
-def supported_python(monkeypatch: "pytest.MonkeyPatch") -> "None":
-    monkeypatch.setattr("litestar_queues.execution.rabbitmq.config._PYTHON_VERSION", (3, 11))
-
-
 class FakeExchange:
     def __init__(self) -> "None":
         self.published: "list[tuple[Any, str, bool]]" = []

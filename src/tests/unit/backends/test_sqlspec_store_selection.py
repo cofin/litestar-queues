@@ -5,13 +5,22 @@ module resolves to, so a change to a shared dialect base cannot silently alter
 what a given adapter does.
 """
 
+import importlib
 import sys
 import types
-from typing import Any
+from datetime import UTC
+from typing import Any, ClassVar, cast
+from unittest.mock import MagicMock
 
 import pytest
+from sqlspec.adapters.asyncpg.events.store import AsyncpgEventQueueStore
 
-from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type
+from litestar_queues.backends.sqlspec import SQLSpecBackendConfig
+from litestar_queues.backends.sqlspec.backend import _adapter_wakeup_transport, _events_queue_store, _match_store_class
+from litestar_queues.backends.sqlspec.stores.asyncpg import AsyncpgQueueStore
+from litestar_queues.backends.sqlspec.stores.base import SQLSpecQueueStore, _adapter_name
+from litestar_queues.backends.sqlspec.stores.factory import _adapter_store_type, create_queue_store
+from litestar_queues.config import QueueConfig
 from litestar_queues.exceptions import QueueConfigurationError
 
 # adapter -> dialect, quote style, datetime binding, JSON column type
@@ -119,7 +128,7 @@ async def test_connected_locking_capability_uses_server_version(is_async: bool, 
     """The real dictionary resolves version gates once on the session's thread."""
     import threading
     from contextlib import asynccontextmanager, contextmanager
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlspec.adapters.aiomysql import AiomysqlConfig
     from sqlspec.adapters.aiomysql.data_dictionary import AiomysqlDataDictionary
@@ -162,7 +171,7 @@ async def test_connected_locking_capability_uses_server_version(is_async: bool, 
         await backend.open()
         store = backend._get_store()
         assert store.supports_skip_locked is expected
-        statement = store.select_claimable(now=datetime.now(timezone.utc), limit=1).build(dialect="mysql").sql
+        statement = store.select_claimable(now=datetime.now(UTC), limit=1).build(dialect="mysql").sql
         assert ("SKIP LOCKED" in statement) is expected
         assert len(calls) == (1 if is_async else 3)
         assert len(set(calls)) == 1
@@ -174,7 +183,7 @@ async def test_connected_locking_capability_uses_server_version(is_async: bool, 
 @pytest.mark.anyio
 async def test_locking_capability_resets_on_reopen_and_gates_repair_reads() -> None:
     from contextlib import asynccontextmanager
-    from datetime import datetime, timezone
+    from datetime import datetime
     from typing import cast
 
     from sqlspec.adapters.aiomysql import AiomysqlConfig
@@ -200,9 +209,7 @@ async def test_locking_capability_resets_on_reopen_and_gates_repair_reads() -> N
     def repair_sql() -> str:
         return (
             store
-            .get_dispatch_repair_candidate(
-                task_id="task", execution_backend="cloudtasks", now=datetime.now(timezone.utc)
-            )
+            .get_dispatch_repair_candidate(task_id="task", execution_backend="cloudtasks", now=datetime.now(UTC))
             .build(dialect="mysql")
             .sql
         )
@@ -331,8 +338,6 @@ def test_config_subclass_native_event_store_uses_canonical_ancestry(
 ) -> "None":
     from importlib import import_module
 
-    from litestar_queues.backends.sqlspec.backend import _events_queue_store
-
     config_type = getattr(import_module(f"sqlspec.adapters.{adapter}"), config_name)
     application_type = type("ApplicationConfig", (config_type,), {"__module__": "application"})
     config = application_type(extension_config={"events": {"queue_table": "application_events"}})
@@ -345,7 +350,201 @@ def test_config_subclass_native_event_store_uses_canonical_ancestry(
 
 
 def test_unsupported_config_native_event_store_has_configuration_error() -> "None":
-    from litestar_queues.backends.sqlspec.backend import _events_queue_store
-
     with pytest.raises(QueueConfigurationError, match="no supported native events queue store"):
         _events_queue_store(_fake_config("nonexistent_driver"))
+
+
+def test_adapter_name_resolution_explicit_classvar() -> "None":
+    """Explicit adapter_name ClassVar on a class or instance takes precedence."""
+
+    class ExternalConfig:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+
+    assert _adapter_name(ExternalConfig) == "asyncpg"
+    assert _adapter_name(ExternalConfig()) == "asyncpg"
+
+
+def test_external_config_uses_dialect_queue_store_and_wakeup_transport() -> "None":
+    """An external configuration subclass outside sqlspec.adapters resolves its dialect store."""
+
+    class ExternalPostgresConfig:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+        is_async: "ClassVar[bool]" = True
+        statement_config: "Any" = None
+        extension_config: "dict[str, Any]" = {}
+
+    config = ExternalPostgresConfig()
+    assert _adapter_store_type(config) is AsyncpgQueueStore
+    assert _adapter_wakeup_transport(_adapter_name(config)) == "notify_queue"
+
+
+def test_external_config_uses_native_events_queue_store() -> "None":
+    """An external configuration subclass outside sqlspec.adapters resolves the driver's native event store."""
+
+    class ExternalPostgresConfig:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+        is_async: "ClassVar[bool]" = True
+        extension_config: "dict[str, Any]" = {"events": {"queue_table": "external_events"}}
+
+    config = ExternalPostgresConfig()
+    store = _events_queue_store(cast("Any", config))
+    assert isinstance(store, AsyncpgEventQueueStore)
+    assert store.table_name == "external_events"
+
+
+def test_external_config_prefers_explicit_events_store_class() -> "None":
+    """Explicit events_store_class on an external config takes precedence over module lookup."""
+
+    class CustomEventStore(AsyncpgEventQueueStore):
+        pass
+
+    class ExternalConfigWithCustomEventStore:
+        adapter_name: "ClassVar[str]" = "asyncpg"
+        is_async: "ClassVar[bool]" = True
+        events_store_class: "ClassVar[type[AsyncpgEventQueueStore]]" = CustomEventStore
+        extension_config: "dict[str, Any]" = {}
+
+    config = ExternalConfigWithCustomEventStore()
+    store = _events_queue_store(cast("Any", config))
+    assert isinstance(store, CustomEventStore)
+
+
+def test_external_config_prefers_explicit_queue_store_class() -> "None":
+    """Explicit queue_store_class on an external config takes precedence over adapter_name lookup."""
+
+    class CustomQueueStore(SQLSpecQueueStore):
+        pass
+
+    class ExternalConfigWithCustomQueueStore:
+        queue_store_class: "ClassVar[type[SQLSpecQueueStore]]" = CustomQueueStore
+        is_async: "ClassVar[bool]" = True
+        statement_config: "Any" = None
+        extension_config: "dict[str, Any]" = {}
+
+    config = ExternalConfigWithCustomQueueStore()
+    assert _adapter_store_type(config) is CustomQueueStore
+    store = create_queue_store(config, table_name="custom_tasks")
+    assert isinstance(store, CustomQueueStore)
+
+
+def test_resolve_adapter_name_handles_mock_objects_safely() -> "None":
+    """Mock instances without explicit adapter settings return empty string without recursing."""
+    mock_config = MagicMock()
+    assert _adapter_name(mock_config) == ""
+
+    mock_store = MagicMock()
+    inner = types.SimpleNamespace(adapter_name="asyncpg")
+    mock_store._config = inner
+    assert _adapter_name(mock_store) == "asyncpg"
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "expected_wakeup"),
+    [
+        ("asyncpg", "notify_queue"),
+        ("psycopg", "notify_queue"),
+        ("psqlpy", "notify_queue"),
+        ("cockroach_asyncpg", "polling"),
+        ("cockroach_psycopg", "polling"),
+        ("duckdb", "poll_queue"),
+        ("sqlite", "polling"),
+        ("aiosqlite", "polling"),
+        ("spanner", "polling"),
+        ("mysqlconnector", "polling"),
+    ],
+)
+def test_external_config_wakeup_transport_mapping(adapter_name: "str", expected_wakeup: "str") -> "None":
+    """External configurations map to their corresponding wakeup transport via adapter_name."""
+
+    class ExternalConfig:
+        adapter_name: "ClassVar[str]" = ""
+
+    ExternalConfig.adapter_name = adapter_name
+    assert _adapter_wakeup_transport(_adapter_name(ExternalConfig)) == expected_wakeup
+
+
+def test_match_store_class_rejects_ambiguous_unprefixed_event_stores() -> "None":
+    """A module exporting multiple non-matching EventQueueStore classes returns None."""
+    module = types.ModuleType("fake_events_store")
+
+    class AlphaEventQueueStore:
+        pass
+
+    class BetaEventQueueStore:
+        pass
+
+    module.AlphaEventQueueStore = AlphaEventQueueStore  # type: ignore[attr-defined]
+    module.BetaEventQueueStore = BetaEventQueueStore  # type: ignore[attr-defined]
+
+    assert _match_store_class(module, ["CustomConfig"], is_async=True) is None
+
+
+@pytest.mark.parametrize("invalid_ttl", [0.0, -5.0])
+def test_sqlspec_backend_config_rejects_non_positive_terminal_ttl(invalid_ttl: "float") -> "None":
+    """SQLSpecBackendConfig.terminal_ttl must be strictly positive when provided."""
+    with pytest.raises(QueueConfigurationError, match="terminal_ttl must be greater than 0"):
+        SQLSpecBackendConfig(terminal_ttl=invalid_ttl)
+
+
+def test_cockroach_queue_store_emits_filtered_row_level_ttl_ddl() -> "None":
+    """CockroachQueueStore embeds a filtered row-level ttl_expiration_expression when terminal_ttl is set."""
+    config = _fake_config("cockroach_asyncpg", is_async=True, dialect="postgres")
+    store_without_ttl = create_queue_store(config)
+    assert "ttl_expiration_expression" not in store_without_ttl.create_statements()[0]
+
+    store_with_ttl = create_queue_store(config, terminal_ttl=3600.0)
+    create_table_sql = store_with_ttl.create_statements()[0]
+    assert "WITH (ttl = 'on', ttl_expiration_expression = '" in create_table_sql
+    assert "IN (''completed'', ''failed'', ''cancelled'', ''expired'')" in create_table_sql
+    assert "INTERVAL ''3600 seconds''" in create_table_sql
+    assert "ELSE NULL END')" in create_table_sql
+
+
+def test_spanner_queue_store_emits_row_deletion_policy_ddl() -> "None":
+    """SpannerQueueStore appends a native ROW DELETION POLICY on completed_at when terminal_ttl is set."""
+    config = _fake_config("spanner", is_async=False, dialect="postgres")
+    store_without_ttl = create_queue_store(config)
+    assert "ROW DELETION POLICY" not in store_without_ttl.create_statements()[0]
+
+    store_with_ttl = create_queue_store(config, terminal_ttl=90000.0)
+    create_table_sql = store_with_ttl.create_statements()[0]
+    assert "ROW DELETION POLICY (OLDER_THAN(`completed_at`, INTERVAL 2 DAY))" in create_table_sql
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("adapter", "expected_clause"),
+    [
+        ("cockroach_asyncpg", "ttl_expiration_expression"),
+        ("spanner", "ROW DELETION POLICY (OLDER_THAN(`completed_at`, INTERVAL 1 DAY))"),
+    ],
+)
+async def test_initial_migration_applies_configured_terminal_ttl(adapter: "str", expected_clause: "str") -> "None":
+    """The 0001_create_queue_tasks migration threads terminal_ttl into native DDL."""
+    migration = importlib.import_module("litestar_queues.backends.sqlspec.migrations.0001_create_queue_tasks")
+    sqlspec_config = _fake_config(adapter, is_async=(adapter != "spanner"), dialect="postgres")
+    sqlspec_config.migration_config = {}
+    sqlspec_config.set_migration_config = lambda cfg: setattr(sqlspec_config, "migration_config", cfg)
+    sqlspec_config.add_extension_migrations = lambda *_args: None
+    sqlspec_config.remove_extension_migrations = lambda *_args: None
+
+    backend_config = SQLSpecBackendConfig(sqlspec_config=sqlspec_config, terminal_ttl=3600.0)
+    queue_config = QueueConfig(queue_backend=backend_config)
+    backend_config.configure_migrations(queue_config)
+
+    context = types.SimpleNamespace(config=sqlspec_config)
+    statements = await migration.up(cast("Any", context))
+    assert any(expected_clause in stmt for stmt in statements)
+
+
+@pytest.mark.parametrize("adapter", [*sorted(_ADAPTER_BEHAVIOR), "adbc"])
+@pytest.mark.parametrize("terminal_ttl", [None, 3600.0])
+def test_create_queue_store_instantiates_every_adapter_with_terminal_ttl(
+    adapter: "str", terminal_ttl: "float | None"
+) -> "None":
+    """Every adapter store accepts terminal_ttl through create_queue_store."""
+    dialect = "sqlite" if adapter == "adbc" else ("tsql" if adapter == "arrow_odbc" else None)
+    config = _fake_config(adapter, is_async=(adapter not in {"spanner", "sqlite", "adbc"}), dialect=dialect)
+    store = create_queue_store(config, terminal_ttl=terminal_ttl)
+    assert isinstance(store, SQLSpecQueueStore)
+    assert store._terminal_ttl == terminal_ttl

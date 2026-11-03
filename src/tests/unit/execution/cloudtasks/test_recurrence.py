@@ -13,7 +13,7 @@ it is a schedule that cannot run, so it has to stop where it is created, and
 say so.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -160,7 +160,7 @@ async def test_a_changed_schedule_cancels_the_old_occurrence_and_delivers_the_ne
         "cloudtasks.recurrence.changed",
         key="scheduled:cloudtasks.recurrence.changed",
         execution_backend="cloudtasks",
-        scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=600),
+        scheduled_at=datetime.now(UTC) + timedelta(seconds=600),
         metadata={
             "schedule": {**get_scheduled_tasks()["cloudtasks.recurrence.changed"].as_metadata(), "interval": 999.0}
         },
@@ -403,7 +403,7 @@ async def test_schedule_retry_finishes_same_occurrence_before_current_budget_suc
 
     from litestar_queues import RetryBackoff
 
-    now = [datetime.now(timezone.utc)]
+    now = [datetime.now(UTC)]
 
     class Clock(datetime):
         @classmethod
@@ -478,7 +478,7 @@ async def test_initialize_schedules_repairs_active_occurrence_missing_execution_
         "cloudtasks.recurrence.repair_init",
         key="scheduled:cloudtasks.recurrence.repair_init",
         execution_backend="cloudtasks",
-        scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        scheduled_at=datetime.now(UTC) + timedelta(seconds=60),
         metadata=probe.metadata({"schedule": schedule.as_metadata(), "timeout": DEFAULT_TASK_TIMEOUT}),
     )
     assert undispatched.execution_ref is None
@@ -507,7 +507,7 @@ async def test_reassert_schedules_creates_missing_occurrence_and_repairs_undispa
         "cloudtasks.recurrence.reassert_undispatched",
         key="scheduled:cloudtasks.recurrence.reassert_undispatched",
         execution_backend="cloudtasks",
-        scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=120),
+        scheduled_at=datetime.now(UTC) + timedelta(seconds=120),
         metadata=undispatched_probe.metadata({"schedule": schedule_b.as_metadata(), "timeout": DEFAULT_TASK_TIMEOUT}),
     )
     assert active_undispatched.execution_ref is None

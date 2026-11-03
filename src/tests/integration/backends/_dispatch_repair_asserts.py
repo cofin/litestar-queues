@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -26,7 +26,7 @@ async def _persisted_creation_order(
     # MySQL's existing second-precision created_at can round into the future.
     # Start scans after every persisted creation time so a new precise check
     # mark sorts after the never-checked records in this rotation assertion.
-    delay = (max(record.created_at for record in expected) - datetime.now(timezone.utc)).total_seconds()
+    delay = (max(record.created_at for record in expected) - datetime.now(UTC)).total_seconds()
     assert delay <= 1
     if delay >= 0:
         await asyncio.sleep(delay + 0.001)
@@ -34,7 +34,7 @@ async def _persisted_creation_order(
 
 
 async def assert_dispatch_repair_candidates(backend: "BaseQueueBackend") -> "None":
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pending = await backend.enqueue("repair.pending", execution_backend="cloudtasks")
     future = await backend.enqueue(
         "repair.future", execution_backend="cloudtasks", scheduled_at=now + timedelta(hours=1)
@@ -100,7 +100,7 @@ async def assert_scheduled_execution_ref_contenders(
         "repair.future_cas",
         execution_backend="cloudtasks",
         execution_profile="profile",
-        scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        scheduled_at=datetime.now(UTC) + timedelta(hours=1),
         max_retries=3,
         metadata={"unchanged": True},
     )
@@ -182,9 +182,7 @@ async def assert_scheduled_execution_ref_rejects_mismatches(backend: "BaseQueueB
         is None
     )
     expired = await backend.enqueue(
-        "repair.cas_expired",
-        execution_backend="cloudtasks",
-        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        "repair.cas_expired", execution_backend="cloudtasks", expires_at=datetime.now(UTC) - timedelta(seconds=1)
     )
     assert (
         await backend.reserve_scheduled_execution_ref(

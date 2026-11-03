@@ -1,7 +1,7 @@
 """Valkey distributed maintenance coordination and bounded-operation contract."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -61,7 +61,7 @@ async def test_valkey_bounded_maintenance_does_not_enumerate_status_sets(
     assert [record.id for record in await valkey_backend.list_running_external(limit=1)] == [external.id]
     stale_result = await valkey_backend.requeue_stale_running(stale_after=timedelta(seconds=-2), limit=1)
     assert stale_result.requeued + stale_result.failed == 1
-    assert await valkey_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1), limit=1) == 1
+    assert await valkey_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1), limit=1) == 1
 
 
 async def test_valkey_bounded_maintenance_fails_closed_until_legacy_indexes_are_rebuilt(

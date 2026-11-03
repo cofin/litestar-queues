@@ -6,7 +6,7 @@ hold, can only fail after the fact -- repeatedly. Each rule therefore runs
 before reservation and before the record is written.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.anyio
 
-_FIXED_NOW = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+_FIXED_NOW = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -232,8 +232,6 @@ async def test_the_horizon_and_budget_do_not_apply_to_a_polled_queue() -> "None"
     async with QueueService(
         QueueConfig(queue_backend="memory", execution_backend="local", worker=WorkerConfig(placement="external"))
     ) as service:
-        result = await service.enqueue(
-            probe, timeout=100000.0, scheduled_at=datetime.now(timezone.utc) + timedelta(days=365)
-        )
+        result = await service.enqueue(probe, timeout=100000.0, scheduled_at=datetime.now(UTC) + timedelta(days=365))
 
     assert result.id is not None

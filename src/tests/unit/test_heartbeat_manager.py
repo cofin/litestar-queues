@@ -283,7 +283,7 @@ async def test_beat_retained_when_missed() -> "None":
 
 
 def test_no_taskgroup_in_manager() -> "None":
-    """The manager must stay Python 3.10-compatible."""
+    """The manager must manage its background loop task directly without TaskGroup."""
     manager_text = Path("src/litestar_queues/worker/heartbeat.py").read_text()
 
     assert "TaskGroup" not in manager_text

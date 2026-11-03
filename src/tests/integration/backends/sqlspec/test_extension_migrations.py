@@ -10,6 +10,8 @@ import pytest
 
 pytest.importorskip("sqlspec")
 
+from datetime import UTC
+
 from litestar_queues import WorkerConfig
 from litestar_queues.backends.sqlspec.extension import QUEUE_EXTENSION_NAME
 from litestar_queues.backends.sqlspec.schema import migration_directory
@@ -307,13 +309,13 @@ async def test_sqlspec_psycopg_fresh_migration_serves_query(request: "FixtureReq
             event_log = backend.get_event_log(EventHistoryConfig(batch_size=1, flush_interval=60))
             assert event_log is not None
 
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             from litestar_queues.events.models import QueueEvent
 
             event = QueueEvent(
                 id="mig-1",
-                occurred_at=datetime.now(timezone.utc),
+                occurred_at=datetime.now(UTC),
                 type="task.log",
                 scope="task",
                 scope_key="acme-mig",

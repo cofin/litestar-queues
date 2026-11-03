@@ -3,7 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from inspect import isawaitable, iscoroutinefunction
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -64,6 +64,7 @@ from litestar_queues.models import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping, Sequence
+    from types import ModuleType
 
     from litestar_queues.backends.sqlspec._typing import (
         SQLSpecConfig,
@@ -79,6 +80,13 @@ if TYPE_CHECKING:
     from litestar_queues.models import HeartbeatTouch
 
 __all__ = ("SQLSpecQueueBackend",)
+
+try:
+    _sqlspec_resolve_extension_store_class = getattr(
+        import_module("sqlspec.utils.adapters"), "resolve_extension_store_class", None
+    )
+except ImportError:
+    _sqlspec_resolve_extension_store_class = None
 
 _DUE_STATUSES = ("pending", "scheduled")
 _RESERVE_MAX_ATTEMPTS = 12
@@ -161,6 +169,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         "_sync_session_lock",
         "_task_reservation_store",
         "_task_reservation_table_name",
+        "_terminal_ttl",
         "_wakeup_backend",
         "_wakeup_channel",
         "_wakeup_poll_interval",
@@ -180,6 +189,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
         self._column_map = resolve_column_map(backend_config.column_map)
         self._native_json_columns = validate_native_json_columns(frozenset(backend_config.native_json_columns))
         self._manage_schema = backend_config.manage_schema
+        self._terminal_ttl = backend_config.terminal_ttl
         self._sqlspec = backend_config.sqlspec
         self._sqlspec_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.sqlspec_config
         self._heartbeat_pool_config: "SQLSpecConfig | SQLSpecStoreConfig | None" = backend_config.heartbeat_pool_config
@@ -2378,6 +2388,7 @@ class SQLSpecQueueBackend(BaseQueueBackend):
                 column_map=self._column_map,
                 native_json_columns=self._native_json_columns,
                 manage_schema=self._manage_schema,
+                terminal_ttl=self._terminal_ttl,
             )
         return self._store
 
@@ -3016,7 +3027,7 @@ async def _select_stream(
 
 
 def _utc_now() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _rows_affected(result: "Any", *, supports_reliable_rowcount: "bool") -> "int":
@@ -3061,8 +3072,8 @@ def _serialize_datetime(value: "datetime | None") -> "datetime | None":
     if value is None:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _deserialize_datetime(value: "Any") -> "datetime | None":
@@ -3072,10 +3083,10 @@ def _deserialize_datetime(value: "Any") -> "datetime | None":
     try:
         parsed = datetime.fromisoformat(value_text)
     except ValueError:
-        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=timezone.utc)
+        parsed = datetime.strptime(value_text.upper(), "%d-%b-%y").replace(tzinfo=UTC)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _coerce_status(value: "Any") -> "TaskStatus":
@@ -3148,39 +3159,96 @@ def resolve_events_migration_backend(
     return transport if transport in _EVENTS_TABLE_BACKENDS else None
 
 
-def _events_queue_store(sqlspec_config: "SQLSpecConfig") -> "Any":
+def _match_store_class(
+    store_module: "ModuleType", candidate_names: "list[str]", *, is_async: "bool"
+) -> "type[Any] | None":
+    for config_name in candidate_names:
+        if config_name.endswith("Config"):
+            direct_name = f"{config_name[:-6]}EventQueueStore"
+            direct_attr = getattr(store_module, direct_name, None)
+            if isinstance(direct_attr, type):
+                return direct_attr
+
+    mode_suffix = "AsyncEventQueueStore" if is_async else "SyncEventQueueStore"
+    for attr in dir(store_module):
+        if attr.endswith(mode_suffix):
+            store_class = getattr(store_module, attr, None)
+            if isinstance(store_class, type):
+                return store_class
+
+    candidates: "list[type[Any]]" = []
+    for attr in dir(store_module):
+        if attr.endswith("EventQueueStore") and attr != "BaseEventQueueStore":
+            store_class = getattr(store_module, attr, None)
+            if isinstance(store_class, type):
+                candidates.append(store_class)
+
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _events_queue_store(sqlspec_config: "SQLSpecStoreConfig") -> "Any":
     """Return the adapter's SQLSpec events queue store for this configuration.
 
     Resolves the adapter's :class:`~sqlspec.extensions.events.BaseEventQueueStore`
     the same way SQLSpec's events extension migration does, so the resolved table
     name and DDL match what that migration records.
 
+    Resolution order:
+        1. Explicit ``events_store_class`` attribute on the config instance or class.
+        2. Upstream ``resolve_extension_store_class`` when available in ``sqlspec.utils.adapters``.
+        3. Built-in store class exported by ``sqlspec.adapters.<adapter_name>.events.store``
+           matching candidate config names, async/sync mode, or single exported store.
+
     Returns:
         The adapter's events queue store bound to ``sqlspec_config``.
     """
-    config_class = next(
-        (
-            config_type
-            for config_type in type(sqlspec_config).__mro__
-            if config_type.__module__.startswith("sqlspec.adapters.")
-        ),
-        None,
-    )
-    if config_class is None:
+    explicit_store = getattr(sqlspec_config, "events_store_class", None)
+    if not isinstance(explicit_store, type):
+        explicit_store = getattr(type(sqlspec_config), "events_store_class", None)
+    if isinstance(explicit_store, type):
+        return explicit_store(sqlspec_config)
+
+    if _sqlspec_resolve_extension_store_class is not None:
+        resolved_store = _sqlspec_resolve_extension_store_class(
+            sqlspec_config, extension="events", store_attr="events_store_class", store_suffix="EventQueueStore"
+        )
+        if resolved_store is not None:
+            return resolved_store(sqlspec_config)
+
+    adapter_name = _adapter_name(sqlspec_config)
+    if not adapter_name:
         msg = f"SQLSpec config {type(sqlspec_config).__name__!r} has no supported native events queue store."
         raise QueueConfigurationError(msg)
-    adapter_name = config_class.__module__.split(".")[2]
-    store_class_name = config_class.__name__.replace("Config", "EventQueueStore")
+
+    target_cls = type(sqlspec_config)
+    candidate_names = [target_cls.__name__]
+    adapter_prefix = f"sqlspec.adapters.{adapter_name}."
+    for cls in target_cls.__mro__:
+        cls_name = cls.__name__
+        if (
+            cls.__module__.startswith(adapter_prefix)
+            and cls_name.endswith("Config")
+            and cls_name not in candidate_names
+        ):
+            candidate_names.append(cls_name)
+
     try:
         store_module = import_module(f"sqlspec.adapters.{adapter_name}.events.store")
-        store_class = getattr(store_module, store_class_name)
-    except (ImportError, AttributeError) as exc:
-        msg = f"SQLSpec config {config_class.__name__!r} has no supported native events queue store."
+    except ImportError as exc:
+        msg = f"SQLSpec config {target_cls.__name__!r} has no supported native events queue store."
         raise QueueConfigurationError(msg) from exc
-    return store_class(sqlspec_config)
+
+    store_class = _match_store_class(
+        store_module, candidate_names, is_async=bool(getattr(sqlspec_config, "is_async", True))
+    )
+    if store_class is not None:
+        return store_class(sqlspec_config)
+
+    msg = f"SQLSpec config {target_cls.__name__!r} has no supported native events queue store."
+    raise QueueConfigurationError(msg)
 
 
-def _events_queue_create_statements(sqlspec_config: "SQLSpecConfig") -> "list[str]":
+def _events_queue_create_statements(sqlspec_config: "SQLSpecStoreConfig") -> "list[str]":
     """Return the DDL provisioning the durable events queue table for this adapter.
 
     Emitting these alongside the queue table makes the durable ``notify_queue`` /

@@ -17,7 +17,7 @@ import asyncio
 import os
 import platform
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -214,7 +214,7 @@ async def test_a_warm_instance_answers_faster_than_a_cold_one(topology: "Topolog
 
 async def test_a_delayed_record_is_not_claimed_before_it_is_due(topology: "Topology") -> "None":
     """Cloud Tasks holds the delivery; nothing polls, so nothing can run early."""
-    due = datetime.now(timezone.utc) + timedelta(seconds=DELAYED_BY)
+    due = datetime.now(UTC) + timedelta(seconds=DELAYED_BY)
 
     record = await topology.enqueue(SUCCEEDS, scheduled_at=due)
     await asyncio.sleep(DELAYED_BY / 3)
@@ -229,7 +229,7 @@ async def test_a_delayed_record_is_not_claimed_before_it_is_due(topology: "Topol
 
 async def test_a_redelivered_record_is_only_run_by_one_consumer(topology: "Topology") -> "None":
     """At-least-once is documented, so a second delivery has to be harmless."""
-    due = datetime.now(timezone.utc) + timedelta(seconds=DELAYED_BY)
+    due = datetime.now(UTC) + timedelta(seconds=DELAYED_BY)
     record = await topology.enqueue(SUCCEEDS, scheduled_at=due)
     duplicate_name = f"{topology.backend.execution_config.queue_path}/tasks/lq-dup-{uuid4().hex}"
     await topology.client.create_task(
@@ -258,7 +258,7 @@ async def test_a_failing_task_gets_one_more_delivery_and_then_settles(topology: 
 
 async def test_a_cancelled_record_is_acknowledged_without_running(topology: "Topology") -> "None":
     """Storage decides, and its decision outlives a delivery Google already holds."""
-    due = datetime.now(timezone.utc) + timedelta(seconds=DELAYED_BY)
+    due = datetime.now(UTC) + timedelta(seconds=DELAYED_BY)
     record = await topology.enqueue(SUCCEEDS, scheduled_at=due)
     assert await topology.service.get_queue_backend().cancel_task(record.id) is not None
 
@@ -273,7 +273,7 @@ async def test_a_cancelled_record_is_acknowledged_without_running(topology: "Top
 
 async def test_a_missing_delivery_is_recreated_by_one_bounded_repair(topology: "Topology") -> "None":
     """Nothing polls these records, so a lost delivery is a record lost forever."""
-    due = datetime.now(timezone.utc) + timedelta(days=1)
+    due = datetime.now(UTC) + timedelta(days=1)
     record = await topology.enqueue(SUCCEEDS, scheduled_at=due)
     original = record.execution_ref
     assert original is not None
@@ -295,7 +295,7 @@ async def test_the_real_already_exists_error_is_the_one_the_package_matches(topo
     It is matched structurally so the package imports no Google error types, and
     a fake cannot prove that the structure it imitates is the real one.
     """
-    due = datetime.now(timezone.utc) + timedelta(days=1)
+    due = datetime.now(UTC) + timedelta(days=1)
     record = await topology.enqueue(SUCCEEDS, scheduled_at=due)
     name = record.execution_ref
     assert name is not None

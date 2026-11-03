@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
@@ -283,7 +283,7 @@ async def test_advanced_alchemy_core_updates_touch_updated_at(
 ) -> "None":
     from litestar_queues.backends.advanced_alchemy import service as service_module
 
-    claim_time = datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+    claim_time = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
     config = _sqlite_config(tmp_path / "updated-at.db")
     await create_tables(config, CustomQueueTaskModel)
     backend = SQLAlchemyBackend(
@@ -310,7 +310,7 @@ async def test_advanced_alchemy_requeues_heartbeat_at_exact_stale_cutoff(
 ) -> "None":
     from litestar_queues.backends.advanced_alchemy import service as service_module
 
-    fixed_now = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 5, 25, tzinfo=UTC)
     monkeypatch.setattr(service_module, "_utc_now", lambda: fixed_now)
     config = _sqlite_config(tmp_path / "stale-cutoff.db")
     await create_tables(config, CustomQueueTaskModel)
@@ -385,8 +385,8 @@ def _mapped_column_name(model: "type[object]", attribute_name: "str") -> "str":
 
 def _as_utc(value: "datetime") -> "datetime":
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def test_dispatch_checked_column_and_repair_index() -> "None":
@@ -424,7 +424,7 @@ async def test_dispatch_checked_upgrade_preserves_populated_custom_table(tmp_pat
         *(column._copy() for column in current.columns if column.name != "dispatch_checked_at"),
     )
     task_id = uuid4()
-    stamp = datetime.now(timezone.utc)
+    stamp = datetime.now(UTC)
     engine = config.get_engine()
     async with engine.begin() as connection:
         await connection.run_sync(legacy.create)

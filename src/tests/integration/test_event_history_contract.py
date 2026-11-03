@@ -7,7 +7,7 @@ filtered bounded retention convergence, on all six backend families.
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -26,7 +26,7 @@ from litestar_queues.exceptions import QueueConfigurationError
 
 pytestmark = pytest.mark.anyio
 
-BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+BASE = datetime(2026, 1, 1, tzinfo=UTC)
 FAMILIES = ("memory", "ephemeral", "sqlspec", "advanced_alchemy", "redis", "valkey")
 _HISTORY_BACKEND: pytest.StashKey[Any] = pytest.StashKey()
 

@@ -63,6 +63,7 @@ def create_queue_store(
     column_map: "Mapping[str, str] | None" = None,
     native_json_columns: "frozenset[str] | None" = None,
     manage_schema: "bool" = True,
+    terminal_ttl: "float | None" = None,
 ) -> "SQLSpecQueueStore":
     """Create a queue store for a SQLSpec adapter configuration.
 
@@ -76,10 +77,17 @@ def create_queue_store(
         column_map=column_map,
         native_json_columns=native_json_columns or None,
         manage_schema=manage_schema,
+        terminal_ttl=terminal_ttl,
     )
 
 
 def _adapter_store_type(config: "SQLSpecStoreConfig") -> "type[SQLSpecQueueStore]":
+    explicit_store = getattr(config, "queue_store_class", None)
+    if not isinstance(explicit_store, type):
+        explicit_store = getattr(type(config), "queue_store_class", None)
+    if isinstance(explicit_store, type) and issubclass(explicit_store, SQLSpecQueueStore):
+        return explicit_store
+
     name = _adapter_name(config)
     if name == "adbc":
         return _adbc_store_type(config)

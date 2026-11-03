@@ -1,6 +1,6 @@
 """Advanced Alchemy stale-recovery fencing regression tests."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -96,7 +96,7 @@ def _selects_model(statement: "Any", model_type: "type[Any]") -> "bool":
 
 
 async def _complete_task_on_session(session: "AsyncSession", model_type: "type[Any]", task_id: "UUID") -> "None":
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await session.execute(
         update(model_type)
         .where(model_type.id == task_id)
@@ -114,7 +114,7 @@ async def _complete_task_on_session(session: "AsyncSession", model_type: "type[A
 async def _requeue_and_claim_on_session(
     session: "AsyncSession", model_type: "type[Any]", task_id: "UUID", retry_count: "int"
 ) -> "None":
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await session.execute(
         update(model_type)
         .where(model_type.id == task_id)

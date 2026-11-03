@@ -12,11 +12,11 @@ classifiers = [
   "Natural Language :: English",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development",
   "Typing :: Typed",
 ]
@@ -39,8 +39,8 @@ keywords = [
 license = { text = "MIT" }
 name = "litestar-queues"
 readme = "README.md"
-requires-python = ">=3.10"
-version = "0.13.0"
+requires-python = ">=3.11"
+version = "0.14.0"
 
 [project.urls]
 Changelog = "https://cofin.github.io/litestar-queues/changelog"
@@ -59,7 +59,7 @@ cloud-tasks = ["google-cloud-tasks>=2.23.0"]
 cloudrun = ["google-cloud-run>=0.10.0"]
 kafka = ["aiokafka>=0.14.0"]
 pubsub = ["google-cloud-pubsub>=2.39.0"]
-rabbitmq = ["aio-pika>=10.0.1; python_version >= '3.11'"]
+rabbitmq = ["aio-pika>=10.0.1"]
 sqs = ["aiobotocore>=3.8.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 prometheus = ["prometheus-client"]
@@ -88,7 +88,7 @@ allow-direct-references = true
 allow_dirty = true
 commit = false
 commit_args = "--no-verify"
-current_version = "0.13.0"
+current_version = "0.14.0"
 ignore_missing_files = false
 ignore_missing_version = false
 message = "chore(release): bump to v{new_version}"
@@ -187,7 +187,7 @@ test-adapters = [
   "prometheus-client",
   "psutil",
   "pyarrow",
-  "aio-pika>=10.0.1; python_version >= '3.11'",
+  "aio-pika>=10.0.1",
   "pytest-databases>=0.19.0",
   "redis>=8.1.0",
   "sqlalchemy>=2.0.0,<2.1.0",
@@ -205,7 +205,6 @@ test-core = [
   "pytest-sugar",
   "pytest-timeout",
   "pytest-xdist",
-  "tomli; python_version < '3.11'",
 ]
 tests = [{ include-group = "test-core" }, { include-group = "test-adapters" }]
 
@@ -296,7 +295,7 @@ include = [
 ]
 line-length = 120
 src = ["src/litestar_queues", "src/tests", "docs", "tools"]
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -315,6 +314,7 @@ ignore = [
   "ANN401",
   "ARG001",
   "ARG002",
+  "ASYNC109",
   "B010",
   "COM812",
   "CPY001",
@@ -419,6 +419,7 @@ disallow_untyped_decorators = true
 implicit_reexport = false
 mypy_path = "src"
 packages = ["litestar_queues", "tests"]
+python_version = "3.11"
 show_error_codes = true
 strict = true
 warn_redundant_casts = true
@@ -436,7 +437,7 @@ skip = "uv.lock"
 
 [tool.pyright]
 include = ["src/litestar_queues"]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 reportAssignmentType = "warning"
 reportOptionalMemberAccess = "warning"
 typeCheckingMode = "standard"

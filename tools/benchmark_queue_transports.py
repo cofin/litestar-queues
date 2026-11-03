@@ -10,7 +10,7 @@ import json
 import math
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -188,7 +188,7 @@ def build_report(
     ]
     return {
         "schema_version": SCHEMA_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "environment": capture_environment(packages=["litestar-queues"], network_class="none-controlled-fake"),
         "results": results,
     }

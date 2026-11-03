@@ -281,7 +281,13 @@ task errors are readable after :meth:`~litestar_queues.TaskResult.refresh`.
 
 Worker recovery runs continuously while a worker runs. For an infrequent,
 finite recovery pass that also applies retention, use :doc:`maintenance`
-instead.
+instead. To run periodic terminal task cleanup directly inside the worker loop
+without an external cron job, set
+:attr:`~litestar_queues.config.WorkerConfig.terminal_retention` (or configure
+``terminal_ttl`` on the queue backend, which workers inherit automatically when
+``terminal_retention`` is ``None``) and tune
+:attr:`~litestar_queues.config.WorkerConfig.terminal_check_interval` (default
+``300.0`` seconds).
 
 Shut a worker down
 ==================

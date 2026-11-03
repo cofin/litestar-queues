@@ -3,7 +3,7 @@ import contextlib
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -755,7 +755,7 @@ async def test_enqueue_normalizes_naive_scheduled_at_to_utc() -> "None":
     async def naive_schedule() -> "str":
         return "ok"
 
-    naive_scheduled_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None)
+    naive_scheduled_at = (datetime.now(UTC) + timedelta(minutes=5)).replace(tzinfo=None)
 
     async with QueueService(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
@@ -764,7 +764,7 @@ async def test_enqueue_normalizes_naive_scheduled_at_to_utc() -> "None":
 
     assert result.status == "scheduled"
     assert result.record is not None
-    assert result.record.scheduled_at == naive_scheduled_at.replace(tzinfo=timezone.utc)
+    assert result.record.scheduled_at == naive_scheduled_at.replace(tzinfo=UTC)
 
 
 async def test_enqueue_rejects_both_expires_in_and_expires_at() -> "None":
@@ -778,9 +778,7 @@ async def test_enqueue_rejects_both_expires_in_and_expires_at() -> "None":
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         with pytest.raises(ValueError, match="both expires_in and expires_at"):
-            await service.enqueue(
-                expires_with_both, expires_in=60, expires_at=datetime.now(timezone.utc) + timedelta(minutes=1)
-            )
+            await service.enqueue(expires_with_both, expires_in=60, expires_at=datetime.now(UTC) + timedelta(minutes=1))
 
 
 async def test_enqueue_relative_expires_in_uses_enqueue_time() -> "None":
@@ -790,12 +788,12 @@ async def test_enqueue_relative_expires_in_uses_enqueue_time() -> "None":
     async def expires_from_enqueue() -> "str":
         return "ok"
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     async with QueueService(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         result = await service.enqueue(expires_from_enqueue, expires_in=30)
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
 
     assert result.record is not None
     expires_at = result.record.expires_at
@@ -839,7 +837,7 @@ async def test_enqueue_relative_expires_in_uses_scheduled_at() -> "None":
     async def expires_from_schedule() -> "str":
         return "ok"
 
-    scheduled_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    scheduled_at = datetime.now(UTC) + timedelta(minutes=5)
     async with QueueService(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
@@ -856,14 +854,14 @@ async def test_enqueue_absolute_expires_at_is_stored_as_utc() -> "None":
     async def expires_absolute() -> "str":
         return "ok"
 
-    naive_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1)
+    naive_expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=1)
     async with QueueService(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         result = await service.enqueue(expires_absolute, expires_at=naive_expires_at)
 
     assert result.record is not None
-    assert result.record.expires_at == naive_expires_at.replace(tzinfo=timezone.utc)
+    assert result.record.expires_at == naive_expires_at.replace(tzinfo=UTC)
 
 
 async def test_enqueue_uses_and_overrides_task_expires_in_default() -> "None":
@@ -873,13 +871,13 @@ async def test_enqueue_uses_and_overrides_task_expires_in_default() -> "None":
     async def expires_by_default() -> "str":
         return "ok"
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     async with QueueService(
         QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory", execution_backend="local")
     ) as service:
         default_result = await service.enqueue(expires_by_default)
         override_result = await service.enqueue(expires_by_default, expires_in=90)
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
 
     assert default_result.record is not None
     assert override_result.record is not None
@@ -1479,7 +1477,7 @@ async def test_recover_stale_tasks_publishes_summary_event() -> "None":
     record = await backend.enqueue("tasks.stale", max_retries=0, metadata={"requeue_on_stale": True})
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     async with QueueService(
         QueueConfig(
@@ -1747,7 +1745,7 @@ async def test_initialize_schedules_applies_task_expiration_from_each_run_time()
         assert first.expires_at == first.scheduled_at + timedelta(seconds=30)
 
         first.status = "completed"
-        first.completed_at = datetime.now(timezone.utc)
+        first.completed_at = datetime.now(UTC)
         await service._reschedule_if_needed(first)
         rescheduled = await backend.get_task_by_key("scheduled:tasks.expiring_schedule")
 
@@ -1804,7 +1802,7 @@ async def test_recover_stale_tasks_invokes_registered_stale_failure_hook() -> "N
     record = await backend.enqueue(stale_hook.name, max_retries=3, metadata=stale_hook.metadata())
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     async with QueueService(
         QueueConfig(
@@ -1842,7 +1840,7 @@ async def test_recover_stale_tasks_offloads_a_sync_stale_failure_hook_to_a_worke
     record = await backend.enqueue(stale_hook.name, max_retries=3, metadata=stale_hook.metadata())
     claimed = await backend.claim_task(record.id)
     assert claimed is not None
-    claimed.heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    claimed.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
 
     async with QueueService(
         QueueConfig(
@@ -2578,7 +2576,7 @@ async def test_schedule_restart_preserves_persisted_retry_policy(
     config = QueueConfig(worker=WorkerConfig(placement="external"), queue_backend="memory")
     backend = InMemoryQueueBackend()
     async with QueueService(config, queue_backend=backend):
-        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        future = datetime.now(UTC) + timedelta(hours=1)
         record = await backend.enqueue(
             probe.name,
             key=f"scheduled:{probe.name}",
@@ -2662,7 +2660,7 @@ async def test_cloudrun_schedules_on_enqueue_dispatches_due_and_repairs_delayed_
         backend = cast("InMemoryQueueBackend", service.get_queue_backend())
         stored = await backend.get_task(delayed_res.id)
         assert stored is not None
-        stored.scheduled_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        stored.scheduled_at = datetime.now(UTC) - timedelta(seconds=1)
 
         repair_when_due = await cloudrun_backend.repair(service, limit=10)
         assert repair_when_due.changed == 1

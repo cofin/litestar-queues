@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import fields, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha1
 from typing import TYPE_CHECKING, Any, cast
 
@@ -745,7 +745,7 @@ class SQLSpecQueueEventLog:
         for attempt in range(2):
             try:
                 await self._write_transaction(records)
-            except Exception as exc:  # noqa: PERF203 - one bounded fresh-transaction retry for duplicate races.
+            except Exception as exc:
                 if attempt == 0 and _is_duplicate_event_error(exc):
                     continue
                 raise
@@ -1067,10 +1067,10 @@ def _deserialize_optional_datetime(value: "Any") -> "datetime | None":
     else:
         if isinstance(value, bytes):
             value = value.decode()
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _optional_str(value: "Any") -> "str | None":

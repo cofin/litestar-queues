@@ -7,14 +7,13 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Self, cast
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import psutil  # type: ignore[import-untyped]
 import pytest
-from typing_extensions import Self
 
 pytestmark = pytest.mark.topology
 
@@ -44,7 +43,7 @@ def _wait_for_json(url: str, *, timeout: float = 20.0) -> "dict[str, Any]":
     while time.monotonic() < deadline:
         try:
             return _json_request(url, timeout=min(5.0, timeout))
-        except (OSError, URLError, TimeoutError) as exc:  # noqa: PERF203
+        except (OSError, URLError, TimeoutError) as exc:
             last_error = exc
             time.sleep(0.02)
     message = f"server did not become ready: {type(last_error).__name__}"

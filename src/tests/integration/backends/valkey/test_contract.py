@@ -7,7 +7,7 @@ notification-capability label (``valkey-pubsub``).
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -124,7 +124,7 @@ async def test_valkey_backend_deduplicates_active_keys_and_replaces_terminal_key
 async def test_valkey_backend_claims_due_tasks_once_by_priority_and_filters_execution(
     valkey_backend: "ValkeyQueueBackend",
 ) -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
 
     low = await valkey_backend.enqueue("tasks.low", priority=1, execution_backend="local")
     await valkey_backend.enqueue("tasks.later", priority=100, scheduled_at=later, execution_backend="local")
@@ -149,11 +149,11 @@ async def test_valkey_backend_claims_due_tasks_once_by_priority_and_filters_exec
 
 
 async def test_valkey_backend_expires_pending_tasks(valkey_backend: "ValkeyQueueBackend") -> "None":
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     claim_overdue = await valkey_backend.enqueue("tasks.valkey.expired.claim", expires_at=past)
     sweep_overdue = await valkey_backend.enqueue("tasks.valkey.expired.sweep", expires_at=past)
     batch_overdue = await valkey_backend.enqueue("tasks.valkey.expired.batch", expires_at=past)
-    live = await valkey_backend.enqueue("tasks.valkey.live", expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    live = await valkey_backend.enqueue("tasks.valkey.live", expires_at=datetime.now(UTC) + timedelta(hours=1))
 
     assert [record.id for record in await valkey_backend.list_pending(limit=10)] == [live.id]
     assert await valkey_backend.claim_task(claim_overdue.id) is None
@@ -175,7 +175,7 @@ async def test_valkey_backend_expires_pending_tasks(valkey_backend: "ValkeyQueue
     assert batch_stored is not None
     assert batch_stored.status == "expired"
     assert statistics.expired == 3
-    assert await valkey_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1)) == 3
+    assert await valkey_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1)) == 3
 
 
 async def test_valkey_enqueue_many_records_remain_claimable_when_batch_marker_is_dropped(
@@ -242,7 +242,7 @@ async def test_valkey_backend_retries_cancels_heartbeats_and_cleans_up(valkey_ba
     assert completed_record.heartbeat_at is None
     statistics = await valkey_backend.get_statistics()
     completed_records = await valkey_backend.list_completed_by_task("tasks.completed")
-    cleanup_count = await valkey_backend.cleanup_terminal(datetime.now(timezone.utc) + timedelta(seconds=1))
+    cleanup_count = await valkey_backend.cleanup_terminal(datetime.now(UTC) + timedelta(seconds=1))
 
     assert statistics.failed == 1
     assert statistics.cancelled == 1
@@ -314,8 +314,8 @@ async def test_valkey_backend_claim_many_filters_queue_and_execution_backend(
 
 
 async def test_valkey_backend_claim_many_promotes_due_scheduled(valkey_backend: "ValkeyQueueBackend") -> "None":
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
-    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    soon = datetime.now(UTC) + timedelta(milliseconds=200)
+    far = datetime.now(UTC) + timedelta(minutes=5)
     due_soon = await valkey_backend.enqueue("tasks.soon", scheduled_at=soon)
     scheduled_far = await valkey_backend.enqueue("tasks.far", scheduled_at=far)
     await asyncio.sleep(0.3)
@@ -330,7 +330,7 @@ async def test_valkey_backend_claim_many_promotes_due_scheduled(valkey_backend: 
 
 
 async def test_valkey_backend_scheduled_zset_holds_future_tasks(valkey_backend: "ValkeyQueueBackend") -> "None":
-    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    far = datetime.now(UTC) + timedelta(minutes=5)
     scheduled = await valkey_backend.enqueue("tasks.future", scheduled_at=far)
 
     client = cast("Any", await valkey_backend._get_client())
@@ -418,7 +418,7 @@ async def test_valkey_backend_enqueue_future_scheduled_indexes_without_publish(
     await pubsub.subscribe(valkey_backend._wakeup_channel)
     await wait_for_channel_subscribers(valkey_backend, valkey_backend._wakeup_channel)
 
-    far = datetime.now(timezone.utc) + timedelta(minutes=5)
+    far = datetime.now(UTC) + timedelta(minutes=5)
     record = await valkey_backend.enqueue("tasks.future", scheduled_at=far)
     messages = await _drain_messages(pubsub, window=0.3)
     await pubsub.aclose()
@@ -529,7 +529,7 @@ async def test_valkey_backend_concurrent_keyed_enqueue_yields_one_record(
 
 
 async def test_valkey_backend_claim_task_honors_due_gating_and_fences(valkey_backend: "ValkeyQueueBackend") -> "None":
-    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    later = datetime.now(UTC) + timedelta(minutes=5)
     scheduled = await valkey_backend.enqueue("tasks.claim.future", scheduled_at=later)
 
     assert await valkey_backend.claim_task(scheduled.id) is None

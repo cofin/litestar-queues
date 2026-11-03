@@ -1,7 +1,7 @@
 """oracledb SQLSpec queue stores."""
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -38,8 +38,8 @@ class _OracledbQueueStore(SQLSpecQueueStore):
         """Preserve scan microseconds instead of binding Python datetimes as Oracle DATE."""
         stamp = datetime.fromisoformat(now) if isinstance(now, str) else now
         if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        checked_now = stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+            stamp = stamp.replace(tzinfo=UTC)
+        checked_now = stamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
         timestamp_sql = "TO_TIMESTAMP(:checked_now, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6')"
         comparison_sql = "TO_TIMESTAMP(:checked_before, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6')"
         checked_column = self._col("dispatch_checked_at")
@@ -212,7 +212,7 @@ class OracledbAsyncQueueStore(_OracledbQueueStore):
         return self._select_claimable_unlimited(now=now, queue=queue, execution_backend=execution_backend)
 
 
-class _OracleJSONStorageType(str, Enum):
+class _OracleJSONStorageType(StrEnum):
     JSON_NATIVE = "json"
     BLOB_JSON = "blob_json"
     BLOB_PLAIN = "blob"

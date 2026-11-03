@@ -9,7 +9,7 @@ SHELL := /bin/bash
 .ONESHELL:
 .EXPORT_ALL_VARIABLES:
 MAKEFLAGS += --no-print-directory
-PYTHON_VERSION ?= 3.10
+PYTHON_VERSION ?= 3.11
 UV_SYNC_ARGS ?= --all-extras --dev
 INFRA_ARGS ?=
 EXAMPLE_APP_FILES := $(wildcard examples/htmx_realtime_*/app.py)

@@ -1,7 +1,7 @@
 """SQLSpec stale-recovery fencing regression tests."""
 
 import contextlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -153,7 +153,7 @@ class _SelectHookDriver:
 
 async def _complete_task_on_driver(backend: "SQLSpecQueueBackend", driver: "Any", task_id: "UUID") -> "None":
     store = backend._get_store()
-    now = backend._serialize_datetime(datetime.now(timezone.utc))
+    now = backend._serialize_datetime(datetime.now(UTC))
     try:
         await driver.execute(
             store.complete_task(
@@ -174,7 +174,7 @@ async def _requeue_and_claim_on_driver(
     backend: "SQLSpecQueueBackend", driver: "Any", task_id: "UUID", retry_count: "int"
 ) -> "None":
     store = backend._get_store()
-    now = backend._serialize_datetime(datetime.now(timezone.utc))
+    now = backend._serialize_datetime(datetime.now(UTC))
     await driver.execute(
         store.retry_task(task_id=str(task_id), error="Task heartbeat stale", retry_count=retry_count + 1, queued_at=now)
     )

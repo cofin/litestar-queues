@@ -9,7 +9,7 @@ assertion, terminal-task retention, and durable-event retention.
 """
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -289,7 +289,7 @@ class QueueMaintenanceSummary:
 
 
 def _default_utcnow() -> "datetime":
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class QueueMaintenanceService:

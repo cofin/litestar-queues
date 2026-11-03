@@ -1,7 +1,7 @@
 """Bounded maintenance benchmarks using public Litestar Queues APIs."""
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -67,7 +67,7 @@ async def run(request: AdapterRequest, backend_config: Any) -> AdapterResult:
             )
             remaining = _terminal_count(await service.get_queue_backend().get_statistics())
         elif request.scenario == "event-retention":
-            occurred_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            occurred_at = datetime(2020, 1, 1, tzinfo=UTC)
             await _seed_events(request, service, record_count, occurred_at)
             result = await _run_drain(
                 request,

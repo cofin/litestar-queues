@@ -1,8 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
-
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from litestar_queues.namespace import QueueNamespace
 

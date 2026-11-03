@@ -118,6 +118,17 @@ class SQLSpecBackendConfig:
     manage_schema: "bool" = True
     """Whether backend startup and migrations may create package-owned queue tables."""
 
+    terminal_ttl: "float | None" = None
+    """Optional retention window in seconds for terminal task rows.
+
+    On databases that support filtered row-level expiration (CockroachDB and
+    Google Cloud Spanner), ``0001_create_queue_tasks.py`` and ``create_statements()``
+    embed a native row-level TTL policy scoped to terminal rows. When
+    ``WorkerConfig.terminal_retention`` is ``None``, workers also inherit this
+    retention window for periodic ``cleanup_terminal()`` sweeps across all SQL
+    dialects.
+    """
+
     def __post_init__(self) -> "None":
         """Validate adopter-owned table and wakeup-transport configuration."""
         if self.queue_table_name is not None:
@@ -128,6 +139,9 @@ class SQLSpecBackendConfig:
             self.maintenance_table_name = validate_table_name(self.maintenance_table_name)
         if self.task_reservation_table_name is not None:
             self.task_reservation_table_name = validate_table_name(self.task_reservation_table_name)
+        if self.terminal_ttl is not None and self.terminal_ttl <= 0:
+            msg = "SQLSpecBackendConfig.terminal_ttl must be greater than 0."
+            raise QueueConfigurationError(msg)
         self.event_history_extra_columns = validate_event_history_extra_columns(self.event_history_extra_columns)
         self.column_map = resolve_column_map(self.column_map)
         self.native_json_columns = validate_native_json_columns(frozenset(self.native_json_columns))
@@ -168,6 +182,12 @@ class SQLSpecBackendConfig:
         extension_config = sqlspec_config.extension_config or {}
         queue_settings = dict(extension_config.get("litestar_queues", {}) or {})
         queue_table_name = self.queue_table_name or queue_settings.get("queue_table_name") or DEFAULT_TABLE_NAME
+        raw_terminal_ttl = self.terminal_ttl if self.terminal_ttl is not None else queue_settings.get("terminal_ttl")
+        terminal_ttl = (
+            float(raw_terminal_ttl)
+            if isinstance(raw_terminal_ttl, (int, float)) and not isinstance(raw_terminal_ttl, bool)
+            else None
+        )
         event_log_config = config.events.history if config.events is not None else None
         configure_queue_migration_extension(
             cast("SQLSpecConfig", sqlspec_config),
@@ -179,4 +199,5 @@ class SQLSpecBackendConfig:
             task_reservation_table_name=self.task_reservation_table_name,
             column_map=self.column_map,
             manage_schema=self.manage_schema,
+            terminal_ttl=terminal_ttl,
         )
