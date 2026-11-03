@@ -1,4 +1,5 @@
 # ruff: noqa: PLR2004
+"""Configuration for Amazon SQS execution dispatch and long-poll consumers."""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
@@ -16,6 +17,8 @@ class SqsExecutionConfig:
     """Amazon SQS execution-dispatch configuration."""
 
     backend_name: "ClassVar[str]" = "sqs"
+    """Registered execution backend identifier (`"sqs"`)."""
+
     queue_url: "str"
     """Absolute URL of the target SQS queue."""
     region_name: "str | None" = None

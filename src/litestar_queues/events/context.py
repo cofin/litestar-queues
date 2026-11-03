@@ -49,16 +49,38 @@ class TaskExecutionContext:
     """Context bound while a queue task is executing."""
 
     task_id: "str"
+    """Hex or UUID string identifier of the executing task record."""
+
     task_name: "str"
+    """Registered task name being executed."""
+
     queue: "str"
+    """Logical queue name on which the task is running."""
+
     worker_id: "str | None"
+    """Identifier of the worker executing the task, or `None` for inline runs."""
+
     execution_backend: "str"
+    """Name of the execution backend executing the task."""
+
     execution_profile: "str | None"
+    """Optional named execution profile used for this attempt."""
+
     attempt: "int"
+    """One-based execution attempt number."""
+
     event_publisher: "QueueEventPublisher"
+    """Event publisher bound to this task execution attempt."""
+
     scope_key: "str | None" = None
+    """Optional default adopter scoping key (tenant, project, account) attached to events."""
+
     actor: "QueueEventActor | None" = None
+    """Optional default actor metadata attached to events published in this context."""
+
     entity: "QueueEventEntityRef | None" = None
+    """Optional default entity reference attached to events published in this context."""
+
     _sequence: "int" = field(default=0, init=False, repr=False)
     _cancelled: "asyncio.Event" = field(default_factory=asyncio.Event, init=False, repr=False)
 
@@ -72,11 +94,12 @@ class TaskExecutionContext:
         await self._cancelled.wait()
 
     def raise_if_cancelled(self) -> "None":
-        """Raise :class:`JobCancelledError` after cancellation is requested."""
+        """Raise `JobCancelledError` after cancellation is requested."""
         if self.is_cancelled:
             raise JobCancelledError
 
     def mark_cancelled(self) -> "None":
+        """Signal that durable cancellation has been requested for this task attempt."""
         self._cancelled.set()
 
     async def progress(
@@ -339,11 +362,11 @@ def beat(detail: "str | None" = None) -> "None":
 
 @contextmanager
 def bind_task_context(context: "TaskExecutionContext") -> "Iterator[TaskExecutionContext]":
-    """Bind ``context`` as the current task execution context.
+    """Bind `context` as the current task execution context.
 
     This is the supported entry point for external runtimes adopting the events
-    subpackage standalone. While bound, :func:`require_current_task_context` and
-    the module-level publish helpers resolve to ``context``.
+    subpackage standalone. While bound, `require_current_task_context()` and
+    the module-level publish helpers resolve to `context`.
 
     Yields:
         The bound task execution context.
@@ -359,7 +382,7 @@ def bind_task_context(context: "TaskExecutionContext") -> "Iterator[TaskExecutio
 
 @contextmanager
 def bind_beat_sink(sink: "TaskBeatSink") -> "Iterator[TaskBeatSink]":
-    """Bind ``sink`` to receive :meth:`TaskExecutionContext.beat` calls.
+    """Bind `sink` to receive `TaskExecutionContext.beat()` calls.
 
     Yields:
         The bound beat sink.

@@ -312,14 +312,14 @@ async def _run_child(
 def _os_name() -> "str":
     """Return the OS family through a seam tests can replace.
 
-    Tests must never assign to ``os.name`` itself: it is process-global, and
-    with it set to ``"posix"`` on Windows ``pathlib.Path`` builds a
-    ``PosixPath`` and raises. That breaks pytest's own failure reporting, which
+    Tests must never assign to `os.name` itself: it is process-global, and
+    with it set to `"posix"` on Windows `pathlib.Path` builds a
+    `PosixPath` and raises. That breaks pytest's own failure reporting, which
     turns an ordinary assertion into an INTERNALERROR before monkeypatch can
     restore it.
 
     Returns:
-        The value of :data:`os.name`.
+        The value of `os.name`.
     """
     return os.name
 
@@ -328,7 +328,7 @@ def _sys_platform() -> "str":
     """Return the platform identifier through a seam tests can replace.
 
     Returns:
-        The value of :data:`sys.platform`.
+        The value of `sys.platform`.
     """
     return sys.platform
 
@@ -524,6 +524,7 @@ class ServerWorkerSupervisor:
 
     @classmethod
     def from_plugin(cls, plugin: "QueuePlugin") -> "ServerWorkerSupervisor":
+        """Create a server worker supervisor from a `QueuePlugin` instance."""
         return cls(plugin.config)
 
     def _raise_start_failure(self, stage: "str", exception_type: "str") -> "NoReturn":
@@ -591,6 +592,7 @@ class ServerWorkerSupervisor:
                 self._close_handles()
 
     def start(self) -> "None":
+        """Spawn the server-owned worker child process and wait for startup readiness."""
         with self._lock:
             if self._start_attempted:
                 msg = "Server queue worker supervisor has already started."
@@ -676,6 +678,7 @@ class ServerWorkerSupervisor:
         return first_error
 
     def close(self) -> "None":
+        """Signal the server-owned worker child process to drain and release all handles."""
         with self._lock:
             process = self._process
             stop_event = self._stop_event

@@ -1,3 +1,5 @@
+"""Apache Kafka ID-only execution dispatch and consumer group backend."""
+
 import asyncio
 import time
 from contextlib import suppress
@@ -57,15 +59,18 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
 
     @property
     def is_external(self) -> "bool":
+        """Whether this backend dispatches records to an external broker consumer."""
         return True
 
     @property
     def execution_config(self) -> "KafkaExecutionConfig":
+        """Resolved Kafka execution transport configuration."""
         if self._execution_config is None:
             self._execution_config = _execution_config_from_queue_config(self.config)
         return self._execution_config
 
     async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
+        """Reserve external dispatch and publish the task ID to the configured Kafka topic."""
         attempt_ref = _new_attempt(record.retry_count)
         reserved = await service.get_queue_backend().reserve_external_dispatch(
             record.id,
@@ -101,6 +106,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
             raise QueueDispatchError(msg, task_id=record.id, committed=True) from exc
 
     async def repair(self, service: "QueueService", *, limit: "int") -> "DispatchRepairResult":
+        """Rotate stale Kafka dispatch reservations and republish their task IDs."""
         if limit <= 0:
             return DispatchRepairResult()
         records = await service.get_queue_backend().list_running_external(limit=limit)
@@ -134,6 +140,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
     async def execute(
         self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: "str | None" = None
     ) -> "QueuedTaskRecord":
+        """Dispatch the record to Kafka and return the updated queue record."""
         del worker_id
         await self.dispatch(service, record)
         return await service.get_queue_backend().get_task(record.id) or record
@@ -176,6 +183,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
         return self._consumer
 
     async def run_consumer(self, service: "QueueService", *, max_concurrency: "int", drain_timeout: "float") -> "None":
+        """Run the Kafka consumer group loop and execute received task IDs via `consume_one()`."""
         consumer = await self._get_consumer()
         self._drain_timeout = drain_timeout
 
@@ -295,6 +303,7 @@ class KafkaExecutionBackend(BaseConsumerExecutionBackend):
             return True
 
     async def close(self) -> "None":
+        """Stop owned Kafka producer and consumer clients and clear in-flight state."""
         if self._owns_consumer and self._consumer is not None:
             await self._consumer.stop()
         if self._owns_producer and self._producer is not None:

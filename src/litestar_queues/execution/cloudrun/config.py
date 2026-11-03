@@ -1,3 +1,5 @@
+"""Configuration for the Google Cloud Run Jobs execution backend."""
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -16,6 +18,8 @@ class CloudRunExecutionConfig:
     """Configuration for Cloud Run Jobs execution."""
 
     backend_name: "ClassVar[str]" = "cloudrun"
+    """Registered execution backend identifier (`"cloudrun"`)."""
+
     project_id: "str"
     """Google Cloud project containing the target jobs."""
 

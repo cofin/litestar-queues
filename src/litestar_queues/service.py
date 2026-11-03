@@ -1,3 +1,5 @@
+"""High-level queue service orchestrating storage, execution transports, events, and observability."""
+
 import asyncio
 import contextlib
 import logging
@@ -231,8 +233,8 @@ class QueueService:
     def get_event_log(self) -> "QueueEventLog | None":
         """Return the backend-owned durable event history, if configured.
 
-        History is wired during :meth:`open` only when ``events.history`` is
-        present; otherwise this returns ``None`` and history maintenance is a
+        History is wired during `open()` only when `events.history` is
+        present; otherwise this returns `None` and history maintenance is a
         no-op.
         """
         return self._event_log
@@ -1930,7 +1932,7 @@ def _bind_execution_context(
     """Bind the ambient context a task body runs under.
 
     Returns:
-        Scope state for :func:`_reset_execution_context`.
+        Scope state for `_reset_execution_context()`.
     """
     stack = ExitStack()
     stack.enter_context(bind_task_context(task_context))

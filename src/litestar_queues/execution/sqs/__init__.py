@@ -1,3 +1,5 @@
+"""Amazon SQS execution transport backend and configuration."""
+
 from litestar_queues.execution.sqs.backend import SqsExecutionBackend
 from litestar_queues.execution.sqs.config import SqsExecutionConfig
 

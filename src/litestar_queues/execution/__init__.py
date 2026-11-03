@@ -1,7 +1,7 @@
 """Queue execution backends public re-exports.
 
 The Cloud Run and Cloud Tasks backends are loaded lazily, mirroring
-:mod:`litestar_queues.backends`: selecting local or immediate execution never
+`litestar_queues.backends`: selecting local or immediate execution never
 imports an optional adapter or requires its extra to be installed.
 """
 

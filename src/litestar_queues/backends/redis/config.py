@@ -18,6 +18,8 @@ class RedisBackendConfig:
     """Configuration for the Redis queue backend."""
 
     backend_name: "ClassVar[str]" = "redis"
+    """Registered queue backend identifier (`"redis"`)."""
+
     url: "str" = "redis://localhost:6379/0"
     """Redis connection URL used when no client is injected."""
 

@@ -1,3 +1,5 @@
+"""Local worker execution backend for in-process and server-managed workers."""
+
 from typing import TYPE_CHECKING
 
 from litestar_queues.execution.base import BaseExecutionBackend

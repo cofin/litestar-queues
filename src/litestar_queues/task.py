@@ -1,3 +1,5 @@
+"""Task registration, `@task` decorator, recurring schedules, retry backoff, and result handles."""
+
 import asyncio
 import contextvars
 import inspect
@@ -73,8 +75,13 @@ class RetryBackoff:
     """Delay policy applied when a task consumes a retry."""
 
     initial_delay: "float"
+    """Base retry delay in seconds for the first retry (`retry_count == 0`)."""
+
     multiplier: "float" = 1.0
+    """Exponential growth multiplier (`>= 1.0`) applied per retry attempt."""
+
     max_delay: "float | None" = None
+    """Optional upper bound in seconds for any computed retry delay."""
 
     def __post_init__(self) -> "None":
         if self.initial_delay < 0:
@@ -1060,15 +1067,15 @@ def _is_valid_local_time(value: "datetime", tz: "zoneinfo.ZoneInfo") -> "bool":
 
 
 def _is_async_callable(value: "object") -> "bool":
-    """Detect async callables the way Litestar's ``is_async_callable`` does.
+    """Detect async callables the way Litestar's `is_async_callable` does.
 
-    Extends :func:`inspect.iscoroutinefunction` to also detect async
-    :func:`functools.partial` objects and class instances defining ``async def
-    __call__``. Reimplemented here because importing ``litestar.utils`` pulls optional
+    Extends `inspect.iscoroutinefunction()` to also detect async
+    `functools.partial` objects and class instances defining `async def
+    __call__`. Reimplemented here because importing `litestar.utils` pulls optional
     backend packages into the core import path.
 
     Returns:
-        Whether calling ``value`` returns an awaitable.
+        Whether calling `value` returns an awaitable.
     """
     while isinstance(value, partial):
         value = value.func

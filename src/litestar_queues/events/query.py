@@ -38,9 +38,9 @@ EVENT_LEVEL_RANKS: "dict[str, int]" = {"debug": 10, "info": 20, "warning": 30, "
 def event_level_rank(level: "str | None") -> "int":
     """Return the severity rank of an event level.
 
-    ``None`` ranks 0, an unrecognized non-empty level ranks 1, and known levels
-    use :data:`EVENT_LEVEL_RANKS`. Unknown levels are never dropped; they simply
-    rank below ``debug``.
+    `None` ranks 0, an unrecognized non-empty level ranks 1, and known levels
+    use `EVENT_LEVEL_RANKS`. Unknown levels are never dropped; they simply
+    rank below `debug`.
 
     Returns:
         The severity rank.
@@ -69,20 +69,39 @@ def event_level_for_rank(rank: "int") -> "str | None":
 class QueueEventQuery:
     """Immutable filter, order, and pagination request for durable event history.
 
-    Every filter is equality and every set filter is ANDed. ``None`` means the
+    Every filter is equality and every set filter is ANDed. `None` means the
     dimension is unconstrained.
     """
 
     task_id: "str | None" = None
+    """Optional task identifier equality filter."""
+
     task_name: "str | None" = None
+    """Optional registered task name equality filter."""
+
     event_type: "str | None" = None
+    """Optional event type equality filter."""
+
     scope: "str | None" = None
+    """Optional event scope equality filter."""
+
     scope_key: "str | None" = None
+    """Optional adopter scope key equality filter."""
+
     entity: "str | None" = None
+    """Optional canonical entity key equality filter."""
+
     level: "str | None" = None
+    """Optional event severity level equality filter."""
+
     order: "QueueEventOrder" = "asc"
+    """Sort direction by the stable event history order key (`"asc"` or `"desc"`)."""
+
     limit: "int | None" = None
+    """Optional maximum number of records returned per page."""
+
     offset: "int" = 0
+    """Zero-based record offset applied before `limit`."""
 
     def __post_init__(self) -> "None":
         """Validate and canonicalize the query.
@@ -210,13 +229,13 @@ def paginate_event_records(
 def summarize_event_records(records: "Iterable[QueueEventLogRecord]") -> "list[QueueEventStageSummary]":
     """Aggregate already-filtered records into per-stage summaries.
 
-    Groups by ``stage``, sums ``duration_ms``, tracks first/last ``occurred_at``,
-    and derives ``latest_sequence``/``latest_message`` from the record with the
-    greatest stable order key and ``worst_level`` from the greatest
-    :func:`event_level_rank` (ties resolved by the latest record).
+    Groups by `stage`, sums `duration_ms`, tracks first/last `occurred_at`,
+    and derives `latest_sequence`/`latest_message` from the record with the
+    greatest stable order key and `worst_level` from the greatest
+    `event_level_rank()` (ties resolved by the latest record).
 
     Returns:
-        Summaries ordered by stage, ``None`` stage first.
+        Summaries ordered by stage, `None` stage first.
     """
     ordered = sort_event_records(records)
 

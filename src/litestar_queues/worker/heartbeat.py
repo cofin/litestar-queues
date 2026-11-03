@@ -1,3 +1,5 @@
+"""Fenced worker heartbeat loop and claim-loss detection."""
+
 import asyncio
 import contextlib
 import logging

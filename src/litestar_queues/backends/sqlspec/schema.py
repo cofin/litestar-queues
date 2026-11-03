@@ -179,7 +179,7 @@ def event_history_table_name_for(table_name: "str") -> "str":
     """Return the default event-history table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_EVENT_HISTORY_TABLE_SUFFIX` to the table part.
+    ``DEFAULT_EVENT_HISTORY_TABLE_SUFFIX`` to the table part.
     """
     validated = validate_table_name(table_name)
     parts = validated.rsplit(".", maxsplit=1)
@@ -208,7 +208,7 @@ def maintenance_table_name_for(table_name: "str") -> "str":
     """Return the default maintenance table for a queue table name.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_MAINTENANCE_TABLE_SUFFIX` to the table part. When the
+    ``DEFAULT_MAINTENANCE_TABLE_SUFFIX`` to the table part. When the
     derived name would exceed the portable identifier limit it is
     deterministically shortened (truncated table part plus a stable hash) so the
     packaged migration and the runtime backend agree on one name.
@@ -229,7 +229,7 @@ def task_reservation_table_name_for(table_name: "str") -> "str":
     """Return the default forever-uniqueness reservation table for a queue table.
 
     Schema-qualified names keep their schema and append
-    :data:`DEFAULT_TASK_RESERVATION_TABLE_SUFFIX` to the table part. Long derived
+    ``DEFAULT_TASK_RESERVATION_TABLE_SUFFIX`` to the table part. Long derived
     names use the same portable deterministic shortening as maintenance tables.
     """
     validated = validate_table_name(table_name)

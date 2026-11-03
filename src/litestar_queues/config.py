@@ -1,3 +1,5 @@
+"""Queue, worker, and dependency injection configuration models and protocols."""
+
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
@@ -171,18 +173,18 @@ class TaskDependencyProvider(Protocol):
     """Per-attempt async context manager supplying task keyword arguments.
 
     The queue enters this scope inside the attempt timeout, merges the yielded
-    mapping into the task's keyword arguments, and awaits ``__aexit__`` exactly
+    mapping into the task's keyword arguments, and awaits `__aexit__` exactly
     once for every attempt outcome: success, retryable failure, terminal
     failure, timeout, cancellation, claim loss, and shutdown interruption.
 
-    ``__aexit__`` receives :class:`asyncio.CancelledError` for timeout,
+    `__aexit__` receives `asyncio.CancelledError` for timeout,
     cancellation, claim loss, and shutdown alike, because all four reach the
-    attempt as a coroutine cancellation. Read ``record`` and ``context`` to
-    distinguish outcomes; never the exception type. A truthy ``__aexit__``
+    attempt as a coroutine cancellation. Read `record` and `context` to
+    distinguish outcomes; never the exception type. A truthy `__aexit__`
     return value is ignored: this is a resource scope, not an exception filter.
 
-    An implementation that also owns process-level state may expose ``open()``
-    and ``close()`` (synchronous or asynchronous); :class:`QueueService`
+    An implementation that also owns process-level state may expose `open()`
+    and `close()` (synchronous or asynchronous); `QueueService`
     includes them in its own lifecycle and partial-open rollback.
     """
 
@@ -214,7 +216,7 @@ class WorkerConfig:
     """Configuration shared by in-app and standalone workers."""
 
     placement: "WorkerPlacement" = "server"
-    """Which process owns this worker; see :data:`WorkerPlacement`."""
+    """Which process owns this worker; see `WorkerPlacement`."""
 
     id: "str | None" = None
     """Explicit worker identity; ``None`` uses a process-derived identifier."""
@@ -383,9 +385,9 @@ class QueueConfig:
     """Per-attempt dependency resolver; ``None`` injects no additional task keyword arguments."""
 
     task_dependency_provider: "TaskDependencyProvider | None" = None
-    """Per-attempt dependency scope; ``None`` opens no scope around the task body.
+    """Per-attempt dependency scope; `None` opens no scope around the task body.
 
-    Mutually exclusive with :attr:`task_dependency_resolver`. Use the resolver
+    Mutually exclusive with `task_dependency_resolver`. Use the resolver
     for stateless keyword arguments and the provider when the attempt must own a
     resource that has to be released on every outcome.
     """
@@ -437,7 +439,7 @@ class QueueConfig:
     """Maximum canonical argument-identity size in bytes; ``None`` disables the bound."""
 
     stale_requeue_priority: "StaleRequeuePriority" = STALE_REQUEUE_PRIORITY
-    """Priority applied to stale-recovered work; see :data:`StaleRequeuePriority`."""
+    """Priority applied to stale-recovered work; see `StaleRequeuePriority`."""
 
     names: "QueueNamespace" = field(init=False)
     """Validated format-specific runtime-name renderer."""

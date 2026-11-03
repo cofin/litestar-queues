@@ -1,3 +1,5 @@
+"""RabbitMQ quorum-queue execution transport backend and configuration."""
+
 from litestar_queues.execution.rabbitmq.backend import RabbitMQExecutionBackend
 from litestar_queues.execution.rabbitmq.config import RabbitMQExecutionConfig
 

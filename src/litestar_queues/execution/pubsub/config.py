@@ -1,3 +1,5 @@
+"""Configuration for Google Cloud Pub/Sub execution dispatch and pull consumers."""
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -17,6 +19,8 @@ class PubSubExecutionConfig:
     """Google Cloud Pub/Sub execution-dispatch configuration."""
 
     backend_name: "ClassVar[str]" = "pubsub"
+    """Registered execution backend identifier (`"pubsub"`)."""
+
     project_id: "str"
     """Google Cloud project containing the topic and subscription."""
     topic_id: "str"

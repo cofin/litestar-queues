@@ -1,3 +1,5 @@
+"""In-memory queue backend implementation."""
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -99,6 +101,11 @@ class InMemoryQueueBackend(BaseQueueBackend):
         metadata: "dict[str, Any] | None" = None,
         id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
+        """Persist a queued task in process memory and signal local waiters.
+
+        Returns:
+            The created or deduplicated queued task record.
+        """
         async with self._lock:
             if key is not None:
                 existing_id = self._keys.get(key)
@@ -184,24 +191,29 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        """Return a queued task record by ID."""
         return self._records.get(task_id)
 
     async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
+        """Return a queued task record by deduplication key."""
         task_id = self._keys.get(key)
         if task_id is None:
             return None
         return self._records.get(task_id)
 
     async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
+        """Return existing queued task records matching ``task_ids``."""
         return [record for task_id in task_ids if (record := self._records.get(task_id)) is not None]
 
     async def notify_worker_control(self, worker_id: "str | None") -> "None":
+        """Signal in-process worker control waiters."""
         del worker_id
         self._control_event.set()
 
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
+        """Record the active worker owner on a fenced running task attempt."""
         async with self._lock:
             record = self._records.get(task_id)
             if record is None or record.status != "running" or record.retry_count != expected_retry_count:
@@ -212,6 +224,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def list_pending(
         self, *, limit: "int" = 1, queue: "str | None" = None, execution_backend: "str | None" = None
     ) -> "list[QueuedTaskRecord]":
+        """Return due pending or scheduled tasks ordered for execution."""
         due_records = [
             record
             for record in self._records.values()
@@ -228,6 +241,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Claim a due pending or scheduled task for execution."""
         claimed, _ = await self.claim_task_with_expired(
             task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
         )
@@ -268,10 +282,10 @@ class InMemoryQueueBackend(BaseQueueBackend):
         """Claim up to ``limit`` due tasks under a single lock acquisition.
 
         Selects eligible records with the same queue/execution/due filter and
-        priority ordering as :meth:`list_pending`, then transitions them to
+        priority ordering as ``list_pending``, then transitions them to
         ``running`` inside one critical section using a single ``now`` snapshot.
         The returned records carry the same owner/start/heartbeat fields a
-        sequential :meth:`claim_next` loop would produce.
+        sequential ``claim_next`` loop would produce.
 
         Returns:
             Claimed task records in claim order.
@@ -331,6 +345,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Transition a running task attempt to ``completed``."""
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
@@ -357,6 +372,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         retry_at: "datetime | None" = None,
         queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Record a task failure and either schedule a retry or mark it ``failed``."""
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
@@ -386,6 +402,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def cancel_task(
         self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
+        """Cancel a pending, scheduled, or optionally running task."""
         async with self._lock:
             record = self._records.get(task_id)
             cancellable_statuses = {"pending", "scheduled", "running"} if include_running else {"pending", "scheduled"}
@@ -403,6 +420,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
     ) -> "QueuedTaskRecord | None":
+        """Return a running task interrupted during worker shutdown to ``pending``."""
         async with self._lock:
             record = self._records.get(task_id)
             if (
@@ -433,6 +451,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         metadata: "Mapping[str, Any] | None" = None,
         include_running: "bool" = False,
     ) -> "int":
+        """Cancel all tasks matching the provided filter predicates."""
         cancellable_statuses = {"pending", "scheduled", "running"} if include_running else {"pending", "scheduled"}
         cancelled = 0
         async with self._lock:
@@ -450,6 +469,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return cancelled
 
     async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Refresh ``heartbeat_at`` for active fenced running task attempts."""
         result = HeartbeatTouchResult()
         if not touches:
             return result
@@ -471,6 +491,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return result
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
+        """Clear ``heartbeat_at`` for the given task IDs."""
         task_id_set = set(task_ids)
         async with self._lock:
             for task_id, record in self._records.items():
@@ -482,6 +503,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def requeue_stale_running(
         self, *, stale_after: "timedelta", limit: "int | None" = None
     ) -> "StaleTaskRecoveryResult":
+        """Recover running tasks whose heartbeats are older than ``stale_after``."""
         cutoff = _utc_now() - stale_after
         result = StaleTaskRecoveryResult()
         async with self._lock:
@@ -605,6 +627,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Reserve a due pending or scheduled task for external execution dispatch."""
         now = _utc_now()
         async with self._lock:
             record = self._records.get(task_id)
@@ -627,6 +650,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Clear a fenced ``execution_ref`` on a pending or scheduled task."""
         async with self._lock:
             record = self._records.get(task_id)
             if (
@@ -643,6 +667,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def replace_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Replace a fenced ``execution_ref`` on a pending or scheduled task."""
         async with self._lock:
             record = self._records.get(task_id)
             if (
@@ -663,6 +688,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Release a provisional external-dispatch reservation back to the queue."""
         async with self._lock:
             record = self._records.get(task_id)
             if record is None or record.execution_ref != reservation_ref:
@@ -682,6 +708,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Commit the concrete provider ``execution_ref`` for a dispatch reservation."""
         async with self._lock:
             record = self._records.get(task_id)
             if (
@@ -698,6 +725,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Record an external execution reference on a queued task."""
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
@@ -710,6 +738,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Update a task's execution backend and clear its ``execution_ref``."""
         async with self._lock:
             record = self._records.get(task_id)
             if record is None:
@@ -721,6 +750,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return record
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Return non-terminal tasks carrying an external ``execution_ref``."""
         records = [
             record for record in self._records.values() if not record.is_terminal and record.execution_ref is not None
         ]
@@ -728,6 +758,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return records[:limit] if limit is not None else records
 
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
+        """Return aggregate task counts grouped by status."""
         statistics = QueueStatistics()
         for record in self._records.values():
             if queue is not None and record.queue != queue:
@@ -738,6 +769,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None" = None, limit: "int" = 10
     ) -> "list[QueuedTaskRecord]":
+        """Return recent completed records for ``task_name`` ordered newest first."""
         records = [
             record
             for record in self._records.values()
@@ -750,6 +782,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return records[:limit]
 
     async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        """Delete terminal task records completed before ``before``."""
         removed = 0
         async with self._lock:
             candidates = [
@@ -831,11 +864,13 @@ class InMemoryQueueBackend(BaseQueueBackend):
             return True
 
     async def notify_new_task(self, record: "QueuedTaskRecord") -> "None":
+        """Signal in-process worker waiters when ``record`` is due."""
         if record.status in {"pending", "scheduled"} and record.is_due:
             self._notification_event.set()
             self._record_wakeup_emitted()
 
     async def wait_for_wakeups(self, timeout: "float | None" = None) -> "bool":
+        """Wait for a task wakeup notification or until ``timeout`` elapses."""
         if not self._pending_read.has_pending and self._notification_event.is_set():
             self._notification_event.clear()
             return True
@@ -847,6 +882,7 @@ class InMemoryQueueBackend(BaseQueueBackend):
         return True
 
     async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
+        """Wait for a worker-control notification or until ``timeout`` elapses."""
         del worker_id
         if not self._control_pending_read.has_pending and self._control_event.is_set():
             self._control_event.clear()

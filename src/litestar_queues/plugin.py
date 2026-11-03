@@ -1,3 +1,5 @@
+"""Litestar plugin wiring queue services, workers, routes, CLI commands, and lifespans."""
+
 import asyncio
 import contextlib
 import logging
@@ -81,8 +83,8 @@ def _process_local_channels_backend(channels: "object | None") -> "str | None":
 class QueuePlugin(InitPlugin, CLIPlugin):
     """Litestar plugin for queue service dependency registration and lifecycle.
 
-    Inheriting the concrete :class:`~litestar.plugins.CLIPlugin` is what makes
-    Litestar register :meth:`server_lifespan`; satisfying ``CLIPluginProtocol``
+    Inheriting the concrete `litestar.plugins.CLIPlugin` is what makes
+    Litestar register `server_lifespan()`; satisfying `CLIPluginProtocol`
     structurally is not enough.
     """
 
@@ -137,10 +139,10 @@ class QueuePlugin(InitPlugin, CLIPlugin):
 
         Args:
             app: Optional Litestar application instance.
-            service: Optional pre-created ``QueueService``; defaults to :meth:`create_worker_service`.
+            service: Optional pre-created `QueueService`; defaults to `create_worker_service()`.
 
         Yields:
-            The active ``QueueService`` with :func:`~litestar_queues.task.get_default_service` bound.
+            The active `QueueService` with `get_default_service()` bound.
         """
         target = service if service is not None else self.create_worker_service()
         previous_default = get_default_service()

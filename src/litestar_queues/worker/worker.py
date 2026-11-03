@@ -1,3 +1,5 @@
+"""Core queue worker loop for claiming, executing, heartbeating, and draining tasks."""
+
 import asyncio
 import contextlib
 import logging
@@ -35,10 +37,10 @@ def _next_backoff_interval(current: "float", *, base: "float", maximum: "float",
     """Compute the next deterministic adaptive-polling interval after an empty cycle.
 
     The stored exponential state itself is never jittered; only the sampled
-    wait derived from it is (see :func:`_apply_jitter`).
+    wait derived from it is (see `_apply_jitter()`).
 
     Returns:
-        ``current * multiplier`` clamped to ``[base, maximum]``.
+        `current * multiplier` clamped to `[base, maximum]`.
     """
     return _clamp(current * multiplier, low=base, high=maximum)
 
@@ -241,19 +243,19 @@ class Worker:
     async def _current_wait_timeout(self) -> "float":
         """Return the wait timeout for the next poll, with jitter applied when enabled.
 
-        Jitter perturbs only the returned wait; :attr:`_current_poll_interval`
+        Jitter perturbs only the returned wait; `_current_poll_interval`
         (the stored exponential state) is never mutated by it. No random
         sampling occurs while backoff is disabled or jitter is zero.
 
         While backoff is enabled, the wait is additionally clamped to the
-        backend's ``time_until_next_due()`` when known: no backend notifies
+        backend's `time_until_next_due()` when known: no backend notifies
         a worker the instant a scheduled or retried record's due time
         arrives, so an uncapped backoff wait could otherwise sleep past
         already-known future work. This clamp never applies to the fixed
         (backoff-disabled) path, matching its exact prior behavior.
 
         Returns:
-            The timeout, in seconds, to pass to ``wait_for_wakeups``.
+            The timeout, in seconds, to pass to `wait_for_wakeups`.
         """
         if self._poll_backoff_max is None:
             return self._current_poll_interval
@@ -487,7 +489,7 @@ class Worker:
         """Reconcile externally dispatched records by delegating to the service.
 
         The reconciliation contract (state transitions, unknown-backend
-        skipping, and metrics) lives on :meth:`QueueService.reconcile_external`;
+        skipping, and metrics) lives on `QueueService.reconcile_external()`;
         the worker keeps only the periodic cadence and fleet lock.
 
         Returns:

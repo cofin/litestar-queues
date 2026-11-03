@@ -161,7 +161,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
     def __init__(self, config: "QueueConfig | None" = None) -> "None":
         """Initialize without resolving the database path.
 
-        The path is resolved in :meth:`open`, because the top-level application
+        The path is resolved in `open()`, because the top-level application
         constructs its backend before the server lifespan creates the database.
         """
         super().__init__(config=config)
@@ -374,6 +374,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
         return await self._run(operation)
 
     async def get_tasks(self, task_ids: "Sequence[UUID]") -> "list[QueuedTaskRecord]":
+        """Return existing task records for the supplied task IDs."""
         records = await asyncio.gather(*(self.get_task(task_id) for task_id in task_ids))
         return [record for record in records if record is not None]
 
@@ -395,6 +396,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
     async def assign_worker(
         self, task_id: "UUID", *, worker_id: "str", expected_retry_count: "int"
     ) -> "QueuedTaskRecord | None":
+        """Fenced update assigning `worker_id` to a running task generation."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
@@ -458,6 +461,7 @@ class EphemeralQueueBackend(BaseQueueBackend):
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Atomically claim one due task record under optional retry and execution-ref fences."""
         claimed, _ = await self.claim_task_with_expired(
             task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
         )
@@ -669,6 +673,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Atomically reserve a due, unexpired task record for external dispatch."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
@@ -697,6 +703,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Clear a matching external execution reference on an active task record."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
@@ -720,6 +728,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
     async def replace_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Atomically rotate an active external execution reference under a retry fence."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
@@ -745,6 +755,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Release a matching external dispatch reservation back to pending dispatch."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
@@ -772,6 +784,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Replace an owned external dispatch reservation with the provider's execution reference."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:
@@ -878,6 +892,8 @@ class EphemeralQueueBackend(BaseQueueBackend):
     async def interrupt_task(
         self, task_id: "UUID", *, expected_retry_count: "int", worker_id: "str", queued_at: "datetime"
     ) -> "QueuedTaskRecord | None":
+        """Fenced shutdown-interruption requeue that increments `retry_count` and `metadata['interruptions']`."""
+
         def operation(connection: "sqlite3.Connection") -> "QueuedTaskRecord | None":
             row = connection.execute("SELECT payload FROM queue_task WHERE id = ?", (str(task_id),)).fetchone()
             if row is None:

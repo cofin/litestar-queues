@@ -1119,6 +1119,7 @@ class RedisQueueBackend(BaseQueueBackend):
             raise error
 
     def get_event_log(self, config: "EventHistoryConfig") -> "RedisQueueEventLog":
+        """Return the Redis-backed queue event history log."""
         if self._event_log is None:
             self._event_log = RedisQueueEventLog(backend=self, config=config)
         return self._event_log
@@ -1258,6 +1259,7 @@ class RedisQueueBackend(BaseQueueBackend):
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Atomically claim a due pending or scheduled task for execution."""
         claimed, _ = await self.claim_task_with_expired(
             task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
         )
@@ -1758,6 +1760,7 @@ class RedisQueueBackend(BaseQueueBackend):
         execution_profile: "str | None" = None,
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Atomically reserve a due pending or scheduled task for external dispatch."""
         client = await self._get_client()
         outcome = await _eval_script(
             client,
@@ -1785,6 +1788,7 @@ class RedisQueueBackend(BaseQueueBackend):
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Clear a fenced ``execution_ref`` on a pending or scheduled task."""
         client = await self._get_client()
         outcome = await _eval_script(
             client,
@@ -1802,6 +1806,7 @@ class RedisQueueBackend(BaseQueueBackend):
     async def replace_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Replace a fenced ``execution_ref`` on a pending or scheduled task."""
         client = await self._get_client()
         outcome = await _eval_script(
             client,
@@ -1821,6 +1826,7 @@ class RedisQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Release a provisional external-dispatch reservation back to the queue."""
         client = await self._get_client()
         outcome = await _eval_script(
             client,
@@ -1850,6 +1856,7 @@ class RedisQueueBackend(BaseQueueBackend):
         *,
         execution_profile: "str | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Commit the concrete provider ``execution_ref`` for a dispatch reservation."""
         client = await self._get_client()
         outcome = await _eval_script(
             client,
@@ -2965,7 +2972,7 @@ async def _receive_pubsub_message(pubsub: "PubSubLike") -> "bool":
     confirmations are filtered to ``None`` by ``ignore_subscribe_messages``, so
     they are skipped without ending the retained read. This coroutine carries
     no deadline of its own — worker poll timeouts race it via
-    :class:`PendingNativeRead`, leaving it pending until a message lands.
+    ``PendingNativeRead``, leaving it pending until a message lands.
 
     Returns:
         True once a real published message is observed.

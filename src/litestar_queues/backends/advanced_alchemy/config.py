@@ -38,6 +38,8 @@ class SQLAlchemyBackendConfig:
     """Configuration values for the SQLAlchemy queue backend."""
 
     backend_name: "ClassVar[str]" = "advanced-alchemy"
+    """Registered queue storage backend identifier (``"advanced-alchemy"``)."""
+
     sqlalchemy_config: "SQLAlchemyAsyncConfig | None" = None
     """Advanced Alchemy async configuration; ``None`` requires an explicit session maker."""
 

@@ -73,7 +73,10 @@ class CloudTasksDelivery(msgspec.Struct, forbid_unknown_fields=True, frozen=True
     """
 
     version: "int"
+    """Wire protocol version (`CLOUD_TASKS_PROTOCOL_VERSION`)."""
+
     task_id: "UUID"
+    """Identifier of the authoritative task record stored in the queue backend."""
 
 
 def build_cloud_tasks_route(queue_config: "QueueConfig") -> "HTTPRouteHandler":

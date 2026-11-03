@@ -1,3 +1,5 @@
+"""Base execution backend contracts, delivery repair summaries, and cancellation models."""
+
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Self
@@ -79,10 +81,19 @@ class DispatchRepairResult:
     """
 
     examined: "int" = 0
+    """Number of candidate records inspected within the repair budget."""
+
     changed: "int" = 0
+    """Number of candidate records whose external delivery was created or updated."""
+
     failed: "int" = 0
+    """Number of candidate records whose external delivery repair attempt failed."""
+
     unchanged: "int" = 0
+    """Number of candidate records that required no external delivery change."""
+
     limit_reached: "bool" = False
+    """Whether the candidate scan hit the caller's examination limit."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +101,10 @@ class ExternalReconciliationResult:
     """Repair evidence and completed reconciliation under one shared budget."""
 
     repair: "DispatchRepairResult"
+    """Delivery-repair summary produced before or during external reconciliation."""
+
     reconciled: "int" = 0
+    """Number of externally running records transitioned to a terminal queue status."""
 
     @property
     def changed(self) -> "int":
@@ -105,12 +119,15 @@ ExecutionCancelStatus = Literal["accepted", "already_cancelled", "retryable", "u
 class ExecutionCancelResult:
     """Outcome of one provider-level cancellation attempt.
 
-    ``detail`` carries the provider's own words for the log line and the
+    `detail` carries the provider's own words for the log line and the
     lifecycle event; it is never parsed.
     """
 
     status: "ExecutionCancelStatus"
+    """Provider cancellation status (`"accepted"`, `"already_cancelled"`, `"retryable"`, or `"unsupported"`)."""
+
     detail: "str | None" = None
+    """Optional unparsed diagnostic message returned by the external provider."""
 
     @property
     def permits_durable_cancel(self) -> "bool":
@@ -182,7 +199,7 @@ class BaseExecutionBackend:
     def schedules_on_enqueue(self) -> "bool":
         """Whether the backend schedules a persisted record without a Worker.
 
-        Deliberately separate from :attr:`is_external`. Cloud Run Jobs and the
+        Deliberately separate from `is_external`. Cloud Run Jobs and the
         broker backends are external but still rely on a worker loop noticing a
         pending record; only a managed transport that accepts the record itself
         answers true here.

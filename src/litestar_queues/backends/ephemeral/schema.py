@@ -2,7 +2,7 @@
 
 This module owns the private environment contract, connection setup, schema
 initialization, and failure mapping. Every SQLite failure surfaced by this
-package is translated into one typed :class:`EphemeralDatabaseError` carrying a
+package is translated into one typed `EphemeralDatabaseError` carrying a
 constant message. No message interpolates the database path, task arguments,
 results, or metadata.
 """

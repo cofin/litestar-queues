@@ -1,3 +1,5 @@
+"""Google Cloud Pub/Sub ID-only execution dispatch and pull-consumer backend."""
+
 import asyncio
 import inspect
 import time

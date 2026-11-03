@@ -243,11 +243,22 @@ class QueueMaintenancePhaseResult:
     """Result of one bounded maintenance phase."""
 
     phase: "MaintenancePhase"
+    """Name of the maintenance phase executed."""
+
     status: "MaintenancePhaseStatus"
+    """Outcome status of this phase (`"completed"`, `"skipped"`, `"failed"`, or `"budget_exhausted"`)."""
+
     changed: "int" = 0
+    """Count of records created, updated, or deleted during this phase."""
+
     duration_ms: "float" = 0.0
+    """Elapsed execution duration of this phase in milliseconds."""
+
     error: "str | None" = None
+    """Sanitized error message if the phase failed, otherwise `None`."""
+
     repair: "DispatchRepairResult | None" = None
+    """Structured external dispatch repair summary produced by this phase, if applicable."""
 
     def to_payload(self) -> "dict[str, object]":
         """Return a JSON-native mapping of this phase result."""
@@ -274,9 +285,16 @@ class QueueMaintenanceSummary:
     """Result of a whole maintenance run."""
 
     outcome: "MaintenanceOutcome"
+    """Overall maintenance run outcome (`"completed"`, `"busy"`, `"partial"`, or `"failed"`)."""
+
     acquired: "bool"
+    """Whether this caller acquired the distributed maintenance coordination lease."""
+
     duration_ms: "float"
+    """Total elapsed maintenance execution time in milliseconds."""
+
     phases: "list[QueueMaintenancePhaseResult]" = field(default_factory=list)
+    """Ordered per-phase execution summaries."""
 
     def to_payload(self) -> "dict[str, object]":
         """Return a JSON-native mapping of the whole summary."""

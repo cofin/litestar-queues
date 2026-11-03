@@ -222,35 +222,82 @@ class QueueEventLogRecord:
     """A durable queue event history record."""
 
     event_id: "str"
+    """Unique identifier of the persisted event."""
+
     event_type: "str"
+    """Event type string (for example `"task.started"` or `"task.progress"`)."""
+
     task_id: "str | None"
+    """Associated task record identifier, if task-scoped."""
+
     task_name: "str | None"
+    """Associated registered task name, if task-scoped."""
+
     queue: "str | None"
+    """Logical queue name associated with the event."""
+
     worker_id: "str | None"
+    """Worker identifier that emitted the event."""
+
     execution_backend: "str | None"
+    """Execution transport name active when the event was emitted."""
+
     execution_profile: "str | None"
+    """Optional named execution profile active when the event was emitted."""
+
     actor_type: "str | None"
+    """Logical actor category (`"user"`, `"system"`, `"service"`)."""
+
     actor_id: "str | None"
+    """Identifier of the actor within `actor_type`."""
+
     stage: "str | None"
+    """Optional logical pipeline stage reported in the event payload."""
+
     level: "str | None"
+    """Severity level (`"debug"`, `"info"`, `"warning"`, `"error"`, `"critical"`)."""
+
     message: "str | None"
+    """Human-readable summary message carried on the event."""
+
     detail: "dict[str, Any]"
+    """Structured JSON payload dictionary persisted with the event."""
+
     progress_current: "float | None"
+    """Current numeric progress counter reported by the event."""
+
     progress_total: "float | None"
+    """Total numeric progress target reported by the event."""
+
     progress_percent: "float | None"
+    """Computed or explicit completion percentage (`0.0`-`100.0`)."""
+
     duration_ms: "float | None"
+    """Optional elapsed duration in milliseconds reported in the event payload."""
+
     sequence: "int | None"
+    """Monotonic per-attempt sequence number assigned by the execution context."""
+
     occurred_at: "datetime"
+    """UTC timestamp when the event was emitted."""
+
     created_at: "datetime"
+    """UTC timestamp when the history record was persisted."""
+
     scope: "str | None" = None
-    """Envelope scope of the event (``task``/``queue``/``worker``/...)."""
+    """Envelope scope of the event (`task`/`queue`/`worker`/...)."""
+
     scope_key: "str | None" = None
     """Adopter scoping key carried on the envelope (tenant, project, account)."""
+
     actor: "str | None" = None
     """The logical actor."""
+
     entity: "str | None" = None
-    """Canonical entity key from :func:`event_entity_key`."""
+    """Canonical entity key from `event_entity_key()`."""
+
     extra: "dict[str, str]" = field(default_factory=dict)
+    """Values extracted for configured `EventHistoryConfig.extra_columns`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,41 +305,65 @@ class QueueEventStageSummary:
     """Aggregated queue event history data for a single stage."""
 
     stage: "str | None"
+    """Stage identifier being summarized, or `None` for unstaged events."""
+
     event_count: "int"
+    """Total number of persisted events matching this stage."""
+
     total_duration_ms: "float"
+    """Sum of `duration_ms` across all events in this stage."""
+
     first_event_at: "datetime | None"
+    """Earliest `occurred_at` timestamp observed in this stage."""
+
     last_event_at: "datetime | None"
+    """Latest `occurred_at` timestamp observed in this stage."""
+
     latest_sequence: "int | None" = None
     """Sequence of the newest record in the stage by the stable order key."""
+
     latest_message: "str | None" = None
     """Message of the newest record in the stage by the stable order key."""
+
     worst_level: "str | None" = None
-    """Highest-ranked level present in the stage; ``None`` when no record has one."""
+    """Highest-ranked level present in the stage; `None` when no record has one."""
 
 
 class QueueEventLog(Protocol):
     """Backend-owned history with explicit commit acknowledgement and closure.
 
     Custom providers must implement commit-aware publication and closure;
-    accepting an event through ``publish_event`` alone is not a commit signal.
+    accepting an event through `publish_event` alone is not a commit signal.
     """
 
-    async def publish_event(self, event: "QueueEvent") -> "None": ...
+    async def publish_event(self, event: "QueueEvent") -> "None":
+        """Persist or enqueue a single event into the durable event history."""
+        ...
+
     async def publish_event_after_commit(
         self, event: "QueueEvent", *, release: "Callable[[], Awaitable[None]]", barrier: "bool" = False
     ) -> "None":
         """Release live delivery after commitment, waiting through a barrier when requested."""
         ...
 
-    async def flush_events(self) -> "None": ...
+    async def flush_events(self) -> "None":
+        """Flush any buffered event history writes to durable storage."""
+        ...
+
     async def aclose(self) -> "None":
         """Finish owned history work and release its lifecycle resources."""
         ...
 
     async def query_events(
         self, query: "QueueEventQuery | None" = None, *, extra: "Mapping[str, str] | None" = None
-    ) -> "OffsetPagination[QueueEventLogRecord]": ...
-    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]": ...
+    ) -> "OffsetPagination[QueueEventLogRecord]":
+        """Query persisted event history records with filtering, ordering, and pagination."""
+        ...
+
+    async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        """Aggregate matching event history records into per-stage summaries."""
+        ...
+
     async def cleanup_events(
         self,
         *,
@@ -300,4 +371,6 @@ class QueueEventLog(Protocol):
         match: "QueueEventQuery | None" = None,
         exclude: "Sequence[QueueEventQuery]" = (),
         limit: "int | None" = None,
-    ) -> "int": ...
+    ) -> "int":
+        """Delete persisted event history records older than `before` matching the retention filter."""
+        ...

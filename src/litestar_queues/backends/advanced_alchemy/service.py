@@ -175,6 +175,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         return criteria
 
     async def query_events(self, query: "QueueEventQuery") -> "tuple[int, list[QueueEventLogRecord]]":
+        """Query persisted queue events matching ``query`` and return total plus page rows."""
         model_type = self.model_type
         criteria = self._criteria(query)
         statement = select(model_type).where(*criteria)
@@ -201,6 +202,7 @@ class QueueEventLogService(SQLAlchemyAsyncRepositoryService[Any]):
         return total, records
 
     async def summarize_stages(self, query: "QueueEventQuery | None" = None) -> "list[QueueEventStageSummary]":
+        """Aggregate persisted event records by execution stage."""
         from litestar_queues.events import QueueEventStageSummary
         from litestar_queues.exceptions import QueueConfigurationError
 
@@ -475,6 +477,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         metadata: "dict[str, Any]",
         id: "UUID | None" = None,  # noqa: A002
     ) -> "QueuedTaskRecord":
+        """Persist a queued task in the current repository session."""
         if key is not None:
             existing = await self._select_task_by_key(key)
             if existing is not None:
@@ -533,16 +536,19 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return records
 
     async def get_task(self, task_id: "UUID") -> "QueuedTaskRecord | None":
+        """Return a queued task record by ID."""
         model = await self._select_task(task_id)
         return self.record_from_model(model) if model is not None else None
 
     async def get_task_by_key(self, key: "str") -> "QueuedTaskRecord | None":
+        """Return a queued task record by deduplication key."""
         model = await self._select_task_by_key(key)
         return self.record_from_model(model) if model is not None else None
 
     async def list_pending(
         self, *, limit: "int", queue: "str | None", execution_backend: "str | None"
     ) -> "list[QueuedTaskRecord]":
+        """Return due pending or scheduled tasks ordered for execution."""
         statement = self._pending_statement(queue=queue, execution_backend=execution_backend).limit(limit)
         models = await self.get_many(statement=statement)
         return [self.record_from_model(model) for model in models]
@@ -573,6 +579,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def claim_task(
         self, task_id: "UUID", *, expected_retry_count: "int | None" = None, expected_execution_ref: "str | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Claim a due pending or scheduled task for execution."""
         claimed, _ = await self.claim_task_with_expired(
             task_id, expected_retry_count=expected_retry_count, expected_execution_ref=expected_execution_ref
         )
@@ -656,6 +663,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return (self.record_from_model(model) if model is not None else None), None
 
     async def claim_next(self, *, queue: "str | None", execution_backend: "str | None") -> "QueuedTaskRecord | None":
+        """Claim the next due pending or scheduled task for ``queue``."""
         if _supports_skip_locked_claim(self._dialect_name()):
             return await self._claim_next_skip_locked(queue=queue, execution_backend=execution_backend)
 
@@ -798,6 +806,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return [by_id[task_id] for task_id in task_ids if task_id in by_id and by_id[task_id].status == "running"]
 
     async def expire_overdue(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Transition overdue pending or scheduled records to ``expired``."""
         now = _utc_now()
         model_type = self.model_type
         statement = (
@@ -858,6 +867,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def complete_task(
         self, task_id: "UUID", *, result: "Any" = None, expected_retry_count: "int | None" = None
     ) -> "QueuedTaskRecord | None":
+        """Transition a running task attempt to ``completed``."""
         now = _utc_now()
         model_type = self.model_type
         criteria = [model_type.id == task_id]
@@ -895,6 +905,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         retry_at: "datetime | None" = None,
         queued_at: "datetime | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Record a task failure and either schedule a retry or mark it ``failed``."""
         model = await self._select_task(task_id)
         if model is None:
             return None
@@ -1019,6 +1030,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def cancel_task(
         self, task_id: "UUID", *, include_running: "bool" = False, expected_retry_count: "int | None" = None
     ) -> "bool":
+        """Cancel a pending, scheduled, or optionally running task."""
         model_type = self.model_type
         now = _utc_now()
         cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
@@ -1043,6 +1055,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         metadata: "Mapping[str, Any] | None" = None,
         include_running: "bool" = False,
     ) -> "int":
+        """Cancel all tasks matching the provided filter predicates."""
         model_type = self.model_type
         cancellable_statuses = (*_DUE_STATUSES, "running") if include_running else _DUE_STATUSES
         criteria = [model_type.status.in_(cancellable_statuses)]
@@ -1061,6 +1074,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return cancelled
 
     async def touch_heartbeats(self, touches: "Sequence[HeartbeatTouch]") -> "HeartbeatTouchResult":
+        """Refresh ``heartbeat_at`` for active fenced running task attempts."""
         result = HeartbeatTouchResult()
         if not touches:
             return result
@@ -1191,6 +1205,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
             result.missed_task_ids.update(task_ids)
 
     async def null_heartbeats(self, task_ids: "list[UUID]", *, expected_retry_count: "int | None" = None) -> "None":
+        """Clear ``heartbeat_at`` for the given task IDs."""
         if not task_ids:
             return
         model_type = self.model_type
@@ -1208,6 +1223,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         limit: "int | None" = None,
         priority_policy: "StaleRequeuePriority" = STALE_REQUEUE_PRIORITY,
     ) -> "StaleTaskRecoveryResult":
+        """Recover running tasks whose heartbeats are older than ``stale_after``."""
         cutoff = _utc_now() - stale_after
         model_type = self.model_type
         stale_heartbeat = or_(model_type.heartbeat_at.is_(None), model_type.heartbeat_at <= cutoff)
@@ -1296,6 +1312,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def set_execution_ref(
         self, task_id: "UUID", execution_backend: "str", execution_ref: "str", *, execution_profile: "str | None"
     ) -> "QueuedTaskRecord | None":
+        """Record an external execution reference on a queued task."""
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
@@ -1421,6 +1438,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         execution_profile: "str | None",
         expected_retry_count: "int | None" = None,
     ) -> "QueuedTaskRecord | None":
+        """Reserve a due pending or scheduled task for external execution dispatch."""
         now = _utc_now()
         model_type = self.model_type
         criteria = [
@@ -1456,6 +1474,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def clear_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Clear a fenced ``execution_ref`` on a pending or scheduled task."""
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
@@ -1476,6 +1495,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def replace_execution_ref(
         self, task_id: "UUID", expected_retry_count: "int", expected_execution_ref: "str", execution_ref: "str"
     ) -> "QueuedTaskRecord | None":
+        """Replace a fenced ``execution_ref`` on a pending or scheduled task."""
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
@@ -1496,6 +1516,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def release_external_dispatch(
         self, task_id: "UUID", reservation_ref: "str", execution_backend: "str", *, execution_profile: "str | None"
     ) -> "QueuedTaskRecord | None":
+        """Release a provisional external-dispatch reservation back to the queue."""
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
@@ -1526,6 +1547,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         *,
         execution_profile: "str | None",
     ) -> "QueuedTaskRecord | None":
+        """Commit the concrete provider ``execution_ref`` for a dispatch reservation."""
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
@@ -1554,6 +1576,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def set_execution_backend(
         self, task_id: "UUID", execution_backend: "str", *, execution_profile: "str | None"
     ) -> "QueuedTaskRecord | None":
+        """Update a task's execution backend and clear its ``execution_ref``."""
         model_type = self.model_type
         result = await self.repository.session.execute(
             update(model_type)
@@ -1575,6 +1598,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return self.record_from_model(model) if model is not None else None
 
     async def list_running_external(self, *, limit: "int | None" = None) -> "list[QueuedTaskRecord]":
+        """Return non-terminal tasks carrying an external ``execution_ref``."""
         model_type = self.model_type
         statement = (
             select(model_type)
@@ -1587,6 +1611,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return [self.record_from_model(model) for model in models]
 
     async def get_statistics(self, *, queue: "str | None" = None) -> "QueueStatistics":
+        """Return aggregate task counts grouped by status."""
         model_type = self.model_type
         statement = select(model_type.status, func.count()).group_by(model_type.status)
         if queue is not None:
@@ -1601,6 +1626,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
     async def list_completed_by_task(
         self, task_name: "str", *, since: "datetime | None", limit: "int"
     ) -> "list[QueuedTaskRecord]":
+        """Return recent completed records for ``task_name`` ordered newest first."""
         model_type = self.model_type
         criteria = [model_type.task_name == task_name, model_type.status == "completed"]
         if since is not None:
@@ -1610,6 +1636,7 @@ class QueueTaskService(SQLAlchemyAsyncRepositoryService[Any]):
         return [self.record_from_model(model) for model in models]
 
     async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
+        """Delete terminal task records completed before ``before``."""
         model_type = self.model_type
         terminal_criteria = (
             model_type.status.in_(_TERMINAL_STATUSES),

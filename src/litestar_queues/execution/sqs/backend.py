@@ -1,3 +1,5 @@
+"""Amazon SQS ID-only execution dispatch and long-poll consumer backend."""
+
 import asyncio
 import hashlib
 import time
@@ -45,15 +47,18 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
 
     @property
     def is_external(self) -> "bool":
+        """Whether this backend dispatches records to an external broker consumer."""
         return True
 
     @property
     def execution_config(self) -> "SqsExecutionConfig":
+        """Resolved Amazon SQS execution transport configuration."""
         if self._execution_config is None:
             self._execution_config = _execution_config_from_queue_config(self.config)
         return self._execution_config
 
     async def dispatch(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
+        """Reserve external dispatch and publish the task ID to the configured SQS queue."""
         runtime = service.observability_runtime
         attributes = _queue_observability_attributes("dispatch", record)
         attributes["messaging.message.id"] = str(record.id)
@@ -110,6 +115,7 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
             raise QueueDispatchError(msg, task_id=record.id, committed=True) from exc
 
     async def repair(self, service: "QueueService", *, limit: "int") -> "DispatchRepairResult":
+        """Rotate stale SQS dispatch reservations and republish their task IDs."""
         if limit <= 0:
             return DispatchRepairResult()
         records = await service.get_queue_backend().list_running_external(limit=limit)
@@ -150,6 +156,7 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
     async def execute(
         self, service: "QueueService", record: "QueuedTaskRecord", *, worker_id: "str | None" = None
     ) -> "QueuedTaskRecord":
+        """Dispatch the record to SQS and return the updated queue record."""
         del worker_id
         await self.dispatch(service, record)
         return await service.get_queue_backend().get_task(record.id) or record
@@ -178,12 +185,14 @@ class SqsExecutionBackend(BaseConsumerExecutionBackend):
         return self._client
 
     async def close(self) -> "None":
+        """Close the owned `aiobotocore` SQS client context."""
         if self._client_context is not None:
             await self._client_context.__aexit__(None, None, None)
             self._client_context = None
             self._client = None
 
     async def run_consumer(self, service: "QueueService", *, max_concurrency: "int", drain_timeout: "float") -> "None":
+        """Run the SQS long-poll consumer loop and execute received task IDs via `consume_one()`."""
         semaphore = asyncio.Semaphore(max_concurrency)
         running: "set[asyncio.Task[None]]" = set()
         client = await self._get_client()

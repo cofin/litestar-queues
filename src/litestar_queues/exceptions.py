@@ -1,3 +1,5 @@
+"""Exceptions, warnings, and failure control-flow helpers for litestar-queues."""
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

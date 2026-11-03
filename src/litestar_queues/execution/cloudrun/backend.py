@@ -1,3 +1,5 @@
+"""Google Cloud Run Jobs execution backend implementation."""
+
 import asyncio
 import logging
 import time
@@ -47,10 +49,19 @@ class CloudRunExecutionStatus:
     """Backend-neutral status for a Cloud Run execution."""
 
     succeeded: "bool" = False
+    """Whether the Cloud Run Job execution completed with zero failed tasks."""
+
     failed: "bool" = False
+    """Whether the Cloud Run Job execution terminated with one or more failed tasks."""
+
     cancelled: "bool" = False
+    """Whether the Cloud Run Job execution was cancelled."""
+
     running: "bool" = True
+    """Whether the Cloud Run Job execution is still in progress."""
+
     error: "str | None" = None
+    """Optional error message extracted from the Cloud Run execution conditions."""
 
 
 class CloudRunExecutionBackend(BaseExecutionBackend):
@@ -100,12 +111,12 @@ class CloudRunExecutionBackend(BaseExecutionBackend):
     async def schedule(self, service: "QueueService", record: "QueuedTaskRecord") -> "str | None":
         """Dispatch a due persisted record to Cloud Run Jobs on enqueue.
 
-        Delayed records (``scheduled_at > now``) remain persisted with
-        ``execution_ref=None`` until :meth:`repair` dispatches them once due.
+        Delayed records (`scheduled_at > now`) remain persisted with
+        `execution_ref=None` until `repair()` dispatches them once due.
 
         Returns:
             The Cloud Run execution reference when dispatched immediately, or
-            ``None`` when deferred or ineligible.
+            `None` when deferred or ineligible.
         """
         if not self.schedules_on_enqueue:
             return None

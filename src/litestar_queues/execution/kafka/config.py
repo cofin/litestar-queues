@@ -1,3 +1,5 @@
+"""Configuration for Apache Kafka execution dispatch and consumer groups."""
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -14,6 +16,8 @@ class KafkaExecutionConfig:
     """Kafka execution-dispatch configuration."""
 
     backend_name: "ClassVar[str]" = "kafka"
+    """Registered execution backend identifier (`"kafka"`)."""
+
     bootstrap_servers: "str"
     """Comma-separated Kafka bootstrap servers."""
     topic: "str" = "litestar-queues"

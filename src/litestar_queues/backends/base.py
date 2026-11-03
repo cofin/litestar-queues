@@ -1,3 +1,5 @@
+"""Abstract queue storage backend contract and retry/heartbeat helper functions."""
+
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -45,14 +47,19 @@ STALE_HEARTBEAT_ERROR = "Task heartbeat stale"
 class DispatchRepairCandidates:
     """A bounded page of scheduled deliveries to inspect.
 
-    ``examined`` includes selected records that became ineligible before they
-    could be returned. ``limit_reached`` signals a full allowance, not a known
+    `examined` includes selected records that became ineligible before they
+    could be returned. `limit_reached` signals a full allowance, not a known
     backlog size, so callers need not count or scan the remaining records.
     """
 
     records: "tuple[QueuedTaskRecord, ...]" = ()
+    """Eligible candidate task records selected and stamped for repair inspection."""
+
     examined: "int" = 0
+    """Total number of candidate rows scanned against the repair allowance."""
+
     limit_reached: "bool" = False
+    """Whether the candidate scan consumed the full caller limit."""
 
 
 def interruption_count(record: "QueuedTaskRecord") -> "int":
@@ -199,13 +206,13 @@ class BaseQueueBackend:
     async def enqueue_many(self, requests: "Sequence[TaskRequest]") -> "list[QueuedTaskRecord]":
         """Persist multiple queued tasks, returning records in input order.
 
-        The default implementation issues one :meth:`enqueue` per request, which
+        The default implementation issues one `enqueue()` per request, which
         preserves per-key deduplication and ordering. Backends with a native
-        bulk path (e.g. SQLSpec COPY/Arrow/``execute_many``) override this for
+        bulk path (e.g. SQLSpec COPY/Arrow/`execute_many`) override this for
         throughput while keeping the same semantics.
 
         Returns:
-            Queue task records in the same order as ``requests``.
+            Queue task records in the same order as `requests`.
         """
         records = [
             await self.enqueue(
@@ -257,7 +264,7 @@ class BaseQueueBackend:
     async def wait_for_worker_control(self, *, worker_id: "str", timeout: "float | None" = None) -> "bool":
         """Wait for a best-effort worker-control hint.
 
-        Mirrors :meth:`wait_for_wakeups`: polling-only backends inherit this
+        Mirrors `wait_for_wakeups()`: polling-only backends inherit this
         sleep-and-report-nothing default and stay pure-poll.
 
         Returns:
@@ -341,11 +348,11 @@ class BaseQueueBackend:
         execution_backend: "str | None" = None,
         queue_limits: "Mapping[str, int] | None" = None,
     ) -> "list[QueuedTaskRecord]":
-        """Claim up to ``limit`` due tasks across the requested queues.
+        """Claim up to `limit` due tasks across the requested queues.
 
-        An empty ``queues`` tuple claims across all queues. Backends with a
+        An empty `queues` tuple claims across all queues. Backends with a
         native batch-claim primitive override this method; the fallback here
-        preserves :meth:`claim_next` semantics for backends with only a
+        preserves `claim_next()` semantics for backends with only a
         single-record primitive.
 
         Returns:
@@ -572,8 +579,8 @@ class BaseQueueBackend:
         """Acquire a backend-scoped worker coordination lock.
 
         Fleet coordination and maintenance ownership are the same primitive, so
-        this routes to :meth:`acquire_maintenance` under a fresh token. The lock
-        is never released explicitly: ``ttl`` bounds it so a worker that dies
+        this routes to `acquire_maintenance()` under a fresh token. The lock
+        is never released explicitly: `ttl` bounds it so a worker that dies
         mid-pass cannot wedge the fleet, and the next holder takes over once the
         stored ownership expires.
 
@@ -763,8 +770,8 @@ class BaseQueueBackend:
     async def cleanup_terminal(self, before: "datetime", *, limit: "int | None" = None) -> "int":
         """Delete terminal records completed before a cutoff.
 
-        Routine terminal cleanup never touches ``unique_until="forever"``
-        reservations; only :meth:`reset_identity` removes them.
+        Routine terminal cleanup never touches `unique_until="forever"`
+        reservations; only `reset_identity()` removes them.
 
         Args:
             before: Delete terminal records completed strictly before this UTC
@@ -900,6 +907,7 @@ def record_matches_filters(
     kwargs: "Mapping[str, Any] | None" = None,
     metadata: "Mapping[str, Any] | None" = None,
 ) -> "bool":
+    """Return whether `record` matches all supplied task, queue, kwargs, and metadata filters."""
     if task_name is not None and record.task_name != task_name:
         return False
     if queue is not None and record.queue != queue:

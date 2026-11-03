@@ -18,6 +18,8 @@ class ValkeyBackendConfig:
     """Configuration for the Valkey queue backend."""
 
     backend_name: "ClassVar[str]" = "valkey"
+    """Registered queue backend identifier (`"valkey"`)."""
+
     url: "str" = "redis://localhost:6379/0"
     """Valkey connection URL used when no client is injected."""
 
