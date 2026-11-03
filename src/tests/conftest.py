@@ -12,8 +12,9 @@ pytestmark = pytest.mark.anyio
 
 def pytest_configure(config: "pytest.Config") -> "None":
     """Disable Litestar's default QueueListener logging before test module collection."""
-    del config
-    LoggingConfig.configure = lambda _self: logging.getLogger  # type: ignore[method-assign]
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(LoggingConfig, "configure", lambda _self: logging.getLogger)
+    config.add_cleanup(monkeypatch.undo)
 
 
 @pytest.fixture
