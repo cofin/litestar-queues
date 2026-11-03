@@ -10,6 +10,12 @@ from litestar_queues.task import clear_task_registry
 pytestmark = pytest.mark.anyio
 
 
+def pytest_configure(config: "pytest.Config") -> "None":
+    """Disable Litestar's default QueueListener logging before test module collection."""
+    del config
+    LoggingConfig.configure = lambda _self: logging.getLogger  # type: ignore[method-assign]
+
+
 @pytest.fixture
 def anyio_backend() -> "str":
     """Return the async backend to use for tests."""

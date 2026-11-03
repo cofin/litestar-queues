@@ -51,6 +51,7 @@ async def test_sqlspec_spanner_backend_live_contract_round_trip() -> "None":
         pytest.skip(f"Spanner live test unavailable: {exc}")
 
 
+@pytest.mark.xdist_group("spanner_service")
 async def test_sqlspec_spanner_backend_emulator_contract_round_trip(spanner_service: "SpannerService") -> "None":
     await _run_spanner_contract(
         _spanner_emulator_connection_config(spanner_service),
@@ -134,6 +135,7 @@ def _spanner_emulator_connection_config(spanner_service: "SpannerService") -> "d
     }
 
 
+@pytest.mark.xdist_group("spanner_service")
 async def test_sqlspec_spanner_emulator_dispatch_repair_current_schema(spanner_service: "SpannerService") -> "None":
     from tests.integration.backends._dispatch_repair_asserts import (
         assert_dispatch_repair_candidates,

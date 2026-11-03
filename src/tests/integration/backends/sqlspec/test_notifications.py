@@ -717,7 +717,7 @@ async def test_oracle_event_backend_names_are_reported_durable(
         await backend.close()
 
 
-@pytest.mark.xdist_group("oracle")
+@pytest.mark.xdist_group("oracle_service")
 @pytest.mark.parametrize(
     ("event_backend", "aq_queue"), [("aq", _ORACLE_AQ_QUEUE), ("txeventq", _ORACLE_TXEVENTQ_QUEUE)]
 )

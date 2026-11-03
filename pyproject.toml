@@ -212,7 +212,7 @@ filterwarnings = [
   "ignore::FutureWarning:google.api_core._python_version_support",
   "ignore:This declarative base already contains a class with the same class name:sqlalchemy.exc.SAWarning",
   "ignore:Table .* already exists:Warning:aiomysql.*",
-  "ignore:Exception ignored in.*OneShotCallback:pytest.PytestUnraisableExceptionWarning",
+  "ignore:Exception ignored .*OneShotCallback:pytest.PytestUnraisableExceptionWarning",
   "ignore::pytest.PytestUnhandledThreadExceptionWarning",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncpg\\.connection",
   "ignore:the \\(type, exc, tb\\) signature of throw\\(\\) is deprecated, use the single-arg signature instead\\.:DeprecationWarning:asyncio\\.locks",
